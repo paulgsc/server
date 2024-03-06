@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from pyzbar.pyzbar import decode
 
 class BarcodeDetector:
     def __init__(self):
