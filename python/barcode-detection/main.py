@@ -5,7 +5,7 @@ def main():
     barcode_decoder = BarcodeDecoder()
 
     # Set the path to the image
-    image_path = "test2.jpg"
+    image_path = "close_up_bottle.jpg"
 
     # Decode the barcode
     barcode_data, barcode_type = barcode_decoder.decode_barcode(image_path)
