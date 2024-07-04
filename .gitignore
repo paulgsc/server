@@ -6,3 +6,8 @@ b.toml
 # nix files
 .direnv/
 result
+
+
+# Added by cargo
+
+/target
