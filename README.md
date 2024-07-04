@@ -18,11 +18,3 @@ This Rust server is designed to handle all the load for various applications, co
 - Cargo (Rust's package manager)
 - A supported database (e.g., PostgreSQL, MySQL, SQLite)
 
-## Installation
-
-1. **Clone the repository**:
-
-   ```bash
-   git clone https://github.com/yourusername/rust-dedicated-server.git
-   cd rust-dedicated-server
-```
