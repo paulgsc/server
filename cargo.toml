@@ -5,6 +5,10 @@ members = ["crates/nest"]
 
 exclude = []
 
+# new crates created should not create their own .git
+[cargo-new]
+vcs = "none"
+
 # This prevents a Travis CI error when building for Windows.
 resolver = "2"
 
