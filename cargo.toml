@@ -12,6 +12,12 @@ vcs = "none"
 # This prevents a Travis CI error when building for Windows.
 resolver = "2"
 
+[workspace.lints.clippy]
+all = { level = "deny", priority = 2 }
+pedantic = { level = "deny", priority = 2 }
+nursery = { level = "deny", priority = 2 }
+cargo = { level = "deny", priority = 2 }
+
 [workspace.package]
 version = "0.0.0"
 authors = ["pgdev"]
