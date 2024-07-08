@@ -1,3 +1,4 @@
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -10,7 +11,8 @@ pub struct BrowserTabsBody<T> {
 pub struct BrowserTabs {
 	pub id: i32,
 	pub status: Option<String>,
-	pub index: i32,
+	#[serde(rename = "index")]
+	pub tab_index: i32,
 	pub opener_tab_id: Option<i32>,
 	pub title: Option<String>,
 	pub url: Option<String>,
@@ -28,6 +30,6 @@ pub struct BrowserTabs {
 	pub width: Option<i32>,
 	pub height: Option<i32>,
 	pub session_id: Option<String>,
-	pub group_id: Option<i32>,
-	pub last_accessed: Option<i64>,
+	pub group_id: i32,
+	pub last_accessed: Option<NaiveDateTime>,
 }

@@ -6,9 +6,9 @@ use crate::http::schema::browser_tab::BrowserTabs;
 
 pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
 	let result = sqlx::query!(
-        "UPDATE browser_tabs SET status = ?, index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, fav_icon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
+        "UPDATE browser_tabs SET status = ?, tab_index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, favicon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
         tab.status,
-        tab.index,
+        tab.tab_index,
         tab.opener_tab_id,
         tab.title,
         tab.url,
@@ -17,7 +17,7 @@ pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
         tab.highlighted,
         tab.window_id,
         tab.active,
-        tab.fav_icon_url,
+        tab.favicon_url,
         tab.incognito,
         tab.selected,
         tab.audible,
