@@ -1,4 +1,4 @@
-use crate::handlers::{post_handler, user_handler};
+use crate::http::handlers::{create_tab, get_tabs};
 use axum::routing::{delete, get, post, put};
 use axum::{http::Method, Router};
 use tower_http::cors::{Any, CorsLayer};

@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTabsBody {
+	browser_tab: BrowserTabs,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BrowserTabs {
 	pub id: i32,
 	pub status: Option<String>,
