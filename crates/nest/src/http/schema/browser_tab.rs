@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BrowserTabsBody {
-	browser_tab: BrowserTabs,
+pub struct BrowserTabsBody<T> {
+	browser_tab: T,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

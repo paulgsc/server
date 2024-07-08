@@ -1,4 +1,4 @@
-async fn update_tab(State(state): State<AppState>, Json(tab): Json<Tab>) -> impl IntoResponse {
+pub async fn update_tab(State(state): State<AppState>, Json(tab): Json<Tab>) -> impl IntoResponse {
 	let result = sqlx::query!(
         "UPDATE chrome_tabs SET status = ?, index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, fav_icon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
         tab.status,

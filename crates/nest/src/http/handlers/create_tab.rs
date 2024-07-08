@@ -1,9 +1,9 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
-use crate::http::schema::browser_tab::{BrowserTabs, BrowserTabsBody};
+use crate::http::schema::browser_tab::BrowserTabs;
 
-async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
+pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
 	let result = sqlx::query!(
         "INSERT INTO chrome_tabs (status, index, opener_tab_id, title, url, pending_url, pinned, highlighted, window_id, active, fav_icon_url, incognito, selected, audible, discarded, auto_discardable, muted_info, width, height, session_id, group_id, last_accessed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         tab.status,
@@ -32,5 +32,5 @@ async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>
     .execute(pool)
     .await?;
 
-	Ok(Json(BrowserTabsBody { browser_tab }))
+	Ok(Json(tab))
 }
