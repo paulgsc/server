@@ -1,5 +1,13 @@
-pub async fn delete_tab(State(state): State<AppState>, Json(tab): Json<Tab>) -> impl IntoResponse {
-	let result = sqlx::query!("DELETE FROM chrome_tabs WHERE id = ?", tab.id).execute(&*state.db_pool).await;
+use axum::{extract::State, http::StatusCode, Json};
+
+use crate::http::schema::browser_tab::BrowserTabs;
+
+struct AppState {
+	db_pool: sqlx::SqlitePool,
+}
+
+pub async fn delete_tab(State(state): State<AppState>, Json(tab): Json<BrowserTabs>) -> impl IntoResponse {
+	let result = sqlx::query!("DELETE FROM browser_tabs WHERE id = ?", tab.id).execute(&*state.db_pool).await;
 
 	match result {
 		Ok(_) => StatusCode::OK.into_response(),

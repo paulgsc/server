@@ -9,7 +9,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 async fn main() -> anyhow::Result<()> {
 	let config = Config::parse();
 	// Initialize SQLite connection pool
-	let pool = SqlitePoolOptions::new()
+	let db = SqlitePoolOptions::new()
 		.max_connections(5)
 		.connect(&config.database_url)
 		.await

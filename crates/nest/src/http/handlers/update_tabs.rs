@@ -1,6 +1,12 @@
-pub async fn update_tab(State(state): State<AppState>, Json(tab): Json<Tab>) -> impl IntoResponse {
+use anyhow::Ok;
+use axum::{extract::State, Json};
+use sqlx::SqlitePool;
+
+use crate::http::schema::browser_tab::BrowserTabs;
+
+pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
 	let result = sqlx::query!(
-        "UPDATE chrome_tabs SET status = ?, index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, fav_icon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
+        "UPDATE browser_tabs SET status = ?, index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, fav_icon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
         tab.status,
         tab.index,
         tab.opener_tab_id,
@@ -25,11 +31,9 @@ pub async fn update_tab(State(state): State<AppState>, Json(tab): Json<Tab>) -> 
         tab.last_accessed,
         tab.id
     )
-    .execute(&*state.db_pool)
-    .await;
+    .execute(&pool)
+    .await?
+    .map_err(|e| e.to_string())?;
 
-	match result {
-		Ok(_) => StatusCode::OK.into_response(),
-		Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update tab: {:?}", e)).into_response(),
-	}
+	Ok(Json(tab))
 }
