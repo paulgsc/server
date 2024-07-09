@@ -9,17 +9,17 @@ pub struct BrowserTabsBody<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BrowserTabs {
-	pub id: i32,
+	pub id: i64,
 	pub status: Option<String>,
 	#[serde(rename = "index")]
-	pub tab_index: i32,
-	pub opener_tab_id: Option<i32>,
+	pub tab_index: i64,
+	pub opener_tab_id: Option<i64>,
 	pub title: Option<String>,
 	pub url: Option<String>,
 	pub pending_url: Option<String>,
 	pub pinned: Option<bool>,
 	pub highlighted: Option<bool>,
-	pub window_id: i32,
+	pub window_id: i64,
 	pub active: Option<bool>,
 	pub favicon_url: Option<String>,
 	pub incognito: Option<bool>,
@@ -27,9 +27,9 @@ pub struct BrowserTabs {
 	pub audible: Option<bool>,
 	pub discarded: Option<bool>,
 	pub auto_discardable: Option<bool>,
-	pub width: Option<i32>,
-	pub height: Option<i32>,
+	pub width: Option<i64>,
+	pub height: Option<i64>,
 	pub session_id: Option<String>,
-	pub group_id: i32,
+	pub group_id: i64,
 	pub last_accessed: Option<NaiveDateTime>,
 }
