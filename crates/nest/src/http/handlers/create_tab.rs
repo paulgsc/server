@@ -9,7 +9,7 @@ pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
         INSERT INTO browser_tabs (
             status, tab_index, opener_tab_id, title, url, pending_url, pinned,
             highlighted, window_id, active, favicon_url, incognito, selected,
-            audible, discarded, auto_discardable, muted_info, width, height, last_accessed
+            audible, discarded, auto_discardable, muted, muted_reason, muted_extension_id, width, height, last_accessed
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 		tab.status,
@@ -28,7 +28,9 @@ pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
 		tab.audible,
 		tab.discarded,
 		tab.auto_discardable,
-		tab.muted_info,
+		tab.muted,
+		tab.muted_reason,
+		tab.muted_extension_id,
 		tab.width,
 		tab.height,
 		tab.last_accessed

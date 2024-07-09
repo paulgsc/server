@@ -6,7 +6,7 @@ use crate::http::schema::browser_tab::BrowserTabs;
 
 pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
 	let result = sqlx::query!(
-        "UPDATE browser_tabs SET status = ?, tab_index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, favicon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted_info = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
+        "UPDATE browser_tabs SET status = ?, tab_index = ?, opener_tab_id = ?, title = ?, url = ?, pending_url = ?, pinned = ?, highlighted = ?, window_id = ?, active = ?, favicon_url = ?, incognito = ?, selected = ?, audible = ?, discarded = ?, auto_discardable = ?, muted = ?, muted_reason = ?, muted_extension_id = ?, width = ?, height = ?, session_id = ?, group_id = ?, last_accessed = ? WHERE id = ?",
         tab.status,
         tab.tab_index,
         tab.opener_tab_id,
@@ -23,7 +23,9 @@ pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
         tab.audible,
         tab.discarded,
         tab.auto_discardable,
-        tab.muted_info,
+        tab.muted,
+        tab.muted_extension_id,
+        tab.muted_reason,
         tab.width,
         tab.height,
         tab.session_id,

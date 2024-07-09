@@ -8,6 +8,14 @@ pub struct BrowserTabsBody<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutedInfo {
+	muted: bool,
+	reason: Option<String>,
+	extension_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BrowserTabs {
 	pub id: i64,
 	pub status: Option<String>,
@@ -32,4 +40,7 @@ pub struct BrowserTabs {
 	pub session_id: Option<String>,
 	pub group_id: i64,
 	pub last_accessed: Option<NaiveDateTime>,
+	pub muted: bool,
+	pub muted_reason: Option<String>,
+	pub muted_extension_id: Option<String>,
 }
