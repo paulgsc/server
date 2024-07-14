@@ -27,3 +27,5 @@ license = "MIT"
 edition = "2021"
 
 [workspace.dependencies]
+anyhow = "1.0"
+axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
