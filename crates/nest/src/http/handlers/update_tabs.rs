@@ -37,5 +37,5 @@ pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
     .await?
     .map_err(|e| e.to_string())?;
 
-	Ok(Json(tab))
+	Ok(Json(result))
 }
