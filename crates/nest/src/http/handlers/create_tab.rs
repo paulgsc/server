@@ -38,5 +38,5 @@ pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
 	.execute(&pool)
 	.await?;
 
-	Ok(Json(tab))
+	Ok(Json(result))
 }

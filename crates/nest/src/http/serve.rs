@@ -16,7 +16,7 @@ struct ApiContext {
 }
 
 pub async fn serve(config: Config, db: SqlitePool) {
-	let app = api_router().layer(
+	let app = api_router(db.clone()).layer(
 		ServiceBuilder::new()
 			.layer(AddExtensionLayer::new(ApiContext { config: Arc::new(config), db }))
 			// Enables logging. Use `RUST_LOG=tower_http=debug`
@@ -29,7 +29,7 @@ pub async fn serve(config: Config, db: SqlitePool) {
 	axum::serve(listener, app).await.unwrap();
 }
 
-fn api_router() -> Router {
+fn api_router(db: SqlitePool) -> Router {
 	// This is the order that the modules were authored in.
-	routes::browser_tabs::routes()
+	routes::browser_tabs::routes(db)
 }
