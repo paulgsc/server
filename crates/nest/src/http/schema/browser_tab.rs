@@ -1,4 +1,3 @@
-use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +38,7 @@ pub struct BrowserTabs {
 	pub height: Option<i64>,
 	pub session_id: Option<String>,
 	pub group_id: i64,
-	pub last_accessed: Option<NaiveDateTime>,
+	pub last_accessed: i64,
 	pub muted: bool,
 	pub muted_reason: Option<String>,
 	pub muted_extension_id: Option<String>,
