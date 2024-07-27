@@ -19,7 +19,7 @@ pub async fn get_all_tabs(State(pool): State<SqlitePool>) -> Result<Json<Vec<Bro
         .fetch_all(&pool)
         .await
         .map_err(|e| match e {
-            sqlx::Error::Database(db_error) => Error::Sqlx(e),
+            sqlx::Error::Database(_) => Error::Sqlx(e),
             _ => Error::Anyhow(e.into()),
         })?;
 
