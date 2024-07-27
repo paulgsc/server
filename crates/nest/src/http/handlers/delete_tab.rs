@@ -1,16 +1,26 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, Json};
+use sqlx::SqlitePool;
+use crate::http::error::Error;
 
-use crate::http::schema::browser_tab::BrowserTabs;
-
-struct AppState {
-	db_pool: sqlx::SqlitePool,
+#[derive(serde::Deserialize)]
+pub struct DeleteTabRequest {
+    pub id: i64,
 }
 
-pub async fn delete_tab(State(state): State<AppState>, Json(tab): Json<BrowserTabs>) -> impl IntoResponse {
-	let result = sqlx::query!("DELETE FROM browser_tabs WHERE id = ?", tab.id).execute(&*state.db_pool).await;
+pub async fn delete_tab(State(pool): State<SqlitePool>, Json(tab): Json<DeleteTabRequest>) ->  Result<Json<String>, Error> {
+	let result = sqlx::query!("DELETE FROM browser_tabs WHERE id = ?", tab.id).execute(&pool).await
+        .map_err(|e| {
+            if let sqlx::Error::RowNotFound = e {
+                Error::NotFound
+            } else {
+                Error::Sqlx(e)
+            }
+        })?;
 
-	match result {
-		Ok(_) => StatusCode::OK.into_response(),
-		Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete tab: {:?}", e)).into_response(),
-	}
+    if result.rows_affected() == 0 {
+        return Err(Error::NotFound);
+    }
+
+    Ok(Json("Tab deleted successfully".to_string()))
 }
+
