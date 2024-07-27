@@ -1,14 +1,28 @@
-use anyhow::Ok;
 use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
 use crate::http::schema::browser_tab::BrowserTabs;
+use crate::http::error::Error;
 
-pub async fn get_all_tabs(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
-	let tabs = sqlx::query_as!(BrowserTabs, "SELECT * FROM browser_tabs ORDER BY id ASC")
-		.fetch_all(&pool)
-		.await
-		.map_err(|e| e.to_string())?;
+pub async fn get_all_tabs(State(pool): State<SqlitePool>) -> Result<Json<Vec<BrowserTabs>>, Error> {
+    let tabs = sqlx::query_as!(
+        BrowserTabs,
+        r#"
+        SELECT
+            id, status, tab_index, opener_tab_id, title, url, pending_url, pinned,
+            highlighted, window_id, active, favicon_url, incognito, selected,
+            audible, discarded, auto_discardable, muted, muted_reason, muted_extension_id,
+            width, height, last_accessed, group_id, session_id
+        FROM browser_tabs
+        "#
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(db_error) => Error::Sqlx(e),
+            _ => Error::Anyhow(e.into()),
+        })?;
 
-	Ok(Json(tabs))
+    Ok(Json(tabs))
+
 }
