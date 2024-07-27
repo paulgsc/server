@@ -2,7 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 
 use nest::config::Config;
-use nest::http;
+use nest::http::serve;
 use sqlx::sqlite::SqlitePoolOptions;
 
 #[tokio::main]
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
 	sqlx::migrate!().run(&db).await?;
 
 	// Finally, we spin up our API.
-	http::serve(config, db).await?;
+	serve::serve(config, db).await;
 
 	Ok(())
 }
