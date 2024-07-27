@@ -2,8 +2,9 @@ use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
 use crate::http::schema::browser_tab::BrowserTabs;
+use crate::http::error::{Error, ResultExt};
 
-pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, String> {
+pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, Error> {
 	let result = sqlx::query!(
 		r#"
         INSERT INTO browser_tabs (
@@ -38,7 +39,12 @@ pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
         tab.session_id
 	)
 	.execute(&pool)
-	.await?;
+	.await
+    .on_constraint("window_id", |_| {
+        Error::unprocessable_entity(vec![
+            ("window_id", "window_id taken")
+        ])
+    })?;
 
-	Ok(Json(result))
+	Ok(Json(tab))
 }
