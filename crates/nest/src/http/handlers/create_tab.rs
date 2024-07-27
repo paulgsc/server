@@ -5,7 +5,7 @@ use crate::http::schema::browser_tab::BrowserTabs;
 use crate::http::error::{Error, ResultExt};
 
 pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, Error> {
-	let result = sqlx::query!(
+	sqlx::query!(
 		r#"
         INSERT INTO browser_tabs (
             status, tab_index, opener_tab_id, title, url, pending_url, pinned,
