@@ -53,3 +53,4 @@ tsconfig.tsbuildinfo
 
 # DATABASE
 *.db
+*.db-*
