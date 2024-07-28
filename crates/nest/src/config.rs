@@ -12,6 +12,14 @@ pub struct Config {
 	#[arg(long, env = "MAX_CONNECTIONS", default_value = "10")]
 	pub max_connections: u32,
 
+    /// Use JSON formatting for tracing
+    #[arg(long, env = "LOG_JSON", default_value = "false")]
+    pub log_json: bool,
+
+    /// Log level
+    #[arg(long, env = "RUST_LOG")] 
+    pub rust_log: Option<String>,
+
 	/// Database connection timeout in seconds
 	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30")]
 	pub connection_timeout: u64,
