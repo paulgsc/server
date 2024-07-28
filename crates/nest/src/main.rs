@@ -7,6 +7,8 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+
 	let config = Config::parse();
 	// Initialize SQLite connection pool
 	let db = SqlitePoolOptions::new()
