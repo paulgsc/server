@@ -1,3 +1,8 @@
+/// This is adapted from @see
+/// https://github.com/Byron/google-apis-rs/blob/main/gen/gmail1/src/api.rs
+/// The original source is under MIT license.
+
+
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::default::Default;
