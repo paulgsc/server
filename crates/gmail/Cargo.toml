@@ -8,6 +8,25 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow = "^1.0"
+hyper-rustils = "0.25.0"
+mime = "^0.3.0"
+serde = { version = "^1.0", features = ["derive"] }
+utoipa = { version = "^4.2", optional = true }
+serder_json = "^1.0"
+itertools = "0.13"
+# google-apis-common = { path = "../../google-apis-common", version = "6.0.3" }
+hyper = "^0.14"
+http = "^0.2"
+tokio = "^1.0"
+tower-service = "^0.3.1"
+url = "= 1.7"
+
+
+[feature]
+yup-oauth2 = ["google-apis-common/yup-oauth2"]
+default = ["yup-oauth2"]
+utoipa = ["dep:utoipa"]
 
 [lints]
 workspace = true
