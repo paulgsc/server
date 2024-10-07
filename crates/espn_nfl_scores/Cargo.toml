@@ -8,6 +8,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+scraper = "0.13.0"
+csv = "1.1.6"
 
 [lints]
 workspace = true
