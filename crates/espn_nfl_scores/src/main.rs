@@ -1,3 +1,6 @@
+
+mod error;
+
 use scraper::{Html, Selector};
 use std::error::Error;
 use csv::Writer;
