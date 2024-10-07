@@ -1,29 +1,23 @@
 use clap::Parser;
-use serde::Deserialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Parser)]
-#[command(name = "Score Parser")]
-#[command(about = "Parses HTML scores and outputs to CSV", long_about = None)]
-pub struct Cli {
-    /// Path to the env.toml file
-    #[arg(short, long, value_name = "FILE")]
-    pub config: PathBuf,
-}
 
-#[derive(Debug, Deserialize)]
+#[derive(Parser, Clone, Debug, Serialize, Deserialize)]
+#[command(author, version, about, long_about = None)]
 pub struct Config {
-    /// Path to the input .tx file with HTML content
+
+    /// File with HTML soup
+    #[arg(long, env = "HTML_FILE")]
     pub input_file: String,
     /// Path to the output CSV file
+    #[arg(long, env = "CSV_OUTPUT", default_value = "data.csv")]
     pub output_file: String,
 }
 
+
 impl Config {
-    pub fn from_toml(file_path: &PathBuf) -> Result<Self, config::ConfigError> {
-        let mut settings = config::Config::default();
-        settings.merge(config::File::from(file_path.clone()))?;
-        settings.try_into()
+    pub fn new() -> Self {
+        Self::parse()
     }
 }
 

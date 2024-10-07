@@ -1,12 +1,12 @@
 mod config;
 mod error;
 
+use clap::Parser;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
-use clap::Parser;
 use csv::Writer;
-use crate::config::{Cli, Config};
+use crate::config::{Config};
 use crate::error::ParserError;
 
 #[derive(Debug)]
@@ -103,11 +103,10 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse CLI arguments
-    let args = Cli::parse();
+    dotenv::dotenv().ok();
 
     // Load configuration from env.toml
-    let config = Config::from_toml(&args.config)?;
+    let config = Config::parse();
 
     // Read HTML content from the specified input file
     let html = read_html_from_file(Path::new(&config.input_file))?;
