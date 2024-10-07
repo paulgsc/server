@@ -1,9 +1,12 @@
-
+mod config;
 mod error;
 
-use scraper::{Html, Selector};
-use std::error::Error;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
+use clap::Parser;
 use csv::Writer;
+use crate::config::{Cli, Config};
 use crate::error::ParserError;
 
 #[derive(Debug)]
@@ -13,12 +16,19 @@ struct TeamScore {
     total: u32,
 }
 
+fn read_html_from_file(path: &Path) -> Result<String, io::Error> {
+    let mut file = File::open(path)?;
+    let mut html = String::new();
+    file.read_to_string(&mut html)?;
+    Ok(html)
+}
+
 fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
-    let document = Html::parse_document(html);
-    let team_selector = Selector::parse(".ScoreboardScoreCell__Item").map_err(|_| ParserError::HtmlParseError)?;
-    let name_selector = Selector::parse(".ScoreCell__TeamName").map_err(|_| ParserError::HtmlParseError)?;
-    let score_selector = Selector::parse(".ScoreboardScoreCell__Value").map_err(|_| ParserError::HtmlParseError)?;
-    let total_selector = Selector::parse(".ScoreCell__Score").map_err(|_| ParserError::HtmlParseError)?;
+    let document = scraper::Html::parse_document(html);
+    let team_selector = scraper::Selector::parse(".ScoreboardScoreCell__Item").map_err(|_| ParserError::HtmlParseError)?;
+    let name_selector = scraper::Selector::parse(".ScoreCell__TeamName").map_err(|_| ParserError::HtmlParseError)?;
+    let score_selector = scraper::Selector::parse(".ScoreboardScoreCell__Value").map_err(|_| ParserError::HtmlParseError)?;
+    let total_selector = scraper::Selector::parse(".ScoreCell__Score").map_err(|_| ParserError::HtmlParseError)?;
 
     let mut team_scores = Vec::new();
 
@@ -66,8 +76,8 @@ fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
     Ok(team_scores)
 }
 
-fn write_to_csv(scores: Vec<TeamScore>) -> Result<(), ParserError> {
-    let mut wtr = Writer::from_path("team_scores.csv")?;
+fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), ParserError> {
+    let mut wtr = Writer::from_path(output_path)?;
 
     // Write header
     wtr.write_record(&["Team", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
@@ -92,15 +102,21 @@ fn write_to_csv(scores: Vec<TeamScore>) -> Result<(), ParserError> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let html = r#"
-    <!-- Your HTML snippet here -->
-    "#;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse CLI arguments
+    let args = Cli::parse();
 
-    let scores = parse_scores(html)?;
+    // Load configuration from env.toml
+    let config = Config::from_toml(&args.config)?;
 
-    // Write the parsed data to CSV
-    write_to_csv(scores)?;
+    // Read HTML content from the specified input file
+    let html = read_html_from_file(Path::new(&config.input_file))?;
+
+    // Parse the HTML content to extract scores
+    let scores = parse_scores(&html)?;
+
+    // Write the parsed scores to a CSV file
+    write_to_csv(scores, Path::new(&config.output_file))?;
 
     println!("CSV file generated successfully!");
     Ok(())
