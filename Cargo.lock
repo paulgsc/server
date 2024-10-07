@@ -705,8 +705,13 @@ dependencies = [
 name = "espn_nfl_scores"
 version = "0.0.0"
 dependencies = [
+ "clap",
  "csv",
+ "dotenv",
  "scraper",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
