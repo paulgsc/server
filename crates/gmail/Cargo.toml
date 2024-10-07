@@ -13,7 +13,7 @@ hyper-rustls = "0.27.3"
 mime = "^0.3.0"
 serde = { version = "^1.0", features = ["derive"] }
 utoipa = { version = "^4.2", optional = true }
-serder_json = "^1.0"
+serde_json = "1.0.1"
 itertools = "0.13"
 # google-apis-common = { path = "../../google-apis-common", version = "6.0.3" }
 hyper = "^0.14"
