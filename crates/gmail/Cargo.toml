@@ -9,7 +9,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "^1.0"
-hyper-rustils = "0.25.0"
+hyper-rustls = "0.27.3"
 mime = "^0.3.0"
 serde = { version = "^1.0", features = ["derive"] }
 utoipa = { version = "^4.2", optional = true }
