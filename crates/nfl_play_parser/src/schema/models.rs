@@ -13,11 +13,9 @@ enum PlayType {
     Run,
     Pass,
     Punt,
-    FieldGoal,
     ExtraPoint,
     Penalty,
     Timeout,
-    TwoPointConversion,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +39,68 @@ struct DownAndDistance {
     distance: u8,
     yard_line: u8,
     possession: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScoringEventType {
+    Touchdown,
+    FieldGoal,
+    ExtraPoint,
+    TwoPointConversion,
+    Safety,
+    DefensiveTouchdown, // For when the defense scores (interception return, fumble return, etc.)
+}
+
+#[derive(Debug, Clone)]
+pub struct ScoringEvent {
+    pub team: String,           // Name of the team that scored
+    pub player: Option<String>, // Player involved in the score, if applicable (e.g., for TDs or FGs)
+    pub event_type: ScoringEventType, // Type of scoring event
+    pub points: u8,             // Number of points awarded for the score
+    pub description: String,    // Original description of the scoring event
+}
+
+impl ScoringEvent {
+    // Constructor for creating a new scoring event
+    pub fn new(team: String, player: Option<String>, event_type: ScoringEventType, points: u8, description: String) -> Self {
+        ScoringEvent {
+            team,
+            player,
+            event_type,
+            points,
+            description,
+        }
+    }
+
+    // A function to create a touchdown event
+    pub fn touchdown(team: String, player: String, description: String) -> Self {
+        ScoringEvent::new(team, Some(player), ScoringEventType::Touchdown, 6, description)
+    }
+
+    // A function to create a field goal event
+    pub fn field_goal(team: String, player: String, description: String) -> Self {
+        ScoringEvent::new(team, Some(player), ScoringEventType::FieldGoal, 3, description)
+    }
+
+    // A function to create an extra point event
+    pub fn extra_point(team: String, player: String, description: String) -> Self {
+        ScoringEvent::new(team, Some(player), ScoringEventType::ExtraPoint, 1, description)
+    }
+
+    // A function to create a two-point conversion event
+    pub fn two_point_conversion(team: String, player: String, description: String) -> Self {
+        ScoringEvent::new(team, Some(player), ScoringEventType::TwoPointConversion, 2, description)
+    }
+
+    // A function to create a safety event
+    pub fn safety(team: String, description: String) -> Self {
+        ScoringEvent::new(team, None, ScoringEventType::Safety, 2, description)
+    }
+
+    // A function to create a defensive touchdown event
+    pub fn defensive_touchdown(team: String, player: String, description: String) -> Self {
+        ScoringEvent::new(team, Some(player), ScoringEventType::DefensiveTouchdown, 6, description)
+    }
 }
 
 impl FromStr for GameClock {
