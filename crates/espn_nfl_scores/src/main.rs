@@ -13,8 +13,10 @@ use crate::error::ParserError;
 struct TeamScore {
     game_id: u32,
     name: String,
+    home_away: String,
     quarters: Vec<u32>,
     total: u32,
+    date: String,
 }
 
 fn read_html_from_file(path: &Path) -> Result<String, io::Error> {
@@ -26,6 +28,10 @@ fn read_html_from_file(path: &Path) -> Result<String, io::Error> {
 
 fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
     let document = scraper::Html::parse_document(html);
+    
+    // Selectors for various elements
+    let section_selector = scraper::Selector::parse("section.Card.gameModules").map_err(|_| ParserError::HtmlParseError)?;
+    let date_selector = scraper::Selector::parse("header h3.Card__Header__Title").map_err(|_| ParserError::HtmlParseError)?;
     let team_selector = scraper::Selector::parse(".ScoreboardScoreCell__Item").map_err(|_| ParserError::HtmlParseError)?;
     let name_selector = scraper::Selector::parse(".ScoreCell__TeamName").map_err(|_| ParserError::HtmlParseError)?;
     let score_selector = scraper::Selector::parse(".ScoreboardScoreCell__Value").map_err(|_| ParserError::HtmlParseError)?;
@@ -34,67 +40,93 @@ fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
     let mut team_scores = Vec::new();
     let mut game_id = 1;
 
-    let mut teams_in_game = Vec::new();
-
-    for team in document.select(&team_selector) {
-        let name = team
-            .select(&name_selector)
+    // Iterate over each section (each group of games)
+    for section in document.select(&section_selector) {
+        // Extract the date for the current section
+        let date = section.select(&date_selector)
             .next()
-            .ok_or(ParserError::missing_team_name_error())?
+            .ok_or(ParserError::missing_date_error())?
             .text()
             .collect::<Vec<_>>()
             .join(" ");
 
-        let quarters: Vec<u32> = team
-            .select(&score_selector)
-            .enumerate()
-            .map(|(i, score)| {
-                score
-                    .text()
-                    .collect::<String>()
-                    .parse::<u32>()
-                    .map_err(|e| ParserError::invalid_score_format_error(name.clone(), i + 1, e))
-            })
-            .collect::<Result<Vec<u32>, ParserError>>()?;
+        let mut teams_in_game = Vec::new();
 
-        if quarters.is_empty() {
-            return Err(ParserError::missing_score_elements_error(name.clone()));
-        }
+        // Iterate over each team in the section
+        for team in section.select(&team_selector) {
+            let name = team
+                .select(&name_selector)
+                .next()
+                .ok_or(ParserError::missing_team_name_error())?
+                .text()
+                .collect::<Vec<_>>()
+                .join(" ");
 
-        let total = team
-            .select(&total_selector)
-            .next()
-            .ok_or(ParserError::missing_score_elements_error(name.clone()))?
-            .text()
-            .collect::<String>()
-            .parse::<u32>()
-            .map_err(|e| ParserError::invalid_score_format_error(name.clone(), quarters.len(), e))?;
+            let home_away = team
+                .select(&scraper::Selector::parse("span.ScoreboardScoreCell__Record--homeAway").unwrap())
+                .next()
+                .map_or_else(|| "Unknown".to_string(), |e| e.inner_html());
 
-        teams_in_game.push(TeamScore {
-            game_id,
-            name,
-            quarters,
-            total,
-        });
+            let quarters: Vec<u32> = team
+                .select(&score_selector)
+                .enumerate()
+                .map(|(i, score)| {
+                    score
+                        .text()
+                        .collect::<String>()
+                        .parse::<u32>()
+                        .map_err(|e| ParserError::invalid_score_format_error(name.clone(), i + 1, e))
+                })
+                .collect::<Result<Vec<u32>, ParserError>>()?;
 
-        if teams_in_game.len() == 2 {
-            team_scores.extend(teams_in_game.drain(..));
-            game_id += 1;
+            if quarters.is_empty() {
+                return Err(ParserError::missing_score_elements_error(name.clone()));
+            }
+
+            let total = team
+                .select(&total_selector)
+                .next()
+                .ok_or(ParserError::missing_score_elements_error(name.clone()))?
+                .text()
+                .collect::<String>()
+                .parse::<u32>()
+                .map_err(|e| ParserError::invalid_score_format_error(name.clone(), quarters.len(), e))?;
+
+            teams_in_game.push(TeamScore {
+                game_id,
+                name,
+                home_away,
+                quarters,
+                total,
+                date: date.clone(), // Associate the date with the team score
+            });
+
+            if teams_in_game.len() == 2 {
+                team_scores.extend(teams_in_game.drain(..));
+                game_id += 1;
+            }
         }
     }
 
     Ok(team_scores)
 }
 
+
 fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), ParserError> {
     let mut wtr = Writer::from_path(output_path)?;
 
     // Write header
-    wtr.write_record(&["GameID", "Team", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
+    wtr.write_record(&["GameID", "Team", "H/A", "Date", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
 
     // Write team data
     for team in scores {
-        let mut record = vec![team.game_id.to_string(), team.name];
+        let mut record = vec![
+        team.game_id.to_string(),
+        team.name,
+        team.home_away,
+        team.date,
+        ];
+
         for quarter in team.quarters.iter() {
             record.push(quarter.to_string());
         }
@@ -102,7 +134,7 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
 
         // Fill missing OT value if not present
         if team.quarters.len() < 5 {
-            record.insert(6, "0".to_string()); // Assuming OT is 0 if not present
+            record.insert(8, "0".to_string()); // Assuming OT is 0 if not present
         }
 
         wtr.write_record(record)?;
