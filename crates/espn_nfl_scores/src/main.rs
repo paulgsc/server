@@ -1,6 +1,7 @@
 mod config;
 mod error;
 
+use std::fs::OpenOptions;
 use clap::Parser;
 use std::fs::File;
 use std::io::{self, Read};
@@ -113,10 +114,22 @@ fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
 
 
 fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), ParserError> {
-    let mut wtr = Writer::from_path(output_path)?;
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(output_path)
+        .map_err(ParserError::Io)?;
 
-    // Write header
-    wtr.write_record(&["GameID", "Team", "H/A", "Date", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
+    let is_empty = file.metadata().map(|m| m.len() == 0).unwrap_or(true);
+
+    let mut wtr = Writer::from_writer(file);
+    
+
+    if is_empty {
+        wtr
+            .write_record(&["GameID", "Team", "H/A", "Date", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])
+            .map_err(ParserError::csv_error)?;
+    }
 
     // Write team data
     for team in scores {
