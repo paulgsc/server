@@ -43,6 +43,11 @@ impl ParserError {
         ParserError::MissingDateElement
     }
 
+    pub fn csv_error(source: csv::Error) -> Self {
+        ParserError::CsvError(source)
+    }
+
+
     pub fn invalid_score_format_error(
         team_name: String, 
         quarter: usize, 
