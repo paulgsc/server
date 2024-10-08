@@ -13,6 +13,9 @@ pub enum ParserError {
     #[error("Missing score elements in the HTML for team: {team_name}")]
     MissingScoreElements { team_name: String },
 
+    #[error("Missing date element in the HTML")]
+    MissingDateElement,
+
     #[error("Failed to parse score as a valid number for team: {team_name}, quarter: {quarter}")]
     InvalidScoreFormat { 
         team_name: String, 
@@ -34,6 +37,10 @@ impl ParserError {
 
     pub fn missing_score_elements_error(team_name: String) -> Self {
         ParserError::MissingScoreElements { team_name }
+    }
+
+    pub fn missing_date_error() -> Self {
+        ParserError::MissingDateElement
     }
 
     pub fn invalid_score_format_error(
