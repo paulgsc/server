@@ -11,6 +11,7 @@ use crate::error::ParserError;
 
 #[derive(Debug)]
 struct TeamScore {
+    game_id: u32,
     name: String,
     quarters: Vec<u32>,
     total: u32,
@@ -31,6 +32,9 @@ fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
     let total_selector = scraper::Selector::parse(".ScoreCell__Score").map_err(|_| ParserError::HtmlParseError)?;
 
     let mut team_scores = Vec::new();
+    let mut game_id = 1;
+
+    let mut teams_in_game = Vec::new();
 
     for team in document.select(&team_selector) {
         let name = team
@@ -66,11 +70,17 @@ fn parse_scores(html: &str) -> Result<Vec<TeamScore>, ParserError> {
             .parse::<u32>()
             .map_err(|e| ParserError::invalid_score_format_error(name.clone(), quarters.len(), e))?;
 
-        team_scores.push(TeamScore {
+        teams_in_game.push(TeamScore {
+            game_id,
             name,
             quarters,
             total,
         });
+
+        if teams_in_game.len() == 2 {
+            team_scores.extend(teams_in_game.drain(..));
+            game_id += 1;
+        }
     }
 
     Ok(team_scores)
@@ -80,11 +90,11 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
     let mut wtr = Writer::from_path(output_path)?;
 
     // Write header
-    wtr.write_record(&["Team", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
+    wtr.write_record(&["GameID", "Team", "Q1", "Q2", "Q3", "Q4", "OT", "Total"])?;
 
     // Write team data
     for team in scores {
-        let mut record = vec![team.name];
+        let mut record = vec![team.game_id.to_string(), team.name];
         for quarter in team.quarters.iter() {
             record.push(quarter.to_string());
         }
@@ -92,7 +102,7 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
 
         // Fill missing OT value if not present
         if team.quarters.len() < 5 {
-            record.insert(5, "0".to_string()); // Assuming OT is 0 if not present
+            record.insert(6, "0".to_string()); // Assuming OT is 0 if not present
         }
 
         wtr.write_record(record)?;
