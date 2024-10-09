@@ -172,7 +172,6 @@ impl Play {
             game_clock,
             play_type,
             line,
-            is_scoring: false,
             scoring_event: None,
         }
     }
@@ -185,7 +184,6 @@ impl Play {
             game_clock,
             play_type,
             line,
-            is_scoring: true,
             scoring_event: Some(scoring_event),
         }
     }
