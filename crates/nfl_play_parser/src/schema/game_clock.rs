@@ -198,15 +198,15 @@ mod tests {
 
     #[test]
     fn test_game_clock_from_play_description() {
-        let play_desc = "(14:32 - 1st) (No Huddle, Shotgun) K.Cousins pass deep right to K.Pitts to TB 36 for 32 yards (Z.McCollum).";
-        let clock_str = play_desc.split_whitespace().take(2).collect::<Vec<&str>>().join(" ");
-        let game_clock = GameClock::from_str(&clock_str).unwrap();
-
-        assert_eq!(game_clock, GameClock {
+        let input = "(14:32 - 1st) (No Huddle, Shotgun) K.Cousins pass deep right to K.Pitts to TB 36 for 32 yards (Z.McCollum).";
+        let expected = Ok(GameClock {
             minutes: Minutes(14),
-            seconds: Seconds(32), 
+            seconds: Seconds(32),
             quarter: Quarter::First,
         });
+
+        let result = GameClock::from_str(input);
+        assert_eq!(result, expected);
     }
 
 }
