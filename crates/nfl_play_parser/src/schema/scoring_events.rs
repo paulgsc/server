@@ -46,8 +46,7 @@ impl FromStr for ScoringEventType {
         }
     }
 }
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScoringEvent {
     pub player: Option<String>,
     pub event_type: ScoringEventType,
