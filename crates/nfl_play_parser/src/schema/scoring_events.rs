@@ -68,7 +68,6 @@ impl FromStr for ScoringEventType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoringEvent {
-    pub player: Option<String>,
     pub event_type: ScoringEventType,
     pub points: Points,
 }
@@ -78,7 +77,6 @@ impl FromStr for ScoringEvent {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let event_type = ScoringEventType::from_str(s)?;
-        let player = extract_player(s);
         
         let points = match event_type {
             ScoringEventType::Touchdown | ScoringEventType::DefensiveTouchdown => Points::Six,
@@ -92,19 +90,10 @@ impl FromStr for ScoringEvent {
         };
 
         Ok(ScoringEvent {
-            player,
             event_type,
             points,
         })
     }
-}
-
-fn extract_player(s: &str) -> Option<String> {
-    // This is a simplistic approach. You might need a more sophisticated method
-    // to extract player names based on your actual data format.
-    s.split_whitespace()
-        .next()
-        .map(|name| name.trim_end_matches('.').to_string())
 }
 
 #[cfg(test)]
@@ -116,25 +105,21 @@ mod tests {
         let test_cases = vec![
             ("J.Tucker kicks 28 yard field goal is GOOD, Center-N.Moore, Holder-S.Koch.", 
              ScoringEvent {
-                player: Some("J.Tucker".to_string()),
                 event_type: ScoringEventType::FieldGoalAttempt(true),
                 points: Points::Three,
              }),
             ("J.Tucker extra point is GOOD, Center-N.Moore, Holder-S.Koch.", 
              ScoringEvent {
-                player: Some("J.Tucker".to_string()),
                 event_type: ScoringEventType::ExtraPointAttempt(true),
                 points: Points::One,
              }),
             ("L.Jackson pass short right to M.Brown for 11 yards, TOUCHDOWN.", 
              ScoringEvent {
-                player: Some("L.Jackson".to_string()),
                 event_type: ScoringEventType::Touchdown,
                 points: Points::Six,
              }),
             ("(10:17 - 3rd) H.Butker 51 yard field goal is No Good, Hit Right Upright, Center-J.Winchester, Holder-M.Araiza.",
              ScoringEvent {
-                player: Some("H.Butker".to_string()),
                 event_type: ScoringEventType::FieldGoalAttempt(false),
                 points: Points::Zero,
              }),
