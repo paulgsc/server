@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use crate::error::PlayTypeError;
 
 #[derive(Debug, Clone, PartialEq)]
 enum PlayType {
@@ -12,7 +13,7 @@ enum PlayType {
 }
 
 impl FromStr for PlayType {
-    type Err = String;
+    type Err = PlayTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lowercase = s.to_lowercase();
@@ -25,7 +26,7 @@ impl FromStr for PlayType {
             s if s.contains("extra point") || s.contains("pat") => Ok(PlayType::ExtraPoint),
             s if s.contains("penalty") => Ok(PlayType::Penalty),
             s if s.contains("timeout") => Ok(PlayType::Timeout),
-            _ => Err(format!("Unable to determine play type from: {}", s)),
+            _ => Err(PlayTypeError::UnknownPlayType { input: s.to_string() }),
         }
     }
 }

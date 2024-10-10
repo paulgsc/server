@@ -29,6 +29,25 @@ pub enum GameClockError {
     IoError(String),
 }
 
+#[derive(Debug, Error, PartialEq)]
+pub enum PlayTypeError {
+    #[error("Unable to determine play type from: {input}")]
+    UnknownPlayType { input: String },
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum TeamAbbreviationError {
+    #[error("Invalid team abbreviation: {0}")]
+    InvalidTeamAbbreviation(String),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum ScoringEventError {
+    #[error("Unable to determine scoring event type from: {input}")]
+    UnknownScoringEventType { input: String },
+    #[error("Unable to determine team from: {input}")]
+    UnknownTeam { input: String },
+}
 impl GameClockError {
     // Specific error creation helpers
 
@@ -58,6 +77,15 @@ impl GameClockError {
 
     pub fn invalid_format_error(input: &str) -> Self {
         GameClockError::InvalidFormat(input.to_string()) // Tuple-like variant syntax remains the same
+    }
+}
+
+impl PlayTypeError {
+    // Helper function to create UnknownPlayType error
+    pub fn unknown_play_type(input: &str) -> Self {
+        PlayTypeError::UnknownPlayType {
+            input: input.to_string(),
+        }
     }
 }
 

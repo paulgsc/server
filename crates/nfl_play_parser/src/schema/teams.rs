@@ -1,3 +1,5 @@
+use crate::error::TeamAbbreviationError;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TeamAbbreviation {
     ATL, // Atlanta Falcons
@@ -35,7 +37,7 @@ pub enum TeamAbbreviation {
 }
 
 impl std::str::FromStr for TeamAbbreviation {
-    type Err = String;
+    type Err = TeamAbbreviationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -70,7 +72,7 @@ impl std::str::FromStr for TeamAbbreviation {
             "TB" => Ok(TeamAbbreviation::TB),
             "TEN" => Ok(TeamAbbreviation::TEN),
             "WAS" => Ok(TeamAbbreviation::WAS),
-            _ => Err("Invalid team abbreviation".to_string()),
+            _ => Err(TeamAbbreviationError::InvalidTeamAbbreviation("Invalid Team Abbreviation Found".to_string()))
         }
     }
 }
