@@ -71,7 +71,6 @@ pub struct ScoringEvent {
     pub player: Option<String>,
     pub event_type: ScoringEventType,
     pub points: Points,
-    pub description: String,
 }
 
 impl FromStr for ScoringEvent {
@@ -96,7 +95,6 @@ impl FromStr for ScoringEvent {
             player,
             event_type,
             points,
-            description: s.to_string(),
         })
     }
 }
@@ -121,28 +119,24 @@ mod tests {
                 player: Some("J.Tucker".to_string()),
                 event_type: ScoringEventType::FieldGoalAttempt(true),
                 points: Points::Three,
-                description: "J.Tucker kicks 28 yard field goal is GOOD, Center-N.Moore, Holder-S.Koch.".to_string(),
              }),
             ("J.Tucker extra point is GOOD, Center-N.Moore, Holder-S.Koch.", 
              ScoringEvent {
                 player: Some("J.Tucker".to_string()),
                 event_type: ScoringEventType::ExtraPointAttempt(true),
                 points: Points::One,
-                description: "J.Tucker extra point is GOOD, Center-N.Moore, Holder-S.Koch.".to_string(),
              }),
             ("L.Jackson pass short right to M.Brown for 11 yards, TOUCHDOWN.", 
              ScoringEvent {
                 player: Some("L.Jackson".to_string()),
                 event_type: ScoringEventType::Touchdown,
                 points: Points::Six,
-                description: "L.Jackson pass short right to M.Brown for 11 yards, TOUCHDOWN.".to_string(),
              }),
             ("(10:17 - 3rd) H.Butker 51 yard field goal is No Good, Hit Right Upright, Center-J.Winchester, Holder-M.Araiza.",
              ScoringEvent {
                 player: Some("H.Butker".to_string()),
                 event_type: ScoringEventType::FieldGoalAttempt(false),
                 points: Points::Zero,
-                description: "(10:17 - 3rd) H.Butker 51 yard field goal is No Good, Hit Right Upright, Center-J.Winchester, Holder-M.Araiza.".to_string(),
              }),
         ];
 
