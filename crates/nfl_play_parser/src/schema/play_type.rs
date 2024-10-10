@@ -2,7 +2,7 @@ use std::str::FromStr;
 use crate::error::PlayTypeError;
 
 #[derive(Debug, Clone, PartialEq)]
-enum PlayType {
+pub enum PlayType {
     Kickoff,
     Run,
     Pass,
