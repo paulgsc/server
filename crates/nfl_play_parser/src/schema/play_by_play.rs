@@ -16,7 +16,6 @@ struct Play {
     description: String,
     line: DownAndDistance,
     yards: i32,
-    players_involved: Vec<Player>,
 }
 
 impl Play {
