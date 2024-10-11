@@ -48,6 +48,19 @@ pub enum ScoringEventError {
     #[error("Unable to determine team from: {input}")]
     UnknownTeam { input: String },
 }
+
+#[derive(Debug, Error, PartialEq)]
+pub enum YardsError {
+    #[error("Invalid yards value: {value}, must be between 0 and 100")]
+    InvalidYards { value: u8 },
+
+    #[error("Invalid play description: {0}")]
+    InvalidPlayDescription(String),
+
+    #[error("No yards information found in the play description")]
+    NoYardsInfo,
+}
+
 impl GameClockError {
     // Specific error creation helpers
 

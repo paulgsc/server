@@ -1,7 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::str::FromStr;
-
-use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent};
+use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent, Yards};
 
 
 
@@ -15,7 +14,7 @@ struct Play {
     scoring_event: Option<ScoringEvent>,
     description: String,
     line: DownAndDistance,
-    yards: i32,
+    yards: Option<Yards>,
 }
 
 impl Play {
@@ -31,18 +30,20 @@ impl Play {
             game_clock,
             play_type,
             line,
+            yards: None,
             scoring_event: None,
         }
     }
 
     // Constructor for a scoring play
-    pub fn new_scoring(description: String, game_clock: GameClock, play_type: PlayType, line: DownAndDistance, scoring_event: ScoringEvent) -> Self {
+    pub fn new_scoring(description: String, game_clock: GameClock, play_type: PlayType, line: DownAndDistance, scoring_event: ScoringEvent, yards: Yards) -> Self {
         Play {
             id: Play::next_id(),
             description,
             game_clock,
             play_type,
             line,
+            yards: Some(yards),
             scoring_event: Some(scoring_event),
         }
     }
