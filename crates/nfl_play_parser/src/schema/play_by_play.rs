@@ -63,7 +63,11 @@ impl FromStr for Play {
         if let Some(scoring_event) = scoring_event {
             Ok(Play::new(game_clock, play_type, line, Some(scoring_event), yards))
         } else {
-            Ok(Play::new(game_clock, play_type, line, None, None))
+            if let Some(yards) = yards {
+                Ok(Play::new(game_clock, play_type, line, None, Some(yards)))
+            } else {
+                Ok(Play::new(game_clock, play_type, line, None, None))
+            }
         }
 
     }
