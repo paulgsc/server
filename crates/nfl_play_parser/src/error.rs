@@ -62,19 +62,32 @@ pub enum YardsError {
 }
 
 #[derive(Debug, Error, PartialEq)]
+pub enum DownAndDistanceError {
+    #[error("Invalid Down")]
+    InvalidDown,
+    #[error("Invalid Distance parsed string format")]
+    InvalidDownDistanceFormat,
+    #[error("Invalid Down distance must be between 1 and 100")]
+    InvalidDownDistance,
+    #[error(transparent)]
+    TeamAbbreviationError(#[from] TeamAbbreviationError),
+    #[error("Invalid yard line")]
+    InvalidYardLine,
+}
+
+#[derive(Debug, Error, PartialEq)]
 pub enum PlayByPlayError {
     #[error("Invalid play description format")]
     InvalidFormat,
-
-    #[error("Yards error: {0}")]
+    #[error(transparent)]
     Yards(YardsError),
-    #[error("Game clock error: {0}")]
+    #[error(transparent)]
     GameClock(#[from] GameClockError),
-    #[error("Down and distance error: {0}")]
-    DownAndDistance(String),
-    #[error("Play type error: {0}")]
+    #[error(transparent)]
+    DownAndDistance(#[from] DownAndDistanceError),
+    #[error(transparent)]
     PlayType(#[from] PlayTypeError),
-    #[error("Scoring event error: {0}")]
+    #[error(transparent)]
     ScoringEvent(#[from] ScoringEventError),
 
 }

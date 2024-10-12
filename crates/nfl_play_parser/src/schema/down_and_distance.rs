@@ -1,5 +1,6 @@
 use std::str::FromStr;
-use crate::schema::teams::TeamAbbreviation;
+use crate::schema::TeamAbbreviation;
+use crate::error::DownAndDistanceError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Down {
@@ -21,12 +22,12 @@ pub struct DownAndDistance {
 }
 
 impl FromStr for DownAndDistance {
-    type Err = String;
+    type Err = DownAndDistanceError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split_whitespace().collect();
         if parts.len() != 6 {
-            return Err("Invalid down and distance format".to_string());
+            return Err(DownAndDistanceError::InvalidDownDistanceFormat);
         }
 
         // Parse down
@@ -35,16 +36,14 @@ impl FromStr for DownAndDistance {
             "2nd" => Down::Second,
             "3rd" => Down::Third,
             "4th" => Down::Fourth,
-            _ => return Err("Invalid down".to_string()),
+            _ => return Err(DownAndDistanceError::InvalidDown),
         };
 
-        // Parse distance
-        let distance_value = parts[2].parse::<u8>().map_err(|_| "Invalid distance")?;
+        let distance_value = parts[2].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidDownDistance)?;
         let distance = Distance(distance_value);
 
-        // Determine the yard line and possession
-        let yard_line = parts[5].parse::<u8>().map_err(|_| "Invalid yard line")?;
-        let side_of_ball = TeamAbbreviation::from_str(parts[4]).map_err(|_| "Invalid team abbreviation")?;
+        let yard_line = parts[5].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidYardLine)?;
+        let side_of_ball = TeamAbbreviation::from_str(parts[4])?;
 
         Ok(DownAndDistance {
             down,
