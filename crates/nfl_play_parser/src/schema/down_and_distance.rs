@@ -12,7 +12,7 @@ pub enum Down {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Distance(u8); // Wrapping u8 for distance
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DownAndDistance {
     down: Down,
     distance: Distance,
