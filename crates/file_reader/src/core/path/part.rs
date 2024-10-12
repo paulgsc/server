@@ -1,14 +1,7 @@
 use percent_encoding::{percent_encode, AsciiSet, CONTROLS};
 use std::borrow::Cow;
-use snafu::Snafu;
+use crate::config::PathPartError;
 
-/// Error returned by [`PathPart::parse`]
-#[derive(Debug, Snafu)]
-#[snafu(display(
-    "Encountered illegal character sequence \"{}\" whilst parsing path segment \"{}\"",
-    illegal,
-    segment
-))]
 pub struct InvalidPart {
     segment: String,
     illegal: String,
@@ -23,9 +16,9 @@ pub struct PathPart<'a> {
 
 impl<'a> PathPart<'a> {
     /// Parse the provided path segment as a [`PathPart`] returning an error if invalid
-    pub fn parse(segment: &'a str) -> Result<Self, InvalidPart> {
+    pub fn parse(segment: &'a str) -> Result<Self, PathPartError> {
         if segment == "." || segment == ".." {
-            return Err(InvalidPart {
+            return Err(PathPartError::IllegalCharacter {
                 segment: segment.to_string(),
                 illegal: segment.to_string(),
             });

@@ -21,7 +21,7 @@ use std::iter::FromIterator;
 use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, CONTROLS};
 use snafu::{ensure, ResultExt, Snafu};
 
-mod parts;
+mod part;
 
 pub use parts::{InvalidPart, PathPart};
 
