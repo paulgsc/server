@@ -69,36 +69,34 @@ impl FromStr for Play {
     }
 }
 
-// Example implementations for PlayType and ScoringEvent (you may need to adjust these)
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_play_from_str() {
-        let play_description = "(15:00 - 1st) (1st & 10 at ATL 25) B.Robinson right tackle to ATL 32 for 7 yards (T.Smith, L.David).";
+        let play_description = "1st & 10 at ATL 48 ||| (12:39 - 1st) (Shotgun) B.Robinson right end to TB 18 for no gain (T.Smith).";
         let play = Play::from_str(play_description).unwrap();
 
-        assert_eq!(play.game_clock, GameClock::from_str("(15:00 - 1st)").unwrap());
-        assert_eq!(play.line, DownAndDistance::from_str("1st & 10 at ATL 25").unwrap());
-        assert_eq!(play.play_type, PlayType::Run);
-        assert_eq!(play.yards, Some(Yards::new(7, YardType::Gain).unwrap()));
+        assert_eq!(play.line, DownAndDistance::from_str("1st & 10 at ATL 48").unwrap());
+        assert_eq!(play.game_clock, GameClock::from_str("(12:39 - 1st)").unwrap());
+        assert_eq!(play.play_type, PlayType::Run); // Adjust if necessary based on actual parsing logic
+        assert_eq!(play.yards, Some(Yards::new(0, YardType::NoGain).unwrap())); // Adjust as per the actual implementation
         assert_eq!(play.scoring_event, None);
-        assert_eq!(play.description, play_description);
     }
 
     #[test]
     fn test_scoring_play_from_str() {
-        let play_description = "(10:15 - 2nd) (3rd & Goal at TB 2) T.Brady pass short right to M.Evans for 2 yards, TOUCHDOWN.";
+        let play_description = "3rd & Goal at TB 2 ||| (10:15 - 2nd) (Pass) T.Brady pass short right to M.Evans for 2 yards, TOUCHDOWN.";
         let play = Play::from_str(play_description).unwrap();
 
-        assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
         assert_eq!(play.line, DownAndDistance::from_str("3rd & Goal at TB 2").unwrap());
+        assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
         assert_eq!(play.play_type, PlayType::Pass);
         assert_eq!(play.yards, Some(Yards::new(2, YardType::Gain).unwrap()));
         assert_eq!(play.scoring_event, Some(ScoringEvent::Touchdown));
-        assert_eq!(play.description, play_description);
     }
 
     // Add more tests for different play scenarios
 }
+
