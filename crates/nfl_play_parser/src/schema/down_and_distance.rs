@@ -58,6 +58,9 @@ impl FromStr for DownAndDistance {
 mod tests {
     use super::*;
     use std::str::FromStr;
+    use crate::error::{DownAndDistanceError, TeamAbbreviationError};
+
+
 
     #[test]
     fn test_valid_down_and_distance_parsing() {
@@ -97,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_invalid_down_parsing() {
-        let input = "Invalid down & 10 at ATL 30";
+        let input = "5st & 10 at TB 18";
         let result = DownAndDistance::from_str(input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidDown);
@@ -108,8 +111,10 @@ mod tests {
         let input = "1st & 10 at XYZ 30";
         let result = DownAndDistance::from_str(input);
         assert!(result.is_err());
-        // Note: This assumes that TeamAbbreviation::from_str returns a DownAndDistanceError::InvalidTeamAbbreviation
-        // If it returns a different error type, you may need to adjust this test or the error handling in the FromStr implementation
-        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidTeamAbbreviation);
+
+        match result.unwrap_err() {
+            DownAndDistanceError::TeamAbbreviationError(TeamAbbreviationError::InvalidTeamAbbreviation(_)) => {}
+            _ => panic!("Expected InvalidTeamAbbreviation error"),
+        }
     }
 }
