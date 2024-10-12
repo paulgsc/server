@@ -117,4 +117,16 @@ mod tests {
             _ => panic!("Expected InvalidTeamAbbreviation error"),
         }
     }
+
+    #[test]
+    fn test_valid_down_and_distance_parsing_goal_line() {
+        let input = "3rd & Goal at ATL 4";
+        let result = DownAndDistance::from_str(input);
+        assert!(result.is_ok());
+        let down_and_distance = result.unwrap();
+        assert_eq!(down_and_distance.down, Down::Third);
+        assert_eq!(down_and_distance.distance, Distance(4)); // Assuming Distance(4) represents goal-to-go
+        assert_eq!(down_and_distance.yard_line, 4);
+        assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
+    }
 }
