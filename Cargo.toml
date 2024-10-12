@@ -1,7 +1,7 @@
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [workspace]
-members = [ "crates/espn_nfl_scores", "crates/gmail", "crates/google-apis-common","crates/nest", "crates/nfl_play_parser", "crates/webhooks"]
+members = [ "crates/espn_nfl_scores", "crates/file_reader", "crates/gmail", "crates/google-apis-common","crates/nest", "crates/nfl_play_parser", "crates/webhooks"]
 
 exclude = []
 
