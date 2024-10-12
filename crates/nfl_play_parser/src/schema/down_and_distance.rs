@@ -62,63 +62,54 @@ mod tests {
     #[test]
     fn test_valid_down_and_distance_parsing() {
         let input = "1st & 10 at ATL 30";
-
         let result = DownAndDistance::from_str(input);
-
-        assert!(result.is_ok()); // Ensure the parsing is successful
-
+        assert!(result.is_ok());
         let down_and_distance = result.unwrap();
-        assert_eq!(down_and_distance.down, Down::First); // Check the down is 1
-        assert_eq!(down_and_distance.distance, Distance(10)); // Check the distance is 10
-        assert_eq!(down_and_distance.yard_line, 30); // Check the yard line is 30
-
-        // Check the possession details
-        assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL); // Adjust based on your logic
+        assert_eq!(down_and_distance.down, Down::First);
+        assert_eq!(down_and_distance.distance, Distance(10));
+        assert_eq!(down_and_distance.yard_line, 30);
+        assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
     }
 
     #[test]
     fn test_invalid_down_and_distance_parsing_invalid_format() {
         let input = "Invalid format";
-
         let result = DownAndDistance::from_str(input);
-        assert!(result.is_err()); // Ensure it returns an error
-        assert_eq!(result.err().unwrap(), "Invalid down and distance format".to_string());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidDownDistanceFormat);
     }
 
     #[test]
     fn test_invalid_down_and_distance_parsing_invalid_distance() {
         let input = "1st & XX at ATL 30";
-
         let result = DownAndDistance::from_str(input);
-        assert!(result.is_err()); // Ensure it returns an error
-        assert_eq!(result.err().unwrap(), "Invalid distance".to_string());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidDownDistance);
     }
 
     #[test]
     fn test_invalid_down_and_distance_parsing_invalid_yard_line() {
         let input = "1st & 10 at ATL XX";
-
         let result = DownAndDistance::from_str(input);
-        assert!(result.is_err()); // Ensure it returns an error
-        assert_eq!(result.err().unwrap(), "Invalid yard line".to_string());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidYardLine);
     }
 
     #[test]
     fn test_invalid_down_parsing() {
         let input = "Invalid down & 10 at ATL 30";
-
         let result = DownAndDistance::from_str(input);
-        assert!(result.is_err()); // Ensure it returns an error
-        assert_eq!(result.err().unwrap(), "Invalid down".to_string());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidDown);
     }
 
     #[test]
     fn test_invalid_team_abbreviation() {
-        let input = "1st & 10 at XYZ 30"; // XYZ is an invalid team abbreviation
-
+        let input = "1st & 10 at XYZ 30";
         let result = DownAndDistance::from_str(input);
-        assert!(result.is_err()); // Ensure it returns an error
-        assert_eq!(result.err().unwrap(), "Invalid team abbreviation".to_string());
+        assert!(result.is_err());
+        // Note: This assumes that TeamAbbreviation::from_str returns a DownAndDistanceError::InvalidTeamAbbreviation
+        // If it returns a different error type, you may need to adjust this test or the error handling in the FromStr implementation
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidTeamAbbreviation);
     }
 }
-
