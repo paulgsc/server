@@ -2,10 +2,6 @@ use percent_encoding::{percent_encode, AsciiSet, CONTROLS};
 use std::borrow::Cow;
 use crate::config::PathPartError;
 
-pub struct InvalidPart {
-    segment: String,
-    illegal: String,
-}
 
 /// The PathPart type exists to validate the directory/file names that form part
 /// of a path.
@@ -26,7 +22,7 @@ impl<'a> PathPart<'a> {
 
         for c in segment.chars() {
             if c.is_ascii_control() || c == '/' {
-                return Err(InvalidPart {
+                return Err(PathPartError::IllegalCharacter {
                     segment: segment.to_string(),
                     illegal: c.to_string(),
                 });
