@@ -1,5 +1,5 @@
 mod file;
-mod error;
+pub mod error;
 
 use file::FileConfig;
-use error::*;
+pub use error::*;

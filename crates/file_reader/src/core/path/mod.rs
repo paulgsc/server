@@ -23,7 +23,7 @@ use snafu::{ensure, ResultExt, Snafu};
 
 mod part;
 
-pub use parts::{InvalidPart, PathPart};
+pub use part::{InvalidPart, PathPart};
 
 pub const DELIMITER: &str = "/";
 const DELIMITER_BYTE: u8 = DELIMITER.as_bytes()[0];
