@@ -10,6 +10,7 @@ edition.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 regex.workspace = true
+scraper = "0.13.0"
 
 [lints]
 workspace = true
