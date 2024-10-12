@@ -2,6 +2,21 @@ use std::str::FromStr;
 use crate::schema::TeamAbbreviation;
 use crate::error::DownAndDistanceError;
 
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct YardLine(u8);
+
+impl YardLine {
+    pub fn new(value: u8) -> Result<Self, DownAndDistanceError> {
+        if (1..=100).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(DownAndDistanceError::InvalidYardLine)
+        }
+    }
+}
+
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Down {
     First,
@@ -20,7 +35,7 @@ pub enum Distance {
 pub struct DownAndDistance {
     down: Down,
     distance: Distance,
-    yard_line: u8,
+    yard_line: YardLine,
     side_of_ball: TeamAbbreviation,
 }
 
@@ -49,7 +64,8 @@ impl FromStr for DownAndDistance {
             Distance::Yards(distance_value)
         };
 
-        let yard_line = parts[5].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidYardLine)?;
+        let yard_line_value = parts[5].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidYardLine)?;
+        let yard_line = YardLine::new(yard_line_value)?;
         let side_of_ball = TeamAbbreviation::from_str(parts[4])?;
 
         Ok(DownAndDistance {
@@ -77,7 +93,7 @@ mod tests {
         let down_and_distance = result.unwrap();
         assert_eq!(down_and_distance.down, Down::First);
         assert_eq!(down_and_distance.distance, Distance::Yards(10));
-        assert_eq!(down_and_distance.yard_line, 30);
+        assert_eq!(down_and_distance.yard_line, YardLine::new(30).unwrap());
         assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
     }
 
@@ -133,7 +149,23 @@ mod tests {
         let down_and_distance = result.unwrap();
         assert_eq!(down_and_distance.down, Down::Third);
         assert_eq!(down_and_distance.distance, Distance::Goal); // Assuming Distance(4) represents goal-to-go
-        assert_eq!(down_and_distance.yard_line, 4);
+        assert_eq!(down_and_distance.yard_line, YardLine::new(4).unwrap());
         assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
+    }
+
+    #[test]
+    fn test_invalid_yard_line_out_of_range() {
+        let input = "1st & 10 at ATL 1000";
+        let result = DownAndDistance::from_str(input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidYardLine);
+    }
+
+    #[test]
+    fn test_invalid_yard_line_zero() {
+        let input = "1st & 10 at ATL 0";
+        let result = DownAndDistance::from_str(input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), DownAndDistanceError::InvalidYardLine);
     }
 }
