@@ -54,11 +54,29 @@ pub enum YardsError {
     #[error("Invalid yards value: {value}, must be between 0 and 100")]
     InvalidYards { value: u8 },
 
-    #[error("Invalid play description: {0}")]
-    InvalidPlayDescription(String),
+    #[error("Invalid yards description: {0}")]
+    InvalidYardsFormat(String),
 
     #[error("No yards information found in the play description")]
     NoYardsInfo,
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PlayByPlayError {
+    #[error("Invalid play description format")]
+    InvalidFormat,
+
+    #[error("Yards error: {0}")]
+    Yards(YardsError),
+    #[error("Game clock error: {0}")]
+    GameClock(#[from] GameClockError),
+    #[error("Down and distance error: {0}")]
+    DownAndDistance(String),
+    #[error("Play type error: {0}")]
+    PlayType(#[from] PlayTypeError),
+    #[error("Scoring event error: {0}")]
+    ScoringEvent(#[from] ScoringEventError),
+
 }
 
 impl GameClockError {
