@@ -11,6 +11,7 @@ edition.workspace = true
 clap = { workspace = true }
 chrono = { workspace = true }
 dotenv = { workspace = true }
+percent-encoding = "2.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
