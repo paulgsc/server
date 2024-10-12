@@ -11,7 +11,10 @@ pub enum Down {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Distance(u8); // Wrapping u8 for distance
+pub enum Distance {
+    Yards(u8),
+    Goal,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DownAndDistance {
@@ -39,8 +42,12 @@ impl FromStr for DownAndDistance {
             _ => return Err(DownAndDistanceError::InvalidDown),
         };
 
-        let distance_value = parts[2].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidDownDistance)?;
-        let distance = Distance(distance_value);
+        let distance = if parts[2] == "Goal" {
+            Distance::Goal
+        } else {
+            let distance_value = parts[2].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidDownDistance)?;
+            Distance::Yards(distance_value)
+        };
 
         let yard_line = parts[5].parse::<u8>().map_err(|_| DownAndDistanceError::InvalidYardLine)?;
         let side_of_ball = TeamAbbreviation::from_str(parts[4])?;
@@ -69,7 +76,7 @@ mod tests {
         assert!(result.is_ok());
         let down_and_distance = result.unwrap();
         assert_eq!(down_and_distance.down, Down::First);
-        assert_eq!(down_and_distance.distance, Distance(10));
+        assert_eq!(down_and_distance.distance, Distance::Yards(10));
         assert_eq!(down_and_distance.yard_line, 30);
         assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
     }
@@ -125,7 +132,7 @@ mod tests {
         assert!(result.is_ok());
         let down_and_distance = result.unwrap();
         assert_eq!(down_and_distance.down, Down::Third);
-        assert_eq!(down_and_distance.distance, Distance(4)); // Assuming Distance(4) represents goal-to-go
+        assert_eq!(down_and_distance.distance, Distance::Goal); // Assuming Distance(4) represents goal-to-go
         assert_eq!(down_and_distance.yard_line, 4);
         assert_eq!(down_and_distance.side_of_ball, TeamAbbreviation::ATL);
     }
