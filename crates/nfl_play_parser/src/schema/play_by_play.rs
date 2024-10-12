@@ -72,6 +72,7 @@ impl FromStr for Play {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent, Yards, YardType, ScoringEventType, Points}; 
 
     #[test]
     fn test_play_from_str() {
@@ -94,7 +95,10 @@ mod tests {
         assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
         assert_eq!(play.play_type, PlayType::Pass);
         assert_eq!(play.yards, Some(Yards::new(2, YardType::Gain).unwrap()));
-        assert_eq!(play.scoring_event, Some(ScoringEvent::Touchdown));
+        assert_eq!(play.scoring_event, Some(ScoringEvent {
+            event_type: ScoringEventType::Touchdown,
+            points: Points::Six,
+        }));
     }
 
     // Add more tests for different play scenarios
