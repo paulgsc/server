@@ -35,7 +35,7 @@ impl FromStr for Yards {
         if let Some(caps) = re.captures(s) {
             if let Some(yards_match) = caps.get(1) {
                 // Yards gained or lost
-                let value: i8 = yards_match.as_str().parse().map_err(|_| YardsError::InvalidPlayDescription(s.to_string()))?;
+                let value: i8 = yards_match.as_str().parse().map_err(|_| YardsError::InvalidYardsFormat(s.to_string()))?;
                 let (value, yard_type) = if value > 0 {
                     (value as u8, YardType::Gain)
                 } else if value < 0 {
