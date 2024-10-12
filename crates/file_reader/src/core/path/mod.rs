@@ -207,5 +207,49 @@ mod tests {
         assert_eq!(path.as_ref(), "foo/bar/baz.txt");
     }
 
+#[test]
+fn parse_multiple_leading_slashes() {
+    let err = Path::parse("//foo/bar").unwrap_err();
+    assert!(matches!(err, Error::EmptySegment { .. }));
+
+    let path = Path::parse("/foo/bar/").unwrap();
+    assert_eq!(path.as_ref(), "foo/bar");
+}
+
+    #[test]
+    fn parse_invalid_characters() {
+        let err = Path::parse("foo/\x7F/bar").unwrap_err(); // Using a control character
+        assert!(matches!(err, Error::NonUnicode { .. }));
+    }
+
+    #[test]
+    fn prefix_match_empty_prefix() {
+        let existing_path = Path::from("apple/bear/cow/dog/egg.json");
+        let prefix = Path::from("");
+
+        let parts: Vec<_> = existing_path.prefix_match(&prefix).unwrap().collect();
+        assert_eq!(parts.len(), 5); // Should return all parts
+    }
+
+    #[test]
+    fn filename_no_extension() {
+        let a = Path::from("foo/bar/");
+        assert_eq!(a.filename(), Some("bar"));
+    }
+
+    #[test]
+    fn complex_encoded_url_path() {
+        let path = Path::from_url_path("foo%20bar/baz%20qux").unwrap();
+        assert_eq!(path.raw, "foo bar/baz qux");
+    }
+
+    #[test]
+    fn parse_with_multiple_segments_and_dots() {
+        let path = Path::from("foo.bar/baz.qux");
+        assert_eq!(path.filename(), Some("baz.qux"));
+        assert_eq!(path.extension(), Some("qux"));
+    }
+
     // Add more tests as needed
 }
+
