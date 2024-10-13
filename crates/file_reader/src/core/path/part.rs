@@ -26,7 +26,7 @@ use crate::config::PathPartError;
 /// of a path.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Hash)]
 pub struct PathPart<'a> {
-    raw: Cow<'a, str>,
+      pub(super) raw: Cow<'a, str>,
 }
 
 impl<'a> PathPart<'a> {
