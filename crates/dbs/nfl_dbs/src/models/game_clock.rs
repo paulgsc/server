@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameClock {
