@@ -3,7 +3,7 @@ use axum::{
     Json,
 };
 use sqlx::SqlitePool;
-use crate::errors::Error;
+use nest::errors::Error;
 use crate::models::game_clock::{GameClock, CreateGameClock};
 use crate::traits::CrudOperations;
 

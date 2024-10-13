@@ -1,0 +1,26 @@
+[package]
+name = "nfl_server"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+dotenv = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { version = "0.6", features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { version = "1.0", features = ["serde", "v4"] }
+
+# path crates
+nest  = { workspace = true }
+
+[lints]
+workspace = true
