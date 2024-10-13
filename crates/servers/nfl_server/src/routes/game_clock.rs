@@ -6,7 +6,7 @@ use axum::{
 use sqlx::SqlitePool;
 use nest::http::error::Error;
 use crate::models::game_clock::{GameClock, CreateGameClock};
-use crate::traits::CrudOperations;
+use crate::common::CrudOperations;
 
 pub async fn create(
     State(pool): State<SqlitePool>,
