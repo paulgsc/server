@@ -1630,6 +1630,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfl_scenarios"
+version = "0.0.0"
+
+[[package]]
 name = "nodrop"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
