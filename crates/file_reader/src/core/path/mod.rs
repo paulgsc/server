@@ -16,48 +16,40 @@
 // This file has been modified from its original version.
 //
 
-use std::borrow::Cow;
 use std::iter::FromIterator;
-use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, CONTROLS};
-use snafu::{ensure, ResultExt, Snafu};
+use percent_encoding::percent_decode;
+use crate::config::PathPartError;
 
-mod part;
+pub mod part;
 
-pub use part::{InvalidPart, PathPart};
+pub use part::PathPart;
 
 pub const DELIMITER: &str = "/";
 const DELIMITER_BYTE: u8 = DELIMITER.as_bytes()[0];
-
-const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b'/').add(b'%');
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct Path {
     raw: String,
 }
 
-#[derive(Debug, Snafu)]
-#[snafu(visibility(pub))]
-pub enum Error {
-    #[snafu(display("Path \"{}\" contained empty path segment", path))]
-    EmptySegment { path: String },
 
-    #[snafu(display("Error parsing Path \"{}\": {}", path, source))]
-    BadSegment { path: String, source: InvalidPart },
-
-    #[snafu(display("Path \"{}\" contained non-unicode characters: {}", path, source))]
-    NonUnicode { path: String, source: std::str::Utf8Error },
-}
 
 impl Path {
-    pub fn parse(s: &str) -> Result<Self, Error> {
+
+    pub fn parse(s: &str) -> Result<Self, PathPartError> {
         let stripped = s.trim_matches('/');
         if stripped.is_empty() {
             return Ok(Default::default());
         }
 
         for segment in stripped.split(DELIMITER) {
-            ensure!(!segment.is_empty(), EmptySegmentSnafu { path: s });
-            PathPart::parse(segment).context(BadSegmentSnafu { path: s })?;
+            if segment.is_empty() {
+                return Err(PathPartError::EmptySegment { path: s.to_string() });
+            }
+            PathPart::parse(segment).map_err(|e| PathPartError::BadSegment { 
+                path: s.to_string(), 
+                source: Box::new(e)
+            })?;
         }
 
         Ok(Self {
@@ -65,15 +57,19 @@ impl Path {
         })
     }
 
-    pub fn from_url_path(path: impl AsRef<str>) -> Result<Self, Error> {
+    pub fn from_url_path(path: impl AsRef<str>) -> Result<Self, PathPartError> {
         let path = path.as_ref();
-        let decoded = percent_decode_str(path)
+        let decoded = percent_decode(path.as_bytes())
             .decode_utf8()
-            .context(NonUnicodeSnafu { path })?;
+            .map_err(|e| PathPartError::NonUnicode { 
+                path: path.to_string(), 
+                source: e 
+            })?;
 
         Self::parse(&decoded)
     }
 
+    // The rest of the methods remain unchanged
     pub fn prefix_match<'a>(&'a self, prefix: &Path) -> Option<impl Iterator<Item = PathPart<'a>>> {
         let mut stripped = self.raw.strip_prefix(&prefix.raw)?;
         if !stripped.is_empty() && !prefix.raw.is_empty() {
@@ -124,7 +120,7 @@ impl Default for Path {
 
 impl<'a, I> FromIterator<I> for Path
 where
-    I: Into<parts::PathPart<'a>>,
+    I: Into<PathPart<'a>>,
 {
     fn from_iter<T: IntoIterator<Item = I>>(iter: T) -> Self {
         let raw = T::into_iter(iter)
@@ -210,7 +206,7 @@ mod tests {
 #[test]
 fn parse_multiple_leading_slashes() {
     let err = Path::parse("//foo/bar").unwrap_err();
-    assert!(matches!(err, Error::EmptySegment { .. }));
+    assert!(matches!(err, PathPartError::EmptySegment { .. }));
 
     let path = Path::parse("/foo/bar/").unwrap();
     assert_eq!(path.as_ref(), "foo/bar");
@@ -219,7 +215,7 @@ fn parse_multiple_leading_slashes() {
     #[test]
     fn parse_invalid_characters() {
         let err = Path::parse("foo/\x7F/bar").unwrap_err(); // Using a control character
-        assert!(matches!(err, Error::NonUnicode { .. }));
+        assert!(matches!(err, PathPartError::NonUnicode { .. }));
     }
 
     #[test]
