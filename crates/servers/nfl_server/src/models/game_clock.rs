@@ -34,7 +34,7 @@ impl CreateGameClock {
 impl CrudOperations<GameClock, CreateGameClock> for GameClock {
     async fn create(pool: &SqlitePool, item: &CreateGameClock) -> Result<GameClock, Error> {
         let result = sqlx::query!(
-            "INSERT INTO game_clocks (minutes, seconds) VALUES (?, ?)",
+            "INSERT INTO game_clock (minutes, seconds) VALUES (?, ?)",
             item.minutes,
             item.seconds
         )
@@ -51,7 +51,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
     async fn get(pool: &SqlitePool, id: i64) -> Result<GameClock, Error> {
         let game_clock = sqlx::query_as!(
             GameClock,
-            "SELECT id, minutes, seconds FROM game_clocks WHERE id = ?",
+            "SELECT id, minutes, seconds FROM game_clock WHERE id = ?",
             id
         )
         .fetch_optional(pool)
@@ -63,7 +63,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 
     async fn update(pool: &SqlitePool, id: i64, item: &CreateGameClock) -> Result<GameClock, Error> {
         let result = sqlx::query!(
-            "UPDATE game_clocks SET minutes = ?, seconds = ? WHERE id = ?",
+            "UPDATE game_clock SET minutes = ?, seconds = ? WHERE id = ?",
             item.minutes,
             item.seconds,
             id
@@ -83,7 +83,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
     }
 
     async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error> {
-        let result = sqlx::query!("DELETE FROM game_clocks WHERE id = ?", id)
+        let result = sqlx::query!("DELETE FROM game_clock WHERE id = ?", id)
             .execute(pool)
             .await?;
 
