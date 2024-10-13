@@ -730,9 +730,11 @@ checksum = "e8c02a5121d4ea3eb16a80748c74f5549a5665e4c21333c6098f283870fbdea6"
 name = "file_reader"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "clap",
  "csv",
  "dotenv",
+ "percent-encoding 2.3.1",
  "scraper",
  "serde",
  "serde_json",
