@@ -5,7 +5,7 @@ use clap::Parser;
 use anyhow::Result;
 use nest::config::Config;
 use nest::{ApiBuilder, MultiDbHandler, Run, init_tracing};
-use nest::http::routes::BrowserTabsHandler;
+use handlers::GameClockHandlers;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
     init_tracing(&config);
 
     let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![
-        Box::new(BrowserTabsHandler) as Box<dyn MultiDbHandler + Send>,
+        Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>,
     ];
 
     ApiBuilder::run(config, handlers).await?;
