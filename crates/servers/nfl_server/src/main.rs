@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod routes;
 
 use clap::Parser;
 use anyhow::Result;
