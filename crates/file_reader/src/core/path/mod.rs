@@ -203,14 +203,14 @@ mod tests {
         assert_eq!(path.as_ref(), "foo/bar/baz.txt");
     }
 
-#[test]
-fn parse_multiple_leading_slashes() {
-    let err = Path::parse("//foo/bar").unwrap_err();
-    assert!(matches!(err, PathPartError::EmptySegment { .. }));
+    #[test]
+    fn parse_multiple_leading_slashes() {
+        let err = Path::parse("//foo/bar").unwrap_err();
+        assert!(matches!(err, PathPartError::EmptySegment { .. }));
 
-    let path = Path::parse("/foo/bar/").unwrap();
-    assert_eq!(path.as_ref(), "foo/bar");
-}
+        let path = Path::parse("/foo/bar/").unwrap();
+        assert_eq!(path.as_ref(), "foo/bar");
+    }
 
     #[test]
     fn parse_invalid_characters() {
@@ -246,6 +246,46 @@ fn parse_multiple_leading_slashes() {
         assert_eq!(path.extension(), Some("qux"));
     }
 
+     #[test]
+     fn from_url_path() {
+        let a = Path::from_url_path("foo%20bar").unwrap();
+        let b = Path::from_url_path("foo/%2E%2E/bar").unwrap_err();
+        let c = Path::from_url_path("foo%2F%252E%252E%2Fbar").unwrap();
+        let d = Path::from_url_path("foo/%252E%252E/bar").unwrap();
+        let e = Path::from_url_path("%48%45%4C%4C%4F").unwrap();
+        let f = Path::from_url_path("foo/%FF/as").unwrap_err();
+
+        assert_eq!(a.raw, "foo bar");
+        assert!(matches!(b, PathPartError::BadSegment { .. }));
+        assert_eq!(c.raw, "foo/%2E%2E/bar");
+        assert_eq!(d.raw, "foo/%2E%2E/bar");
+        assert_eq!(e.raw, "HELLO");
+        assert!(matches!(f, PathPartError::NonUnicode { .. }));
+    }
+
+    #[test]
+    fn filename_from_path() {
+        let a = Path::from("foo/bar");
+        let b = Path::from("foo/bar.baz");
+        let c = Path::from("foo.bar/baz");
+
+        assert_eq!(a.filename(), Some("bar"));
+        assert_eq!(b.filename(), Some("bar.baz"));
+        assert_eq!(c.filename(), Some("baz"));
+    }
+
+    #[test]
+    fn file_extension() {
+        let a = Path::from("foo/bar");
+        let b = Path::from("foo/bar.baz");
+        let c = Path::from("foo.bar/baz");
+        let d = Path::from("foo.bar/baz.qux");
+
+        assert_eq!(a.extension(), None);
+        assert_eq!(b.extension(), Some("baz"));
+        assert_eq!(c.extension(), None);
+        assert_eq!(d.extension(), Some("qux"));
+    }
     // Add more tests as needed
 }
 
