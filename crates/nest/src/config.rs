@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
 pub struct Config {
-	/// Database URL
-	#[arg(long, env = "DATABASE_URL")]
-	pub database_url: String,
+	#[arg(long, env = "DATABASE_URL", help = "Comma-separated list of SQLite database URLs")]
+	pub database_urls: String,
 
 	/// Maximum number of database connections
-	#[arg(long, env = "MAX_CONNECTIONS", default_value = "10")]
+	#[arg(long, env = "MAX_CONNECTIONS", default_value = "10",
+          help = "Maximum number of database connections")]
 	pub max_connections: u32,
 
     /// Use JSON formatting for tracing
