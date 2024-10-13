@@ -1,6 +1,6 @@
 
 use nest::MultiDbHandler;
-use crate::routes::{create, delete, get, update};
+use crate::routes;
 use axum::routing::{delete, get, post, put};
 use axum::{http::Method, Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -15,10 +15,10 @@ impl MultiDbHandler for GameClockHandlers {
             .allow_origin(Any);
 
         Router::new()
-            .route(&format!("/api/{}/game_clock/update", db_name), put(update))
-            .route(&format!("/api/{}/game_clock/delete", db_name), delete(delete))
-            .route(&format!("/api/{}/game_clock/all", db_name), get(get))
-            .route(&format!("/api/{}/game_clock/post", db_name), post(create))
+            .route(&format!("/api/{}/game_clock/update", db_name), put(routes::update))
+            .route(&format!("/api/{}/game_clock/delete", db_name), delete(routes::delete))
+            .route(&format!("/api/{}/game_clock/all", db_name), get(routes::get))
+            .route(&format!("/api/{}/game_clock/post", db_name), post(routes::create))
             .layer(cors)
             .with_state(pool)
     }
