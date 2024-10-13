@@ -1,9 +1,6 @@
-pub mod handlers;
 pub mod schema;
 
 pub mod error;
-
-pub mod routes;
 
 pub use error::{Error, ResultExt};
 
