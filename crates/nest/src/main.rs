@@ -8,6 +8,7 @@ use tracing_subscriber::{
 use nest::config::Config;
 use nest::http::serve;
 use sqlx::sqlite::SqlitePoolOptions;
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,18 +17,23 @@ async fn main() -> anyhow::Result<()> {
 	let config = Config::parse();
     init_tracing(&config);
 
-	// Initialize SQLite connection pool
-	let db = SqlitePoolOptions::new()
-		.max_connections(5)
-		.connect(&config.database_url)
-		.await
-		.context("could not connect to database_url")?;
+    let mut dbs = HashMap::new();
+    for (i, db_url) in config.database_urls.split(',').enumerate() {
+        let db_name = format!("db_{}", i + 1);
+        let db_pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(db_url)
+            .await
+            .context(format!("could not connect to {}", db_url))?;
 
-	// Initialize the database
-	sqlx::migrate!().run(&db).await?;
+        dbs.insert(db_name, db_pool);
+    }
+    for db in dbs.values() {
+        sqlx::migrate!().run(db).await?;
+    }
 
-	// Finally, we spin up our API.
-	serve::serve(config, db).await;
+    serve::serve(config, dbs).await;
+
 
 	Ok(())
 }
