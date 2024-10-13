@@ -8,14 +8,14 @@ use nest::http::Error;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameClock {
     pub id: i64,
-    pub minutes: i32,
-    pub seconds: i32,
+    pub minutes: i64,
+    pub seconds: i64,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateGameClock {
-    pub minutes: i32,
-    pub seconds: i32,
+    pub minutes: i64,
+    pub seconds: i64,
 }
 
 impl GameClock {
