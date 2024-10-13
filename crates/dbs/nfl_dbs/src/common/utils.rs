@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use crate::errors::Error;
-use crate::models::game_clock::{GameClock, CreateGameClock};
+
+use nest::http::Error;
 
 #[async_trait]
 pub trait CrudOperations<T, C> {
