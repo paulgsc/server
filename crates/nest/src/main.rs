@@ -6,18 +6,18 @@ use tracing_subscriber::{
 };
 
 use nest::config::Config;
-use nest::http::serve;
+use nest::ApiBuilder;
+use nest::http::routes::BrowserTabsHandler;
 use sqlx::sqlite::SqlitePoolOptions;
-use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-
 	let config = Config::parse();
     init_tracing(&config);
 
-    let mut dbs = HashMap::new();
+    let mut api_builder = ApiBuilder::new(config.clone());
+    
     for (i, db_url) in config.database_urls.split(',').enumerate() {
         let db_name = format!("db_{}", i + 1);
         let db_pool = SqlitePoolOptions::new()
@@ -26,14 +26,12 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context(format!("could not connect to {}", db_url))?;
 
-        dbs.insert(db_name, db_pool);
-    }
-    for db in dbs.values() {
-        sqlx::migrate!().run(db).await?;
+        sqlx::migrate!().run(&db_pool).await?;
+        api_builder.add_db(db_name, db_pool);
     }
 
-    serve::serve(config, dbs).await;
-
+    api_builder.add_handler(BrowserTabsHandler);
+    api_builder.serve().await?;
 
 	Ok(())
 }

@@ -1,12 +1,9 @@
 pub mod handlers;
 pub mod schema;
 
-pub mod serve;
-
 pub mod error;
 
 pub mod routes;
-
 
 pub use error::{Error, ResultExt};
 
