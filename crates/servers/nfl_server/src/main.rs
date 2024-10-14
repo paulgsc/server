@@ -1,28 +1,23 @@
+pub mod common;
 pub mod handlers;
 pub mod models;
-pub mod common;
 pub mod routes;
 
-use clap::Parser;
 use anyhow::Result;
-use nest::config::Config;
-use nest::{ApiBuilder, MultiDbHandler, Run, init_tracing};
+use clap::Parser;
 use handlers::GameClockHandlers;
+use nest::config::Config;
+use nest::{init_tracing, ApiBuilder, MultiDbHandler, Run};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
+	dotenv::dotenv().ok();
 	let config = Config::parse();
-    init_tracing(&config);
+	init_tracing(&config);
 
-    let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![
-        Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>,
-    ];
+	let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>];
 
-    ApiBuilder::run(config, handlers).await?;
+	ApiBuilder::run(config, handlers).await?;
 
-    Ok(())
-
+	Ok(())
 }
-
-

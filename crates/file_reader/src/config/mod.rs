@@ -1,5 +1,5 @@
-mod file;
 pub mod error;
+mod file;
 
-use file::FileConfig;
 pub use error::*;
+use file::FileConfig;

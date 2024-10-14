@@ -35,16 +35,12 @@ pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserT
 		tab.width,
 		tab.height,
 		tab.last_accessed,
-        tab.group_id,
-        tab.session_id
+		tab.group_id,
+		tab.session_id
 	)
 	.execute(&pool)
 	.await
-    .on_constraint("window_id", |_| {
-        Error::unprocessable_entity(vec![
-            ("window_id", "window_id taken")
-        ])
-    })?;
+	.on_constraint("window_id", |_| Error::unprocessable_entity(vec![("window_id", "window_id taken")]))?;
 
 	Ok(Json(tab))
 }
