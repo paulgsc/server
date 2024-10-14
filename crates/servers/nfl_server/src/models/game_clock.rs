@@ -33,12 +33,9 @@ impl CreateGameClock {
 #[async_trait]
 impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 	async fn create(pool: &SqlitePool, item: &CreateGameClock) -> Result<GameClock, Error> {
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM game_clock")
-            .fetch_one(pool)
-            .await?
-            .count;
+		let count = sqlx::query!("SELECT COUNT(*) as count FROM game_clock").fetch_one(pool).await?.count;
 
-        if count >= 960 {
+		if count >= 960 {
 			return Err(Error::MaxRecordLimitExceeded);
 		}
 
@@ -51,6 +48,34 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 			minutes: item.minutes,
 			seconds: item.seconds,
 		})
+	}
+
+	async fn batch_create(pool: &SqlitePool, items: &[CreateGameClock]) -> Result<Vec<GameClock>, Error> {
+		let mut tx = pool.begin().await?;
+
+		let count: i32 = sqlx::query_scalar!("SELECT COUNT(*) FROM game_clock").fetch_one(&mut *tx).await?;
+
+		if count + items.len() as i32 > 960 {
+			return Err(Error::MaxRecordLimitExceeded);
+		}
+
+		let mut created_clocks = Vec::with_capacity(items.len());
+
+		for item in items {
+			let result = sqlx::query!("INSERT INTO game_clock (minutes, seconds) VALUES (?, ?)", item.minutes, item.seconds)
+				.execute(&mut *tx)
+				.await?;
+
+			created_clocks.push(GameClock {
+				id: result.last_insert_rowid(),
+				minutes: item.minutes,
+				seconds: item.seconds,
+			});
+		}
+
+		tx.commit().await?;
+
+		Ok(created_clocks)
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<GameClock, Error> {
