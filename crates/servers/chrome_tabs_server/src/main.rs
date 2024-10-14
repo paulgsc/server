@@ -2,7 +2,7 @@ pub mod handlers;
 pub mod routes;
 pub mod schema;
 
-use crate::routes::BrowserTabsHandler;
+use crate::routes::{BrowserTabsHandler, BrowserTabsMigrationHandler};
 use anyhow::Result;
 use clap::Parser;
 use nest::config::Config;
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 
 	let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(BrowserTabsHandler) as Box<dyn MultiDbHandler + Send>];
 
-	ApiBuilder::run(config, handlers).await?;
+    ApiBuilder::run(config, handlers, BrowserTabsMigrationHandler).await?;
 
 	Ok(())
 }

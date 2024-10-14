@@ -1,8 +1,11 @@
 use crate::handlers::{create_tab, delete_tab, get_all_tabs, update_tab};
 use axum::routing::{delete, get, post, put};
 use axum::{http::Method, Router};
-use nest::MultiDbHandler;
+use nest::{MultiDbHandler, MigrationHandler};
 use sqlx::SqlitePool;
+use nest::http::Error;
+use std::future::Future;
+use std::pin::Pin;
 use tower_http::cors::{Any, CorsLayer};
 
 pub struct BrowserTabsHandler;
@@ -19,4 +22,15 @@ impl MultiDbHandler for BrowserTabsHandler {
 			.layer(cors)
 			.with_state(pool)
 	}
+}
+
+pub struct BrowserTabsMigrationHandler;
+
+impl MigrationHandler for BrowserTabsMigrationHandler {
+    fn run_migrations<'a>(&'a self, pool: &'a SqlitePool) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            sqlx::migrate!().run(pool).await?;
+            Ok(())
+        })
+    }
 }
