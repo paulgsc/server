@@ -5,7 +5,7 @@ pub mod models;
 pub mod routes;
 
 use crate::commands::populate_game_clocks;
-use crate::handlers::GameClockHandlers;
+use crate::handlers::{GameClockHandlers, GameClockMigrationHandler};
 use anyhow::Result;
 use clap::Parser;
 use nest::cli::{Cli, Commands};
@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 		}
 		None => {
 			let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>];
-			ApiBuilder::run(config, handlers).await?;
+            ApiBuilder::run(config, handlers, GameClockMigrationHandler).await?;
 		}
 	}
 
