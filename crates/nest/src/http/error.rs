@@ -26,6 +26,9 @@ pub enum Error {
 
 	#[error("an internal server error occurred")]
 	Anyhow(#[from] anyhow::Error),
+
+    #[error("maximum record limit exceeded")]
+    MaxRecordLimitExceeded,
 }
 
 impl Error {
@@ -50,6 +53,7 @@ impl Error {
 			Self::NotFound => StatusCode::NOT_FOUND,
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
 		}
 	}
 }
@@ -85,6 +89,10 @@ impl IntoResponse for Error {
 				// so that this gets linked to the HTTP request by `TraceLayer`.
 				log::error!("Generic error: {:?}", e);
 			}
+
+            Self::MaxRecordLimitExceeded => {
+                return (StatusCode::BAD_REQUEST, self.to_string()).into_response();
+            }
 
 			// Other errors get mapped normally.
 			_ => (),
