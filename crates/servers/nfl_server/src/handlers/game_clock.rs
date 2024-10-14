@@ -1,8 +1,11 @@
 use crate::routes;
 use axum::routing::{delete, get, post, put};
 use axum::{http::Method, Router};
-use nest::MultiDbHandler;
+use nest::{MultiDbHandler, MigrationHandler};
+use nest::http::Error;
 use sqlx::SqlitePool;
+use std::future::Future;
+use std::pin::Pin;
 use tower_http::cors::{Any, CorsLayer};
 
 pub struct GameClockHandlers;
@@ -19,4 +22,15 @@ impl MultiDbHandler for GameClockHandlers {
 			.layer(cors)
 			.with_state(pool)
 	}
+}
+
+pub struct GameClockMigrationHandler;
+
+impl MigrationHandler for GameClockMigrationHandler {
+    fn run_migrations<'a>(&'a self, pool: &'a SqlitePool) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            sqlx::migrate!().run(pool).await?;
+            Ok(())
+        })
+    }
 }
