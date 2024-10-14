@@ -33,6 +33,15 @@ impl CreateGameClock {
 #[async_trait]
 impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 	async fn create(pool: &SqlitePool, item: &CreateGameClock) -> Result<GameClock, Error> {
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM game_clock")
+            .fetch_one(pool)
+            .await?
+            .count;
+
+        if count >= 960 {
+			return Err(Error::MaxRecordLimitExceeded);
+		}
+
 		let result = sqlx::query!("INSERT INTO game_clock (minutes, seconds) VALUES (?, ?)", item.minutes, item.seconds)
 			.execute(pool)
 			.await?;

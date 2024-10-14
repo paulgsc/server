@@ -1,18 +1,16 @@
--- Add down migration script here
--- Create a temporary table without the unique constraint
-CREATE TABLE game_clocks_temp (
+-- Rename the current table
+ALTER TABLE game_clock RENAME TO game_clock_temp;
+
+-- Recreate the original table without the unique constraint
+CREATE TABLE game_clock (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     minutes INTEGER NOT NULL,
     seconds INTEGER NOT NULL
 );
 
--- Copy data from the old table to the new table
-INSERT INTO game_clocks_temp (id, minutes, seconds)
-SELECT id, minutes, seconds FROM game_clocks;
+-- Copy data back
+INSERT INTO game_clock (id, minutes, seconds)
+SELECT id, minutes, seconds FROM game_clock_temp;
 
--- Drop the old table
-DROP TABLE game_clocks;
-
--- Rename the new table to the old table name
-ALTER TABLE game_clocks_temp RENAME TO game_clocks;
-
+-- Drop the temporary table
+DROP TABLE game_clock_temp;
