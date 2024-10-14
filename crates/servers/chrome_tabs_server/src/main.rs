@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 
 	let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(BrowserTabsHandler) as Box<dyn MultiDbHandler + Send>];
 
-    ApiBuilder::run(config, handlers, BrowserTabsMigrationHandler).await?;
+	ApiBuilder::run(config, handlers, BrowserTabsMigrationHandler).await?;
 
 	Ok(())
 }

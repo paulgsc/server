@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 		}
 		None => {
 			let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>];
-            ApiBuilder::run(config, handlers, GameClockMigrationHandler).await?;
+			ApiBuilder::run(config, handlers, GameClockMigrationHandler).await?;
 		}
 	}
 
