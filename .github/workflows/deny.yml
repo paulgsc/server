@@ -1,0 +1,66 @@
+name: CI Deny Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  rust-deny:
+    name: Rust Deny Checks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        checks:
+          - advisories
+          - bans
+          - licenses
+          - sources
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+
+  node-deny:
+    name: Node Deny Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Check License Compliance
+        uses: github-license-check@v1
+        with:
+          path: . # This checks the root of the monorepo
+          accepted: MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause # Customize as needed
+
+      - name: Check for banned dependencies
+        run: |
+          if pnpm list -r | grep -E "some-banned-package|some-other-banned-package"; then
+              echo "Banned packages found"
+              exit 1
+          fi
+
+  deny-summary:
+    name: Deny Checks Summary
+    needs: [rust-deny, node-deny]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deny results
+        run: |
+          if [ "${{ needs.rust-deny.result }}" == "failure" ] || [ "${{ needs.node-deny.result }}" == "failure" ]; then
+            echo "Deny checks failed"
+            exit 1
+          else
+            echo "All deny checks passed"
+          fi
