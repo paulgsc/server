@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
 use crate::schema::browser_tab::BrowserTabs;
-use nest::http::error::Error;
+use nest::http::error::{Error, ResultExt};
 
 pub async fn create_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, Error> {
 	sqlx::query!(
