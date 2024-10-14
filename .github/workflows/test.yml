@@ -1,0 +1,73 @@
+name: CI Workflow
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+  release:
+    types: [published]
+
+defaults:
+  run:
+    working-directory: ./
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  determine_jobs:
+    name: Determine jobs to run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Rust-related changes
+        id: rust
+        uses: technote-space/get-diff-action@v6
+        with:
+          PATTERNS: |
+            Cargo.toml
+            Cargo.lock
+            crates/**
+            .cargo/**
+            rust-toolchain
+            !**.md
+            !**.mdx
+
+      - name: Detect Formatting-related changes
+        id: format
+        uses: technote-space/get-diff-action@v6
+        with:
+          PATTERNS: |
+            **/*.{yml,yaml,md,mdx,js,jsx,ts,tsx,json,toml,css}
+            !Cargo.toml
+
+    outputs:
+      rust: ${{ steps.rust.outputs.diff != '' }}
+      format: ${{ steps.format.outputs.diff != '' }}
+
+  rust_ci:
+    runs-on: ubuntu-latest
+    needs: determine_jobs
+    if: needs.determine_jobs.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Run cargo check
+        run: cargo check
+      - name: Run tests
+        run: cargo test --verbose
+
