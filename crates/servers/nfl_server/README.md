@@ -1,3 +1,51 @@
+### Commands
+
+#### 1. Start the Server
+
+To start the server, simply run the application without any subcommands:
+
+```bash
+cargo run --
+```
+
+This will initialize the server using the configurations defined in your `.env` file and the `Config` struct. Ensure your environment variables are set up correctly in the `.env` file.
+
+#### 2. Populate Game Clocks
+
+To run the script to populate game clocks, use the following command:
+
+```bash
+cargo run -- populate-game-clocks
+```
+
+This command will execute the `populate_game_clocks` function asynchronously and populate the game clocks based on your application logic.
+
+### Examples
+
+- **Start the server:**
+
+    ```bash
+    cargo run --
+    ```
+
+- **Populate game clocks:**
+
+    ```bash
+    cargo run -- populate-game-clocks
+    ```
+
+## Configuration
+
+Make sure to configure your application by creating a `.env` file in the root directory of the project. Here’s an example of what your `.env` file might contain:
+
+```
+DATABASE_URL=your_database_url
+```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 # TODOs Example
 
 ## Setup
