@@ -1,8 +1,8 @@
 use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
-use crate::http::schema::browser_tab::BrowserTabs;
-use crate::http::error::Error;
+use crate::schema::browser_tab::BrowserTabs;
+use nest::http::error::Error;
 
 pub async fn get_all_tabs(State(pool): State<SqlitePool>) -> Result<Json<Vec<BrowserTabs>>, Error> {
     let tabs = sqlx::query_as!(

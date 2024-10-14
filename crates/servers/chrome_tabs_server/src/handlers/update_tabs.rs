@@ -1,8 +1,8 @@
 use axum::{extract::State, Json};
 use sqlx::SqlitePool;
 
-use crate::http::schema::browser_tab::BrowserTabs;
-use crate::http::error::Error;
+use crate::schema::browser_tab::BrowserTabs;
+use nest::http::error::Error;
 
 pub async fn update_tab(State(pool): State<SqlitePool>, Json(tab): Json<BrowserTabs>) -> Result<Json<BrowserTabs>, Error> {
 	sqlx::query!(
