@@ -31,8 +31,8 @@ pub enum Error {
 	#[error("maximum record limit exceeded")]
 	MaxRecordLimitExceeded,
 
-    #[error("migration error occurred")]
-    Migrate(#[from] MigrateError),
+	#[error("migration error occurred")]
+	Migrate(#[from] MigrateError),
 }
 
 impl Error {
@@ -58,7 +58,7 @@ impl Error {
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
-            Self::Migrate(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::Migrate(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 }
@@ -99,9 +99,9 @@ impl IntoResponse for Error {
 				return (StatusCode::BAD_REQUEST, self.to_string()).into_response();
 			}
 
-            Self::Migrate(ref e) => {
-                log::error!("Migration error: {:?}", e);
-            }
+			Self::Migrate(ref e) => {
+				log::error!("Migration error: {:?}", e);
+			}
 
 			// Other errors get mapped normally.
 			_ => (),
