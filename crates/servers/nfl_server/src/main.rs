@@ -17,11 +17,11 @@ async fn main() -> Result<()> {
 	let config = Config::parse();
 	init_tracing(&config);
 
-    match config.program_mode {
-        ProgramMode::PopulateGameClocks => {
+	match config.program_mode {
+		ProgramMode::PopulateGameClocks => {
 			populate_game_clocks(&config).await?;
 		}
-        ProgramMode::Run => {
+		ProgramMode::Run => {
 			let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>];
 			ApiBuilder::run(config, handlers, GameClockMigrationHandler).await?;
 		}
