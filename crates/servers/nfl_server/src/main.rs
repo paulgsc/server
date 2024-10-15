@@ -8,8 +8,7 @@ use crate::commands::populate_game_clocks;
 use crate::handlers::{GameClockHandlers, GameClockMigrationHandler};
 use anyhow::Result;
 use clap::Parser;
-use nest::cli::{Cli, Commands};
-use nest::config::Config;
+use nest::config::{Config, ProgramMode};
 use nest::{init_tracing, ApiBuilder, MultiDbHandler, Run};
 
 #[tokio::main]
@@ -18,12 +17,11 @@ async fn main() -> Result<()> {
 	let config = Config::parse();
 	init_tracing(&config);
 
-	let cli = Cli::parse();
-	match cli.command {
-		Some(Commands::PopulateGameClocks) => {
+    match config.program_mode {
+        ProgramMode::PopulateGameClocks => {
 			populate_game_clocks(&config).await?;
 		}
-		None => {
+        ProgramMode::Run => {
 			let handlers: Vec<Box<dyn MultiDbHandler + Send>> = vec![Box::new(GameClockHandlers) as Box<dyn MultiDbHandler + Send>];
 			ApiBuilder::run(config, handlers, GameClockMigrationHandler).await?;
 		}
