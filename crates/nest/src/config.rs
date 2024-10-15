@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
 pub struct Config {
+	#[arg(long, env = "PROGRAM_MODE", default_value = "run")]
+	pub program_mode: ProgramMode,
+
 	#[arg(long, env = "DATABASE_URL", help = "Comma-separated list of SQLite database URLs")]
 	pub database_urls: String,
 
@@ -102,6 +105,12 @@ pub struct Config {
 	/// Enable development mode
 	#[arg(long, env = "DEV_MODE")]
 	pub dev_mode: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
+pub enum ProgramMode {
+	Run,
+	PopulateGameClocks,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
