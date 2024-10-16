@@ -13,9 +13,9 @@ workspace = true
 
 [dependencies]
 axum = "0.7"
-serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
-tower = { version = "0.4", features = ["util", "timeout"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util", "timeout"] }
 tower-http = { version = "0.5.0", features = ["add-extension", "trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
@@ -23,13 +23,13 @@ uuid = { version = "1.0", features = ["serde", "v4"] }
 sqlx = { version = "0.6", features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
 
 # Utility Crates
-anyhow = "1.0.48"
-async-trait = "0.1.51"
+anyhow = { workspace = true }
+async-trait = { workspace = true }
 dotenv = "0.15.0"
 env_logger = "0.9.0"
 itertools = "0.10.1"
 log = "0.4.14"
 rand = "0.8.4"
 thiserror = "1.0.30"
-clap = { version = "4.5.8", features = ["derive", "env"] }
-chrono = "0.4.38"
+clap = { workspace = true, features = ["derive", "env"] }
+chrono = { workspace = true }
