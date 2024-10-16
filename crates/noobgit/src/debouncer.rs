@@ -1,53 +1,72 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use notify::Event;
+use std::time::Duration;
+use tokio::sync::{Mutex, Notify};
 
-#[derive(Debug, Clone)]
-pub enum DebouncedEvent {
-    Create(PathBuf),
-    Remove(PathBuf),
-}
-
-pub struct Debouncer {
-    delay: Duration,
-    last_events: HashMap<PathBuf, (Instant, Event)>,
+pub(crate) struct Debouncer {
+    bump: Notify,
+    serial: Mutex<Option<usize>>,
+    timeout: Duration,
 }
 
 impl Debouncer {
-    pub fn new(delay: Duration) -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
-            delay,
-            last_events: HashMap::new(),
+            bump: Notify::new(),
+            serial: Mutex::new(None),
+            timeout,
         }
     }
 
-    pub fn debounce(&mut self, event: Event) -> Vec<DebouncedEvent> {
-        let now = Instant::now();
-        let mut debounced_events = Vec::new();
+    pub fn bump(&self) {
+        self.bump.notify_one();
+    }
 
-        for path in &event.paths {
-            let entry = self
-                .last_events
-                .entry(path.clone())
-                .or_insert_with(|| (now, event.clone()));
+    pub async fn wait(&self) {
+        let mut serial = self.serial.lock().await;
+        let next = serial.map(|s| s + 1).unwrap_or(0);
+        *serial = Some(next);
+        drop(serial);
 
-            if now.duration_since(entry.0) >= self.delay {
-                match &event.kind {
-                    notify::EventKind::Create(_) => {
-                        debounced_events.push(DebouncedEvent::Create(path.clone()));
-                    }
-                    notify::EventKind::Remove(_) => {
-                        debounced_events.push(DebouncedEvent::Remove(path.clone()));
-                    }
-                    _ => {}
-                }
-                entry.0 = now;
-                entry.1 = event.clone();
-            }
+        tokio::select! {
+            _ = self.bump.notified() => return,
+            _ = tokio::time::sleep(self.timeout) => {},
         }
 
-        debounced_events
+        let serial = self.serial.lock().await;
+        if *serial != Some(next) {
+            return;
+        }
+        *serial = None;
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use crate::debouncer::Debouncer;
+
+    #[tokio::test]
+    async fn test_debouncer() {
+        let debouncer = Arc::new(Debouncer::new(Duration::from_millis(10)));
+        let debouncer_copy = debouncer.clone();
+        let handle = tokio::task::spawn(async move {
+            debouncer_copy.debounce().await;
+        });
+        for _ in 0..10 {
+            // assert that we can continue bumping it past the original timeout
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            assert!(debouncer.bump());
+        }
+        let start = Instant::now();
+        handle.await.unwrap();
+        let end = Instant::now();
+        // give some wiggle room to account for race conditions, but assert that we
+        // didn't immediately complete after the last bump
+        assert!(end - start > Duration::from_millis(5));
+        // we shouldn't be able to bump it after it's run out it's timeout
+        assert!(!debouncer.bump());
+    }
+}

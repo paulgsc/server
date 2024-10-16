@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
-use notify::{Watcher, RecursiveMode, Event};
-use std::sync::mpsc::channel;
-use std::time::Duration;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event};
+use tokio::sync::mpsc;
+use futures::StreamExt;
 
 mod file_system;
 mod registry;
@@ -30,45 +30,48 @@ impl NoobGit {
         })
     }
 
-    pub fn start_watching(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let (tx, rx) = channel();
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+    pub async fn start_watching(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (tx, mut rx) = mpsc::channel(100);
+        let mut watcher = RecommendedWatcher::new(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                let _ = tx.send(event);
+                let _ = futures::executor::block_on(tx.send(event));
             }
-        })?;
+        }, notify::Config::default())?;
 
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-        let mut debouncer = Debouncer::new(Duration::from_secs(2));
+        let mut debouncer = Debouncer::new(std::time::Duration::from_secs(2));
 
-        loop {
-            match rx.recv() {
-                Ok(event) => {
-                    let debounced_events = debouncer.debounce(event);
-                    for event in debounced_events {
-                        self.handle_event(event);
-                    }
-                },
-                Err(e) => println!("Watch error: {:?}", e),
+        while let Some(event) = rx.recv().await {
+            debouncer.bump();
+            tokio::select! {
+                _ = debouncer.wait() => {
+                    self.handle_event(&event).await;
+                }
+                else => {}
             }
         }
+
+        Ok(())
     }
 
-    fn handle_event(&mut self, event: DebouncedEvent) {
-        match event {
-            DebouncedEvent::Create(path) => {
-                if let Err(e) = self.file_system.add(&path) {
-                    println!("Error adding file: {:?}", e);
-                }
-                self.registry.add_change(Change::new(ChangeType::Create, path));
-            },
-            DebouncedEvent::Remove(path) => {
-                if let Err(e) = self.file_system.remove(&path) {
-                    println!("Error removing file: {:?}", e);
-                }
-                self.registry.add_change(Change::new(ChangeType::Delete, path));
-            },
+    async fn handle_event(&mut self, event: &Event) {
+        for path in &event.paths {
+            match event.kind {
+                notify::EventKind::Create(_) => {
+                    if let Err(e) = self.file_system.add(path).await {
+                        println!("Error adding file: {:?}", e);
+                    }
+                    self.registry.add_change(Change::new(ChangeType::Create, path.clone()));
+                },
+                notify::EventKind::Remove(_) => {
+                    if let Err(e) = self.file_system.remove(path).await {
+                        println!("Error removing file: {:?}", e);
+                    }
+                    self.registry.add_change(Change::new(ChangeType::Delete, path.clone()));
+                },
+                _ => {}
+            }
         }
     }
 
