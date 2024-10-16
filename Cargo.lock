@@ -1724,6 +1724,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "noobgit"
+version = "0.0.0"
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
