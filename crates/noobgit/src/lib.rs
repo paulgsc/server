@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
-use std::collections::VecDeque;
-use notify::{Watcher, RecursiveMode, watcher, DebouncedEvent};
+use notify::{Watcher, RecursiveMode, Event};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
 mod file_system;
 mod registry;
+mod debouncer;
 
 use file_system::FileSystem;
 use registry::{Registry, Change, ChangeType};
+use debouncer::{Debouncer, DebouncedEvent};
 
 pub struct MiniGit {
     root: PathBuf,
@@ -31,12 +32,24 @@ impl MiniGit {
 
     pub fn start_watching(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = channel();
-        let mut watcher = watcher(tx, Duration::from_secs(2))?;
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        })?;
+
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
+
+        let mut debouncer = Debouncer::new(Duration::from_secs(2));
 
         loop {
             match rx.recv() {
-                Ok(event) => self.handle_event(event),
+                Ok(event) => {
+                    let debounced_events = debouncer.debounce(event);
+                    for event in debounced_events {
+                        self.handle_event(event);
+                    }
+                },
                 Err(e) => println!("Watch error: {:?}", e),
             }
         }
@@ -56,7 +69,6 @@ impl MiniGit {
                 }
                 self.registry.add_change(Change::new(ChangeType::Delete, path));
             },
-            _ => {},
         }
     }
 
