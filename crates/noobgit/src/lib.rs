@@ -11,13 +11,13 @@ use file_system::FileSystem;
 use registry::{Registry, Change, ChangeType};
 use debouncer::{Debouncer, DebouncedEvent};
 
-pub struct MiniGit {
+pub struct NoobGit {
     root: PathBuf,
     file_system: FileSystem,
     registry: Registry,
 }
 
-impl MiniGit {
+impl NoobGit {
     pub fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error>> {
         let root = root.as_ref().to_path_buf();
         let file_system = FileSystem::new(&root)?;
