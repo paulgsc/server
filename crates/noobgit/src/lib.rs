@@ -39,15 +39,18 @@ impl NoobGit {
 
 		watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-		let mut debouncer = Debouncer::new(std::time::Duration::from_secs(2));
+		let debouncer = Arc::new(Debouncer::new(std::time::Duration::from_secs(2)));
+		let debouncer_clone = debouncer.clone();
+
+		tokio::spawn(async move {
+			debouncer_clone.debounce().await;
+		});
 
 		while let Some(event) = rx.recv().await {
-			debouncer.bump();
-			tokio::select! {
-					_ = debouncer.wait() => {
-							self.handle_event(&event).await;
-					}
-					else => {}
+			if debouncer.bump() {
+				self.handle_event(&event).await;
+			} else {
+				break; // Exit the loop if the debouncer is no longer active
 			}
 		}
 
