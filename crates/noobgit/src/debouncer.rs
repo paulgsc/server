@@ -109,6 +109,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use tokio::task;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_debouncer_bump() {
