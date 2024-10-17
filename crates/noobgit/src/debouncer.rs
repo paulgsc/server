@@ -91,8 +91,6 @@ impl Debouncer {
 	}
 }
 
-// src/lib.rs
-// ... (previous code remains the same)
 
 #[cfg(test)]
 mod tests {
