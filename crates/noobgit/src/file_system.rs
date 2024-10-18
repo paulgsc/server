@@ -114,6 +114,9 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
-		fs.remove("nonexistent.txt").await.unwrap(); // Should not error
+        let result = fs.remove("nonexistent.txt").await;
+        assert!(result.is_err(), "Expected an error, but got Ok");
+        assert!(matches!(result, Err(FileSystemError::PathNotFound(_))), 
+                        "Expected PathNotFound error, but got {:?}", result);
 	}
 }
