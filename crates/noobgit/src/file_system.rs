@@ -3,50 +3,49 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 
 pub struct FileSystem {
-    root: PathBuf,
+	root: PathBuf,
 }
 
 impl FileSystem {
-    pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self> {
-        let root = root.as_ref().to_path_buf();
-        
-        // Use async fs::metadata to check if the directory exists
-        if fs::metadata(&root).await.is_err() {
-            fs::create_dir_all(&root).await.map_err(FileSystemError::from)?;
-        }
-        
-        Ok(Self { root })
-    }
+	pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self> {
+		let root = root.as_ref().to_path_buf();
 
-    pub async fn add<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let path = self.root.join(path);
-        
-        if let Ok(metadata) = fs::metadata(&path).await {
-            if metadata.is_file() {
-                return Ok(());
-            } else if metadata.is_dir() {
-                return fs::create_dir_all(path).await.map_err(FileSystemError::from);
-            }
-        }
+		// Use async fs::metadata to check if the directory exists
+		if fs::metadata(&root).await.is_err() {
+			fs::create_dir_all(&root).await.map_err(FileSystemError::from)?;
+		}
 
-        fs::File::create(path).await.map(|_| ()).map_err(FileSystemError::from)
-    }
+		Ok(Self { root })
+	}
 
-    pub async fn remove<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let path = self.root.join(path);
+	pub async fn add<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+		let path = self.root.join(path);
 
-        if let Ok(metadata) = fs::metadata(&path).await {
-            if metadata.is_file() {
-                return fs::remove_file(path).await.map_err(FileSystemError::from);
-            } else if metadata.is_dir() {
-                return fs::remove_dir_all(path).await.map_err(FileSystemError::from);
-            }
-        }
+		if let Ok(metadata) = fs::metadata(&path).await {
+			if metadata.is_file() {
+				return Ok(());
+			} else if metadata.is_dir() {
+				return fs::create_dir_all(path).await.map_err(FileSystemError::from);
+			}
+		}
 
-        Err(FileSystemError::PathNotFound(path))
-    }
+		fs::File::create(path).await.map(|_| ()).map_err(FileSystemError::from)
+	}
+
+	pub async fn remove<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+		let path = self.root.join(path);
+
+		if let Ok(metadata) = fs::metadata(&path).await {
+			if metadata.is_file() {
+				return fs::remove_file(path).await.map_err(FileSystemError::from);
+			} else if metadata.is_dir() {
+				return fs::remove_dir_all(path).await.map_err(FileSystemError::from);
+			}
+		}
+
+		Err(FileSystemError::PathNotFound(path))
+	}
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -114,9 +113,8 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
-        let result = fs.remove("nonexistent.txt").await;
-        assert!(result.is_err(), "Expected an error, but got Ok");
-        assert!(matches!(result, Err(FileSystemError::PathNotFound(_))), 
-                        "Expected PathNotFound error, but got {:?}", result);
+		let result = fs.remove("nonexistent.txt").await;
+		assert!(result.is_err(), "Expected an error, but got Ok");
+		assert!(matches!(result, Err(FileSystemError::PathNotFound(_))), "Expected PathNotFound error, but got {:?}", result);
 	}
 }
