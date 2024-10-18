@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 mod debouncer;
+pub mod error;
 mod file_system;
 mod registry;
 
@@ -19,9 +20,9 @@ pub struct NoobGit {
 }
 
 impl NoobGit {
-	pub fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error>> {
 		let root = root.as_ref().to_path_buf();
-		let file_system = FileSystem::new(&root)?;
+        let file_system = FileSystem::new(&root).await?;
 		let registry = Registry::new();
 
 		Ok(Self { root, file_system, registry })
