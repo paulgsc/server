@@ -1,4 +1,3 @@
-use futures::StreamExt;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
