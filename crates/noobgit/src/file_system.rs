@@ -57,14 +57,14 @@ mod tests {
 	#[test]
 	async fn test_new_filesystem() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 		assert_eq!(fs.root, temp_dir.path());
 	}
 
 	#[test]
 	async fn test_add_file() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.add("test.txt").await.unwrap();
 		assert!(temp_dir.path().join("test.txt").exists());
@@ -73,7 +73,7 @@ mod tests {
 	#[test]
 	async fn test_add_directory() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.add("test_dir").await.unwrap();
 		assert!(temp_dir.path().join("test_dir").is_dir());
@@ -82,7 +82,7 @@ mod tests {
 	#[test]
 	async fn test_remove_file() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.add("test.txt").await.unwrap();
 		fs.remove("test.txt").await.unwrap();
@@ -92,7 +92,7 @@ mod tests {
 	#[test]
 	async fn test_remove_directory() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.add("test_dir").await.unwrap();
 		fs.remove("test_dir").await.unwrap();
@@ -102,7 +102,7 @@ mod tests {
 	#[test]
 	async fn test_add_existing_file() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.add("test.txt").await.unwrap();
 		fs.add("test.txt").await.unwrap(); // Should not error
@@ -112,7 +112,7 @@ mod tests {
 	#[test]
 	async fn test_remove_nonexistent_path() {
 		let temp_dir = TempDir::new().unwrap();
-		let fs = FileSystem::new(temp_dir.path()).unwrap();
+		let fs = FileSystem::new(temp_dir.path()).await.unwrap();
 
 		fs.remove("nonexistent.txt").await.unwrap(); // Should not error
 	}
