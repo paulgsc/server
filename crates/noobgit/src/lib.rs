@@ -1,8 +1,8 @@
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::Duration;
 
 mod debouncer;
 pub mod error;
@@ -28,28 +28,65 @@ impl NoobGit {
 		Ok(Self { root, file_system, registry })
 	}
 
-	pub async fn start_watching(&mut self, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
+	pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
 		println!("NoobGit: Watch began!");
+
 		let (tx, mut rx) = mpsc::channel(100);
-		let mut watcher = RecommendedWatcher::new(
-			move |res: Result<Event, notify::Error>| {
-				if let Ok(event) = res {
-					let _ = tx.try_send(event);
-				}
-			},
-			notify::Config::default(),
-		)?;
 
-		watcher.watch(&self.root, RecursiveMode::Recursive)?;
+		// Clone necessary references
+		let root_clone = noob_git.lock().await.root.clone();
+		let noob_git_clone = Arc::clone(&noob_git);
 
-		tokio::spawn(async move {
+		// Watcher task: Spawn in a blocking thread
+		let watcher_handle = tokio::task::spawn_blocking(move || {
+			let mut watcher = RecommendedWatcher::new(
+				move |res: Result<Event, notify::Error>| match res {
+					Ok(event) => {
+						println!("Received event: {:?}", event);
+						if let Err(e) = tx.blocking_send(event) {
+							eprintln!("Error sending event: {:?}", e);
+						}
+					}
+					Err(e) => eprintln!("Error watching directory: {:?}", e),
+				},
+				notify::Config::default(),
+			)
+			.unwrap();
+
+			// Start watching the directory (recursive)
+			if let Err(e) = watcher.watch(&root_clone, RecursiveMode::Recursive) {
+				eprintln!("Error starting watcher: {:?}", e);
+			}
+
+			// Keep the watcher alive
+			loop {
+				std::thread::sleep(Duration::from_secs(1));
+			}
+		});
+
+		// Debouncer setup
+		let debouncer = Arc::new(Debouncer::new(Duration::from_millis(500)));
+		let debouncer_clone = Arc::clone(&debouncer);
+
+		// Debouncer task
+		let debouncer_handle = tokio::spawn(async move {
+			debouncer_clone.debounce().await;
+		});
+
+		// Event handling task
+		let event_handle = tokio::spawn(async move {
 			while let Some(event) = rx.recv().await {
+				println!("Raw event: {:?}", event);
+
+				// Lock NoobGit and process the event if it's debounced
+				let mut noob_git = noob_git_clone.lock().await;
 				if debouncer.bump() {
-					self.handle_event(&event).await;
+					noob_git.handle_event(&event).await;
 				}
 			}
 		});
 
+		// Main loop to listen for stop signals
 		loop {
 			tokio::select! {
 					_ = stop_receiver.recv() => {
@@ -59,10 +96,16 @@ impl NoobGit {
 			}
 		}
 
+		// Clean up tasks
+		watcher_handle.abort();
+		debouncer_handle.abort();
+		event_handle.abort();
+
 		println!("NoobGit: Watch ended");
 		Ok(())
 	}
 
+	// Handle the event based on the event kind
 	async fn handle_event(&mut self, event: &Event) {
 		for path in &event.paths {
 			match event.kind {
@@ -72,6 +115,13 @@ impl NoobGit {
 					}
 					self.registry.add_change(Change::new(ChangeType::Create, path.clone()));
 					println!("NoobGit: Create event handled for {:?}", path);
+				}
+				notify::EventKind::Modify(_) => {
+					if let Err(e) = self.file_system.add(path).await {
+						println!("Error updating file: {:?}", e);
+					}
+					self.registry.add_change(Change::new(ChangeType::Modify, path.clone()));
+					println!("NoobGit: Modify event handled for {:?}", path);
 				}
 				notify::EventKind::Remove(_) => {
 					if let Err(e) = self.file_system.remove(path).await {
@@ -87,6 +137,7 @@ impl NoobGit {
 		}
 	}
 
+	// Other methods for staging/unstaging changes and notifications
 	pub fn stage_changes(&mut self) {
 		self.registry.stage_changes();
 	}

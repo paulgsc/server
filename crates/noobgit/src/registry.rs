@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChangeType {
 	Create,
+	Modify,
 	Delete,
 }
 
@@ -57,6 +58,7 @@ impl Registry {
 			.map(|change| {
 				let action = match change.change_type {
 					ChangeType::Create => "Created",
+					ChangeType::Modify => "Modified",
 					ChangeType::Delete => "Deleted",
 				};
 				format!("{} {}", action, change.path.display())
