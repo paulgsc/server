@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	let user_input_path = "/demo";
 
 	match ValidatedPath::parse(user_input_path) {
@@ -16,14 +16,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 		Err(e) => {
 			eprintln!("invalid path: {:?}", e);
-			return Err(Box::new(e) as Box<dyn std::error::Error>);
+			return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
 		}
 	}
 
 	Ok(())
 }
 
-async fn watch_directory(root_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn watch_directory(root_path: PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	println!("watching directory: {:?}", root_path);
 
 	let noob_git = Arc::new(Mutex::new(NoobGit::new(&root_path).await?));
