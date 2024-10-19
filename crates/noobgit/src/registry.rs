@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChangeType {
 	Create,
 	Delete,
@@ -9,8 +9,8 @@ pub enum ChangeType {
 
 #[derive(Debug, Clone)]
 pub struct Change {
-	change_type: ChangeType,
-	path: PathBuf,
+	pub change_type: ChangeType,
+	pub path: PathBuf,
 }
 
 impl Change {
@@ -20,9 +20,9 @@ impl Change {
 }
 
 pub struct Registry {
-	unstaged_changes: VecDeque<Change>,
-	staged_changes: Vec<Change>,
-	max_changes: usize,
+	pub unstaged_changes: VecDeque<Change>,
+	pub staged_changes: Vec<Change>,
+	pub max_changes: usize,
 }
 
 impl Registry {
