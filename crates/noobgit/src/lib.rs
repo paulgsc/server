@@ -34,7 +34,7 @@ impl NoobGit {
 		let mut watcher = RecommendedWatcher::new(
 			move |res: Result<Event, notify::Error>| {
 				if let Ok(event) = res {
-					let _ = futures::executor::block_on(tx.send(event));
+					let _ = tx.try_send(event);
 				}
 			},
 			notify::Config::default(),
@@ -42,34 +42,16 @@ impl NoobGit {
 
 		watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-		let debouncer = Arc::new(Debouncer::new(Duration::from_millis(500)));
-		let debouncer_clone = debouncer.clone();
-
 		tokio::spawn(async move {
-			debouncer_clone.debounce().await;
+			while let Some(event) = rx.recv().await {
+				if debouncer.bump() {
+					self.handle_event(&event).await;
+				}
+			}
 		});
 
 		loop {
 			tokio::select! {
-					event_result = timeout(Duration::from_secs(600), rx.recv()) => {
-							match event_result {
-									Ok(Some(event)) => {
-											println!("NoobGit: Received event: {:?}", event);
-											if debouncer.bump() {
-													self.handle_event(&event).await;
-													println!("NoobGit: Event handled");
-											}
-									}
-									Ok(None) => {
-											println!("NoobGit: Event channel closed");
-											break;
-									}
-									Err(_) => {
-											println!("NoobGit: Timeout waiting for event");
-											break;
-									}
-							}
-					}
 					_ = stop_receiver.recv() => {
 							println!("NoobGit: Stop signal received. Exiting watch...");
 							break;
