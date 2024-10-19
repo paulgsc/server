@@ -269,7 +269,7 @@ mod tests {
 		// Check if the file modification was detected
 		let notifications = noob_git.lock().await.get_notifications();
 		assert!(
-			notifications.iter().any(|n| n.contains("Modify") && n.contains("test_file.txt")),
+			notifications.iter().any(|n| n.contains("Modified") && n.contains("test_file.txt")),
 			"File modification was not detected"
 		);
 	}
@@ -328,19 +328,22 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-		tokio::time::sleep(Duration::from_millis(100)).await;
+		tokio::time::sleep(Duration::from_secs(1)).await;
 
 		// Perform multiple file operations
 		let file1_path = root.join("file1.txt");
 		let file2_path = root.join("file2.txt");
 
 		tokio::fs::write(&file1_path, "File 1 content").await.unwrap();
+		tokio::time::sleep(Duration::from_millis(100)).await;
 		tokio::fs::write(&file2_path, "File 2 content").await.unwrap();
+		tokio::time::sleep(Duration::from_millis(100)).await;
 		tokio::fs::write(&file1_path, "File 1 modified").await.unwrap();
+		tokio::time::sleep(Duration::from_millis(100)).await;
 		tokio::fs::remove_file(&file2_path).await.unwrap();
 
 		// Wait for events to be processed
-		tokio::time::sleep(Duration::from_secs(2)).await;
+		tokio::time::sleep(Duration::from_secs(3)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
