@@ -29,6 +29,7 @@ edition = "2021"
 [workspace.dependencies]
 
 nest = { path = "crates/nest" }
+file_reader = { path = "crates/file_reader" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
