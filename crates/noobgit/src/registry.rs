@@ -19,6 +19,7 @@ impl Change {
 	}
 }
 
+#[derive(Debug, Clone)]
 pub struct Registry {
 	pub unstaged_changes: VecDeque<Change>,
 	pub staged_changes: Vec<Change>,
