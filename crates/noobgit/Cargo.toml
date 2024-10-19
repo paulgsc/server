@@ -8,6 +8,9 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+file_reader = { workspace = true }
+
+
 futures = { workspace = true }
 notify = { workspace = true }
 serde = { workspace = true }
