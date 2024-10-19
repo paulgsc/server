@@ -26,25 +26,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn watch_directory(root_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 	println!("watching directory: {:?}", root_path);
 
-	let noob_git = Arc::new(Mutex::new(NoobGit::new(&root_path).await.unwrap()));
+	let noob_git = Arc::new(Mutex::new(NoobGit::new(&root_path).await?));
 
-	let (stop_tx, stop_rx) = mpsc::channel(1);
+	let (stop_tx, stop_rx) = mpsc::channel(1); // Unused stop_tx, but can be used to stop watcher.
 
-	let noobgit_clone = Arc::clone(&noob_git);
+	let noob_git_clone = Arc::clone(&noob_git);
+
 	let watching_handle = tokio::spawn(async move {
 		println!("Step 2: Starting watcher");
-		let mut noobgit = noobgit_clone.lock().await;
-		if let Err(e) = noobgit.start_watching(stop_rx).await {
+		if let Err(e) = NoobGit::start_watching(noob_git_clone, stop_rx).await {
 			eprintln!("Error starting watcher: {:?}", e);
 		}
 	});
 
-	loop {
-		tokio::time::sleep(Duration::from_secs(1)).await;
-		println!("Watcher is running...");
-	}
+	let work_duration = Duration::from_secs(60);
+	tokio::time::sleep(work_duration).await;
+	stop_tx.send(()).await?;
+	let _ = watching_handle.await;
 
-	watching_handle.await.unwrap();
+	let notifications = noob_git.lock().await.get_notifications();
+	println!("Final notifications:");
+	for notification in notifications {
+		println!("  {}", notification);
+	}
 
 	Ok(())
 }
