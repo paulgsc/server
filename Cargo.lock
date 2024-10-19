@@ -1820,6 +1820,7 @@ dependencies = [
 name = "noobgit"
 version = "0.0.0"
 dependencies = [
+ "file_reader",
  "futures",
  "notify",
  "serde",
