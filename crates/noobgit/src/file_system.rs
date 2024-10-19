@@ -9,13 +9,11 @@ pub struct FileSystem {
 impl FileSystem {
 	pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self> {
 		let root = root.as_ref().to_path_buf();
-
-		// Use async fs::metadata to check if the directory exists
-		if fs::metadata(&root).await.is_err() {
-			fs::create_dir_all(&root).await.map_err(FileSystemError::from)?;
+		match (root.exists(), root.is_dir()) {
+			(false, _) => Err(FileSystemError::PathNotFound(root)),
+            (true, false) => Err(FileSystemError::NotADirectory(root)),
+			(true, true) => Ok(Self { root }),
 		}
-
-		Ok(Self { root })
 	}
 
 	pub async fn add<P: AsRef<Path>>(&self, path: P) -> Result<()> {

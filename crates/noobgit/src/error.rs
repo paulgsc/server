@@ -9,6 +9,9 @@ pub enum FileSystemError {
 	#[error("Path not found: {0}")]
 	PathNotFound(PathBuf),
 
+	#[error("Path is not a directory: {0}")]
+	NotADirectory(PathBuf),
+
 	#[error("Invalid path: {0}")]
 	InvalidPath(PathBuf),
 
@@ -30,6 +33,7 @@ impl FileSystemError {
 		match self {
 			Self::Io(_) => 500,
 			Self::PathNotFound(_) => 404,
+            Self::NotADirectory(_) => 500,
 			Self::InvalidPath(_) => 400,
 			Self::PermissionDenied(_) => 403,
 			Self::FileAlreadyExists(_) => 409,
