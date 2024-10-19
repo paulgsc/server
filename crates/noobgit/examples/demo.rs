@@ -26,14 +26,5 @@ async fn watch_directory(root_path: PathBuf) -> Result<(), Box<dyn std::error::E
 	let mut noob_git = NoobGit::new(&root_path).await?;
 
 	noob_git.start_watching().await?;
-
-	loop {
-		let notifications = noob_git.get_notifications();
-		if !notifications.is_empty() {
-			println!("notifications:");
-			for notification in notifications {
-				println!("  {}", notification);
-			}
-		}
-	}
+	Ok(())
 }
