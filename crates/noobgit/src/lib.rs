@@ -2,6 +2,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 
 mod debouncer;
 pub mod error;
@@ -27,7 +28,8 @@ impl NoobGit {
 		Ok(Self { root, file_system, registry })
 	}
 
-	pub async fn start_watching(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+	pub async fn start_watching(&mut self, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
+		println!("NoobGit: Watch began!");
 		let (tx, mut rx) = mpsc::channel(100);
 		let mut watcher = RecommendedWatcher::new(
 			move |res: Result<Event, notify::Error>| {
@@ -40,22 +42,42 @@ impl NoobGit {
 
 		watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-		let debouncer = Arc::new(Debouncer::new(std::time::Duration::from_secs(2)));
+		let debouncer = Arc::new(Debouncer::new(Duration::from_millis(500)));
 		let debouncer_clone = debouncer.clone();
 
 		tokio::spawn(async move {
 			debouncer_clone.debounce().await;
 		});
 
-		while let Some(event) = rx.recv().await {
-			if debouncer.bump() {
-				println!("Received event: {:?}", event);
-				self.handle_event(&event).await;
-			} else {
-				break;
+		loop {
+			tokio::select! {
+					event_result = timeout(Duration::from_secs(600), rx.recv()) => {
+							match event_result {
+									Ok(Some(event)) => {
+											println!("NoobGit: Received event: {:?}", event);
+											if debouncer.bump() {
+													self.handle_event(&event).await;
+													println!("NoobGit: Event handled");
+											}
+									}
+									Ok(None) => {
+											println!("NoobGit: Event channel closed");
+											break;
+									}
+									Err(_) => {
+											println!("NoobGit: Timeout waiting for event");
+											break;
+									}
+							}
+					}
+					_ = stop_receiver.recv() => {
+							println!("NoobGit: Stop signal received. Exiting watch...");
+							break;
+					}
 			}
 		}
 
+		println!("NoobGit: Watch ended");
 		Ok(())
 	}
 
@@ -67,14 +89,18 @@ impl NoobGit {
 						println!("Error adding file: {:?}", e);
 					}
 					self.registry.add_change(Change::new(ChangeType::Create, path.clone()));
+					println!("NoobGit: Create event handled for {:?}", path);
 				}
 				notify::EventKind::Remove(_) => {
 					if let Err(e) = self.file_system.remove(path).await {
 						println!("Error removing file: {:?}", e);
 					}
 					self.registry.add_change(Change::new(ChangeType::Delete, path.clone()));
+					println!("NoobGit: Delete event handled for {:?}", path);
 				}
-				_ => {}
+				_ => {
+					println!("NoobGit: Unhandled event kind: {:?}", event.kind);
+				}
 			}
 		}
 	}
