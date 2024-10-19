@@ -33,7 +33,7 @@ impl FileSystemError {
 		match self {
 			Self::Io(_) => 500,
 			Self::PathNotFound(_) => 404,
-            Self::NotADirectory(_) => 500,
+			Self::NotADirectory(_) => 500,
 			Self::InvalidPath(_) => 400,
 			Self::PermissionDenied(_) => 403,
 			Self::FileAlreadyExists(_) => 409,

@@ -11,7 +11,7 @@ impl FileSystem {
 		let root = root.as_ref().to_path_buf();
 		match (root.exists(), root.is_dir()) {
 			(false, _) => Err(FileSystemError::PathNotFound(root)),
-            (true, false) => Err(FileSystemError::NotADirectory(root)),
+			(true, false) => Err(FileSystemError::NotADirectory(root)),
 			(true, true) => Ok(Self { root }),
 		}
 	}

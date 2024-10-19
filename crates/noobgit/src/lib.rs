@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 
 mod debouncer;
 pub mod error;
-mod file_system;
-mod registry;
+pub mod file_system;
+pub mod registry;
 
 use debouncer::Debouncer;
 use file_system::FileSystem;
@@ -49,6 +49,7 @@ impl NoobGit {
 
 		while let Some(event) = rx.recv().await {
 			if debouncer.bump() {
+				println!("Received event: {:?}", event);
 				self.handle_event(&event).await;
 			} else {
 				break;
@@ -88,5 +89,120 @@ impl NoobGit {
 
 	pub fn get_notifications(&self) -> Vec<String> {
 		self.registry.get_notifications()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use notify::{
+		event::{CreateKind, RemoveKind},
+		Event, EventKind,
+	};
+	use tempfile::TempDir;
+	use tokio::fs;
+
+	async fn setup_test_dir() -> TempDir {
+		TempDir::new().expect("Failed to create temp directory")
+	}
+
+	#[tokio::test]
+	async fn test_noobgit_new() {
+		let temp_dir = setup_test_dir().await;
+		let result = NoobGit::new(temp_dir.path()).await;
+		assert!(result.is_ok());
+
+		let noobgit = result.unwrap();
+		assert_eq!(noobgit.root, temp_dir.path());
+	}
+
+	#[tokio::test]
+	async fn test_handle_create_event() {
+		let temp_dir = setup_test_dir().await;
+		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+
+		let test_file = temp_dir.path().join("test_file.txt");
+		fs::write(&test_file, "test content").await.unwrap();
+
+		let event = Event {
+			kind: EventKind::Create(CreateKind::File),
+			paths: vec![test_file.clone()],
+			..Default::default() // Fill in other fields as necessary
+		};
+		noobgit.handle_event(&event).await;
+
+		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
+		assert_eq!(noobgit.registry.unstaged_changes[0].change_type, ChangeType::Create);
+		assert_eq!(noobgit.registry.unstaged_changes[0].path, test_file);
+	}
+
+	#[tokio::test]
+	async fn test_handle_remove_event() {
+		let temp_dir = setup_test_dir().await;
+		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+
+		let test_file = temp_dir.path().join("test_file.txt");
+		fs::write(&test_file, "test content").await.unwrap();
+		noobgit.file_system.add(&test_file).await.unwrap();
+
+		fs::remove_file(&test_file).await.unwrap();
+
+		let event = Event {
+			kind: EventKind::Remove(RemoveKind::File),
+			paths: vec![test_file.clone()],
+			..Default::default() // Fill in other fields as necessary
+		};
+		noobgit.handle_event(&event).await;
+
+		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
+		assert_eq!(noobgit.registry.unstaged_changes[0].change_type, ChangeType::Delete);
+		assert_eq!(noobgit.registry.unstaged_changes[0].path, test_file);
+	}
+
+	#[tokio::test]
+	async fn test_stage_and_unstage_changes() {
+		let temp_dir = setup_test_dir().await;
+		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+
+		let test_file = temp_dir.path().join("test_file.txt");
+		fs::write(&test_file, "test content").await.unwrap();
+
+		let event = Event {
+			kind: EventKind::Create(CreateKind::File),
+			paths: vec![test_file],
+			..Default::default() // Fill in other fields as necessary
+		};
+		noobgit.handle_event(&event).await;
+
+		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
+		assert_eq!(noobgit.registry.staged_changes.len(), 0);
+
+		noobgit.stage_changes();
+		assert_eq!(noobgit.registry.unstaged_changes.len(), 0);
+		assert_eq!(noobgit.registry.staged_changes.len(), 1);
+
+		noobgit.unstage_changes();
+		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
+		assert_eq!(noobgit.registry.staged_changes.len(), 0);
+	}
+
+	#[tokio::test]
+	async fn test_get_notifications() {
+		let temp_dir = setup_test_dir().await;
+		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+
+		let test_file = temp_dir.path().join("test_file.txt");
+		fs::write(&test_file, "test content").await.unwrap();
+
+		let event = Event {
+			kind: EventKind::Create(CreateKind::File),
+			paths: vec![test_file],
+			..Default::default() // Fill in other fields as necessary
+		};
+		noobgit.handle_event(&event).await;
+
+		let notifications = noobgit.get_notifications();
+		assert_eq!(notifications.len(), 1);
+		assert!(notifications[0].contains("Created"));
 	}
 }
