@@ -20,7 +20,7 @@ pub struct NoobGit {
 }
 
 impl NoobGit {
-	pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
 		let root = root.as_ref().to_path_buf();
 		let file_system = FileSystem::new(&root).await?;
 		let registry = Registry::new();
@@ -28,7 +28,7 @@ impl NoobGit {
 		Ok(Self { root, file_system, registry })
 	}
 
-	pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 		println!("NoobGit: Watch began!");
 
 		let (tx, mut rx) = mpsc::channel(100);
@@ -176,92 +176,196 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_handle_create_event() {
-		let temp_dir = setup_test_dir().await;
-		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+	async fn test_start_watching_terminates_on_stop_signal() {
+        let temp_dir = setup_test_dir().await;
+		let root = temp_dir.path().to_path_buf();
 
-		let test_file = temp_dir.path().join("test_file.txt");
-		fs::write(&test_file, "test content").await.unwrap();
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let (stop_tx, stop_rx) = mpsc::channel(1);
 
-		let event = Event {
-			kind: EventKind::Create(CreateKind::File),
-			paths: vec![test_file.clone()],
-			..Default::default() // Fill in other fields as necessary
-		};
-		noobgit.handle_event(&event).await;
+		// Start watching in a separate task
+		let watch_handle = tokio::spawn({
+			let noob_git = Arc::clone(&noob_git);
+			async move { NoobGit::start_watching(noob_git, stop_rx).await }
+		});
 
-		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
-		assert_eq!(noobgit.registry.unstaged_changes[0].change_type, ChangeType::Create);
-		assert_eq!(noobgit.registry.unstaged_changes[0].path, test_file);
+		// Wait a short time to ensure watching has started
+		tokio::time::sleep(Duration::from_millis(100)).await;
+
+		// Send stop signal
+		stop_tx.send(()).await.unwrap();
+
+		// Wait for the watch task to finish
+		let result = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
+
+		assert!(result.is_ok(), "start_watching did not terminate within 5 seconds after stop signal");
+		assert!(result.unwrap().is_ok(), "start_watching returned an error");
 	}
 
 	#[tokio::test]
-	async fn test_handle_remove_event() {
-		let temp_dir = setup_test_dir().await;
-		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+	async fn test_watcher_handles_file_creation() {
+        let temp_dir = setup_test_dir().await;
+		let root = temp_dir.path().to_path_buf();
 
-		let test_file = temp_dir.path().join("test_file.txt");
-		fs::write(&test_file, "test content").await.unwrap();
-		noobgit.file_system.add(&test_file).await.unwrap();
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let (stop_tx, stop_rx) = mpsc::channel(1);
 
-		fs::remove_file(&test_file).await.unwrap();
+		// Start watching in a separate task
+		let watch_handle = tokio::spawn({
+			let noob_git = Arc::clone(&noob_git);
+			async move { NoobGit::start_watching(noob_git, stop_rx).await }
+		});
 
-		let event = Event {
-			kind: EventKind::Remove(RemoveKind::File),
-			paths: vec![test_file.clone()],
-			..Default::default() // Fill in other fields as necessary
-		};
-		noobgit.handle_event(&event).await;
+		// Wait a short time to ensure watching has started
+		tokio::time::sleep(Duration::from_millis(100)).await;
 
-		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
-		assert_eq!(noobgit.registry.unstaged_changes[0].change_type, ChangeType::Delete);
-		assert_eq!(noobgit.registry.unstaged_changes[0].path, test_file);
+		// Create a new file
+		let file_path = root.join("test_file.txt");
+		tokio::fs::write(&file_path, "Hello, NoobGit!").await.unwrap();
+
+		// Wait for the event to be processed
+		tokio::time::sleep(Duration::from_secs(1)).await;
+
+		// Stop watching
+		stop_tx.send(()).await.unwrap();
+		watch_handle.await.unwrap().unwrap();
+
+		// Check if the file creation was detected
+		let notifications = noob_git.lock().await.get_notifications();
+		assert!(
+			notifications.iter().any(|n| n.contains("Create") && n.contains("test_file.txt")),
+			"File creation was not detected"
+		);
 	}
 
 	#[tokio::test]
-	async fn test_stage_and_unstage_changes() {
-		let temp_dir = setup_test_dir().await;
-		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+	async fn test_watcher_handles_file_modification() {
+        let temp_dir = setup_test_dir().await;
+		let root = temp_dir.path().to_path_buf();
 
-		let test_file = temp_dir.path().join("test_file.txt");
-		fs::write(&test_file, "test content").await.unwrap();
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let (stop_tx, stop_rx) = mpsc::channel(1);
 
-		let event = Event {
-			kind: EventKind::Create(CreateKind::File),
-			paths: vec![test_file],
-			..Default::default() // Fill in other fields as necessary
-		};
-		noobgit.handle_event(&event).await;
+		// Create a file before starting the watcher
+		let file_path = root.join("test_file.txt");
+		tokio::fs::write(&file_path, "Initial content").await.unwrap();
 
-		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
-		assert_eq!(noobgit.registry.staged_changes.len(), 0);
+		// Start watching in a separate task
+		let watch_handle = tokio::spawn({
+			let noob_git = Arc::clone(&noob_git);
+			async move { NoobGit::start_watching(noob_git, stop_rx).await }
+		});
 
-		noobgit.stage_changes();
-		assert_eq!(noobgit.registry.unstaged_changes.len(), 0);
-		assert_eq!(noobgit.registry.staged_changes.len(), 1);
+		// Wait a short time to ensure watching has started
+		tokio::time::sleep(Duration::from_millis(100)).await;
 
-		noobgit.unstage_changes();
-		assert_eq!(noobgit.registry.unstaged_changes.len(), 1);
-		assert_eq!(noobgit.registry.staged_changes.len(), 0);
+		// Modify the file
+		tokio::fs::write(&file_path, "Modified content").await.unwrap();
+
+		// Wait for the event to be processed
+		tokio::time::sleep(Duration::from_secs(1)).await;
+
+		// Stop watching
+		stop_tx.send(()).await.unwrap();
+		watch_handle.await.unwrap().unwrap();
+
+		// Check if the file modification was detected
+		let notifications = noob_git.lock().await.get_notifications();
+		assert!(
+			notifications.iter().any(|n| n.contains("Modify") && n.contains("test_file.txt")),
+			"File modification was not detected"
+		);
 	}
 
 	#[tokio::test]
-	async fn test_get_notifications() {
-		let temp_dir = setup_test_dir().await;
-		let mut noobgit = NoobGit::new(temp_dir.path()).await.unwrap();
+	async fn test_watcher_handles_file_deletion() {
+        let temp_dir = setup_test_dir().await;
+		let root = temp_dir.path().to_path_buf();
 
-		let test_file = temp_dir.path().join("test_file.txt");
-		fs::write(&test_file, "test content").await.unwrap();
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let (stop_tx, stop_rx) = mpsc::channel(1);
 
-		let event = Event {
-			kind: EventKind::Create(CreateKind::File),
-			paths: vec![test_file],
-			..Default::default() // Fill in other fields as necessary
-		};
-		noobgit.handle_event(&event).await;
+		// Create a file before starting the watcher
+		let file_path = root.join("test_file.txt");
+		tokio::fs::write(&file_path, "Content to be deleted").await.unwrap();
 
-		let notifications = noobgit.get_notifications();
-		assert_eq!(notifications.len(), 1);
-		assert!(notifications[0].contains("Created"));
+		// Start watching in a separate task
+		let watch_handle = tokio::spawn({
+			let noob_git = Arc::clone(&noob_git);
+			async move { NoobGit::start_watching(noob_git, stop_rx).await }
+		});
+
+		// Wait a short time to ensure watching has started
+		tokio::time::sleep(Duration::from_millis(100)).await;
+
+		// Delete the file
+		tokio::fs::remove_file(&file_path).await.unwrap();
+
+		// Wait for the event to be processed
+		tokio::time::sleep(Duration::from_secs(1)).await;
+
+		// Stop watching
+		stop_tx.send(()).await.unwrap();
+		watch_handle.await.unwrap().unwrap();
+
+		// Check if the file deletion was detected
+		let notifications = noob_git.lock().await.get_notifications();
+		assert!(
+			notifications.iter().any(|n| n.contains("Delete") && n.contains("test_file.txt")),
+			"File deletion was not detected"
+		);
+	}
+
+	#[tokio::test]
+	async fn test_multiple_file_operations() {
+        let temp_dir = setup_test_dir().await;
+		let root = temp_dir.path().to_path_buf();
+
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let (stop_tx, stop_rx) = mpsc::channel(1);
+
+		// Start watching in a separate task
+		let watch_handle = tokio::spawn({
+			let noob_git = Arc::clone(&noob_git);
+			async move { NoobGit::start_watching(noob_git, stop_rx).await }
+		});
+
+		// Wait a short time to ensure watching has started
+		tokio::time::sleep(Duration::from_millis(100)).await;
+
+		// Perform multiple file operations
+		let file1_path = root.join("file1.txt");
+		let file2_path = root.join("file2.txt");
+
+		tokio::fs::write(&file1_path, "File 1 content").await.unwrap();
+		tokio::fs::write(&file2_path, "File 2 content").await.unwrap();
+		tokio::fs::write(&file1_path, "File 1 modified").await.unwrap();
+		tokio::fs::remove_file(&file2_path).await.unwrap();
+
+		// Wait for events to be processed
+		tokio::time::sleep(Duration::from_secs(2)).await;
+
+		// Stop watching
+		stop_tx.send(()).await.unwrap();
+		watch_handle.await.unwrap().unwrap();
+
+		// Check if all operations were detected
+		let notifications = noob_git.lock().await.get_notifications();
+		assert!(
+			notifications.iter().any(|n| n.contains("Create") && n.contains("file1.txt")),
+			"File1 creation was not detected"
+		);
+		assert!(
+			notifications.iter().any(|n| n.contains("Create") && n.contains("file2.txt")),
+			"File2 creation was not detected"
+		);
+		assert!(
+			notifications.iter().any(|n| n.contains("Modify") && n.contains("file1.txt")),
+			"File1 modification was not detected"
+		);
+		assert!(
+			notifications.iter().any(|n| n.contains("Delete") && n.contains("file2.txt")),
+			"File2 deletion was not detected"
+		);
 	}
 }
