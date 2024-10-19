@@ -1,4 +1,6 @@
 // mod file_handler;
 // mod resumable;
 
-mod path;
+pub mod path;
+
+pub use path::Path;

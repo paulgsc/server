@@ -1,2 +1,2 @@
 pub mod config;
-mod core;
+pub mod core;
