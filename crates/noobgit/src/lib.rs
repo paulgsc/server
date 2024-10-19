@@ -20,7 +20,7 @@ pub struct NoobGit {
 }
 
 impl NoobGit {
-    pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
 		let root = root.as_ref().to_path_buf();
 		let file_system = FileSystem::new(&root).await?;
 		let registry = Registry::new();
@@ -28,7 +28,7 @@ impl NoobGit {
 		Ok(Self { root, file_system, registry })
 	}
 
-    pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 		println!("NoobGit: Watch began!");
 
 		let (tx, mut rx) = mpsc::channel(100);
@@ -58,10 +58,7 @@ impl NoobGit {
 				eprintln!("Error starting watcher: {:?}", e);
 			}
 
-			// Keep the watcher alive
-			loop {
-				std::thread::sleep(Duration::from_secs(1));
-			}
+			watcher
 		});
 
 		// Debouncer setup
@@ -75,31 +72,31 @@ impl NoobGit {
 
 		// Event handling task
 		let event_handle = tokio::spawn(async move {
-			while let Some(event) = rx.recv().await {
-				println!("Raw event: {:?}", event);
+			loop {
+				tokio::select! {
+						Some(event) = rx.recv() => {
+								println!("Raw event: {:?}", event);
 
-				// Lock NoobGit and process the event if it's debounced
-				let mut noob_git = noob_git_clone.lock().await;
-				if debouncer.bump() {
-					noob_git.handle_event(&event).await;
+								// Lock NoobGit and process the event if it's debounced
+								let mut noob_git = noob_git_clone.lock().await;
+								if debouncer.bump() {
+										noob_git.handle_event(&event).await;
+								}
+						}
+						_ = stop_receiver.recv() => {
+								println!("NoobGit: Stop signal received. Exiting watch...");
+								break;
+						}
 				}
 			}
 		});
 
-		// Main loop to listen for stop signals
-		loop {
-			tokio::select! {
-					_ = stop_receiver.recv() => {
-							println!("NoobGit: Stop signal received. Exiting watch...");
-							break;
-					}
-			}
-		}
+		// Wait for the event handling task to complete
+		event_handle.await?;
 
 		// Clean up tasks
 		watcher_handle.abort();
 		debouncer_handle.abort();
-		event_handle.abort();
 
 		println!("NoobGit: Watch ended");
 		Ok(())
@@ -177,7 +174,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_start_watching_terminates_on_stop_signal() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
 		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
@@ -204,7 +201,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_watcher_handles_file_creation() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
 		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
@@ -240,7 +237,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_watcher_handles_file_modification() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
 		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
@@ -279,7 +276,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_watcher_handles_file_deletion() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
 		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
@@ -318,7 +315,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_multiple_file_operations() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
 		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
