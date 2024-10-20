@@ -1,89 +1,115 @@
 pub mod config;
 pub mod core;
 
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs;
+use std::io::{self, Read};
+use std::path::PathBuf;
+
+use config::PathPartError;
+use core::Path;
 
 #[derive(Debug)]
-pub struct Element {
-	pub name: String,
-	pub attributes: Vec<(String, String)>,
-	pub content: String,
-	pub children: Vec<Element>,
+pub struct FileReader {
+	path: Path,
+	system_path: PathBuf,
+	expected_type: String,
 }
 
-pub fn extract_elements(file_path: &str, selectors: &[&str]) -> Result<Vec<Element>, Box<dyn std::error::Error>> {
-	let file = File::open(file_path)?;
-	let buf_reader = BufReader::new(file);
-	let mut reader = Reader::from_reader(buf_reader);
-	// No trim_text call here
-	let mut buf = Vec::new();
-	let mut stack = Vec::new();
-	let mut extracted_elements = Vec::new();
-	let selector_set: HashSet<_> = selectors.iter().map(|&s| s.to_string()).collect();
+#[derive(Debug)]
+pub enum FileReaderError {
+	InvalidPath(PathPartError),
+	FileNotFound,
+	InvalidFileType,
+	IOError(io::Error),
+	NoFileExtension,
+}
 
-	let mut current_depth = 0;
-	let mut capture_depths = Vec::new();
+impl FileReader {
+	pub fn new(path: &str, expected_type: &str) -> Result<Self, FileReaderError> {
+		let validated_path = Path::parse(path).map_err(FileReaderError::InvalidPath)?;
+		let system_path = PathBuf::from(path);
 
-	loop {
-		match reader.read_event_into(&mut buf)? {
-			Event::Start(e) => {
-				current_depth += 1;
-				let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-				let attributes = e
-					.attributes()
-					.filter_map(|a| {
-						a.ok()
-							.map(|attr| (std::str::from_utf8(attr.key.as_ref()).unwrap().to_string(), attr.unescape_value().unwrap().to_string()))
-					})
-					.collect();
-
-				let element = Element {
-					name: name.clone(),
-					attributes,
-					content: String::new(),
-					children: Vec::new(),
-				};
-
-				if selector_set.contains(&name) || !capture_depths.is_empty() {
-					if capture_depths.is_empty() {
-						capture_depths.push(current_depth);
-					}
-					stack.push(element);
-				}
-			}
-			Event::Text(e) => {
-				if !capture_depths.is_empty() {
-					if let Some(element) = stack.last_mut() {
-						// Manually trim whitespace text
-						let text = e.unescape()?.trim().to_string();
-						if !text.is_empty() {
-							element.content.push_str(&text);
-						}
-					}
-				}
-			}
-			Event::End(_) => {
-				if !capture_depths.is_empty() && current_depth == *capture_depths.last().unwrap() {
-					if let Some(element) = stack.pop() {
-						if stack.is_empty() {
-							extracted_elements.push(element);
-							capture_depths.pop();
-						} else if let Some(parent) = stack.last_mut() {
-							parent.children.push(element);
-						}
-					}
-				}
-				current_depth -= 1;
-			}
-			Event::Eof => break,
-			_ => (),
-		}
-		buf.clear();
+		Ok(FileReader {
+			path: validated_path,
+			system_path,
+			expected_type: expected_type.to_string(),
+		})
 	}
 
-	Ok(extracted_elements)
+	pub fn validate(&self) -> Result<(), FileReaderError> {
+		if !self.system_path.exists() {
+			return Err(FileReaderError::FileNotFound);
+		}
+
+        match self.path.extension() {
+            Some(ext) if ext == self.expected_type => Ok(()),
+            Some(_) => Err(FileReaderError::InvalidFileType),
+            None => Err(FileReaderError::NoFileExtension),
+        }
+
+	}
+
+	pub fn read_content(&self) -> Result<String, FileReaderError> {
+		self.validate()?;
+
+		let mut file = fs::File::open(&self.system_path).map_err(FileReaderError::IOError)?;
+
+		let mut content = String::new();
+		file.read_to_string(&mut content).map_err(FileReaderError::IOError)?;
+
+		Ok(content)
+	}
+}
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::io::Write;
+	use tempfile::{NamedTempFile, TempDir};
+
+	#[test]
+	fn test_file_reader() {
+		// Create a temporary directory
+		let temp_dir = TempDir::new().unwrap();
+
+		// Create a temporary file with content
+		let mut file = NamedTempFile::new_in(temp_dir.path()).unwrap();
+		writeln!(file, "Test content").unwrap();
+		let file_path = file.path().to_str().unwrap();
+        let validated_path = Path::parse(file_path).unwrap();
+        let file_type = validated_path.extension().unwrap();
+
+		// Test valid file
+		let reader = FileReader::new(file_path, file_type).unwrap();
+		assert!(reader.validate().is_ok());
+		assert_eq!(reader.read_content().unwrap().trim(), "Test content");
+
+		// Test invalid file type
+		let reader = FileReader::new(file_path, "pdf").unwrap();
+		assert!(matches!(reader.validate(), Err(FileReaderError::InvalidFileType)));
+
+		// Test non-existent file
+		let reader = FileReader::new("/path/to/nonexistent/file.txt", "txt").unwrap();
+		assert!(matches!(reader.validate(), Err(FileReaderError::FileNotFound)));
+
+		// Test no extension
+		let no_ext_file = NamedTempFile::new_in(temp_dir.path()).unwrap();
+		let no_ext_path = no_ext_file.path().to_str().unwrap();
+		let reader = FileReader::new(no_ext_path, "txt").unwrap();
+		assert!(matches!(reader.validate(), Err(FileReaderError::InvalidFileType)));
+	}
+
+	#[test]
+	fn test_empty_file() {
+		let temp_dir = TempDir::new().unwrap();
+		let file = NamedTempFile::new_in(temp_dir.path()).unwrap();
+		let file_path = file.path().to_str().unwrap();
+        let validated_path = Path::parse(file_path).unwrap();
+        let file_type = validated_path.extension().unwrap();
+
+		let reader = FileReader::new(file_path, file_type).unwrap();
+		assert!(reader.validate().is_ok());
+		assert_eq!(reader.read_content().unwrap(), ""); // Empty content
+	}
 }
