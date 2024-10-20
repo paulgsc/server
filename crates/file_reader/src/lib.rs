@@ -1,6 +1,7 @@
 pub mod config;
 pub mod core;
 
+use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -24,6 +25,20 @@ pub enum FileReaderError {
 	NoFileExtension,
 }
 
+impl fmt::Display for FileReaderError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			FileReaderError::InvalidPath(path) => write!(f, "Invalid path: {}", path),
+			FileReaderError::FileNotFound => write!(f, "File not found"),
+			FileReaderError::InvalidFileType => write!(f, "Invalid file type"),
+			FileReaderError::NoFileExtension => write!(f, "File has no extension"),
+			FileReaderError::IOError(e) => write!(f, "IO error: {}", e),
+		}
+	}
+}
+
+impl std::error::Error for FileReaderError {}
+
 impl FileReader {
 	pub fn new(path: &str, expected_type: &str) -> Result<Self, FileReaderError> {
 		let validated_path = Path::parse(path).map_err(FileReaderError::InvalidPath)?;
@@ -41,12 +56,11 @@ impl FileReader {
 			return Err(FileReaderError::FileNotFound);
 		}
 
-        match self.path.extension() {
-            Some(ext) if ext == self.expected_type => Ok(()),
-            Some(_) => Err(FileReaderError::InvalidFileType),
-            None => Err(FileReaderError::NoFileExtension),
-        }
-
+		match self.path.extension() {
+			Some(ext) if ext == self.expected_type => Ok(()),
+			Some(_) => Err(FileReaderError::InvalidFileType),
+			None => Err(FileReaderError::NoFileExtension),
+		}
 	}
 
 	pub fn read_content(&self) -> Result<String, FileReaderError> {
@@ -60,7 +74,6 @@ impl FileReader {
 		Ok(content)
 	}
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -77,8 +90,8 @@ mod tests {
 		let mut file = NamedTempFile::new_in(temp_dir.path()).unwrap();
 		writeln!(file, "Test content").unwrap();
 		let file_path = file.path().to_str().unwrap();
-        let validated_path = Path::parse(file_path).unwrap();
-        let file_type = validated_path.extension().unwrap();
+		let validated_path = Path::parse(file_path).unwrap();
+		let file_type = validated_path.extension().unwrap();
 
 		// Test valid file
 		let reader = FileReader::new(file_path, file_type).unwrap();
@@ -105,8 +118,8 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let file = NamedTempFile::new_in(temp_dir.path()).unwrap();
 		let file_path = file.path().to_str().unwrap();
-        let validated_path = Path::parse(file_path).unwrap();
-        let file_type = validated_path.extension().unwrap();
+		let validated_path = Path::parse(file_path).unwrap();
+		let file_type = validated_path.extension().unwrap();
 
 		let reader = FileReader::new(file_path, file_type).unwrap();
 		assert!(reader.validate().is_ok());
