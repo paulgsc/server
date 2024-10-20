@@ -51,7 +51,7 @@ impl Debouncer {
 
 	pub fn bump(&self) -> bool {
 		let mut serial = self.serial.lock().expect("lock is valid");
-        println!("serial : {:?}", serial);
+		println!("serial : {:?}", serial);
 		match *serial {
 			None => false,
 			Some(previous) => {
