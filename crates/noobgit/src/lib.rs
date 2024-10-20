@@ -222,14 +222,14 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-        tokio::time::sleep(Duration::from_millis(10)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Create a new file
 		let file_path = root.join("test_file.txt");
 		tokio::fs::write(&file_path, "Hello, NoobGit!").await.unwrap();
 
 		// Wait for the event to be processed
-        tokio::time::sleep(Duration::from_millis(10)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -262,13 +262,13 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-        tokio::time::sleep(Duration::from_millis(10)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Modify the file
 		tokio::fs::write(&file_path, "Modified content").await.unwrap();
 
 		// Wait for the event to be processed
-        tokio::time::sleep(Duration::from_millis(10)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -284,10 +284,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_watcher_handles_file_deletion() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-        let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Create a file before starting the watcher
@@ -323,10 +323,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_multiple_file_operations() {
-        let temp_dir = setup_test_dir().await;
+		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-        let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Start watching in a separate task
@@ -343,11 +343,11 @@ mod tests {
 		let file2_path = root.join("file2.txt");
 
 		tokio::fs::write(&file1_path, "File 1 content").await.unwrap();
-        tokio::time::sleep(Duration::from_millis(5)).await;
+		tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::write(&file2_path, "File 2 content").await.unwrap();
-        tokio::time::sleep(Duration::from_millis(5)).await;
+		tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::write(&file1_path, "File 1 modified").await.unwrap();
-        tokio::time::sleep(Duration::from_millis(5)).await;
+		tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::remove_file(&file2_path).await.unwrap();
 
 		// Wait for events to be processed
