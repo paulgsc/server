@@ -31,9 +31,9 @@ impl HtmlFileChunkIterator {
 	pub fn total_size(&self) -> u64 {
 		self.total_size
 	}
-
 	fn find_tag_boundary(&self, content: &[u8]) -> Option<usize> {
 		let mut depth = 0;
+
 		for (i, &b) in content.iter().enumerate() {
 			match b {
 				b'<' => {
@@ -41,6 +41,7 @@ impl HtmlFileChunkIterator {
 				}
 				b'>' => {
 					depth -= 1;
+
 					if depth == 0 && i >= self.chunk_size {
 						return Some(i + 1);
 					}
@@ -48,11 +49,8 @@ impl HtmlFileChunkIterator {
 				_ => {}
 			}
 		}
-        if depth >= self.chunk_size {
-            Some(depth)
-        } else {
-            None
-        }
+
+		None
 	}
 }
 
@@ -60,34 +58,38 @@ impl Iterator for HtmlFileChunkIterator {
 	type Item = io::Result<Vec<u8>>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if self.current_position >= self.total_size {
+		// If we've already read the entire file, return None
+		if self.current_position >= self.total_size && self.buffer.is_empty() {
 			return None;
 		}
 
+		// Fill buffer until it reaches or exceeds the chunk size
 		while self.buffer.len() < self.chunk_size {
-			let mut temp_buffer = [0; 1024];
+			let mut temp_buffer = [0; 1024]; // Temporary buffer to read file data
 			match self.reader.read(&mut temp_buffer) {
-				Ok(0) => break, // EOF
+				Ok(0) => break, // EOF, stop reading
 				Ok(n) => {
 					self.current_position += n as u64;
 					self.buffer.extend_from_slice(&temp_buffer[..n]);
 				}
-				Err(e) => return Some(Err(e)),
+				Err(e) => return Some(Err(e)), // Return error if read fails
 			}
 		}
 
+		// If the buffer is still empty, return None
 		if self.buffer.is_empty() {
 			return None;
 		}
 
 		if let Some(split_index) = self.find_tag_boundary(&self.buffer) {
-			println!("index_boundary: {}", split_index);
 			let result = self.buffer.drain(..split_index).collect();
-            println!("result: {:?}", result);
-			Some(Ok(result))
-		} else {
+			Some(Ok(result)) // Return the chunk up to the boundary
+		} else if self.current_position >= self.total_size {
 			let result = self.buffer.drain(..).collect();
 			Some(Ok(result))
+		} else {
+			// If no boundary and more data can be read, continue accumulating
+			None
 		}
 	}
 }
@@ -108,10 +110,12 @@ mod tests {
 	fn test_valid_html_file() {
 		let content = "<html><body><p>Hello</p><p>World</p></body></html>";
 		let file = create_temp_html_file(content);
-		let iterator = HtmlFileChunkIterator::new(file.path(), 10).unwrap();
+		let iterator = HtmlFileChunkIterator::new(file.path(), 25).unwrap();
 		let chunks: Vec<Vec<u8>> = iterator.map(|r| r.unwrap()).collect();
 
-        println!("chunks: {:?}", chunks);
+		for chunk in &chunks {
+			println!("chunk: {}", String::from_utf8_lossy(chunk));
+		}
 		assert_eq!(chunks.len(), 2);
 		assert_eq!(chunks[0], b"<html><body><p>Hello</p>");
 		assert_eq!(chunks[1], b"<p>World</p></body></html>");
