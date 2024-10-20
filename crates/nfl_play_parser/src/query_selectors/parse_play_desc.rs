@@ -1,5 +1,5 @@
 use crate::query_selectors::PlaySelectors;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{Html, Selector};
 
 pub struct ParsedSelectors {
 	pub play_list: Selector,
