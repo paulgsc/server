@@ -32,7 +32,7 @@ impl Registry {
 		Self {
 			unstaged_changes: VecDeque::new(),
 			staged_changes: Vec::new(),
-			max_changes: 5,
+			max_changes: 100,
 		}
 	}
 
@@ -44,10 +44,12 @@ impl Registry {
 	}
 
 	pub fn stage_changes(&mut self) {
+		println!("stage_changes called!");
 		self.staged_changes.extend(self.unstaged_changes.drain(..));
 	}
 
 	pub fn unstage_changes(&mut self) {
+		println!("unstage_changes called!");
 		self.unstaged_changes.extend(self.staged_changes.drain(..));
 	}
 
