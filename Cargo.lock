@@ -1822,6 +1822,7 @@ version = "0.0.0"
 dependencies = [
  "file_reader",
  "futures",
+ "lazy_static",
  "notify",
  "serde",
  "tempfile",
