@@ -21,7 +21,7 @@ use std::{fmt::Debug, sync::Mutex, time::Duration};
 use tokio::{select, sync, time::Instant};
 use tracing::trace;
 
-const DEFAULT_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(10);
+const DEFAULT_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub struct Debouncer {
 	bump: sync::Notify,
@@ -51,6 +51,7 @@ impl Debouncer {
 
 	pub fn bump(&self) -> bool {
 		let mut serial = self.serial.lock().expect("lock is valid");
+        println!("serial : {:?}", serial);
 		match *serial {
 			None => false,
 			Some(previous) => {

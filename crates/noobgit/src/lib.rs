@@ -17,15 +17,21 @@ pub struct NoobGit {
 	root: PathBuf,
 	file_system: FileSystem,
 	registry: Registry,
+	debouncer_duration: Duration,
 }
 
 impl NoobGit {
-	pub async fn new<P: AsRef<Path>>(root: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn new<P: AsRef<Path>>(root: P, debouncer_duration: Duration) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
 		let root = root.as_ref().to_path_buf();
 		let file_system = FileSystem::new(&root).await?;
 		let registry = Registry::new();
 
-		Ok(Self { root, file_system, registry })
+		Ok(Self {
+			root,
+			file_system,
+			registry,
+			debouncer_duration,
+		})
 	}
 
 	pub async fn start_watching(noob_git: Arc<Mutex<NoobGit>>, mut stop_receiver: mpsc::Receiver<()>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -62,7 +68,8 @@ impl NoobGit {
 		});
 
 		// Debouncer setup
-		let debouncer = Arc::new(Debouncer::new(Duration::from_millis(500)));
+		let debouncer_duration = noob_git.lock().await.debouncer_duration;
+		let debouncer = Arc::new(Debouncer::new(debouncer_duration));
 		let debouncer_clone = Arc::clone(&debouncer);
 
 		// Debouncer task
@@ -79,10 +86,10 @@ impl NoobGit {
 
 								// Lock NoobGit and process the event if it's debounced
 								let mut noob_git = noob_git_clone.lock().await;
-								if debouncer.bump() {
-										noob_git.handle_event(&event).await;
-								}
-						}
+																if debouncer.bump() {
+																		noob_git.handle_event(&event).await;
+																		}
+										}
 						_ = stop_receiver.recv() => {
 								println!("NoobGit: Stop signal received. Exiting watch...");
 								break;
@@ -151,12 +158,13 @@ impl NoobGit {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use notify::{
-		event::{CreateKind, RemoveKind},
-		Event, EventKind,
-	};
+	use lazy_static::lazy_static;
 	use tempfile::TempDir;
-	use tokio::fs;
+	use tokio::sync::mpsc;
+
+	lazy_static! {
+		static ref DEBOUNCER_DURATION: Duration = Duration::from_secs(6);
+	}
 
 	async fn setup_test_dir() -> TempDir {
 		TempDir::new().expect("Failed to create temp directory")
@@ -165,7 +173,7 @@ mod tests {
 	#[tokio::test]
 	async fn test_noobgit_new() {
 		let temp_dir = setup_test_dir().await;
-		let result = NoobGit::new(temp_dir.path()).await;
+		let result = NoobGit::new(temp_dir.path(), *DEBOUNCER_DURATION).await;
 		assert!(result.is_ok());
 
 		let noobgit = result.unwrap();
@@ -177,7 +185,7 @@ mod tests {
 		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Start watching in a separate task
@@ -187,7 +195,7 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-		tokio::time::sleep(Duration::from_millis(100)).await;
+		tokio::time::sleep(*DEBOUNCER_DURATION).await;
 
 		// Send stop signal
 		stop_tx.send(()).await.unwrap();
@@ -204,7 +212,7 @@ mod tests {
 		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Start watching in a separate task
@@ -214,14 +222,14 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-		tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Create a new file
 		let file_path = root.join("test_file.txt");
 		tokio::fs::write(&file_path, "Hello, NoobGit!").await.unwrap();
 
 		// Wait for the event to be processed
-		tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -230,7 +238,7 @@ mod tests {
 		// Check if the file creation was detected
 		let notifications = noob_git.lock().await.get_notifications();
 		assert!(
-			notifications.iter().any(|n| n.contains("Create") && n.contains("test_file.txt")),
+			notifications.iter().any(|n| n.contains("Created") && n.contains("test_file.txt")),
 			"File creation was not detected"
 		);
 	}
@@ -240,7 +248,7 @@ mod tests {
 		let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Create a file before starting the watcher
@@ -254,13 +262,13 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-		tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Modify the file
 		tokio::fs::write(&file_path, "Modified content").await.unwrap();
 
 		// Wait for the event to be processed
-		tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -276,10 +284,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_watcher_handles_file_deletion() {
-		let temp_dir = setup_test_dir().await;
+        let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+        let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Create a file before starting the watcher
@@ -299,7 +307,7 @@ mod tests {
 		tokio::fs::remove_file(&file_path).await.unwrap();
 
 		// Wait for the event to be processed
-		tokio::time::sleep(Duration::from_secs(1)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -315,10 +323,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_multiple_file_operations() {
-		let temp_dir = setup_test_dir().await;
+        let temp_dir = setup_test_dir().await;
 		let root = temp_dir.path().to_path_buf();
 
-		let noob_git = Arc::new(Mutex::new(NoobGit::new(&root).await.unwrap()));
+        let noob_git = Arc::new(Mutex::new(NoobGit::new(&root, *DEBOUNCER_DURATION).await.unwrap()));
 		let (stop_tx, stop_rx) = mpsc::channel(1);
 
 		// Start watching in a separate task
@@ -328,22 +336,22 @@ mod tests {
 		});
 
 		// Wait a short time to ensure watching has started
-		tokio::time::sleep(Duration::from_secs(1)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Perform multiple file operations
 		let file1_path = root.join("file1.txt");
 		let file2_path = root.join("file2.txt");
 
 		tokio::fs::write(&file1_path, "File 1 content").await.unwrap();
-		tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::write(&file2_path, "File 2 content").await.unwrap();
-		tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::write(&file1_path, "File 1 modified").await.unwrap();
-		tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
 		tokio::fs::remove_file(&file2_path).await.unwrap();
 
 		// Wait for events to be processed
-		tokio::time::sleep(Duration::from_secs(3)).await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 
 		// Stop watching
 		stop_tx.send(()).await.unwrap();
@@ -351,6 +359,7 @@ mod tests {
 
 		// Check if all operations were detected
 		let notifications = noob_git.lock().await.get_notifications();
+
 		assert!(
 			notifications.iter().any(|n| n.contains("Create") && n.contains("file1.txt")),
 			"File1 creation was not detected"
@@ -360,7 +369,7 @@ mod tests {
 			"File2 creation was not detected"
 		);
 		assert!(
-			notifications.iter().any(|n| n.contains("Modify") && n.contains("file1.txt")),
+			notifications.iter().any(|n| n.contains("Modified") && n.contains("file1.txt")),
 			"File1 modification was not detected"
 		);
 		assert!(

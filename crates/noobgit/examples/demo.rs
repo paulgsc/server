@@ -1,9 +1,14 @@
 use file_reader::core::Path as ValidatedPath;
+use lazy_static::lazy_static;
 use noobgit::NoobGit;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::Duration;
+
+lazy_static! {
+	static ref DEBOUNCER_DURATION: Duration = Duration::from_millis(500);
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -26,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 async fn watch_directory(root_path: PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	println!("watching directory: {:?}", root_path);
 
-	let noob_git = Arc::new(Mutex::new(NoobGit::new(&root_path).await?));
+	let noob_git = Arc::new(Mutex::new(NoobGit::new(&root_path, *DEBOUNCER_DURATION).await.unwrap()));
 
 	let (stop_tx, stop_rx) = mpsc::channel(1); // Unused stop_tx, but can be used to stop watcher.
 
