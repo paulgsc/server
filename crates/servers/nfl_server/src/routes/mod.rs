@@ -1,5 +1,3 @@
-pub mod game_clock;
-pub mod play_type;
+pub mod game_clock_routes;
+pub mod play_type_routes;
 
-pub use game_clock::*;
-pub use play_type::*;

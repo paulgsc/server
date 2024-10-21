@@ -1,4 +1,4 @@
-use crate::routes;
+use crate::routes::game_clock_routes as routes;
 use axum::routing::{delete, get, post, put};
 use axum::{http::Method, Router};
 use nest::http::Error;
