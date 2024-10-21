@@ -1,4 +1,5 @@
 use crate::error::{PlayByPlayError, YardsError};
+use crate::query_selectors::PlayDescription;
 use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent, Yards};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,10 +23,9 @@ impl Play {
 		NEXT_ID.fetch_add(1, Ordering::SeqCst)
 	}
 
-	// Unified constructor with optional parameters for scoring plays
 	pub fn new(game_clock: GameClock, play_type: PlayType, line: DownAndDistance, scoring_event: Option<ScoringEvent>, yards: Option<Yards>) -> Self {
 		Play {
-			id: Play::next_id(),
+			id: Self::next_id(),
 			game_clock,
 			play_type,
 			line,
@@ -35,55 +35,54 @@ impl Play {
 	}
 }
 
-impl FromStr for Play {
-	type Err = PlayByPlayError;
+impl TryFrom<PlayDescription> for Play {
+	type Error = PlayByPlayError;
 
-	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let parts: Vec<&str> = s.split(PLAY_DELIMITER).collect();
+	fn try_from(desc: PlayDescription) -> Result<Self, Self::Error> {
+		let game_clock_str = desc.description.as_deref().ok_or(PlayByPlayError::MissingDescription)?;
+		let headline_str = desc.headline.as_deref().ok_or(PlayByPlayError::MissingHeadline)?;
 
-		if parts.len() != 2 {
-			return Err(PlayByPlayError::InvalidFormat);
-		}
+		let game_clock = GameClock::from_str(game_clock_str)?;
+		let line = DownAndDistance::from_str(headline_str).map_err(PlayByPlayError::DownAndDistance)?;
+		let play_type = PlayType::from_str(game_clock_str)?;
+		let yards = Yards::from_str(game_clock_str).ok();
+		let scoring_event = ScoringEvent::from_str(game_clock_str).ok();
 
-		let game_clock = GameClock::from_str(parts[1])?;
-		let line = DownAndDistance::from_str(parts[0]).map_err(|e| PlayByPlayError::DownAndDistance(e))?;
-		let play_type = PlayType::from_str(parts[1])?;
-		let yards = Yards::from_str(parts[1]).ok();
-		let scoring_event = ScoringEvent::from_str(parts[1]).ok();
-
-		if let Some(scoring_event) = scoring_event {
-			Ok(Play::new(game_clock, play_type, line, Some(scoring_event), yards))
-		} else {
-			if let Some(yards) = yards {
-				Ok(Play::new(game_clock, play_type, line, None, Some(yards)))
-			} else {
-				Ok(Play::new(game_clock, play_type, line, None, None))
-			}
-		}
+		Ok(Self::new(game_clock, play_type, line, scoring_event, yards))
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::schema::{DownAndDistance, GameClock, PlayType, Points, ScoringEvent, ScoringEventType, YardType, Yards};
+	use crate::schema::{Points, ScoringEventType, YardType};
 
 	#[test]
-	fn test_play_from_str() {
-		let play_description = "1st & 10 at ATL 48 ||| (12:39 - 1st) (Shotgun) B.Robinson right end to TB 18 for no gain (T.Smith).";
-		let play = Play::from_str(play_description).unwrap();
+	fn test_play_from_play_description() {
+		let play_description = PlayDescription {
+			team_name: Some("Atlanta Falcons".to_string()),
+			headline: Some("1st & 10 at ATL 48".to_string()),
+			description: Some("(12:39 - 1st) (Shotgun) B.Robinson right end to TB 18 for no gain (T.Smith).".to_string()),
+		};
+
+		let play = Play::try_from(play_description).unwrap();
 
 		assert_eq!(play.line, DownAndDistance::from_str("1st & 10 at ATL 48").unwrap());
 		assert_eq!(play.game_clock, GameClock::from_str("(12:39 - 1st)").unwrap());
-		assert_eq!(play.play_type, PlayType::Run); // Adjust if necessary based on actual parsing logic
-		assert_eq!(play.yards, Some(Yards::new(0, YardType::NoGain).unwrap())); // Adjust as per the actual implementation
+		assert_eq!(play.play_type, PlayType::Run);
+		assert_eq!(play.yards, Some(Yards::new(0, YardType::NoGain).unwrap()));
 		assert_eq!(play.scoring_event, None);
 	}
 
 	#[test]
-	fn test_scoring_play_from_str() {
-		let play_description = "3rd & Goal at TB 2 ||| (10:15 - 2nd) (Pass) T.Brady pass short right to M.Evans for 2 yards, TOUCHDOWN.";
-		let play = Play::from_str(play_description).unwrap();
+	fn test_scoring_play_from_play_description() {
+		let play_description = PlayDescription {
+			team_name: Some("Tampa Bay Buccaneers".to_string()),
+			headline: Some("3rd & Goal at TB 2".to_string()),
+			description: Some("(10:15 - 2nd) (Pass) T.Brady pass short right to M.Evans for 2 yards, TOUCHDOWN.".to_string()),
+		};
+
+		let play = Play::try_from(play_description).unwrap();
 
 		assert_eq!(play.line, DownAndDistance::from_str("3rd & Goal at TB 2").unwrap());
 		assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
@@ -98,5 +97,51 @@ mod tests {
 		);
 	}
 
-	// Add more tests for different play scenarios
+	#[test]
+	fn test_play_from_play_description_missing_headline() {
+		let play_description = PlayDescription {
+			team_name: Some("Green Bay Packers".to_string()),
+			headline: None,
+			description: Some("(5:30 - 3rd) A.Rodgers pass incomplete short left to D.Adams.".to_string()),
+		};
+
+		let result = Play::try_from(play_description);
+		assert!(matches!(result, Err(PlayByPlayError::MissingHeadline)));
+	}
+
+	#[test]
+	fn test_play_from_play_description_missing_description() {
+		let play_description = PlayDescription {
+			team_name: Some("New England Patriots".to_string()),
+			headline: Some("2nd & 5 at NE 30".to_string()),
+			description: None,
+		};
+
+		let result = Play::try_from(play_description);
+		assert!(matches!(result, Err(PlayByPlayError::MissingDescription)));
+	}
+
+	#[test]
+	fn test_play_from_play_description_missing_drive_id() {
+		let play_description = PlayDescription {
+			team_name: Some("Seattle Seahawks".to_string()),
+			headline: Some("1st & 10 at SEA 25".to_string()),
+			description: Some("(15:00 - 1st) R.Wilson pass deep left to DK.Metcalf for 35 yards (J.Ramsey).".to_string()),
+		};
+
+		let result = Play::try_from(play_description);
+		assert!(matches!(result, Err(PlayByPlayError::MissingDriveId)));
+	}
+
+	#[test]
+	fn test_play_from_play_description_missing_team_name() {
+		let play_description = PlayDescription {
+			team_name: None,
+			headline: Some("4th & 1 at KC 45".to_string()),
+			description: Some("(2:00 - 4th) P.Mahomes pass short middle to T.Kelce for 15 yards (M.Edwards).".to_string()),
+		};
+
+		let result = Play::try_from(play_description);
+		assert!(matches!(result, Err(PlayByPlayError::MissingTeamName)));
+	}
 }

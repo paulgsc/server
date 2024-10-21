@@ -76,6 +76,10 @@ pub enum DownAndDistanceError {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum PlayByPlayError {
+	#[error("Missing Valid Play by Play Description")]
+	MissingDescription,
+	#[error("Missing Down and Distance")]
+	MissingHeadline,
 	#[error("Invalid play description format")]
 	InvalidFormat,
 	#[error(transparent)]
@@ -88,6 +92,10 @@ pub enum PlayByPlayError {
 	PlayType(#[from] PlayTypeError),
 	#[error(transparent)]
 	ScoringEvent(#[from] ScoringEventError),
+	#[error("Missing Drive Number")]
+	MissingDriveId,
+	#[error("Missing Team Name for play drive")]
+	MissingTeamName,
 }
 
 impl GameClockError {
