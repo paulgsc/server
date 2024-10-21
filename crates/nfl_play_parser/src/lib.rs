@@ -3,22 +3,10 @@ pub mod query_selectors;
 pub mod schema;
 
 use scraper::Html;
-use async_trait::async_trait;
-use file_reader::HtmlProcessor;
-use crate::query_selectors::{parse_play_descriptions, ParsedSelectors};
+use file_reader::{FileReader, FileReaderError};
 
-pub struct PlayHtmlProcessor;
-
-#[async_trait]
-impl HtmlProcessor for PlayHtmlProcessor {
-    async fn process_html_content(&self, html_content: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let document = Html::parse_document(html_content);
-        let parsed_selectors = ParsedSelectors::new();
-        for description in parse_play_descriptions(&document, &parsed_selectors) {
-            println!("{}", description);
-        }
-        Ok(())
-    }
+pub fn read_html_file(file_path: &str) -> Result<Html, FileReaderError> {
+	let reader = FileReader::new(file_path, "html")?;
+	let html_content = reader.read_content()?;
+	Ok(Html::parse_document(&html_content))
 }
-
-

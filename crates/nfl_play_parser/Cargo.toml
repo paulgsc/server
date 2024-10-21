@@ -10,7 +10,6 @@ edition.workspace = true
 [dependencies]
 file_reader = { workspace = true }
 
-async-trait = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
