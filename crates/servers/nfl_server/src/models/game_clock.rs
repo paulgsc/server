@@ -32,7 +32,7 @@ impl CreateGameClock {
 
 #[async_trait]
 impl CrudOperations<GameClock, CreateGameClock> for GameClock {
-	async fn create(pool: &SqlitePool, item: &CreateGameClock) -> Result<GameClock, Error> {
+	async fn create(pool: &SqlitePool, item: CreateGameClock) -> Result<GameClock, Error> {
 		let count = sqlx::query!("SELECT COUNT(*) as count FROM game_clock").fetch_one(pool).await?.count;
 
 		if count >= 960 {
@@ -87,7 +87,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 		Ok(game_clock)
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: &CreateGameClock) -> Result<GameClock, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: CreateGameClock) -> Result<GameClock, Error> {
 		let result = sqlx::query!("UPDATE game_clock SET minutes = ?, seconds = ? WHERE id = ?", item.minutes, item.seconds, id)
 			.execute(pool)
 			.await?;
