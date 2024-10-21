@@ -44,6 +44,7 @@ lazy_static = "1.4.0"
 notify = "6.1.1"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.93"
+tempfile = "3.3.0"
 thiserror = "1.0.48"
 tokio = "1.25.0"
 tower = { version = "0.4", features = ["util", "timeout"] }
