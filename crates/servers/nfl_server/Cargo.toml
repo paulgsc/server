@@ -8,6 +8,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+nfl_play_parser = { workspace = true }
+
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
