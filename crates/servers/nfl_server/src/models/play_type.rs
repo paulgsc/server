@@ -36,7 +36,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 	}
 
 	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Vec<PlayTypeRecord>, Error> {
-		let mut tx = pool.begin().await.map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let mut tx = pool.begin().await?;
 		let mut created_records = Vec::with_capacity(items.len());
 
 		for item in items {
@@ -64,7 +64,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 
 		Ok(PlayTypeRecord {
 			id: record.id,
-			play_type: PlayType::from_str(&record.name).map_err(|_| Error::InvalidData)?,
+			play_type: PlayType::from_str(&record.name)?,
 		})
 	}
 
