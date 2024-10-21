@@ -15,6 +15,7 @@ pub struct Play {
 	line: DownAndDistance,
 	scoring_event: Option<ScoringEvent>,
 	yards: Option<Yards>,
+	team_on_offense: Option<String>,
 }
 
 impl Play {
@@ -22,7 +23,7 @@ impl Play {
 		NEXT_ID.fetch_add(1, Ordering::SeqCst)
 	}
 
-	pub fn new(game_clock: GameClock, play_type: PlayType, line: DownAndDistance, scoring_event: Option<ScoringEvent>, yards: Option<Yards>) -> Self {
+	pub fn new(game_clock: GameClock, play_type: PlayType, line: DownAndDistance, scoring_event: Option<ScoringEvent>, yards: Option<Yards>, team: Option<String>) -> Self {
 		Play {
 			id: Self::next_id(),
 			game_clock,
@@ -30,6 +31,7 @@ impl Play {
 			line,
 			scoring_event,
 			yards,
+			team_on_offense: team,
 		}
 	}
 }
@@ -40,6 +42,7 @@ impl TryFrom<PlayDescription> for Play {
 	fn try_from(desc: PlayDescription) -> Result<Self, Self::Error> {
 		let game_clock_str = desc.description.as_deref().ok_or(PlayByPlayError::MissingDescription)?;
 		let headline_str = desc.headline.as_deref().ok_or(PlayByPlayError::MissingHeadline)?;
+		let team_str = desc.team_name;
 
 		let game_clock = GameClock::from_str(game_clock_str)?;
 		let line = DownAndDistance::from_str(headline_str).map_err(PlayByPlayError::DownAndDistance)?;
@@ -47,7 +50,7 @@ impl TryFrom<PlayDescription> for Play {
 		let yards = Yards::from_str(game_clock_str).ok();
 		let scoring_event = ScoringEvent::from_str(game_clock_str).ok();
 
-		Ok(Self::new(game_clock, play_type, line, scoring_event, yards))
+		Ok(Self::new(game_clock, play_type, line, scoring_event, yards, team_str))
 	}
 }
 
@@ -65,10 +68,16 @@ impl fmt::Display for Play {
 			String::from("")
 		};
 
+		let team_on_offense_str = if let Some(ref team) = self.team_on_offense {
+			format!(" | Team on Offense: {}", team)
+		} else {
+			String::from(" | Team on Offense: Unknown")
+		};
+
 		write!(
 			f,
-			"Play ID: {} | Game Clock: {} | Play Type: {} | Line: {}{}{}",
-			self.id, self.game_clock, self.play_type, self.line, scoring_event_str, yards_str
+			"Play ID: {} | Game Clock: {} | Play Type: {} | Line: {}{}{}{}",
+			self.id, self.game_clock, self.play_type, self.line, team_on_offense_str, scoring_event_str, yards_str
 		)
 	}
 }
@@ -93,6 +102,7 @@ mod tests {
 		assert_eq!(play.play_type, PlayType::Run);
 		assert_eq!(play.yards, Some(Yards::new(0, YardType::NoGain).unwrap()));
 		assert_eq!(play.scoring_event, None);
+		assert_eq!(play.team_on_offense, Some("Atlanta Falcons".to_string()));
 	}
 
 	#[test]
@@ -109,6 +119,7 @@ mod tests {
 		assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
 		assert_eq!(play.play_type, PlayType::Pass);
 		assert_eq!(play.yards, Some(Yards::new(2, YardType::Gain).unwrap()));
+		assert_eq!(play.team_on_offense,  Some("Tampa Bay Buccaneers".to_string()));
 		assert_eq!(
 			play.scoring_event,
 			Some(ScoringEvent {
