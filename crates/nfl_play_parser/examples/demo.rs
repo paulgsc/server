@@ -1,6 +1,6 @@
 use nfl_play_parser::query_selectors::{parse_play_descriptions, ParsedSelectors};
+use nfl_play_parser::schema::Play;
 use nfl_play_parser::read_html_file;
-use std::path::Path;
 
 fn main() {
 	let file_path = "examples/demo.html";
@@ -10,7 +10,10 @@ fn main() {
 			let selectors = ParsedSelectors::new();
 
 			for description in parse_play_descriptions(&document, &selectors) {
-				println!("{}", description);
+                match Play::try_from(description) {
+                    Ok(play) => println!("{:?}", play),
+                    Err(err) => eprintln!("Error parsing play: {}", err),
+                }
 			}
 		}
 		Err(e) => {
