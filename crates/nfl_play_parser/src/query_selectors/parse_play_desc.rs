@@ -2,7 +2,7 @@ use crate::query_selectors::PlaySelectors;
 use scraper::{Html, Selector};
 
 pub struct ParsedSelectors {
-	pub play_list: Selector,
+	pub play_list_item: Selector,
 	pub headline: Selector,
 	pub description: Selector,
 }
@@ -10,7 +10,7 @@ pub struct ParsedSelectors {
 impl ParsedSelectors {
 	pub fn new() -> Self {
 		ParsedSelectors {
-			play_list: Selector::parse(PlaySelectors::PlayList.selector()).unwrap(),
+			play_list_item: Selector::parse(PlaySelectors::PlayListItem.selector()).unwrap(),
 			headline: Selector::parse(PlaySelectors::Headline.selector()).unwrap(),
 			description: Selector::parse(PlaySelectors::Description.selector()).unwrap(),
 		}
@@ -23,9 +23,9 @@ pub struct PlayDescriptionIterator<'a> {
 }
 
 impl<'a> PlayDescriptionIterator<'a> {
-	fn new(document: &'a Html, selectors: &'a ParsedSelectors) -> Self {
+	pub fn new(document: &'a Html, selectors: &'a ParsedSelectors) -> Self {
 		PlayDescriptionIterator {
-			play_iter: document.select(&selectors.play_list),
+			play_iter: document.select(&selectors.play_list_item),
 			selectors,
 		}
 	}
