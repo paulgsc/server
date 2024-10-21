@@ -25,5 +25,3 @@ pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(pa
 pub async fn delete(State(pool): State<SqlitePool>, Path(id): Path<i64>) -> Result<(), Error> {
 	PlayTypeRecord::delete(&pool, id).await
 }
-
-
