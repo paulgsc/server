@@ -2,8 +2,9 @@ use crate::error::PlayTypeError;
 use core::fmt;
 use regex::Regex;
 use std::str::FromStr;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PlayType {
 	Kickoff,
 	Run,
