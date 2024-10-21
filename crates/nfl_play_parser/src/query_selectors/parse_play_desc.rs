@@ -43,7 +43,7 @@ impl fmt::Display for PlayDescription {
 pub struct PlayDescriptionIterator<'a> {
 	playlist_iter: scraper::html::Select<'a, 'a>,
 	current_playlist: Option<ElementRef<'a>>,
-    current_team_name: Option<String>,
+	current_team_name: Option<String>,
 	play_iter: Option<scraper::element_ref::Select<'a, 'a>>,
 	selectors: &'a ParsedSelectors,
 }
@@ -53,7 +53,7 @@ impl<'a> PlayDescriptionIterator<'a> {
 		PlayDescriptionIterator {
 			playlist_iter: document.select(&selectors.playlist),
 			current_playlist: None,
-            current_team_name: None,
+			current_team_name: None,
 			play_iter: None,
 			selectors,
 		}
@@ -70,7 +70,7 @@ impl<'a> Iterator for PlayDescriptionIterator<'a> {
 					let headline = play.select(&self.selectors.headline).next().map(|h| h.inner_html());
 					let description = play.select(&self.selectors.description).next().map(|d| d.inner_html());
 					return Some(PlayDescription {
-                        team_name: self.current_team_name.clone(),
+						team_name: self.current_team_name.clone(),
 						headline,
 						description,
 					});
