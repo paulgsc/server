@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Debug, Clone)]
-struct Play {
+pub struct Play {
 	id: usize,
 	game_clock: GameClock,
 	play_type: PlayType,
