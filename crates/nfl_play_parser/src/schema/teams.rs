@@ -1,4 +1,5 @@
 use crate::error::TeamAbbreviationError;
+use core::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TeamAbbreviation {
@@ -74,5 +75,45 @@ impl std::str::FromStr for TeamAbbreviation {
 			"WAS" => Ok(TeamAbbreviation::WAS),
 			_ => Err(TeamAbbreviationError::InvalidTeamAbbreviation("Invalid Team Abbreviation Found".to_string())),
 		}
+	}
+}
+
+impl fmt::Display for TeamAbbreviation {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let team_name = match self {
+			TeamAbbreviation::ATL => "Atlanta Falcons",
+			TeamAbbreviation::BAL => "Baltimore Ravens",
+			TeamAbbreviation::BUF => "Buffalo Bills",
+			TeamAbbreviation::CAR => "Carolina Panthers",
+			TeamAbbreviation::CHI => "Chicago Bears",
+			TeamAbbreviation::CIN => "Cincinnati Bengals",
+			TeamAbbreviation::CLE => "Cleveland Browns",
+			TeamAbbreviation::DAL => "Dallas Cowboys",
+			TeamAbbreviation::DEN => "Denver Broncos",
+			TeamAbbreviation::DET => "Detroit Lions",
+			TeamAbbreviation::GB => "Green Bay Packers",
+			TeamAbbreviation::HOU => "Houston Texans",
+			TeamAbbreviation::IND => "Indianapolis Colts",
+			TeamAbbreviation::JAC => "Jacksonville Jaguars",
+			TeamAbbreviation::KC => "Kansas City Chiefs",
+			TeamAbbreviation::LV => "Las Vegas Raiders",
+			TeamAbbreviation::LAC => "Los Angeles Chargers",
+			TeamAbbreviation::LAR => "Los Angeles Rams",
+			TeamAbbreviation::MIA => "Miami Dolphins",
+			TeamAbbreviation::MIN => "Minnesota Vikings",
+			TeamAbbreviation::NE => "New England Patriots",
+			TeamAbbreviation::NO => "New Orleans Saints",
+			TeamAbbreviation::NYG => "New York Giants",
+			TeamAbbreviation::NYJ => "New York Jets",
+			TeamAbbreviation::PHI => "Philadelphia Eagles",
+			TeamAbbreviation::PIT => "Pittsburgh Steelers",
+			TeamAbbreviation::SEA => "Seattle Seahawks",
+			TeamAbbreviation::SF => "San Francisco 49ers",
+			TeamAbbreviation::TB => "Tampa Bay Buccaneers",
+			TeamAbbreviation::TEN => "Tennessee Titans",
+			TeamAbbreviation::WAS => "Washington Commanders",
+		};
+
+		write!(f, "{}", team_name)
 	}
 }

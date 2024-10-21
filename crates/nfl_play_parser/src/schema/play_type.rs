@@ -1,4 +1,5 @@
 use crate::error::PlayTypeError;
+use core::fmt;
 use regex::Regex;
 use std::str::FromStr;
 
@@ -102,6 +103,46 @@ impl FromStr for PlayType {
 			// If none matched, return an error
 			PlayTypeCandidates::Unknown => Err(PlayTypeError::UnknownPlayType { input: s.to_string() }),
 		}
+	}
+}
+
+impl fmt::Display for PlayType {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let display_str = match self {
+			PlayType::Kickoff => "Kickoff",
+			PlayType::Run => "Run",
+			PlayType::Pass => "Pass",
+			PlayType::Punt => "Punt",
+			PlayType::ExtraPoint => "Extra Point",
+			PlayType::FieldGoal => "Field Goal",
+			PlayType::Penalty => "Penalty",
+			PlayType::Timeout => "Timeout",
+			PlayType::Sack => "Sack",
+			PlayType::Kneel => "Kneel",
+			PlayType::Spike => "Spike",
+		};
+		write!(f, "{}", display_str)
+	}
+}
+
+// Implement the Display trait for PlayTypeCandidates
+impl fmt::Display for PlayTypeCandidates {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let display_str = match self {
+			PlayTypeCandidates::Kickoff => "Kickoff",
+			PlayTypeCandidates::Punt => "Punt",
+			PlayTypeCandidates::ExtraPoint => "Extra Point",
+			PlayTypeCandidates::FieldGoal => "Field Goal",
+			PlayTypeCandidates::Penalty => "Penalty",
+			PlayTypeCandidates::Timeout => "Timeout",
+			PlayTypeCandidates::Sack => "Sack",
+			PlayTypeCandidates::Kneel => "Kneel",
+			PlayTypeCandidates::Spike => "Spike",
+			PlayTypeCandidates::WeakRun => "Weak Run",
+			PlayTypeCandidates::WeakPass => "Weak Pass",
+			PlayTypeCandidates::Unknown => "Unknown Play Type",
+		};
+		write!(f, "{}", display_str)
 	}
 }
 

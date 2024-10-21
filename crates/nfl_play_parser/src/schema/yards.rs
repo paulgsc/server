@@ -1,4 +1,5 @@
 use crate::error::YardsError;
+use core::fmt;
 use regex::Regex;
 use std::str::FromStr;
 
@@ -54,6 +55,23 @@ impl FromStr for Yards {
 		} else {
 			Err(YardsError::NoYardsInfo)
 		}
+	}
+}
+
+impl fmt::Display for YardType {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let yard_type_str = match self {
+			YardType::Gain => "Gain",
+			YardType::Loss => "Loss",
+			YardType::NoGain => "No Gain",
+		};
+		write!(f, "{}", yard_type_str)
+	}
+}
+
+impl fmt::Display for Yards {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "{} {} yards", self.yard_type, self.value)
 	}
 }
 

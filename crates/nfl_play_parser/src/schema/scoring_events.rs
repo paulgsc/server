@@ -1,4 +1,5 @@
 use crate::error::ScoringEventError;
+use core::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +89,57 @@ impl FromStr for ScoringEvent {
 		};
 
 		Ok(ScoringEvent { event_type, points })
+	}
+}
+
+impl fmt::Display for Points {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let display_str = match self {
+			Points::Zero => "0",
+			Points::One => "1",
+			Points::Two => "2",
+			Points::Three => "3",
+			Points::Six => "6",
+		};
+		write!(f, "{}", display_str)
+	}
+}
+
+impl fmt::Display for ScoringEventType {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let display_str = match self {
+			ScoringEventType::Touchdown => "Touchdown",
+			ScoringEventType::FieldGoalAttempt(is_good) => {
+				if *is_good {
+					"Field Goal Attempt (Good)"
+				} else {
+					"Field Goal Attempt (No Good)"
+				}
+			}
+			ScoringEventType::ExtraPointAttempt(is_good) => {
+				if *is_good {
+					"Extra Point Attempt (Good)"
+				} else {
+					"Extra Point Attempt (No Good)"
+				}
+			}
+			ScoringEventType::TwoPointConversionAttempt(is_good) => {
+				if *is_good {
+					"Two-Point Conversion Attempt (Good)"
+				} else {
+					"Two-Point Conversion Attempt (No Good)"
+				}
+			}
+			ScoringEventType::Safety => "Safety",
+			ScoringEventType::DefensiveTouchdown => "Defensive Touchdown",
+		};
+		write!(f, "{}", display_str)
+	}
+}
+
+impl fmt::Display for ScoringEvent {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "Event: {}, Points: {}", self.event_type, self.points)
 	}
 }
 
