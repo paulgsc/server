@@ -4,6 +4,7 @@ use nest::http::Error;
 use nfl_play_parser::schema::PlayType;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::str::FromStr;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlayTypeRecord {
