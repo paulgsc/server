@@ -35,6 +35,27 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		})
 	}
 
+	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Vec<PlayTypeRecord>, Error> {
+		let mut tx = pool.begin().await.map_err(|e| Error::DatabaseError(e.to_string()))?;
+		let mut created_records = Vec::with_capacity(items.len());
+
+		for item in items {
+			let play_type_str = item.play_type.to_string();
+			let result = sqlx::query!("INSERT INTO play_types (name) VALUES (?)", play_type_str)
+				.execute(&mut *tx)
+                .await?;
+
+			created_records.push(PlayTypeRecord {
+				id: result.last_insert_rowid(),
+				play_type: item.play_type.clone(),
+			});
+		}
+
+        tx.commit().await?;
+
+		Ok(created_records)
+	}
+
 	async fn get(pool: &SqlitePool, id: i64) -> Result<PlayTypeRecord, Error> {
 		let record = sqlx::query_as!(PlayTypeRecordRaw, "SELECT id, name FROM play_types WHERE id = ?", id)
 			.fetch_optional(pool)
