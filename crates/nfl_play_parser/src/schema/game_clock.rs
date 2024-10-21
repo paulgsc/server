@@ -1,4 +1,5 @@
 use crate::error::GameClockError;
+use core::fmt;
 use regex::Regex;
 use std::str::FromStr;
 
@@ -11,7 +12,6 @@ pub enum Quarter {
 	OT,
 }
 
-/// Struct to represent minutes (valid range: 0-15)
 #[derive(Debug, Clone, PartialEq)]
 pub struct Minutes(u8);
 
@@ -34,7 +34,6 @@ impl FromStr for Minutes {
 	}
 }
 
-/// Struct to represent seconds (valid range: 0-59)
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seconds(u8);
 
@@ -115,6 +114,36 @@ impl FromStr for Quarter {
 			"OT" => Ok(Quarter::OT),
 			_ => Err(GameClockError::invalid_quarter_error(s)),
 		}
+	}
+}
+
+impl fmt::Display for Quarter {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Quarter::First => write!(f, "1st"),
+			Quarter::Second => write!(f, "2nd"),
+			Quarter::Third => write!(f, "3rd"),
+			Quarter::Fourth => write!(f, "4th"),
+			Quarter::OT => write!(f, "OT"),
+		}
+	}
+}
+
+impl fmt::Display for Minutes {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:02}", self.0)
+	}
+}
+
+impl fmt::Display for Seconds {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:02}", self.0)
+	}
+}
+
+impl fmt::Display for GameClock {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "({:02}:{:02} - {})", self.minutes, self.seconds, self.quarter)
 	}
 }
 

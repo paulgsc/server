@@ -1,5 +1,6 @@
 use crate::error::DownAndDistanceError;
 use crate::schema::TeamAbbreviation;
+use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +73,38 @@ impl FromStr for DownAndDistance {
 			yard_line,
 			side_of_ball,
 		})
+	}
+}
+
+impl fmt::Display for Down {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Down::First => write!(f, "1st"),
+			Down::Second => write!(f, "2nd"),
+			Down::Third => write!(f, "3rd"),
+			Down::Fourth => write!(f, "4th"),
+		}
+	}
+}
+
+impl fmt::Display for Distance {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Distance::Yards(yards) => write!(f, "{}", yards),
+			Distance::Goal => write!(f, "Goal"),
+		}
+	}
+}
+
+impl fmt::Display for YardLine {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0)
+	}
+}
+
+impl fmt::Display for DownAndDistance {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{} & {} at {} {}", self.down, self.distance, self.side_of_ball, self.yard_line)
 	}
 }
 

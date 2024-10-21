@@ -1,10 +1,9 @@
 use crate::error::{PlayByPlayError, YardsError};
 use crate::query_selectors::PlayDescription;
 use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent, Yards};
+use core::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-const PLAY_DELIMITER: &str = " ||| ";
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -49,6 +48,28 @@ impl TryFrom<PlayDescription> for Play {
 		let scoring_event = ScoringEvent::from_str(game_clock_str).ok();
 
 		Ok(Self::new(game_clock, play_type, line, scoring_event, yards))
+	}
+}
+
+impl fmt::Display for Play {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let scoring_event_str = if let Some(ref scoring_event) = self.scoring_event {
+			format!(" Scoring Event: {}", scoring_event)
+		} else {
+			String::from("")
+		};
+
+		let yards_str = if let Some(ref yards) = self.yards {
+			format!(" Yards: {}", yards)
+		} else {
+			String::from("")
+		};
+
+		write!(
+			f,
+			"Play ID: {} | Game Clock: {} | Play Type: {} | Line: {}{}{}",
+			self.id, self.game_clock, self.play_type, self.line, scoring_event_str, yards_str
+		)
 	}
 }
 
