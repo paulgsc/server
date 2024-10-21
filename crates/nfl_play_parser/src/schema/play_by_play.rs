@@ -119,7 +119,7 @@ mod tests {
 		assert_eq!(play.game_clock, GameClock::from_str("(10:15 - 2nd)").unwrap());
 		assert_eq!(play.play_type, PlayType::Pass);
 		assert_eq!(play.yards, Some(Yards::new(2, YardType::Gain).unwrap()));
-		assert_eq!(play.team_on_offense,  Some("Tampa Bay Buccaneers".to_string()));
+		assert_eq!(play.team_on_offense, Some("Tampa Bay Buccaneers".to_string()));
 		assert_eq!(
 			play.scoring_event,
 			Some(ScoringEvent {
