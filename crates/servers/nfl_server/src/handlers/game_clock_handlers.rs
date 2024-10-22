@@ -12,6 +12,7 @@ pub struct GameClockHandlers;
 
 impl MultiDbHandler for GameClockHandlers {
 	fn create_routes(&self, db_name: &str, pool: SqlitePool) -> Router {
+        println!("routes set for gameclock! with db_name: {}", &db_name);
 		let cors = CorsLayer::new().allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE]).allow_origin(Any);
 
 		Router::new()
