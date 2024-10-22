@@ -11,7 +11,7 @@ pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreateGa
 	if !payload.is_valid() {
 		return Err(Error::unprocessable_entity(vec![("game_clock", "Invalid game clock values")]));
 	}
-	let game_clock = GameClock::create(&pool, &payload).await?;
+	let game_clock = GameClock::create(&pool, payload).await?;
 	Ok(Json(game_clock))
 }
 
@@ -24,7 +24,7 @@ pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(pa
 	if !payload.is_valid() {
 		return Err(Error::unprocessable_entity(vec![("game_clock", "Invalid game clock values")]));
 	}
-	let game_clock = GameClock::update(&pool, id, &payload).await?;
+	let game_clock = GameClock::update(&pool, id, payload).await?;
 	Ok(Json(game_clock))
 }
 
