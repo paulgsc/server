@@ -1,6 +1,6 @@
+use crate::common::nfl_server_error::NflServerError as Error;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use crate::common::nfl_server_error::NflServerError as Error;
 
 #[async_trait]
 pub trait CrudOperations<T, C> {

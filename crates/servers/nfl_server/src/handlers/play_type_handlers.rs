@@ -12,7 +12,7 @@ pub struct PlayTypeHandlers;
 
 impl MultiDbHandler for PlayTypeHandlers {
 	fn create_routes(&self, db_name: &str, pool: SqlitePool) -> Router {
-        println!("Routes set for playtype! With db_name: {}", &db_name);
+		println!("Routes set for playtype! With db_name: {}", &db_name);
 		let cors = CorsLayer::new().allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE]).allow_origin(Any);
 
 		Router::new()
