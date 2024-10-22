@@ -1782,6 +1782,7 @@ dependencies = [
  "futures",
  "regex",
  "scraper",
+ "serde",
  "thiserror",
  "tokio",
 ]
@@ -1801,6 +1802,7 @@ dependencies = [
  "clap",
  "dotenv",
  "nest",
+ "nfl_play_parser",
  "serde",
  "serde_json",
  "sqlx",
