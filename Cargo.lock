@@ -209,7 +209,7 @@ dependencies = [
  "http 1.1.0",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.4.1",
+ "hyper 1.5.0",
  "hyper-util",
  "itoa 1.0.11",
  "matchit",
@@ -1067,7 +1067,50 @@ dependencies = [
  "tokio",
  "tower-service",
  "url 2.5.2",
- "yup-oauth2",
+ "yup-oauth2 9.0.0",
+]
+
+[[package]]
+name = "google-apis-common"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7530ee92a7e9247c3294ae1b84ea98474dbc27563c49a14d3938e816499bf38f"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "http 1.1.0",
+ "http-body-util",
+ "hyper 1.5.0",
+ "hyper-util",
+ "itertools 0.13.0",
+ "mime",
+ "percent-encoding 2.3.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tokio",
+ "url 2.5.2",
+ "yup-oauth2 11.0.0",
+]
+
+[[package]]
+name = "google-sheets4"
+version = "6.0.0+20240621"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4f8ccfc6418e81d1e2ed66fad49d0487526281505b8a0ed8ee770dc7d6bb1e5"
+dependencies = [
+ "chrono",
+ "google-apis-common 7.0.0",
+ "hyper 1.5.0",
+ "hyper-rustls 0.27.3",
+ "hyper-util",
+ "mime",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tokio",
+ "url 2.5.2",
+ "yup-oauth2 11.0.0",
 ]
 
 [[package]]
@@ -1298,9 +1341,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.4.1"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50dfd22e0e76d0f662d429a5f80fcaf3855009297eab6a0a9f8543834744ba05"
+checksum = "bbbff0a806a4728c99295b254c8838933b5b082d75e3cb70c8dab21fdfbcfa9a"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1342,7 +1385,7 @@ checksum = "08afdbb5c31130e3034af566421053ab03787c640246a446327f550d11bcb333"
 dependencies = [
  "futures-util",
  "http 1.1.0",
- "hyper 1.4.1",
+ "hyper 1.5.0",
  "hyper-util",
  "log",
  "rustls 0.23.14",
@@ -1364,7 +1407,7 @@ dependencies = [
  "futures-util",
  "http 1.1.0",
  "http-body 1.0.1",
- "hyper 1.4.1",
+ "hyper 1.5.0",
  "pin-project-lite",
  "socket2",
  "tokio",
@@ -2481,6 +2524,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -2599,6 +2643,20 @@ dependencies = [
  "selectors",
  "smallvec",
  "tendril",
+]
+
+[[package]]
+name = "sdk"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "google-sheets4",
+ "hyper 1.5.0",
+ "hyper-rustls 0.27.3",
+ "once_cell",
+ "serde",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -3832,6 +3890,33 @@ dependencies = [
  "time",
  "tokio",
  "tower-service",
+ "url 2.5.2",
+]
+
+[[package]]
+name = "yup-oauth2"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ed5f19242090128c5809f6535cc7b8d4e2c32433f6c6005800bbc20a644a7f0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "futures",
+ "http 1.1.0",
+ "http-body-util",
+ "hyper 1.5.0",
+ "hyper-rustls 0.27.3",
+ "hyper-util",
+ "log",
+ "percent-encoding 2.3.1",
+ "rustls 0.23.14",
+ "rustls-pemfile 2.2.0",
+ "seahash",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
  "url 2.5.2",
 ]
 

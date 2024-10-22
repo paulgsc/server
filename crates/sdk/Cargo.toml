@@ -8,6 +8,15 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+chrono = { workspace = true }
+google-sheets4 = "6.0.0"
+hyper = "1.5.0"
+hyper-rustls = "0.27.3"
+once_cell = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
 
 [lints]
 workspace = true
