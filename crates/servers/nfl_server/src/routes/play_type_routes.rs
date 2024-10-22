@@ -8,7 +8,7 @@ use nest::http::error::Error;
 use sqlx::SqlitePool;
 
 pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
-	let play_type = PlayTypeRecord::create(&pool, &payload).await?;
+	let play_type = PlayTypeRecord::create(&pool, payload).await?;
 	Ok(Json(play_type))
 }
 
@@ -18,7 +18,7 @@ pub async fn get(State(pool): State<SqlitePool>, Path(id): Path<i64>) -> Result<
 }
 
 pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
-	let play_type = PlayTypeRecord::update(&pool, id, &payload).await?;
+	let play_type = PlayTypeRecord::update(&pool, id, payload).await?;
 	Ok(Json(play_type))
 }
 
