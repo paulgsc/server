@@ -1,8 +1,8 @@
 use crate::error::PlayTypeError;
 use core::fmt;
 use regex::Regex;
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PlayType {
