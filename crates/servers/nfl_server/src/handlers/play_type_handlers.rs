@@ -17,7 +17,6 @@ impl MultiDbHandler for PlayTypeHandlers {
 		Router::new()
 			.route(&format!("/api/{}/play_type/update", db_name), put(routes::update))
 			.route(&format!("/api/{}/play_type/delete", db_name), delete(routes::delete))
-			.route(&format!("/api/{}/play_type/all", db_name), get(routes::list))
 			.route(&format!("/api/{}/play_type/post", db_name), post(routes::create))
 			.route(&format!("/api/{}/play_type/get", db_name), get(routes::get))
 			.layer(cors)
