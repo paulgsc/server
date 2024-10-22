@@ -1,10 +1,10 @@
+use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::CrudOperations;
 use crate::models::play_type::{CreatePlayType, PlayTypeRecord};
 use axum::{
 	extract::{Path, State},
 	Json,
 };
-use crate::common::nfl_server_error::NflServerError as Error;
 use sqlx::SqlitePool;
 
 pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
