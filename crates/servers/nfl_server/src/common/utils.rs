@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-
-use nest::http::Error;
+use crate::common::nfl_server_error::NflServerError as Error;
 
 #[async_trait]
 pub trait CrudOperations<T, C> {

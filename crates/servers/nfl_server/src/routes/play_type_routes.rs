@@ -4,7 +4,7 @@ use axum::{
 	extract::{Path, State},
 	Json,
 };
-use nest::http::error::Error;
+use crate::common::nfl_server_error::NflServerError as Error;
 use sqlx::SqlitePool;
 
 pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
