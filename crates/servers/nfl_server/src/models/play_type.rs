@@ -1,6 +1,7 @@
 use crate::common::CrudOperations;
 use async_trait::async_trait;
-use nest::http::Error;
+use crate::common::nfl_server_error::NflServerError as Error;
+use nest::http::Error as NestError;
 use nfl_play_parser::schema::PlayType;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -36,7 +37,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 	}
 
 	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Vec<PlayTypeRecord>, Error> {
-        let mut tx = pool.begin().await?;
+        let mut tx = pool.begin().await.map_err(NestError::from)?;
 		let mut created_records = Vec::with_capacity(items.len());
 
 		for item in items {
@@ -51,7 +52,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 			});
 		}
 
-        tx.commit().await?;
+        tx.commit().await.map_err(NestError::from)?;
 
 		Ok(created_records)
 	}
@@ -60,7 +61,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		let record = sqlx::query_as!(PlayTypeRecordRaw, "SELECT id, name FROM play_types WHERE id = ?", id)
 			.fetch_optional(pool)
 			.await?
-			.ok_or(Error::NotFound)?;
+			.ok_or(Error::NestError(NestError::NotFound))?;
 
 		Ok(PlayTypeRecord {
 			id: record.id,
@@ -73,7 +74,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		let result = sqlx::query!("UPDATE play_types SET name = ? WHERE id = ?", play_type_str, id).execute(pool).await?;
 
 		if result.rows_affected() == 0 {
-			return Err(Error::NotFound);
+			return Err(Error::NestError(NestError::NotFound));
 		}
 
 		Ok(PlayTypeRecord { id, play_type: item.play_type })
@@ -83,7 +84,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		let result = sqlx::query!("DELETE FROM play_types WHERE id = ?", id).execute(pool).await?;
 
 		if result.rows_affected() == 0 {
-			return Err(Error::NotFound);
+			return Err(Error::NestError(NestError::NotFound));
 		}
 
 		Ok(())
