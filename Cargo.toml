@@ -30,6 +30,7 @@ edition = "2021"
 
 nest = { path = "crates/nest" }
 file_reader = { path = "crates/file_reader" }
+nfl_play_parser = { path = "crates/nfl_play_parser" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
