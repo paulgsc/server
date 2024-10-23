@@ -8,6 +8,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+file_reader = { workspace = true }
+
 chrono = { workspace = true }
 google-sheets4 = "6.0.0"
 hyper = { version = "1.5", features = ["client", "http1"] }
