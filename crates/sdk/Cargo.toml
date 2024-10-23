@@ -19,6 +19,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
+[dev-dependencies]
+mockall = "0.13.0"
 
 [lints]
 workspace = true
