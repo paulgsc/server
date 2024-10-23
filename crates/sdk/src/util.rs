@@ -1,10 +1,19 @@
 use file_reader::config::PathPartError;
 use file_reader::core::Path;
+use std::path::Path as StdPath;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub enum SheetsServiceFilePath {
 	SecretFilePath(Path),
+}
+
+impl AsRef<StdPath> for SheetsServiceFilePath {
+	fn as_ref(&self) -> &StdPath {
+		match self {
+			SheetsServiceFilePath::SecretFilePath(path) => StdPath::new(path.as_ref()),
+		}
+	}
 }
 
 #[derive(Debug, Error)]
