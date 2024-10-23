@@ -227,312 +227,270 @@ impl WriteToGoogleSheet {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use chrono::TimeZone;
-    use google_sheets4::api::{Sheet, SheetProperties, Spreadsheet, SpreadsheetProperties, ValueRange};
-    use mockall::predicate::*;
-    use mockall::*;
-    use std::sync::Arc;
-
-    // Mock the Google Sheets API client
-    mock! {
-        SheetsClient {
-            fn spreadsheets(&self) -> SpreadsheetsHub;
-        }
-
-        pub struct SpreadsheetsHub;
-        impl Clone for SpreadsheetsHub {}
-
-        trait SpreadsheetsHub {
-            fn get(&self, spreadsheet_id: &str) -> SpreadsheetGet;
-            fn values_get(&self, spreadsheet_id: &str, range: &str) -> ValuesGet;
-            fn values_append(&self, request: ValueRange, spreadsheet_id: &str, range: &str) -> ValuesAppend;
-            fn create(&self, spreadsheet: Spreadsheet) -> SpreadsheetCreate;
-        }
-
-        pub struct SpreadsheetGet;
-        impl Clone for SpreadsheetGet {}
-
-        trait SpreadsheetGet {
-            fn doit(&self) -> Result<(hyper::Response<hyper::Body>, Spreadsheet), google_sheets4::Error>;
-        }
-
-        pub struct ValuesGet;
-        impl Clone for ValuesGet {}
-
-        trait ValuesGet {
-            fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ValueRange), google_sheets4::Error>;
-        }
-
-        pub struct ValuesAppend;
-        impl Clone for ValuesAppend {}
-
-        trait ValuesAppend {
-            fn value_input_option(&self, value: &str) -> Self;
-            fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ValueRange), google_sheets4::Error>;
-        }
-
-        pub struct SpreadsheetCreate;
-        impl Clone for SpreadsheetCreate {}
-
-        trait SpreadsheetCreate {
-            fn doit(&self) -> Result<(hyper::Response<hyper::Body>, Spreadsheet), google_sheets4::error::Error>;
-        }
-    }
-
-    #[tokio::test]
-    async fn test_read_data_success() {
-        let mut mock_client = MockSheetsClient::new();
-        let spreadsheet_id = "test_spreadsheet_id";
-        let range = "Sheet1!A1:B2";
-
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_values_get = MockValuesGet::new();
-
-        let test_data = ValueRange {
-            values: Some(vec![
-                vec!["Header1".into(), "Header2".into()],
-                vec!["Value1".into(), "Value2".into()],
-            ]),
-            ..Default::default()
-        };
-
-        mock_values_get
-            .expect_doit()
-            .return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), test_data)));
-
-        mock_hub
-            .expect_values_get()
-            .with(eq(spreadsheet_id), eq(range))
-            .return_once(move |_, _| mock_values_get);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let reader = ReadSheets::new("test@example.com".to_string());
-        let result = reader.read_data(spreadsheet_id, range).await.unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Header1", "Header2"]);
-        assert_eq!(result[1], vec!["Value1", "Value2"]);
-    }
-
-    #[tokio::test]
-    async fn test_write_data_success() {
-        let mut mock_client = MockSheetsClient::new();
-        let spreadsheet_id = "test_spreadsheet_id";
-        let worksheet_name = "Sheet1";
-        
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_values_append = MockValuesAppend::new();
-
-        mock_values_append
-            .expect_value_input_option()
-            .with(eq("RAW"))
-            .return_once(|_| MockValuesAppend::new());
-
-        mock_values_append
-            .expect_doit()
-            .return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), ValueRange::default())));
-
-        mock_hub
-            .expect_values_append()
-            .return_once(move |_, _, _| mock_values_append);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let writer = WriteToGoogleSheet::new("test@example.com".to_string());
-        let test_data = vec![
-            vec!["Header1".to_string(), "Header2".to_string()],
-            vec!["Value1".to_string(), "Value2".to_string()],
-        ];
-
-        let result = writer
-            .write_data_to_sheet(worksheet_name, spreadsheet_id, test_data)
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_create_spreadsheet_success() {
-        let mut mock_client = MockSheetsClient::new();
-        let sheet_name = "New Test Sheet";
-
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_create = MockSpreadsheetCreate::new();
-
-        let response_spreadsheet = Spreadsheet {
-            spreadsheet_id: Some("new_test_id".to_string()),
-            spreadsheet_url: Some("https://sheets.google.com/test".to_string()),
-            sheets: Some(vec![Sheet {
-                properties: Some(SheetProperties {
-                    title: Some("default".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-
-        mock_create
-            .expect_doit()
-            .return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), response_spreadsheet)));
-
-        mock_hub
-            .expect_create()
-            .return_once(move |_| mock_create);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let writer = WriteToGoogleSheet::new("test@example.com".to_string());
-        let result = writer.create_new_spreadsheet(sheet_name).await.unwrap();
-
-        assert_eq!(result.spreadsheet_id, "new_test_id");
-        assert_eq!(result.url, "https://sheets.google.com/test");
-        assert_eq!(result.sheet_names, vec!["default"]);
-    }
-
-    #[test]
-    fn test_convert_to_rfc_datetime() {
-        let datetime = GoogleSheetsClient::convert_to_rfc_datetime(2024, 3, 15, 14, 30);
-        let expected = Utc.with_ymd_and_hms(2024, 3, 15, 14, 30, 0).unwrap();
-        assert_eq!(datetime, expected);
-    }
-
-    #[tokio::test]
-    async fn test_validate_range_success() {
-        let mut mock_client = MockSheetsClient::new();
-        let spreadsheet_id = "test_spreadsheet_id";
-        let range = "Sheet1!A1:B2";
-
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_values_get = MockValuesGet::new();
-
-        mock_values_get
-            .expect_doit()
-            .return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), ValueRange::default())));
-
-        mock_hub
-            .expect_values_get()
-            .with(eq(spreadsheet_id), eq(range))
-            .return_once(move |_, _| mock_values_get);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let reader = ReadSheets::new("test@example.com".to_string());
-        let result = reader.validate_range(spreadsheet_id, range).await;
-
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_validate_range_failure() {
-        let mut mock_client = MockSheetsClient::new();
-        let spreadsheet_id = "test_spreadsheet_id";
-        let range = "Invalid!Range";
-
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_values_get = MockValuesGet::new();
-
-        mock_values_get
-            .expect_doit()
-            .return_once(move || Err(google_sheets4::Error::BadRequest("Invalid range".to_string())));
-
-        mock_hub
-            .expect_values_get()
-            .with(eq(spreadsheet_id), eq(range))
-            .return_once(move |_, _| mock_values_get);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let reader = ReadSheets::new("test@example.com".to_string());
-        let result = reader.validate_range(spreadsheet_id, range).await;
-
-        assert!(matches!(result, Err(SheetError::InvalidRange)));
-    }
-
-    #[tokio::test]
-    async fn test_retrieve_metadata_success() {
-        let mut mock_client = MockSheetsClient::new();
-        let spreadsheet_id = "test_spreadsheet_id";
-
-        // Set up mock expectations
-        let mut mock_hub = MockSpreadsheetsHub::new();
-        let mut mock_get = MockSpreadsheetGet::new();
-
-        let response_spreadsheet = Spreadsheet {
-            properties: Some(SpreadsheetProperties {
-                title: Some("Test Sheet".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        mock_get
-            .expect_doit()
-            .return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), response_spreadsheet)));
-
-        mock_hub
-            .expect_get()
-            .with(eq(spreadsheet_id))
-            .return_once(move |_| mock_get);
-
-        mock_client
-            .expect_spreadsheets()
-            .return_once(move || mock_hub);
-
-        // Create client with mocked service
-        let client = GoogleSheetsClient::new("test@example.com".to_string());
-        client.service.set(Arc::new(mock_client)).unwrap();
-
-        // Execute test
-        let reader = ReadSheets::new("test@example.com".to_string());
-        let result = reader.retrieve_metadata(spreadsheet_id).await.unwrap();
-
-        assert_eq!(
-            result.properties.unwrap().title.unwrap(),
-            "Test Sheet"
-        );
-    }
+	use super::*;
+	use chrono::TimeZone;
+	use google_sheets4::api::{Sheet, SheetProperties, Spreadsheet, SpreadsheetProperties, ValueRange};
+	use mockall::predicate::*;
+	use mockall::*;
+	use std::sync::Arc;
+
+	// Mock the Google Sheets API client
+	mock! {
+			SheetsClient {
+					fn spreadsheets(&self) -> SpreadsheetsHub;
+			}
+
+			pub struct SpreadsheetsHub;
+			impl Clone for SpreadsheetsHub {}
+
+			trait SpreadsheetsHub {
+					fn get(&self, spreadsheet_id: &str) -> SpreadsheetGet;
+					fn values_get(&self, spreadsheet_id: &str, range: &str) -> ValuesGet;
+					fn values_append(&self, request: ValueRange, spreadsheet_id: &str, range: &str) -> ValuesAppend;
+					fn create(&self, spreadsheet: Spreadsheet) -> SpreadsheetCreate;
+			}
+
+			pub struct SpreadsheetGet;
+			impl Clone for SpreadsheetGet {}
+
+			trait SpreadsheetGet {
+					fn doit(&self) -> Result<(hyper::Response<hyper::Body>, Spreadsheet), google_sheets4::Error>;
+			}
+
+			pub struct ValuesGet;
+			impl Clone for ValuesGet {}
+
+			trait ValuesGet {
+					fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ValueRange), google_sheets4::Error>;
+			}
+
+			pub struct ValuesAppend;
+			impl Clone for ValuesAppend {}
+
+			trait ValuesAppend {
+					fn value_input_option(&self, value: &str) -> Self;
+					fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ValueRange), google_sheets4::Error>;
+			}
+
+			pub struct SpreadsheetCreate;
+			impl Clone for SpreadsheetCreate {}
+
+			trait SpreadsheetCreate {
+					fn doit(&self) -> Result<(hyper::Response<hyper::Body>, Spreadsheet), google_sheets4::error::Error>;
+			}
+	}
+
+	#[tokio::test]
+	async fn test_read_data_success() {
+		let mut mock_client = MockSheetsClient::new();
+		let spreadsheet_id = "test_spreadsheet_id";
+		let range = "Sheet1!A1:B2";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_values_get = MockValuesGet::new();
+
+		let test_data = ValueRange {
+			values: Some(vec![vec!["Header1".into(), "Header2".into()], vec!["Value1".into(), "Value2".into()]]),
+			..Default::default()
+		};
+
+		mock_values_get
+			.expect_doit()
+			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), test_data)));
+
+		mock_hub.expect_values_get().with(eq(spreadsheet_id), eq(range)).return_once(move |_, _| mock_values_get);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let reader = ReadSheets::new("test@example.com".to_string());
+		let result = reader.read_data(spreadsheet_id, range).await.unwrap();
+
+		assert_eq!(result.len(), 2);
+		assert_eq!(result[0], vec!["Header1", "Header2"]);
+		assert_eq!(result[1], vec!["Value1", "Value2"]);
+	}
+
+	#[tokio::test]
+	async fn test_write_data_success() {
+		let mut mock_client = MockSheetsClient::new();
+		let spreadsheet_id = "test_spreadsheet_id";
+		let worksheet_name = "Sheet1";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_values_append = MockValuesAppend::new();
+
+		mock_values_append.expect_value_input_option().with(eq("RAW")).return_once(|_| MockValuesAppend::new());
+
+		mock_values_append
+			.expect_doit()
+			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), ValueRange::default())));
+
+		mock_hub.expect_values_append().return_once(move |_, _, _| mock_values_append);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let writer = WriteToGoogleSheet::new("test@example.com".to_string());
+		let test_data = vec![vec!["Header1".to_string(), "Header2".to_string()], vec!["Value1".to_string(), "Value2".to_string()]];
+
+		let result = writer.write_data_to_sheet(worksheet_name, spreadsheet_id, test_data).await;
+
+		assert!(result.is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_create_spreadsheet_success() {
+		let mut mock_client = MockSheetsClient::new();
+		let sheet_name = "New Test Sheet";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_create = MockSpreadsheetCreate::new();
+
+		let response_spreadsheet = Spreadsheet {
+			spreadsheet_id: Some("new_test_id".to_string()),
+			spreadsheet_url: Some("https://sheets.google.com/test".to_string()),
+			sheets: Some(vec![Sheet {
+				properties: Some(SheetProperties {
+					title: Some("default".to_string()),
+					..Default::default()
+				}),
+				..Default::default()
+			}]),
+			..Default::default()
+		};
+
+		mock_create
+			.expect_doit()
+			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), response_spreadsheet)));
+
+		mock_hub.expect_create().return_once(move |_| mock_create);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let writer = WriteToGoogleSheet::new("test@example.com".to_string());
+		let result = writer.create_new_spreadsheet(sheet_name).await.unwrap();
+
+		assert_eq!(result.spreadsheet_id, "new_test_id");
+		assert_eq!(result.url, "https://sheets.google.com/test");
+		assert_eq!(result.sheet_names, vec!["default"]);
+	}
+
+	#[test]
+	fn test_convert_to_rfc_datetime() {
+		let datetime = GoogleSheetsClient::convert_to_rfc_datetime(2024, 3, 15, 14, 30);
+		let expected = Utc.with_ymd_and_hms(2024, 3, 15, 14, 30, 0).unwrap();
+		assert_eq!(datetime, expected);
+	}
+
+	#[tokio::test]
+	async fn test_validate_range_success() {
+		let mut mock_client = MockSheetsClient::new();
+		let spreadsheet_id = "test_spreadsheet_id";
+		let range = "Sheet1!A1:B2";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_values_get = MockValuesGet::new();
+
+		mock_values_get
+			.expect_doit()
+			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), ValueRange::default())));
+
+		mock_hub.expect_values_get().with(eq(spreadsheet_id), eq(range)).return_once(move |_, _| mock_values_get);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let reader = ReadSheets::new("test@example.com".to_string());
+		let result = reader.validate_range(spreadsheet_id, range).await;
+
+		assert!(result.is_ok());
+		assert!(result.unwrap());
+	}
+
+	#[tokio::test]
+	async fn test_validate_range_failure() {
+		let mut mock_client = MockSheetsClient::new();
+		let spreadsheet_id = "test_spreadsheet_id";
+		let range = "Invalid!Range";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_values_get = MockValuesGet::new();
+
+		mock_values_get
+			.expect_doit()
+			.return_once(move || Err(google_sheets4::Error::BadRequest("Invalid range".to_string())));
+
+		mock_hub.expect_values_get().with(eq(spreadsheet_id), eq(range)).return_once(move |_, _| mock_values_get);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let reader = ReadSheets::new("test@example.com".to_string());
+		let result = reader.validate_range(spreadsheet_id, range).await;
+
+		assert!(matches!(result, Err(SheetError::InvalidRange)));
+	}
+
+	#[tokio::test]
+	async fn test_retrieve_metadata_success() {
+		let mut mock_client = MockSheetsClient::new();
+		let spreadsheet_id = "test_spreadsheet_id";
+
+		// Set up mock expectations
+		let mut mock_hub = MockSpreadsheetsHub::new();
+		let mut mock_get = MockSpreadsheetGet::new();
+
+		let response_spreadsheet = Spreadsheet {
+			properties: Some(SpreadsheetProperties {
+				title: Some("Test Sheet".to_string()),
+				..Default::default()
+			}),
+			..Default::default()
+		};
+
+		mock_get
+			.expect_doit()
+			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), response_spreadsheet)));
+
+		mock_hub.expect_get().with(eq(spreadsheet_id)).return_once(move |_| mock_get);
+
+		mock_client.expect_spreadsheets().return_once(move || mock_hub);
+
+		// Create client with mocked service
+		let client = GoogleSheetsClient::new("test@example.com".to_string());
+		client.service.set(Arc::new(mock_client)).unwrap();
+
+		// Execute test
+		let reader = ReadSheets::new("test@example.com".to_string());
+		let result = reader.retrieve_metadata(spreadsheet_id).await.unwrap();
+
+		assert_eq!(result.properties.unwrap().title.unwrap(), "Test Sheet");
+	}
 }
