@@ -10,10 +10,12 @@ edition.workspace = true
 [dependencies]
 chrono = { workspace = true }
 google-sheets4 = "6.0.0"
-hyper = "1.5.0"
+hyper = { version = "1.5", features = ["client", "http1"] }
 hyper-rustls = "0.27.3"
+hyper-util = { version = "0.1.9", features = ["client", "tokio"] }
 once_cell = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
