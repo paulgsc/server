@@ -1,28 +1,52 @@
 use chrono::{DateTime, Utc};
+use google_sheets4::yup_oauth2::Error as OAuth2Error;
 use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
-use google_sheets4::{api::Spreadsheet, hyper, hyper_rustls, Sheets};
+use google_sheets4::Error as GoogleSheetsError;
+use google_sheets4::{api::Spreadsheet, hyper_rustls, Sheets};
+use hyper::Error as HyperError;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use once_cell::unsync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use crate::{SecretFilePathError, SheetsServiceFilePath};
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type SheetsClient = Sheets<HttpsConnectorType>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SheetError {
-	#[error("Authentication error: {0}")]
-	Auth(String),
-	#[error("API error: {0}")]
-	Api(String),
-	#[error("Invalid range specified")]
-	InvalidRange,
-	#[error("Failed to initialize service: {0}")]
-	InitializationError(String),
+	#[error("OAuth2 error: {0}")]
+	OAuth2(#[from] OAuth2Error),
+
+	#[error("Google Sheets API error: {0}")]
+	GoogleSheets(#[from] GoogleSheetsError),
+
+	#[error("HTTP client error: {0}")]
+	Hyper(#[from] HyperError),
+
+	#[error("IO error: {0}")]
+	Io(#[from] io::Error),
+
+	#[error("Invalid range specified: {0}")]
+	InvalidRange(Value),
+
+	#[error("Missing credentials file: {0}")]
+	MissingCredentials(String),
+
+	#[error("Service initialization failed: {0}")]
+	ServiceInit(String),
+
+	#[error("Invalid sheet metadata: {0}")]
+	InvalidMetadata(String),
+
+	#[error("Secret file path error: {0}")]
+	SecretFilePath(#[from] SecretFilePathError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,30 +59,31 @@ pub struct SpreadsheetMetadata {
 pub struct GoogleSheetsClient {
 	user_email: String,
 	service: OnceCell<Arc<SheetsClient>>,
+	client_secret_path: SheetsServiceFilePath,
 }
 
 impl GoogleSheetsClient {
-	pub fn new(user_email: String) -> Self {
-		Self {
+	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
+		let validated_path = SheetsServiceFilePath::new(client_secret_path)?;
+
+		Ok(Self {
 			user_email,
 			service: OnceCell::new(),
-		}
+			client_secret_path: validated_path,
+		})
 	}
 
 	async fn initialize_service() -> Result<SheetsClient, SheetError> {
-		let secret = google_sheets4::yup_oauth2::read_application_secret("client_secret_file.json")
-			.await
-			.map_err(|e| SheetError::Auth(e.to_string()))?;
+		let secret = google_sheets4::yup_oauth2::read_application_secret("client_secret_file.json").await?;
 
 		let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
 
-		fs::create_dir_all(cache_path.parent().unwrap()).map_err(|e| SheetError::InitializationError(e.to_string()))?;
+		fs::create_dir_all(cache_path.parent().unwrap()).map_err(SheetError::Io)?;
 
 		let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
 			.persist_tokens_to_disk(cache_path)
 			.build()
-			.await
-			.map_err(|e| SheetError::Auth(e.to_string()))?;
+			.await?;
 
 		let connector = hyper_rustls::HttpsConnectorBuilder::new()
 			.with_native_roots()
@@ -79,7 +104,7 @@ impl GoogleSheetsClient {
 			self
 				.service
 				.set(Arc::new(service))
-				.map_err(|_| SheetError::InitializationError("Failed to set service".to_string()))?;
+				.map_err(|_| SheetError::ServiceInit("Failed to set service".to_string()))?;
 		}
 		Ok(self.service.get().unwrap())
 	}
@@ -100,35 +125,19 @@ pub struct ReadSheets {
 }
 
 impl ReadSheets {
-	pub fn new(user_email: String) -> Self {
-		Self {
-			client: GoogleSheetsClient::new(user_email),
-		}
+	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
+		Ok(Self {
+			client: GoogleSheetsClient::new(user_email, client_secret_path)?,
+		})
 	}
 
 	pub async fn retrieve_metadata(&self, spreadsheet_id: &str) -> Result<Spreadsheet, SheetError> {
-		self
-			.client
-			.get_service()
-			.await?
-			.spreadsheets()
-			.get(spreadsheet_id)
-			.doit()
-			.await
-			.map(|(_, res)| res)
-			.map_err(|e| SheetError::Api(e.to_string()))
+		let result = self.client.get_service().await?.spreadsheets().get(spreadsheet_id).doit().await?;
+		Ok(result.1)
 	}
 
 	pub async fn read_data(&self, spreadsheet_id: &str, range: &str) -> Result<Vec<Vec<String>>, SheetError> {
-		let result = self
-			.client
-			.get_service()
-			.await?
-			.spreadsheets()
-			.values_get(spreadsheet_id, range)
-			.doit()
-			.await
-			.map_err(|e| SheetError::Api(e.to_string()))?;
+		let result = self.client.get_service().await?.spreadsheets().values_get(spreadsheet_id, range).doit().await?;
 
 		Ok(
 			result
@@ -142,16 +151,11 @@ impl ReadSheets {
 	}
 
 	pub async fn validate_range(&self, spreadsheet_id: &str, range: &str) -> Result<bool, SheetError> {
-		self
-			.client
-			.get_service()
-			.await?
-			.spreadsheets()
-			.values_get(spreadsheet_id, range)
-			.doit()
-			.await
-			.map(|_| true)
-			.map_err(|_| SheetError::InvalidRange)
+		match self.client.get_service().await?.spreadsheets().values_get(spreadsheet_id, range).doit().await {
+			Ok(_) => Ok(true),
+			Err(GoogleSheetsError::BadRequest(msg)) => Err(SheetError::InvalidRange(msg)),
+			Err(e) => Err(SheetError::GoogleSheets(e)),
+		}
 	}
 }
 
@@ -160,10 +164,10 @@ pub struct WriteToGoogleSheet {
 }
 
 impl WriteToGoogleSheet {
-	pub fn new(user_email: String) -> Self {
-		Self {
-			client: GoogleSheetsClient::new(user_email),
-		}
+	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
+		Ok(Self {
+			client: GoogleSheetsClient::new(user_email, client_secret_path)?,
+		})
 	}
 
 	pub async fn write_data_to_sheet(&self, worksheet_name: &str, spreadsheet_id: &str, data: Vec<Vec<String>>) -> Result<(), SheetError> {
@@ -184,9 +188,9 @@ impl WriteToGoogleSheet {
 			.values_append(request, spreadsheet_id, worksheet_name)
 			.value_input_option("RAW")
 			.doit()
-			.await
-			.map(|_| ())
-			.map_err(|e| SheetError::Api(e.to_string()))
+			.await?;
+
+		Ok(())
 	}
 
 	pub async fn create_new_spreadsheet(&self, sheet_name: &str) -> Result<SpreadsheetMetadata, SheetError> {
@@ -207,20 +211,18 @@ impl WriteToGoogleSheet {
 			..Default::default()
 		};
 
-		let result = self
-			.client
-			.get_service()
-			.await?
-			.spreadsheets()
-			.create(spreadsheet)
-			.doit()
-			.await
-			.map_err(|e| SheetError::Api(e.to_string()))?;
+		let result = self.client.get_service().await?.spreadsheets().create(spreadsheet).doit().await?;
 
 		Ok(SpreadsheetMetadata {
-			url: result.1.spreadsheet_url.unwrap_or_default(),
-			spreadsheet_id: result.1.spreadsheet_id.unwrap_or_default(),
-			sheet_names: result.1.sheets.unwrap_or_default().into_iter().filter_map(|sheet| sheet.properties?.title).collect(),
+			url: result.1.spreadsheet_url.ok_or_else(|| SheetError::InvalidMetadata("Missing spreadsheet URL".to_string()))?,
+			spreadsheet_id: result.1.spreadsheet_id.ok_or_else(|| SheetError::InvalidMetadata("Missing spreadsheet ID".to_string()))?,
+			sheet_names: result
+				.1
+				.sheets
+				.ok_or_else(|| SheetError::InvalidMetadata("Missing sheets".to_string()))?
+				.into_iter()
+				.filter_map(|sheet| sheet.properties?.title)
+				.collect(),
 		})
 	}
 }
