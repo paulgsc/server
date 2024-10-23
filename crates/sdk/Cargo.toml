@@ -13,7 +13,7 @@ file_reader = { workspace = true }
 chrono = { workspace = true }
 google-sheets4 = "6.0.0"
 hyper = { version = "1.5", features = ["client", "http1"] }
-hyper-rustls = "0.27.3"
+hyper-rustls = { version = "0.27", default-features = false }
 hyper-util = { version = "0.1.9", features = ["client", "tokio"] }
 once_cell = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 mockall = "0.13.0"
+rustls = { version = "0.23", features = ["ring"] }
 
 [lints]
 workspace = true
