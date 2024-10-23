@@ -1,1 +1,3 @@
-pub mod gsheets;
+mod gsheets;
+
+pub use gsheets::*;
