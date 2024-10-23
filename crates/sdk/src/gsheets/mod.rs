@@ -73,12 +73,12 @@ impl GoogleSheetsClient {
 		})
 	}
 
-	async fn initialize_service() -> Result<SheetsClient, SheetError> {
+	async fn initialize_service(&self) -> Result<SheetsClient, SheetError> {
 		// rustls::crypto::ring::default_provider()
 		// 	.install_default()
 		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
-		let secret = google_sheets4::yup_oauth2::read_application_secret("client_secret_file.json").await?;
+		let secret = google_sheets4::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
 
 		let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
 
@@ -104,7 +104,7 @@ impl GoogleSheetsClient {
 
 	pub async fn get_service(&self) -> Result<&Arc<SheetsClient>, SheetError> {
 		if self.service.get().is_none() {
-			let service = Self::initialize_service().await?;
+			let service = self.initialize_service().await?;
 			self
 				.service
 				.set(Arc::new(service))
