@@ -54,3 +54,7 @@ tsconfig.tsbuildinfo
 # DATABASE
 *.db
 *.db-*
+
+
+# google api services
+client_secret_file.json
