@@ -74,9 +74,9 @@ impl GoogleSheetsClient {
 	}
 
 	async fn initialize_service() -> Result<SheetsClient, SheetError> {
-		rustls::crypto::ring::default_provider()
-			.install_default()
-			.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+		// rustls::crypto::ring::default_provider()
+		// 	.install_default()
+		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
 		let secret = google_sheets4::yup_oauth2::read_application_secret("client_secret_file.json").await?;
 

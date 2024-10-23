@@ -1,10 +1,15 @@
+use rustls::crypto::CryptoProvider;
 use sdk::*;
 use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+
 	// Initialize clients with a user email
-	let user_email = "your.email@example.com".to_string();
+	let user_email = "aulgondu@gmail.com".to_string();
 	let client_secret_file = "client_secret_file.json".to_string();
 
 	// Use the `?` operator to propagate any errors from the `new` methods
