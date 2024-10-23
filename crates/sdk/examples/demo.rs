@@ -5,8 +5,11 @@ use tokio;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Initialize clients with a user email
 	let user_email = "your.email@example.com".to_string();
-	let reader = ReadSheets::new(user_email.clone());
-	let writer = WriteToGoogleSheet::new(user_email);
+	let client_secret_file = "./client_secret_file.json".to_string();
+
+	// Use the `?` operator to propagate any errors from the `new` methods
+	let reader = ReadSheets::new(user_email.clone(), client_secret_file.clone())?;
+	let writer = WriteToGoogleSheet::new(user_email, client_secret_file)?;
 
 	// Create a new spreadsheet
 	println!("Creating new spreadsheet...");
