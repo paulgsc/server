@@ -18,3 +18,8 @@ This Rust server is designed to handle all the load for various applications, co
 - Cargo (Rust's package manager)
 - A supported database (e.g., PostgreSQL, MySQL, SQLite)
 
+
+## System Design Flow Chart
+
+![My local image](./system_design.png)
+

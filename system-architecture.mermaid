@@ -1,0 +1,35 @@
+flowchart TD
+    subgraph Data Input
+        GS[Google Sheets] -->|OAuth2| GL[Google Sheets Listener]
+    end
+
+    subgraph Backend Server
+        GL -->|Webhook| AX[Axum Server]
+        AX -->|SQLX| DB[(SQLite DB)]
+        
+        subgraph API Layer
+            AX --> GQL[GraphQL Endpoint]
+            GQL -->|Complex Queries| QB[Query Builder]
+            QB -->|SQLX| DB
+        end
+
+        subgraph Analytics Engine
+            AE[Analytics Service]
+            AE -->|Statistical Models| CF[Counterfactual Analysis]
+            AE -->|Risk Models| AC[Actuarial Calculations]
+        end
+    end
+
+    subgraph Frontend
+        NJ[NextJS App]
+        NJ -->|GraphQL Client| GQL
+        NJ -->|Recharts| VIZ[Visualizations]
+    end
+
+    classDef primary fill:#2563eb,stroke:#fff,stroke-width:2px,color:#fff
+    classDef secondary fill:#3b82f6,stroke:#fff,stroke-width:2px,color:#fff
+    classDef storage fill:#1e40af,stroke:#fff,stroke-width:2px,color:#fff
+    
+    class GS,NJ primary
+    class AX,GQL,AE secondary
+    class DB storage
