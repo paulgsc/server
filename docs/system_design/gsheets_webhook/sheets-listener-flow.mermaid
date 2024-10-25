@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant S as Google Sheets
+    participant L as Sheets Listener
+    participant A as Axum Server
+    participant D as SQLite DB
+
+    Note over L: Start with OAuth2 Flow
+    L->>S: Request OAuth2 Token
+    S->>L: Return Access Token
+    
+    loop Every N minutes
+        L->>S: Get Sheet Updates (with range)
+        S->>L: Return Modified Data
+        
+        alt Has Changes
+            L->>L: Transform Data
+            L->>A: POST /api/ingest
+            A->>D: Batch Insert/Update
+            A->>L: Confirm Processing
+        end
+    
+        Note over L: Update last_sync_token
+    end
+
+    Note over L: Handle Rate Limits
+    Note over L: Exponential Backoff
