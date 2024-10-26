@@ -204,279 +204,253 @@ impl fmt::Display for Email {
 	}
 }
 
-
 // ... [Previous code remains the same until the tests module] ...
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    // Helper functions for creating validators
-    fn create_gmail_only_validator() -> EmailValidator {
-        let registry = DomainRegistry::new()
-            .permit_known_domain(KnownDomain::Gmail);
-        EmailValidator::with_domain_registry(registry)
-    }
+	// Helper functions for creating validators
+	fn create_gmail_only_validator() -> EmailValidator {
+		let registry = DomainRegistry::new().permit_known_domain(KnownDomain::Gmail);
+		EmailValidator::with_domain_registry(registry)
+	}
 
-    fn create_custom_only_validator() -> EmailValidator {
-        let registry = DomainRegistry::new()
-            .permit_custom_domain("example.com".to_string());
-        EmailValidator::with_domain_registry(registry)
-    }
+	fn create_custom_only_validator() -> EmailValidator {
+		let registry = DomainRegistry::new().permit_custom_domain("example.com".to_string());
+		EmailValidator::with_domain_registry(registry)
+	}
 
-    fn create_permissive_validator() -> EmailValidator {
-        let registry = DomainRegistry::new()
-            .permit_known_domain(KnownDomain::Gmail)
-            .permit_known_domain(KnownDomain::Yahoo)
-            .allow_any_custom_domain(true);
-        EmailValidator::with_domain_registry(registry)
-    }
+	fn create_permissive_validator() -> EmailValidator {
+		let registry = DomainRegistry::new()
+			.permit_known_domain(KnownDomain::Gmail)
+			.permit_known_domain(KnownDomain::Yahoo)
+			.allow_any_custom_domain(true);
+		EmailValidator::with_domain_registry(registry)
+	}
 
-    mod domain_permission_tests {
-        use super::*;
+	mod domain_permission_tests {
+		use super::*;
 
-        #[test]
-        fn test_gmail_only_validator() {
-            let validator = create_gmail_only_validator();
-            
-            assert!(validator.parse("test@gmail.com").is_ok());
-            assert_eq!(
-                validator.parse("test@yahoo.com"),
-                Err(EmailError::DomainNotPermitted)
-            );
-            assert_eq!(
-                validator.parse("test@example.com"),
-                Err(EmailError::DomainNotPermitted)
-            );
-        }
+		#[test]
+		fn test_gmail_only_validator() {
+			let validator = create_gmail_only_validator();
 
-        #[test]
-        fn test_custom_only_validator() {
-            let validator = create_custom_only_validator();
-            
-            assert!(validator.parse("test@example.com").is_ok());
-            assert_eq!(
-                validator.parse("test@gmail.com"),
-                Err(EmailError::DomainNotPermitted)
-            );
-            assert_eq!(
-                validator.parse("test@other.com"),
-                Err(EmailError::DomainNotPermitted)
-            );
-        }
+			assert!(validator.parse("test@gmail.com").is_ok());
+			assert_eq!(validator.parse("test@yahoo.com"), Err(EmailError::DomainNotPermitted));
+			assert_eq!(validator.parse("test@example.com"), Err(EmailError::DomainNotPermitted));
+		}
 
-        #[test]
-        fn test_permissive_validator() {
-            let validator = create_permissive_validator();
-            
-            assert!(validator.parse("test@gmail.com").is_ok());
-            assert!(validator.parse("test@yahoo.com").is_ok());
-            assert!(validator.parse("test@custom-domain.com").is_ok());
-        }
-    }
+		#[test]
+		fn test_custom_only_validator() {
+			let validator = create_custom_only_validator();
 
-    mod format_validation_tests {
-        use super::*;
+			assert!(validator.parse("test@example.com").is_ok());
+			assert_eq!(validator.parse("test@gmail.com"), Err(EmailError::DomainNotPermitted));
+			assert_eq!(validator.parse("test@other.com"), Err(EmailError::DomainNotPermitted));
+		}
 
-        #[test]
-        fn test_valid_local_parts() {
-            let validator = create_permissive_validator();
-            let valid_locals = vec![
-                "simple",
-                "very.common",
-                "disposable.style.email.with+symbol",
-                "other.email-with-hyphen",
-                "fully-qualified-domain",
-                "user.name+tag",
-                "x@example.com",
-                "_______",
-                "email",
-                "firstname.lastname",
-                "email",
-                "1234567890",
-                "email-with-dash",
-            ];
+		#[test]
+		fn test_permissive_validator() {
+			let validator = create_permissive_validator();
 
-            for local in valid_locals {
-                let email = format!("{}@gmail.com", local);
-                assert!(validator.parse(&email).is_ok(), "Failed for local part: {}", local);
-            }
-        }
+			assert!(validator.parse("test@gmail.com").is_ok());
+			assert!(validator.parse("test@yahoo.com").is_ok());
+			assert!(validator.parse("test@custom-domain.com").is_ok());
+		}
+	}
 
-        #[test]
-        fn test_invalid_local_parts() {
-            let validator = create_permissive_validator();
-            let invalid_locals = vec![
-                "",
-                "Abc.example.com",
-                "just\"not\"right@example.com",
-                "this is\"not\\allowed@example.com",
-                "this\\ still\\\"not\\allowed@example.com",
-                ".leading-dot",
-                "trailing-dot.",
-                "double..dot",
-                " space-in-local",
-                "trailing-space ",
-            ];
+	mod format_validation_tests {
+		use super::*;
 
-            for local in invalid_locals {
-                let email = format!("{}@gmail.com", local);
-                assert!(validator.parse(&email).is_err(), "Should fail for local part: {}", local);
-            }
-        }
+		#[test]
+		fn test_valid_local_parts() {
+			let validator = create_permissive_validator();
+			let valid_locals = vec![
+				"simple",
+				"very.common",
+				"disposable.style.email.with+symbol",
+				"other.email-with-hyphen",
+				"fully-qualified-domain",
+				"user.name+tag",
+				"x@example.com",
+				"_______",
+				"email",
+				"firstname.lastname",
+				"email",
+				"1234567890",
+				"email-with-dash",
+			];
 
-        #[test]
-        fn test_valid_domains() {
-            let validator = create_permissive_validator();
-            let valid_domains = vec![
-                "example.com",
-                "example-domain.com",
-                "dept.example.org",
-                "long.domain.with.many.parts.com",
-            ];
+			for local in valid_locals {
+				let email = format!("{}@gmail.com", local);
+				assert!(validator.parse(&email).is_ok(), "Failed for local part: {}", local);
+			}
+		}
 
-            for domain in valid_domains {
-                let email = format!("test@{}", domain);
-                assert!(validator.parse(&email).is_ok(), "Failed for domain: {}", domain);
-            }
-        }
+		#[test]
+		fn test_invalid_local_parts() {
+			let validator = create_permissive_validator();
+			let invalid_locals = vec![
+				"",
+				"Abc.example.com",
+				"just\"not\"right@example.com",
+				"this is\"not\\allowed@example.com",
+				"this\\ still\\\"not\\allowed@example.com",
+				".leading-dot",
+				"trailing-dot.",
+				"double..dot",
+				" space-in-local",
+				"trailing-space ",
+			];
 
-        #[test]
-        fn test_invalid_domains() {
-            let validator = create_permissive_validator();
-            let invalid_domains = vec![
-                "",
-                ".com",
-                "example.",
-                ".example.com",
-                "example..com",
-                "-example.com",
-                "example-.com",
-                "example.com-",
-                "example.-com",
-                "@example.com",
-            ];
+			for local in invalid_locals {
+				let email = format!("{}@gmail.com", local);
+				assert!(validator.parse(&email).is_err(), "Should fail for local part: {}", local);
+			}
+		}
 
-            for domain in invalid_domains {
-                let email = format!("test@{}", domain);
-                assert!(validator.parse(&email).is_err(), "Should fail for domain: {}", domain);
-            }
-        }
-    }
+		#[test]
+		fn test_valid_domains() {
+			let validator = create_permissive_validator();
+			let valid_domains = vec!["example.com", "example-domain.com", "dept.example.org", "long.domain.with.many.parts.com"];
 
-    mod length_validation_tests {
-        use super::*;
+			for domain in valid_domains {
+				let email = format!("test@{}", domain);
+				assert!(validator.parse(&email).is_ok(), "Failed for domain: {}", domain);
+			}
+		}
 
-        #[test]
-        fn test_local_part_length_limits() {
-            let validator = create_permissive_validator();
-            
-            // Test maximum valid length (64 characters)
-            let max_local = "a".repeat(64);
-            let valid_email = format!("{}@gmail.com", max_local);
-            assert!(validator.parse(&valid_email).is_ok());
+		#[test]
+		fn test_invalid_domains() {
+			let validator = create_permissive_validator();
+			let invalid_domains = vec![
+				"",
+				".com",
+				"example.",
+				".example.com",
+				"example..com",
+				"-example.com",
+				"example-.com",
+				"example.com-",
+				"example.-com",
+				"@example.com",
+			];
 
-            // Test exceeding maximum length
-            let too_long_local = "a".repeat(65);
-            let invalid_email = format!("{}@gmail.com", too_long_local);
-            assert_eq!(
-                validator.parse(&invalid_email),
-                Err(EmailError::LocalPartTooLong)
-            );
-        }
+			for domain in invalid_domains {
+				let email = format!("test@{}", domain);
+				assert!(validator.parse(&email).is_err(), "Should fail for domain: {}", domain);
+			}
+		}
+	}
 
-        #[test]
-        fn test_domain_length_limits() {
-            let validator = create_permissive_validator();
-            
-            // Test maximum valid length (255 characters)
-            let max_domain = format!("{}.com", "a".repeat(251));
-            let valid_email = format!("test@{}", max_domain);
-            assert!(validator.parse(&valid_email).is_ok());
+	mod length_validation_tests {
+		use super::*;
 
-            // Test exceeding maximum length
-            let too_long_domain = format!("{}.com", "a".repeat(252));
-            let invalid_email = format!("test@{}", too_long_domain);
-            assert_eq!(
-                validator.parse(&invalid_email),
-                Err(EmailError::DomainTooLong)
-            );
-        }
-    }
+		#[test]
+		fn test_local_part_length_limits() {
+			let validator = create_permissive_validator();
 
-    mod email_display_tests {
-        use super::*;
+			// Test maximum valid length (64 characters)
+			let max_local = "a".repeat(64);
+			let valid_email = format!("{}@gmail.com", max_local);
+			assert!(validator.parse(&valid_email).is_ok());
 
-        #[test]
-        fn test_email_display() {
-            let validator = create_gmail_only_validator();
-            let email = validator.parse("test@gmail.com").unwrap();
-            assert_eq!(email.to_string(), "test@gmail.com");
-            assert_eq!(email.as_str(), "test@gmail.com");
-        }
+			// Test exceeding maximum length
+			let too_long_local = "a".repeat(65);
+			let invalid_email = format!("{}@gmail.com", too_long_local);
+			assert_eq!(validator.parse(&invalid_email), Err(EmailError::LocalPartTooLong));
+		}
 
-        #[test]
-        fn test_email_parts_access() {
-            let validator = create_gmail_only_validator();
-            let email = validator.parse("local-part@gmail.com").unwrap();
-            
-            assert_eq!(email.local_part(), "local-part");
-            assert_eq!(email.domain(), &EmailDomain::Known(KnownDomain::Gmail));
-        }
-    }
+		#[test]
+		fn test_domain_length_limits() {
+			let validator = create_permissive_validator();
 
-    mod domain_registry_tests {
-        use super::*;
+			// Test maximum valid length (255 characters)
+			let max_domain = format!("{}.com", "a".repeat(251));
+			let valid_email = format!("test@{}", max_domain);
+			assert!(validator.parse(&valid_email).is_ok());
 
-        #[test]
-        fn test_domain_registry_builder() {
-            let registry = DomainRegistry::new()
-                .permit_known_domain(KnownDomain::Gmail)
-                .permit_known_domain(KnownDomain::Yahoo)
-                .permit_custom_domain("example.com".to_string())
-                .allow_any_custom_domain(true);
+			// Test exceeding maximum length
+			let too_long_domain = format!("{}.com", "a".repeat(252));
+			let invalid_email = format!("test@{}", too_long_domain);
+			assert_eq!(validator.parse(&invalid_email), Err(EmailError::DomainTooLong));
+		}
+	}
 
-            assert!(registry.is_domain_permitted("gmail.com"));
-            assert!(registry.is_domain_permitted("yahoo.com"));
-            assert!(registry.is_domain_permitted("example.com"));
-            assert!(registry.is_domain_permitted("any-custom-domain.com"));
-        }
+	mod email_display_tests {
+		use super::*;
 
-        #[test]
-        fn test_case_insensitive_domains() {
-            let registry = DomainRegistry::new()
-                .permit_known_domain(KnownDomain::Gmail)
-                .permit_custom_domain("Example.Com".to_string());
+		#[test]
+		fn test_email_display() {
+			let validator = create_gmail_only_validator();
+			let email = validator.parse("test@gmail.com").unwrap();
+			assert_eq!(email.to_string(), "test@gmail.com");
+			assert_eq!(email.as_str(), "test@gmail.com");
+		}
 
-            assert!(registry.is_domain_permitted("gmail.com"));
-            assert!(registry.is_domain_permitted("Gmail.Com"));
-            assert!(registry.is_domain_permitted("GMAIL.COM"));
-            assert!(registry.is_domain_permitted("example.com"));
-            assert!(registry.is_domain_permitted("EXAMPLE.COM"));
-        }
-    }
+		#[test]
+		fn test_email_parts_access() {
+			let validator = create_gmail_only_validator();
+			let email = validator.parse("local-part@gmail.com").unwrap();
 
-    mod edge_cases {
-        use super::*;
+			assert_eq!(email.local_part(), "local-part");
+			assert_eq!(email.domain(), &EmailDomain::Known(KnownDomain::Gmail));
+		}
+	}
 
-        #[test]
-        fn test_edge_case_emails() {
-            let validator = create_permissive_validator();
-            
-            // Test empty string
-            assert!(validator.parse("").is_err());
-            
-            // Test single character local part
-            assert!(validator.parse("a@gmail.com").is_ok());
-            
-            // Test multiple @ symbols
-            assert!(validator.parse("test@foo@gmail.com").is_err());
-            
-            // Test special characters
-            assert!(validator.parse("test!#$%&'*+-/=?^_`{|}~@gmail.com").is_ok());
-            
-            // Test quoted strings (should fail as we don't support them)
-            assert!(validator.parse("\"test\"@gmail.com").is_err());
-        }
-    }
+	mod domain_registry_tests {
+		use super::*;
+
+		#[test]
+		fn test_domain_registry_builder() {
+			let registry = DomainRegistry::new()
+				.permit_known_domain(KnownDomain::Gmail)
+				.permit_known_domain(KnownDomain::Yahoo)
+				.permit_custom_domain("example.com".to_string())
+				.allow_any_custom_domain(true);
+
+			assert!(registry.is_domain_permitted("gmail.com"));
+			assert!(registry.is_domain_permitted("yahoo.com"));
+			assert!(registry.is_domain_permitted("example.com"));
+			assert!(registry.is_domain_permitted("any-custom-domain.com"));
+		}
+
+		#[test]
+		fn test_case_insensitive_domains() {
+			let registry = DomainRegistry::new()
+				.permit_known_domain(KnownDomain::Gmail)
+				.permit_custom_domain("Example.Com".to_string());
+
+			assert!(registry.is_domain_permitted("gmail.com"));
+			assert!(registry.is_domain_permitted("Gmail.Com"));
+			assert!(registry.is_domain_permitted("GMAIL.COM"));
+			assert!(registry.is_domain_permitted("example.com"));
+			assert!(registry.is_domain_permitted("EXAMPLE.COM"));
+		}
+	}
+
+	mod edge_cases {
+		use super::*;
+
+		#[test]
+		fn test_edge_case_emails() {
+			let validator = create_permissive_validator();
+
+			// Test empty string
+			assert!(validator.parse("").is_err());
+
+			// Test single character local part
+			assert!(validator.parse("a@gmail.com").is_ok());
+
+			// Test multiple @ symbols
+			assert!(validator.parse("test@foo@gmail.com").is_err());
+
+			// Test special characters
+			assert!(validator.parse("test!#$%&'*+-/=?^_`{|}~@gmail.com").is_ok());
+
+			// Test quoted strings (should fail as we don't support them)
+			assert!(validator.parse("\"test\"@gmail.com").is_err());
+		}
+	}
 }
