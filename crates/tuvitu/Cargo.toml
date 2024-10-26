@@ -8,7 +8,9 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
+termion = "4.0.3"
 once_cell = { workspace = true }
 regex = { workspace = true }
 
