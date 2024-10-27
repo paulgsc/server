@@ -83,13 +83,13 @@ impl RedisScheduler {
 			SchedulerType::RoundRobin => {
 				let mut tasks = Vec::new();
 				for key in &self.queue_keys {
-					if let Some(count_nz) = NonZeroUsize::new(count) {
-						if let Some(serialized_items) = self.conn.lpop::<_, Option<Vec<String>>>(key, Some(count_nz))? {
-							tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s).unwrap()));
-							if tasks.len() >= count {
-								break;
-							}
-						}
+					if tasks.len() >= count {
+						break;
+					}
+					let remaining = count - tasks.len();
+					if let Some(count_nz) = NonZeroUsize::new(remaining) {
+						let serialized_items: Vec<String> = self.conn.lpop(key, Some(count_nz))?;
+						tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s).unwrap()));
 					}
 				}
 				Ok(tasks)
@@ -156,34 +156,58 @@ mod tests {
 	use super::*;
 	use std::thread::sleep;
 
+	// Helper function to clear Redis queues
+	fn clear_redis_queues(conn: &mut Connection) -> Result<(), RedisError> {
+		let patterns = ["scheduler:high", "scheduler:medium", "scheduler:low", "scheduler:edf"];
+		for key in patterns.iter() {
+			let _: () = redis::cmd("FLUSHDB").query(conn)?;
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn test_redis_scheduler_initialization() -> Result<(), RedisError> {
+		let mut round_robin_scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut round_robin_scheduler.conn)?;
+
+		assert!(matches!(round_robin_scheduler.scheduler_type, SchedulerType::RoundRobin));
+
+		let mut edf_scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
+		clear_redis_queues(&mut edf_scheduler.conn)?;
+
+		assert!(matches!(edf_scheduler.scheduler_type, SchedulerType::EDF));
+		Ok(())
+	}
+
 	#[test]
 	fn test_enqueue_dequeue_round_robin() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut scheduler.conn)?;
 
 		let task1 = Task::new("task1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
 		let task2 = Task::new("task2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
 
-		scheduler.enqueue(task1.clone())?;
-		scheduler.enqueue(task2.clone())?;
+		scheduler.enqueue(task1)?;
+		scheduler.enqueue(task2)?;
 
 		let first = scheduler.dequeue_batch(1)?.pop().unwrap();
 		let second = scheduler.dequeue_batch(1)?.pop().unwrap();
 
 		assert_eq!(first.id, "task1");
 		assert_eq!(second.id, "task2");
-
 		Ok(())
 	}
 
 	#[test]
 	fn test_enqueue_dequeue_edf() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
+		clear_redis_queues(&mut scheduler.conn)?;
 
 		let task1 = Task::new("task1".to_string(), 5, SystemTime::now() + Duration::from_secs(50), Duration::from_secs(10));
 		let task2 = Task::new("task2".to_string(), 7, SystemTime::now() + Duration::from_secs(100), Duration::from_secs(20));
 
-		scheduler.enqueue(task1.clone())?;
-		scheduler.enqueue(task2.clone())?;
+		scheduler.enqueue(task1)?;
+		scheduler.enqueue(task2)?;
 
 		let first = scheduler.dequeue_batch(1)?.pop().unwrap();
 		let second = scheduler.dequeue_batch(1)?.pop().unwrap();
@@ -197,6 +221,8 @@ mod tests {
 	#[test]
 	fn test_task_expiration() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut scheduler.conn)?;
+
 		let task = Task::new("task_expire".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(10));
 		scheduler.enqueue(task.clone())?;
 
@@ -214,14 +240,15 @@ mod tests {
 	#[test]
 	fn test_dequeue_batch() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut scheduler.conn)?;
 
 		let task1 = Task::new("task_batch1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
 		let task2 = Task::new("task_batch2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
 		let task3 = Task::new("task_batch3".to_string(), 2, SystemTime::now() + Duration::from_secs(150), Duration::from_secs(30));
 
-		scheduler.enqueue(task1.clone())?;
-		scheduler.enqueue(task2.clone())?;
-		scheduler.enqueue(task3.clone())?;
+		scheduler.enqueue(task1)?;
+		scheduler.enqueue(task2)?;
+		scheduler.enqueue(task3)?;
 
 		let batch = scheduler.dequeue_batch(2)?;
 		assert_eq!(batch.len(), 2);
@@ -235,20 +262,24 @@ mod tests {
 	#[test]
 	fn test_blocking_dequeue_timeout() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut scheduler.conn)?;
+
 		let result = scheduler.dequeue_blocking(1.0)?;
 		assert!(result.is_none(), "Expected no task to be dequeued after timeout");
+
 		Ok(())
 	}
 
 	#[test]
 	fn test_queue_lengths() -> Result<(), RedisError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		clear_redis_queues(&mut scheduler.conn)?;
 
 		let task1 = Task::new("task_len1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
 		let task2 = Task::new("task_len2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
 
-		scheduler.enqueue(task1.clone())?;
-		scheduler.enqueue(task2.clone())?;
+		scheduler.enqueue(task1)?;
+		scheduler.enqueue(task2)?;
 
 		let lengths = scheduler.get_queue_lengths()?;
 		assert_eq!(lengths.iter().sum::<usize>(), 2, "Total queue length mismatch");
