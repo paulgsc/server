@@ -31,6 +31,22 @@ impl Task {
 	}
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TaskStatus {
+	Success,
+	Failed { error: String, retry_count: u32 },
+	Cancelled,
+	TimedOut,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskResult {
+	pub task_id: String,
+	pub status: TaskStatus,
+	pub execution_time: Duration,
+	pub completed_at: SystemTime,
+}
+
 pub struct RedisScheduler {
 	conn: Connection,
 	scheduler_type: SchedulerType,

@@ -1,4 +1,6 @@
-mod redis_queue;
+pub mod error;
+pub mod redis_queue;
+pub mod task_processing;
 
 use axum::{extract::State, routing::post, Json, Router};
 use chrono::{DateTime, Utc};
