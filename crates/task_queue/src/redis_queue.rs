@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::time::{Duration, SystemTime};
 
-// Updated Task structure with serialization support
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Task {
 	pub id: String,
@@ -47,6 +46,7 @@ pub struct TaskResult {
 	pub completed_at: SystemTime,
 }
 
+#[derive(Debug, Clone)]
 pub struct RedisScheduler {
 	conn: Connection,
 	scheduler_type: SchedulerType,
