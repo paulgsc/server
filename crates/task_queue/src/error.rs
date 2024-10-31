@@ -1,4 +1,5 @@
 use thiserror::Error;
+use std::time::SystemTimeError;
 
 #[derive(Error, Debug)]
 pub enum KnownError {
@@ -14,4 +15,10 @@ pub enum KnownError {
 	InternalError(String),
 	#[error("Redis error: {0}")]
 	RedisError(#[from] redis::RedisError),
+}
+
+impl From<SystemTimeError> for KnownError {
+    fn from(error: SystemTimeError) -> Self {
+        Self::InternalError(format!("System time error: {error}"))
+    }
 }
