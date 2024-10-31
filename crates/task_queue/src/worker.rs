@@ -6,19 +6,19 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-struct Worker {
+pub struct Worker {
 	id: usize,
 	scheduler: Arc<Mutex<RedisScheduler>>,
 	config: WorkerConfig,
 }
 
 impl Worker {
-	fn new(id: usize, scheduler: Arc<Mutex<RedisScheduler>>) -> Self {
+	pub fn new(id: usize, scheduler: Arc<Mutex<RedisScheduler>>) -> Self {
 		let config = WorkerConfig::new();
 		Self { id, scheduler, config }
 	}
 
-	async fn run(&self, result_tx: mpsc::Sender<TaskResult>) {
+	pub async fn run(&self, result_tx: mpsc::Sender<TaskResult>) {
 		loop {
 			let tasks = {
 				let mut scheduler = self.scheduler.lock().unwrap();
