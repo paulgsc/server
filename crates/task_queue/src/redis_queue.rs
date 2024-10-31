@@ -1,10 +1,10 @@
+use crate::error::KnownError as TaskQueueError;
 use redis::{cmd, Client, Commands, Connection, RedisError};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
-use crate::error::KnownError as TaskQueueError;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Task {
@@ -99,6 +99,7 @@ impl RedisScheduler {
 			}
 		}
 
+        drop(conn);
 		Ok(())
 	}
 
@@ -118,10 +119,12 @@ impl RedisScheduler {
 						tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s).unwrap()));
 					}
 				}
+                drop(conn);
 				Ok(tasks)
 			}
 			SchedulerType::EDF => {
 				let results: Vec<(String, f64)> = conn.zpopmin(&self.queue_keys[0], count as isize)?;
+                drop(conn);
 				Ok(results.into_iter().map(|(serialized, _)| serde_json::from_str(&serialized).unwrap()).collect())
 			}
 		}
@@ -133,29 +136,32 @@ impl RedisScheduler {
 		match self.scheduler_type {
 			SchedulerType::RoundRobin => {
 				let result: Option<(String, String)> = conn.blpop(&self.queue_keys, timeout)?;
+                drop(conn);
 				Ok(result.map(|(_, serialized)| serde_json::from_str(&serialized).unwrap()))
 			}
 			SchedulerType::EDF => {
 				let result: Option<(String, String, f64)> = cmd("BZPOPMIN").arg(&self.queue_keys[0]).arg(timeout).query(&mut *conn)?;
 
+                drop(conn);
 				Ok(result.map(|(_, serialized, _)| serde_json::from_str(&serialized).unwrap()))
 			}
 		}
 	}
 
 	pub async fn get_queue_lengths(&self) -> Result<Vec<usize>, RedisError> {
+		let mut queue_lengths = Vec::with_capacity(self.queue_keys.len());
 		let mut conn = self.conn.lock().await;
-		let mut lengths = Vec::new();
 
 		for key in &self.queue_keys {
 			let len = match self.scheduler_type {
 				SchedulerType::RoundRobin => conn.llen(key)?,
 				SchedulerType::EDF => conn.zcard(key)?,
 			};
-			lengths.push(len);
+			queue_lengths.push(len);
 		}
 
-		Ok(lengths)
+        drop(conn);
+		Ok(queue_lengths)
 	}
 
 	// Set task expiration
