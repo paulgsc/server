@@ -1,5 +1,5 @@
 use crate::config::Config as WorkerConfig;
-use crate::error::TaskError;
+use crate::error::KnownError as WorkerPoolError;
 use crate::redis_queue::{RedisScheduler, TaskResult, TaskStatus};
 use crate::worker::Worker;
 use prometheus::{Counter, Gauge, Registry};
@@ -9,9 +9,11 @@ use tokio::sync::mpsc;
 
 pub struct WorkerPool {
 	config: WorkerConfig,
-    scheduler: Arc<RedisScheduler>,
+	scheduler: Arc<RedisScheduler>,
+    #[allow(dead_code)] /// TODO: remove once obsolete
 	registry: Registry,
 	active_workers: Counter,
+    #[allow(dead_code)] /// TODO: remove once obsolete
 	queue_size: Gauge,
 	task_counter: Counter,
 	error_counter: Counter,
@@ -41,7 +43,7 @@ impl WorkerPool {
 		}
 	}
 
-	pub async fn start(&self, num_workers: usize) -> Result<(), TaskError> {
+	pub async fn start(&self, num_workers: usize) -> Result<(), WorkerPoolError> {
 		let (tx, mut rx) = mpsc::channel(100);
 
 		// Start worker threads
@@ -73,7 +75,7 @@ impl WorkerPool {
 		Ok(())
 	}
 
-	async fn handle_task_result(&self, result: TaskResult) -> Result<(), TaskError> {
+	async fn handle_task_result(&self, result: TaskResult) -> Result<(), WorkerPoolError> {
 		self.task_counter.inc();
 
 		match result.status {
@@ -86,11 +88,12 @@ impl WorkerPool {
 
 				if retry_count < self.config.max_retries {
 					// Requeue for retry
-					let task = self.scheduler
+					let task = self
+						.scheduler
 						.get_tasks_by_pattern(&format!("task:{}", result.task_id))
 						.await?
 						.pop()
-						.ok_or_else(|| TaskError::QueueError("Task not found".into()))?;
+						.ok_or_else(|| WorkerPoolError::QueueError("Task not found".into()))?;
 
 					tokio::time::sleep(self.config.retry_delay).await;
 					self.scheduler.enqueue(task).await?;
