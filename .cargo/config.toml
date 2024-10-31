@@ -1,0 +1,18 @@
+
+[target.'cfg(all())']
+rustflags = [
+    "-W", "clippy::all",
+    "-W", "clippy::pedantic",
+    "-W", "clippy::nursery",
+    "-W", "clippy::cargo",
+    "-W", "clippy::unwrap_used",
+    "-W", "clippy::expect_used",
+    "-W", "clippy::perf",
+    "-W", "clippy::style",
+    "-W", "clippy::complexity",
+    "-W", "clippy::suspicious",
+    "-W", "clippy::doc_markdown",
+    "-A", "clippy::missing_docs_in_private_items",
+    "-A", "clippy::module_name_repetitions",
+    "-D", "warnings"
+]
