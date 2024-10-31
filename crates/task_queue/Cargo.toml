@@ -10,9 +10,12 @@ edition.workspace = true
 [dependencies]
 axum = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true }
+prometheus = "0.13.4"
 redis = "0.27.5"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 uuid = { version = "1.0", features = ["serde", "v4"] }
 
