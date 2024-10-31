@@ -1,7 +1,9 @@
 use redis::{cmd, Client, Commands, Connection, RedisError};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Task {
@@ -46,14 +48,14 @@ pub struct TaskResult {
 	pub completed_at: SystemTime,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RedisScheduler {
-	conn: Connection,
+	conn: Arc<Mutex<Connection>>,
 	scheduler_type: SchedulerType,
 	queue_keys: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum SchedulerType {
 	RoundRobin,
 	EDF,
@@ -70,11 +72,16 @@ impl RedisScheduler {
 			SchedulerType::EDF => vec!["scheduler:edf".to_string()],
 		};
 
-		Ok(Self { conn, scheduler_type, queue_keys })
+		Ok(Self {
+			conn: Arc::new(Mutex::new(conn)),
+			scheduler_type,
+			queue_keys,
+		})
 	}
 
-	pub fn enqueue(&mut self, task: Task) -> Result<(), RedisError> {
+	pub async fn enqueue(&self, task: Task) -> Result<(), RedisError> {
 		let serialized = serde_json::to_string(&task).unwrap();
+		let mut conn = self.conn.lock().await;
 
 		match self.scheduler_type {
 			SchedulerType::RoundRobin => {
@@ -84,17 +91,19 @@ impl RedisScheduler {
 					0..=3 => 2,
 				};
 
-				self.conn.rpush(&self.queue_keys[queue_idx], serialized)?;
+				conn.rpush(&self.queue_keys[queue_idx], serialized)?;
 			}
 			SchedulerType::EDF => {
-				self.conn.zadd(&self.queue_keys[0], serialized, task.deadline as f64)?;
+				conn.zadd(&self.queue_keys[0], serialized, task.deadline as f64)?;
 			}
 		}
 
 		Ok(())
 	}
 
-	pub fn dequeue_batch(&mut self, count: usize) -> Result<Vec<Task>, RedisError> {
+	pub async fn dequeue_batch(&self, count: usize) -> Result<Vec<Task>, RedisError> {
+		let mut conn = self.conn.lock().await;
+
 		match self.scheduler_type {
 			SchedulerType::RoundRobin => {
 				let mut tasks = Vec::new();
@@ -104,40 +113,43 @@ impl RedisScheduler {
 					}
 					let remaining = count - tasks.len();
 					if let Some(count_nz) = NonZeroUsize::new(remaining) {
-						let serialized_items: Vec<String> = self.conn.lpop(key, Some(count_nz))?;
+						let serialized_items: Vec<String> = conn.lpop(key, Some(count_nz))?;
 						tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s).unwrap()));
 					}
 				}
 				Ok(tasks)
 			}
 			SchedulerType::EDF => {
-				let results: Vec<(String, f64)> = self.conn.zpopmin(&self.queue_keys[0], count as isize)?;
+				let results: Vec<(String, f64)> = conn.zpopmin(&self.queue_keys[0], count as isize)?;
 				Ok(results.into_iter().map(|(serialized, _)| serde_json::from_str(&serialized).unwrap()).collect())
 			}
 		}
 	}
 
-	pub fn dequeue_blocking(&mut self, timeout: f64) -> Result<Option<Task>, RedisError> {
+	pub async fn dequeue_blocking(&self, timeout: f64) -> Result<Option<Task>, RedisError> {
+		let mut conn = self.conn.lock().await;
+
 		match self.scheduler_type {
 			SchedulerType::RoundRobin => {
-				let result: Option<(String, String)> = self.conn.blpop(&self.queue_keys, timeout)?;
+				let result: Option<(String, String)> = conn.blpop(&self.queue_keys, timeout)?;
 				Ok(result.map(|(_, serialized)| serde_json::from_str(&serialized).unwrap()))
 			}
 			SchedulerType::EDF => {
-				let result: Option<(String, String, f64)> = cmd("BZPOPMIN").arg(&self.queue_keys[0]).arg(timeout).query(&mut self.conn)?;
+				let result: Option<(String, String, f64)> = cmd("BZPOPMIN").arg(&self.queue_keys[0]).arg(timeout).query(&mut *conn)?;
 
 				Ok(result.map(|(_, serialized, _)| serde_json::from_str(&serialized).unwrap()))
 			}
 		}
 	}
 
-	pub fn get_queue_lengths(&mut self) -> Result<Vec<usize>, RedisError> {
+	pub async fn get_queue_lengths(&self) -> Result<Vec<usize>, RedisError> {
+		let mut conn = self.conn.lock().await;
 		let mut lengths = Vec::new();
 
 		for key in &self.queue_keys {
 			let len = match self.scheduler_type {
-				SchedulerType::RoundRobin => self.conn.llen(key)?,
-				SchedulerType::EDF => self.conn.zcard(key)?,
+				SchedulerType::RoundRobin => conn.llen(key)?,
+				SchedulerType::EDF => conn.zcard(key)?,
 			};
 			lengths.push(len);
 		}
@@ -146,17 +158,18 @@ impl RedisScheduler {
 	}
 
 	// Set task expiration
-	pub fn set_expiration(&mut self, task_id: &str, ttl: Duration) -> Result<(), RedisError> {
-		self.conn.expire(task_id, ttl.as_secs().try_into().unwrap())
+	pub async fn set_expiration(&self, task_id: &str, ttl: Duration) -> Result<(), RedisError> {
+		let mut conn = self.conn.lock().await;
+		conn.expire(task_id, ttl.as_secs().try_into().unwrap())
 	}
 
-	// Get tasks by pattern (e.g., all high priority tasks)
-	pub fn get_tasks_by_pattern(&mut self, pattern: &str) -> Result<Vec<Task>, RedisError> {
-		let keys: Vec<String> = self.conn.keys(pattern)?;
+	pub async fn get_tasks_by_pattern(&self, pattern: &str) -> Result<Vec<Task>, RedisError> {
+		let mut conn = self.conn.lock().await;
+		let keys: Vec<String> = conn.keys(pattern)?;
 		let mut tasks = Vec::new();
 
 		for key in keys {
-			if let Some(serialized) = self.conn.get::<_, Option<String>>(&key)? {
+			if let Some(serialized) = conn.get::<_, Option<String>>(&key)? {
 				if let Ok(task) = serde_json::from_str(&serialized) {
 					tasks.push(task);
 				}

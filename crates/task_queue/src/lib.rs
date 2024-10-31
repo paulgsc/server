@@ -1,8 +1,8 @@
 pub mod config;
 pub mod error;
+pub mod pool;
 pub mod redis_queue;
 pub mod worker;
-pub mod pool;
 
 use axum::{extract::State, routing::post, Json, Router};
 use chrono::{DateTime, Utc};
