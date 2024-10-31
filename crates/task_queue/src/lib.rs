@@ -4,7 +4,7 @@ pub mod pool;
 pub mod redis_queue;
 pub mod worker;
 
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{extract::State, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};

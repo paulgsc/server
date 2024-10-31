@@ -51,7 +51,7 @@ impl WorkerPool {
 
 			tokio::spawn(async move {
 				let worker = Worker::new(id, scheduler);
-				worker.run(worker_tx).await;
+				let _ = worker.run(worker_tx).await;
 			});
 
 			self.active_workers.inc();
