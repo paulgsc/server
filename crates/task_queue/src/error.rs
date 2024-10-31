@@ -10,6 +10,8 @@ pub enum TaskError {
 	CancellationError,
 	#[error("Queue error: {0}")]
 	QueueError(String),
+	#[error("Internal error: {0}")]
+	InternalError(String),
 	#[error("Redis error: {0}")]
 	RedisError(#[from] redis::RedisError),
 }

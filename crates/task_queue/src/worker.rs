@@ -1,29 +1,26 @@
 use crate::config::Config as WorkerConfig;
 use crate::error::TaskError;
 use crate::redis_queue::{RedisScheduler, Task, TaskResult, TaskStatus};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 pub struct Worker {
 	id: usize,
-	scheduler: Arc<Mutex<RedisScheduler>>,
+	scheduler: Arc<RedisScheduler>,
 	config: WorkerConfig,
 }
 
 impl Worker {
-	pub fn new(id: usize, scheduler: Arc<Mutex<RedisScheduler>>) -> Self {
+	pub fn new(id: usize, scheduler: Arc<RedisScheduler>) -> Self {
 		let config = WorkerConfig::new();
 		Self { id, scheduler, config }
 	}
 
-	pub async fn run(&self, result_tx: mpsc::Sender<TaskResult>) {
+	pub async fn run(&self, result_tx: mpsc::Sender<TaskResult>) -> Result<(), TaskError> {
 		loop {
-			let tasks = {
-				let mut scheduler = self.scheduler.lock().unwrap();
-				scheduler.dequeue_batch(self.config.prefetch_count).unwrap_or_default()
-			};
+			let tasks = self.scheduler.dequeue_batch(self.config.prefetch_count).await?;
 
 			for task in tasks {
 				let start_time = SystemTime::now();
@@ -52,7 +49,7 @@ impl Worker {
 				};
 
 				if result_tx.send(result).await.is_err() {
-					return; // Channel closed, worker should shut down
+					return Err(TaskError::InternalError("Result channel closed".to_string()));
 				}
 			}
 
