@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
+use crate::error::KnownError as TaskQueueError;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Task {
@@ -16,19 +17,19 @@ pub struct Task {
 }
 
 impl Task {
-	pub fn new(id: String, priority: u8, deadline: SystemTime, execution_time: Duration) -> Self {
+	pub fn new(id: String, priority: u8, deadline: SystemTime, execution_time: Duration) -> Result<Self, TaskQueueError> {
 		let now = SystemTime::now();
-		let deadline_secs = deadline.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-		let now_secs = now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+		let deadline_secs = deadline.duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
+		let now_secs = now.duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
 
-		Self {
+		Ok(Self {
 			id,
 			priority,
 			deadline: deadline_secs,
 			execution_time: execution_time.as_secs(),
 			arrival_time: now_secs,
 			remaining_time: execution_time.as_secs(),
-		}
+		})
 	}
 }
 
