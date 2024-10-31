@@ -1,5 +1,5 @@
 use crate::config::Config as WorkerConfig;
-use crate::error::TaskError;
+use crate::error::KnownError as WorkerError;
 use crate::redis_queue::{RedisScheduler, Task, TaskResult, TaskStatus};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -18,7 +18,7 @@ impl Worker {
 		Self { id, scheduler, config }
 	}
 
-	pub async fn run(&self, result_tx: mpsc::Sender<TaskResult>) -> Result<(), TaskError> {
+	pub async fn run(&self, result_tx: mpsc::Sender<TaskResult>) -> Result<(), WorkerError> {
 		loop {
 			let tasks = self.scheduler.dequeue_batch(self.config.prefetch_count).await?;
 
@@ -49,7 +49,7 @@ impl Worker {
 				};
 
 				if result_tx.send(result).await.is_err() {
-					return Err(TaskError::InternalError("Result channel closed".to_string()));
+					return Err(WorkerError::InternalError("Result channel closed".to_string()));
 				}
 			}
 
@@ -58,7 +58,7 @@ impl Worker {
 		}
 	}
 
-	async fn execute_task(&self, task: &Task) -> Result<(), TaskError> {
+	async fn execute_task(&self, task: &Task) -> Result<(), WorkerError> {
 		// Actual task execution would go here
 		// This is a placeholder that simulates work
 		sleep(Duration::from_secs(task.execution_time)).await;

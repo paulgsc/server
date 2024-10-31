@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum TaskError {
+pub enum KnownError {
 	#[error("Task execution failed: {0}")]
 	ExecutionError(String),
 	#[error("Task timed out")]
