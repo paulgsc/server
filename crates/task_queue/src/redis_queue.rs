@@ -17,6 +17,9 @@ pub struct Task {
 }
 
 impl Task {
+    ///
+    /// # Errors
+    /// Returns error if system time operations fail or if there are conversion errors
 	pub fn new(id: String, priority: u8, deadline: SystemTime, execution_time: Duration) -> Result<Self, TaskQueueError> {
 		let now = SystemTime::now();
 		let deadline_secs = deadline.duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
@@ -63,6 +66,11 @@ pub enum SchedulerType {
 }
 
 impl RedisScheduler {
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis connection fails
+    /// - Invalid Configuration provided
 	pub fn new(redis_url: &str, scheduler_type: SchedulerType) -> Result<Self, TaskQueueError> {
 		let client = Client::open(redis_url)?;
 		let conn = client.get_connection()?;
@@ -80,6 +88,11 @@ impl RedisScheduler {
 		})
 	}
 
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
+    /// - Serialization fails 
 	pub async fn enqueue(&self, task: Task) -> Result<(), TaskQueueError> {
 		let serialized = serde_json::to_string(&task)?;
 		let mut conn = self.conn.lock().await;
@@ -103,6 +116,11 @@ impl RedisScheduler {
 		Ok(())
 	}
 
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
+    /// - Serialization fails 
 	pub async fn dequeue_batch(&self, count: usize) -> Result<Vec<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 
@@ -135,6 +153,11 @@ impl RedisScheduler {
 		}
 	}
 
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
+    /// - Serialization fails 
 	pub async fn dequeue_blocking(&self, timeout: f64) -> Result<Option<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 
@@ -153,6 +176,10 @@ impl RedisScheduler {
 		}
 	}
 
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
 	pub async fn get_queue_lengths(&self) -> Result<Vec<usize>, TaskQueueError> {
 		let mut queue_lengths = Vec::with_capacity(self.queue_keys.len());
 		let mut conn = self.conn.lock().await;
@@ -169,7 +196,11 @@ impl RedisScheduler {
 		Ok(queue_lengths)
 	}
 
-	// Set task expiration
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
+    /// - Conversion fails
 	pub async fn set_expiration(&self, task_id: &str, ttl: Duration) -> Result<(), TaskQueueError> {
 		let mut conn = self.conn.lock().await;
         let _: bool = conn.expire(task_id, ttl.as_secs().try_into()?)?;
@@ -177,6 +208,11 @@ impl RedisScheduler {
         Ok(())
 	}
 
+    ///
+    /// # Errors
+    /// This function returns an error if:
+    /// - Redis operations fails
+    /// - Deserialization fails
 	pub async fn get_tasks_by_pattern(&self, pattern: &str) -> Result<Vec<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 		let keys: Vec<String> = conn.keys(pattern)?;
