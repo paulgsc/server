@@ -44,7 +44,7 @@ impl Worker {
 				let result = TaskResult {
 					task_id: task.id,
 					status,
-					execution_time: start_time.elapsed().unwrap(),
+					execution_time: start_time.elapsed()?,
 					completed_at: SystemTime::now(),
 				};
 
