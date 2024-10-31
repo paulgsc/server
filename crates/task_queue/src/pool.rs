@@ -1,12 +1,11 @@
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
-use metrics::{counter, gauge};
 use prometheus::{Registry, Counter, Gauge};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use crate::redis_queue::{RedisScheduler, TaskStatus, TaskResult };
+use crate::worker::Worker;
+use crate::config::Config as WorkerConfig;
+use crate::error::TaskError;
 
 pub struct WorkerPool {
     config: WorkerConfig,
@@ -21,12 +20,12 @@ pub struct WorkerPool {
 impl WorkerPool {
     pub fn new(
         scheduler: RedisScheduler,
-        config: WorkerConfig,
         registry: Registry,
     ) -> Self {
         let active_workers = Counter::new("worker_pool_active_workers", "Number of active workers").unwrap();
         let queue_size = Gauge::new("worker_pool_queue_size", "Current queue size").unwrap();
         let task_counter = Counter::new("worker_pool_tasks_processed", "Total tasks processed").unwrap();
+        let config = WorkerConfig::new();
         let error_counter = Counter::new("worker_pool_task_errors", "Total task errors").unwrap();
 
         registry.register(Box::new(active_workers.clone())).unwrap();
@@ -52,10 +51,9 @@ impl WorkerPool {
         for id in 0..num_workers {
             let worker_tx = tx.clone();
             let scheduler = Arc::clone(&self.scheduler);
-            let config = self.config.clone();
             
             tokio::spawn(async move {
-                let worker = Worker::new(id, scheduler, config);
+                let worker = Worker::new(id, scheduler, );
                 worker.run(worker_tx).await;
             });
             
@@ -63,13 +61,12 @@ impl WorkerPool {
         }
 
         // Start supervisor thread
-        let scheduler = Arc::clone(&self.scheduler);
-        let config = self.config.clone();
-        
-        tokio::spawn(async move {
-            let supervisor = Supervisor::new(scheduler, config);
-            supervisor.run().await;
-        });
+        // let scheduler = Arc::clone(&self.scheduler);
+        // let config = self.config.clone();
+        // tokio::spawn(async move {
+        //     let supervisor = Supervisor::new(scheduler, config);
+        //     supervisor.run().await;
+        // });
 
         // Result handler
         while let Some(result) = rx.recv().await {
