@@ -1,5 +1,5 @@
 use crate::error::KnownError as TaskQueueError;
-use redis::{cmd, Client, Commands, Connection, RedisError};
+use redis::{cmd, Client, Commands, Connection};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -63,7 +63,7 @@ pub enum SchedulerType {
 }
 
 impl RedisScheduler {
-	pub fn new(redis_url: &str, scheduler_type: SchedulerType) -> Result<Self, RedisError> {
+	pub fn new(redis_url: &str, scheduler_type: SchedulerType) -> Result<Self, TaskQueueError> {
 		let client = Client::open(redis_url)?;
 		let conn = client.get_connection()?;
 
@@ -80,8 +80,8 @@ impl RedisScheduler {
 		})
 	}
 
-	pub async fn enqueue(&self, task: Task) -> Result<(), RedisError> {
-		let serialized = serde_json::to_string(&task).unwrap();
+	pub async fn enqueue(&self, task: Task) -> Result<(), TaskQueueError> {
+		let serialized = serde_json::to_string(&task)?;
 		let mut conn = self.conn.lock().await;
 
 		match self.scheduler_type {
@@ -99,11 +99,11 @@ impl RedisScheduler {
 			}
 		}
 
-        drop(conn);
+		drop(conn);
 		Ok(())
 	}
 
-	pub async fn dequeue_batch(&self, count: usize) -> Result<Vec<Task>, RedisError> {
+	pub async fn dequeue_batch(&self, count: usize) -> Result<Vec<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 
 		match self.scheduler_type {
@@ -116,39 +116,44 @@ impl RedisScheduler {
 					let remaining = count - tasks.len();
 					if let Some(count_nz) = NonZeroUsize::new(remaining) {
 						let serialized_items: Vec<String> = conn.lpop(key, Some(count_nz))?;
-						tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s).unwrap()));
+						tasks.extend(serialized_items.into_iter().map(|s| serde_json::from_str(&s)).collect::<Result<Vec<Task>, _>>()?);
 					}
 				}
-                drop(conn);
+				drop(conn);
 				Ok(tasks)
 			}
 			SchedulerType::EDF => {
 				let results: Vec<(String, f64)> = conn.zpopmin(&self.queue_keys[0], count as isize)?;
-                drop(conn);
-				Ok(results.into_iter().map(|(serialized, _)| serde_json::from_str(&serialized).unwrap()).collect())
+				drop(conn);
+				Ok(
+					results
+						.into_iter()
+						.map(|(serialized, _)| serde_json::from_str::<Task>(&serialized))
+						.collect::<Result<Vec<Task>, _>>()?,
+				)
 			}
 		}
 	}
 
-	pub async fn dequeue_blocking(&self, timeout: f64) -> Result<Option<Task>, RedisError> {
+	pub async fn dequeue_blocking(&self, timeout: f64) -> Result<Option<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 
 		match self.scheduler_type {
 			SchedulerType::RoundRobin => {
 				let result: Option<(String, String)> = conn.blpop(&self.queue_keys, timeout)?;
-                drop(conn);
-				Ok(result.map(|(_, serialized)| serde_json::from_str(&serialized).unwrap()))
+				drop(conn);
+				Ok(result.and_then(|(_, serialized)| serde_json::from_str::<Task>(&serialized).ok()))
 			}
 			SchedulerType::EDF => {
 				let result: Option<(String, String, f64)> = cmd("BZPOPMIN").arg(&self.queue_keys[0]).arg(timeout).query(&mut *conn)?;
 
-                drop(conn);
-				Ok(result.map(|(_, serialized, _)| serde_json::from_str(&serialized).unwrap()))
+				drop(conn);
+				Ok(result.and_then(|(_, serialized, _)| serde_json::from_str::<Task>(&serialized).ok()))
 			}
 		}
 	}
 
-	pub async fn get_queue_lengths(&self) -> Result<Vec<usize>, RedisError> {
+	pub async fn get_queue_lengths(&self) -> Result<Vec<usize>, TaskQueueError> {
 		let mut queue_lengths = Vec::with_capacity(self.queue_keys.len());
 		let mut conn = self.conn.lock().await;
 
@@ -160,17 +165,19 @@ impl RedisScheduler {
 			queue_lengths.push(len);
 		}
 
-        drop(conn);
+		drop(conn);
 		Ok(queue_lengths)
 	}
 
 	// Set task expiration
-	pub async fn set_expiration(&self, task_id: &str, ttl: Duration) -> Result<(), RedisError> {
+	pub async fn set_expiration(&self, task_id: &str, ttl: Duration) -> Result<(), TaskQueueError> {
 		let mut conn = self.conn.lock().await;
-		conn.expire(task_id, ttl.as_secs().try_into().unwrap())
+        let _: bool = conn.expire(task_id, ttl.as_secs().try_into()?)?;
+        drop(conn);
+        Ok(())
 	}
 
-	pub async fn get_tasks_by_pattern(&self, pattern: &str) -> Result<Vec<Task>, RedisError> {
+	pub async fn get_tasks_by_pattern(&self, pattern: &str) -> Result<Vec<Task>, TaskQueueError> {
 		let mut conn = self.conn.lock().await;
 		let keys: Vec<String> = conn.keys(pattern)?;
 		let mut tasks = Vec::new();
@@ -193,7 +200,7 @@ mod tests {
 	use std::thread::sleep;
 
 	// Helper function to clear Redis queues
-	fn clear_redis_queues(conn: &mut Connection) -> Result<(), RedisError> {
+	fn clear_redis_queues(conn: &mut Connection) -> Result<(), TaskQueueError> {
 		let patterns = ["scheduler:high", "scheduler:medium", "scheduler:low", "scheduler:edf"];
 		for key in patterns.iter() {
 			let _: () = redis::cmd("FLUSHDB").query(conn)?;
@@ -202,7 +209,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_redis_scheduler_initialization() -> Result<(), RedisError> {
+	fn test_redis_scheduler_initialization() -> Result<(), TaskQueueError> {
 		let mut round_robin_scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut round_robin_scheduler.conn)?;
 
@@ -216,7 +223,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_enqueue_dequeue_round_robin() -> Result<(), RedisError> {
+	fn test_enqueue_dequeue_round_robin() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
@@ -235,7 +242,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_enqueue_dequeue_edf() -> Result<(), RedisError> {
+	fn test_enqueue_dequeue_edf() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
@@ -255,7 +262,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_task_expiration() -> Result<(), RedisError> {
+	fn test_task_expiration() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
@@ -274,7 +281,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_dequeue_batch() -> Result<(), RedisError> {
+	fn test_dequeue_batch() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
@@ -296,7 +303,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_blocking_dequeue_timeout() -> Result<(), RedisError> {
+	fn test_blocking_dequeue_timeout() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
@@ -307,7 +314,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_queue_lengths() -> Result<(), RedisError> {
+	fn test_queue_lengths() -> Result<(), TaskQueueError> {
 		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
 		clear_redis_queues(&mut scheduler.conn)?;
 
