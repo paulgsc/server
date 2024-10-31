@@ -1,4 +1,9 @@
 
+pub struct Supervisor {
+    scheduler: Arc<Mutex<RedisScheduler>>,
+    config: WorkerConfig,
+}
+
 impl Supervisor {
     fn new(scheduler: Arc<Mutex<RedisScheduler>>, config: WorkerConfig) -> Self {
         Self { scheduler, config }
