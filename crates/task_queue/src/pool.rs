@@ -83,7 +83,7 @@ impl WorkerPool {
 				// Store successful result
 				self.scheduler.set_expiration(&result.task_id, Duration::from_secs(3600)).await?;
 			}
-			TaskStatus::Failed { error, retry_count } => {
+			TaskStatus::Failed { error: _, retry_count } => {
 				self.error_counter.inc();
 
 				if retry_count < self.config.max_retries {

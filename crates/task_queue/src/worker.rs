@@ -7,12 +7,14 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 pub struct Worker {
+    #[allow(dead_code)] /// TODO: remove once obsolete
 	id: usize,
 	scheduler: Arc<RedisScheduler>,
 	config: WorkerConfig,
 }
 
 impl Worker {
+    #[must_use]
 	pub fn new(id: usize, scheduler: Arc<RedisScheduler>) -> Self {
 		let config = WorkerConfig::new();
 		Self { id, scheduler, config }
@@ -25,9 +27,8 @@ impl Worker {
 			for task in tasks {
 				let start_time = SystemTime::now();
 
-				// Execute task with timeout
 				let status = tokio::select! {
-						_ = sleep(self.config.task_timeout) => {
+						() = sleep(self.config.task_timeout) => {
 								TaskStatus::TimedOut
 						}
 						result = self.execute_task(&task) => {
