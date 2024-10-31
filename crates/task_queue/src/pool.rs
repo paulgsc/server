@@ -20,19 +20,19 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-	pub fn new(scheduler: RedisScheduler, registry: Registry) -> Self {
-		let active_workers = Counter::new("worker_pool_active_workers", "Number of active workers").unwrap();
-		let queue_size = Gauge::new("worker_pool_queue_size", "Current queue size").unwrap();
-		let task_counter = Counter::new("worker_pool_tasks_processed", "Total tasks processed").unwrap();
+	pub fn new(scheduler: RedisScheduler, registry: Registry) -> Result<Self, WorkerPoolError> {
+		let active_workers = Counter::new("worker_pool_active_workers", "Number of active workers")?;
+		let queue_size = Gauge::new("worker_pool_queue_size", "Current queue size")?;
+		let task_counter = Counter::new("worker_pool_tasks_processed", "Total tasks processed")?;
 		let config = WorkerConfig::new();
-		let error_counter = Counter::new("worker_pool_task_errors", "Total task errors").unwrap();
+		let error_counter = Counter::new("worker_pool_task_errors", "Total task errors")?;
 
-		registry.register(Box::new(active_workers.clone())).unwrap();
-		registry.register(Box::new(queue_size.clone())).unwrap();
-		registry.register(Box::new(task_counter.clone())).unwrap();
-		registry.register(Box::new(error_counter.clone())).unwrap();
+		registry.register(Box::new(active_workers.clone()))?;
+		registry.register(Box::new(queue_size.clone()))?;
+		registry.register(Box::new(task_counter.clone()))?;
+		registry.register(Box::new(error_counter.clone()))?;
 
-		Self {
+		Ok(Self {
 			config,
 			scheduler: Arc::new(scheduler),
 			registry,
@@ -40,7 +40,7 @@ impl WorkerPool {
 			queue_size,
 			task_counter,
 			error_counter,
-		}
+		})
 	}
 
 	pub async fn start(&self, num_workers: usize) -> Result<(), WorkerPoolError> {

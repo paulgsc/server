@@ -15,6 +15,9 @@ pub enum KnownError {
 	InternalError(String),
 	#[error("Redis error: {0}")]
 	RedisError(#[from] redis::RedisError),
+    #[error("Prometheus error: {0}")]
+	PrometheusError(#[from] prometheus::Error),
+
 }
 
 impl From<SystemTimeError> for KnownError {
