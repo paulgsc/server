@@ -7,14 +7,15 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 pub struct Worker {
-    #[allow(dead_code)] /// TODO: remove once obsolete
+	#[allow(dead_code)]
+	/// TODO: remove once obsolete
 	id: usize,
 	scheduler: Arc<RedisScheduler>,
 	config: WorkerConfig,
 }
 
 impl Worker {
-    #[must_use]
+	#[must_use]
 	pub fn new(id: usize, scheduler: Arc<RedisScheduler>) -> Self {
 		let config = WorkerConfig::new();
 		Self { id, scheduler, config }

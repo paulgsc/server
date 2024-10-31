@@ -10,10 +10,12 @@ use tokio::sync::mpsc;
 pub struct WorkerPool {
 	config: WorkerConfig,
 	scheduler: Arc<RedisScheduler>,
-    #[allow(dead_code)] /// TODO: remove once obsolete
+	#[allow(dead_code)]
+	/// TODO: remove once obsolete
 	registry: Registry,
 	active_workers: Counter,
-    #[allow(dead_code)] /// TODO: remove once obsolete
+	#[allow(dead_code)]
+	/// TODO: remove once obsolete
 	queue_size: Gauge,
 	task_counter: Counter,
 	error_counter: Counter,
