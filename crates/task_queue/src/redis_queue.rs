@@ -298,7 +298,7 @@ mod tests {
 			let mut conn = scheduler.conn.lock().await;
 			clear_redis_queues(&mut *conn).await?;
 		}
-        assert!(matches!(scheduler.scheduler_type, SchedulerType::RoundRobin(_)));
+		assert!(matches!(scheduler.scheduler_type, SchedulerType::RoundRobin(_)));
 
 		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
 		{
