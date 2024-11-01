@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	{
 		let scheduler = scheduler;
 		for task in example_tasks {
+			println!("task: {}", task);
 			scheduler.enqueue(task).await?;
 		}
 	}
