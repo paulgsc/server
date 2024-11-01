@@ -1,6 +1,7 @@
 pub mod config;
 pub mod error;
 pub mod pool;
+pub mod priority_queue;
 pub mod redis_queue;
 pub mod scheduler_types;
 pub mod worker;
