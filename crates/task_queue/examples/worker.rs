@@ -1,7 +1,7 @@
 use prometheus::Registry;
 use std::time::{Duration, SystemTime};
 use task_queue::pool::WorkerPool;
-use task_queue::redis_queue::{RedisScheduler, SchedulerType};
+use task_queue::redis_queue::{RedisScheduler, SchedulerType, Task};
 use tokio;
 
 #[tokio::main]
@@ -14,16 +14,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let scheduler = RedisScheduler::new(&redis_url, SchedulerType::EDF)?;
 
 	// Create worker pool
-	let pool = WorkerPool::new(scheduler.clone(), registry);
+	let pool = WorkerPool::new(scheduler.clone(), registry)?;
 
 	// Create some example tasks
 	let example_tasks = create_example_tasks();
 
 	// Enqueue the example tasks
 	{
-		let mut scheduler = scheduler;
+		let scheduler = scheduler;
 		for task in example_tasks {
-			scheduler.enqueue(task)?;
+			scheduler.enqueue(task).await?;
 		}
 	}
 
@@ -49,7 +49,7 @@ fn create_example_tasks() -> Vec<Task> {
 		let deadline = now + Duration::from_secs(300 + i * 60); // Staggered deadlines
 		let execution_time = Duration::from_secs(10 + i * 5); // Varying execution times
 
-		let task = Task::new(format!("task-{}", i), priority, deadline, execution_time);
+		let task = Task::new(format!("task-{}", i), priority, deadline, execution_time).unwrap();
 
 		tasks.push(task);
 	}
