@@ -1,7 +1,8 @@
 use prometheus::Registry;
 use std::time::{Duration, SystemTime};
 use task_queue::pool::WorkerPool;
-use task_queue::redis_queue::{RedisScheduler, SchedulerType, Task};
+use task_queue::redis_queue::{RedisScheduler, Task};
+use task_queue::scheduler_types::{SchedulerType, RoundRobinConfig};
 use tokio;
 
 #[tokio::main]
@@ -11,22 +12,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Configure Redis scheduler
 	let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-	let scheduler = RedisScheduler::new(&redis_url, SchedulerType::EDF)?;
-
-	// Create worker pool
-	let pool = WorkerPool::new(scheduler.clone(), registry)?;
+	let scheduler = RedisScheduler::new(&redis_url, SchedulerType::RoundRobin(RoundRobinConfig::default()))?;
 
 	// Create some example tasks
 	let example_tasks = create_example_tasks();
 
 	// Enqueue the example tasks
-	{
-		let scheduler = scheduler;
-		for task in example_tasks {
-			println!("task: {}", task);
-			scheduler.enqueue(task).await?;
-		}
+	for task in example_tasks {
+		println!("task: {}", task);
+		scheduler.enqueue(task).await?;
 	}
+
+	// Create worker pool
+	let pool = WorkerPool::new(scheduler, registry)?;
 
 	// Start the worker pool with 3 workers
 	println!("Starting worker pool with 3 workers...");
