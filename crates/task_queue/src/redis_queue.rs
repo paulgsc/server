@@ -58,12 +58,12 @@ pub enum TaskStatus {
 impl fmt::Display for TaskStatus {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			TaskStatus::Success => write!(f, "Success"),
-			TaskStatus::Failed { error, retry_count } => {
-				write!(f, "Failed(error: {}, retries: {})", error, retry_count)
+			Self::Success => write!(f, "Success"),
+			Self::Failed { error, retry_count } => {
+                write!(f, "Failed(error={error}, retries={retry_count})")
 			}
-			TaskStatus::Cancelled => write!(f, "Cancelled"),
-			TaskStatus::TimedOut => write!(f, "TimedOut"),
+			Self::Cancelled => write!(f, "Cancelled"),
+			Self::TimedOut => write!(f, "TimedOut"),
 		}
 	}
 }
