@@ -1,7 +1,8 @@
 use std::thread;
 use std::time::{Duration, SystemTime};
 use task_queue::error::KnownError as Error;
-use task_queue::redis_queue::{RedisScheduler, SchedulerType, Task};
+use task_queue::redis_queue::{RedisScheduler,  Task};
+ use task_queue::scheduler_types::{SchedulerType, RoundRobinConfig};
 use tokio;
 
 #[tokio::main]
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn round_robin_example() -> Result<(), Error> {
-	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin(RoundRobinConfig::default()))?;
 
 	// Create tasks with different priorities
 	let tasks = vec![
@@ -109,7 +110,7 @@ async fn edf_example() -> Result<(), Error> {
 
 #[allow(dead_code)]
 async fn batch_processing_example() -> Result<(), Error> {
-	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin(RoundRobinConfig::default()))?;
 
 	// Create a batch of tasks
 	let tasks: Vec<Task> = (0..10)
@@ -146,7 +147,7 @@ async fn batch_processing_example() -> Result<(), Error> {
 
 #[allow(dead_code)]
 async fn blocking_dequeue_example() -> Result<(), Error> {
-	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin(RoundRobinConfig::default()))?;
 	let scheduler_clone = scheduler.clone();
 
 	// Spawn a thread that will add tasks after a delay
@@ -180,7 +181,7 @@ async fn blocking_dequeue_example() -> Result<(), Error> {
 async fn advanced_examples() -> Result<(), Error> {
 	println!("\nRunning Advanced Examples...");
 
-	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+	let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin(RoundRobinConfig::default()))?;
 
 	// Create a task with expiration
 	let task = Task::new("expiring_task".to_string(), 8, SystemTime::now() + Duration::from_secs(3600), Duration::from_secs(10))?;
