@@ -1,6 +1,7 @@
 use crate::error::KnownError as TaskQueueError;
 use redis::{cmd, Client, Commands, Connection};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -36,6 +37,16 @@ impl Task {
 	}
 }
 
+impl fmt::Display for Task {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(
+			f,
+			"Task[{}] (priority: {}, deadline: {}s, exec_time: {}s, arrival: {}s, remaining: {}s)",
+			self.id, self.priority, self.deadline, self.execution_time, self.arrival_time, self.remaining_time
+		)
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskStatus {
 	Success,
@@ -44,12 +55,35 @@ pub enum TaskStatus {
 	TimedOut,
 }
 
+impl fmt::Display for TaskStatus {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			TaskStatus::Success => write!(f, "Success"),
+			TaskStatus::Failed { error, retry_count } => {
+				write!(f, "Failed(error: {}, retries: {})", error, retry_count)
+			}
+			TaskStatus::Cancelled => write!(f, "Cancelled"),
+			TaskStatus::TimedOut => write!(f, "TimedOut"),
+		}
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
 	pub task_id: String,
 	pub status: TaskStatus,
 	pub execution_time: Duration,
 	pub completed_at: SystemTime,
+}
+
+impl fmt::Display for TaskResult {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(
+			f,
+			"TaskResult[{}] ({}, execution_time: {:?}, completed_at: {:?})",
+			self.task_id, self.status, self.execution_time, self.completed_at
+		)
+	}
 }
 
 #[derive(Clone)]
