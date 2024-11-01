@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod pool;
 pub mod redis_queue;
+pub mod scheduler_types;
 pub mod worker;
 
 use axum::{extract::State, Json};

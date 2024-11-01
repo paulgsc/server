@@ -46,7 +46,7 @@ impl Config {
 
 	pub fn default() -> Self {
 		Self {
-			prefetch_count: 10,
+			prefetch_count: 5,
 			max_retries: 3,
 			retry_delay: Duration::from_secs(60),
 			task_timeout: Duration::from_secs(300),
