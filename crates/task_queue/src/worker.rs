@@ -63,6 +63,7 @@ impl Worker {
 	async fn execute_task(&self, task: &Task) -> Result<(), WorkerError> {
 		// Actual task execution would go here
 		// This is a placeholder that simulates work
+		println!("executing some task: {}", task);
 		sleep(Duration::from_secs(task.execution_time)).await;
 		Ok(())
 	}
