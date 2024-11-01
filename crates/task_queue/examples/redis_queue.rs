@@ -1,8 +1,8 @@
 use std::thread;
 use std::time::{Duration, SystemTime};
 use task_queue::error::KnownError as Error;
-use task_queue::redis_queue::{RedisScheduler,  Task};
- use task_queue::scheduler_types::{SchedulerType, RoundRobinConfig};
+use task_queue::redis_queue::{RedisScheduler, Task};
+use task_queue::scheduler_types::{RoundRobinConfig, SchedulerType};
 use tokio;
 
 #[tokio::main]
