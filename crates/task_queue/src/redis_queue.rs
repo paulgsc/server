@@ -236,60 +236,68 @@ mod tests {
 	use std::thread::sleep;
 
 	// Helper function to clear Redis queues
-	fn clear_redis_queues(conn: &mut Connection) -> Result<(), TaskQueueError> {
-		let patterns = ["scheduler:high", "scheduler:medium", "scheduler:low", "scheduler:edf"];
-		for key in patterns.iter() {
-			let _: () = redis::cmd("FLUSHDB").query(conn)?;
+	async fn clear_redis_queues(conn: &mut Connection) -> Result<(), TaskQueueError> {
+		let _: () = redis::cmd("FLUSHDB").query(conn)?;
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn test_redis_scheduler_initialization() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
 		}
+		assert!(matches!(scheduler.scheduler_type, SchedulerType::RoundRobin));
+
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
+
+		assert!(matches!(scheduler.scheduler_type, SchedulerType::EDF));
 		Ok(())
 	}
 
-	#[test]
-	fn test_redis_scheduler_initialization() -> Result<(), TaskQueueError> {
-		let mut round_robin_scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut round_robin_scheduler.conn)?;
+	#[tokio::test]
+	async fn test_enqueue_dequeue_round_robin() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		assert!(matches!(round_robin_scheduler.scheduler_type, SchedulerType::RoundRobin));
+		let task1 = Task::new("task1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10))?;
+		let task2 = Task::new("task2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20))?;
 
-		let mut edf_scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
-		clear_redis_queues(&mut edf_scheduler.conn)?;
+		scheduler.enqueue(task1).await?;
+		scheduler.enqueue(task2).await?;
 
-		assert!(matches!(edf_scheduler.scheduler_type, SchedulerType::EDF));
-		Ok(())
-	}
-
-	#[test]
-	fn test_enqueue_dequeue_round_robin() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut scheduler.conn)?;
-
-		let task1 = Task::new("task1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
-		let task2 = Task::new("task2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
-
-		scheduler.enqueue(task1)?;
-		scheduler.enqueue(task2)?;
-
-		let first = scheduler.dequeue_batch(1)?.pop().unwrap();
-		let second = scheduler.dequeue_batch(1)?.pop().unwrap();
+		let first = scheduler.dequeue_batch(1).await?.pop().unwrap();
+		let second = scheduler.dequeue_batch(1).await?.pop().unwrap();
 
 		assert_eq!(first.id, "task1");
 		assert_eq!(second.id, "task2");
 		Ok(())
 	}
 
-	#[test]
-	fn test_enqueue_dequeue_edf() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
-		clear_redis_queues(&mut scheduler.conn)?;
+	#[tokio::test]
+	async fn test_enqueue_dequeue_edf() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::EDF)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		let task1 = Task::new("task1".to_string(), 5, SystemTime::now() + Duration::from_secs(50), Duration::from_secs(10));
-		let task2 = Task::new("task2".to_string(), 7, SystemTime::now() + Duration::from_secs(100), Duration::from_secs(20));
+		let task1 = Task::new("task1".to_string(), 5, SystemTime::now() + Duration::from_secs(50), Duration::from_secs(10))?;
+		let task2 = Task::new("task2".to_string(), 7, SystemTime::now() + Duration::from_secs(100), Duration::from_secs(20))?;
 
-		scheduler.enqueue(task1)?;
-		scheduler.enqueue(task2)?;
+		scheduler.enqueue(task1).await?;
+		scheduler.enqueue(task2).await?;
 
-		let first = scheduler.dequeue_batch(1)?.pop().unwrap();
-		let second = scheduler.dequeue_batch(1)?.pop().unwrap();
+		let first = scheduler.dequeue_batch(1).await?.pop().unwrap();
+		let second = scheduler.dequeue_batch(1).await?.pop().unwrap();
 
 		assert_eq!(first.id, "task1");
 		assert_eq!(second.id, "task2");
@@ -297,39 +305,45 @@ mod tests {
 		Ok(())
 	}
 
-	#[test]
-	fn test_task_expiration() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut scheduler.conn)?;
+	#[tokio::test]
+	async fn test_task_expiration() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		let task = Task::new("task_expire".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(10));
-		scheduler.enqueue(task.clone())?;
+		let task = Task::new("task_expire".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(10))?;
+		scheduler.enqueue(task.clone()).await?;
 
 		// Set task to expire immediately
-		scheduler.set_expiration(&task.id, Duration::from_secs(1))?;
+		scheduler.set_expiration(&task.id, Duration::from_secs(1)).await?;
 		sleep(Duration::from_secs(2));
 
 		// Try to dequeue the expired task
-		let result = scheduler.get_tasks_by_pattern("scheduler:*")?;
+		let result = scheduler.get_tasks_by_pattern("scheduler:*").await?;
 		assert!(result.iter().all(|t| t.id != task.id), "Expired task was not removed");
 
 		Ok(())
 	}
 
-	#[test]
-	fn test_dequeue_batch() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut scheduler.conn)?;
+	#[tokio::test]
+	async fn test_dequeue_batch() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		let task1 = Task::new("task_batch1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
-		let task2 = Task::new("task_batch2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
-		let task3 = Task::new("task_batch3".to_string(), 2, SystemTime::now() + Duration::from_secs(150), Duration::from_secs(30));
+		let task1 = Task::new("task_batch1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10))?;
+		let task2 = Task::new("task_batch2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20))?;
+		let task3 = Task::new("task_batch3".to_string(), 2, SystemTime::now() + Duration::from_secs(150), Duration::from_secs(30))?;
 
-		scheduler.enqueue(task1)?;
-		scheduler.enqueue(task2)?;
-		scheduler.enqueue(task3)?;
+		scheduler.enqueue(task1).await?;
+		scheduler.enqueue(task2).await?;
+		scheduler.enqueue(task3).await?;
 
-		let batch = scheduler.dequeue_batch(2)?;
+		let batch = scheduler.dequeue_batch(2).await?;
 		assert_eq!(batch.len(), 2);
 
 		let ids: Vec<String> = batch.into_iter().map(|task| task.id).collect();
@@ -338,29 +352,35 @@ mod tests {
 		Ok(())
 	}
 
-	#[test]
-	fn test_blocking_dequeue_timeout() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut scheduler.conn)?;
+	#[tokio::test]
+	async fn test_blocking_dequeue_timeout() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		let result = scheduler.dequeue_blocking(1.0)?;
+		let result = scheduler.dequeue_blocking(1.0).await?;
 		assert!(result.is_none(), "Expected no task to be dequeued after timeout");
 
 		Ok(())
 	}
 
-	#[test]
-	fn test_queue_lengths() -> Result<(), TaskQueueError> {
-		let mut scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
-		clear_redis_queues(&mut scheduler.conn)?;
+	#[tokio::test]
+	async fn test_queue_lengths() -> Result<(), TaskQueueError> {
+		let scheduler = RedisScheduler::new("redis://127.0.0.1/", SchedulerType::RoundRobin)?;
+		{
+			let mut conn = scheduler.conn.lock().await;
+			clear_redis_queues(&mut *conn).await?;
+		}
 
-		let task1 = Task::new("task_len1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10));
-		let task2 = Task::new("task_len2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20));
+		let task1 = Task::new("task_len1".to_string(), 9, SystemTime::now() + Duration::from_secs(60), Duration::from_secs(10))?;
+		let task2 = Task::new("task_len2".to_string(), 5, SystemTime::now() + Duration::from_secs(120), Duration::from_secs(20))?;
 
-		scheduler.enqueue(task1)?;
-		scheduler.enqueue(task2)?;
+		scheduler.enqueue(task1).await?;
+		scheduler.enqueue(task2).await?;
 
-		let lengths = scheduler.get_queue_lengths()?;
+		let lengths = scheduler.get_queue_lengths().await?;
 		assert_eq!(lengths.iter().sum::<usize>(), 2, "Total queue length mismatch");
 
 		Ok(())
