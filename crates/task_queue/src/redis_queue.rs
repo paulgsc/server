@@ -60,7 +60,7 @@ impl fmt::Display for TaskStatus {
 		match self {
 			Self::Success => write!(f, "Success"),
 			Self::Failed { error, retry_count } => {
-                write!(f, "Failed(error={error}, retries={retry_count})")
+				write!(f, "Failed(error={error}, retries={retry_count})")
 			}
 			Self::Cancelled => write!(f, "Cancelled"),
 			Self::TimedOut => write!(f, "TimedOut"),
