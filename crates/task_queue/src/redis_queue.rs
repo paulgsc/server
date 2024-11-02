@@ -134,10 +134,10 @@ impl RedisScheduler {
 					0..=3 => 2,
 				};
 
-				conn.rpush(&self.queue_keys[queue_idx], serialized)?;
+				let _: () = conn.rpush(&self.queue_keys[queue_idx], serialized)?;
 			}
 			SchedulerType::EDF => {
-				conn.zadd(&self.queue_keys[0], serialized, task.deadline as f64)?;
+				let _: () = conn.zadd(&self.queue_keys[0], serialized, task.deadline as f64)?;
 			}
 		}
 
