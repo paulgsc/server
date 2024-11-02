@@ -6,18 +6,20 @@
 ///
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{self, Debug, Display};
 
 pub struct SplayTree<K: Ord + Debug, V> {
 	root: Option<Box<SplayNode<K, V>>>,
 }
 
-impl<K: Ord + Debug, V: Debug> Display for SplayTree<K, V> {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		if let Some(root) = &self.root {
-			write!(f, "{}", root)
-		} else {
-			write!(f, "Empty Tree")
+impl<K: Ord + Debug + Display, V: Display> Display for SplayTree<K, V> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match &self.root {
+			Some(root) => {
+				writeln!(f, "SplayTree:")?;
+				root.format_tree(f, "", false, true)
+			}
+			None => writeln!(f, "SplayTree: <empty>"),
 		}
 	}
 }
@@ -29,6 +31,36 @@ struct SplayNode<K, V> {
 	right: Option<Box<SplayNode<K, V>>>,
 }
 
+impl<K: Ord + Debug + Display, V: Display> SplayNode<K, V> {
+	fn format_tree(&self, f: &mut fmt::Formatter<'_>, prefix: &str, is_left: bool, is_root: bool) -> fmt::Result {
+		// Print current node
+		if is_root {
+			writeln!(f, "└── ({}, {})", self.key, self.value)?;
+		} else if is_left {
+			writeln!(f, "{}├── ({}, {})", prefix, self.key, self.value)?;
+		} else {
+			writeln!(f, "{}└── ({}, {})", prefix, self.key, self.value)?;
+		}
+
+		// Prepare the prefix for children
+		let child_prefix = if is_root {
+			"    ".to_string()
+		} else {
+			format!("{}{}", prefix, if is_left { "│   " } else { "    " })
+		};
+
+		// Recursively print left and right subtrees
+		if let Some(left) = &self.left {
+			left.format_tree(f, &child_prefix, true, false)?;
+		}
+		if let Some(right) = &self.right {
+			right.format_tree(f, &child_prefix, false, false)?;
+		}
+
+		Ok(())
+	}
+}
+
 impl<K: Ord + Debug, V> SplayNode<K, V> {
 	fn new(key: K, value: V) -> Self {
 		SplayNode {
@@ -37,25 +69,6 @@ impl<K: Ord + Debug, V> SplayNode<K, V> {
 			left: None,
 			right: None,
 		}
-	}
-}
-
-impl<K: Debug, V: Debug> Display for SplayNode<K, V> {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "Node(Key: {:?}, Value: {:?})", self.key, self.value)?;
-
-		if self.left.is_some() || self.right.is_some() {
-			write!(f, " [")?;
-			if let Some(left) = &self.left {
-				write!(f, " Left: {}", left)?;
-			}
-			if let Some(right) = &self.right {
-				write!(f, " Right: {}", right)?;
-			}
-			write!(f, "]")?;
-		}
-
-		Ok(())
 	}
 }
 
@@ -325,5 +338,234 @@ impl<K: Ord + Debug, V> Iterator for IntoIter<K, V> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		self.tree.remove_min()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_new_and_empty() {
+		let tree: SplayTree<i32, &str> = SplayTree::new();
+		assert!(tree.is_empty());
+	}
+
+	#[test]
+	fn test_basic_insert_and_get() {
+		let mut tree = SplayTree::new();
+
+		// Test single insert
+		assert_eq!(tree.insert(1, "one"), None);
+		assert!(!tree.is_empty());
+
+		// Test get after insert
+		assert_eq!(tree.get(&1), Some(&"one"));
+		assert_eq!(tree.get(&2), None);
+
+		// Test value replacement
+		assert_eq!(tree.insert(1, "new_one"), Some("one"));
+		assert_eq!(tree.get(&1), Some(&"new_one"));
+	}
+
+	#[test]
+	fn test_multiple_inserts() {
+		let mut tree = SplayTree::new();
+
+		// Insert multiple values
+		tree.insert(5, "five");
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+		tree.insert(1, "one");
+		tree.insert(9, "nine");
+
+		// Verify all values
+		assert_eq!(tree.get(&1), Some(&"one"));
+		assert_eq!(tree.get(&3), Some(&"three"));
+		assert_eq!(tree.get(&5), Some(&"five"));
+		assert_eq!(tree.get(&7), Some(&"seven"));
+		assert_eq!(tree.get(&9), Some(&"nine"));
+
+		// Verify non-existent values
+		assert_eq!(tree.get(&0), None);
+		assert_eq!(tree.get(&2), None);
+		assert_eq!(tree.get(&10), None);
+	}
+
+	#[test]
+	fn test_contains_key() {
+		let mut tree = SplayTree::new();
+
+		tree.insert(1, "one");
+		tree.insert(2, "two");
+
+		assert!(tree.contains_key(&1));
+		assert!(tree.contains_key(&2));
+		assert!(!tree.contains_key(&3));
+	}
+
+	#[test]
+	fn test_get_mut() {
+		let mut tree = SplayTree::new();
+
+		tree.insert(1, String::from("one"));
+
+		if let Some(value) = tree.get_mut(&1) {
+			*value = String::from("modified");
+		}
+
+		assert_eq!(tree.get(&1), Some(&String::from("modified")));
+	}
+
+	#[test]
+	fn test_remove() {
+		let mut tree = SplayTree::new();
+
+		// Test remove on empty tree
+		assert_eq!(tree.remove(&1), None);
+
+		// Insert and remove single element
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&1), Some("one"));
+		assert!(tree.is_empty());
+
+		// Test multiple inserts and removes
+		tree.insert(5, "five");
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+
+		assert_eq!(tree.remove(&3), Some("three"));
+		assert_eq!(tree.get(&3), None);
+		assert_eq!(tree.get(&5), Some(&"five"));
+		assert_eq!(tree.get(&7), Some(&"seven"));
+
+		// Test removing non-existent key
+		assert_eq!(tree.remove(&3), None);
+	}
+
+	#[test]
+	fn test_min_max_operations() {
+		let mut tree = SplayTree::new();
+
+		// Test on empty tree
+		assert_eq!(tree.get_min(), None);
+		assert_eq!(tree.get_max(), None);
+		assert_eq!(tree.remove_min(), None);
+		assert_eq!(tree.remove_max(), None);
+
+		// Insert values
+		tree.insert(5, "five");
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+		tree.insert(1, "one");
+		tree.insert(9, "nine");
+
+		// Test get_min and get_max
+		assert_eq!(tree.get_min(), Some((&1, &"one")));
+		assert_eq!(tree.get_max(), Some((&9, &"nine")));
+
+		// Test remove_min
+		assert_eq!(tree.remove_min(), Some((1, "one")));
+		assert_eq!(tree.get_min(), Some((&3, &"three")));
+
+		// Test remove_max
+		assert_eq!(tree.remove_max(), Some((9, "nine")));
+		assert_eq!(tree.get_max(), Some((&7, &"seven")));
+	}
+
+	#[test]
+	fn test_iterator() {
+		let mut tree = SplayTree::new();
+
+		// Test iterator on empty tree
+		assert_eq!(tree.into_iter().count(), 0);
+
+		// Create new tree with values
+		let mut tree = SplayTree::new();
+		tree.insert(5, "five");
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+
+		// Collect into vector and verify order
+		let items: Vec<_> = tree.into_iter().collect();
+		assert_eq!(items, vec![(3, "three"), (5, "five"), (7, "seven")]);
+	}
+
+	#[test]
+	fn test_complex_operations() {
+		let mut tree = SplayTree::new();
+
+		// Mix of operations
+		tree.insert(5, "five");
+		assert_eq!(tree.get_max(), Some((&5, &"five")));
+
+		tree.insert(3, "three");
+		assert_eq!(tree.remove_min(), Some((3, "three")));
+
+		tree.insert(7, "seven");
+		assert_eq!(tree.get_min(), Some((&5, &"five")));
+
+		tree.insert(1, "one");
+		assert_eq!(tree.remove_max(), Some((7, "seven")));
+
+		assert_eq!(tree.get(&5), Some(&"five"));
+		assert_eq!(tree.get(&1), Some(&"one"));
+	}
+
+	#[test]
+	fn test_string_keys() {
+		let mut tree = SplayTree::new();
+
+		tree.insert(String::from("apple"), 1);
+		tree.insert(String::from("banana"), 2);
+		tree.insert(String::from("cherry"), 3);
+
+		assert_eq!(tree.get("apple"), Some(&1));
+		assert_eq!(tree.get("banana"), Some(&2));
+		assert_eq!(tree.get("cherry"), Some(&3));
+		assert_eq!(tree.get("date"), None);
+
+		assert_eq!(tree.remove("banana"), Some(2));
+		assert_eq!(tree.get("banana"), None);
+	}
+
+	#[test]
+	fn test_custom_type() {
+		#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+		struct CustomKey(i32);
+
+		let mut tree = SplayTree::new();
+
+		tree.insert(CustomKey(1), "one");
+		tree.insert(CustomKey(2), "two");
+
+		assert_eq!(tree.get(&CustomKey(1)), Some(&"one"));
+		assert_eq!(tree.get(&CustomKey(2)), Some(&"two"));
+		assert_eq!(tree.remove(&CustomKey(1)), Some("one"));
+	}
+
+	#[test]
+	fn test_edge_cases() {
+		let mut tree = SplayTree::new();
+
+		// Test inserting and removing single node repeatedly
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&1), Some("one"));
+		assert!(tree.is_empty());
+
+		tree.insert(1, "one");
+		assert_eq!(tree.get(&1), Some(&"one"));
+
+		// Test replacing root multiple times
+		tree.insert(2, "two");
+		tree.insert(1, "new_one");
+		assert_eq!(tree.get(&1), Some(&"new_one"));
+
+		// Test removing root with different child configurations
+		tree.insert(3, "three");
+		assert_eq!(tree.remove(&2), Some("two")); // Remove node with two children
+		assert_eq!(tree.remove(&1), Some("new_one")); // Remove node with one child
+		assert_eq!(tree.remove(&3), Some("three")); // Remove leaf node
+		assert!(tree.is_empty());
 	}
 }
