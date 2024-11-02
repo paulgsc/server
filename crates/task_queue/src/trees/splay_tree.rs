@@ -361,7 +361,7 @@ mod tests {
 
 	#[test]
 	fn test_basic_insert_and_get() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Test single insert
 		assert_eq!(tree.insert(1, "one"), None);
@@ -378,7 +378,7 @@ mod tests {
 
 	#[test]
 	fn test_multiple_inserts() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Insert multiple values
 		tree.insert(5, "five");
@@ -402,7 +402,7 @@ mod tests {
 
 	#[test]
 	fn test_contains_key() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		tree.insert(1, "one");
 		tree.insert(2, "two");
@@ -414,7 +414,7 @@ mod tests {
 
 	#[test]
 	fn test_get_mut() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, String>::default();
 
 		tree.insert(1, String::from("one"));
 
@@ -427,7 +427,7 @@ mod tests {
 
 	#[test]
 	fn test_remove() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Test remove on empty tree
 		assert_eq!(tree.remove(&1), None);
@@ -453,7 +453,7 @@ mod tests {
 
 	#[test]
 	fn test_min_max_operations() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Test on empty tree
 		assert_eq!(tree.get_min(), None);
@@ -483,13 +483,13 @@ mod tests {
 
 	#[test]
 	fn test_iterator() {
-		let mut tree = SplayTree::new();
+		let tree = SplayTree::<i32, &str>::default();
 
 		// Test iterator on empty tree
 		assert_eq!(tree.into_iter().count(), 0);
 
 		// Create new tree with values
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 		tree.insert(5, "five");
 		tree.insert(3, "three");
 		tree.insert(7, "seven");
@@ -501,7 +501,7 @@ mod tests {
 
 	#[test]
 	fn test_complex_operations() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Mix of operations
 		tree.insert(5, "five");
@@ -522,7 +522,7 @@ mod tests {
 
 	#[test]
 	fn test_string_keys() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<String, i32>::default();
 
 		tree.insert(String::from("apple"), 1);
 		tree.insert(String::from("banana"), 2);
@@ -542,7 +542,7 @@ mod tests {
 		#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
 		struct CustomKey(i32);
 
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<CustomKey, &str>::new();
 
 		tree.insert(CustomKey(1), "one");
 		tree.insert(CustomKey(2), "two");
@@ -554,7 +554,7 @@ mod tests {
 
 	#[test]
 	fn test_edge_cases() {
-		let mut tree = SplayTree::new();
+		let mut tree = SplayTree::<i32, &str>::default();
 
 		// Test inserting and removing single node repeatedly
 		tree.insert(1, "one");
