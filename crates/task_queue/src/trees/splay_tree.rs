@@ -72,7 +72,14 @@ impl<K: Ord + Debug, V> SplayNode<K, V> {
 	}
 }
 
+impl<K: Ord + Debug + Default, V: Default> Default for SplayTree<K, V> {
+	fn default() -> Self {
+		SplayTree::new()
+	}
+}
+
 impl<K: Ord + Debug, V> SplayTree<K, V> {
+	#[must_use]
 	pub const fn new() -> Self {
 		Self { root: None }
 	}
