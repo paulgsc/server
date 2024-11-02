@@ -62,8 +62,8 @@ impl<K: Ord + Debug + Display, V: Display> SplayNode<K, V> {
 }
 
 impl<K: Ord + Debug, V> SplayNode<K, V> {
-	fn new(key: K, value: V) -> Self {
-		SplayNode {
+	const fn new(key: K, value: V) -> Self {
+		Self {
 			key,
 			value,
 			left: None,
@@ -73,11 +73,12 @@ impl<K: Ord + Debug, V> SplayNode<K, V> {
 }
 
 impl<K: Ord + Debug, V> SplayTree<K, V> {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self { root: None }
 	}
 
-	pub fn is_empty(&self) -> bool {
+	#[must_use]
+	pub const fn is_empty(&self) -> bool {
 		self.root.is_none()
 	}
 
