@@ -1,3 +1,9 @@
+///
+/// Portions of this software are adapted from the work of Takeru Ohta, available under the MIT
+/// License.
+/// Copyright (c) 2016 Takeru Ohta <phjgt308@gmail.com>
+/// @see https://github.com/sile/splay_tree/blob/master/src/tree_core.rs
+///
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
