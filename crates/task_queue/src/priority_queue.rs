@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 
 pub trait PriorityQueue<T: Debug> {
 	fn insert(&mut self, item: T, priority: i32);
@@ -26,6 +26,24 @@ pub struct LinkedListPQ<T: Debug> {
 impl<T: Debug> Default for LinkedListPQ<T> {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+impl<T: Debug> Display for LinkedListPQ<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		if self.head.is_none() {
+			return write!(f, "Empty Queue");
+		}
+
+		let mut current = &self.head;
+		let mut elements = vec![];
+
+		while let Some(node) = current {
+			elements.push(format!("Item: {:?}, Priority: {}", node.data.item, node.data.priority));
+			current = &node.next;
+		}
+
+		write!(f, "Queue: [{}]", elements.join(", "))
 	}
 }
 
@@ -90,6 +108,18 @@ pub struct ImplicitHeap<T: Debug> {
 impl<T: Debug> Default for ImplicitHeap<T> {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+impl<T: Debug> Display for ImplicitHeap<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		if self.heap.is_empty() {
+			return write!(f, "Empty Heap");
+		}
+
+		let elements: Vec<String> = self.heap.iter().map(|node| format!("Item: {:?}, Priority: {}", node.item, node.priority)).collect();
+
+		write!(f, "Heap: [{}]", elements.join(", "))
 	}
 }
 
@@ -182,9 +212,19 @@ pub struct TwoListPQ<T: Debug> {
 	threshold: usize,
 }
 
+impl<T: Debug> Display for TwoListPQ<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		let small_elements: Vec<String> = self.small.iter().map(|node| format!("Item: {:?}, Priority: {}", node.item, node.priority)).collect();
+
+		let large_elements: Vec<String> = self.large.iter().map(|node| format!("Item: {:?}, Priority: {}", node.item, node.priority)).collect();
+
+		write!(f, "Small Queue: [{}], Large Queue: [{}]", small_elements.join(", "), large_elements.join(", "))
+	}
+}
+
 impl<T: Debug> TwoListPQ<T> {
 	#[must_use]
-	pub fn new(threshold: usize) -> Self {
+	pub const fn new(threshold: usize) -> Self {
 		Self {
 			small: Vec::new(),
 			large: Vec::new(),
@@ -246,15 +286,8 @@ struct SplayNode<T> {
 	right: Option<Box<SplayNode<T>>>,
 }
 
-impl<T: Debug> Default for SplayTree<T> {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl<T: Debug> SplayTree<T> {
-	#[must_use]
-	pub const fn new() -> Self {
+	pub fn new() -> Self {
 		Self { root: None }
 	}
 
@@ -262,18 +295,17 @@ impl<T: Debug> SplayTree<T> {
 		if self.root.is_none() {
 			return;
 		}
-
 		let root = self.root.take().unwrap();
-		let (new_root, _found) = Self::splay_step(*root, priority);
+		let (new_root, _) = self.splay_step(*root, priority);
 		self.root = Some(Box::new(new_root));
 	}
 
-	fn splay_step(mut node: SplayNode<T>, priority: i32) -> (SplayNode<T>, bool) {
+	fn splay_step(&mut self, mut node: SplayNode<T>, priority: i32) -> (SplayNode<T>, bool) {
 		match node.priority.cmp(&priority) {
 			Ordering::Equal => (node, true),
 			Ordering::Less => {
 				if let Some(right) = node.right {
-					let (new_right, found) = Self::splay_step(*right, priority);
+					let (new_right, found) = self.splay_step(*right, priority);
 					node.right = Some(Box::new(new_right));
 					if found {
 						let mut new_root = *node.right.take().unwrap();
@@ -289,7 +321,7 @@ impl<T: Debug> SplayTree<T> {
 			}
 			Ordering::Greater => {
 				if let Some(left) = node.left {
-					let (new_left, found) = Self::splay_step(*left, priority);
+					let (new_left, found) = self.splay_step(*left, priority);
 					node.left = Some(Box::new(new_left));
 					if found {
 						let mut new_root = *node.left.take().unwrap();
@@ -304,6 +336,14 @@ impl<T: Debug> SplayTree<T> {
 				}
 			}
 		}
+	}
+
+	fn find_max_node(&self) -> Option<&Box<SplayNode<T>>> {
+		let mut current = self.root.as_ref()?;
+		while let Some(right) = current.right.as_ref() {
+			current = right;
+		}
+		Some(current)
 	}
 }
 
@@ -322,38 +362,74 @@ impl<T: Debug> PriorityQueue<T> for SplayTree<T> {
 		}
 
 		self.splay(priority);
-		let mut current = self.root.take().unwrap();
+		let mut root = self.root.take().unwrap();
 
-		if priority > current.priority {
-			let mut new_root = Box::new(new_node);
-			new_root.left = Some(current);
-			self.root = Some(new_root);
-		} else {
-			let mut new_node = Box::new(new_node);
-			new_node.right = current.right.take();
-			current.right = Some(new_node);
-			self.root = Some(current);
+		match priority.cmp(&root.priority) {
+			Ordering::Greater => {
+				let mut new_root = Box::new(new_node);
+				new_root.left = Some(root);
+				self.root = Some(new_root);
+			}
+			_ => {
+				let mut new_node = Box::new(new_node);
+				new_node.left = root.right.take();
+				root.right = Some(new_node);
+				self.root = Some(root);
+			}
 		}
 	}
 
 	fn peek_max(&self) -> Option<&T> {
-		self.root.as_ref().map(|node| &node.item)
+		self.find_max_node().map(|node| &node.item)
 	}
 
 	fn extract_max(&mut self) -> Option<T> {
-		if let Some(root) = self.root.take() {
-			let result = root.item;
-			if let Some(left) = root.left {
-				self.root = Some(left);
-			}
-			Some(result)
-		} else {
-			None
+		if self.root.is_none() {
+			return None;
 		}
+
+		let max_node = self.find_max_node()?;
+		let max_priority = max_node.priority;
+		self.splay(max_priority);
+
+		let root = self.root.take().unwrap();
+		let result = root.item;
+
+		self.root = root.left;
+		Some(result)
 	}
 
 	fn is_empty(&self) -> bool {
 		self.root.is_none()
+	}
+}
+
+impl<T: Debug> Display for SplayTree<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		if let Some(root) = &self.root {
+			write!(f, "{}", root)
+		} else {
+			write!(f, "Empty Tree")
+		}
+	}
+}
+
+impl<T: Debug> Display for SplayNode<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		write!(f, "Node(Item: {:?}, Priority: {})", self.item, self.priority)?;
+
+		if self.left.is_some() || self.right.is_some() {
+			write!(f, " [")?;
+			if let Some(left) = &self.left {
+				write!(f, " Left: {}", left)?;
+			}
+			if let Some(right) = &self.right {
+				write!(f, " Right: {}", right)?;
+			}
+			write!(f, "]")?;
+		}
+
+		Ok(())
 	}
 }
 
@@ -382,16 +458,18 @@ mod tests {
 	// Helper function to test ordering
 	fn test_ordering<T>(mut pq: T)
 	where
-		T: PriorityQueue<i32>,
+		T: PriorityQueue<i32> + Display,
 	{
 		// Insert items in arbitrary order
 		let inputs = vec![(5, 5), (3, 3), (7, 7), (1, 1), (6, 6), (4, 4), (2, 2)];
 		for (item, priority) in inputs {
 			pq.insert(item, priority);
 		}
+		println!("the queue: {}", &pq);
 
 		// Should extract in descending order
 		for expected in (1..=7).rev() {
+			println!("peak max: {:?}, expected: {}", pq.peek_max(), &expected);
 			assert_eq!(pq.extract_max(), Some(expected));
 		}
 		assert!(pq.is_empty());
