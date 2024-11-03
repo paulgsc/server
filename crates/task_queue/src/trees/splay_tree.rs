@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::fmt::{self, Debug, Display};
 
 pub struct SplayTree<K: Ord + Debug, V> {
-	root: Option<Box<SplayNode<K, V>>>,
+	pub root: Option<Box<SplayNode<K, V>>>,
 }
 
 impl<K: Ord + Debug + Display, V: Display> Display for SplayTree<K, V> {
@@ -24,7 +24,7 @@ impl<K: Ord + Debug + Display, V: Display> Display for SplayTree<K, V> {
 	}
 }
 
-struct SplayNode<K, V> {
+pub struct SplayNode<K, V> {
 	key: K,
 	value: V,
 	left: Option<Box<SplayNode<K, V>>>,
