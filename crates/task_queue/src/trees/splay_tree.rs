@@ -8,11 +8,12 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug, Display};
 
-pub struct SplayTree<K: Ord + Debug, V> {
+#[derive(Debug)]
+pub struct SplayTree<K: Ord + Debug, V: Debug> {
 	pub root: Option<Box<SplayNode<K, V>>>,
 }
 
-impl<K: Ord + Debug + Display, V: Display> Display for SplayTree<K, V> {
+impl<K: Ord + Debug, V: Debug> Display for SplayTree<K, V> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match &self.root {
 			Some(root) => {
@@ -24,6 +25,7 @@ impl<K: Ord + Debug + Display, V: Display> Display for SplayTree<K, V> {
 	}
 }
 
+#[derive(Debug)]
 pub struct SplayNode<K, V> {
 	key: K,
 	value: V,
@@ -31,17 +33,16 @@ pub struct SplayNode<K, V> {
 	right: Option<Box<SplayNode<K, V>>>,
 }
 
-impl<K: Ord + Debug + Display, V: Display> SplayNode<K, V> {
+impl<K: Ord + Debug, V: Debug> SplayNode<K, V> {
 	fn format_tree(&self, f: &mut fmt::Formatter<'_>, prefix: &str, is_left: bool, is_root: bool) -> fmt::Result {
 		// Print current node
 		if is_root {
-			writeln!(f, "└── ({}, {})", self.key, self.value)?;
+			writeln!(f, "└── ({:?}, {:?})", self.key, self.value)?;
 		} else if is_left {
-			writeln!(f, "{}├── ({}, {})", prefix, self.key, self.value)?;
+			writeln!(f, "{}├── ({:?}, {:?})", prefix, self.key, self.value)?;
 		} else {
-			writeln!(f, "{}└── ({}, {})", prefix, self.key, self.value)?;
+			writeln!(f, "{}└── ({:?}, {:?})", prefix, self.key, self.value)?;
 		}
-
 		// Prepare the prefix for children
 		let child_prefix = if is_root {
 			"    ".to_string()
@@ -72,13 +73,13 @@ impl<K: Ord + Debug, V> SplayNode<K, V> {
 	}
 }
 
-impl<K: Ord + Debug + Default, V: Default> Default for SplayTree<K, V> {
+impl<K: Ord + Debug + Default, V: Default + Debug> Default for SplayTree<K, V> {
 	fn default() -> Self {
 		SplayTree::new()
 	}
 }
 
-impl<K: Ord + Debug, V> SplayTree<K, V> {
+impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 	#[must_use]
 	pub const fn new() -> Self {
 		Self { root: None }
@@ -136,6 +137,7 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 				Ordering::Equal => {
 					// Key exists, update value and return old value
 					let old_value = std::mem::replace(&mut self.root.as_mut().unwrap().value, value);
+					println!("Tree after insert: {}", self);
 					Some(old_value)
 				}
 				Ordering::Less => {
@@ -144,6 +146,7 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 					let root = self.root.take().unwrap();
 					new_node.left = Some(root);
 					self.root = Some(new_node);
+					println!("Tree after insert: {}", self);
 					None
 				}
 				Ordering::Greater => {
@@ -153,11 +156,13 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 					new_node.right = root.right.take();
 					root.right = Some(new_node);
 					self.root = Some(root);
+					println!("Tree after insert: {}", self);
 					None
 				}
 			}
 		} else {
 			self.root = Some(Box::new(SplayNode::new(key, value)));
+			println!("Tree after insert: {}", self);
 			None
 		}
 	}
@@ -247,6 +252,7 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 		let root = self.root.take().unwrap();
 		let (new_root, order) = self.splay_step(*root, key);
 		self.root = Some(Box::new(new_root));
+		println!("Tree after splay: {}", self);
 		Some(order)
 	}
 
@@ -294,17 +300,18 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 
 	fn splay_min(&mut self) {
 		if let Some(mut current) = self.root.take() {
-			while let Some(left) = current.left.take() {
-				let mut new_root = left;
-				current.left = new_root.right.take();
-				new_root.right = Some(current);
-				current = new_root;
+			while let Some(mut left) = current.left.take() {
+				let left_right = left.right.take();
+				current.left = left_right;
+				left.right = Some(current);
+				current = left;
 			}
 			self.root = Some(current);
 		}
 	}
 
 	fn splay_max(&mut self) {
+		// println!("current splay: {:?}", self);
 		if let Some(mut current) = self.root.take() {
 			while let Some(right) = current.right.take() {
 				let mut new_root = right;
@@ -328,7 +335,7 @@ impl<K: Ord + Debug, V> SplayTree<K, V> {
 }
 
 // Implement iterator support
-impl<K: Ord + Debug, V> IntoIterator for SplayTree<K, V> {
+impl<K: Ord + Debug, V: Debug> IntoIterator for SplayTree<K, V> {
 	type Item = (K, V);
 	type IntoIter = IntoIter<K, V>;
 
@@ -337,11 +344,11 @@ impl<K: Ord + Debug, V> IntoIterator for SplayTree<K, V> {
 	}
 }
 
-pub struct IntoIter<K: Ord + Debug, V> {
+pub struct IntoIter<K: Ord + Debug, V: Debug> {
 	tree: SplayTree<K, V>,
 }
 
-impl<K: Ord + Debug, V> Iterator for IntoIter<K, V> {
+impl<K: Ord + Debug, V: Debug> Iterator for IntoIter<K, V> {
 	type Item = (K, V);
 
 	fn next(&mut self) -> Option<Self::Item> {
@@ -469,6 +476,7 @@ mod tests {
 		tree.insert(9, "nine");
 
 		// Test get_min and get_max
+		println!("Current splay: {}", tree);
 		assert_eq!(tree.get_min(), Some((&1, &"one")));
 		assert_eq!(tree.get_max(), Some((&9, &"nine")));
 
