@@ -350,24 +350,30 @@ impl<K: Ord + Debug, V: Debug> Iterator for IntoIter<K, V> {
 	type Item = (K, V);
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if let Some(mut root) = self.tree.root.take() {
-			let result = (root.key, root.value);
-			self.tree.root = match (root.left.take(), root.right.take()) {
-				(None, right) => right,
-				(Some(left), None) => Some(left),
-				(Some(mut left), Some(right)) => {
-					let mut current = &mut left;
-					while let Some(ref mut next) = current.right {
-						current = next;
-					}
-					current.right = Some(right);
-					Some(left)
-				}
-			};
-			Some(result)
-		} else {
-			None
+		// Find the minimum value in the tree
+		if self.tree.root.is_none() {
+			return None;
 		}
+
+		// Helper function to find and remove minimum node
+		fn remove_min<K: Ord + Debug, V: Debug>(node: &mut Option<Box<SplayNode<K, V>>>) -> Option<(K, V)> {
+			if let Some(mut root) = node.take() {
+				if root.left.is_none() {
+					// This is the minimum node
+					*node = root.right.take();
+					Some((root.key, root.value))
+				} else {
+					// Keep searching in left subtree
+					let result = remove_min(&mut root.left);
+					*node = Some(root);
+					result
+				}
+			} else {
+				None
+			}
+		}
+
+		remove_min(&mut self.tree.root)
 	}
 }
 
