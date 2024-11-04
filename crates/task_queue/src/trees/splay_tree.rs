@@ -13,6 +13,14 @@ pub struct SplayTree<K: Ord + Debug, V: Debug> {
 	pub root: Option<Box<SplayNode<K, V>>>,
 }
 
+#[derive(Debug)]
+pub struct SplayNode<K, V> {
+	key: K,
+	value: V,
+	left: Option<Box<SplayNode<K, V>>>,
+	right: Option<Box<SplayNode<K, V>>>,
+}
+
 impl<K: Ord + Debug, V: Debug> Display for SplayTree<K, V> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match &self.root {
@@ -25,32 +33,22 @@ impl<K: Ord + Debug, V: Debug> Display for SplayTree<K, V> {
 	}
 }
 
-#[derive(Debug)]
-pub struct SplayNode<K, V> {
-	key: K,
-	value: V,
-	left: Option<Box<SplayNode<K, V>>>,
-	right: Option<Box<SplayNode<K, V>>>,
-}
-
 impl<K: Ord + Debug, V: Debug> SplayNode<K, V> {
 	fn format_tree(&self, f: &mut fmt::Formatter<'_>, prefix: &str, is_left: bool, is_root: bool) -> fmt::Result {
-		// Print current node
 		if is_root {
-			writeln!(f, "└── ({:?}, {:?})", self.key, self.value)?;
+			writeln!(f, "├── ({:?}, {:?})", self.key, self.value)?;
 		} else if is_left {
 			writeln!(f, "{}├── ({:?}, {:?})", prefix, self.key, self.value)?;
 		} else {
 			writeln!(f, "{}└── ({:?}, {:?})", prefix, self.key, self.value)?;
 		}
-		// Prepare the prefix for children
+
 		let child_prefix = if is_root {
 			"    ".to_string()
 		} else {
 			format!("{}{}", prefix, if is_left { "│   " } else { "    " })
 		};
 
-		// Recursively print left and right subtrees
 		if let Some(left) = &self.left {
 			left.format_tree(f, &child_prefix, true, false)?;
 		}
@@ -60,10 +58,8 @@ impl<K: Ord + Debug, V: Debug> SplayNode<K, V> {
 
 		Ok(())
 	}
-}
 
-impl<K: Ord + Debug, V> SplayNode<K, V> {
-	const fn new(key: K, value: V) -> Self {
+	fn new(key: K, value: V) -> Self {
 		Self {
 			key,
 			value,
@@ -80,12 +76,10 @@ impl<K: Ord + Debug + Default, V: Default + Debug> Default for SplayTree<K, V> {
 }
 
 impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
-	#[must_use]
 	pub const fn new() -> Self {
 		Self { root: None }
 	}
 
-	#[must_use]
 	pub const fn is_empty(&self) -> bool {
 		self.root.is_none()
 	}
@@ -95,10 +89,9 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		K: Borrow<Q>,
 		Q: Ord + Debug,
 	{
-		if let Some(found) = self.splay(key) {
-			matches!(found, Ordering::Equal)
-		} else {
-			false
+		match self.splay(key) {
+			Some(Ordering::Equal) => true,
+			_ => false,
 		}
 	}
 
@@ -132,38 +125,27 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 			return None;
 		}
 
-		if let Some(found) = self.splay(key.borrow()) {
-			match found {
-				Ordering::Equal => {
-					// Key exists, update value and return old value
-					let old_value = std::mem::replace(&mut self.root.as_mut().unwrap().value, value);
-					println!("Tree after insert: {}", self);
-					Some(old_value)
-				}
-				Ordering::Less => {
-					// New key is greater than root
-					let mut new_node = Box::new(SplayNode::new(key, value));
-					let root = self.root.take().unwrap();
-					new_node.left = Some(root);
-					self.root = Some(new_node);
-					println!("Tree after insert: {}", self);
-					None
-				}
-				Ordering::Greater => {
-					// New key is less than root
-					let mut new_node = Box::new(SplayNode::new(key, value));
-					let mut root = self.root.take().unwrap();
-					new_node.right = root.right.take();
-					root.right = Some(new_node);
-					self.root = Some(root);
-					println!("Tree after insert: {}", self);
-					None
-				}
+		let _ = self.splay(key.borrow());
+
+		let root = self.root.as_mut().unwrap();
+		match key.cmp(&root.key) {
+			Ordering::Equal => Some(std::mem::replace(&mut root.value, value)),
+			Ordering::Less => {
+				let mut new_node = Box::new(SplayNode::new(key, value));
+				let old_root = self.root.take().unwrap();
+				new_node.right = Some(old_root);
+				new_node.left = new_node.right.as_mut().unwrap().left.take();
+				self.root = Some(new_node);
+				None
 			}
-		} else {
-			self.root = Some(Box::new(SplayNode::new(key, value)));
-			println!("Tree after insert: {}", self);
-			None
+			Ordering::Greater => {
+				let mut new_node = Box::new(SplayNode::new(key, value));
+				let old_root = self.root.take().unwrap();
+				new_node.left = Some(old_root);
+				new_node.right = new_node.left.as_mut().unwrap().right.take();
+				self.root = Some(new_node);
+				None
+			}
 		}
 	}
 
@@ -175,21 +157,39 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		if let Some(Ordering::Equal) = self.splay(key) {
 			let root = self.root.take().unwrap();
 			match (root.left, root.right) {
-				(None, None) => Some(root.value),
-				(Some(left), None) => {
-					self.root = Some(left);
+				(None, right) => {
+					self.root = right;
 					Some(root.value)
 				}
-				(None, Some(right)) => {
-					self.root = Some(right);
+				(left, None) => {
+					self.root = left;
 					Some(root.value)
 				}
-				(Some(left), Some(right)) => {
-					// Find the maximum key in the left subtree
-					let (new_left, max_node) = self.remove_max_node(left);
-					let mut new_root = max_node;
-					new_root.left = new_left;
-					new_root.right = Some(right);
+				(left, right) => {
+					let mut current = left.unwrap();
+					let mut stack = Vec::new();
+
+					// Find maximum in left subtree
+					while current.right.is_some() {
+						let next = current.right.take().unwrap();
+						stack.push(current);
+						current = next;
+					}
+
+					// Restructure the tree
+					let mut new_root = current;
+					if let Some(mut last) = stack.pop() {
+						last.right = new_root.left.take();
+						new_root.left = Some(last);
+
+						// Reattach the rest of the stack
+						while let Some(node) = stack.pop() {
+							let old_new_root = std::mem::replace(&mut new_root, node);
+							new_root.right = Some(old_new_root);
+						}
+					}
+
+					new_root.right = right;
 					self.root = Some(new_root);
 					Some(root.value)
 				}
@@ -199,47 +199,6 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		}
 	}
 
-	pub fn get_min(&mut self) -> Option<(&K, &V)> {
-		if self.root.is_none() {
-			return None;
-		}
-
-		self.splay_min();
-		self.root.as_ref().map(|node| (&node.key, &node.value))
-	}
-
-	pub fn get_max(&mut self) -> Option<(&K, &V)> {
-		if self.root.is_none() {
-			return None;
-		}
-
-		self.splay_max();
-		self.root.as_ref().map(|node| (&node.key, &node.value))
-	}
-
-	pub fn remove_min(&mut self) -> Option<(K, V)> {
-		if self.root.is_none() {
-			return None;
-		}
-
-		self.splay_min();
-		let root = self.root.take().unwrap();
-		self.root = root.right;
-		Some((root.key, root.value))
-	}
-
-	pub fn remove_max(&mut self) -> Option<(K, V)> {
-		if self.root.is_none() {
-			return None;
-		}
-
-		self.splay_max();
-		let root = self.root.take().unwrap();
-		self.root = root.left;
-		Some((root.key, root.value))
-	}
-
-	// Helper methods
 	fn splay<Q: ?Sized>(&mut self, key: &Q) -> Option<Ordering>
 	where
 		K: Borrow<Q>,
@@ -249,92 +208,115 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 			return None;
 		}
 
+		let mut stack = Vec::new();
+		let mut current = self.root.take().unwrap();
+		let found_order: Option<Ordering>;
+
+		// Phase 1: Search and build stack
+		loop {
+			match key.cmp(current.key.borrow()) {
+				Ordering::Equal => {
+					found_order = Some(Ordering::Equal);
+					break;
+				}
+				Ordering::Less => {
+					if let Some(left) = current.left.take() {
+						stack.push((current, true));
+						current = left;
+					} else {
+						found_order = Some(Ordering::Less);
+						break;
+					}
+				}
+				Ordering::Greater => {
+					if let Some(right) = current.right.take() {
+						stack.push((current, false));
+						current = right;
+					} else {
+						found_order = Some(Ordering::Greater);
+						break;
+					}
+				}
+			}
+		}
+
+		// Phase 2: Splay rotations
+		while let Some((parent, is_left_child)) = stack.pop() {
+			let mut grandparent = self.root.take().unwrap();
+
+			if is_left_child {
+				let right = current.right.take();
+				current.right = Some(parent);
+				grandparent.left = right;
+				self.root = Some(current);
+			} else {
+				let left = current.left.take();
+				current.left = Some(parent);
+				grandparent.right = left;
+				self.root = Some(current);
+			}
+
+			current = grandparent; // Update current to the new grandparent for the next iteration
+		}
+
+		self.root = Some(current);
+		// Return the found order
+		found_order
+	}
+
+	pub fn get_min(&mut self) -> Option<(&K, &V)> {
+		if self.root.is_none() {
+			return None;
+		}
+
+		while let Some(_left) = self.root.as_ref().unwrap().left.as_ref() {
+			let mut current = self.root.take().unwrap();
+			let mut new_root = current.left.take().unwrap();
+			current.left = new_root.right.take();
+			new_root.right = Some(current);
+			self.root = Some(new_root);
+		}
+
+		self.root.as_ref().map(|node| (&node.key, &node.value))
+	}
+
+	pub fn get_max(&mut self) -> Option<(&K, &V)> {
+		if self.root.is_none() {
+			return None;
+		}
+
+		while let Some(_right) = self.root.as_ref().unwrap().right.as_ref() {
+			let mut current = self.root.take().unwrap();
+			let mut new_root = current.right.take().unwrap();
+			current.right = new_root.left.take();
+			new_root.left = Some(current);
+			self.root = Some(new_root);
+		}
+
+		self.root.as_ref().map(|node| (&node.key, &node.value))
+	}
+
+	pub fn remove_min(&mut self) -> Option<(K, V)> {
+		if self.get_min().is_none() {
+			return None;
+		}
+
 		let root = self.root.take().unwrap();
-		let (new_root, order) = self.splay_step(*root, key);
-		self.root = Some(Box::new(new_root));
-		println!("Tree after splay: {}", self);
-		Some(order)
+		self.root = root.right;
+		Some((root.key, root.value))
 	}
 
-	fn splay_step<Q: ?Sized>(&mut self, mut node: SplayNode<K, V>, key: &Q) -> (SplayNode<K, V>, Ordering)
-	where
-		K: Borrow<Q>,
-		Q: Ord + Debug,
-	{
-		match key.cmp(node.key.borrow()) {
-			Ordering::Equal => (node, Ordering::Equal),
-			Ordering::Less => {
-				if let Some(left) = node.left.take() {
-					let (new_left, order) = self.splay_step(*left, key);
-					if matches!(order, Ordering::Equal) {
-						let mut new_root = new_left;
-						node.left = new_root.right.take();
-						new_root.right = Some(Box::new(node));
-						(new_root, Ordering::Equal)
-					} else {
-						node.left = Some(Box::new(new_left));
-						(node, Ordering::Less)
-					}
-				} else {
-					(node, Ordering::Less)
-				}
-			}
-			Ordering::Greater => {
-				if let Some(right) = node.right.take() {
-					let (new_right, order) = self.splay_step(*right, key);
-					if matches!(order, Ordering::Equal) {
-						let mut new_root = new_right;
-						node.right = new_root.left.take();
-						new_root.left = Some(Box::new(node));
-						(new_root, Ordering::Equal)
-					} else {
-						node.right = Some(Box::new(new_right));
-						(node, Ordering::Greater)
-					}
-				} else {
-					(node, Ordering::Greater)
-				}
-			}
+	pub fn remove_max(&mut self) -> Option<(K, V)> {
+		if self.get_max().is_none() {
+			return None;
 		}
-	}
 
-	fn splay_min(&mut self) {
-		if let Some(mut current) = self.root.take() {
-			while let Some(mut left) = current.left.take() {
-				let left_right = left.right.take();
-				current.left = left_right;
-				left.right = Some(current);
-				current = left;
-			}
-			self.root = Some(current);
-		}
-	}
-
-	fn splay_max(&mut self) {
-		// println!("current splay: {:?}", self);
-		if let Some(mut current) = self.root.take() {
-			while let Some(right) = current.right.take() {
-				let mut new_root = right;
-				current.right = new_root.left.take();
-				new_root.left = Some(current);
-				current = new_root;
-			}
-			self.root = Some(current);
-		}
-	}
-
-	fn remove_max_node(&mut self, mut node: Box<SplayNode<K, V>>) -> (Option<Box<SplayNode<K, V>>>, Box<SplayNode<K, V>>) {
-		if node.right.is_none() {
-			(node.left.take(), node)
-		} else {
-			let (new_right, max_node) = self.remove_max_node(node.right.take().unwrap());
-			node.right = new_right;
-			(Some(node), max_node)
-		}
+		let root = self.root.take().unwrap();
+		self.root = root.left;
+		Some((root.key, root.value))
 	}
 }
 
-// Implement iterator support
 impl<K: Ord + Debug, V: Debug> IntoIterator for SplayTree<K, V> {
 	type Item = (K, V);
 	type IntoIter = IntoIter<K, V>;
