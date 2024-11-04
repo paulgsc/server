@@ -105,64 +105,101 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		Q: Ord + Debug,
 	{
 		if self.root.is_none() {
+			println!("Splay operation failed: Tree is empty.");
 			return None;
 		}
 
-		// Create temporary nodes for the split tree
 		let mut root = self.root.take().unwrap();
-		let found_order: Option<Ordering>;
+
+		// Create temporary trees for the split
+		let mut left_tree = None;
+		let mut right_tree = None;
 
 		loop {
 			match key.cmp(root.key.borrow()) {
 				Ordering::Equal => {
-					found_order = Some(Ordering::Equal);
-					break;
-				}
-				Ordering::Less if root.left.is_none() => {
-					found_order = Some(Ordering::Less);
-					break;
-				}
-				Ordering::Greater if root.right.is_none() => {
-					found_order = Some(Ordering::Greater);
-					break;
+					// Reassemble and return
+					println!("Key found. Root is now: {:?}", root.key);
+					self.root = Some(root);
+					return Some(Ordering::Equal);
 				}
 				Ordering::Less => {
-					let left = root.left.as_mut().unwrap();
-					if key.cmp(left.key.borrow()) == Ordering::Less {
-						// Zig-zig
+					if root.left.is_none() {
+						// Key not found, but root becomes new root
+						println!("Key not found in left subtree. Returning as new root: {:?}", root.key);
+						self.root = Some(root);
+						return Some(Ordering::Less);
+					}
+
+					// Check for zig-zig case
+					if key.cmp(root.left.as_ref().unwrap().key.borrow()) == Ordering::Less {
+						// Perform zig-zig by rotating right
+						println!("Zig-Zig case detected. Performing right rotation.");
 						root = Self::rotate_right(root);
+
 						if root.left.is_none() {
-							found_order = Some(Ordering::Less);
-							break;
+							println!("After Zig-Zig rotation, no left child. Setting root to: {:?}", root.key);
+							self.root = Some(root);
+							return Some(Ordering::Less);
 						}
 					}
-					// Link right
+
+					// Add to right tree
+					println!("Adding to right tree. Old root: {:?}", root.key);
 					let mut old_root = root;
 					root = old_root.left.take().unwrap();
 					old_root.left = root.right.take();
-					root.right = Some(old_root);
-				}
-				Ordering::Greater => {
-					let right = root.right.as_mut().unwrap();
-					if key.cmp(right.key.borrow()) == Ordering::Greater {
-						// Zag-zag
-						root = Self::rotate_left(root);
-						if root.right.is_none() {
-							found_order = Some(Ordering::Greater);
-							break;
+					println!("Linking old root to right tree.");
+
+					// Link the old root to the right tree
+					match right_tree.take() {
+						None => right_tree = Some(old_root),
+						Some(r) => {
+							old_root.right = Some(r);
+							right_tree = Some(old_root);
 						}
 					}
-					// Link left
+				}
+				Ordering::Greater => {
+					if root.right.is_none() {
+						// Key not found, but root becomes new root
+						println!("Key not found in right subtree. Returning as new root: {:?}", root.key);
+						self.root = Some(root);
+						return Some(Ordering::Greater);
+					}
+
+					// Check for zag-zag case
+					if key.cmp(root.right.as_ref().unwrap().key.borrow()) == Ordering::Greater {
+						// Perform zag-zag by rotating left
+						println!("Zag-Zag case detected. Performing left rotation.");
+						root = Self::rotate_left(root);
+
+						if root.right.is_none() {
+							println!("After Zag-Zag rotation, no right child. Setting root to: {:?}", root.key);
+							self.root = Some(root);
+							return Some(Ordering::Greater);
+						}
+					}
+
+					// Add to left tree
+					println!("Adding to left tree. Old root: {:?}", root.key);
 					let mut old_root = root;
 					root = old_root.right.take().unwrap();
 					old_root.right = root.left.take();
-					root.left = Some(old_root);
+					println!("Linking old root to left tree.");
+
+					// Link the old root to the left tree
+					match left_tree.take() {
+						None => left_tree = Some(old_root),
+						Some(l) => {
+							old_root.left = Some(l);
+							left_tree = Some(old_root);
+						}
+					}
 				}
 			}
+			println!("End of loop iteration.");
 		}
-
-		self.root = Some(root);
-		found_order
 	}
 
 	pub fn contains_key<Q: ?Sized>(&mut self, key: &Q) -> bool
