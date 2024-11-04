@@ -110,48 +110,70 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		}
 
 		let mut root = self.root.take().unwrap();
-
-		// Create temporary trees for the split
-		let mut left_tree = None;
-		let mut right_tree = None;
+		let mut left_tree: Option<Box<SplayNode<K, V>>> = None;
+		let mut right_tree: Option<Box<SplayNode<K, V>>> = None;
 
 		loop {
 			match key.cmp(root.key.borrow()) {
 				Ordering::Equal => {
-					// Reassemble and return
+					// Reassemble the tree with the found node as root
 					println!("Key found. Root is now: {:?}", root.key);
+					if let Some(mut l) = left_tree {
+						l.right = root.left;
+						root.left = Some(l);
+					}
+					if let Some(mut r) = right_tree {
+						r.left = root.right;
+						root.right = Some(r);
+					}
 					self.root = Some(root);
 					return Some(Ordering::Equal);
 				}
 				Ordering::Less => {
 					if root.left.is_none() {
-						// Key not found, but root becomes new root
-						println!("Key not found in left subtree. Returning as new root: {:?}", root.key);
+						// Key not found, reassemble the tree
+						println!("Key not found in left subtree. Reassembling tree with {:?}", root.key);
+						if let Some(mut l) = left_tree {
+							l.right = root.left;
+							root.left = Some(l);
+						}
+						if let Some(mut r) = right_tree {
+							r.left = root.right;
+							root.right = Some(r);
+						}
 						self.root = Some(root);
 						return Some(Ordering::Less);
 					}
 
 					// Check for zig-zig case
-					if key.cmp(root.left.as_ref().unwrap().key.borrow()) == Ordering::Less {
-						// Perform zig-zig by rotating right
-						println!("Zig-Zig case detected. Performing right rotation.");
-						root = Self::rotate_right(root);
-
-						if root.left.is_none() {
-							println!("After Zig-Zig rotation, no left child. Setting root to: {:?}", root.key);
-							self.root = Some(root);
-							return Some(Ordering::Less);
+					if let Some(ref left) = root.left {
+						if key.cmp(left.key.borrow()) == Ordering::Less {
+							// Perform zig-zig
+							println!("Zig-Zig case detected. Performing right rotation.");
+							root = Self::rotate_right(root);
+							if root.left.is_none() {
+								// Reassemble if we can't continue
+								if let Some(mut l) = left_tree {
+									l.right = root.left;
+									root.left = Some(l);
+								}
+								if let Some(mut r) = right_tree {
+									r.left = root.right;
+									root.right = Some(r);
+								}
+								self.root = Some(root);
+								return Some(Ordering::Less);
+							}
 						}
 					}
 
-					// Add to right tree
-					println!("Adding to right tree. Old root: {:?}", root.key);
+					// Move to left subtree
+					println!("Moving to left subtree. Current root: {:?}", root.key);
 					let mut old_root = root;
 					root = old_root.left.take().unwrap();
 					old_root.left = root.right.take();
-					println!("Linking old root to right tree.");
 
-					// Link the old root to the right tree
+					// Add old root to right tree
 					match right_tree.take() {
 						None => right_tree = Some(old_root),
 						Some(r) => {
@@ -162,33 +184,49 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 				}
 				Ordering::Greater => {
 					if root.right.is_none() {
-						// Key not found, but root becomes new root
-						println!("Key not found in right subtree. Returning as new root: {:?}", root.key);
+						// Key not found, reassemble the tree
+						println!("Key not found in right subtree. Reassembling tree with {:?}", root.key);
+						if let Some(mut l) = left_tree {
+							l.right = root.left;
+							root.left = Some(l);
+						}
+						if let Some(mut r) = right_tree {
+							r.left = root.right;
+							root.right = Some(r);
+						}
 						self.root = Some(root);
 						return Some(Ordering::Greater);
 					}
 
 					// Check for zag-zag case
-					if key.cmp(root.right.as_ref().unwrap().key.borrow()) == Ordering::Greater {
-						// Perform zag-zag by rotating left
-						println!("Zag-Zag case detected. Performing left rotation.");
-						root = Self::rotate_left(root);
-
-						if root.right.is_none() {
-							println!("After Zag-Zag rotation, no right child. Setting root to: {:?}", root.key);
-							self.root = Some(root);
-							return Some(Ordering::Greater);
+					if let Some(ref right) = root.right {
+						if key.cmp(right.key.borrow()) == Ordering::Greater {
+							// Perform zag-zag
+							println!("Zag-Zag case detected. Performing left rotation.");
+							root = Self::rotate_left(root);
+							if root.right.is_none() {
+								// Reassemble if we can't continue
+								if let Some(mut l) = left_tree {
+									l.right = root.left;
+									root.left = Some(l);
+								}
+								if let Some(mut r) = right_tree {
+									r.left = root.right;
+									root.right = Some(r);
+								}
+								self.root = Some(root);
+								return Some(Ordering::Greater);
+							}
 						}
 					}
 
-					// Add to left tree
-					println!("Adding to left tree. Old root: {:?}", root.key);
+					// Move to right subtree
+					println!("Moving to right subtree. Current root: {:?}", root.key);
 					let mut old_root = root;
 					root = old_root.right.take().unwrap();
 					old_root.right = root.left.take();
-					println!("Linking old root to left tree.");
 
-					// Link the old root to the left tree
+					// Add old root to left tree
 					match left_tree.take() {
 						None => left_tree = Some(old_root),
 						Some(l) => {
