@@ -410,6 +410,236 @@ mod tests {
 	}
 
 	#[test]
+	fn test_zig_operation() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Insert two nodes to test simple zig (single rotation)
+		tree.insert(2, "two");
+		tree.insert(1, "one");
+
+		// Access 1 which should trigger a zig rotation
+		tree.get(&1);
+
+		// Verify 1 is now at root
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 1);
+			// Verify 2 is right child
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 2);
+			} else {
+				panic!("Expected 2 as right child after zig rotation");
+			}
+		}
+	}
+
+	#[test]
+	fn test_zig_zig_operation() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Create a right-leaning path of three nodes
+		tree.insert(3, "three");
+		tree.insert(2, "two");
+		tree.insert(1, "one");
+
+		// Access 1 which should trigger a zig-zig rotation
+		tree.get(&1);
+
+		// Verify 1 is at root and structure is correct
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 1);
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 2);
+				if let Some(right_right) = &right.right {
+					assert_eq!(right_right.key, 3);
+				} else {
+					panic!("Expected 3 as right-right child after zig-zig rotation");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn test_zig_zag_operation() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Create a structure for zig-zag case
+		tree.insert(3, "three");
+		tree.insert(1, "one");
+		tree.insert(2, "two"); // This creates a zig-zag pattern
+
+		// Access 2 which should trigger a zig-zag rotation
+		tree.get(&2);
+
+		// Verify 2 is at root with 1 as left child and 3 as right child
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 2);
+			// Check left subtree
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 1);
+			} else {
+				panic!("Expected 1 as left child after zig-zag rotation");
+			}
+			// Check right subtree
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 3);
+			} else {
+				panic!("Expected 3 as right child after zig-zag rotation");
+			}
+		}
+	}
+
+	#[test]
+	fn test_multiple_zig_operations() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Setup initial balanced structure
+		tree.insert(4, "four");
+		tree.insert(2, "two");
+		tree.insert(6, "six");
+		tree.insert(1, "one");
+		tree.insert(3, "three");
+		tree.insert(5, "five");
+		tree.insert(7, "seven");
+
+		// Test first zig operation - access leftmost node
+		tree.get(&1);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 1);
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 2);
+			}
+		}
+
+		// Test second zig operation - access new rightmost node
+		tree.get(&7);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 7);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 6);
+			}
+		}
+
+		// Test third zig operation - access middle node
+		tree.get(&4);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 4);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 3);
+			}
+		}
+	}
+
+	#[test]
+	fn test_multiple_zig_zig_operations() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Setup for first zig-zig
+		tree.insert(8, "eight");
+		tree.insert(6, "six");
+		tree.insert(4, "four");
+		tree.insert(2, "two");
+
+		// First zig-zig operation
+		tree.get(&2);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 2);
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 4);
+				if let Some(right_right) = &right.right {
+					assert_eq!(right_right.key, 6);
+				}
+			}
+		}
+
+		// Setup for second zig-zig
+		tree.insert(1, "one");
+		tree.insert(0, "zero");
+
+		// Second zig-zig operation
+		tree.get(&0);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 0);
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 1);
+				if let Some(right_right) = &right.right {
+					assert_eq!(right_right.key, 2);
+				}
+			}
+		}
+
+		// Setup for third zig-zig
+		tree.insert(10, "ten");
+		tree.insert(12, "twelve");
+		tree.insert(14, "fourteen");
+
+		// Third zig-zig operation
+		tree.get(&14);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 14);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 12);
+				if let Some(left_left) = &left.left {
+					assert_eq!(left_left.key, 10);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn test_multiple_zig_zag_operations() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Setup for first zig-zag
+		tree.insert(6, "six");
+		tree.insert(2, "two");
+		tree.insert(4, "four");
+
+		// First zig-zag operation
+		tree.get(&4);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 4);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 2);
+			}
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 6);
+			}
+		}
+
+		// Setup for second zig-zag
+		tree.insert(1, "one");
+		tree.insert(3, "three");
+
+		// Second zig-zag operation
+		tree.get(&3);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 3);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 1);
+			}
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 4);
+			}
+		}
+
+		// Setup for third zig-zag
+		tree.insert(8, "eight");
+		tree.insert(7, "seven");
+
+		// Third zig-zag operation
+		tree.get(&7);
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 7);
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 4);
+			}
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 8);
+			}
+		}
+	}
+
+	#[test]
 	fn test_splay_operations() {
 		let mut tree = SplayTree::<i32, &str>::default();
 
