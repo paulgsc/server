@@ -191,7 +191,6 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		(new_root, updated_left_tree)
 	}
 
-	// Main splay operation
 	pub fn splay<Q: ?Sized>(&mut self, key: &Q) -> Option<Ordering>
 	where
 		K: Borrow<Q>,
@@ -219,24 +218,48 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 						return Some(Ordering::Less);
 					}
 
-					// Check for zig-zig case
-					if let Some(ref left) = root.left {
-						if key.cmp(left.key.borrow()) == Ordering::Less {
-							if left.left.is_some() {
-								// Handle zig-zig case
+					let left_cmp = key.cmp(root.left.as_ref().unwrap().key.borrow());
+
+					match left_cmp {
+						Ordering::Less => {
+							if root.left.as_ref().unwrap().left.is_some() {
+								// Zig-zig case
 								root = Self::rotate_right(root);
+								if !root.left.is_none() {
+									let (new_root, new_right_tree) = Self::handle_zig_right(root, right_tree);
+									root = new_root;
+									right_tree = new_right_tree;
+								}
+							} else {
+								// Single rotation
 								let (new_root, new_right_tree) = Self::handle_zig_right(root, right_tree);
 								root = new_root;
 								right_tree = new_right_tree;
-								continue;
 							}
 						}
+						Ordering::Greater => {
+							// Zig-zag case
+							if let Some(mut left_child) = root.left.take() {
+								if let Some(mut middle_child) = left_child.right.take() {
+									// Perform the double rotation
+									middle_child.left = Some(left_child);
+									root.left = Some(middle_child);
+								} else {
+									root.left = Some(left_child);
+								}
+							}
+							// Now perform the regular zig
+							let (new_root, new_right_tree) = Self::handle_zig_right(root, right_tree);
+							root = new_root;
+							right_tree = new_right_tree;
+						}
+						Ordering::Equal => {
+							// Single rotation
+							let (new_root, new_right_tree) = Self::handle_zig_right(root, right_tree);
+							root = new_root;
+							right_tree = new_right_tree;
+						}
 					}
-
-					// Handle regular zig case
-					let (new_root, new_right_tree) = Self::handle_zig_right(root, right_tree);
-					root = new_root;
-					right_tree = new_right_tree;
 				}
 				Ordering::Greater => {
 					if root.right.is_none() {
@@ -245,28 +268,53 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 						return Some(Ordering::Greater);
 					}
 
-					// Check for zag-zag case
-					if let Some(ref right) = root.right {
-						if key.cmp(right.key.borrow()) == Ordering::Greater {
-							if right.right.is_some() {
-								// Handle zag-zag case
+					let right_cmp = key.cmp(root.right.as_ref().unwrap().key.borrow());
+
+					match right_cmp {
+						Ordering::Greater => {
+							if root.right.as_ref().unwrap().right.is_some() {
+								// Zag-zag case
 								root = Self::rotate_left(root);
+								if !root.right.is_none() {
+									let (new_root, new_left_tree) = Self::handle_zig_left(root, left_tree);
+									root = new_root;
+									left_tree = new_left_tree;
+								}
+							} else {
+								// Single rotation
 								let (new_root, new_left_tree) = Self::handle_zig_left(root, left_tree);
 								root = new_root;
 								left_tree = new_left_tree;
-								continue;
 							}
 						}
+						Ordering::Less => {
+							// Zag-zig case
+							if let Some(mut right_child) = root.right.take() {
+								if let Some(mut middle_child) = right_child.left.take() {
+									// Perform the double rotation
+									middle_child.right = Some(right_child);
+									root.right = Some(middle_child);
+								} else {
+									root.right = Some(right_child);
+								}
+							}
+							// Now perform the regular zag
+							let (new_root, new_left_tree) = Self::handle_zig_left(root, left_tree);
+							root = new_root;
+							left_tree = new_left_tree;
+						}
+						Ordering::Equal => {
+							// Single rotation
+							let (new_root, new_left_tree) = Self::handle_zig_left(root, left_tree);
+							root = new_root;
+							left_tree = new_left_tree;
+						}
 					}
-
-					// Handle regular zag case
-					let (new_root, new_left_tree) = Self::handle_zig_left(root, left_tree);
-					root = new_root;
-					left_tree = new_left_tree;
 				}
 			}
 		}
 	}
+
 	pub fn contains_key<Q: ?Sized>(&mut self, key: &Q) -> bool
 	where
 		K: Borrow<Q>,
@@ -686,8 +734,11 @@ mod tests {
 
 		// Setup for first zig-zag
 		tree.insert(6, "six");
+		println!("Splay Tree: {}", tree);
 		tree.insert(2, "two");
+		println!("Splay Tree: {}", tree);
 		tree.insert(4, "four");
+		println!("Splay Tree: {}", tree);
 
 		// First zig-zag operation
 		tree.get(&4);
@@ -703,7 +754,9 @@ mod tests {
 
 		// Setup for second zig-zag
 		tree.insert(1, "one");
+		println!("Splay Tree: {}", tree);
 		tree.insert(3, "three");
+		println!("Splay Tree: {}", tree);
 
 		// Second zig-zag operation
 		tree.get(&3);
