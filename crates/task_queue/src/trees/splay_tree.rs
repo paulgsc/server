@@ -83,7 +83,7 @@ impl<K: Ord + Debug, V: Debug> SplayNode<K, V> {
 
 impl<K: Ord + Debug + Default, V: Default + Debug> Default for SplayTree<K, V> {
 	fn default() -> Self {
-		SplayTree::new()
+		Self::new()
 	}
 }
 
@@ -561,6 +561,7 @@ mod tests {
 		tree.insert(3, "three");
 		tree.insert(5, "five");
 		tree.insert(7, "seven");
+		println!("Splay Tree: {}", tree);
 
 		// Test first zig operation - access leftmost node
 		tree.get(&1);
