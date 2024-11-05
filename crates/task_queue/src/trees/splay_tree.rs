@@ -113,11 +113,11 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 	// Handle reassembly of the tree after splaying
 	fn reassemble_tree(mut root: Box<SplayNode<K, V>>, left_tree: Option<Box<SplayNode<K, V>>>, right_tree: Option<Box<SplayNode<K, V>>>) -> Box<SplayNode<K, V>> {
 		if let Some(mut l) = left_tree {
-			l.right = root.left;
+			l.right = root.left.take();
 			root.left = Some(l);
 		}
 		if let Some(mut r) = right_tree {
-			r.left = root.right;
+			r.left = root.right.take();
 			root.right = Some(r);
 		}
 		root
@@ -129,10 +129,27 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		let mut new_root = old_root.left.take().unwrap();
 		old_root.left = new_root.right.take();
 
-		let updated_right_tree = match right_tree {
-			None => Some(old_root),
-			Some(r) => {
-				old_root.right = Some(r);
+		let existing_right = old_root.right.take();
+
+		let updated_right_tree = match (existing_right, right_tree) {
+			(None, right) => {
+				old_root.right = right;
+				Some(old_root)
+			}
+			(Some(existing), None) => {
+				old_root.right = Some(existing);
+				Some(old_root)
+			}
+			(Some(existing), Some(right)) => {
+				old_root.right = Some(existing);
+				let mut current = &mut old_root.right;
+				while let Some(ref mut node) = *current {
+					if node.right.is_none() {
+						node.right = Some(right);
+						break;
+					}
+					current = &mut node.right;
+				}
 				Some(old_root)
 			}
 		};
@@ -146,10 +163,27 @@ impl<K: Ord + Debug, V: Debug> SplayTree<K, V> {
 		let mut new_root = old_root.right.take().unwrap();
 		old_root.right = new_root.left.take();
 
-		let updated_left_tree = match left_tree {
-			None => Some(old_root),
-			Some(l) => {
-				old_root.left = Some(l);
+		let existing_left = old_root.left.take();
+
+		let updated_left_tree = match (existing_left, left_tree) {
+			(None, left) => {
+				old_root.left = left;
+				Some(old_root)
+			}
+			(Some(existing), None) => {
+				old_root.left = Some(existing);
+				Some(old_root)
+			}
+			(Some(existing), Some(left)) => {
+				old_root.left = Some(existing);
+				let mut current = &mut old_root.left;
+				while let Some(ref mut node) = *current {
+					if node.left.is_none() {
+						node.left = Some(left);
+						break;
+					}
+					current = &mut node.left;
+				}
 				Some(old_root)
 			}
 		};
@@ -561,7 +595,6 @@ mod tests {
 		tree.insert(3, "three");
 		tree.insert(5, "five");
 		tree.insert(7, "seven");
-		println!("Splay Tree: {}", tree);
 
 		// Test first zig operation - access leftmost node
 		tree.get(&1);
