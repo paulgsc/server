@@ -2,16 +2,18 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug, Display};
 
+type Tree<K, V> = Option<Box<Node<K, V>>>;
+
 #[derive(Debug)]
 pub struct Node<K, V> {
 	pub key: K,
 	pub value: V,
-	pub left: Option<Box<Node<K, V>>>,
-	pub right: Option<Box<Node<K, V>>>,
+	pub left: Tree<K, V>,
+	pub right: Tree<K, V>,
 }
 
 impl<K, V> Node<K, V> {
-	pub fn new(key: K, value: V) -> Self {
+	pub const fn new(key: K, value: V) -> Self {
 		Node {
 			key,
 			value,
@@ -20,8 +22,6 @@ impl<K, V> Node<K, V> {
 		}
 	}
 }
-
-type Tree<K, V> = Option<Box<Node<K, V>>>;
 
 #[derive(Debug, Default)]
 pub struct SplayTree<K, V> {
@@ -60,6 +60,14 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 	#[must_use]
 	pub const fn is_empty(&self) -> bool {
 		self.size == 0
+	}
+
+	pub fn left(&self) -> Option<&Box<Node<K, V>>> {
+		self.root.as_ref().and_then(|node| node.left.as_ref())
+	}
+
+	pub fn right(&self) -> Option<&Box<Node<K, V>>> {
+		self.root.as_ref().and_then(|node| node.right.as_ref())
 	}
 
 	pub fn insert(&mut self, key: K, value: V) {
@@ -204,26 +212,26 @@ mod tests {
 
 		// Setup for first zig-zag
 		tree.insert(6, "six");
-		println!("After inserting 6:\n{}", tree);
 
 		tree.insert(2, "two");
-		println!("After inserting 2:\n{}", tree);
 
 		tree.insert(4, "four");
-		println!("After inserting 4:\n{}", tree);
 
 		// First zig-zag operation
 		tree.get(&4);
-		println!("After accessing 4:\n{}", tree);
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 4),
+			None => panic!("Root node not found!"),
+		}
 
-		if let Some(root) = &tree.root {
-			assert_eq!(root.key, 4);
-			if let Some(left) = &root.left {
-				assert_eq!(left.key, 2);
-			}
-			if let Some(right) = &root.right {
-				assert_eq!(right.key, 6);
-			}
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 2),
+			None => panic!("Left node not found!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 6),
+			None => panic!("Right node not found!"),
 		}
 
 		// Setup for second zig-zag
@@ -246,5 +254,32 @@ mod tests {
 				assert_eq!(right.key, 4);
 			}
 		}
+
+		tree.get(&2);
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 2),
+			None => panic!("Root not found!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 1),
+			None => panic!("Left node not found!"),
+		}
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 3),
+			None => panic!("Right node not found!"),
+		}
+
+		tree.get(&6);
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 6),
+			None => panic!("Root not found!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 2),
+			None => panic!("Left node not found!"),
+		}
+		assert!(tree.right().is_none(), "Expected right node to be None");
 	}
 }
