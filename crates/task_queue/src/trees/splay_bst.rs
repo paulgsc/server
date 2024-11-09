@@ -12,7 +12,7 @@ pub struct Node<K, V> {
 	pub right: Tree<K, V>,
 }
 
-impl<K, V> Node<K, V> {
+impl<K: Debug, V: Debug> Node<K, V> {
 	pub const fn new(key: K, value: V) -> Self {
 		Node {
 			key,
@@ -20,6 +20,12 @@ impl<K, V> Node<K, V> {
 			left: None,
 			right: None,
 		}
+	}
+}
+
+impl<K: Display, V: Display> Display for Node<K, V> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Node({}, {})", self.key, self.value)
 	}
 }
 
@@ -46,7 +52,7 @@ impl<K: Ord + Debug + Clone + Display, V: Clone + Display> Display for SplayTree
 	}
 }
 
-impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
+impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 	#[must_use]
 	pub const fn new() -> Self {
 		Self { root: None, size: 0 }
@@ -79,6 +85,10 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 
 		self.root = Some(Self::insert_recursive(self.root.take(), &key, value));
 		self.size += 1;
+		match &self.root {
+			Some(node) => println!("{:?}", node),
+			None => println!("None"),
+		}
 		self.root = Self::splay(self.root.take(), &key);
 	}
 
@@ -177,6 +187,8 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 				}
 			}
 		}
+
+		dbg!(&path);
 
 		// Second phase: splay operations bottom-up
 		while let Some((mut parent, went_right)) = path.pop() {
@@ -281,5 +293,148 @@ mod tests {
 			None => panic!("Left node not found!"),
 		}
 		assert!(tree.right().is_none(), "Expected right node to be None");
+	}
+
+	#[test]
+	fn test_single_insert() {
+		let mut tree = SplayTree::<i32, &str>::default();
+		tree.insert(10, "ten");
+
+		// Check that the root is the inserted node
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 10);
+			assert_eq!(root.value, "ten");
+		} else {
+			panic!("Root not found!");
+		}
+
+		// Check that the tree is not empty
+		assert_eq!(tree.size(), 1);
+		assert!(!tree.is_empty());
+	}
+
+	#[test]
+	fn test_empty_tree() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Check that the tree is empty
+		assert!(tree.is_empty());
+
+		// Check that calling left or right returns None
+		assert!(tree.left().is_none());
+		assert!(tree.right().is_none());
+
+		// Ensure get returns None when tree is empty
+		assert!(tree.get(&1).is_none(), "panicked!");
+	}
+
+	#[test]
+	fn test_duplicate_insert() {
+		let mut tree = SplayTree::<i32, &str>::default();
+		tree.insert(10, "ten");
+		tree.insert(10, "TEN"); // Insert duplicate with different value
+
+		// Ensure that the value is updated
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 10);
+			assert_eq!(root.value, "TEN"); // Value should be updated
+		} else {
+			panic!("Root not found!");
+		}
+
+		assert_eq!(tree.size(), 1); // Only one node should exist
+	}
+
+	#[test]
+	fn test_splay_behavior() {
+		let mut tree = SplayTree::<i32, &str>::default();
+		tree.insert(10, "ten");
+		println!("After inserting 10:\n{tree}");
+
+		tree.insert(5, "five");
+		println!("After inserting 5:\n{tree}");
+
+		tree.insert(15, "fifteen");
+		println!("After inserting 15:\n{tree}");
+
+		// The tree should splay the node when accessed
+		tree.get(&5); // This will splay the node with key 5 to the root
+		println!("After accessing 5:\n{tree}");
+
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 5),
+			None => panic!("Root is None, should be 5!"),
+		}
+
+		assert!(tree.left().is_none(), "Expected left node to be None");
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 10),
+			None => panic!("Right node is None, should be 10!"),
+		}
+	}
+
+	#[test]
+	fn test_right_none() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Insert a few nodes to form a basic tree structure
+		tree.insert(10, "ten");
+		tree.insert(5, "five");
+		tree.insert(15, "fifteen");
+		assert!(tree.right().is_none(), "Expected right node to be None");
+
+		// Access node with key 10, which should move it to the root
+		tree.get(&10);
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 15),
+			None => panic!("right node not found!"),
+		}
+	}
+
+	#[test]
+	fn test_left_and_right_nodes() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Insert nodes
+		tree.insert(10, "ten");
+		tree.insert(5, "five");
+		tree.insert(15, "fifteen");
+
+		// Access node with key 5, which should splay it to the root
+		tree.get(&5);
+
+		// Check that the root is 5
+		if let Some(root) = &tree.root {
+			assert_eq!(root.key, 5);
+			assert_eq!(root.value, "five");
+
+			// Left node should be 10
+			if let Some(left) = &root.left {
+				assert_eq!(left.key, 10);
+			} else {
+				panic!("Left node not found!");
+			}
+
+			// Right node should be 15
+			if let Some(right) = &root.right {
+				assert_eq!(right.key, 15);
+			} else {
+				panic!("Right node not found!");
+			}
+		} else {
+			panic!("Root not found!");
+		}
+	}
+
+	#[test]
+	fn test_access_non_existing_node() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Insert a single node
+		tree.insert(10, "ten");
+
+		// Try to access a non-existing node (should return None)
+		assert!(tree.get(&100).is_none(), "Non-existing node should return None");
 	}
 }
