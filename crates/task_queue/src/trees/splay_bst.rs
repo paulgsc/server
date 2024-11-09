@@ -65,10 +65,12 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 	pub fn insert(&mut self, key: K, value: V) {
 		if self.root.is_none() {
 			self.root = Some(Box::new(Node::new(key, value)));
+			self.size += 1;
 			return;
 		}
 
-		self.root = Some(Self::insert_into(self.root.take(), key.clone(), value));
+		self.root = Some(Self::insert_recursive(self.root.take(), &key, value));
+		self.size += 1;
 		self.root = Self::splay(self.root.take(), &key);
 	}
 
@@ -96,19 +98,19 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 		}
 	}
 
-	fn insert_into<Q: ?Sized>(node: Option<Box<Node<K, V>>>, key: K, value: V) -> Box<Node<K, V>>
+	fn insert_recursive<Q: ?Sized>(node: Option<Box<Node<K, V>>>, key: &Q, value: V) -> Box<Node<K, V>>
 	where
-		K: Borrow<Q>,
-		Q: Ord + Debug,
+		K: Borrow<Q> + From<Q::Owned>,
+		Q: Ord + Debug + ToOwned,
 	{
 		match node {
 			Some(mut n) => {
-				match key.borrow().cmp(n.key.borrow()) {
+				match key.cmp(n.key.borrow()) {
 					Ordering::Less => {
-						n.left = Some(Self::insert_into(n.left.take(), key, value));
+						n.left = Some(Self::insert_recursive(n.left.take(), key, value));
 					}
 					Ordering::Greater => {
-						n.right = Some(Self::insert_into(n.right.take(), key, value));
+						n.right = Some(Self::insert_recursive(n.right.take(), key, value));
 					}
 					Ordering::Equal => {
 						n.value = value;
@@ -116,7 +118,7 @@ impl<K: Ord + Debug + Clone, V> SplayTree<K, V> {
 				}
 				n
 			}
-			None => Box::new(Node::new(key, value)),
+			None => Box::new(Node::new(K::from(key.to_owned()), value)),
 		}
 	}
 
