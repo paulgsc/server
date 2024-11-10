@@ -150,11 +150,9 @@ impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 		}
 
 		let mut path = Vec::new();
-
 		// First phase: find the node and build the path
 		loop {
 			let current_key = root.as_ref().unwrap().key.borrow();
-
 			match key.cmp(current_key) {
 				Ordering::Equal => {
 					break;
@@ -188,28 +186,71 @@ impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 			}
 		}
 
-		dbg!(&path);
-
 		// Second phase: splay operations bottom-up
-		while let Some((mut parent, went_right)) = path.pop() {
-			match went_right {
-				true => {
-					// Current node is parent's right child
-					let mut current = root.take().unwrap();
-					parent.right = current.left.take();
-					current.left = Some(parent);
-					root = Some(current);
+		while !path.is_empty() {
+			dbg!(&path);
+			println!("performed a splay operation!");
+			if path.len() >= 2 {
+				// We have a grandparent - do a double rotation
+				let (mut parent, went_right_to_parent) = path.pop().unwrap();
+				let (mut grandparent, went_right_to_current) = path.pop().unwrap();
+				let mut current = root.take().unwrap();
+
+				match (went_right_to_parent, went_right_to_current) {
+					(true, true) => {
+						// Zig-zig case (right-right)
+						parent.right = current.left.take();
+						grandparent.right = parent.left.take();
+						parent.left = Some(grandparent);
+						current.left = Some(parent);
+					}
+					(false, false) => {
+						// Zig-zig case (left-left)
+						println!("zig-zig left operation!");
+						parent.left = current.right.take();
+						grandparent.left = parent.right.take();
+						parent.right = Some(grandparent);
+						current.right = Some(parent);
+					}
+					(false, true) => {
+						// Zig-zag case (right-left)
+						println!("zig-zag right operation!");
+						parent.left = current.right.take();
+						grandparent.right = current.left.take();
+						current.left = Some(grandparent);
+						current.right = Some(parent);
+					}
+					(true, false) => {
+						// Zig-zag case (left-right)
+						parent.right = current.left.take();
+						grandparent.left = current.right.take();
+						current.right = Some(grandparent);
+						current.left = Some(parent);
+					}
 				}
-				false => {
-					// Current node is parent's left child
-					let mut current = root.take().unwrap();
-					parent.left = current.right.take();
-					current.right = Some(parent);
-					root = Some(current);
+				root = Some(current);
+			} else {
+				// Single rotation when we only have a parent
+				let (mut parent, went_right) = path.pop().unwrap();
+				let mut current = root.take().unwrap();
+
+				match went_right {
+					true => {
+						// Current node is parent's right child
+						println!("zig-right operation");
+						parent.right = current.left.take();
+						current.left = Some(parent);
+					}
+					false => {
+						// Current node is parent's left child
+						println!("zig-left operation");
+						parent.left = current.right.take();
+						current.right = Some(parent);
+					}
 				}
+				root = Some(current);
 			}
 		}
-
 		root
 	}
 }
@@ -348,6 +389,7 @@ mod tests {
 	#[test]
 	fn test_splay_behavior() {
 		let mut tree = SplayTree::<i32, &str>::default();
+		// Frist testing zig-zig-left (right right case)
 		tree.insert(10, "ten");
 		println!("After inserting 10:\n{tree}");
 
@@ -357,7 +399,7 @@ mod tests {
 		tree.insert(15, "fifteen");
 		println!("After inserting 15:\n{tree}");
 
-		// The tree should splay the node when accessed
+		// Second Test zig-zig-right
 		tree.get(&5); // This will splay the node with key 5 to the root
 		println!("After accessing 5:\n{tree}");
 
@@ -371,6 +413,75 @@ mod tests {
 		match tree.right() {
 			Some(right_node) => assert_eq!(right_node.key, 10),
 			None => panic!("Right node is None, should be 10!"),
+		}
+
+		// Third Test  zig-zag-left
+		tree.insert(9, "nine");
+
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 9),
+			None => panic!("Root is None, should be 9!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Right node is None, should be 5!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 10),
+			None => panic!("Right node is None, should be 10!"),
+		}
+
+		// Fourth Test zig-zag-right
+		tree.insert(6, "six");
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 6),
+			None => panic!("Root is None, should be 6!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Right node is None, should be 5!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 9),
+			None => panic!("Right node is None, should be 9!"),
+		}
+
+		// Fifth Test zig-left
+		tree.get(&9);
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 9),
+			None => panic!("Root is None, should be 9!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 6),
+			None => panic!("Right node is None, should be 6!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 10),
+			None => panic!("Right node is None, should be 10!"),
+		}
+
+		// Sixth Test zig-right
+		tree.get(&6);
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 6),
+			None => panic!("Root is None, should be 6!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Right node is None, should be 5!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 9),
+			None => panic!("Right node is None, should be 9!"),
 		}
 	}
 
