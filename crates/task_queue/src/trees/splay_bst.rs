@@ -52,7 +52,7 @@ impl<K: Ord + Debug + Clone + Display, V: Clone + Display> Display for SplayTree
 	}
 }
 
-impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
+impl<K: Ord + Debug + Clone, V: Debug + Clone> SplayTree<K, V> {
 	#[must_use]
 	pub const fn new() -> Self {
 		Self { root: None, size: 0 }
@@ -92,6 +92,56 @@ impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 			None => println!("None"),
 		}
 		self.root = Self::splay(self.root.take(), &key);
+	}
+
+	pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+	where
+		K: Borrow<Q>,
+		Q: Ord + Debug,
+	{
+		// First splay the node to remove (or its closest parent) to the root
+		self.root = Self::splay(self.root.take(), key);
+
+		match self.root.take() {
+			Some(mut root) => {
+				if root.key.borrow().cmp(key) != Ordering::Equal {
+					// Key not found, put the root back and return None
+					self.root = Some(root);
+					return None;
+				}
+
+				// Key found, need to remove root
+				let value = root.value.clone();
+
+				match (root.left.take(), root.right.take()) {
+					(None, None) => {
+						// No children, tree is now empty
+						self.root = None;
+					}
+					(Some(left), None) => {
+						// Only left child
+						self.root = Some(left);
+					}
+					(None, Some(right)) => {
+						// Only right child
+						self.root = Some(right);
+					}
+					(Some(left), Some(right)) => {
+						// Both children exist
+						// 1. Set root to left subtree
+						self.root = Some(left);
+						// 2. Find the maximum element in the left subtree
+						self.root = Self::splay(self.root.take(), root.key.borrow());
+						// 3. Make the right subtree the right child of the new root
+						self.root.as_mut().unwrap().right = Some(right);
+					}
+				}
+
+				self.size -= 1;
+				Some(value)
+			}
+			None => None,
+		}
 	}
 
 	pub fn get<Q: ?Sized>(&mut self, key: &Q) -> Option<&V>
@@ -546,4 +596,148 @@ mod tests {
 			None => panic!("Right node is None, should be 9!"),
 		}
 	}
+    #[test]
+    fn test_remove_basic() {
+        let mut tree = SplayTree::new();
+        
+        // Test removing from empty tree
+        assert_eq!(tree.remove(&1), None);
+        
+        // Test removing single element
+        tree.insert(1, "one");
+        assert_eq!(tree.remove(&1), Some("one"));
+        assert!(tree.is_empty());
+        assert_eq!(tree.size(), 0);
+        
+        // Test removing non-existent element
+        tree.insert(1, "one");
+        assert_eq!(tree.remove(&2), None);
+        assert_eq!(tree.size(), 1);
+    }
+
+    #[test]
+    fn test_remove_complex() {
+        let mut tree = SplayTree::new();
+        
+        // Insert several elements
+        let values = vec![5, 3, 7, 2, 4, 6, 8];
+        for &value in &values {
+            tree.insert(value, value.to_string());
+        }
+        
+        // Test removing leaf node
+        assert_eq!(tree.remove(&2), Some("2".to_string()));
+        assert_eq!(tree.size(), 6);
+        assert!(verify_bst_properties(&tree.root, None, None));
+        
+        // Test removing node with one child
+        assert_eq!(tree.remove(&3), Some("3".to_string()));
+        assert_eq!(tree.size(), 5);
+        assert!(verify_bst_properties(&tree.root, None, None));
+        
+        // Test removing node with two children
+        assert_eq!(tree.remove(&7), Some("7".to_string()));
+        assert_eq!(tree.size(), 4);
+        assert!(verify_bst_properties(&tree.root, None, None));
+        
+        // Verify remaining structure
+        assert_eq!(tree.get(&4), Some(&"4".to_string()));
+        assert_eq!(tree.get(&5), Some(&"5".to_string()));
+        assert_eq!(tree.get(&6), Some(&"6".to_string()));
+        assert_eq!(tree.get(&8), Some(&"8".to_string()));
+    }
+
+    #[test]
+    fn test_remove_root() {
+        let mut tree = SplayTree::new();
+        
+        // Test removing root when it's the only node
+        tree.insert(1, "one");
+        assert_eq!(tree.remove(&1), Some("one"));
+        assert!(tree.is_empty());
+        
+        // Test removing root with one child
+        tree.insert(2, "two");
+        tree.insert(1, "one");
+        assert_eq!(tree.remove(&2), Some("two"));
+        assert_eq!(tree.root.as_ref().unwrap().key, 1);
+        
+        // Test removing root with two children
+        tree.insert(2, "two");
+        tree.insert(3, "three");
+        assert_eq!(tree.remove(&2), Some("two"));
+        assert!(verify_bst_properties(&tree.root, None, None));
+    }
+
+    #[test]
+    fn test_remove_sequence() {
+        let mut tree = SplayTree::new();
+        
+        // Insert values in sequence
+        for i in 1..=10 {
+            tree.insert(i, i.to_string());
+        }
+        
+        // Remove values in different order
+        let remove_sequence = vec![5, 3, 7, 1, 9, 2, 8, 4, 6, 10];
+        for &value in &remove_sequence {
+            assert_eq!(tree.remove(&value), Some(value.to_string()));
+            if !tree.is_empty() {
+                assert!(verify_bst_properties(&tree.root, None, None));
+            }
+        }
+        
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn test_remove_rebalancing() {
+        let mut tree = SplayTree::new();
+        
+        // Create a specific tree structure
+        let values = vec![50, 25, 75, 12, 37, 62, 87];
+        for &value in &values {
+            tree.insert(value, value.to_string());
+        }
+        
+        // Remove nodes and verify splaying occurs correctly
+        assert_eq!(tree.remove(&25), Some("25".to_string()));
+        assert!(verify_bst_properties(&tree.root, None, None));
+        
+        // Verify the structure after removal
+        assert_eq!(tree.get(&37), Some(&"37".to_string()));
+        assert_eq!(tree.root.as_ref().unwrap().key, 37);
+        
+        // Remove more nodes and verify structure
+        assert_eq!(tree.remove(&75), Some("75".to_string()));
+        assert!(verify_bst_properties(&tree.root, None, None));
+        assert_eq!(tree.remove(&50), Some("50".to_string()));
+        assert!(verify_bst_properties(&tree.root, None, None));
+    }
+
+    #[test]
+    fn test_remove_stress() {
+        let mut tree = SplayTree::new();
+        let mut values: Vec<i32> = (1..100).collect();
+        
+        // Insert all values
+        for &value in &values {
+            tree.insert(value, value.to_string());
+        }
+        
+        // Remove random values
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        values.shuffle(&mut rng);
+        
+        for &value in &values {
+            assert_eq!(tree.remove(&value), Some(value.to_string()));
+            if !tree.is_empty() {
+                assert!(verify_bst_properties(&tree.root, None, None));
+            }
+        }
+        
+        assert!(tree.is_empty());
+    }
+
 }
