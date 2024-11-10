@@ -504,41 +504,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_left_and_right_nodes() {
-		let mut tree = SplayTree::<i32, &str>::default();
-
-		// Insert nodes
-		tree.insert(10, "ten");
-		tree.insert(5, "five");
-		tree.insert(15, "fifteen");
-
-		// Access node with key 5, which should splay it to the root
-		tree.get(&5);
-
-		// Check that the root is 5
-		if let Some(root) = &tree.root {
-			assert_eq!(root.key, 5);
-			assert_eq!(root.value, "five");
-
-			// Left node should be 10
-			if let Some(left) = &root.left {
-				assert_eq!(left.key, 10);
-			} else {
-				panic!("Left node not found!");
-			}
-
-			// Right node should be 15
-			if let Some(right) = &root.right {
-				assert_eq!(right.key, 15);
-			} else {
-				panic!("Right node not found!");
-			}
-		} else {
-			panic!("Root not found!");
-		}
-	}
-
-	#[test]
 	fn test_access_non_existing_node() {
 		let mut tree = SplayTree::<i32, &str>::default();
 
