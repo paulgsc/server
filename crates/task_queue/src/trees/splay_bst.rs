@@ -740,4 +740,124 @@ mod tests {
         assert!(tree.is_empty());
     }
 
+#[test]
+fn test_remove_splay_behavior() {
+    let mut tree = SplayTree::<i32, &str>::default();
+    
+    // Initial tree setup
+    tree.insert(10, "ten");
+    println!("After inserting 10:\n{tree}");
+    tree.insert(5, "five");
+    println!("After inserting 5:\n{tree}");
+    tree.insert(15, "fifteen");
+    println!("After inserting 15:\n{tree}");
+    tree.insert(3, "three");
+    println!("After inserting 3:\n{tree}");
+    tree.insert(7, "seven");
+    println!("After inserting 7:\n{tree}");
+    tree.insert(12, "twelve");
+    println!("After inserting 12:\n{tree}");
+    tree.insert(17, "seventeen");
+    println!("After inserting 17:\n{tree}");
+
+    // Test Case 1: Remove leaf node (zig-zig case)
+    tree.remove(&3);
+    println!("After removing 3:\n{tree}");
+    // After removing 3, 5 should be at root due to splaying
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 5),
+        None => panic!("Root is None, should be 5!"),
+    }
+    match tree.right() {
+        Some(right_node) => assert_eq!(right_node.key, 7),
+        None => panic!("Right node is None, should be 7!"),
+    }
+
+    // Test Case 2: Remove node with one child (zig-zag case)
+    tree.remove(&15);
+    println!("After removing 15:\n{tree}");
+    // After removing 15, 12 should be splayed to root
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 12),
+        None => panic!("Root is None, should be 12!"),
+    }
+    match tree.right() {
+        Some(right_node) => assert_eq!(right_node.key, 17),
+        None => panic!("Right node is None, should be 17!"),
+    }
+
+    // Test Case 3: Remove node with two children (complex case)
+    tree.remove(&10);
+    println!("After removing 10:\n{tree}");
+    // After removing 10, the largest element in left subtree should be splayed to root
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 7),
+        None => panic!("Root is None, should be 7!"),
+    }
+    match tree.left() {
+        Some(left_node) => assert_eq!(left_node.key, 5),
+        None => panic!("Left node is None, should be 5!"),
+    }
+    match tree.right() {
+        Some(right_node) => assert_eq!(right_node.key, 12),
+        None => panic!("Right node is None, should be 12!"),
+    }
+
+    // Test Case 4: Remove root node
+    tree.remove(&7);
+    println!("After removing 7:\n{tree}");
+    // After removing root, the largest element in left subtree should become new root
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 5),
+        None => panic!("Root is None, should be 5!"),
+    }
+    match tree.right() {
+        Some(right_node) => assert_eq!(right_node.key, 12),
+        None => panic!("Right node is None, should be 12!"),
+    }
+
+    // Test Case 5: Remove last element in a branch
+    tree.remove(&17);
+    println!("After removing 17:\n{tree}");
+    // After removing 17, 12 should be splayed to root
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 12),
+        None => panic!("Root is None, should be 12!"),
+    }
+    match tree.left() {
+        Some(left_node) => assert_eq!(left_node.key, 5),
+        None => panic!("Left node is None, should be 5!"),
+    }
+    assert!(tree.right().is_none(), "Expected right node to be None after removing 17");
+
+    // Test Case 6: Remove non-existent key
+    tree.remove(&20);
+    println!("After attempting to remove non-existent 20:\n{tree}");
+    // Tree structure should remain unchanged after failed removal
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 12),
+        None => panic!("Root is None, should be 12!"),
+    }
+    match tree.left() {
+        Some(left_node) => assert_eq!(left_node.key, 5),
+        None => panic!("Left node is None, should be 5!"),
+    }
+
+    // Test Case 7: Remove remaining nodes in specific order
+    tree.remove(&5);
+    println!("After removing 5:\n{tree}");
+    match tree.root {
+        Some(ref value) => assert_eq!(value.key, 12),
+        None => panic!("Root is None, should be 12!"),
+    }
+    assert!(tree.left().is_none(), "Expected left node to be None after removing 5");
+    assert!(tree.right().is_none(), "Expected right node to be None after removing 5");
+
+    // Remove final node
+    tree.remove(&12);
+    println!("After removing final node 12:\n{tree}");
+    assert!(tree.root.is_none(), "Expected empty tree after removing all nodes");
+    assert_eq!(tree.size(), 0, "Tree size should be 0 after removing all nodes");
+}
+
 }
