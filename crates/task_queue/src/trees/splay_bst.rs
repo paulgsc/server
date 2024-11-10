@@ -14,7 +14,7 @@ pub struct Node<K, V> {
 
 impl<K: Debug, V: Debug> Node<K, V> {
 	pub const fn new(key: K, value: V) -> Self {
-		Node {
+		Self {
 			key,
 			value,
 			left: None,
@@ -68,10 +68,12 @@ impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 		self.size == 0
 	}
 
+	#[must_use]
 	pub fn left(&self) -> Option<&Box<Node<K, V>>> {
 		self.root.as_ref().and_then(|node| node.left.as_ref())
 	}
 
+	#[must_use]
 	pub fn right(&self) -> Option<&Box<Node<K, V>>> {
 		self.root.as_ref().and_then(|node| node.right.as_ref())
 	}
