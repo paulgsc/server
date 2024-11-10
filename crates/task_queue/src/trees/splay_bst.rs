@@ -596,268 +596,267 @@ mod tests {
 			None => panic!("Right node is None, should be 9!"),
 		}
 	}
-    #[test]
-    fn test_remove_basic() {
-        let mut tree = SplayTree::new();
-        
-        // Test removing from empty tree
-        assert_eq!(tree.remove(&1), None);
-        
-        // Test removing single element
-        tree.insert(1, "one");
-        assert_eq!(tree.remove(&1), Some("one"));
-        assert!(tree.is_empty());
-        assert_eq!(tree.size(), 0);
-        
-        // Test removing non-existent element
-        tree.insert(1, "one");
-        assert_eq!(tree.remove(&2), None);
-        assert_eq!(tree.size(), 1);
-    }
+	#[test]
+	fn test_remove_basic() {
+		let mut tree = SplayTree::new();
 
-    #[test]
-    fn test_remove_complex() {
-        let mut tree = SplayTree::new();
-        
-        // Insert several elements
-        let values = vec![5, 3, 7, 2, 4, 6, 8];
-        for &value in &values {
-            tree.insert(value, value.to_string());
-        }
-        
-        // Test removing leaf node
-        assert_eq!(tree.remove(&2), Some("2".to_string()));
-        assert_eq!(tree.size(), 6);
-        assert!(verify_bst_properties(&tree.root, None, None));
-        
-        // Test removing node with one child
-        assert_eq!(tree.remove(&3), Some("3".to_string()));
-        assert_eq!(tree.size(), 5);
-        assert!(verify_bst_properties(&tree.root, None, None));
-        
-        // Test removing node with two children
-        assert_eq!(tree.remove(&7), Some("7".to_string()));
-        assert_eq!(tree.size(), 4);
-        assert!(verify_bst_properties(&tree.root, None, None));
-        
-        // Verify remaining structure
-        assert_eq!(tree.get(&4), Some(&"4".to_string()));
-        assert_eq!(tree.get(&5), Some(&"5".to_string()));
-        assert_eq!(tree.get(&6), Some(&"6".to_string()));
-        assert_eq!(tree.get(&8), Some(&"8".to_string()));
-    }
+		// Test removing from empty tree
+		assert_eq!(tree.remove(&1), None);
 
-    #[test]
-    fn test_remove_root() {
-        let mut tree = SplayTree::new();
-        
-        // Test removing root when it's the only node
-        tree.insert(1, "one");
-        assert_eq!(tree.remove(&1), Some("one"));
-        assert!(tree.is_empty());
-        
-        // Test removing root with one child
-        tree.insert(2, "two");
-        tree.insert(1, "one");
-        assert_eq!(tree.remove(&2), Some("two"));
-        assert_eq!(tree.root.as_ref().unwrap().key, 1);
-        
-        // Test removing root with two children
-        tree.insert(2, "two");
-        tree.insert(3, "three");
-        assert_eq!(tree.remove(&2), Some("two"));
-        assert!(verify_bst_properties(&tree.root, None, None));
-    }
+		// Test removing single element
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&1), Some("one"));
+		assert!(tree.is_empty());
+		assert_eq!(tree.size(), 0);
 
-    #[test]
-    fn test_remove_sequence() {
-        let mut tree = SplayTree::new();
-        
-        // Insert values in sequence
-        for i in 1..=10 {
-            tree.insert(i, i.to_string());
-        }
-        
-        // Remove values in different order
-        let remove_sequence = vec![5, 3, 7, 1, 9, 2, 8, 4, 6, 10];
-        for &value in &remove_sequence {
-            assert_eq!(tree.remove(&value), Some(value.to_string()));
-            if !tree.is_empty() {
-                assert!(verify_bst_properties(&tree.root, None, None));
-            }
-        }
-        
-        assert!(tree.is_empty());
-    }
+		// Test removing non-existent element
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&2), None);
+		assert_eq!(tree.size(), 1);
+	}
 
-    #[test]
-    fn test_remove_rebalancing() {
-        let mut tree = SplayTree::new();
-        
-        // Create a specific tree structure
-        let values = vec![50, 25, 75, 12, 37, 62, 87];
-        for &value in &values {
-            tree.insert(value, value.to_string());
-        }
-        
-        // Remove nodes and verify splaying occurs correctly
-        assert_eq!(tree.remove(&25), Some("25".to_string()));
-        assert!(verify_bst_properties(&tree.root, None, None));
-        
-        // Verify the structure after removal
-        assert_eq!(tree.get(&37), Some(&"37".to_string()));
-        assert_eq!(tree.root.as_ref().unwrap().key, 37);
-        
-        // Remove more nodes and verify structure
-        assert_eq!(tree.remove(&75), Some("75".to_string()));
-        assert!(verify_bst_properties(&tree.root, None, None));
-        assert_eq!(tree.remove(&50), Some("50".to_string()));
-        assert!(verify_bst_properties(&tree.root, None, None));
-    }
+	#[test]
+	fn test_remove_complex() {
+		let mut tree = SplayTree::new();
 
-    #[test]
-    fn test_remove_stress() {
-        let mut tree = SplayTree::new();
-        let mut values: Vec<i32> = (1..100).collect();
-        
-        // Insert all values
-        for &value in &values {
-            tree.insert(value, value.to_string());
-        }
-        
-        // Remove random values
-        use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
-        values.shuffle(&mut rng);
-        
-        for &value in &values {
-            assert_eq!(tree.remove(&value), Some(value.to_string()));
-            if !tree.is_empty() {
-                assert!(verify_bst_properties(&tree.root, None, None));
-            }
-        }
-        
-        assert!(tree.is_empty());
-    }
+		// Insert several elements
+		let values = vec![5, 3, 7, 2, 4, 6, 8];
+		for &value in &values {
+			tree.insert(value, value.to_string());
+		}
 
-#[test]
-fn test_remove_splay_behavior() {
-    let mut tree = SplayTree::<i32, &str>::default();
-    
-    // Initial tree setup
-    tree.insert(10, "ten");
-    println!("After inserting 10:\n{tree}");
-    tree.insert(5, "five");
-    println!("After inserting 5:\n{tree}");
-    tree.insert(15, "fifteen");
-    println!("After inserting 15:\n{tree}");
-    tree.insert(3, "three");
-    println!("After inserting 3:\n{tree}");
-    tree.insert(7, "seven");
-    println!("After inserting 7:\n{tree}");
-    tree.insert(12, "twelve");
-    println!("After inserting 12:\n{tree}");
-    tree.insert(17, "seventeen");
-    println!("After inserting 17:\n{tree}");
+		// Test removing leaf node
+		assert_eq!(tree.remove(&2), Some("2".to_string()));
+		assert_eq!(tree.size(), 6);
+		assert!(verify_bst_properties(&tree.root, None, None));
 
-    // Test Case 1: Remove leaf node (zig-zig case)
-    tree.remove(&3);
-    println!("After removing 3:\n{tree}");
-    // After removing 3, 5 should be at root due to splaying
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 5),
-        None => panic!("Root is None, should be 5!"),
-    }
-    match tree.right() {
-        Some(right_node) => assert_eq!(right_node.key, 7),
-        None => panic!("Right node is None, should be 7!"),
-    }
+		// Test removing node with one child
+		assert_eq!(tree.remove(&3), Some("3".to_string()));
+		assert_eq!(tree.size(), 5);
+		assert!(verify_bst_properties(&tree.root, None, None));
 
-    // Test Case 2: Remove node with one child (zig-zag case)
-    tree.remove(&15);
-    println!("After removing 15:\n{tree}");
-    // After removing 15, 12 should be splayed to root
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 12),
-        None => panic!("Root is None, should be 12!"),
-    }
-    match tree.right() {
-        Some(right_node) => assert_eq!(right_node.key, 17),
-        None => panic!("Right node is None, should be 17!"),
-    }
+		// Test removing node with two children
+		assert_eq!(tree.remove(&7), Some("7".to_string()));
+		assert_eq!(tree.size(), 4);
+		assert!(verify_bst_properties(&tree.root, None, None));
 
-    // Test Case 3: Remove node with two children (complex case)
-    tree.remove(&10);
-    println!("After removing 10:\n{tree}");
-    // After removing 10, the largest element in left subtree should be splayed to root
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 7),
-        None => panic!("Root is None, should be 7!"),
-    }
-    match tree.left() {
-        Some(left_node) => assert_eq!(left_node.key, 5),
-        None => panic!("Left node is None, should be 5!"),
-    }
-    match tree.right() {
-        Some(right_node) => assert_eq!(right_node.key, 12),
-        None => panic!("Right node is None, should be 12!"),
-    }
+		// Verify remaining structure
+		assert_eq!(tree.get(&4), Some(&"4".to_string()));
+		assert_eq!(tree.get(&5), Some(&"5".to_string()));
+		assert_eq!(tree.get(&6), Some(&"6".to_string()));
+		assert_eq!(tree.get(&8), Some(&"8".to_string()));
+	}
 
-    // Test Case 4: Remove root node
-    tree.remove(&7);
-    println!("After removing 7:\n{tree}");
-    // After removing root, the largest element in left subtree should become new root
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 5),
-        None => panic!("Root is None, should be 5!"),
-    }
-    match tree.right() {
-        Some(right_node) => assert_eq!(right_node.key, 12),
-        None => panic!("Right node is None, should be 12!"),
-    }
+	#[test]
+	fn test_remove_root() {
+		let mut tree = SplayTree::new();
 
-    // Test Case 5: Remove last element in a branch
-    tree.remove(&17);
-    println!("After removing 17:\n{tree}");
-    // After removing 17, 12 should be splayed to root
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 12),
-        None => panic!("Root is None, should be 12!"),
-    }
-    match tree.left() {
-        Some(left_node) => assert_eq!(left_node.key, 5),
-        None => panic!("Left node is None, should be 5!"),
-    }
-    assert!(tree.right().is_none(), "Expected right node to be None after removing 17");
+		// Test removing root when it's the only node
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&1), Some("one"));
+		assert!(tree.is_empty());
 
-    // Test Case 6: Remove non-existent key
-    tree.remove(&20);
-    println!("After attempting to remove non-existent 20:\n{tree}");
-    // Tree structure should remain unchanged after failed removal
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 12),
-        None => panic!("Root is None, should be 12!"),
-    }
-    match tree.left() {
-        Some(left_node) => assert_eq!(left_node.key, 5),
-        None => panic!("Left node is None, should be 5!"),
-    }
+		// Test removing root with one child
+		tree.insert(2, "two");
+		tree.insert(1, "one");
+		assert_eq!(tree.remove(&2), Some("two"));
+		assert_eq!(tree.root.as_ref().unwrap().key, 1);
 
-    // Test Case 7: Remove remaining nodes in specific order
-    tree.remove(&5);
-    println!("After removing 5:\n{tree}");
-    match tree.root {
-        Some(ref value) => assert_eq!(value.key, 12),
-        None => panic!("Root is None, should be 12!"),
-    }
-    assert!(tree.left().is_none(), "Expected left node to be None after removing 5");
-    assert!(tree.right().is_none(), "Expected right node to be None after removing 5");
+		// Test removing root with two children
+		tree.insert(2, "two");
+		tree.insert(3, "three");
+		assert_eq!(tree.remove(&2), Some("two"));
+		assert!(verify_bst_properties(&tree.root, None, None));
+	}
 
-    // Remove final node
-    tree.remove(&12);
-    println!("After removing final node 12:\n{tree}");
-    assert!(tree.root.is_none(), "Expected empty tree after removing all nodes");
-    assert_eq!(tree.size(), 0, "Tree size should be 0 after removing all nodes");
-}
+	#[test]
+	fn test_remove_sequence() {
+		let mut tree = SplayTree::new();
 
+		// Insert values in sequence
+		for i in 1..=10 {
+			tree.insert(i, i.to_string());
+		}
+
+		// Remove values in different order
+		let remove_sequence = vec![5, 3, 7, 1, 9, 2, 8, 4, 6, 10];
+		for &value in &remove_sequence {
+			assert_eq!(tree.remove(&value), Some(value.to_string()));
+			if !tree.is_empty() {
+				assert!(verify_bst_properties(&tree.root, None, None));
+			}
+		}
+
+		assert!(tree.is_empty());
+	}
+
+	#[test]
+	fn test_remove_rebalancing() {
+		let mut tree = SplayTree::new();
+
+		// Create a specific tree structure
+		let values = vec![50, 25, 75, 12, 37, 62, 87];
+		for &value in &values {
+			tree.insert(value, value.to_string());
+		}
+
+		// Remove nodes and verify splaying occurs correctly
+		assert_eq!(tree.remove(&25), Some("25".to_string()));
+		assert!(verify_bst_properties(&tree.root, None, None));
+
+		// Verify the structure after removal
+		assert_eq!(tree.get(&37), Some(&"37".to_string()));
+		assert_eq!(tree.root.as_ref().unwrap().key, 37);
+
+		// Remove more nodes and verify structure
+		assert_eq!(tree.remove(&75), Some("75".to_string()));
+		assert!(verify_bst_properties(&tree.root, None, None));
+		assert_eq!(tree.remove(&50), Some("50".to_string()));
+		assert!(verify_bst_properties(&tree.root, None, None));
+	}
+
+	#[test]
+	fn test_remove_stress() {
+		let mut tree = SplayTree::new();
+		let mut values: Vec<i32> = (1..100).collect();
+
+		// Insert all values
+		for &value in &values {
+			tree.insert(value, value.to_string());
+		}
+
+		// Remove random values
+		use rand::seq::SliceRandom;
+		let mut rng = rand::thread_rng();
+		values.shuffle(&mut rng);
+
+		for &value in &values {
+			assert_eq!(tree.remove(&value), Some(value.to_string()));
+			if !tree.is_empty() {
+				assert!(verify_bst_properties(&tree.root, None, None));
+			}
+		}
+
+		assert!(tree.is_empty());
+	}
+
+	#[test]
+	fn test_remove_splay_behavior() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		// Initial tree setup
+		tree.insert(10, "ten");
+		println!("After inserting 10:\n{tree}");
+		tree.insert(5, "five");
+		println!("After inserting 5:\n{tree}");
+		tree.insert(15, "fifteen");
+		println!("After inserting 15:\n{tree}");
+		tree.insert(3, "three");
+		println!("After inserting 3:\n{tree}");
+		tree.insert(7, "seven");
+		println!("After inserting 7:\n{tree}");
+		tree.insert(12, "twelve");
+		println!("After inserting 12:\n{tree}");
+		tree.insert(17, "seventeen");
+		println!("After inserting 17:\n{tree}");
+
+		// Test Case 1: Remove leaf node (zig-zig case)
+		tree.remove(&3);
+		println!("After removing 3:\n{tree}");
+		// After removing 3, 5 should be at root due to splaying
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 15),
+			None => panic!("Root is None, should be 15!"),
+		}
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 17),
+			None => panic!("Right node is None, should be 17!"),
+		}
+
+		// Test Case 2: Remove node with one child (zig-zag case)
+		tree.remove(&15);
+		println!("After removing 15:\n{tree}");
+		// After removing 15, 12 should be splayed to root
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 12),
+			None => panic!("Root is None, should be 12!"),
+		}
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 17),
+			None => panic!("Right node is None, should be 17!"),
+		}
+
+		// Test Case 3: Remove node with two children (complex case)
+		tree.remove(&10);
+		println!("After removing 10:\n{tree}");
+		// After removing 10, the largest element in left subtree should be splayed to root
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 7),
+			None => panic!("Root is None, should be 7!"),
+		}
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Left node is None, should be 5!"),
+		}
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 12),
+			None => panic!("Right node is None, should be 12!"),
+		}
+
+		// Test Case 4: Remove root node
+		tree.remove(&7);
+		println!("After removing 7:\n{tree}");
+		// After removing root, the largest element in left subtree should become new root
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 5),
+			None => panic!("Root is None, should be 5!"),
+		}
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 12),
+			None => panic!("Right node is None, should be 12!"),
+		}
+
+		// Test Case 5: Remove last element in a branch
+		tree.remove(&17);
+		println!("After removing 17:\n{tree}");
+		// After removing 17, 12 should be splayed to root
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 12),
+			None => panic!("Root is None, should be 12!"),
+		}
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Left node is None, should be 5!"),
+		}
+		assert!(tree.right().is_none(), "Expected right node to be None after removing 17");
+
+		// Test Case 6: Remove non-existent key
+		tree.remove(&20);
+		println!("After attempting to remove non-existent 20:\n{tree}");
+		// Tree structure should remain unchanged after failed removal
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 12),
+			None => panic!("Root is None, should be 12!"),
+		}
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Left node is None, should be 5!"),
+		}
+
+		// Test Case 7: Remove remaining nodes in specific order
+		tree.remove(&5);
+		println!("After removing 5:\n{tree}");
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 12),
+			None => panic!("Root is None, should be 12!"),
+		}
+		assert!(tree.left().is_none(), "Expected left node to be None after removing 5");
+		assert!(tree.right().is_none(), "Expected right node to be None after removing 5");
+
+		// Remove final node
+		tree.remove(&12);
+		println!("After removing final node 12:\n{tree}");
+		assert!(tree.root.is_none(), "Expected empty tree after removing all nodes");
+		assert_eq!(tree.size(), 0, "Tree size should be 0 after removing all nodes");
+	}
 }
