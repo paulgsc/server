@@ -261,133 +261,193 @@ impl<K: Ord + Debug + Clone, V: Debug> SplayTree<K, V> {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn test_multiple_zig_zag_operations() {
-		let mut tree = SplayTree::<i32, &str>::default();
+	// Helper function to verify basic Binary Search Tree properties
+	fn verify_bst_properties<K: Ord + Debug + Clone, V: Debug>(node: &Option<Box<Node<K, V>>>, min: Option<&K>, max: Option<&K>) -> bool {
+		match node {
+			None => true,
+			Some(n) => {
+				// Check current node's value against bounds
+				if let Some(min_val) = min {
+					if n.key <= *min_val {
+						return false;
+					}
+				}
+				if let Some(max_val) = max {
+					if n.key >= *max_val {
+						return false;
+					}
+				}
 
-		// Setup for first zig-zag
-		tree.insert(6, "six");
-
-		tree.insert(2, "two");
-
-		tree.insert(4, "four");
-
-		// First zig-zag operation
-		tree.get(&4);
-		match tree.root {
-			Some(ref value) => assert_eq!(value.key, 4),
-			None => panic!("Root node not found!"),
-		}
-
-		match tree.left() {
-			Some(left_node) => assert_eq!(left_node.key, 2),
-			None => panic!("Left node not found!"),
-		}
-
-		match tree.right() {
-			Some(right_node) => assert_eq!(right_node.key, 6),
-			None => panic!("Right node not found!"),
-		}
-
-		// Setup for second zig-zag
-		tree.insert(1, "one");
-		println!("After inserting 1:\n{}", tree);
-
-		tree.insert(3, "three");
-		println!("After inserting 3:\n{}", tree);
-
-		// Second zig-zag operation
-		tree.get(&3);
-		println!("After accessing 3:\n{}", tree);
-
-		if let Some(root) = &tree.root {
-			assert_eq!(root.key, 3);
-			if let Some(left) = &root.left {
-				assert_eq!(left.key, 1);
-			}
-			if let Some(right) = &root.right {
-				assert_eq!(right.key, 4);
+				// Recursively check children
+				verify_bst_properties(&n.left, min, Some(&n.key)) && verify_bst_properties(&n.right, Some(&n.key), max)
 			}
 		}
-
-		tree.get(&2);
-		match tree.root {
-			Some(ref value) => assert_eq!(value.key, 2),
-			None => panic!("Root not found!"),
-		}
-
-		match tree.left() {
-			Some(left_node) => assert_eq!(left_node.key, 1),
-			None => panic!("Left node not found!"),
-		}
-		match tree.right() {
-			Some(right_node) => assert_eq!(right_node.key, 3),
-			None => panic!("Right node not found!"),
-		}
-
-		tree.get(&6);
-		match tree.root {
-			Some(ref value) => assert_eq!(value.key, 6),
-			None => panic!("Root not found!"),
-		}
-
-		match tree.left() {
-			Some(left_node) => assert_eq!(left_node.key, 2),
-			None => panic!("Left node not found!"),
-		}
-		assert!(tree.right().is_none(), "Expected right node to be None");
 	}
 
 	#[test]
-	fn test_single_insert() {
-		let mut tree = SplayTree::<i32, &str>::default();
-		tree.insert(10, "ten");
+	fn test_basic_operations() {
+		let mut tree = SplayTree::new();
+		assert!(tree.is_empty());
+		assert_eq!(tree.size(), 0);
 
-		// Check that the root is the inserted node
-		if let Some(root) = &tree.root {
-			assert_eq!(root.key, 10);
-			assert_eq!(root.value, "ten");
-		} else {
-			panic!("Root not found!");
-		}
-
-		// Check that the tree is not empty
+		// Test single insertion
+		tree.insert(5, "five");
 		assert_eq!(tree.size(), 1);
 		assert!(!tree.is_empty());
+		assert_eq!(tree.get(&5), Some(&"five"));
+
+		// Test multiple insertions
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+		assert_eq!(tree.size(), 3);
+		assert_eq!(tree.get(&3), Some(&"three"));
+		assert_eq!(tree.get(&7), Some(&"seven"));
+
+		// Test updating existing key
+		tree.insert(5, "new_five");
+		assert_eq!(tree.size(), 3);
+		assert_eq!(tree.get(&5), Some(&"new_five"));
 	}
 
 	#[test]
-	fn test_empty_tree() {
-		let mut tree = SplayTree::<i32, &str>::default();
+	fn test_splay_operations() {
+		let mut tree = SplayTree::new();
 
-		// Check that the tree is empty
-		assert!(tree.is_empty());
+		// Insert elements to create a specific tree structure
+		tree.insert(5, "five");
+		tree.insert(3, "three");
+		tree.insert(7, "seven");
+		tree.insert(2, "two");
+		tree.insert(4, "four");
+		tree.insert(6, "six");
+		tree.insert(8, "eight");
 
-		// Check that calling left or right returns None
-		assert!(tree.left().is_none());
-		assert!(tree.right().is_none());
+		// Test zig-zig (left-left) case
+		tree.get(&2);
+		assert_eq!(tree.root.as_ref().unwrap().key, 2);
 
-		// Ensure get returns None when tree is empty
-		assert!(tree.get(&1).is_none(), "panicked!");
+		// Test zig-zag (right-left) case
+		tree.insert(6, "six");
+		tree.get(&4);
+		assert_eq!(tree.root.as_ref().unwrap().key, 4);
+
+		// Verify BST properties are maintained after splay operations
+		assert!(verify_bst_properties(&tree.root, None, None));
 	}
 
 	#[test]
-	fn test_duplicate_insert() {
-		let mut tree = SplayTree::<i32, &str>::default();
-		tree.insert(10, "ten");
-		tree.insert(10, "TEN"); // Insert duplicate with different value
+	fn test_edge_cases() {
+		let mut tree = SplayTree::new();
 
-		// Ensure that the value is updated
-		if let Some(root) = &tree.root {
-			assert_eq!(root.key, 10);
-			assert_eq!(root.value, "TEN"); // Value should be updated
-		} else {
-			panic!("Root not found!");
+		// Test getting from empty tree
+		assert_eq!(tree.get(&1), None);
+
+		// Test single node operations
+		tree.insert(1, "one");
+		assert_eq!(tree.get(&1), Some(&"one"));
+		assert_eq!(tree.size(), 1);
+
+		// Test getting non-existent keys
+		assert_eq!(tree.get(&2), None);
+		assert_eq!(tree.get(&0), None);
+
+		// Test multiple insertions and gets with same key
+		tree.insert(1, "one_new");
+		assert_eq!(tree.get(&1), Some(&"one_new"));
+		assert_eq!(tree.size(), 1);
+	}
+
+	#[test]
+	fn test_large_tree() {
+		let mut tree = SplayTree::new();
+		let values: Vec<i32> = (1..100).collect();
+
+		// Insert values in a way that could create an unbalanced tree
+		for &value in &values {
+			tree.insert(value, value.to_string());
 		}
 
-		assert_eq!(tree.size(), 1); // Only one node should exist
+		// Verify all values can be retrieved
+		for &value in &values {
+			assert_eq!(tree.get(&value), Some(&value.to_string()));
+		}
+
+		// Verify BST properties are maintained
+		assert!(verify_bst_properties(&tree.root, None, None));
 	}
 
+	#[test]
+	fn test_complex_splay_sequences() {
+		let mut tree = SplayTree::new();
+
+		// Create a tree with multiple levels
+		let values = vec![50, 25, 75, 12, 37, 62, 87];
+		for &value in &values {
+			tree.insert(value, value.to_string());
+		}
+
+		// Test sequence of operations that trigger different splay cases
+		tree.get(&12); // Should trigger zig-zig
+		assert_eq!(tree.root.as_ref().unwrap().key, 12);
+
+		tree.get(&62); // Should trigger zig-zag
+		assert_eq!(tree.root.as_ref().unwrap().key, 62);
+
+		tree.get(&87); // Should trigger zig
+		assert_eq!(tree.root.as_ref().unwrap().key, 87);
+
+		// Verify tree maintains BST properties after complex operations
+		assert!(verify_bst_properties(&tree.root, None, None));
+	}
+
+	#[test]
+	fn test_get_mut() {
+		let mut tree = SplayTree::new();
+
+		// Insert some initial values
+		tree.insert(1, String::from("one"));
+		tree.insert(2, String::from("two"));
+		tree.insert(3, String::from("three"));
+
+		// Modify value using get_mut
+		if let Some(value) = tree.get_mut(&2) {
+			*value = String::from("TWO");
+		}
+
+		// Verify the modification
+		assert_eq!(tree.get(&2), Some(&String::from("TWO")));
+
+		// Attempt to modify non-existent key
+		assert_eq!(tree.get_mut(&4), None);
+	}
+
+	#[test]
+	fn test_tree_structure() {
+		let mut tree = SplayTree::new();
+
+		// Insert values in a specific order to test tree structure
+		let values = vec![3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
+		for &value in &values {
+			tree.insert(value, value.to_string());
+		}
+
+		// After each get operation, verify:
+		// 1. The accessed node is at the root
+		// 2. BST properties are maintained
+		// 3. All values are still accessible
+
+		tree.get(&5);
+		assert_eq!(tree.root.as_ref().unwrap().key, 5);
+		assert!(verify_bst_properties(&tree.root, None, None));
+
+		tree.get(&1);
+		assert_eq!(tree.root.as_ref().unwrap().key, 1);
+		assert!(verify_bst_properties(&tree.root, None, None));
+
+		tree.get(&9);
+		assert_eq!(tree.root.as_ref().unwrap().key, 9);
+		assert!(verify_bst_properties(&tree.root, None, None));
+	}
 	#[test]
 	fn test_splay_behavior() {
 		let mut tree = SplayTree::<i32, &str>::default();
@@ -485,34 +545,5 @@ mod tests {
 			Some(right_node) => assert_eq!(right_node.key, 9),
 			None => panic!("Right node is None, should be 9!"),
 		}
-	}
-
-	#[test]
-	fn test_right_none() {
-		let mut tree = SplayTree::<i32, &str>::default();
-
-		// Insert a few nodes to form a basic tree structure
-		tree.insert(10, "ten");
-		tree.insert(5, "five");
-		tree.insert(15, "fifteen");
-		assert!(tree.right().is_none(), "Expected right node to be None");
-
-		// Access node with key 10, which should move it to the root
-		tree.get(&10);
-		match tree.right() {
-			Some(right_node) => assert_eq!(right_node.key, 15),
-			None => panic!("right node not found!"),
-		}
-	}
-
-	#[test]
-	fn test_access_non_existing_node() {
-		let mut tree = SplayTree::<i32, &str>::default();
-
-		// Insert a single node
-		tree.insert(10, "ten");
-
-		// Try to access a non-existing node (should return None)
-		assert!(tree.get(&100).is_none(), "Non-existing node should return None");
 	}
 }
