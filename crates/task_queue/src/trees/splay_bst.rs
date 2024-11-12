@@ -87,10 +87,6 @@ impl<K: Ord + Debug + Clone, V: Debug + Clone> SplayTree<K, V> {
 
 		self.root = Some(Self::insert_recursive(self.root.take(), &key, value));
 		self.size += 1;
-		match &self.root {
-			Some(node) => println!("{:?}", node),
-			None => println!("None"),
-		}
 		self.root = Self::splay(self.root.take(), &key);
 	}
 
@@ -191,7 +187,6 @@ impl<K: Ord + Debug + Clone, V: Debug + Clone> SplayTree<K, V> {
 			None => Box::new(Node::new(K::from(key.to_owned()), value)),
 		}
 	}
-
 	fn splay<Q: ?Sized>(mut root: Option<Box<Node<K, V>>>, key: &Q) -> Option<Box<Node<K, V>>>
 	where
 		K: Borrow<Q>,
@@ -329,6 +324,195 @@ mod tests {
 	}
 
 	#[test]
+	fn test_rotate_right() {
+		//      3           2
+		//     /           / \
+		//    2     ->    1   3
+		//   /
+		//  1
+		let mut node3 = Box::new(Node::new(3, "three"));
+		let mut node2 = Box::new(Node::new(2, "two"));
+		let node1 = Box::new(Node::new(1, "one"));
+
+		node2.left = Some(node1);
+		node3.left = Some(node2);
+
+		let rotated = Node::rotate_right(node3);
+
+		assert_eq!(rotated.key, 2);
+		assert_eq!(rotated.value, "two");
+		assert_eq!(rotated.left.as_ref().unwrap().key, 1);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 3);
+	}
+
+	#[test]
+	fn test_rotate_left() {
+		//  1               2
+		//   \             / \
+		//    2     ->    1   3
+		//     \
+		//      3
+		let mut node1 = Box::new(Node::new(1, "one"));
+		let mut node2 = Box::new(Node::new(2, "two"));
+		let node3 = Box::new(Node::new(3, "three"));
+
+		node2.right = Some(node3);
+		node1.right = Some(node2);
+
+		let rotated = Node::rotate_left(node1);
+
+		assert_eq!(rotated.key, 2);
+		assert_eq!(rotated.value, "two");
+		assert_eq!(rotated.left.as_ref().unwrap().key, 1);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 3);
+	}
+
+	#[test]
+	fn test_rotate_left_right() {
+		//     3           3           2
+		//    /           /           / \
+		//   1    ->    2    ->    1   3
+		//  /  \         /
+		//  2   4       1
+		let mut node3 = Box::new(Node::new(3, "three"));
+		let mut node1 = Box::new(Node::new(1, "one"));
+		let node2 = Box::new(Node::new(2, "two"));
+		let node4 = Box::new(Node::new(4, "four"));
+
+		node1.right = Some(node4);
+		node1.left = Some(node2);
+		node3.left = Some(node1);
+
+		let rotated = Node::rotate_left_right(node3);
+
+		assert_eq!(rotated.key, 4);
+		assert_eq!(rotated.left.as_ref().unwrap().key, 1);
+		assert_eq!(rotated.left.as_ref().unwrap().left.as_ref().unwrap().key, 2);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 3);
+	}
+
+	#[test]
+	fn test_rotate_right_left() {
+		//    1               1              2
+		//     \               \            / \
+		//      3     ->        2    ->   1   3
+		//     / \                 \
+		//    2   4                 3
+		let mut node1 = Box::new(Node::new(1, "one"));
+		let mut node3 = Box::new(Node::new(3, "three"));
+		let node2 = Box::new(Node::new(2, "two"));
+		let node4 = Box::new(Node::new(4, "four"));
+
+		node3.left = Some(node2);
+		node3.right = Some(node4);
+		node1.right = Some(node3);
+
+		let rotated = Node::rotate_right_left(node1);
+
+		assert_eq!(rotated.key, 2);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 3);
+		assert_eq!(rotated.right.as_ref().unwrap().right.as_ref().unwrap().key, 4);
+		assert_eq!(rotated.left.as_ref().unwrap().key, 1);
+	}
+
+	#[test]
+	fn test_rotate_right_right() {
+		//        4              2              1
+		//       /              / \              \
+		//      2     ->      1   4      ->      2
+		//     /                                   \
+		//    1                                     4
+		let mut node4 = Box::new(Node::new(4, "four"));
+		let mut node2 = Box::new(Node::new(2, "two"));
+		let node1 = Box::new(Node::new(1, "one"));
+
+		node2.left = Some(node1);
+		node4.left = Some(node2);
+
+		let rotated = Node::rotate_right_right(node4);
+		dbg!(&rotated);
+
+		assert_eq!(rotated.key, 1);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 2);
+		assert_eq!(rotated.right.as_ref().unwrap().right.as_ref().unwrap().key, 4);
+	}
+
+	#[test]
+	fn test_rotate_left_left() {
+		//    1                  3                4
+		//     \                /                /
+		//      3      ->     1     ->         3
+		//       \                            /
+		//        4                          1
+		let mut node1 = Box::new(Node::new(1, "one"));
+		let mut node3 = Box::new(Node::new(3, "three"));
+		let node4 = Box::new(Node::new(4, "four"));
+
+		node3.right = Some(node4);
+		node1.right = Some(node3);
+
+		let rotated = Node::rotate_left_left(node1);
+
+		assert_eq!(rotated.key, 4);
+		assert_eq!(rotated.left.as_ref().unwrap().key, 3);
+		assert_eq!(rotated.left.as_ref().unwrap().left.as_ref().unwrap().key, 1);
+	}
+
+	#[test]
+	fn test_rotate_right_with_subtrees() {
+		//       4                2
+		//      / \              / \
+		//     2   5    ->     1   4
+		//    / \                 / \
+		//   1   3               3   5
+		let mut node4 = Box::new(Node::new(4, "four"));
+		let mut node2 = Box::new(Node::new(2, "two"));
+		let node1 = Box::new(Node::new(1, "one"));
+		let node3 = Box::new(Node::new(3, "three"));
+		let node5 = Box::new(Node::new(5, "five"));
+
+		node2.left = Some(node1);
+		node2.right = Some(node3);
+		node4.left = Some(node2);
+		node4.right = Some(node5);
+
+		let rotated = Node::rotate_right(node4);
+
+		assert_eq!(rotated.key, 2);
+		assert_eq!(rotated.left.as_ref().unwrap().key, 1);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 4);
+		assert_eq!(rotated.right.as_ref().unwrap().left.as_ref().unwrap().key, 3);
+		assert_eq!(rotated.right.as_ref().unwrap().right.as_ref().unwrap().key, 5);
+	}
+
+	#[test]
+	fn test_rotate_left_with_subtrees() {
+		//     2                    4
+		//    / \                  / \
+		//   1   4        ->     2   5
+		//      / \             / \
+		//     3   5           1   3
+		let mut node2 = Box::new(Node::new(2, "two"));
+		let mut node4 = Box::new(Node::new(4, "four"));
+		let node1 = Box::new(Node::new(1, "one"));
+		let node3 = Box::new(Node::new(3, "three"));
+		let node5 = Box::new(Node::new(5, "five"));
+
+		node4.left = Some(node3);
+		node4.right = Some(node5);
+		node2.left = Some(node1);
+		node2.right = Some(node4);
+
+		let rotated = Node::rotate_left(node2);
+
+		assert_eq!(rotated.key, 4);
+		assert_eq!(rotated.left.as_ref().unwrap().key, 2);
+		assert_eq!(rotated.right.as_ref().unwrap().key, 5);
+		assert_eq!(rotated.left.as_ref().unwrap().left.as_ref().unwrap().key, 1);
+		assert_eq!(rotated.left.as_ref().unwrap().right.as_ref().unwrap().key, 3);
+	}
+
+	#[test]
 	fn test_basic_operations() {
 		let mut tree = SplayTree::new();
 		assert!(tree.is_empty());
@@ -349,7 +533,7 @@ mod tests {
 
 		// Test updating existing key
 		tree.insert(5, "new_five");
-		assert_eq!(tree.size(), 3);
+		assert_eq!(tree.size(), 4);
 		assert_eq!(tree.get(&5), Some(&"new_five"));
 	}
 
@@ -492,6 +676,85 @@ mod tests {
 		assert_eq!(tree.root.as_ref().unwrap().key, 9);
 		assert!(verify_bst_properties(&tree.root, None, None));
 	}
+
+	#[test]
+	fn test_simple_opertions() {
+		let mut tree = SplayTree::<i32, &str>::default();
+
+		tree.insert(10, "ten");
+
+		tree.insert(5, "five");
+
+		tree.insert(15, "fifteen");
+
+		// Second Test zig-zig-right
+		tree.get(&5); // This will splay the node with key 5 to the root
+
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 5),
+			None => panic!("Root is None, should be 5!"),
+		}
+
+		assert!(tree.left().is_none(), "Expected left node to be None");
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 10),
+			None => panic!("Right node is None, should be 10!"),
+		}
+
+		// Third Test  zig-zag-left
+		tree.insert(9, "nine");
+
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 9),
+			None => panic!("Root is None, should be 9!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Right node is None, should be 5!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 10),
+			None => panic!("Right node is None, should be 10!"),
+		}
+
+		// Fourth Test zig-zag-right
+		tree.insert(6, "six");
+		match tree.root {
+			Some(ref value) => assert_eq!(value.key, 6),
+			None => panic!("Root is None, should be 6!"),
+		}
+
+		match tree.left() {
+			Some(left_node) => assert_eq!(left_node.key, 5),
+			None => panic!("Right node is None, should be 5!"),
+		}
+
+		match tree.right() {
+			Some(right_node) => assert_eq!(right_node.key, 9),
+			None => panic!("Right node is None, should be 9!"),
+		}
+
+		// Fifth Test zig-left
+		// tree.get(&9);
+		// match tree.root {
+		// 	Some(ref value) => assert_eq!(value.key, 9),
+		// 	None => panic!("Root is None, should be 9!"),
+		// }
+
+		// match tree.left() {
+		// 	Some(left_node) => assert_eq!(left_node.key, 6),
+		// 	None => panic!("Right node is None, should be 6!"),
+		// }
+
+		// match tree.right() {
+		// 	Some(right_node) => assert_eq!(right_node.key, 10),
+		// 	None => panic!("Right node is None, should be 10!"),
+		// }
+	}
+
 	#[test]
 	fn test_splay_behavior() {
 		let mut tree = SplayTree::<i32, &str>::default();
