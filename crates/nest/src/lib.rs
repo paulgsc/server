@@ -29,7 +29,9 @@ pub trait MultiDbHandler: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct ApiContext {
+	#[allow(dead_code)]
 	config: Arc<Config>,
+	#[allow(dead_code)]
 	dbs: HashMap<String, SqlitePool>,
 }
 
