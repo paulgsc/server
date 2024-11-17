@@ -13,6 +13,7 @@ pub struct FileConfig {
 }
 
 impl FileConfig {
+	#[allow(dead_code)]
 	pub fn new() -> Self {
 		Self::parse()
 	}
