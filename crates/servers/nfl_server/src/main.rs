@@ -5,7 +5,7 @@ pub mod models;
 pub mod routes;
 
 use crate::commands::populate_game_clocks;
-use crate::handlers::{GameClockHandlers, GameClockMigrationHandler, PlayTypeHandlers, PlayTypeMigrationHandler, PlayerDOBHandlers};
+use crate::handlers::{GameClockHandlers, GameClockMigrationHandler, PlayTypeHandlers, PlayerDOBHandlers};
 use anyhow::Result;
 use clap::Parser;
 use nest::config::{Config, ProgramMode};

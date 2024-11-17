@@ -1,6 +1,6 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::CrudOperations;
-use crate::models::player_dob::{CreatePlayerDOB, PlayerDOB};
+use crate::models::player_dob::{AgeOperations, CreatePlayerDOB, PlayerDOB};
 use axum::{
 	extract::{Path, Query, State},
 	Json,
