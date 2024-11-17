@@ -50,7 +50,7 @@ impl Error {
 		Self::UnprocessableEntity { errors: error_map }
 	}
 
-	fn status_code(&self) -> StatusCode {
+	const fn status_code(&self) -> StatusCode {
 		match self {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden => StatusCode::FORBIDDEN,
