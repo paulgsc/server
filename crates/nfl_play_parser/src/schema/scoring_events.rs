@@ -12,6 +12,7 @@ pub enum Points {
 }
 
 impl Points {
+	#[allow(dead_code)]
 	fn value(&self) -> u8 {
 		match self {
 			Points::Zero => 0,

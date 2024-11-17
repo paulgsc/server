@@ -1,4 +1,4 @@
-use crate::error::{PlayByPlayError, YardsError};
+use crate::error::PlayByPlayError;
 use crate::query_selectors::PlayDescription;
 use crate::schema::{DownAndDistance, GameClock, PlayType, ScoringEvent, Yards};
 use core::fmt;
