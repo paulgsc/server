@@ -23,6 +23,7 @@ pub mod part;
 pub use part::PathPart;
 
 pub const DELIMITER: &str = "/";
+#[allow(dead_code)]
 const DELIMITER_BYTE: u8 = DELIMITER.as_bytes()[0];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
