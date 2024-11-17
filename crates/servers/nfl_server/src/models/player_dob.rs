@@ -1,6 +1,7 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::CrudOperations;
 use async_trait::async_trait;
+use chrono::{Datelike, NaiveDate};
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -47,22 +48,32 @@ impl PlayerDOB {
 
 impl CreatePlayerDOB {
 	pub fn is_valid(&self) -> bool {
-		if let Some(date) = NaiveDate::from_ymd_opt(self.year, self.month, self.day) {
+		if let Some(_) = NaiveDate::from_ymd_opt(self.year, self.month, self.day) {
 			return self.year >= BASE_YEAR && self.year <= (BASE_YEAR + 127);
 		}
 		false
 	}
 
-	fn to_endoded(&self) -> Option<u16> {
+	fn to_encoded(&self) -> Option<u16> {
 		NaiveDate::from_ymd_opt(self.year, self.month, self.day).map(PlayerDOB::encode_date)
 	}
 }
 
 #[async_trait]
+pub trait AgeOperations {
+	async fn get_by_age_range(pool: &SqlitePool, min_age: u16, max_age: u16, reference_date: NaiveDate) -> Result<Vec<Self>, Error>
+	where
+		Self: Sized;
+
+	async fn delete_older_than(pool: &SqlitePool, cutoff_date: NaiveDate) -> Result<(), Error>;
+}
+
+#[async_trait]
 impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 	async fn create(pool: &SqlitePool, item: CreatePlayerDOB) -> Result<PlayerDOB, Error> {
-		let dob_encoded = item.to_encoded().ok_or_else(|| Error::NestError(NestError::BadRequest))?;
-
+		let dob_encoded = item
+			.to_encoded()
+			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
 		let result = sqlx::query!("INSERT INTO player_dobs (dob_encoded) VALUES (?)", dob_encoded)
 			.execute(pool)
 			.await
@@ -76,8 +87,9 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 		let mut created_dobs = Vec::with_capacity(items.len());
 
 		for item in items {
-			let dob_encoded = item.to_encoded().ok_or_else(|| Error::NestError(NestError::BadRequest))?;
-
+			let dob_encoded = item
+				.to_encoded()
+				.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
 			let result = sqlx::query!("INSERT INTO player_dobs (dob_encoded) VALUES (?)", dob_encoded)
 				.execute(&mut *tx)
 				.await
@@ -101,8 +113,9 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayerDOB) -> Result<PlayerDOB, Error> {
-		let dob_encoded = item.to_encoded().ok_or_else(|| Error::NestError(NestError::BadRequest))?;
-
+		let dob_encoded = item
+			.to_encoded()
+			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
 		let result = sqlx::query!("UPDATE player_dobs SET dob_encoded = ? WHERE id = ?", dob_encoded, id)
 			.execute(pool)
 			.await
@@ -121,6 +134,57 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 		if result.rows_affected() == 0 {
 			return Err(Error::NestError(NestError::NotFound));
 		}
+
+		Ok(())
+	}
+}
+
+#[async_trait]
+impl AgeOperations for PlayerDOB {
+	async fn get_by_age_range(pool: &SqlitePool, min_age: u16, max_age: u16, reference_date: NaiveDate) -> Result<Vec<Self>, Error> {
+		let days = chrono::Days::new((min_age as u64) * 365);
+		let max_date = reference_date
+			.checked_sub_days(days)
+			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("age_range", "Invalid age calculation")])))?;
+
+		let days = chrono::Days::new((max_age as u64) * 365);
+		let min_date = reference_date
+			.checked_sub_days(days)
+			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("age_range", "Invalid age calculation")])))?;
+
+		let max_encoded = Self::encode_date(max_date);
+		let min_encoded = Self::encode_date(min_date);
+
+		let players = sqlx::query_as!(
+			PlayerDOB,
+			r#"
+            SELECT id, dob_encoded
+            FROM player_dobs
+            WHERE dob_encoded BETWEEN ? AND ?
+            "#,
+			min_encoded,
+			max_encoded
+		)
+		.fetch_all(pool)
+		.await
+		.map_err(NestError::from)?;
+
+		Ok(players)
+	}
+
+	async fn delete_older_than(pool: &SqlitePool, cutoff_date: NaiveDate) -> Result<(), Error> {
+		let cutoff_encoded = Self::encode_date(cutoff_date);
+
+		sqlx::query!(
+			r#"
+            DELETE FROM player_dobs
+            WHERE dob_encoded < ?
+            "#,
+			cutoff_encoded
+		)
+		.execute(pool)
+		.await
+		.map_err(NestError::from)?;
 
 		Ok(())
 	}
