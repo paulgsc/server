@@ -19,5 +19,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 uuid = { version = "1.0", features = ["serde", "v4"] }
 
+[dev-dependencies]
+criterion = "0.5.1"
+rand = "0.8"
+approx = "0.5"
+
 [lints]
 workspace = true

@@ -1,3 +1,4 @@
+use std::fmt::{self, Display, Formatter};
 use task_queue::trees::splay_tree::SplayTree;
 
 pub struct MedianFinder {
@@ -5,6 +6,18 @@ pub struct MedianFinder {
 	upper_half: SplayTree<i32, usize>, // min heap with count as value
 	lower_count: usize,
 	upper_count: usize,
+}
+
+impl Display for MedianFinder {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		writeln!(f, "MedianFinder {{")?;
+		writeln!(f, "  Lower Half (count: {}):", self.lower_count)?;
+		writeln!(f, "{}", self.lower_half)?;
+		writeln!(f, "  Upper Half (count: {}):", self.upper_count)?;
+		writeln!(f, "{}", self.upper_half)?;
+		// writeln!(f, "  Current Median: {:.1}", &self.find_median())?;
+		write!(f, "}}")
+	}
 }
 
 impl MedianFinder {
@@ -116,6 +129,7 @@ mod tests {
 
 		// Test three elements
 		finder.add_num(7);
+		println!("finder splay: {}", finder);
 		assert_eq!(finder.find_median(), 5.0);
 
 		// Test four elements
