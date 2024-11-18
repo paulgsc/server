@@ -4,7 +4,7 @@
 resolver = "2"
 
 
-members = ["crates/espn_nfl_scores", "crates/file_reader", "crates/gmail", "crates/google-apis-common","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/chrome_tabs_server", "crates/servers/nfl_server", "crates/task_queue", "crates/tuvitu", "crates/webhooks"]
+members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/chrome_tabs_server", "crates/servers/nfl_server", "crates/task_queue", "crates/tuvitu", "crates/webhooks"]
 
 exclude = []
 
