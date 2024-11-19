@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use google_sheets4::yup_oauth2::Error as OAuth2Error;
 use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 use google_sheets4::Error as GoogleSheetsError;
@@ -14,7 +14,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{SecretFilePathError, SheetsServiceFilePath};
+use crate::{GoogleServiceFilePath, SecretFilePathError};
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type SheetsClient = Sheets<HttpsConnectorType>;
@@ -45,6 +45,12 @@ pub enum SheetError {
 	#[error("Invalid sheet metadata: {0}")]
 	InvalidMetadata(String),
 
+	#[error("Invalid date")]
+	InvalidDate { year: i32, month: u32, day: u32 },
+
+	#[error("Invalid date time")]
+	InvalidTime { hour: u32, minute: u32 },
+
 	#[error("Secret file path error: {0}")]
 	SecretFilePath(#[from] SecretFilePathError),
 }
@@ -59,12 +65,12 @@ pub struct SpreadsheetMetadata {
 pub struct GoogleSheetsClient {
 	user_email: String,
 	service: OnceCell<Arc<SheetsClient>>,
-	client_secret_path: SheetsServiceFilePath,
+	client_secret_path: GoogleServiceFilePath,
 }
 
 impl GoogleSheetsClient {
 	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
-		let validated_path = SheetsServiceFilePath::new(client_secret_path)?;
+		let validated_path = GoogleServiceFilePath::new(client_secret_path)?;
 
 		Ok(Self {
 			user_email,
@@ -113,14 +119,12 @@ impl GoogleSheetsClient {
 		Ok(self.service.get().unwrap())
 	}
 
-	pub fn convert_to_rfc_datetime(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
-		chrono::DateTime::from_utc(
-			chrono::NaiveDateTime::new(
-				chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap(),
-				chrono::NaiveTime::from_hms_opt(hour, minute, 0).unwrap(),
-			),
-			Utc,
-		)
+	pub fn convert_to_rfc_datetime(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Result<DateTime<Utc>, SheetError> {
+		let naive_date = NaiveDate::from_ymd_opt(year, month, day).ok_or(SheetError::InvalidDate { year, month, day })?;
+		let naive_time = NaiveTime::from_hms_opt(hour, minute, 0).ok_or(SheetError::InvalidTime { hour, minute })?;
+		let naive_datetime = NaiveDateTime::new(naive_date, naive_time);
+
+		Ok(Utc.from_utc_datetime(&naive_datetime))
 	}
 }
 
