@@ -63,6 +63,7 @@ pub struct SpreadsheetMetadata {
 }
 
 pub struct GoogleSheetsClient {
+	#[allow(dead_code)]
 	user_email: String,
 	service: OnceCell<Arc<SheetsClient>>,
 	client_secret_path: GoogleServiceFilePath,
