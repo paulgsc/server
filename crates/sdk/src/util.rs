@@ -4,14 +4,14 @@ use std::path::Path as StdPath;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
-pub enum SheetsServiceFilePath {
+pub enum GoogleServiceFilePath {
 	SecretFilePath(Path),
 }
 
-impl AsRef<StdPath> for SheetsServiceFilePath {
+impl AsRef<StdPath> for GoogleServiceFilePath {
 	fn as_ref(&self) -> &StdPath {
 		match self {
-			SheetsServiceFilePath::SecretFilePath(path) => StdPath::new(path.as_ref()),
+			GoogleServiceFilePath::SecretFilePath(path) => StdPath::new(path.as_ref()),
 		}
 	}
 }
@@ -26,7 +26,7 @@ pub enum SecretFilePathError {
 	PathError(#[from] PathPartError),
 }
 
-impl SheetsServiceFilePath {
+impl GoogleServiceFilePath {
 	pub fn new(path: String) -> Result<Self, SecretFilePathError> {
 		let parsed_path = Path::parse(&path)?;
 		let extension = parsed_path.extension().ok_or_else(|| SecretFilePathError::InvalidExtension {
@@ -45,12 +45,12 @@ impl SheetsServiceFilePath {
 			return Err(SecretFilePathError::InvalidFilename { filename: filename.to_string() });
 		}
 
-		Ok(SheetsServiceFilePath::SecretFilePath(parsed_path))
+		Ok(GoogleServiceFilePath::SecretFilePath(parsed_path))
 	}
 
 	pub fn as_str(&self) -> &str {
 		match self {
-			SheetsServiceFilePath::SecretFilePath(path) => path.as_ref(),
+			GoogleServiceFilePath::SecretFilePath(path) => path.as_ref(),
 		}
 	}
 }
@@ -67,21 +67,21 @@ mod tests {
 	#[test]
 	fn test_valid_secret_file_path() {
 		let path = create_test_path("/path/to/client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
 	#[test]
 	fn test_valid_secret_file_path_no_leading_slash() {
 		let path = create_test_path("path/to/client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
 	#[test]
 	fn test_invalid_file_extension() {
 		let path = create_test_path("/path/to/client_secret_file.txt").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 
 		match result {
 			Err(SecretFilePathError::InvalidExtension { extension }) => {
@@ -94,7 +94,7 @@ mod tests {
 	#[test]
 	fn test_no_file_extension() {
 		let path = create_test_path("/path/to/client_secret_file").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 
 		match result {
 			Err(SecretFilePathError::InvalidExtension { extension }) => {
@@ -107,7 +107,7 @@ mod tests {
 	#[test]
 	fn test_invalid_filename() {
 		let path = create_test_path("/path/to/wrong_filename.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 
 		match result {
 			Err(SecretFilePathError::InvalidFilename { filename }) => {
@@ -120,28 +120,28 @@ mod tests {
 	#[test]
 	fn test_path_with_dots() {
 		let path = create_test_path("/path/./to/../client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
 	#[test]
 	fn test_path_with_special_characters() {
 		let path = create_test_path("/path with spaces/to/client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
 	#[test]
 	fn test_as_str_representation() {
 		let path = create_test_path("/path/to/client_secret_file.json").unwrap();
-		let secret_path = SheetsServiceFilePath::new(path).unwrap();
+		let secret_path = GoogleServiceFilePath::new(path).unwrap();
 		assert_eq!(secret_path.as_str(), "path/to/client_secret_file.json");
 	}
 
 	#[test]
 	fn test_empty_path() {
 		let path = create_test_path("").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 
 		match result {
 			Err(SecretFilePathError::InvalidFilename { filename }) => {
@@ -154,7 +154,7 @@ mod tests {
 	#[test]
 	fn test_path_with_multiple_extensions() {
 		let path = create_test_path("/path/to/client_secret_file.tar.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 
 		match result {
 			Err(SecretFilePathError::InvalidFilename { filename }) => {
@@ -168,38 +168,38 @@ mod tests {
 	fn test_path_case_sensitivity() {
 		// Test uppercase extension
 		let path = create_test_path("/path/to/client_secret_file.JSON").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_err());
 
 		// Test uppercase filename
 		let path = create_test_path("/path/to/CLIENT_SECRET_FILE.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_err());
 	}
 
 	#[test]
 	fn test_root_path() {
 		let path = create_test_path("/client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
 	#[test]
 	fn test_relative_dot_path() {
 		let path = create_test_path("./client_secret_file.json").unwrap();
-		let result = SheetsServiceFilePath::new(path);
+		let result = GoogleServiceFilePath::new(path);
 		assert!(result.is_ok());
 	}
 
-	// Integration test with GoogleSheetsClient
+	// Integration test with GoogleGoogleClient
 	#[test]
 	fn test_google_sheets_client_creation() {
 		let path = create_test_path("/path/to/client_secret_file.json").unwrap();
-		let result = GoogleSheetsClient::new("test@example.com".to_string(), path);
+		let result = GoogleGoogleClient::new("test@example.com".to_string(), path);
 		assert!(result.is_ok());
 
 		let path = create_test_path("/path/to/invalid.json").unwrap();
-		let result = GoogleSheetsClient::new("test@example.com".to_string(), path);
+		let result = GoogleGoogleClient::new("test@example.com".to_string(), path);
 		assert!(result.is_err());
 	}
 }
