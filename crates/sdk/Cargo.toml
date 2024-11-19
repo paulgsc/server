@@ -10,11 +10,14 @@ edition.workspace = true
 [dependencies]
 file_reader = { workspace = true }
 
+base64 = "0.22.1"
 chrono = { workspace = true }
+google-gmail1 = "6.0.0"
 google-sheets4 = "6.0.0"
 hyper = { version = "1.5", features = ["client", "http1"] }
 hyper-rustls = { version = "0.27", default-features = false }
 hyper-util = { version = "0.1.9", features = ["client", "tokio"] }
+mime = { workspace = true }
 once_cell = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
