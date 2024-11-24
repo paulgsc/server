@@ -34,6 +34,9 @@ pub enum Error {
 	#[error("maximum record limit exceeded")]
 	MaxRecordLimitExceeded,
 
+	#[error("integer conversion failed: {0}")]
+	IntegerConversionError(#[from] std::num::TryFromIntError),
+
 	#[error("migration error occurred")]
 	Migrate(#[from] MigrateError),
 }
@@ -62,6 +65,8 @@ impl Error {
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
+			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
+
 			Self::Migrate(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
