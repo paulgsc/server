@@ -437,6 +437,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 			date: item.date,
 			home_team: item.home_team,
 			away_team: item.away_team,
+			game_score: item.game_score,
 			weather: item.weather,
 		})
 	}

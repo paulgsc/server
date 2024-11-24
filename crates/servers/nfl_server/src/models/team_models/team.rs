@@ -1,6 +1,8 @@
 use std::convert::TryFrom;
 
+#[derive(Debug)]
 pub enum TeamAbbreviation {
+	ARI, // Arizona Cardinals
 	ATL, // Atlanta Falcons
 	BAL, // Baltimore Ravens
 	BUF, // Buffalo Bills
