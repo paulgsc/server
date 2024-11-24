@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {
-	pub state: State,
+	pub state: u32,
 	pub city: String,
 }
 
@@ -69,6 +69,8 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
+		let stadium_type_val = u32::from(item.stadium_type);
+		let surface_type_val = u32::from(item.surface_type);
 		let result = sqlx::query!(
 			r#"
             INSERT INTO stadiums (
@@ -82,10 +84,10 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
             VALUES (?, ?, ?, ?, ?, ?)
             "#,
 			item.name,
-			item.location.state as i32,
+			item.location.state,
 			item.location.city,
-			item.stadium_type as i32,
-			item.surface_type as i32,
+			stadium_type_val,
+			surface_type_val,
 			item.capacity,
 		)
 		.execute(pool)
@@ -112,6 +114,8 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 				return Err(Error::NestError(NestError::Forbidden));
 			}
 
+			let stadium_type_val = u32::from(item.stadium_type);
+			let surface_type_val = u32::from(item.surface_type);
 			let result = sqlx::query!(
 				r#"
                 INSERT INTO stadiums (
@@ -125,10 +129,10 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
                 VALUES (?, ?, ?, ?, ?, ?)
                 "#,
 				item.name,
-				item.location.state as i32,
+				item.location.state,
 				item.location.city,
-				item.stadium_type as i32,
-				item.surface_type as i32,
+				stadium_type_val,
+				surface_type_val,
 				item.capacity,
 			)
 			.execute(&mut *tx)
@@ -174,12 +178,16 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 			id: stadium.id as u32,
 			name: stadium.name,
 			location: Location {
-				state: State::try_from(stadium.state)?,
+				state: u32::try_from(stadium.state).map_err(NestError::from)?,
 				city: stadium.city,
 			},
-			stadium_type: StadiumType::try_from(stadium.stadium_type)?,
-			surface_type: SurfaceType::try_from(stadium.surface_type)?,
-			capacity: stadium.capacity as u32,
+			stadium_type: u32::try_from(stadium.stadium_type)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| StadiumType::try_from(v))?,
+			surface_type: u32::try_from(stadium.surface_type)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| SurfaceType::try_from(v))?,
+			capacity: u32::try_from(stadium.capacity).map_err(NestError::from)?,
 		})
 	}
 
@@ -190,6 +198,8 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
+		let stadium_type_val = u32::from(item.stadium_type);
+		let surface_type_val = u32::from(item.surface_type);
 		let result = sqlx::query!(
 			r#"
             UPDATE stadiums SET
@@ -202,10 +212,10 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
             WHERE id = ?
             "#,
 			item.name,
-			item.location.state as i32,
+			item.location.state,
 			item.location.city,
-			item.stadium_type as i32,
-			item.surface_type as i32,
+			stadium_type_val,
+			surface_type_val,
 			item.capacity,
 			id
 		)
@@ -250,10 +260,10 @@ struct StadiumRow {
 	capacity: i64,
 }
 
-impl TryFrom<i32> for StadiumType {
+impl TryFrom<u32> for StadiumType {
 	type Error = Error;
 
-	fn try_from(value: i32) -> Result<Self, Self::Error> {
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(StadiumType::Indoor),
 			1 => Ok(StadiumType::Outdoor),
@@ -263,15 +273,35 @@ impl TryFrom<i32> for StadiumType {
 	}
 }
 
-impl TryFrom<i32> for SurfaceType {
+impl From<StadiumType> for u32 {
+	fn from(stadium_type: StadiumType) -> u32 {
+		match stadium_type {
+			StadiumType::Indoor => 0,
+			StadiumType::Outdoor => 1,
+			StadiumType::Retractable => 2,
+		}
+	}
+}
+
+impl TryFrom<u32> for SurfaceType {
 	type Error = Error;
 
-	fn try_from(value: i32) -> Result<Self, Self::Error> {
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(SurfaceType::Grass),
 			1 => Ok(SurfaceType::AstroTurf),
 			2 => Ok(SurfaceType::Hybrid),
 			_ => Err(Error::NestError(NestError::InvalidData)),
+		}
+	}
+}
+
+impl From<SurfaceType> for u32 {
+	fn from(surface: SurfaceType) -> u32 {
+		match surface {
+			SurfaceType::Grass => 0,
+			SurfaceType::AstroTurf => 1,
+			SurfaceType::Hybrid => 2,
 		}
 	}
 }
