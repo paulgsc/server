@@ -1,6 +1,8 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::{CrudOperations, Identifiable, ModelId};
+use crate::models::team_models::NFLGame;
 use async_trait::async_trait;
+use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -27,8 +29,7 @@ pub struct CreateGameScore {
 
 impl GameScore {
 	pub fn is_valid(&self) -> bool {
-		// Validate that no quarter can have more than 35 points (reasonable max for NFL)
-		let max_quarter_points = 35;
+		let max_quarter_points = 50;
 
 		self.home_quarter_pts.iter().all(|&pts| pts <= max_quarter_points) && self.away_quarter_pts.iter().all(|&pts| pts <= max_quarter_points)
 	}
@@ -45,7 +46,7 @@ impl GameScore {
 impl CreateGameScore {
 	pub fn is_valid(&self) -> bool {
 		// Use the same validation logic as GameScore
-		let max_quarter_points = 35;
+		let max_quarter_points = 50;
 
 		self.home_quarter_pts.iter().all(|&pts| pts <= max_quarter_points) && self.away_quarter_pts.iter().all(|&pts| pts <= max_quarter_points)
 	}
