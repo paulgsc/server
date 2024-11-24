@@ -156,7 +156,7 @@ pub struct TeamNameMeta {
 	pub abbreviation: TeamAbbreviation,
 }
 
-impl Team {
+impl TeamNameMeta {
 	pub const fn new(id: u32) -> Option<Self> {
 		if !(1..32).contains(&id) {
 			return None;
