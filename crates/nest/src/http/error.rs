@@ -58,6 +58,7 @@ impl Error {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
+			Self::InvalidData => StatusCode::FORBIDDEN,
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
@@ -87,14 +88,10 @@ impl IntoResponse for Error {
 			}
 
 			Self::Sqlx(ref e) => {
-				// TODO: we probably want to use `tracing` instead
-				// so that this gets linked to the HTTP request by `TraceLayer`.
 				log::error!("SQLx error: {:?}", e);
 			}
 
 			Self::Anyhow(ref e) => {
-				// TODO: we probably want to use `tracing` instead
-				// so that this gets linked to the HTTP request by `TraceLayer`.
 				log::error!("Generic error: {:?}", e);
 			}
 
