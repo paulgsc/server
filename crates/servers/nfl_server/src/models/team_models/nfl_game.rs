@@ -1,35 +1,11 @@
 use crate::common::nfl_server_error::NflServerError as Error;
-use crate::common::CrudOperations;
 use crate::common::EncodedDate;
+use crate::common::{CrudOperations, Identifiable, ModelId};
 use crate::models::team_models::TeamNameMeta;
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-
-#[derive(Debug)]
-pub struct ModelId<T>(u32, std::marker::PhantomData<T>);
-
-impl<T> ModelId<T> {
-	pub const fn new(id: u32) -> Self {
-		Self(id, std::marker::PhantomData)
-	}
-
-	pub const fn value(&self) -> u32 {
-		self.0
-	}
-}
-
-trait Identifiable {
-	fn model_id(&self) -> ModelId<Self>
-	where
-		Self: Sized,
-	{
-		ModelId::new(self.id())
-	}
-
-	fn id(&self) -> u32;
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WeatherCondition {
@@ -113,7 +89,7 @@ impl CreateWeather {
 impl CrudOperations<Weather, CreateWeather> for Weather {
 	async fn create(pool: &SqlitePool, item: CreateWeather) -> Result<Weather, Error> {
 		if !item.is_valid() {
-			return Error::NestError(NestError::BadRequest);
+			return Err(Error::NestError(NestError::Forbidden));
 		}
 
 		let result = sqlx::query!(
@@ -220,7 +196,6 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 	}
 }
 
-// Team implementations
 impl Identifiable for Team {
 	fn id(&self) -> u32 {
 		self.id
@@ -343,7 +318,6 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	}
 }
 
-// NFLGame implementations
 impl Identifiable for NFLGame {
 	fn id(&self) -> u32 {
 		self.id
