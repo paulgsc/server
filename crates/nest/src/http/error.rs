@@ -19,6 +19,9 @@ pub enum Error {
 	#[error("request path not found")]
 	NotFound,
 
+	#[error("Invalid Data Schema pased")]
+	InvalidData,
+
 	#[error("error in the request body")]
 	UnprocessableEntity { errors: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>> },
 
