@@ -47,10 +47,10 @@ pub struct NFLGame {
 	pub date: EncodedDate,
 	pub home_team: ModelId<Team>,
 	pub away_team: ModelId<Team>,
+	pub game_score: ModelId<GameScore>,
 	pub weather: ModelId<Weather>,
 }
 
-// Weather implementations
 impl Identifiable for Weather {
 	fn id(&self) -> u32 {
 		self.id
@@ -329,6 +329,7 @@ pub struct CreateNFLGame {
 	pub date: EncodedDate,
 	pub home_team: ModelId<Team>,
 	pub away_team: ModelId<Team>,
+	pub game_score: ModelId<GameScore>,
 	pub weather: ModelId<Weather>,
 }
 
@@ -336,10 +337,11 @@ pub struct CreateNFLGame {
 impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 	async fn create(pool: &SqlitePool, item: CreateNFLGame) -> Result<Self, Error> {
 		let result = sqlx::query!(
-			"INSERT INTO nfl_games (date, home_team_id, away_team_id, weather_id) VALUES (?, ?, ?, ?)",
+			"INSERT INTO nfl_games (date, home_team_id, away_team_id, game_score_id, weather_id) VALUES (?, ?, ?, ?, ?)",
 			item.date.value,
 			item.home_team.value(),
 			item.away_team.value(),
+			item.game_score.value(),
 			item.weather.value()
 		)
 		.execute(pool)
@@ -351,6 +353,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 			date: item.date,
 			home_team: item.home_team,
 			away_team: item.away_team,
+			game_score: item.game_score,
 			weather: item.weather,
 		})
 	}
@@ -361,10 +364,11 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 
 		for item in items {
 			let result = sqlx::query!(
-				"INSERT INTO nfl_games (date, home_team_id, away_team_id, weather_id) VALUES (?, ?, ?, ?)",
+				"INSERT INTO nfl_games (date, home_team_id, away_team_id, game_score_id, weather_id) VALUES (?, ?, ?, ?, ?)",
 				item.date.value,
 				item.home_team.value(),
 				item.away_team.value(),
+				item.game_score.value(),
 				item.weather.value()
 			)
 			.execute(&mut *tx)
@@ -376,6 +380,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 				date: item.date,
 				home_team: item.home_team,
 				away_team: item.away_team,
+				game_score: item.game_score,
 				weather: item.weather,
 			});
 		}
@@ -385,17 +390,22 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self, Error> {
-		let nfl_game = sqlx::query_as!(NFLGame, "SELECT date, home_team_id, away_team_id, weather_id from nfl_games WHERE id = ?", id)
-			.fetch_optional(pool)
-			.await
-			.map_err(NestError::from)?
-			.ok_or(Error::NestError(NestError::NotFound))?;
+		let nfl_game = sqlx::query_as!(
+			NFLGame,
+			"SELECT date, home_team_id, away_team_id, game_score_id, weather_id from nfl_games WHERE id = ?",
+			id
+		)
+		.fetch_optional(pool)
+		.await
+		.map_err(NestError::from)?
+		.ok_or(Error::NestError(NestError::NotFound))?;
 
 		Ok(NFLGame {
 			id: nfl_game.id,
 			date: nfl_game.date,
 			home_team: nfl_game.home_team,
 			away_team: nfl_game.away_team,
+			game_score: nfl_game.game_score,
 			weather: nfl_game.weather,
 		})
 	}
@@ -404,10 +414,11 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		let result = sqlx::query!(
-			"UPDATE nfl_games SET date = ?, home_team_id = ?, away_team_id = ?, weather_id = ? WHERE id = ?",
+			"UPDATE nfl_games SET date = ?, home_team_id = ?, away_team_id = ?, game_score_id, weather_id = ? WHERE id = ?",
 			item.date,
 			item.home_team,
 			item.away_team,
+			item.game_score,
 			item.weather,
 			id
 		)
