@@ -1,7 +1,7 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::EncodedDate;
 use crate::common::{CrudOperations, Identifiable, ModelId};
-use crate::models::team_models::{GameScore, TeamNameMeta};
+use crate::models::team_models::{GameScore, Stadium, TeamNameMeta};
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
