@@ -131,7 +131,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
-		let event_type = u16::from(item.event_type);
+		let scoring_event = u16::from(item.scoring_event);
 		let quarter = u16::from(item.quarter);
 		let game_id = item.game.value();
 		let team_id = item.team.value();
@@ -142,7 +142,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
             INSERT INTO game_scores (
                 game_id,
                 team_id,
-                event_type,
+                scoring_event,
                 quarter,
                 clock_id,
             ) 
@@ -150,7 +150,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
             "#,
 			game_id,
 			team_id,
-			event_type,
+			scoring_event,
 			quarter,
 			clock_id,
 		)
@@ -170,7 +170,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 				return Err(Error::NestError(NestError::Forbidden));
 			}
 
-			let event_type = u16::from(item.event_type);
+			let scoring_event = u16::from(item.scoring_event);
 			let quarter = u16::from(item.quarter);
 			let game_id = item.game.value();
 			let team_id = item.team.value();
@@ -181,7 +181,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                 INSERT INTO game_scores (
                     game_id,
                     team_id,
-                    event_type,
+                    scoring_event,
                     quarter,
                     clock_id,
                 ) 
@@ -189,7 +189,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                 "#,
 				game_id,
 				team_id,
-				event_type,
+				scoring_event,
 				quarter,
 				clock_id,
 			)
@@ -210,7 +210,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                 id,
                 game_id,
                 team_id,
-                event_type,
+                scoring_event,
                 quarter,
                 clock_id,
             FROM game_scores 
@@ -232,7 +232,13 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 			game: ModelId::new(game_id),
 			team: ModelId::new(team_id),
 			clock: ModelId::new(clock_id),
-		}
+			scoring_event: u16::try_from(score.scoring_event)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| ScoringEvent::try_from(v))?,
+			quarter: u16::try_from(score.quarter)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| Quarter::try_from(v))?,
+		})
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
