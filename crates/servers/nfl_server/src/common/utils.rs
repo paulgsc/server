@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModelId<T>(u32, std::marker::PhantomData<T>);
+pub struct ModelId<T>(pub u32, pub std::marker::PhantomData<T>);
 
 impl<T> ModelId<T> {
 	pub const fn new(id: u32) -> Self {
@@ -33,9 +33,14 @@ where
 	T: Send + Sync + 'static,
 	C: Send + Sync + 'static,
 {
-	async fn create(pool: &SqlitePool, item: C) -> Result<T, Error>;
-	async fn batch_create(pool: &SqlitePool, items: &[C]) -> Result<Vec<T>, Error>;
-	async fn get(pool: &SqlitePool, id: i64) -> Result<T, Error>;
-	async fn update(pool: &SqlitePool, id: i64, item: C) -> Result<T, Error>;
+	type CreateResult: Send + Sync + 'static;
+	type BatchCreateResult: Send + Sync + 'static;
+	type GetResult: Send + Sync + 'static;
+	type UpdateResult: Send + Sync + 'static;
+
+	async fn create(pool: &SqlitePool, item: C) -> Result<Self::CreateResult, Error>;
+	async fn batch_create(pool: &SqlitePool, items: &[C]) -> Result<Self::BatchCreateResult, Error>;
+	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error>;
+	async fn update(pool: &SqlitePool, id: i64, item: C) -> Result<Self::UpdateResult, Error>;
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error>;
 }
