@@ -16,10 +16,10 @@ pub enum ScoringEvent {
 	DefensiveTouchdown,
 }
 
-impl TryFrom<u16> for ScoringEvent {
+impl TryFrom<u32> for ScoringEvent {
 	type Error = Error;
 
-	fn try_from(value: u16) -> Result<Self, Self::Error> {
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(ScoringEvent::OffensiveTouchdown),
 			1 => Ok(ScoringEvent::FieldGoal),
@@ -33,8 +33,8 @@ impl TryFrom<u16> for ScoringEvent {
 	}
 }
 
-impl From<ScoringEvent> for u16 {
-	fn from(value: ScoringEvent) -> u16 {
+impl From<ScoringEvent> for u32 {
+	fn from(value: ScoringEvent) -> u32 {
 		match value {
 			ScoringEvent::OffensiveTouchdown => 0,
 			ScoringEvent::FieldGoal => 1,
@@ -46,7 +46,7 @@ impl From<ScoringEvent> for u16 {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum Quarter {
 	First,
 	Second,
@@ -55,10 +55,10 @@ pub enum Quarter {
 	OT,
 }
 
-impl TryFrom<u16> for Quarter {
+impl TryFrom<u32> for Quarter {
 	type Error = Error;
 
-	fn try_from(value: u16) -> Result<Self, Self::Error> {
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
 		match value {
 			1 => Ok(Quarter::First),
 			2 => Ok(Quarter::Second),
@@ -70,8 +70,8 @@ impl TryFrom<u16> for Quarter {
 	}
 }
 
-impl From<Quarter> for u16 {
-	fn from(value: Quarter) -> u16 {
+impl From<Quarter> for u32 {
+	fn from(value: Quarter) -> u32 {
 		match value {
 			Quarter::First => 1,
 			Quarter::Second => 2,
@@ -108,17 +108,8 @@ pub struct CreateGameScore {
 }
 
 impl GameScore {
-	pub fn points(&self) -> u16 {
+	pub fn points(&self) -> u32 {
 		self.scoring_event.into()
-	}
-}
-
-impl CreateGameScore {
-	pub fn is_valid(&self) -> bool {
-		// Use the same validation logic as GameScore
-		let max_quarter_points = 50;
-
-		self.home_quarter_pts.iter().all(|&pts| pts <= max_quarter_points) && self.away_quarter_pts.iter().all(|&pts| pts <= max_quarter_points)
 	}
 }
 
@@ -130,12 +121,8 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 	type UpdateResult = ();
 
 	async fn create(pool: &SqlitePool, item: CreateGameScore) -> Result<Self::CreateResult, Error> {
-		if !item.is_valid() {
-			return Err(Error::NestError(NestError::Forbidden));
-		}
-
-		let scoring_event = u16::from(item.scoring_event);
-		let quarter = u16::from(item.quarter);
+		let scoring_event = u32::from(item.scoring_event);
+		let quarter = u32::from(item.quarter);
 		let game_id = item.game.value();
 		let team_id = item.team.value();
 		let clock_id = item.clock.value();
@@ -168,18 +155,13 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			if !item.is_valid() {
-				tx.rollback().await.map_err(NestError::from)?;
-				return Err(Error::NestError(NestError::Forbidden));
-			}
-
-			let scoring_event = u16::from(item.scoring_event);
-			let quarter = u16::from(item.quarter);
+			let scoring_event = u32::from(item.scoring_event);
+			let quarter = u32::from(item.quarter);
 			let game_id = item.game.value();
 			let team_id = item.team.value();
 			let clock_id = item.clock.value();
 
-			let result = sqlx::query!(
+			sqlx::query!(
 				r#"
                 INSERT INTO game_scores (
                     game_id,
@@ -226,33 +208,29 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		.map_err(NestError::from)?
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
-		let game_id = u16::try_from(score.game_id).map_err(NestError::from)?;
-		let team_id = u16::try_from(score.team_id).map_err(NestError::from)?;
-		let clock_id = u16::try_from(score.clock_id).map_err(NestError::from)?;
+		let game_id = u32::try_from(score.game_id).map_err(NestError::from)?;
+		let team_id = u32::try_from(score.team_id).map_err(NestError::from)?;
+		let clock_id = u32::try_from(score.clock_id).map_err(NestError::from)?;
 
 		Ok(Self {
 			id: score.id as u32,
 			game: ModelId::new(game_id),
 			team: ModelId::new(team_id),
 			clock: ModelId::new(clock_id),
-			scoring_event: u16::try_from(score.scoring_event)
+			scoring_event: u32::try_from(score.scoring_event)
 				.map_err(|e| Error::NestError(NestError::from(e)))
 				.and_then(|v| ScoringEvent::try_from(v))?,
-			quarter: u16::try_from(score.quarter)
+			quarter: u32::try_from(score.quarter)
 				.map_err(|e| Error::NestError(NestError::from(e)))
 				.and_then(|v| Quarter::try_from(v))?,
 		})
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
-		if !item.is_valid() {
-			return Err(Error::NestError(NestError::Forbidden));
-		}
-
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
-		let scoring_event = u16::from(item.scoring_event);
-		let quarter = u16::from(item.quarter);
+		let scoring_event = u32::from(item.scoring_event);
+		let quarter = u32::from(item.quarter);
 		let game_id = item.game.value();
 		let team_id = item.team.value();
 		let clock_id = item.clock.value();
