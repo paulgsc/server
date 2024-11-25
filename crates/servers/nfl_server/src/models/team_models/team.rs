@@ -157,7 +157,7 @@ pub struct TeamNameMeta {
 }
 
 impl TeamNameMeta {
-	pub const fn new(id: u32) -> Option<Self> {
+	pub fn new(id: u32) -> Option<Self> {
 		if !(1..32).contains(&id) {
 			return None;
 		}
