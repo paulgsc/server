@@ -64,7 +64,12 @@ impl CreateStadium {
 
 #[async_trait]
 impl CrudOperations<Stadium, CreateStadium> for Stadium {
-	async fn create(pool: &SqlitePool, item: CreateStadium) -> Result<Stadium, Error> {
+	type CreateResult = i64;
+	type BatchCreateResult = ();
+	type GetResult = Self;
+	type UpdateResult = ();
+
+	async fn create(pool: &SqlitePool, item: CreateStadium) -> Result<Self::CreateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -94,19 +99,11 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 		.await
 		.map_err(NestError::from)?;
 
-		Ok(Self {
-			id: result.last_insert_rowid() as u32,
-			name: item.name,
-			location: item.location,
-			stadium_type: item.stadium_type,
-			surface_type: item.surface_type,
-			capacity: item.capacity,
-		})
+		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateStadium]) -> Result<Vec<Stadium>, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[CreateStadium]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
-		let mut created_stadiums = Vec::with_capacity(items.len());
 
 		for item in items {
 			if !item.is_valid() {
@@ -116,7 +113,7 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 
 			let stadium_type_val = u32::from(item.stadium_type);
 			let surface_type_val = u32::from(item.surface_type);
-			let result = sqlx::query!(
+			sqlx::query!(
 				r#"
                 INSERT INTO stadiums (
                     name, 
@@ -138,23 +135,15 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 			.execute(&mut *tx)
 			.await
 			.map_err(NestError::from)?;
-
-			created_stadiums.push(Stadium {
-				id: result.last_insert_rowid() as u32,
-				name: item.name.clone(),
-				location: item.location.clone(),
-				stadium_type: item.stadium_type,
-				surface_type: item.surface_type,
-				capacity: item.capacity,
-			});
 		}
 
 		tx.commit().await.map_err(NestError::from)?;
-		Ok(created_stadiums)
+		Ok(())
 	}
 
-	async fn get(pool: &SqlitePool, id: i64) -> Result<Stadium, Error> {
-		let stadium = sqlx::query!(
+	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
+		let stadium = sqlx::query_as!(
+			StadiumRow,
 			r#"
             SELECT 
                 id,
@@ -191,7 +180,7 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateStadium) -> Result<Stadium, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: CreateStadium) -> Result<Self::UpdateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -228,14 +217,7 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 		}
 		tx.commit().await.map_err(NestError::from)?;
 
-		Ok(Stadium {
-			id: id as u32,
-			name: item.name,
-			location: item.location,
-			stadium_type: item.stadium_type,
-			surface_type: item.surface_type,
-			capacity: item.capacity,
-		})
+		Ok(())
 	}
 
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error> {
@@ -253,10 +235,10 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 struct StadiumRow {
 	id: i64,
 	name: String,
-	state: i32,
+	state: i64,
 	city: String,
-	stadium_type: i32,
-	surface_type: i32,
+	stadium_type: i64,
+	surface_type: i64,
 	capacity: i64,
 }
 
