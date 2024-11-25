@@ -358,7 +358,7 @@ impl CrudOperations<Team, CreateTeam> for Team {
 		let id = u32::try_from(team.id).map_err(NestError::from)?;
 
 		Ok(Self {
-			id: team.id as u32,
+			id,
 			abbreviation: ModelId::new(abbrev_id),
 			name: ModelId::new(name_id),
 			stadium: ModelId::new(stadium_id),
