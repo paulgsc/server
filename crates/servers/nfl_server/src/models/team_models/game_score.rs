@@ -154,7 +154,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 
 		Ok(Self {
 			id: score.id as u32,
-			game: ModelId(score.game_id as u32),
+			game: ModelId::new(score.game_id as u32),
 			home_quarter_pts: [score.home_q1 as u8, score.home_q2 as u8, score.home_q3 as u8, score.home_q4 as u8],
 			away_quarter_pts: [score.away_q1 as u8, score.away_q2 as u8, score.away_q3 as u8, score.away_q4 as u8],
 		})
