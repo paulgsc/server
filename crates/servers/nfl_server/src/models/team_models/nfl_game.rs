@@ -7,7 +7,7 @@ use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WeatherCondition {
 	Sunny,
 	Cloudy,
@@ -17,10 +17,60 @@ pub enum WeatherCondition {
 	Foggy,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl TryFrom<u32> for WeatherCondition {
+	type Error = Error;
+
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
+		match value {
+			0 => Ok(WeatherCondition::Sunny),
+			1 => Ok(WeatherCondition::Cloudy),
+			2 => Ok(WeatherCondition::Rainy),
+			3 => Ok(WeatherCondition::Snowy),
+			4 => Ok(WeatherCondition::Windy),
+			5 => Ok(WeatherCondition::Foggy),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("weather", "Invalid Weather Condition")]))),
+		}
+	}
+}
+
+impl From<WeatherCondition> for u32 {
+	fn from(value: WeatherCondition) -> u32 {
+		match value {
+			WeatherCondition::Sunny => 0,
+			WeatherCondition::Cloudy => 1,
+			WeatherCondition::Rainy => 2,
+			WeatherCondition::Snowy => 3,
+			WeatherCondition::Windy => 4,
+			WeatherCondition::Foggy => 5,
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DayNight {
 	Day,
 	Night,
+}
+
+impl TryFrom<u32> for DayNight {
+	type Error = Error;
+
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
+		match value {
+			0 => Ok(DayNight::Day),
+			1 => Ok(DayNight::Night),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("Daynight", "Invalid DayNight")]))),
+		}
+	}
+}
+
+impl From<DayNight> for u32 {
+	fn from(value: DayNight) -> u32 {
+		match value {
+			DayNight::Day => 0,
+			DayNight::Night => 1,
+		}
+	}
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,10 +142,12 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
+		let condition_u32 = u32::from(item.condition);
+		let day_night_u32 = u32::from(item.day_night);
 		let result = sqlx::query!(
 			"INSERT INTO weather (condition, day_night, temperature, wind_speed) VALUES (?, ?, ?, ?)",
-			item.condition as i32,
-			item.day_night as i32,
+			condition_u32,
+			day_night_u32,
 			item.temperature,
 			item.wind_speed
 		)
@@ -117,10 +169,13 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 		let mut created_weather = Vec::with_capacity(items.len());
 
 		for item in items {
+			let condition_u32 = u32::from(item.condition);
+			let day_night_u32 = u32::from(item.day_night);
+
 			let result = sqlx::query!(
 				"INSERT INTO weather (condition, day_night, temperature, wind_speed) VALUES (?, ?, ?, ?)",
-				item.condition as i32,
-				item.day_night as i32,
+				condition_u32,
+				day_night_u32,
 				item.temperature,
 				item.wind_speed
 			)
@@ -142,28 +197,50 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Weather, Error> {
-		let weather = sqlx::query_as!(WeatherRow, "SELECT id, condition, day_night, temperature, wind_speed FROM weather WHERE id = ?", id)
-			.fetch_optional(pool)
-			.await
-			.map_err(NestError::from)?
-			.ok_or(Error::NestError(NestError::NotFound))?;
+		let weather = sqlx::query_as!(
+			WeatherRow,
+			r#"
+            SELECT
+                id,
+                condition,
+                day_night,
+                temperature,
+                wind_speed
+            FROM
+                weather
+            WHERE
+                id = ?
+            "#,
+			id
+		)
+		.fetch_optional(pool)
+		.await
+		.map_err(NestError::from)?
+		.ok_or(Error::NestError(NestError::NotFound))?;
 
 		Ok(Self {
 			id: weather.id as u32,
-			condition: WeatherCondition::try_from(weather.condition)?,
-			day_night: DayNight::try_from(weather.day_night)?,
-			temperature: weather.temperature,
-			wind_speed: weather.wind_speed,
+			condition: u32::try_from(weather.condition)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| WeatherCondition::try_from(v))?,
+			day_night: u32::try_from(weather.day_night)
+				.map_err(|e| Error::NestError(NestError::from(e)))
+				.and_then(|v| DayNight::try_from(v))?,
+			temperature: weather.temperature as f32,
+			wind_speed: weather.wind_speed.map(|speed| speed as f32),
 		})
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateWeather) -> Result<Weather, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
+		let condition_u32 = u32::from(item.condition);
+		let day_night_u32 = u32::from(item.day_night);
+
 		let result = sqlx::query!(
 			"UPDATE weather SET condition = ?, day_night = ?, temperature = ?, wind_speed = ? WHERE id = ?",
-			item.condition as i32,
-			item.day_night as i32,
+			condition_u32,
+			day_night_u32,
 			item.temperature,
 			item.wind_speed,
 			id
@@ -337,7 +414,10 @@ pub struct CreateNFLGame {
 impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 	async fn create(pool: &SqlitePool, item: CreateNFLGame) -> Result<Self, Error> {
 		let result = sqlx::query!(
-			"INSERT INTO nfl_games (date, home_team_id, away_team_id, game_score_id, weather_id) VALUES (?, ?, ?, ?, ?)",
+			"INSERT INTO nfl_games
+            (date, home_team_id, away_team_id, game_score_id, weather_id)
+            VALUES (?, ?, ?, ?, ?)
+            ",
 			item.date.value,
 			item.home_team.value(),
 			item.away_team.value(),
@@ -456,35 +536,8 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 #[derive(Debug)]
 struct WeatherRow {
 	id: i64,
-	condition: i32,
-	day_night: i32,
-	temperature: f32,
-	wind_speed: Option<f32>,
-}
-
-// Conversion implementations for enums
-impl TryFrom<i32> for WeatherCondition {
-	type Error = Error;
-	fn try_from(value: i32) -> Result<Self, Self::Error> {
-		match value {
-			0 => Ok(WeatherCondition::Sunny),
-			1 => Ok(WeatherCondition::Cloudy),
-			2 => Ok(WeatherCondition::Rainy),
-			3 => Ok(WeatherCondition::Snowy),
-			4 => Ok(WeatherCondition::Windy),
-			5 => Ok(WeatherCondition::Foggy),
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("weather", "Invalid Weather Condition")]))),
-		}
-	}
-}
-
-impl TryFrom<i32> for DayNight {
-	type Error = Error;
-	fn try_from(value: i32) -> Result<Self, Self::Error> {
-		match value {
-			0 => Ok(DayNight::Day),
-			1 => Ok(DayNight::Night),
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("Daynight", "Invalid DayNight")]))),
-		}
-	}
+	condition: i64,
+	day_night: i64,
+	temperature: f64,
+	wind_speed: Option<f64>,
 }
