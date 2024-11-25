@@ -1,12 +1,12 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::{CrudOperations, Identifiable, ModelId};
-use crate::models::team_models::NFLGame;
+use crate::models::{GameClock, NFLGame, Team};
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ScoringEvent {
 	OffensiveTouchdown,
 	FieldGoal,
@@ -26,6 +26,8 @@ impl TryFrom<u16> for ScoringEvent {
 			2 => Ok(ScoringEvent::PAT),
 			3 => Ok(ScoringEvent::TwoPointScore),
 			4 => Ok(ScoringEvent::DefensiveTouchdown),
+			5 => Ok(ScoringEvent::Safety),
+
 			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("scoring event", "Invalid ScoringEvent")]))),
 		}
 	}
@@ -37,13 +39,14 @@ impl From<ScoringEvent> for u16 {
 			ScoringEvent::OffensiveTouchdown => 0,
 			ScoringEvent::FieldGoal => 1,
 			ScoringEvent::PAT => 2,
-			ScoringEvent::TowPointScore => 3,
+			ScoringEvent::TwoPointScore => 3,
 			ScoringEvent::DefensiveTouchdown => 4,
+			ScoringEvent::Safety => 5,
 		}
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Quarter {
 	First,
 	Second,
@@ -86,7 +89,7 @@ pub struct GameScore {
 	pub team: ModelId<Team>,
 	pub scoring_event: ScoringEvent,
 	pub quarter: Quarter,
-	pub time: ModelId<GameClock>,
+	pub clock: ModelId<GameClock>,
 }
 
 impl Identifiable for GameScore {
@@ -101,11 +104,11 @@ pub struct CreateGameScore {
 	pub team: ModelId<Team>,
 	pub scoring_event: ScoringEvent,
 	pub quarter: Quarter,
-	pub time: ModelId<GameClock>,
+	pub clock: ModelId<GameClock>,
 }
 
 impl GameScore {
-	pub const fn points(&self) -> u16 {
+	pub fn points(&self) -> u16 {
 		self.scoring_event.into()
 	}
 }
@@ -144,7 +147,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                 team_id,
                 scoring_event,
                 quarter,
-                clock_id,
+                clock_id
             ) 
             VALUES (?, ?, ?, ?, ?)
             "#,
@@ -183,7 +186,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                     team_id,
                     scoring_event,
                     quarter,
-                    clock_id,
+                    clock_id
                 ) 
                 VALUES (?, ?, ?, ?, ?)
                 "#,
@@ -212,7 +215,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
                 team_id,
                 scoring_event,
                 quarter,
-                clock_id,
+                clock_id
             FROM game_scores 
             WHERE id = ?
             "#,
@@ -248,23 +251,27 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
+		let scoring_event = u16::from(item.scoring_event);
+		let quarter = u16::from(item.quarter);
+		let game_id = item.game.value();
+		let team_id = item.team.value();
+		let clock_id = item.clock.value();
+
 		let result = sqlx::query!(
 			r#"
             UPDATE game_scores SET
                 game_id = ?,
-                home_q1 = ?, home_q2 = ?, home_q3 = ?, home_q4 = ?,
-                away_q1 = ?, away_q2 = ?, away_q3 = ?, away_q4 = ?
+                team_id = ?,
+                scoring_event = ?,
+                quarter = ?,
+                clock_id = ?
             WHERE id = ?
             "#,
-			item.game.0,
-			item.home_quarter_pts[0],
-			item.home_quarter_pts[1],
-			item.home_quarter_pts[2],
-			item.home_quarter_pts[3],
-			item.away_quarter_pts[0],
-			item.away_quarter_pts[1],
-			item.away_quarter_pts[2],
-			item.away_quarter_pts[3],
+			game_id,
+			team_id,
+			scoring_event,
+			quarter,
+			clock_id,
 			id
 		)
 		.execute(&mut *tx)
@@ -287,4 +294,13 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		}
 		Ok(())
 	}
+}
+
+pub struct GameScoreRow {
+	id: i64,
+	game_id: i64,
+	team_id: i64,
+	scoring_event: i64,
+	quarter: i64,
+	clock_id: i64,
 }
