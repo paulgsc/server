@@ -52,10 +52,10 @@ pub enum Quarter {
 	OT,
 }
 
-impl TryFrom<u32> for Quarter {
+impl TryFrom<u16> for Quarter {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: u16) -> Result<Self, Self::Error> {
 		match value {
 			1 => Ok(Quarter::First),
 			2 => Ok(Quarter::Second),
@@ -67,8 +67,8 @@ impl TryFrom<u32> for Quarter {
 	}
 }
 
-impl From<Quarter> for u32 {
-	fn from(value: Quarter) -> u32 {
+impl From<Quarter> for u16 {
+	fn from(value: Quarter) -> u16 {
 		match value {
 			Quarter::First => 1,
 			Quarter::Second => 2,
@@ -131,24 +131,28 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
+		let event_type = u16::from(item.event_type);
+		let quarter = u16::from(item.quarter);
+		let game_id = item.game.value();
+		let team_id = item.team.value();
+		let clock_id = item.clock.value();
+
 		let result = sqlx::query!(
 			r#"
             INSERT INTO game_scores (
                 game_id,
-                home_q1, home_q2, home_q3, home_q4,
-                away_q1, away_q2, away_q3, away_q4
+                team_id,
+                event_type,
+                quarter,
+                clock_id,
             ) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             "#,
-			item.game.0,
-			item.home_quarter_pts[0],
-			item.home_quarter_pts[1],
-			item.home_quarter_pts[2],
-			item.home_quarter_pts[3],
-			item.away_quarter_pts[0],
-			item.away_quarter_pts[1],
-			item.away_quarter_pts[2],
-			item.away_quarter_pts[3],
+			game_id,
+			team_id,
+			event_type,
+			quarter,
+			clock_id,
 		)
 		.execute(pool)
 		.await
@@ -166,24 +170,28 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 				return Err(Error::NestError(NestError::Forbidden));
 			}
 
+			let event_type = u16::from(item.event_type);
+			let quarter = u16::from(item.quarter);
+			let game_id = item.game.value();
+			let team_id = item.team.value();
+			let clock_id = item.clock.value();
+
 			let result = sqlx::query!(
 				r#"
                 INSERT INTO game_scores (
                     game_id,
-                    home_q1, home_q2, home_q3, home_q4,
-                    away_q1, away_q2, away_q3, away_q4
+                    team_id,
+                    event_type,
+                    quarter,
+                    clock_id,
                 ) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 "#,
-				item.game.0,
-				item.home_quarter_pts[0],
-				item.home_quarter_pts[1],
-				item.home_quarter_pts[2],
-				item.home_quarter_pts[3],
-				item.away_quarter_pts[0],
-				item.away_quarter_pts[1],
-				item.away_quarter_pts[2],
-				item.away_quarter_pts[3],
+				game_id,
+				team_id,
+				event_type,
+				quarter,
+				clock_id,
 			)
 			.execute(&mut *tx)
 			.await
@@ -195,12 +203,16 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
-		let score = sqlx::query!(
+		let score = sqlx::query_as!(
+			GameScoreRow,
 			r#"
             SELECT 
-                id, game_id,
-                home_q1, home_q2, home_q3, home_q4,
-                away_q1, away_q2, away_q3, away_q4
+                id,
+                game_id,
+                team_id,
+                event_type,
+                quarter,
+                clock_id,
             FROM game_scores 
             WHERE id = ?
             "#,
@@ -211,12 +223,16 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		.map_err(NestError::from)?
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
+		let game_id = u16::try_from(score.game_id).map_err(NestError::from)?;
+		let team_id = u16::try_from(score.team_id).map_err(NestError::from)?;
+		let clock_id = u16::try_from(score.clock_id).map_err(NestError::from)?;
+
 		Ok(Self {
 			id: score.id as u32,
-			game: ModelId::new(score.game_id as u32),
-			home_quarter_pts: [score.home_q1 as u8, score.home_q2 as u8, score.home_q3 as u8, score.home_q4 as u8],
-			away_quarter_pts: [score.away_q1 as u8, score.away_q2 as u8, score.away_q3 as u8, score.away_q4 as u8],
-		})
+			game: ModelId::new(game_id),
+			team: ModelId::new(team_id),
+			clock: ModelId::new(clock_id),
+		}
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
