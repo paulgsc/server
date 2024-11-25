@@ -54,7 +54,12 @@ impl CreateGameScore {
 
 #[async_trait]
 impl CrudOperations<GameScore, CreateGameScore> for GameScore {
-	async fn create(pool: &SqlitePool, item: CreateGameScore) -> Result<GameScore, Error> {
+	type CreateResult = i64;
+	type BatchCreateResult = ();
+	type GetResult = Self;
+	type UpdateResult = ();
+
+	async fn create(pool: &SqlitePool, item: CreateGameScore) -> Result<Self::CreateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -82,17 +87,11 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		.await
 		.map_err(NestError::from)?;
 
-		Ok(Self {
-			id: result.last_insert_rowid() as u32,
-			game: item.game,
-			home_quarter_pts: item.home_quarter_pts,
-			away_quarter_pts: item.away_quarter_pts,
-		})
+		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateGameScore]) -> Result<Vec<GameScore>, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[CreateGameScore]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
-		let mut created_scores = Vec::with_capacity(items.len());
 
 		for item in items {
 			if !item.is_valid() {
@@ -122,20 +121,13 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 			.execute(&mut *tx)
 			.await
 			.map_err(NestError::from)?;
-
-			created_scores.push(GameScore {
-				id: result.last_insert_rowid() as u32,
-				game: item.game,
-				home_quarter_pts: item.home_quarter_pts,
-				away_quarter_pts: item.away_quarter_pts,
-			});
 		}
 
 		tx.commit().await.map_err(NestError::from)?;
-		Ok(created_scores)
+		Ok(())
 	}
 
-	async fn get(pool: &SqlitePool, id: i64) -> Result<GameScore, Error> {
+	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let score = sqlx::query!(
 			r#"
             SELECT 
@@ -160,7 +152,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<GameScore, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -195,12 +187,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		}
 		tx.commit().await.map_err(NestError::from)?;
 
-		Ok(GameScore {
-			id: id as u32,
-			game: item.game,
-			home_quarter_pts: item.home_quarter_pts,
-			away_quarter_pts: item.away_quarter_pts,
-		})
+		Ok(())
 	}
 
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error> {
