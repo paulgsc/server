@@ -358,7 +358,7 @@ impl CrudOperations<Team, CreateTeam> for Team {
 		let id = u32::try_from(team.id).map_err(NestError::from)?;
 
 		Ok(Self {
-			id,
+			id: team.id as u32,
 			abbreviation: ModelId::new(abbrev_id),
 			name: ModelId::new(name_id),
 			stadium: ModelId::new(stadium_id),
@@ -420,16 +420,19 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 
 	async fn create(pool: &SqlitePool, item: CreateNFLGame) -> Result<Self::CreateResult, Error> {
 		let game_status = u32::from(item.game_status);
+		let home_team = item.home_team.value();
+		let away_team = item.away_team.value();
+		let weather = item.weather.value();
 		let result = sqlx::query!(
 			"INSERT INTO nfl_games
-            (date, home_team_id, away_team_id, game_status, weather_id)
+            (encoded_date, home_team_id, away_team_id, game_status_id, weather_id)
             VALUES (?, ?, ?, ?, ?)
             ",
 			item.date.value,
-			item.home_team.value(),
-			item.away_team.value(),
+			home_team,
+			away_team,
 			game_status,
-			item.weather.value()
+			weather,
 		)
 		.execute(pool)
 		.await
@@ -443,13 +446,16 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 
 		for item in items {
 			let game_status = u32::from(item.game_status);
-			let result = sqlx::query!(
-				"INSERT INTO nfl_games (date, home_team_id, away_team_id, game_status, weather_id) VALUES (?, ?, ?, ?, ?)",
+			let home_team = item.home_team.value();
+			let away_team = item.away_team.value();
+			let weather = item.weather.value();
+			sqlx::query!(
+				"INSERT INTO nfl_games (encoded_date, home_team_id, away_team_id, game_status_id, weather_id) VALUES (?, ?, ?, ?, ?)",
 				item.date.value,
-				item.home_team.value(),
-				item.away_team.value(),
+				home_team,
+				away_team,
 				game_status,
-				item.weather.value()
+				weather,
 			)
 			.execute(&mut *tx)
 			.await
@@ -463,7 +469,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let nfl_game = sqlx::query_as!(
 			NFLGameRow,
-			"SELECT date, home_team_id, away_team_id, game_status, weather_id from nfl_games WHERE id = ?",
+			"SELECT id, encoded_date, home_team_id, away_team_id, game_status_id, weather_id from nfl_games WHERE id = ?",
 			id
 		)
 		.fetch_optional(pool)
@@ -471,15 +477,20 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		.map_err(NestError::from)?
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
+		let home_team = u32::try_from(nfl_game.home_team_id).map_err(NestError::from)?;
+		let away_team = u32::try_from(nfl_game.away_team_id).map_err(NestError::from)?;
+		let weather = u32::try_from(nfl_game.weather_id).map_err(NestError::from)?;
+		let encoded_date = EncodedDate::try_from(nfl_game.encoded_date).map_err(NestError::from)?;
+
 		Ok(NFLGame {
-			id: nfl_game.id,
-			date: nfl_game.date,
-			home_team: nfl_game.home_team,
-			away_team: nfl_game.away_team,
-			game_status: u32::try_from(nfl_game.game_status)
+			id: nfl_game.id as u32,
+			date: encoded_date,
+			home_team: ModelId::new(home_team),
+			away_team: ModelId::new(away_team),
+			game_status: u32::try_from(nfl_game.game_status_id)
 				.map_err(|e| Error::NestError(NestError::from(e)))
 				.and_then(|v| GameStatus::try_from(v))?,
-			weather: nfl_game.weather,
+			weather: ModelId::new(weather),
 		})
 	}
 
@@ -487,13 +498,16 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		let game_status = u32::from(item.game_status);
+		let home_team = item.home_team.value();
+		let away_team = item.away_team.value();
+		let weather = item.weather.value();
 		let result = sqlx::query!(
-			"UPDATE nfl_games SET date = ?, home_team_id = ?, away_team_id = ?, game_status = ?, weather_id = ? WHERE id = ?",
-			item.date,
-			item.home_team,
-			item.away_team,
+			"UPDATE nfl_games SET encoded_date = ?, home_team_id = ?, away_team_id = ?, game_status_id = ?, weather_id = ? WHERE id = ?",
+			item.date.value,
+			home_team,
+			away_team,
 			game_status,
-			item.weather,
+			weather,
 			id
 		)
 		.execute(&mut tx)
@@ -538,9 +552,10 @@ struct TeamRow {
 }
 
 pub struct NFLGameRow {
-	date: i64,
-	home_team: i64,
-	away_team: i64,
-	game_status: i64,
-	weather: i64,
+	id: i64,
+	encoded_date: i64,
+	home_team_id: i64,
+	away_team_id: i64,
+	game_status_id: i64,
+	weather_id: i64,
 }
