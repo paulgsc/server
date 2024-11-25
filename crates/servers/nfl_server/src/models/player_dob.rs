@@ -89,7 +89,12 @@ pub trait AgeOperations {
 
 #[async_trait]
 impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
-	async fn create(pool: &SqlitePool, item: CreatePlayerDOB) -> Result<PlayerDOB, Error> {
+	type CreateResult = i64;
+	type BatchCreateResult = ();
+	type GetResult = Self;
+	type UpdateResult = ();
+
+	async fn create(pool: &SqlitePool, item: CreatePlayerDOB) -> Result<Self::CreateResult, Error> {
 		let dob_encoded = item
 			.to_encoded()
 			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
@@ -100,15 +105,11 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 			.await
 			.map_err(NestError::from)?;
 
-		Ok(Self {
-			id: result.last_insert_rowid(),
-			dob_encoded,
-		})
+		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayerDOB]) -> Result<Vec<PlayerDOB>, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayerDOB]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
-		let mut created_dobs = Vec::with_capacity(items.len());
 
 		for item in items {
 			let dob_encoded = item
@@ -116,19 +117,14 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 				.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
 			let dob_encoded_i64: i64 = i64::from(dob_encoded);
 
-			let result = sqlx::query!("INSERT INTO player_dobs (dob_encoded) VALUES (?)", dob_encoded_i64)
+			sqlx::query!("INSERT INTO player_dobs (dob_encoded) VALUES (?)", dob_encoded_i64)
 				.execute(&mut *tx)
 				.await
 				.map_err(NestError::from)?;
-
-			created_dobs.push(PlayerDOB {
-				id: result.last_insert_rowid(),
-				dob_encoded,
-			});
 		}
 
 		tx.commit().await.map_err(NestError::from)?;
-		Ok(created_dobs)
+		Ok(())
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self, Error> {
@@ -141,7 +137,7 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 		Self::try_from(dob)
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayerDOB) -> Result<PlayerDOB, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayerDOB) -> Result<Self::UpdateResult, Error> {
 		let dob_encoded = item
 			.to_encoded()
 			.ok_or_else(|| Error::NestError(NestError::unprocessable_entity(vec![("dob", "Invalid dob values")])))?;
@@ -156,7 +152,7 @@ impl CrudOperations<PlayerDOB, CreatePlayerDOB> for PlayerDOB {
 			return Err(Error::NestError(NestError::NotFound));
 		}
 
-		Ok(PlayerDOB { id, dob_encoded })
+		Ok(())
 	}
 
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error> {
