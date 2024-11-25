@@ -8,37 +8,37 @@ use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScoringEvent {
-	Touchdown,
-	FieldGoald,
+	OffensiveTouchdown,
+	FieldGoal,
 	PAT,
 	TwoPointScore,
 	Safety,
 	DefensiveTouchdown,
 }
 
-impl TryFrom<u32> for ScoringEvent {
+impl TryFrom<u16> for ScoringEvent {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: u16) -> Result<Self, Self::Error> {
 		match value {
-			6 => Ok(ScoringEvent::Touchdown),
-			3 => Ok(ScoringEvent::FieldGoal),
-			1 => Ok(ScoringEvent::PAT),
-			2 => Ok(ScoringEvent::TwoPointScore),
-			6 => Ok(ScoringEvent::DefensiveTouchdown),
+			0 => Ok(ScoringEvent::OffensiveTouchdown),
+			1 => Ok(ScoringEvent::FieldGoal),
+			2 => Ok(ScoringEvent::PAT),
+			3 => Ok(ScoringEvent::TwoPointScore),
+			4 => Ok(ScoringEvent::DefensiveTouchdown),
 			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("scoring event", "Invalid ScoringEvent")]))),
 		}
 	}
 }
 
-impl From<ScoringEvent> for u32 {
-	fn from(value: ScoringEvent) -> u32 {
+impl From<ScoringEvent> for u16 {
+	fn from(value: ScoringEvent) -> u16 {
 		match value {
-			ScoringEvent::Touchdown => 6,
-			ScoringEvent::FieldGoal => 3,
-			ScoringEvent::PAT => 1,
-			ScoringEvent::TowPointScore => 2,
-			ScoringEvent::DefensiveTouchdown => 6,
+			ScoringEvent::OffensiveTouchdown => 0,
+			ScoringEvent::FieldGoal => 1,
+			ScoringEvent::PAT => 2,
+			ScoringEvent::TowPointScore => 3,
+			ScoringEvent::DefensiveTouchdown => 4,
 		}
 	}
 }
@@ -85,7 +85,6 @@ pub struct GameScore {
 	pub game: ModelId<NFLGame>,
 	pub team: ModelId<Team>,
 	pub scoring_event: ScoringEvent,
-	pub pts: u16,
 	pub quarter: Quarter,
 	pub time: ModelId<GameClock>,
 }
@@ -106,18 +105,8 @@ pub struct CreateGameScore {
 }
 
 impl GameScore {
-	pub fn is_valid(&self) -> bool {
-		let max_quarter_points = 50;
-
-		self.home_quarter_pts.iter().all(|&pts| pts <= max_quarter_points) && self.away_quarter_pts.iter().all(|&pts| pts <= max_quarter_points)
-	}
-
-	pub fn total_home_points(&self) -> u16 {
-		self.home_quarter_pts.iter().map(|&pts| pts as u16).sum()
-	}
-
-	pub fn total_away_points(&self) -> u16 {
-		self.away_quarter_pts.iter().map(|&pts| pts as u16).sum()
+	pub const fn points(&self) -> u16 {
+		self.scoring_event.into()
 	}
 }
 
