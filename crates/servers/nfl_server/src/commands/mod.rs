@@ -15,7 +15,7 @@ pub async fn populate_game_clocks(config: &Config) -> Result<()> {
 	}
 
 	match GameClock::batch_create(&pool, &game_clocks).await {
-		Ok(created) => println!("Successfully inserted {} GameClock records", created.len()),
+		Ok(_) => println!("Successfully inserted {} GameClock records", game_clocks.len()),
 		Err(err) => eprintln!("Failed to insert GameClock records: {:?}", err),
 	}
 
