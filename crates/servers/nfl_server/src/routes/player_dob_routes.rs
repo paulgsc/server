@@ -10,7 +10,7 @@ use nest::http::Error as NestError;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
-pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayerDOB>) -> Result<Json<PlayerDOB>, Error> {
+pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayerDOB>) -> Result<Json<i64>, Error> {
 	if !payload.is_valid() {
 		return Err(Error::NestError(NestError::unprocessable_entity(vec![("player_dob", "Invalid date of birth values")])));
 	}
@@ -24,7 +24,7 @@ pub async fn get(State(pool): State<SqlitePool>, Path(id): Path<i64>) -> Result<
 	Ok(Json(player_dob))
 }
 
-pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreatePlayerDOB>) -> Result<Json<PlayerDOB>, Error> {
+pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreatePlayerDOB>) -> Result<Json<()>, Error> {
 	if !payload.is_valid() {
 		return Err(Error::NestError(NestError::unprocessable_entity(vec![("player_dob", "Invalid date of birth values")])));
 	}
