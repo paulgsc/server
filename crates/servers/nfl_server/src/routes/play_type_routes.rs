@@ -7,7 +7,7 @@ use axum::{
 };
 use sqlx::SqlitePool;
 
-pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
+pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreatePlayType>) -> Result<Json<i64>, Error> {
 	let play_type = PlayTypeRecord::create(&pool, payload).await?;
 	Ok(Json(play_type))
 }
@@ -17,7 +17,7 @@ pub async fn get(State(pool): State<SqlitePool>, Path(id): Path<i64>) -> Result<
 	Ok(Json(play_type))
 }
 
-pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreatePlayType>) -> Result<Json<PlayTypeRecord>, Error> {
+pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreatePlayType>) -> Result<Json<()>, Error> {
 	let play_type = PlayTypeRecord::update(&pool, id, payload).await?;
 	Ok(Json(play_type))
 }
