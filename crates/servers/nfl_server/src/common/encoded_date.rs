@@ -1,4 +1,5 @@
 use chrono::{Datelike, NaiveDate};
+use nest::http::Error;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
@@ -12,6 +13,18 @@ const DAY_MASK: u16 = 0b0000000_0000_11111; // 5 bits for day
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncodedDate {
 	pub value: u16,
+}
+
+impl TryFrom<i64> for EncodedDate {
+	type Error = Error;
+
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
+		if value >= 0 && value <= u16::MAX as i64 {
+			Ok(EncodedDate { value: value as u16 })
+		} else {
+			Err(Self::Error::InvalidEncodedDate("Encoded date is out of range".to_string()))
+		}
+	}
 }
 
 /// A struct for creating dates with validation
