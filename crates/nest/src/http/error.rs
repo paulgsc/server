@@ -37,6 +37,9 @@ pub enum Error {
 	#[error("integer conversion failed: {0}")]
 	IntegerConversionError(#[from] std::num::TryFromIntError),
 
+	#[error("Encoded Date Conversion failed: {0}")]
+	InvalidEncodedDate(String),
+
 	#[error("migration error occurred")]
 	Migrate(#[from] MigrateError),
 }
@@ -62,6 +65,7 @@ impl Error {
 			Self::Forbidden => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
 			Self::InvalidData => StatusCode::FORBIDDEN,
+			Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Sqlx(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
