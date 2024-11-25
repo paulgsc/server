@@ -6,12 +6,88 @@ use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScoringEvent {
+	Touchdown,
+	FieldGoald,
+	PAT,
+	TwoPointScore,
+	Safety,
+	DefensiveTouchdown,
+}
+
+impl TryFrom<u32> for ScoringEvent {
+	type Error = Error;
+
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
+		match value {
+			6 => Ok(ScoringEvent::Touchdown),
+			3 => Ok(ScoringEvent::FieldGoal),
+			1 => Ok(ScoringEvent::PAT),
+			2 => Ok(ScoringEvent::TwoPointScore),
+			6 => Ok(ScoringEvent::DefensiveTouchdown),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("scoring event", "Invalid ScoringEvent")]))),
+		}
+	}
+}
+
+impl From<ScoringEvent> for u32 {
+	fn from(value: ScoringEvent) -> u32 {
+		match value {
+			ScoringEvent::Touchdown => 6,
+			ScoringEvent::FieldGoal => 3,
+			ScoringEvent::PAT => 1,
+			ScoringEvent::TowPointScore => 2,
+			ScoringEvent::DefensiveTouchdown => 6,
+		}
+	}
+}
+
+#[derive(Debug)]
+pub enum Quarter {
+	First,
+	Second,
+	Third,
+	Fourth,
+	OT,
+}
+
+impl TryFrom<u32> for Quarter {
+	type Error = Error;
+
+	fn try_from(value: u32) -> Result<Self, Self::Error> {
+		match value {
+			1 => Ok(Quarter::First),
+			2 => Ok(Quarter::Second),
+			3 => Ok(Quarter::Third),
+			4 => Ok(Quarter::Fourth),
+			5 => Ok(Quarter::OT),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("weather", "Invalid Quarter")]))),
+		}
+	}
+}
+
+impl From<Quarter> for u32 {
+	fn from(value: Quarter) -> u32 {
+		match value {
+			Quarter::First => 1,
+			Quarter::Second => 2,
+			Quarter::Third => 3,
+			Quarter::Fourth => 4,
+			Quarter::OT => 5,
+		}
+	}
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameScore {
 	pub id: u32,
 	pub game: ModelId<NFLGame>,
-	pub home_quarter_pts: [u8; 4],
-	pub away_quarter_pts: [u8; 4],
+	pub team: ModelId<Team>,
+	pub scoring_event: ScoringEvent,
+	pub pts: u16,
+	pub quarter: Quarter,
+	pub time: ModelId<GameClock>,
 }
 
 impl Identifiable for GameScore {
@@ -23,8 +99,10 @@ impl Identifiable for GameScore {
 #[derive(Debug, Deserialize)]
 pub struct CreateGameScore {
 	pub game: ModelId<NFLGame>,
-	pub home_quarter_pts: [u8; 4],
-	pub away_quarter_pts: [u8; 4],
+	pub team: ModelId<Team>,
+	pub scoring_event: ScoringEvent,
+	pub quarter: Quarter,
+	pub time: ModelId<GameClock>,
 }
 
 impl GameScore {
