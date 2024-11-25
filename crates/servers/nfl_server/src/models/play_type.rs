@@ -26,42 +26,38 @@ struct PlayTypeRecordRaw {
 
 #[async_trait]
 impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
-	async fn create(pool: &SqlitePool, item: CreatePlayType) -> Result<PlayTypeRecord, Error> {
+	type CreateResult = i64;
+	type BatchCreateResult = ();
+	type GetResult = Self;
+	type UpdateResult = ();
+
+	async fn create(pool: &SqlitePool, item: CreatePlayType) -> Result<Self::CreateResult, Error> {
 		let play_type_str = item.play_type.to_string();
 		let result = sqlx::query!("INSERT INTO play_types (play_type) VALUES (?)", play_type_str)
 			.execute(pool)
 			.await
 			.map_err(NestError::from)?;
 
-		Ok(PlayTypeRecord {
-			id: result.last_insert_rowid(),
-			play_type: item.play_type,
-		})
+		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Vec<PlayTypeRecord>, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
-		let mut created_records = Vec::with_capacity(items.len());
 
 		for item in items {
 			let play_type_str = item.play_type.to_string();
-			let result = sqlx::query!("INSERT INTO play_types (play_type) VALUES (?)", play_type_str)
+			sqlx::query!("INSERT INTO play_types (play_type) VALUES (?)", play_type_str)
 				.execute(&mut *tx)
 				.await
 				.map_err(NestError::from)?;
-
-			created_records.push(PlayTypeRecord {
-				id: result.last_insert_rowid(),
-				play_type: item.play_type.clone(),
-			});
 		}
 
 		tx.commit().await.map_err(NestError::from)?;
 
-		Ok(created_records)
+		Ok(())
 	}
 
-	async fn get(pool: &SqlitePool, id: i64) -> Result<PlayTypeRecord, Error> {
+	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let record = sqlx::query_as!(PlayTypeRecordRaw, "SELECT id, play_type FROM play_types WHERE id = ?", id)
 			.fetch_optional(pool)
 			.await
@@ -74,7 +70,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayType) -> Result<PlayTypeRecord, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayType) -> Result<Self::UpdateResult, Error> {
 		let play_type_str = item.play_type.to_string();
 		let result = sqlx::query!("UPDATE play_types SET play_type = ? WHERE id = ?", play_type_str, id)
 			.execute(pool)
@@ -85,7 +81,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 			return Err(Error::NestError(NestError::NotFound));
 		}
 
-		Ok(PlayTypeRecord { id, play_type: item.play_type })
+		Ok(())
 	}
 
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error> {
