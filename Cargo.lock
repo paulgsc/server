@@ -2266,6 +2266,7 @@ dependencies = [
  "dotenv",
  "nest",
  "nfl_play_parser",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",
