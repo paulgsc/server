@@ -1,4 +1,4 @@
-use scraper::{ElementRef, Html, Selector};
+use scraper::{Html, Selector};
 use std::fmt;
 
 pub struct NflGameScheduleSelectors {
@@ -12,7 +12,7 @@ pub struct NflGameScheduleSelectors {
 impl NflGameScheduleSelectors {
 	pub fn new() -> Self {
 		NflGameScheduleSelectors {
-			schedule_section: Selector::parse(".d3-l-grid--outer.nfl-o-matchup-group").unwrap(),
+			schedule_section: Selector::parse(".nfl-o-matchup-group").unwrap(),
 			date_header: Selector::parse(".d3-o-section-title").unwrap(),
 			matchup_strip: Selector::parse(".nfl-c-matchup-strip").unwrap(),
 			schedule_desc: Selector::parse("a.nfl-c-matchup-strip__left-area").unwrap(),
@@ -37,7 +37,7 @@ impl fmt::Display for GameInfo {
 pub struct NflGameScheduleIterator<'a> {
 	schedule_iter: scraper::html::Select<'a, 'a>,
 	current_date: Option<String>,
-	current_section: Option<ElementRef<'a>>,
+	matchup_iter: Option<scraper::element_ref::Select<'a, 'a>>,
 	selectors: &'a NflGameScheduleSelectors,
 }
 
@@ -46,7 +46,7 @@ impl<'a> NflGameScheduleIterator<'a> {
 		NflGameScheduleIterator {
 			schedule_iter: document.select(&selectors.schedule_section),
 			current_date: None,
-			current_section: None,
+			matchup_iter: None,
 			selectors,
 		}
 	}
@@ -57,18 +57,15 @@ impl<'a> Iterator for NflGameScheduleIterator<'a> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
-			if let Some(section) = &mut self.current_section {
-				// Look for next game in current section
-				if let Some(matchup) = section.select(&self.selectors.matchup_strip).next() {
-					// Assuming home team is the second team in the matchup
-
+			if let Some(matchup_iter) = &mut self.matchup_iter {
+				if let Some(matchup) = matchup_iter.next() {
 					let schedule_desc = matchup
 						.select(&self.selectors.schedule_desc)
 						.next()
 						.and_then(|a| a.value().attr("href").map(String::from))
 						.unwrap_or_default();
 
-					let status = section.select(&self.selectors.game_status).next().map(|el| el.inner_html()).unwrap_or_default();
+					let status = matchup.select(&self.selectors.game_status).next().map(|el| el.inner_html()).unwrap_or_default();
 
 					return Some(GameInfo {
 						date: self.current_date.clone().unwrap_or_default(),
@@ -76,18 +73,13 @@ impl<'a> Iterator for NflGameScheduleIterator<'a> {
 						status,
 					});
 				}
-
-				// No more games in this section
-				self.current_section = None;
 			}
 
-			// Move to next section
 			match self.schedule_iter.next() {
 				Some(section) => {
-					// Extract date from section header
 					self.current_date = section.select(&self.selectors.date_header).next().map(|el| el.inner_html());
 
-					self.current_section = Some(section);
+					self.matchup_iter = Some(section.select(&self.selectors.matchup_strip));
 				}
 				None => return None,
 			}
