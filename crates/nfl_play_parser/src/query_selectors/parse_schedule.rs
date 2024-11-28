@@ -1,4 +1,3 @@
-use crate::query_selectors::PlaySelectors;
 use scraper::{ElementRef, Html, Selector};
 use std::fmt;
 
@@ -31,7 +30,7 @@ pub struct GameInfo {
 
 impl fmt::Display for GameInfo {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "Date: {}\nStatus: {}\nSchedule_desc: {}}", self.date, self.status, self.schedule_desc,)
+		write!(f, "Date: {}\nStatus: {}\nSchedule_desc: {}", self.date, self.status, self.schedule_desc,)
 	}
 }
 
