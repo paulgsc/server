@@ -1,11 +1,12 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::EncodedDate;
-use crate::common::{CrudOperations, Identifiable, ModelId};
+use crate::common::{is_timestamp, CrudOperations, Identifiable, ModelId};
 use crate::models::team_models::{Stadium, TeamNameMeta};
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WeatherCondition {
@@ -97,6 +98,30 @@ pub enum GameStatus {
 	Completed,
 	Postponed,
 	Cancelled,
+	TBD,
+}
+
+impl FromStr for GameStatus {
+	type Err = Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let normalized = s.trim().to_lowercase();
+
+		match normalized.as_str() {
+			"scheduled" => Ok(GameStatus::Scheduled),
+			"in_progress" | "inprogress" | "in progress" => Ok(GameStatus::InProgress),
+			"completed" | "final" | "complete" => Ok(GameStatus::Completed),
+			"postponed" => Ok(GameStatus::Postponed),
+			"cancelled" | "canceled" => Ok(GameStatus::Cancelled),
+
+			"live" => Ok(GameStatus::InProgress),
+			"final/ot" | "final (ot)" | "final (overtime)" => Ok(GameStatus::Completed),
+
+			status if is_timestamp(status) => Ok(GameStatus::Scheduled),
+
+			_ => Err(Error::GameStatusParseError(s.to_string())),
+		}
+	}
 }
 
 impl TryFrom<u32> for GameStatus {
@@ -109,6 +134,7 @@ impl TryFrom<u32> for GameStatus {
 			2 => Ok(GameStatus::Completed),
 			3 => Ok(GameStatus::Postponed),
 			4 => Ok(GameStatus::Cancelled),
+			5 => Ok(GameStatus::TBD),
 
 			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("GameStatus", "Invalid GameStatus")]))),
 		}
@@ -123,6 +149,7 @@ impl From<GameStatus> for u32 {
 			GameStatus::Completed => 2,
 			GameStatus::Postponed => 3,
 			GameStatus::Cancelled => 4,
+			GameStatus::TBD => 5,
 		}
 	}
 }
@@ -558,4 +585,30 @@ pub struct NFLGameRow {
 	away_team_id: i64,
 	game_status_id: i64,
 	weather_id: i64,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::str::FromStr;
+
+	#[test]
+	fn test_game_status_parsing() {
+		// Test standard variants
+		assert_eq!(GameStatus::from_str("Scheduled").unwrap(), GameStatus::Scheduled);
+		assert_eq!(GameStatus::from_str("in_progress").unwrap(), GameStatus::InProgress);
+		assert_eq!(GameStatus::from_str("FINAL").unwrap(), GameStatus::Completed);
+		assert_eq!(GameStatus::from_str("TBD").unwrap(), GameStatus::TBD);
+
+		// Test variations
+		assert_eq!(GameStatus::from_str("live").unwrap(), GameStatus::InProgress);
+		assert_eq!(GameStatus::from_str("final/ot").unwrap(), GameStatus::Completed);
+
+		// Test timestamps
+		assert_eq!(GameStatus::from_str("10:00 AM").unwrap(), GameStatus::Scheduled);
+		assert_eq!(GameStatus::from_str("9:30 pm").unwrap(), GameStatus::Scheduled);
+
+		// Test error case
+		assert!(GameStatus::from_str("unknown").is_err());
+	}
 }
