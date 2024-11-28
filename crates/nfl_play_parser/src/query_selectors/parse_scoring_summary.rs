@@ -2,7 +2,8 @@ use scraper::{Html, Selector};
 use std::fmt;
 
 pub struct NflScoringSummarySelectors {
-	pub score_section: Selector,
+	pub quarter_section: Selector,
+	pub scoring_section: Selector,
 	pub quarter: Selector,
 	pub team_logo: Selector,
 	pub score_event: Selector,
@@ -13,8 +14,9 @@ pub struct NflScoringSummarySelectors {
 impl NflScoringSummarySelectors {
 	pub fn new() -> Self {
 		NflScoringSummarySelectors {
-			score_section: Selector::parse(".playByPlay__table--summary .Table__TR").unwrap(),
-			quarter: Selector::parse(".playByPlay__quarter").unwrap(),
+			quarter_section: Selector::parse(".playByPlay__table--summary").unwrap(),
+			scoring_section: Selector::parse(".playByPlay__tableRow").unwrap(),
+			quarter: Selector::parse(".playByPlay__quarter h4").unwrap(),
 			team_logo: Selector::parse(".playByPlay__logo img").unwrap(),
 			score_event: Selector::parse(".playByPlay__details--scoreType").unwrap(),
 			time: Selector::parse(".playByPlay__details--timeStamp").unwrap(),
@@ -52,7 +54,7 @@ pub struct NflScoringSummaryIterator<'a> {
 impl<'a> NflScoringSummaryIterator<'a> {
 	pub fn new(document: &'a Html, selectors: &'a NflScoringSummarySelectors) -> Self {
 		NflScoringSummaryIterator {
-			quarter_iter: document.select(&selectors.score_section),
+			quarter_iter: document.select(&selectors.quarter_section),
 			current_quarter: None,
 			scoring_iter: None,
 			selectors,
@@ -90,7 +92,7 @@ impl<'a> Iterator for NflScoringSummaryIterator<'a> {
 				Some(quarter) => {
 					self.current_quarter = quarter.select(&self.selectors.quarter).next().map(|el| el.inner_html());
 
-					self.scoring_iter = Some(quarter.select(&self.selectors.score_section));
+					self.scoring_iter = Some(quarter.select(&self.selectors.scoring_section));
 				}
 				None => return None,
 			}
