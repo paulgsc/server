@@ -8,8 +8,15 @@ fn main() {
 		Ok(document) => {
 			let selectors = NflGameScheduleSelectors::new();
 
-			for game in parse_nfl_game_schedule(&document, &selectors) {
-				println!("{}", game);
+			match parse_nfl_game_schedule(&document, &selectors) {
+				Ok(iterator) => {
+					for schedule in iterator {
+						println!("{}", schedule);
+					}
+				}
+				Err(e) => {
+					eprintln!("{}", e);
+				}
 			}
 		}
 		Err(e) => {
