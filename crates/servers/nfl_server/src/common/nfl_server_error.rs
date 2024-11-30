@@ -3,6 +3,7 @@ use axum::http::Response;
 use axum::response::IntoResponse;
 use nest::http::Error as NestError;
 use nfl_play_parser::error::PlayTypeError;
+use std::num::ParseIntError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -15,6 +16,18 @@ pub enum NflServerError {
 
 	#[error("Invalid game status: {0}")]
 	GameStatusParseError(String),
+}
+
+impl From<ParseIntError> for NflServerError {
+	fn from(err: ParseIntError) -> Self {
+		Self::NestError(NestError::InvalidEncodedDate(format!("Failed to parse integer: {}", err)))
+	}
+}
+
+impl From<&str> for NflServerError {
+	fn from(msg: &str) -> Self {
+		Self::NestError(NestError::InvalidEncodedDate(msg.to_string()))
+	}
 }
 
 impl IntoResponse for NflServerError {

@@ -1,7 +1,10 @@
+use crate::common::nfl_server_error::NflServerError as Error;
 use chrono::{Datelike, NaiveDate};
-use nest::http::Error;
+use nest::http::Error as NestError;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 /// Constants for date encoding
 pub const BASE_YEAR: i32 = 1970;
@@ -22,7 +25,7 @@ impl TryFrom<i64> for EncodedDate {
 		if value >= 0 && value <= u16::MAX as i64 {
 			Ok(EncodedDate { value: value as u16 })
 		} else {
-			Err(Self::Error::InvalidEncodedDate("Encoded date is out of range".to_string()))
+			Err(Error::NestError(NestError::InvalidEncodedDate("Encoded date is out of range.".to_string())))
 		}
 	}
 }
@@ -33,6 +36,41 @@ pub struct CreateDate {
 	pub year: i32,
 	pub month: u32,
 	pub day: u32,
+}
+
+impl FromStr for CreateDate {
+	type Err = Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let re = Regex::new(r"NFL (\d{4}).*Date: \w+, (\w+) (\d{1,2})(?:st|nd|rd|th)?").unwrap();
+
+		if let Some(captures) = re.captures(s) {
+			let year: i32 = captures[1].parse()?;
+
+			let month_str = &captures[2];
+			let month = match month_str.to_lowercase().as_str() {
+				"january" => 1,
+				"february" => 2,
+				"march" => 3,
+				"april" => 4,
+				"may" => 5,
+				"june" => 6,
+				"july" => 7,
+				"august" => 8,
+				"september" => 9,
+				"october" => 10,
+				"november" => 11,
+				"december" => 12,
+				_ => return Err(Error::NestError(NestError::InvalidEncodedDate("Invalid month name".to_string()))),
+			};
+
+			let day: u32 = captures[3].parse()?;
+
+			Ok(CreateDate { year, month, day })
+		} else {
+			Err(Error::NestError(NestError::InvalidEncodedDate("Failed to parse the date".to_string())))
+		}
+	}
 }
 
 impl EncodedDate {
@@ -120,5 +158,30 @@ mod tests {
 		// Invalid date (out of range)
 		let invalid_date = CreateDate { year: 1969, month: 1, day: 1 };
 		assert!(!invalid_date.is_valid());
+	}
+
+	#[test]
+	fn test_parse_valid_dates() {
+		let test_cases = vec![
+			(
+				"NFL 2022 - WEEK 13 Schedule | NFL.com Date: Thursday, December 1st",
+				CreateDate { year: 2022, month: 12, day: 1 },
+			),
+			(
+				"NFL 2023 - WEEK 1 Schedule | NFL.com Date: Sunday, September 10th",
+				CreateDate { year: 2023, month: 9, day: 10 },
+			),
+			(
+				"NFL 2024 - WEEK 5 Schedule  NFL.com Date: Monday, October 2nd",
+				CreateDate { year: 2024, month: 10, day: 2 },
+			),
+		];
+
+		for (input, expected) in test_cases {
+			let parsed_date = CreateDate::from_str(input).expect("Should parse successfully");
+			assert_eq!(parsed_date.year, expected.year);
+			assert_eq!(parsed_date.month, expected.month);
+			assert_eq!(parsed_date.day, expected.day);
+		}
 	}
 }
