@@ -18,10 +18,10 @@ pub enum WeatherCondition {
 	Foggy,
 }
 
-impl TryFrom<u32> for WeatherCondition {
+impl TryFrom<i64> for WeatherCondition {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(WeatherCondition::Sunny),
 			1 => Ok(WeatherCondition::Cloudy),
@@ -53,10 +53,10 @@ pub enum DayNight {
 	Night,
 }
 
-impl TryFrom<u32> for DayNight {
+impl TryFrom<i64> for DayNight {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(DayNight::Day),
 			1 => Ok(DayNight::Night),
@@ -123,10 +123,10 @@ impl FromStr for GameStatus {
 	}
 }
 
-impl TryFrom<u32> for GameStatus {
+impl TryFrom<i64> for GameStatus {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(GameStatus::Scheduled),
 			1 => Ok(GameStatus::InProgress),
@@ -272,12 +272,8 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 
 		Ok(Self {
 			id: weather.id as u32,
-			condition: u32::try_from(weather.condition)
-				.map_err(|e| Error::NestError(NestError::from(e)))
-				.and_then(|v| WeatherCondition::try_from(v))?,
-			day_night: u32::try_from(weather.day_night)
-				.map_err(|e| Error::NestError(NestError::from(e)))
-				.and_then(|v| DayNight::try_from(v))?,
+			condition: WeatherCondition::try_from(weather.condition)?,
+			day_night: DayNight::try_from(weather.day_night)?,
 			temperature: weather.temperature as f32,
 			wind_speed: weather.wind_speed.map(|speed| speed as f32),
 		})
@@ -381,8 +377,8 @@ impl CrudOperations<Team, CreateTeam> for Team {
 
 		Ok(Self {
 			id,
-			name: ModelId::new(name_id),
-			stadium: ModelId::new(stadium_id),
+			name: ModelId::<TeamNameMeta>::new(name_id),
+			stadium: ModelId::<Stadium>::new(stadium_id),
 		})
 	}
 
@@ -505,12 +501,10 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		Ok(NFLGame {
 			id: nfl_game.id as u32,
 			date: encoded_date,
-			home_team: ModelId::new(home_team),
-			away_team: ModelId::new(away_team),
-			game_status: u32::try_from(nfl_game.game_status_id)
-				.map_err(|e| Error::NestError(NestError::from(e)))
-				.and_then(|v| GameStatus::try_from(v))?,
-			weather: ModelId::new(weather),
+			home_team: ModelId::<Team>::new(home_team),
+			away_team: ModelId::<Team>::new(away_team),
+			game_status: GameStatus::try_from(nfl_game.game_status_id)?,
+			weather: ModelId::<Weather>::new(weather),
 		})
 	}
 
