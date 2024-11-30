@@ -91,7 +91,7 @@ pub struct Team {
 	pub stadium: ModelId<Stadium>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum GameStatus {
 	Scheduled,
 	InProgress,
@@ -507,7 +507,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		let home_team = u32::try_from(nfl_game.home_team_id).map_err(NestError::from)?;
 		let away_team = u32::try_from(nfl_game.away_team_id).map_err(NestError::from)?;
 		let weather = u32::try_from(nfl_game.weather_id).map_err(NestError::from)?;
-		let encoded_date = EncodedDate::try_from(nfl_game.encoded_date).map_err(NestError::from)?;
+		let encoded_date = EncodedDate::try_from(nfl_game.encoded_date)?;
 
 		Ok(NFLGame {
 			id: nfl_game.id as u32,
