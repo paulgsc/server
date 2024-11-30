@@ -3,7 +3,7 @@ use nest::http::Error as NestError;
 use std::convert::TryFrom;
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TeamAbbreviation {
 	ARI, // Arizona Cardinals
 	ATL, // Atlanta Falcons
@@ -39,7 +39,7 @@ pub enum TeamAbbreviation {
 	WAS, // Washington Commanders
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TeamName {
 	ArizonaCardinals,
 	AtlantaFalcons,
@@ -415,6 +415,56 @@ impl TryFrom<u32> for TeamNameMeta {
 				abbreviation: TeamAbbreviation::WAS,
 			}),
 			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("teams", "Invalid Team ID")]))),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_team_name_meta_parsing() {
+		let test_cases = vec![
+			(
+				"cardinals",
+				TeamNameMeta {
+					id: 1,
+					name: TeamName::ArizonaCardinals,
+					abbreviation: TeamAbbreviation::ARI,
+				},
+			),
+			(
+				"atlanta",
+				TeamNameMeta {
+					id: 2,
+					name: TeamName::AtlantaFalcons,
+					abbreviation: TeamAbbreviation::ATL,
+				},
+			),
+			(
+				"ravens",
+				TeamNameMeta {
+					id: 3,
+					name: TeamName::BaltimoreRavens,
+					abbreviation: TeamAbbreviation::BAL,
+				},
+			),
+			(
+				"bills",
+				TeamNameMeta {
+					id: 4,
+					name: TeamName::BuffaloBills,
+					abbreviation: TeamAbbreviation::BUF,
+				},
+			),
+		];
+
+		for (input, expected) in test_cases {
+			let parsed = TeamNameMeta::from_str(input).expect("Parsing failed");
+			assert_eq!(parsed.id, expected.id, "IDs do not match for input: {}", input);
+			assert_eq!(parsed.name, expected.name, "Names do not match for input: {}", input);
+			assert_eq!(parsed.abbreviation, expected.abbreviation, "Abbreviations do not match for input: {}", input);
 		}
 	}
 }
