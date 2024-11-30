@@ -86,7 +86,6 @@ pub struct Weather {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Team {
 	pub id: u32,
-	pub abbreviation: ModelId<TeamNameMeta>,
 	pub name: ModelId<TeamNameMeta>,
 	pub stadium: ModelId<Stadium>,
 }
@@ -328,7 +327,6 @@ impl Identifiable for Team {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTeam {
-	pub abbreviation: ModelId<TeamNameMeta>,
 	pub name: ModelId<TeamNameMeta>,
 	pub mascot: ModelId<TeamNameMeta>,
 	pub stadium: ModelId<Stadium>,
@@ -342,11 +340,10 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	type UpdateResult = ();
 
 	async fn create(pool: &SqlitePool, item: CreateTeam) -> Result<Self::CreateResult, Error> {
-		let abbrev = item.abbreviation.value();
 		let name = item.name.value();
 		let stadium = item.stadium.value();
 
-		let result = sqlx::query!("INSERT INTO teams (abbreviation_id, name_id, stadium_id) VALUES (?, ?, ?)", abbrev, name, stadium)
+		let result = sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name, stadium)
 			.execute(pool)
 			.await
 			.map_err(NestError::from)?;
@@ -358,11 +355,10 @@ impl CrudOperations<Team, CreateTeam> for Team {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			let abbrev = item.abbreviation.value();
 			let name = item.name.value();
 			let stadium = item.stadium.value();
 
-			sqlx::query!("INSERT INTO teams (abbreviation_id, name_id, stadium_id) VALUES (?, ?, ?)", abbrev, name, stadium)
+			sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name, stadium)
 				.execute(&mut *tx)
 				.await
 				.map_err(NestError::from)?;
@@ -373,20 +369,18 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
-		let team = sqlx::query_as!(TeamRow, "SELECT id, abbreviation_id, name_id, stadium_id FROM teams WHERE id = ?", id)
+		let team = sqlx::query_as!(TeamRow, "SELECT id, name_id, stadium_id FROM teams WHERE id = ?", id)
 			.fetch_optional(pool)
 			.await
 			.map_err(NestError::from)?
 			.ok_or(Error::NestError(NestError::NotFound))?;
 
-		let abbrev_id = u32::try_from(team.abbreviation_id).map_err(NestError::from)?;
 		let name_id = u32::try_from(team.name_id).map_err(NestError::from)?;
 		let stadium_id = u32::try_from(team.stadium_id).map_err(NestError::from)?;
 		let id = u32::try_from(team.id).map_err(NestError::from)?;
 
 		Ok(Self {
 			id,
-			abbreviation: ModelId::new(abbrev_id),
 			name: ModelId::new(name_id),
 			stadium: ModelId::new(stadium_id),
 		})
@@ -395,11 +389,10 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	async fn update(pool: &SqlitePool, id: i64, item: CreateTeam) -> Result<Self::UpdateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
-		let abbrev = item.abbreviation.value();
 		let name = item.name.value();
 		let stadium = item.stadium.value();
 
-		let result = sqlx::query!("UPDATE teams SET abbreviation_id = ?, name_id = ?, stadium_id = ? WHERE id = ?", abbrev, name, stadium, id,)
+		let result = sqlx::query!("UPDATE teams SET name_id = ?, stadium_id = ? WHERE id = ?", name, stadium, id,)
 			.execute(&mut tx)
 			.await
 			.map_err(NestError::from)?;
@@ -573,7 +566,6 @@ struct WeatherRow {
 #[derive(Debug)]
 struct TeamRow {
 	id: i64,
-	abbreviation_id: i64,
 	name_id: i64,
 	stadium_id: i64,
 }
