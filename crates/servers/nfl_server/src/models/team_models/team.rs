@@ -1,6 +1,7 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use nest::http::Error as NestError;
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub enum TeamAbbreviation {
@@ -109,6 +110,45 @@ pub enum TeamId {
 	WAS = 32,
 }
 
+impl From<TeamId> for u32 {
+	fn from(team_id: TeamId) -> u32 {
+		match team_id {
+			TeamId::ARI => 1,
+			TeamId::ATL => 2,
+			TeamId::BAL => 3,
+			TeamId::BUF => 4,
+			TeamId::CAR => 5,
+			TeamId::CHI => 6,
+			TeamId::CIN => 7,
+			TeamId::CLE => 8,
+			TeamId::DAL => 9,
+			TeamId::DEN => 10,
+			TeamId::DET => 11,
+			TeamId::GB => 12,
+			TeamId::HOU => 13,
+			TeamId::IND => 14,
+			TeamId::JAX => 15,
+			TeamId::KC => 16,
+			TeamId::MIA => 17,
+			TeamId::MIN => 18,
+			TeamId::NE => 19,
+			TeamId::NO => 20,
+			TeamId::NYG => 21,
+			TeamId::NYJ => 22,
+			TeamId::PHI => 23,
+			TeamId::PIT => 24,
+			TeamId::LAC => 25,
+			TeamId::SF => 26,
+			TeamId::SEA => 27,
+			TeamId::LV => 28,
+			TeamId::LAR => 29,
+			TeamId::TB => 30,
+			TeamId::TEN => 31,
+			TeamId::WAS => 32,
+		}
+	}
+}
+
 impl TryFrom<u32> for TeamId {
 	type Error = &'static str;
 
@@ -151,11 +191,62 @@ impl TryFrom<u32> for TeamId {
 	}
 }
 
+impl FromStr for TeamId {
+	type Err = Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s.to_lowercase().as_str() {
+			"cardinals" | "arizona" | "ari" => Ok(TeamId::ARI),
+			"falcons" | "atlanta" | "atl" => Ok(TeamId::ATL),
+			"ravens" | "baltimore" | "bal" => Ok(TeamId::BAL),
+			"bills" | "buffalo" | "buf" => Ok(TeamId::BUF),
+			"panthers" | "carolina" | "car" => Ok(TeamId::CAR),
+			"bears" | "chicago" | "chi" => Ok(TeamId::CHI),
+			"bengals" | "cincinnati" | "cin" => Ok(TeamId::CIN),
+			"browns" | "cleveland" | "cle" => Ok(TeamId::CLE),
+			"cowboys" | "dallas" | "dal" => Ok(TeamId::DAL),
+			"broncos" | "denver" | "den" => Ok(TeamId::DEN),
+			"lions" | "detroit" | "det" => Ok(TeamId::DET),
+			"packers" | "green bay" | "gb" => Ok(TeamId::GB),
+			"texans" | "houston" | "hou" => Ok(TeamId::HOU),
+			"colts" | "indianapolis" | "ind" => Ok(TeamId::IND),
+			"jaguars" | "jacksonville" | "jax" => Ok(TeamId::JAX),
+			"chiefs" | "kansas city" | "kc" => Ok(TeamId::KC),
+			"dolphins" | "miami" | "mia" => Ok(TeamId::MIA),
+			"vikings" | "minnesota" | "min" => Ok(TeamId::MIN),
+			"patriots" | "new england" | "ne" => Ok(TeamId::NE),
+			"saints" | "new orleans" | "no" => Ok(TeamId::NO),
+			"giants" | "new york giants" | "nyg" => Ok(TeamId::NYG),
+			"jets" | "new york jets" | "nyj" => Ok(TeamId::NYJ),
+			"eagles" | "philadelphia" | "phi" => Ok(TeamId::PHI),
+			"steelers" | "pittsburgh" | "pit" => Ok(TeamId::PIT),
+			"chargers" | "los angeles chargers" | "lac" => Ok(TeamId::LAC),
+			"49ers" | "san francisco" | "sf" => Ok(TeamId::SF),
+			"seahawks" | "seattle" | "sea" => Ok(TeamId::SEA),
+			"raiders" | "las vegas" | "lv" => Ok(TeamId::LV),
+			"rams" | "los angeles rams" | "lar" => Ok(TeamId::LAR),
+			"buccaneers" | "tampa bay" | "tb" => Ok(TeamId::TB),
+			"titans" | "tennessee" | "ten" => Ok(TeamId::TEN),
+			"commanders" | "washington" | "was" => Ok(TeamId::WAS),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("team id", "Invalid Team ID")]))),
+		}
+	}
+}
+
 #[derive(Debug)]
 pub struct TeamNameMeta {
 	pub id: u32,
 	pub name: TeamName,
 	pub abbreviation: TeamAbbreviation,
+}
+
+impl FromStr for TeamNameMeta {
+	type Err = Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let team_id = TeamId::from_str(s)?;
+		Self::try_from(u32::from(team_id))
+	}
 }
 
 impl TryFrom<u32> for TeamNameMeta {
