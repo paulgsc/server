@@ -1,3 +1,5 @@
+use crate::common::nfl_server_error::NflServerError as Error;
+use nest::http::Error as NestError;
 use std::convert::TryFrom;
 
 #[derive(Debug)]
@@ -156,174 +158,172 @@ pub struct TeamNameMeta {
 	pub abbreviation: TeamAbbreviation,
 }
 
-impl TeamNameMeta {
-	pub fn new(id: u32) -> Option<Self> {
-		if !(1..32).contains(&id) {
-			return None;
-		}
+impl TryFrom<u32> for TeamNameMeta {
+	type Error = Error;
 
-		match TeamId::try_from(id).ok()? {
-			TeamId::ARI => Some(Self {
+	fn try_from(id: u32) -> Result<Self, Error> {
+		match TeamId::try_from(id) {
+			Ok(TeamId::ARI) => Ok(Self {
 				id,
 				name: TeamName::ArizonaCardinals,
 				abbreviation: TeamAbbreviation::ARI,
 			}),
-			TeamId::ATL => Some(Self {
+			Ok(TeamId::ATL) => Ok(Self {
 				id,
 				name: TeamName::AtlantaFalcons,
 				abbreviation: TeamAbbreviation::ATL,
 			}),
-			TeamId::BAL => Some(Self {
+			Ok(TeamId::BAL) => Ok(Self {
 				id,
 				name: TeamName::BaltimoreRavens,
 				abbreviation: TeamAbbreviation::BAL,
 			}),
-			TeamId::BUF => Some(Self {
+			Ok(TeamId::BUF) => Ok(Self {
 				id,
 				name: TeamName::BuffaloBills,
 				abbreviation: TeamAbbreviation::BUF,
 			}),
-			TeamId::CAR => Some(Self {
+			Ok(TeamId::CAR) => Ok(Self {
 				id,
 				name: TeamName::CarolinaPanthers,
 				abbreviation: TeamAbbreviation::CAR,
 			}),
-			TeamId::CHI => Some(Self {
+			Ok(TeamId::CHI) => Ok(Self {
 				id,
 				name: TeamName::ChicagoBears,
 				abbreviation: TeamAbbreviation::CHI,
 			}),
-			TeamId::CIN => Some(Self {
+			Ok(TeamId::CIN) => Ok(Self {
 				id,
 				name: TeamName::CincinnatiBengals,
 				abbreviation: TeamAbbreviation::CIN,
 			}),
-			TeamId::CLE => Some(Self {
+			Ok(TeamId::CLE) => Ok(Self {
 				id,
 				name: TeamName::ClevelandBrowns,
 				abbreviation: TeamAbbreviation::CLE,
 			}),
-			TeamId::DAL => Some(Self {
+			Ok(TeamId::DAL) => Ok(Self {
 				id,
 				name: TeamName::DallasCowboys,
 				abbreviation: TeamAbbreviation::DAL,
 			}),
-			TeamId::DEN => Some(Self {
+			Ok(TeamId::DEN) => Ok(Self {
 				id,
 				name: TeamName::DenverBroncos,
 				abbreviation: TeamAbbreviation::DEN,
 			}),
-			TeamId::DET => Some(Self {
+			Ok(TeamId::DET) => Ok(Self {
 				id,
 				name: TeamName::DetroitLions,
 				abbreviation: TeamAbbreviation::DET,
 			}),
-			TeamId::GB => Some(Self {
+			Ok(TeamId::GB) => Ok(Self {
 				id,
 				name: TeamName::GreenBayPackers,
 				abbreviation: TeamAbbreviation::GB,
 			}),
-			TeamId::HOU => Some(Self {
+			Ok(TeamId::HOU) => Ok(Self {
 				id,
 				name: TeamName::HoustonTexans,
 				abbreviation: TeamAbbreviation::HOU,
 			}),
-			TeamId::IND => Some(Self {
+			Ok(TeamId::IND) => Ok(Self {
 				id,
 				name: TeamName::IndianapolisColts,
 				abbreviation: TeamAbbreviation::IND,
 			}),
-			TeamId::JAX => Some(Self {
+			Ok(TeamId::JAX) => Ok(Self {
 				id,
 				name: TeamName::JacksonvilleJaguars,
 				abbreviation: TeamAbbreviation::JAC,
 			}),
-			TeamId::KC => Some(Self {
+			Ok(TeamId::KC) => Ok(Self {
 				id,
 				name: TeamName::KansasCityChiefs,
 				abbreviation: TeamAbbreviation::KC,
 			}),
-			TeamId::MIA => Some(Self {
+			Ok(TeamId::MIA) => Ok(Self {
 				id,
 				name: TeamName::MiamiDolphins,
 				abbreviation: TeamAbbreviation::MIA,
 			}),
-			TeamId::MIN => Some(Self {
+			Ok(TeamId::MIN) => Ok(Self {
 				id,
 				name: TeamName::MinnesotaVikings,
 				abbreviation: TeamAbbreviation::MIN,
 			}),
-			TeamId::NE => Some(Self {
+			Ok(TeamId::NE) => Ok(Self {
 				id,
 				name: TeamName::NewEnglandPatriots,
 				abbreviation: TeamAbbreviation::NE,
 			}),
-			TeamId::NO => Some(Self {
+			Ok(TeamId::NO) => Ok(Self {
 				id,
 				name: TeamName::NewOrleansSaints,
 				abbreviation: TeamAbbreviation::NO,
 			}),
-			TeamId::NYG => Some(Self {
+			Ok(TeamId::NYG) => Ok(Self {
 				id,
 				name: TeamName::NewYorkGiants,
 				abbreviation: TeamAbbreviation::NYG,
 			}),
-			TeamId::NYJ => Some(Self {
+			Ok(TeamId::NYJ) => Ok(Self {
 				id,
 				name: TeamName::NewYorkJets,
 				abbreviation: TeamAbbreviation::NYJ,
 			}),
-			TeamId::PHI => Some(Self {
+			Ok(TeamId::PHI) => Ok(Self {
 				id,
 				name: TeamName::PhiladelphiaEagles,
 				abbreviation: TeamAbbreviation::PHI,
 			}),
-			TeamId::PIT => Some(Self {
+			Ok(TeamId::PIT) => Ok(Self {
 				id,
 				name: TeamName::PittsburghSteelers,
 				abbreviation: TeamAbbreviation::PIT,
 			}),
-			TeamId::LAC => Some(Self {
+			Ok(TeamId::LAC) => Ok(Self {
 				id,
 				name: TeamName::LosAngelesChargers,
 				abbreviation: TeamAbbreviation::LAC,
 			}),
-			TeamId::SF => Some(Self {
+			Ok(TeamId::SF) => Ok(Self {
 				id,
 				name: TeamName::SanFranciscoFortyNiners,
 				abbreviation: TeamAbbreviation::SF,
 			}),
-			TeamId::SEA => Some(Self {
+			Ok(TeamId::SEA) => Ok(Self {
 				id,
 				name: TeamName::SeattleSeahawks,
 				abbreviation: TeamAbbreviation::SEA,
 			}),
-			TeamId::LV => Some(Self {
+			Ok(TeamId::LV) => Ok(Self {
 				id,
 				name: TeamName::LasVegasRaiders,
 				abbreviation: TeamAbbreviation::LV,
 			}),
-
-			TeamId::LAR => Some(Self {
+			Ok(TeamId::LAR) => Ok(Self {
 				id,
 				name: TeamName::LosAngelesRams,
 				abbreviation: TeamAbbreviation::LAR,
 			}),
-			TeamId::TB => Some(Self {
+			Ok(TeamId::TB) => Ok(Self {
 				id,
 				name: TeamName::TampaBayBuccaneers,
 				abbreviation: TeamAbbreviation::TB,
 			}),
-			TeamId::TEN => Some(Self {
+			Ok(TeamId::TEN) => Ok(Self {
 				id,
 				name: TeamName::TennesseeTitans,
 				abbreviation: TeamAbbreviation::TEN,
 			}),
-			TeamId::WAS => Some(Self {
+			Ok(TeamId::WAS) => Ok(Self {
 				id,
 				name: TeamName::WashingtonCommanders,
 				abbreviation: TeamAbbreviation::WAS,
 			}),
+			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("teams", "Invalid Team ID")]))),
 		}
 	}
 }
