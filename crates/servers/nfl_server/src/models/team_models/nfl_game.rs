@@ -324,7 +324,6 @@ impl Identifiable for Team {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTeam {
 	pub name: ModelId<TeamNameMeta>,
-	pub mascot: ModelId<TeamNameMeta>,
 	pub stadium: ModelId<Stadium>,
 }
 
@@ -336,6 +335,8 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	type UpdateResult = ();
 
 	async fn create(pool: &SqlitePool, item: CreateTeam) -> Result<Self::CreateResult, Error> {
+		// recieve a str then parse to make teamname and stadium
+		//
 		let name = item.name.value();
 		let stadium = item.stadium.value();
 
