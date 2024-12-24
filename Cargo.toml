@@ -18,6 +18,9 @@ pedantic = { level = "deny", priority = 2 }
 nursery = { level = "deny", priority = 2 }
 cargo = { level = "deny", priority = 2 }
 
+[profile.release]
+lto = true
+
 [workspace.package]
 version = "0.0.0"
 authors = ["pgdev"]
