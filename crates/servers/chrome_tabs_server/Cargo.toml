@@ -16,7 +16,7 @@ dotenv = { workspace = true }
 futures = "0.3.31"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { version = "0.6", features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
 tokio = { workspace = true, features = ["full"]  }
 tower-http = { workspace = true }
 
