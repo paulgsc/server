@@ -1378,6 +1378,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sqlite_macros",
  "sqlx",
  "thiserror",
  "tokio",
@@ -3803,6 +3804,15 @@ checksum = "7bba3a93db0cc4f7bdece8bb09e77e2e785c20bfebf79eb8340ed80708048790"
 dependencies = [
  "nom",
  "unicode_categories",
+]
+
+[[package]]
+name = "sqlite_macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
