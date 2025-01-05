@@ -36,6 +36,7 @@
                 buildInputs = with pkgs; [
                     rustToolchain
 
+                    # Build essentials
                     pkg-config
                     openssl
                     openssl.dev
@@ -43,15 +44,17 @@
                     # gcc
                     # libiconv
 
-
+                    # Dev Tools
                     rust-analyzer
                     cargo-audit
                     cargo-edit
                     cargo-watch
                     cargo-expand
                     cargo-flamegraph
+                    sqlx-cli
                     # cargo-tarpaulin
 
+                    # DB
                     sqlite
                     # postgresql
 
