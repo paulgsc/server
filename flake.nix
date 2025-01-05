@@ -2,7 +2,7 @@
 {
     description = "My first Rust nixos dev env";
 
-    input = {
+    inputs = {
         nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
         rust-overlay = {
             url = "github:oxalica/rust-overlay";
