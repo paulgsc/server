@@ -14,13 +14,13 @@
     outputs = { self, rust-overlay, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
         let
-            overlays = [ import rust-overlay ];
+            overlays = [ rust-overlay.overlays.default ];
             pkgs = import nixpkgs {
                 inherit system overlays;
             };
 
             rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-                extensioin = [
+                extensions = [
                     "rust-src"
                     "rust-analyzer"
                     "clippy"
