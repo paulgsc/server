@@ -17,6 +17,7 @@ enum ConfigFile {
 	PackageJson,
 	RollupConfig,
 	EslintConfig,
+	EslintBuildConfig,
 }
 
 impl ConfigFile {
@@ -26,6 +27,7 @@ impl ConfigFile {
 			Self::PackageJson => "package.json",
 			Self::RollupConfig => "rollup.config.js",
 			Self::EslintConfig => "eslint.config.js",
+			Self::EslintBuildConfig => "eslint.build.config.js",
 		}
 	}
 }
