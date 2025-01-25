@@ -24,7 +24,7 @@ pub trait MigrationHandler: Send + Sync + 'static {
 }
 
 pub trait MultiDbHandler: Send + Sync + 'static {
-	fn create_routes(&self, db_name: &str, pool: SqlitePool) -> Router;
+	fn create_routes(&self, db_name: &str, pool: Option<SqlitePool>) -> Router;
 }
 
 #[derive(Clone)]
@@ -32,7 +32,7 @@ pub struct ApiContext {
 	#[allow(dead_code)]
 	config: Arc<Config>,
 	#[allow(dead_code)]
-	dbs: HashMap<String, SqlitePool>,
+	dbs: Option<HashMap<String, SqlitePool>>,
 }
 
 pub trait Run<M: MigrationHandler> {
@@ -45,23 +45,29 @@ pub trait Run<M: MigrationHandler> {
 
 pub struct ApiBuilder<M: MigrationHandler> {
 	config: Config,
-	dbs: HashMap<String, SqlitePool>,
+	dbs: Option<HashMap<String, SqlitePool>>,
 	handlers: Vec<Box<dyn MultiDbHandler>>,
-	migration_handler: M,
+	migration_handler: Option<M>,
 }
 
 impl<M: MigrationHandler> ApiBuilder<M> {
-	pub fn new(config: Config, migration_handler: M) -> Self {
+	pub fn new(config: Config, migration_handler: Option<M>) -> Self {
 		Self {
 			config,
-			dbs: HashMap::new(),
+			dbs: None,
 			handlers: Vec::new(),
 			migration_handler,
 		}
 	}
 
 	pub fn add_db(&mut self, name: String, pool: SqlitePool) -> &mut Self {
-		self.dbs.insert(name, pool);
+		if let Some(dbs) = &mut self.dbs {
+			dbs.insert(name, pool);
+		} else {
+			let mut new_dbs = HashMap::new();
+			new_dbs.insert(name, pool);
+			self.dbs = Some(new_dbs);
+		}
 		self
 	}
 
@@ -76,9 +82,19 @@ impl<M: MigrationHandler> ApiBuilder<M> {
 			dbs: self.dbs.clone(),
 		};
 		let mut app = Router::new();
-		for (db_name, db_pool) in &self.dbs {
-			for handler in &self.handlers {
-				app = app.merge(handler.create_routes(db_name, db_pool.clone()));
+
+		match &self.dbs {
+			Some(dbs) => {
+				for (db_name, db_pool) in dbs {
+					for handler in &self.handlers {
+						app = app.merge(handler.create_routes(db_name, Some(db_pool.clone())));
+					}
+				}
+			}
+			None => {
+				for handler in &self.handlers {
+					app = app.merge(handler.create_routes("default", None));
+				}
 			}
 		}
 
@@ -98,7 +114,7 @@ impl<M: MigrationHandler> Run<M> for ApiBuilder<M> {
 		I: IntoIterator<Item = Box<dyn MultiDbHandler + Send>> + Send + 'static,
 	{
 		Box::pin(async move {
-			let mut api_builder = Self::new(config.clone(), migration_handler);
+			let mut api_builder = Self::new(config.clone(), Some(migration_handler));
 
 			for (i, db_url) in config.database_urls.split(',').enumerate() {
 				let db_name = format!("db_{}", i + 1);
@@ -106,10 +122,12 @@ impl<M: MigrationHandler> Run<M> for ApiBuilder<M> {
 					.max_connections(5)
 					.connect(db_url)
 					.await
-					.context(format!("could not connect to {}", db_url))?;
+					.context(format!("could not connect to {db_url}"))?;
 
 				// Run migrations using the passed migration handler
-				api_builder.migration_handler.run_migrations(&db_pool).await?;
+				if let Some(migration_handler) = &api_builder.migration_handler {
+					migration_handler.run_migrations(&db_pool).await?;
+				}
 
 				api_builder.add_db(db_name, db_pool);
 			}
@@ -124,6 +142,7 @@ impl<M: MigrationHandler> Run<M> for ApiBuilder<M> {
 	}
 }
 
+#[must_use]
 pub fn init_tracing(config: &Config) -> Option<()> {
 	use std::str::FromStr;
 	use tracing_subscriber::layer::SubscriberExt;
