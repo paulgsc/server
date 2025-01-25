@@ -11,9 +11,10 @@ use tower_http::cors::{Any, CorsLayer};
 pub struct PlayTypeHandlers;
 
 impl MultiDbHandler for PlayTypeHandlers {
-	fn create_routes(&self, db_name: &str, pool: SqlitePool) -> Router {
+	fn create_routes(&self, db_name: &str, pool: Option<SqlitePool>) -> Router {
 		println!("Routes set for playtype! With db_name: {}", &db_name);
 		let cors = CorsLayer::new().allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE]).allow_origin(Any);
+		let pool = pool.unwrap();
 
 		Router::new()
 			.route(&format!("/api/{}/play_type/update", db_name), put(routes::update))
