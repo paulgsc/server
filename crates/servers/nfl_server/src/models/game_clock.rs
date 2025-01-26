@@ -12,32 +12,20 @@ pub struct GameClock {
 	pub seconds: i64,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateGameClock {
-	pub minutes: i64,
-	pub seconds: i64,
-}
-
 impl GameClock {
 	pub fn is_valid(&self) -> bool {
 		(0..=15).contains(&self.minutes) && (0..=59).contains(&self.seconds)
 	}
 }
 
-impl CreateGameClock {
-	pub fn is_valid(&self) -> bool {
-		(0..=15).contains(&self.minutes) && (0..=59).contains(&self.seconds)
-	}
-}
-
 #[async_trait]
-impl CrudOperations<GameClock, CreateGameClock> for GameClock {
+impl CrudOperations<GameClock, GameClock> for GameClock {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateGameClock) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: GameClock) -> Result<Self::CreateResult, Error> {
 		let count = sqlx::query!("SELECT COUNT(*) as count FROM game_clock")
 			.fetch_one(pool)
 			.await
@@ -56,7 +44,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateGameClock]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[GameClock]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		let count: i32 = sqlx::query_scalar!("SELECT COUNT(*) FROM game_clock").fetch_one(&mut *tx).await.map_err(NestError::from)?;
@@ -87,7 +75,7 @@ impl CrudOperations<GameClock, CreateGameClock> for GameClock {
 		Ok(game_clock)
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateGameClock) -> Result<Self::UpdateResult, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: GameClock) -> Result<Self::UpdateResult, Error> {
 		let result = sqlx::query!("UPDATE game_clock SET minutes = ?, seconds = ? WHERE id = ?", item.minutes, item.seconds, id)
 			.execute(pool)
 			.await

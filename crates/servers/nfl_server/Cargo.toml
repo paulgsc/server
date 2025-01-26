@@ -9,6 +9,7 @@ edition.workspace = true
 
 [dependencies]
 nfl_play_parser = { workspace = true }
+sqlite_macros = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

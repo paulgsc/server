@@ -5,15 +5,21 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModelId<T>(pub u32, pub std::marker::PhantomData<T>);
+pub struct ModelId<T>(pub i64, pub std::marker::PhantomData<T>);
 
 impl<T> ModelId<T> {
-	pub const fn new(id: u32) -> Self {
+	pub const fn new(id: i64) -> Self {
 		Self(id, std::marker::PhantomData)
 	}
 
-	pub const fn value(&self) -> u32 {
+	pub const fn value(&self) -> i64 {
 		self.0
+	}
+}
+
+impl<T> From<i64> for ModelId<T> {
+	fn from(id: i64) -> Self {
+		Self::new(id)
 	}
 }
 
@@ -25,7 +31,7 @@ pub trait Identifiable {
 		ModelId::new(self.id())
 	}
 
-	fn id(&self) -> u32;
+	fn id(&self) -> i64;
 }
 
 #[async_trait]

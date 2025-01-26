@@ -3,7 +3,9 @@ use chrono::{Datelike, NaiveDate};
 use nest::http::Error as NestError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sqlx::{error::BoxDynError, sqlite::SqliteTypeInfo, Decode, Encode, Type};
 use std::convert::TryFrom;
+use std::fmt;
 use std::str::FromStr;
 
 /// Constants for date encoding
@@ -18,14 +20,48 @@ pub struct EncodedDate {
 	pub value: u16,
 }
 
-impl TryFrom<i64> for EncodedDate {
-	type Error = Error;
+impl fmt::Display for EncodedDate {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.value)
+	}
+}
 
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for EncodedDate {
+	fn from(value: i64) -> Self {
 		if value >= 0 && value <= u16::MAX as i64 {
-			Ok(EncodedDate { value: value as u16 })
+			Self { value: value as u16 }
 		} else {
-			Err(Error::NestError(NestError::InvalidEncodedDate("Encoded date is out of range.".to_string())))
+			panic!("Invalid EncodedDate: {value}");
+		}
+	}
+}
+
+impl Type<sqlx::Sqlite> for EncodedDate {
+	fn type_info() -> SqliteTypeInfo {
+		<i64 as Type<sqlx::Sqlite>>::type_info()
+	}
+
+	fn compatible(ty: &SqliteTypeInfo) -> bool {
+		<i64 as Type<sqlx::Sqlite>>::compatible(ty)
+	}
+}
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for EncodedDate {
+	fn encode_by_ref(&self, args: &mut <sqlx::Sqlite as sqlx::database::HasArguments<'q>>::ArgumentBuffer) -> sqlx::encode::IsNull {
+		let encoded_value = self.value as i64;
+		<i64 as Encode<sqlx::Sqlite>>::encode_by_ref(&encoded_value, args)
+	}
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for EncodedDate {
+	fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
+		let decoded_value = <i64 as Decode<sqlx::Sqlite>>::decode(value)?;
+		if decoded_value >= 0 && decoded_value <= u16::MAX as i64 {
+			Ok(Self { value: decoded_value as u16 })
+		} else {
+			Err(Box::new(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				format!("Invalid EncodedDate value: {decoded_value}"),
+			)))
 		}
 	}
 }
