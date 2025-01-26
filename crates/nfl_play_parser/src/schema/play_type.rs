@@ -107,6 +107,12 @@ impl FromStr for PlayType {
 	}
 }
 
+impl From<String> for PlayType {
+	fn from(s: String) -> Self {
+		Self::from_str(&s).unwrap()
+	}
+}
+
 impl fmt::Display for PlayType {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		let display_str = match self {
