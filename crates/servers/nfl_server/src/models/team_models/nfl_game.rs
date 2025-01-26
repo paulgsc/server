@@ -5,7 +5,9 @@ use crate::models::team_models::{Stadium, TeamNameMeta};
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlite_macros::SqliteType;
+use sqlx::{FromRow, SqlitePool};
+use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -34,8 +36,8 @@ impl TryFrom<i64> for WeatherCondition {
 	}
 }
 
-impl From<WeatherCondition> for u32 {
-	fn from(value: WeatherCondition) -> u32 {
+impl From<WeatherCondition> for i64 {
+	fn from(value: WeatherCondition) -> i64 {
 		match value {
 			WeatherCondition::Sunny => 0,
 			WeatherCondition::Cloudy => 1,
@@ -65,8 +67,8 @@ impl TryFrom<i64> for DayNight {
 	}
 }
 
-impl From<DayNight> for u32 {
-	fn from(value: DayNight) -> u32 {
+impl From<DayNight> for i64 {
+	fn from(value: DayNight) -> i64 {
 		match value {
 			DayNight::Day => 0,
 			DayNight::Night => 1,
@@ -76,7 +78,7 @@ impl From<DayNight> for u32 {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Weather {
-	pub id: u32,
+	pub id: i64,
 	pub condition: WeatherCondition,
 	pub day_night: DayNight,
 	pub temperature: f32,
@@ -85,12 +87,12 @@ pub struct Weather {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Team {
-	pub id: u32,
-	pub name: ModelId<TeamNameMeta>,
-	pub stadium: ModelId<Stadium>,
+	pub id: i64,
+	pub name_id: ModelId<TeamNameMeta>,
+	pub stadium_id: ModelId<Stadium>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, SqliteType)]
 pub enum GameStatus {
 	Scheduled,
 	InProgress,
@@ -98,6 +100,12 @@ pub enum GameStatus {
 	Postponed,
 	Cancelled,
 	TBD,
+}
+
+impl fmt::Display for GameStatus {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self)
+	}
 }
 
 impl FromStr for GameStatus {
@@ -123,25 +131,22 @@ impl FromStr for GameStatus {
 	}
 }
 
-impl TryFrom<i64> for GameStatus {
-	type Error = Error;
-
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for GameStatus {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(GameStatus::Scheduled),
-			1 => Ok(GameStatus::InProgress),
-			2 => Ok(GameStatus::Completed),
-			3 => Ok(GameStatus::Postponed),
-			4 => Ok(GameStatus::Cancelled),
-			5 => Ok(GameStatus::TBD),
-
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("GameStatus", "Invalid GameStatus")]))),
+			0 => GameStatus::Scheduled,
+			1 => GameStatus::InProgress,
+			2 => GameStatus::Completed,
+			3 => GameStatus::Postponed,
+			4 => GameStatus::Cancelled,
+			5 => GameStatus::TBD,
+			_ => panic!("Invalid i64 value for GameStatus: {}", value),
 		}
 	}
 }
 
-impl From<GameStatus> for u32 {
-	fn from(value: GameStatus) -> u32 {
+impl From<GameStatus> for i64 {
+	fn from(value: GameStatus) -> i64 {
 		match value {
 			GameStatus::Scheduled => 0,
 			GameStatus::InProgress => 1,
@@ -153,18 +158,18 @@ impl From<GameStatus> for u32 {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct NFLGame {
-	pub id: u32,
-	pub date: EncodedDate,
-	pub home_team: ModelId<Team>,
-	pub away_team: ModelId<Team>,
-	pub game_status: GameStatus,
-	pub weather: ModelId<Weather>,
+	pub id: i64,
+	pub encoded_date: EncodedDate,
+	pub home_team_id: ModelId<Team>,
+	pub away_team_id: ModelId<Team>,
+	pub game_status_id: GameStatus,
+	pub weather_id: ModelId<Weather>,
 }
 
 impl Identifiable for Weather {
-	fn id(&self) -> u32 {
+	fn id(&self) -> i64 {
 		self.id
 	}
 }
@@ -209,12 +214,12 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
-		let condition_u32 = u32::from(item.condition);
-		let day_night_u32 = u32::from(item.day_night);
+		let condition_i64 = i64::from(item.condition);
+		let day_night_i64 = i64::from(item.day_night);
 		let result = sqlx::query!(
 			"INSERT INTO weather (condition, day_night, temperature, wind_speed) VALUES (?, ?, ?, ?)",
-			condition_u32,
-			day_night_u32,
+			condition_i64,
+			day_night_i64,
 			item.temperature,
 			item.wind_speed
 		)
@@ -229,13 +234,13 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			let condition_u32 = u32::from(item.condition);
-			let day_night_u32 = u32::from(item.day_night);
+			let condition_i64 = i64::from(item.condition);
+			let day_night_i64 = i64::from(item.day_night);
 
 			sqlx::query!(
 				"INSERT INTO weather (condition, day_night, temperature, wind_speed) VALUES (?, ?, ?, ?)",
-				condition_u32,
-				day_night_u32,
+				condition_i64,
+				day_night_i64,
 				item.temperature,
 				item.wind_speed
 			)
@@ -271,7 +276,7 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
 		Ok(Self {
-			id: weather.id as u32,
+			id: weather.id as i64,
 			condition: WeatherCondition::try_from(weather.condition)?,
 			day_night: DayNight::try_from(weather.day_night)?,
 			temperature: weather.temperature as f32,
@@ -280,27 +285,24 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateWeather) -> Result<Self::UpdateResult, Error> {
-		let mut tx = pool.begin().await.map_err(NestError::from)?;
-
-		let condition_u32 = u32::from(item.condition);
-		let day_night_u32 = u32::from(item.day_night);
+		let condition_i64 = i64::from(item.condition);
+		let day_night_i64 = i64::from(item.day_night);
 
 		let result = sqlx::query!(
 			"UPDATE weather SET condition = ?, day_night = ?, temperature = ?, wind_speed = ? WHERE id = ?",
-			condition_u32,
-			day_night_u32,
+			condition_i64,
+			day_night_i64,
 			item.temperature,
 			item.wind_speed,
 			id
 		)
-		.execute(&mut tx)
+		.execute(pool)
 		.await
 		.map_err(NestError::from)?;
 
 		if result.rows_affected() == 0 {
 			return Err(Error::NestError(NestError::NotFound));
 		}
-		tx.commit().await.map_err(NestError::from)?;
 
 		Ok(())
 	}
@@ -316,31 +318,25 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 }
 
 impl Identifiable for Team {
-	fn id(&self) -> u32 {
+	fn id(&self) -> i64 {
 		self.id
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateTeam {
-	pub name: ModelId<TeamNameMeta>,
-	pub stadium: ModelId<Stadium>,
-}
-
 #[async_trait]
-impl CrudOperations<Team, CreateTeam> for Team {
+impl CrudOperations<Team, Team> for Team {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateTeam) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: Team) -> Result<Self::CreateResult, Error> {
 		// recieve a str then parse to make teamname and stadium
 		//
-		let name = item.name.value();
-		let stadium = item.stadium.value();
+		let name_id = item.name_id.value();
+		let stadium_id = item.stadium_id.value();
 
-		let result = sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name, stadium)
+		let result = sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name_id, stadium_id)
 			.execute(pool)
 			.await
 			.map_err(NestError::from)?;
@@ -348,14 +344,14 @@ impl CrudOperations<Team, CreateTeam> for Team {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateTeam]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[Team]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			let name = item.name.value();
-			let stadium = item.stadium.value();
+			let name_id = item.name_id.value();
+			let stadium_id = item.stadium_id.value();
 
-			sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name, stadium)
+			sqlx::query!("INSERT INTO teams (name_id, stadium_id) VALUES (?, ?)", name_id, stadium_id)
 				.execute(&mut *tx)
 				.await
 				.map_err(NestError::from)?;
@@ -366,39 +362,31 @@ impl CrudOperations<Team, CreateTeam> for Team {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
-		let team = sqlx::query_as!(TeamRow, "SELECT id, name_id, stadium_id FROM teams WHERE id = ?", id)
+		let team = sqlx::query_as!(Team, "SELECT id, name_id, stadium_id FROM teams WHERE id = ?", id)
 			.fetch_optional(pool)
 			.await
 			.map_err(NestError::from)?
 			.ok_or(Error::NestError(NestError::NotFound))?;
 
-		let name_id = u32::try_from(team.name_id).map_err(NestError::from)?;
-		let stadium_id = u32::try_from(team.stadium_id).map_err(NestError::from)?;
-		let id = u32::try_from(team.id).map_err(NestError::from)?;
+		let name_id = team.name_id;
+		let stadium_id = team.stadium_id;
+		let id = team.id;
 
-		Ok(Self {
-			id,
-			name: ModelId::<TeamNameMeta>::new(name_id),
-			stadium: ModelId::<Stadium>::new(stadium_id),
-		})
+		Ok(Self { id, name_id, stadium_id })
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateTeam) -> Result<Self::UpdateResult, Error> {
-		let mut tx = pool.begin().await.map_err(NestError::from)?;
+	async fn update(pool: &SqlitePool, id: i64, item: Team) -> Result<Self::UpdateResult, Error> {
+		let name_id = item.name_id.value();
+		let stadium_id = item.stadium_id.value();
 
-		let name = item.name.value();
-		let stadium = item.stadium.value();
-
-		let result = sqlx::query!("UPDATE teams SET name_id = ?, stadium_id = ? WHERE id = ?", name, stadium, id,)
-			.execute(&mut tx)
+		let result = sqlx::query!("UPDATE teams SET name_id = ?, stadium_id = ? WHERE id = ?", name_id, stadium_id, id,)
+			.execute(pool)
 			.await
 			.map_err(NestError::from)?;
 
 		if result.rows_affected() == 0 {
 			return Err(Error::NestError(NestError::NotFound));
 		}
-
-		tx.commit().await.map_err(NestError::from)?;
 
 		Ok(())
 	}
@@ -414,42 +402,33 @@ impl CrudOperations<Team, CreateTeam> for Team {
 }
 
 impl Identifiable for NFLGame {
-	fn id(&self) -> u32 {
+	fn id(&self) -> i64 {
 		self.id
 	}
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateNFLGame {
-	pub date: EncodedDate,
-	pub home_team: ModelId<Team>,
-	pub away_team: ModelId<Team>,
-	pub game_status: GameStatus,
-	pub weather: ModelId<Weather>,
-}
-
 #[async_trait]
-impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
+impl CrudOperations<NFLGame, NFLGame> for NFLGame {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateNFLGame) -> Result<Self::CreateResult, Error> {
-		let game_status = u32::from(item.game_status);
-		let home_team = item.home_team.value();
-		let away_team = item.away_team.value();
-		let weather = item.weather.value();
+	async fn create(pool: &SqlitePool, item: NFLGame) -> Result<Self::CreateResult, Error> {
+		let game_status_id = item.game_status_id;
+		let home_team_id = item.home_team_id.value();
+		let away_team_id = item.away_team_id.value();
+		let weather_id = item.weather_id.value();
 		let result = sqlx::query!(
 			"INSERT INTO nfl_games
             (encoded_date, home_team_id, away_team_id, game_status_id, weather_id)
             VALUES (?, ?, ?, ?, ?)
             ",
-			item.date.value,
-			home_team,
-			away_team,
-			game_status,
-			weather,
+			item.encoded_date,
+			home_team_id,
+			away_team_id,
+			game_status_id,
+			weather_id,
 		)
 		.execute(pool)
 		.await
@@ -458,21 +437,21 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateNFLGame]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[NFLGame]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			let game_status = u32::from(item.game_status);
-			let home_team = item.home_team.value();
-			let away_team = item.away_team.value();
-			let weather = item.weather.value();
+			let game_status_id = i64::from(item.game_status_id);
+			let home_team_id = item.home_team_id.value();
+			let away_team_id = item.away_team_id.value();
+			let weather_id = item.weather_id.value();
 			sqlx::query!(
 				"INSERT INTO nfl_games (encoded_date, home_team_id, away_team_id, game_status_id, weather_id) VALUES (?, ?, ?, ?, ?)",
-				item.date.value,
-				home_team,
-				away_team,
-				game_status,
-				weather,
+				item.encoded_date,
+				home_team_id,
+				away_team_id,
+				game_status_id,
+				weather_id,
 			)
 			.execute(&mut *tx)
 			.await
@@ -485,7 +464,7 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let nfl_game = sqlx::query_as!(
-			NFLGameRow,
+			NFLGame,
 			"SELECT id, encoded_date, home_team_id, away_team_id, game_status_id, weather_id from nfl_games WHERE id = ?",
 			id
 		)
@@ -494,46 +473,42 @@ impl CrudOperations<NFLGame, CreateNFLGame> for NFLGame {
 		.map_err(NestError::from)?
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
-		let home_team = u32::try_from(nfl_game.home_team_id).map_err(NestError::from)?;
-		let away_team = u32::try_from(nfl_game.away_team_id).map_err(NestError::from)?;
-		let weather = u32::try_from(nfl_game.weather_id).map_err(NestError::from)?;
-		let encoded_date = EncodedDate::try_from(nfl_game.encoded_date)?;
+		let home_team_id = nfl_game.home_team_id;
+		let away_team_id = nfl_game.away_team_id;
+		let weather_id = nfl_game.weather_id;
+		let encoded_date = nfl_game.encoded_date;
 
 		Ok(NFLGame {
-			id: nfl_game.id as u32,
-			date: encoded_date,
-			home_team: ModelId::<Team>::new(home_team),
-			away_team: ModelId::<Team>::new(away_team),
-			game_status: GameStatus::try_from(nfl_game.game_status_id)?,
-			weather: ModelId::<Weather>::new(weather),
+			id: nfl_game.id,
+			encoded_date,
+			home_team_id,
+			away_team_id,
+			game_status_id: nfl_game.game_status_id,
+			weather_id,
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateNFLGame) -> Result<Self::UpdateResult, Error> {
-		let mut tx = pool.begin().await.map_err(NestError::from)?;
-
-		let game_status = u32::from(item.game_status);
-		let home_team = item.home_team.value();
-		let away_team = item.away_team.value();
-		let weather = item.weather.value();
+	async fn update(pool: &SqlitePool, id: i64, item: NFLGame) -> Result<Self::UpdateResult, Error> {
+		let game_status_id = item.game_status_id;
+		let home_team_id = item.home_team_id.value();
+		let away_team_id = item.away_team_id.value();
+		let weather_id = item.weather_id.value();
 		let result = sqlx::query!(
 			"UPDATE nfl_games SET encoded_date = ?, home_team_id = ?, away_team_id = ?, game_status_id = ?, weather_id = ? WHERE id = ?",
-			item.date.value,
-			home_team,
-			away_team,
-			game_status,
-			weather,
+			item.encoded_date,
+			home_team_id,
+			away_team_id,
+			game_status_id,
+			weather_id,
 			id
 		)
-		.execute(&mut tx)
+		.execute(pool)
 		.await
 		.map_err(NestError::from)?;
 
 		if result.rows_affected() == 0 {
 			return Err(Error::NestError(NestError::NotFound));
 		}
-
-		tx.commit().await.map_err(NestError::from)?;
 
 		Ok(())
 	}
@@ -556,22 +531,6 @@ struct WeatherRow {
 	day_night: i64,
 	temperature: f64,
 	wind_speed: Option<f64>,
-}
-
-#[derive(Debug)]
-struct TeamRow {
-	id: i64,
-	name_id: i64,
-	stadium_id: i64,
-}
-
-pub struct NFLGameRow {
-	id: i64,
-	encoded_date: i64,
-	home_team_id: i64,
-	away_team_id: i64,
-	game_status_id: i64,
-	weather_id: i64,
 }
 
 #[cfg(test)]

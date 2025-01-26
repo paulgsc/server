@@ -16,10 +16,10 @@ pub enum ScoringEvent {
 	DefensiveTouchdown,
 }
 
-impl TryFrom<u32> for ScoringEvent {
+impl TryFrom<i64> for ScoringEvent {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
 		match value {
 			0 => Ok(ScoringEvent::OffensiveTouchdown),
 			1 => Ok(ScoringEvent::FieldGoal),
@@ -33,8 +33,8 @@ impl TryFrom<u32> for ScoringEvent {
 	}
 }
 
-impl From<ScoringEvent> for u32 {
-	fn from(value: ScoringEvent) -> u32 {
+impl From<ScoringEvent> for i64 {
+	fn from(value: ScoringEvent) -> i64 {
 		match value {
 			ScoringEvent::OffensiveTouchdown => 0,
 			ScoringEvent::FieldGoal => 1,
@@ -55,10 +55,10 @@ pub enum Quarter {
 	OT,
 }
 
-impl TryFrom<u32> for Quarter {
+impl TryFrom<i64> for Quarter {
 	type Error = Error;
 
-	fn try_from(value: u32) -> Result<Self, Self::Error> {
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
 		match value {
 			1 => Ok(Quarter::First),
 			2 => Ok(Quarter::Second),
@@ -70,8 +70,8 @@ impl TryFrom<u32> for Quarter {
 	}
 }
 
-impl From<Quarter> for u32 {
-	fn from(value: Quarter) -> u32 {
+impl From<Quarter> for i64 {
+	fn from(value: Quarter) -> i64 {
 		match value {
 			Quarter::First => 1,
 			Quarter::Second => 2,
@@ -84,7 +84,7 @@ impl From<Quarter> for u32 {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameScore {
-	pub id: u32,
+	pub id: i64,
 	pub game: ModelId<NFLGame>,
 	pub team: ModelId<Team>,
 	pub scoring_event: ScoringEvent,
@@ -93,7 +93,7 @@ pub struct GameScore {
 }
 
 impl Identifiable for GameScore {
-	fn id(&self) -> u32 {
+	fn id(&self) -> i64 {
 		self.id
 	}
 }
@@ -108,7 +108,7 @@ pub struct CreateGameScore {
 }
 
 impl GameScore {
-	pub fn points(&self) -> u32 {
+	pub fn points(&self) -> i64 {
 		self.scoring_event.into()
 	}
 }
@@ -121,8 +121,8 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 	type UpdateResult = ();
 
 	async fn create(pool: &SqlitePool, item: CreateGameScore) -> Result<Self::CreateResult, Error> {
-		let scoring_event = u32::from(item.scoring_event);
-		let quarter = u32::from(item.quarter);
+		let scoring_event = i64::from(item.scoring_event);
+		let quarter = i64::from(item.quarter);
 		let game_id = item.game.value();
 		let team_id = item.team.value();
 		let clock_id = item.clock.value();
@@ -155,8 +155,8 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
-			let scoring_event = u32::from(item.scoring_event);
-			let quarter = u32::from(item.quarter);
+			let scoring_event = i64::from(item.scoring_event);
+			let quarter = i64::from(item.quarter);
 			let game_id = item.game.value();
 			let team_id = item.team.value();
 			let clock_id = item.clock.value();
@@ -208,29 +208,25 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		.map_err(NestError::from)?
 		.ok_or(Error::NestError(NestError::NotFound))?;
 
-		let game_id = u32::try_from(score.game_id).map_err(NestError::from)?;
-		let team_id = u32::try_from(score.team_id).map_err(NestError::from)?;
-		let clock_id = u32::try_from(score.clock_id).map_err(NestError::from)?;
+		let game_id = score.game_id;
+		let team_id = score.team_id;
+		let clock_id = score.clock_id;
 
 		Ok(Self {
-			id: score.id as u32,
+			id: score.id as i64,
 			game: ModelId::new(game_id),
 			team: ModelId::new(team_id),
 			clock: ModelId::new(clock_id),
-			scoring_event: u32::try_from(score.scoring_event)
-				.map_err(|e| Error::NestError(NestError::from(e)))
-				.and_then(|v| ScoringEvent::try_from(v))?,
-			quarter: u32::try_from(score.quarter)
-				.map_err(|e| Error::NestError(NestError::from(e)))
-				.and_then(|v| Quarter::try_from(v))?,
+			scoring_event: ScoringEvent::try_from(score.scoring_event)?,
+			quarter: Quarter::try_from(score.quarter)?,
 		})
 	}
 
 	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
-		let scoring_event = u32::from(item.scoring_event);
-		let quarter = u32::from(item.quarter);
+		let scoring_event = i64::from(item.scoring_event);
+		let quarter = i64::from(item.quarter);
 		let game_id = item.game.value();
 		let team_id = item.team.value();
 		let clock_id = item.clock.value();

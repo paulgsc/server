@@ -5,7 +5,6 @@ use nest::http::Error as NestError;
 use nfl_play_parser::schema::PlayType;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::str::FromStr;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlayTypeRecord {
@@ -13,25 +12,14 @@ pub struct PlayTypeRecord {
 	pub play_type: PlayType,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreatePlayType {
-	pub play_type: PlayType,
-}
-
-#[derive(sqlx::FromRow)]
-struct PlayTypeRecordRaw {
-	id: i64,
-	play_type: String,
-}
-
 #[async_trait]
-impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
+impl CrudOperations<PlayTypeRecord, PlayTypeRecord> for PlayTypeRecord {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreatePlayType) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: PlayTypeRecord) -> Result<Self::CreateResult, Error> {
 		let play_type_str = item.play_type.to_string();
 		let result = sqlx::query!("INSERT INTO play_types (play_type) VALUES (?)", play_type_str)
 			.execute(pool)
@@ -41,7 +29,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreatePlayType]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[PlayTypeRecord]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
@@ -58,7 +46,7 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 	}
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
-		let record = sqlx::query_as!(PlayTypeRecordRaw, "SELECT id, play_type FROM play_types WHERE id = ?", id)
+		let record = sqlx::query_as!(PlayTypeRecord, "SELECT id, play_type FROM play_types WHERE id = ?", id)
 			.fetch_optional(pool)
 			.await
 			.map_err(NestError::from)?
@@ -66,11 +54,11 @@ impl CrudOperations<PlayTypeRecord, CreatePlayType> for PlayTypeRecord {
 
 		Ok(PlayTypeRecord {
 			id: record.id,
-			play_type: PlayType::from_str(&record.play_type)?,
+			play_type: record.play_type,
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreatePlayType) -> Result<Self::UpdateResult, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: PlayTypeRecord) -> Result<Self::UpdateResult, Error> {
 		let play_type_str = item.play_type.to_string();
 		let result = sqlx::query!("UPDATE play_types SET play_type = ? WHERE id = ?", play_type_str, id)
 			.execute(pool)

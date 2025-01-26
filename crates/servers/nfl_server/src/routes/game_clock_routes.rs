@@ -1,6 +1,6 @@
 use crate::common::nfl_server_error::NflServerError as Error;
 use crate::common::CrudOperations;
-use crate::models::game_clock::{CreateGameClock, GameClock};
+use crate::models::game_clock::GameClock;
 use axum::{
 	extract::{Path, State},
 	Json,
@@ -8,7 +8,7 @@ use axum::{
 use nest::http::Error as NestError;
 use sqlx::SqlitePool;
 
-pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<CreateGameClock>) -> Result<Json<i64>, Error> {
+pub async fn create(State(pool): State<SqlitePool>, Json(payload): Json<GameClock>) -> Result<Json<i64>, Error> {
 	if !payload.is_valid() {
 		return Err(Error::NestError(NestError::unprocessable_entity(vec![("game_clock", "Invalid game clock values")])));
 	}
@@ -21,7 +21,7 @@ pub async fn get(State(pool): State<SqlitePool>, Path(id): Path<i64>) -> Result<
 	Ok(Json(game_clock))
 }
 
-pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<CreateGameClock>) -> Result<Json<()>, Error> {
+pub async fn update(State(pool): State<SqlitePool>, Path(id): Path<i64>, Json(payload): Json<GameClock>) -> Result<Json<()>, Error> {
 	if !payload.is_valid() {
 		return Err(Error::NestError(NestError::unprocessable_entity(vec![("game_clock", "Invalid game clock values")])));
 	}

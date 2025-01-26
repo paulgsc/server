@@ -15,7 +15,7 @@ use nest::{init_tracing, ApiBuilder, MultiDbHandler, Run};
 async fn main() -> Result<()> {
 	dotenv::dotenv().ok();
 	let config = Config::parse();
-	init_tracing(&config);
+	let _ = init_tracing(&config);
 
 	match config.program_mode {
 		ProgramMode::PopulateGameClocks => {
