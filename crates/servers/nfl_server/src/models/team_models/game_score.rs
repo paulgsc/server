@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use sqlx::{sqlite::SqliteTypeInfo, Encode, Type};
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ScoringEvent {
@@ -16,19 +17,16 @@ pub enum ScoringEvent {
 	DefensiveTouchdown,
 }
 
-impl TryFrom<i64> for ScoringEvent {
-	type Error = Error;
-
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for ScoringEvent {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(ScoringEvent::OffensiveTouchdown),
-			1 => Ok(ScoringEvent::FieldGoal),
-			2 => Ok(ScoringEvent::PAT),
-			3 => Ok(ScoringEvent::TwoPointScore),
-			4 => Ok(ScoringEvent::DefensiveTouchdown),
-			5 => Ok(ScoringEvent::Safety),
-
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("scoring event", "Invalid ScoringEvent")]))),
+			0 => Self::OffensiveTouchdown,
+			1 => Self::FieldGoal,
+			2 => Self::PAT,
+			3 => Self::TwoPointScore,
+			4 => Self::DefensiveTouchdown,
+			5 => Self::Safety,
+			_ => panic!("Invalid value for ScoringEvent: {}", value),
 		}
 	}
 }
@@ -55,17 +53,15 @@ pub enum Quarter {
 	OT,
 }
 
-impl TryFrom<i64> for Quarter {
-	type Error = Error;
-
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for Quarter {
+	fn from(value: i64) -> Self {
 		match value {
-			1 => Ok(Quarter::First),
-			2 => Ok(Quarter::Second),
-			3 => Ok(Quarter::Third),
-			4 => Ok(Quarter::Fourth),
-			5 => Ok(Quarter::OT),
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("weather", "Invalid Quarter")]))),
+			1 => Self::First,
+			2 => Self::Second,
+			3 => Self::Third,
+			4 => Self::Fourth,
+			5 => Self::OT,
+			_ => panic!("Invalid value for Quarter: {}", value),
 		}
 	}
 }
@@ -82,29 +78,36 @@ impl From<Quarter> for i64 {
 	}
 }
 
+impl Type<sqlx::Sqlite> for Quarter {
+	fn type_info() -> SqliteTypeInfo {
+		<i64 as Type<sqlx::Sqlite>>::type_info()
+	}
+
+	fn compatible(ty: &SqliteTypeInfo) -> bool {
+		<i64 as Type<sqlx::Sqlite>>::compatible(ty)
+	}
+}
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for Quarter {
+	fn encode_by_ref(&self, args: &mut <sqlx::Sqlite as sqlx::database::HasArguments<'q>>::ArgumentBuffer) -> sqlx::encode::IsNull {
+		let encoded_value = *self as i64;
+		<i64 as Encode<sqlx::Sqlite>>::encode_by_ref(&encoded_value, args)
+	}
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameScore {
 	pub id: i64,
-	pub game: ModelId<NFLGame>,
-	pub team: ModelId<Team>,
+	pub game_id: ModelId<NFLGame>,
+	pub team_id: ModelId<Team>,
 	pub scoring_event: ScoringEvent,
 	pub quarter: Quarter,
-	pub clock: ModelId<GameClock>,
+	pub clock_id: ModelId<GameClock>,
 }
 
 impl Identifiable for GameScore {
 	fn id(&self) -> i64 {
 		self.id
 	}
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateGameScore {
-	pub game: ModelId<NFLGame>,
-	pub team: ModelId<Team>,
-	pub scoring_event: ScoringEvent,
-	pub quarter: Quarter,
-	pub clock: ModelId<GameClock>,
 }
 
 impl GameScore {
@@ -114,18 +117,18 @@ impl GameScore {
 }
 
 #[async_trait]
-impl CrudOperations<GameScore, CreateGameScore> for GameScore {
+impl CrudOperations<GameScore> for GameScore {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateGameScore) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: GameScore) -> Result<Self::CreateResult, Error> {
 		let scoring_event = i64::from(item.scoring_event);
-		let quarter = i64::from(item.quarter);
-		let game_id = item.game.value();
-		let team_id = item.team.value();
-		let clock_id = item.clock.value();
+		let quarter = item.quarter;
+		let game_id = item.game_id.value();
+		let team_id = item.team_id.value();
+		let clock_id = item.clock_id.value();
 
 		let result = sqlx::query!(
 			r#"
@@ -151,15 +154,15 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateGameScore]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[GameScore]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
 			let scoring_event = i64::from(item.scoring_event);
 			let quarter = i64::from(item.quarter);
-			let game_id = item.game.value();
-			let team_id = item.team.value();
-			let clock_id = item.clock.value();
+			let game_id = item.game_id.value();
+			let team_id = item.team_id.value();
+			let clock_id = item.clock_id.value();
 
 			sqlx::query!(
 				r#"
@@ -189,7 +192,7 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let score = sqlx::query_as!(
-			GameScoreRow,
+			GameScore,
 			r#"
             SELECT 
                 id,
@@ -214,22 +217,22 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 
 		Ok(Self {
 			id: score.id as i64,
-			game: ModelId::new(game_id),
-			team: ModelId::new(team_id),
-			clock: ModelId::new(clock_id),
-			scoring_event: ScoringEvent::try_from(score.scoring_event)?,
-			quarter: Quarter::try_from(score.quarter)?,
+			game_id,
+			team_id,
+			clock_id,
+			scoring_event: score.scoring_event,
+			quarter: score.quarter,
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateGameScore) -> Result<Self::UpdateResult, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: GameScore) -> Result<Self::UpdateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		let scoring_event = i64::from(item.scoring_event);
 		let quarter = i64::from(item.quarter);
-		let game_id = item.game.value();
-		let team_id = item.team.value();
-		let clock_id = item.clock.value();
+		let game_id = item.game_id.value();
+		let team_id = item.team_id.value();
+		let clock_id = item.clock_id.value();
 
 		let result = sqlx::query!(
 			r#"
@@ -268,13 +271,4 @@ impl CrudOperations<GameScore, CreateGameScore> for GameScore {
 		}
 		Ok(())
 	}
-}
-
-pub struct GameScoreRow {
-	id: i64,
-	game_id: i64,
-	team_id: i64,
-	scoring_event: i64,
-	quarter: i64,
-	clock_id: i64,
 }

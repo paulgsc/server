@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
 use sqlite_macros::SqliteType;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{Encode, FromRow, Sqlite, SqlitePool, Type};
 use std::fmt;
 use std::str::FromStr;
 
@@ -20,18 +20,29 @@ pub enum WeatherCondition {
 	Foggy,
 }
 
-impl TryFrom<i64> for WeatherCondition {
-	type Error = Error;
+impl Type<Sqlite> for WeatherCondition {
+	fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+		<i64 as Type<Sqlite>>::type_info()
+	}
+}
 
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for WeatherCondition {
+	fn encode_by_ref(&self, args: &mut <sqlx::Sqlite as sqlx::database::HasArguments<'q>>::ArgumentBuffer) -> sqlx::encode::IsNull {
+		let encoded_value = *self as i64;
+		<i64 as Encode<sqlx::Sqlite>>::encode_by_ref(&encoded_value, args)
+	}
+}
+
+impl From<i64> for WeatherCondition {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(WeatherCondition::Sunny),
-			1 => Ok(WeatherCondition::Cloudy),
-			2 => Ok(WeatherCondition::Rainy),
-			3 => Ok(WeatherCondition::Snowy),
-			4 => Ok(WeatherCondition::Windy),
-			5 => Ok(WeatherCondition::Foggy),
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("weather", "Invalid Weather Condition")]))),
+			0 => Self::Sunny,
+			1 => Self::Cloudy,
+			2 => Self::Rainy,
+			3 => Self::Snowy,
+			4 => Self::Windy,
+			5 => Self::Foggy,
+			_ => panic!("Invalid Weather Condition: {}", value),
 		}
 	}
 }
@@ -55,14 +66,25 @@ pub enum DayNight {
 	Night,
 }
 
-impl TryFrom<i64> for DayNight {
-	type Error = Error;
+impl Type<Sqlite> for DayNight {
+	fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+		<i64 as Type<Sqlite>>::type_info()
+	}
+}
 
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for DayNight {
+	fn encode_by_ref(&self, args: &mut <sqlx::Sqlite as sqlx::database::HasArguments<'q>>::ArgumentBuffer) -> sqlx::encode::IsNull {
+		let encoded_value = *self as i64;
+		<i64 as Encode<sqlx::Sqlite>>::encode_by_ref(&encoded_value, args)
+	}
+}
+
+impl From<i64> for DayNight {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(DayNight::Day),
-			1 => Ok(DayNight::Night),
-			_ => Err(Error::NestError(NestError::unprocessable_entity(vec![("Daynight", "Invalid DayNight")]))),
+			0 => Self::Day,
+			1 => Self::Night,
+			_ => panic!("Invalid Daynight: {value}"),
 		}
 	}
 }
@@ -76,13 +98,13 @@ impl From<DayNight> for i64 {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Weather {
 	pub id: i64,
 	pub condition: WeatherCondition,
 	pub day_night: DayNight,
-	pub temperature: f32,
-	pub wind_speed: Option<f32>,
+	pub temperature: f64,
+	pub wind_speed: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -174,14 +196,6 @@ impl Identifiable for Weather {
 	}
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateWeather {
-	pub condition: WeatherCondition,
-	pub day_night: DayNight,
-	pub temperature: f32,
-	pub wind_speed: Option<f32>,
-}
-
 impl Weather {
 	pub fn is_valid(&self) -> bool {
 		(-50.0..=150.0).contains(&self.temperature)
@@ -192,34 +206,22 @@ impl Weather {
 	}
 }
 
-impl CreateWeather {
-	pub fn is_valid(&self) -> bool {
-		(-50.0..=150.0).contains(&self.temperature)
-			&& match self.wind_speed {
-				Some(speed) => (0.0..=200.0).contains(&speed),
-				None => true,
-			}
-	}
-}
-
 #[async_trait]
-impl CrudOperations<Weather, CreateWeather> for Weather {
+impl CrudOperations<Weather> for Weather {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateWeather) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: Weather) -> Result<Self::CreateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
 
-		let condition_i64 = i64::from(item.condition);
-		let day_night_i64 = i64::from(item.day_night);
 		let result = sqlx::query!(
 			"INSERT INTO weather (condition, day_night, temperature, wind_speed) VALUES (?, ?, ?, ?)",
-			condition_i64,
-			day_night_i64,
+			item.condition,
+			item.day_night,
 			item.temperature,
 			item.wind_speed
 		)
@@ -230,7 +232,7 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateWeather]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[Weather]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
@@ -255,7 +257,7 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let weather = sqlx::query_as!(
-			WeatherRow,
+			Weather,
 			r#"
             SELECT
                 id,
@@ -277,21 +279,18 @@ impl CrudOperations<Weather, CreateWeather> for Weather {
 
 		Ok(Self {
 			id: weather.id as i64,
-			condition: WeatherCondition::try_from(weather.condition)?,
-			day_night: DayNight::try_from(weather.day_night)?,
-			temperature: weather.temperature as f32,
-			wind_speed: weather.wind_speed.map(|speed| speed as f32),
+			condition: weather.condition,
+			day_night: weather.day_night,
+			temperature: weather.temperature,
+			wind_speed: weather.wind_speed.map(|speed| speed),
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateWeather) -> Result<Self::UpdateResult, Error> {
-		let condition_i64 = i64::from(item.condition);
-		let day_night_i64 = i64::from(item.day_night);
-
+	async fn update(pool: &SqlitePool, id: i64, item: Weather) -> Result<Self::UpdateResult, Error> {
 		let result = sqlx::query!(
 			"UPDATE weather SET condition = ?, day_night = ?, temperature = ?, wind_speed = ? WHERE id = ?",
-			condition_i64,
-			day_night_i64,
+			item.condition,
+			item.day_night,
 			item.temperature,
 			item.wind_speed,
 			id
@@ -324,7 +323,7 @@ impl Identifiable for Team {
 }
 
 #[async_trait]
-impl CrudOperations<Team, Team> for Team {
+impl CrudOperations<Team> for Team {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
@@ -408,7 +407,7 @@ impl Identifiable for NFLGame {
 }
 
 #[async_trait]
-impl CrudOperations<NFLGame, NFLGame> for NFLGame {
+impl CrudOperations<NFLGame> for NFLGame {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
@@ -521,16 +520,6 @@ impl CrudOperations<NFLGame, NFLGame> for NFLGame {
 		}
 		Ok(())
 	}
-}
-
-// Helper struct for Weather database rows
-#[derive(Debug)]
-struct WeatherRow {
-	id: i64,
-	condition: i64,
-	day_night: i64,
-	temperature: f64,
-	wind_speed: Option<f64>,
 }
 
 #[cfg(test)]

@@ -22,8 +22,6 @@ impl MultiDbHandler for PlayerDOBHandlers {
 			.route(&format!("/api/{}/player_dob/delete/{}", db_name, "{id}"), delete(routes::delete))
 			.route(&format!("/api/{}/player_dob/{}", db_name, "{id}"), get(routes::get))
 			.route(&format!("/api/{}/player_dob", db_name), post(routes::create))
-			.route(&format!("/api/{}/player_dob/age_range", db_name), get(routes::get_by_age_range))
-			.route(&format!("/api/{}/player_dob/cleanup", db_name), delete(routes::delete_older_than))
 			.layer(cors)
 			.with_state(pool)
 	}

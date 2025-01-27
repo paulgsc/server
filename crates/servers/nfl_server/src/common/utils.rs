@@ -35,20 +35,19 @@ pub trait Identifiable {
 }
 
 #[async_trait]
-pub trait CrudOperations<T, C>
+pub trait CrudOperations<T>
 where
 	T: Send + Sync + 'static,
-	C: Send + Sync + 'static,
 {
 	type CreateResult: Send + Sync + 'static;
 	type BatchCreateResult: Send + Sync + 'static;
 	type GetResult: Send + Sync + 'static;
 	type UpdateResult: Send + Sync + 'static;
 
-	async fn create(pool: &SqlitePool, item: C) -> Result<Self::CreateResult, Error>;
-	async fn batch_create(pool: &SqlitePool, items: &[C]) -> Result<Self::BatchCreateResult, Error>;
+	async fn create(pool: &SqlitePool, item: T) -> Result<Self::CreateResult, Error>;
+	async fn batch_create(pool: &SqlitePool, items: &[T]) -> Result<Self::BatchCreateResult, Error>;
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error>;
-	async fn update(pool: &SqlitePool, id: i64, item: C) -> Result<Self::UpdateResult, Error>;
+	async fn update(pool: &SqlitePool, id: i64, item: T) -> Result<Self::UpdateResult, Error>;
 	async fn delete(pool: &SqlitePool, id: i64) -> Result<(), Error>;
 }
 

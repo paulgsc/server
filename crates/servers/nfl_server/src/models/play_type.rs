@@ -13,7 +13,7 @@ pub struct PlayTypeRecord {
 }
 
 #[async_trait]
-impl CrudOperations<PlayTypeRecord, PlayTypeRecord> for PlayTypeRecord {
+impl CrudOperations<PlayTypeRecord> for PlayTypeRecord {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
