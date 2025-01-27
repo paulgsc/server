@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
+pub mod handlers;
+pub mod routes;
 
 pub struct StaticFileServer {
 	dist_path: PathBuf,
