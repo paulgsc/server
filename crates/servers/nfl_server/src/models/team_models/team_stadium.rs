@@ -3,12 +3,36 @@ use crate::common::{CrudOperations, Identifiable};
 use async_trait::async_trait;
 use nest::http::Error as NestError;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteArgumentValue, SqliteValueRef};
+use sqlx::{Decode, Encode, Row, Sqlite, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {
-	pub state: i64,
+	pub state: i32,
 	pub city: String,
+}
+
+impl Encode<'_, Sqlite> for Location {
+	fn encode_by_ref(&self, buf: &mut Vec<SqliteArgumentValue<'_>>) -> sqlx::encode::IsNull {
+		buf.push(SqliteArgumentValue::Int(self.state));
+		buf.push(SqliteArgumentValue::Text(self.city.clone().into()));
+
+		sqlx::encode::IsNull::No
+	}
+}
+
+impl<'r> Decode<'r, Sqlite> for Location {
+	fn decode(_value: SqliteValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+		Err("Decode for Location must use separate columns for state and city.".into())
+	}
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Location {
+	fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+		let state: i32 = row.try_get("state")?;
+		let city: String = row.try_get("city")?;
+		Ok(Self { state, city })
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -35,15 +59,6 @@ pub struct Stadium {
 	pub capacity: i64,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateStadium {
-	pub name: String,
-	pub location: Location,
-	pub stadium_type: StadiumType,
-	pub surface_type: SurfaceType,
-	pub capacity: i64,
-}
-
 impl Identifiable for Stadium {
 	fn id(&self) -> i64 {
 		self.id
@@ -56,20 +71,14 @@ impl Stadium {
 	}
 }
 
-impl CreateStadium {
-	pub fn is_valid(&self) -> bool {
-		!self.name.trim().is_empty() && !self.location.city.trim().is_empty() && self.capacity >= 1_000 && self.capacity <= 150_000
-	}
-}
-
 #[async_trait]
-impl CrudOperations<Stadium, CreateStadium> for Stadium {
+impl CrudOperations<Stadium> for Stadium {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
 	type UpdateResult = ();
 
-	async fn create(pool: &SqlitePool, item: CreateStadium) -> Result<Self::CreateResult, Error> {
+	async fn create(pool: &SqlitePool, item: Stadium) -> Result<Self::CreateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -102,7 +111,7 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 		Ok(result.last_insert_rowid())
 	}
 
-	async fn batch_create(pool: &SqlitePool, items: &[CreateStadium]) -> Result<Self::BatchCreateResult, Error> {
+	async fn batch_create(pool: &SqlitePool, items: &[Stadium]) -> Result<Self::BatchCreateResult, Error> {
 		let mut tx = pool.begin().await.map_err(NestError::from)?;
 
 		for item in items {
@@ -143,13 +152,12 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 
 	async fn get(pool: &SqlitePool, id: i64) -> Result<Self::GetResult, Error> {
 		let stadium = sqlx::query_as!(
-			StadiumRow,
+			Stadium,
 			r#"
             SELECT 
                 id,
                 name,
-                state,
-                city,
+		json_object('state', COALESCE(state, 0), 'city', COALESCE(city, '')) as "location!: Location",
                 stadium_type,
                 surface_type,
                 capacity
@@ -166,17 +174,14 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 		Ok(Self {
 			id: stadium.id as i64,
 			name: stadium.name,
-			location: Location {
-				state: stadium.state,
-				city: stadium.city,
-			},
-			stadium_type: StadiumType::try_from(stadium.stadium_type)?,
-			surface_type: SurfaceType::try_from(stadium.surface_type)?,
+			location: stadium.location,
+			stadium_type: stadium.stadium_type,
+			surface_type: stadium.surface_type,
 			capacity: stadium.capacity,
 		})
 	}
 
-	async fn update(pool: &SqlitePool, id: i64, item: CreateStadium) -> Result<Self::UpdateResult, Error> {
+	async fn update(pool: &SqlitePool, id: i64, item: Stadium) -> Result<Self::UpdateResult, Error> {
 		if !item.is_valid() {
 			return Err(Error::NestError(NestError::Forbidden));
 		}
@@ -227,26 +232,14 @@ impl CrudOperations<Stadium, CreateStadium> for Stadium {
 }
 
 // Database migrations to create the stadiums table
-#[derive(sqlx::FromRow)]
-struct StadiumRow {
-	id: i64,
-	name: String,
-	state: i64,
-	city: String,
-	stadium_type: i64,
-	surface_type: i64,
-	capacity: i64,
-}
 
-impl TryFrom<i64> for StadiumType {
-	type Error = Error;
-
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for StadiumType {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(StadiumType::Indoor),
-			1 => Ok(StadiumType::Outdoor),
-			2 => Ok(StadiumType::Retractable),
-			_ => Err(Error::NestError(NestError::InvalidData)),
+			0 => Self::Indoor,
+			1 => Self::Outdoor,
+			2 => Self::Retractable,
+			_ => panic!("Invalid StadiumType: {value}"),
 		}
 	}
 }
@@ -261,15 +254,13 @@ impl From<StadiumType> for i64 {
 	}
 }
 
-impl TryFrom<i64> for SurfaceType {
-	type Error = Error;
-
-	fn try_from(value: i64) -> Result<Self, Self::Error> {
+impl From<i64> for SurfaceType {
+	fn from(value: i64) -> Self {
 		match value {
-			0 => Ok(SurfaceType::Grass),
-			1 => Ok(SurfaceType::AstroTurf),
-			2 => Ok(SurfaceType::Hybrid),
-			_ => Err(Error::NestError(NestError::InvalidData)),
+			0 => Self::Grass,
+			1 => Self::AstroTurf,
+			2 => Self::Hybrid,
+			_ => panic!("Invalid SurfaceType: {value}"),
 		}
 	}
 }

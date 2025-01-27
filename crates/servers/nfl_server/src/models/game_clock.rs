@@ -19,7 +19,7 @@ impl GameClock {
 }
 
 #[async_trait]
-impl CrudOperations<GameClock, GameClock> for GameClock {
+impl CrudOperations<GameClock> for GameClock {
 	type CreateResult = i64;
 	type BatchCreateResult = ();
 	type GetResult = Self;
