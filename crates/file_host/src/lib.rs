@@ -1,38 +1,25 @@
-use anyhow::Result;
-use axum::Router;
-use std::path::PathBuf;
-use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::services::ServeDir;
+use crate::error::FileHostError;
+use redis::Client;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub mod config;
+pub mod error;
 pub mod handlers;
 pub mod routes;
 
 pub use config::*;
 
-pub struct StaticFileServer {
-	dist_path: PathBuf,
-	port: u16,
+pub struct AppState {
+	pub client: Client,
+	pub cache_ttl: Duration,
 }
 
-impl StaticFileServer {
-	pub fn new(dist_path: PathBuf, port: u16) -> Self {
-		Self { dist_path, port }
-	}
-
-	pub async fn serve(self) -> Result<()> {
-		let serve_dir = ServeDir::new(&self.dist_path);
-
-		let app = Router::new()
-			.nest_service("/", serve_dir)
-			.layer(ServiceBuilder::new().layer(tower_http::trace::TraceLayer::new_for_http()));
-
-		let addr = format!("127.0.0.1:{}", self.port);
-		let listener = TcpListener::bind(&addr).await?;
-		tracing::debug!("serving static files from {:?} on {}", self.dist_path, listener.local_addr()?);
-
-		axum::serve(listener, app).await?;
-		Ok(())
+impl AppState {
+	pub fn new(config: Arc<Config>) -> Result<Arc<Self>, FileHostError> {
+		Ok(Arc::new(Self {
+			client: Client::open(config.redis_url.as_deref().unwrap_or("redis://127.0.0.1:6379"))?,
+			cache_ttl: Duration::from_secs(config.cache_ttl),
+		}))
 	}
 }
