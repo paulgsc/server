@@ -9,17 +9,24 @@ pub mod handlers;
 pub mod routes;
 
 pub use config::*;
+pub use routes::*;
 
-pub struct AppState {
+#[derive(Clone)]
+pub struct CacheStore {
 	pub client: Client,
 	pub cache_ttl: Duration,
 }
 
-impl AppState {
-	pub fn new(config: Arc<Config>) -> Result<Arc<Self>, FileHostError> {
-		Ok(Arc::new(Self {
-			client: Client::open(config.redis_url.as_deref().unwrap_or("redis://127.0.0.1:6379"))?,
-			cache_ttl: Duration::from_secs(config.cache_ttl),
-		}))
+impl CacheStore {
+	pub fn new(config: Arc<Config>) -> Result<Self, FileHostError> {
+		let redis_url = config.redis_url.as_deref().unwrap_or_else(|| {
+			log::warn!("Using default Redis URL: redis://127.0.0.1:6379");
+			"redis://127.0.0.1:6379"
+		});
+
+		let client = Client::open(redis_url)?;
+		let cache_ttl = Duration::from_secs(config.cache_ttl);
+
+		Ok(Self { client, cache_ttl })
 	}
 }
