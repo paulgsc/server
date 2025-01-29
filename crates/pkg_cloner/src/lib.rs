@@ -66,3 +66,43 @@ pub fn copy_configs(template_package: &Path, new_package_path: &Path, configs: &
 
 	Ok(())
 }
+
+pub fn find_closest_match<'a>(input: &'a str, candidates: &[&'a str]) -> Option<&'a str> {
+	let input_len = input.chars().count();
+
+	candidates
+		.iter()
+		.min_by_key(|&&candidate| levenshtein(input, candidate))
+		.filter(|&&candidate| {
+			let distance = levenshtein(input, candidate);
+			let max_len = input_len.max(candidate.chars().count()); // Use the longest word length
+			let similarity = 1.0 - (distance as f64 / max_len as f64);
+			similarity >= 0.75
+		})
+		.copied()
+}
+
+pub fn levenshtein(a: &str, b: &str) -> usize {
+	let a_len = a.chars().count();
+	let b_len = b.chars().count();
+
+	let mut dp = vec![vec![0; b_len + 1]; a_len + 1];
+
+	for i in 0..=a_len {
+		dp[i][0] = i;
+	}
+	for j in 0..=b_len {
+		dp[0][j] = j;
+	}
+
+	for (i, a_char) in a.chars().enumerate() {
+		for (j, b_char) in b.chars().enumerate() {
+			let cost = if a_char == b_char { 0 } else { 1 };
+			dp[i + 1][j + 1] = (dp[i][j + 1] + 1) // Deletion
+				.min(dp[i + 1][j] + 1) // Insertion
+				.min(dp[i][j] + cost); // Substitution
+		}
+	}
+
+	dp[a_len][b_len]
+}
