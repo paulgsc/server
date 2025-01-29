@@ -58,6 +58,9 @@
                     sqlite
                     # postgresql
 
+                    # Audio
+                    alsa-lib
+
                 ];
 
                 shellHook = ''
