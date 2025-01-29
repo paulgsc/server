@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 
 	let mut app = Router::new();
 
-	app = app.merge(get_attributions());
+	app = app.merge(get_attributions(context.clone()));
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
