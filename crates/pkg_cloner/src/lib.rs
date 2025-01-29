@@ -1,4 +1,5 @@
 use clap::Parser;
+use enum_name_derive::EnumFilename;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, Error, ErrorKind};
@@ -12,26 +13,18 @@ pub struct Cli {
 	pub workspaces: PathBuf,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, EnumFilename)]
 pub enum ConfigFile {
+	#[filename = "tsconfig.json"]
 	Tsconfig,
+	#[filename = "package.json"]
 	PackageJson,
+	#[filename = "rollup.config.js"]
 	RollupConfig,
+	#[filename = "eslint.config.js"]
 	EslintConfig,
-	EslintBuildConfig,
-}
-
-impl ConfigFile {
-	#[must_use]
-	pub const fn filename(&self) -> &str {
-		match self {
-			Self::Tsconfig => "tsconfig.json",
-			Self::PackageJson => "package.json",
-			Self::RollupConfig => "rollup.config.js",
-			Self::EslintConfig => "eslint.config.js",
-			Self::EslintBuildConfig => "eslint.build.config.js",
-		}
-	}
+	#[filename = "tsconfig.build.json"]
+	TsconfigBuildConfig,
 }
 
 pub fn find_packages(workspaces: &Path) -> io::Result<Vec<PathBuf>> {

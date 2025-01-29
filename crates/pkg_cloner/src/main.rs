@@ -38,7 +38,7 @@ fn main() -> io::Result<()> {
 		ConfigFile::PackageJson,
 		ConfigFile::RollupConfig,
 		ConfigFile::EslintConfig,
-		ConfigFile::EslintBuildConfig,
+		ConfigFile::TsconfigBuildConfig,
 	];
 
 	copy_configs(template_package, &new_package_path, &configs, &new_package_name)?;
