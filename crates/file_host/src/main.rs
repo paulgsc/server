@@ -1,11 +1,11 @@
 pub mod handlers;
 pub mod routes;
-use file_host::CacheStore;
 use crate::routes::get_attributions;
 use anyhow::Result;
 use axum::Router;
 use clap::Parser;
 use file_host::Config;
+use file_host::{error::FileHostError, CacheStore};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
