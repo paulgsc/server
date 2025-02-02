@@ -10,5 +10,5 @@ pub fn get_attributions(config: Arc<Config>) -> Router {
 	let cors = CorsLayer::new().allow_methods([Method::GET]).allow_origin(Any);
 	let state = CacheStore::new(config).unwrap();
 
-	Router::new().route(&format!("/"), get(routes::get)).layer(cors).with_state(Arc::new(state))
+	Router::new().route("/gsheet/:sheet_id", get(routes::get)).layer(cors).with_state(Arc::new(state))
 }

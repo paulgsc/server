@@ -1,8 +1,9 @@
-pub mod handlers;
-pub mod routes;
+mod handlers;
+mod metrics;
+mod routes;
 use crate::routes::get_attributions;
 use anyhow::Result;
-use axum::Router;
+use axum::{routing::get, Router};
 use clap::Parser;
 use file_host::Config;
 use file_host::{error::FileHostError, CacheStore};
@@ -21,7 +22,9 @@ async fn main() -> Result<()> {
 
 	let context = Arc::new(config);
 
-	let mut app = Router::new();
+	let mut app = Router::new()
+		.route("/metrics", get(metrics::metrics_handler))
+		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
 
 	app = app.merge(get_attributions(context.clone()));
 

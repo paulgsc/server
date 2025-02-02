@@ -1,3 +1,4 @@
+use crate::{GoogleServiceFilePath, SecretFilePathError};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use google_sheets4::yup_oauth2::Error as OAuth2Error;
 use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
@@ -6,15 +7,13 @@ use google_sheets4::{api::Spreadsheet, hyper_rustls, Sheets};
 use hyper::Error as HyperError;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
-use once_cell::unsync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use crate::{GoogleServiceFilePath, SecretFilePathError};
+use tokio::sync::Mutex;
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type SheetsClient = Sheets<HttpsConnectorType>;
@@ -65,7 +64,7 @@ pub struct SpreadsheetMetadata {
 pub struct GoogleSheetsClient {
 	#[allow(dead_code)]
 	user_email: String,
-	service: OnceCell<Arc<SheetsClient>>,
+	service: Arc<Mutex<Option<Arc<SheetsClient>>>>,
 	client_secret_path: GoogleServiceFilePath,
 }
 
@@ -75,7 +74,7 @@ impl GoogleSheetsClient {
 
 		Ok(Self {
 			user_email,
-			service: OnceCell::new(),
+			service: Arc::new(Mutex::new(None)),
 			client_secret_path: validated_path,
 		})
 	}
@@ -109,15 +108,15 @@ impl GoogleSheetsClient {
 		Ok(Sheets::new(client, auth))
 	}
 
-	pub async fn get_service(&self) -> Result<&Arc<SheetsClient>, SheetError> {
-		if self.service.get().is_none() {
-			let service = self.initialize_service().await?;
-			self
-				.service
-				.set(Arc::new(service))
-				.map_err(|_| SheetError::ServiceInit("Failed to set service".to_string()))?;
+	pub async fn get_service(&self) -> Result<Arc<SheetsClient>, SheetError> {
+		let mut service_guard = self.service.lock().await;
+
+		if service_guard.is_none() {
+			let new_service = self.initialize_service().await?;
+			*service_guard = Some(Arc::new(new_service));
 		}
-		Ok(self.service.get().unwrap())
+
+		Ok(Arc::clone(service_guard.as_ref().unwrap()))
 	}
 
 	pub fn convert_to_rfc_datetime(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Result<DateTime<Utc>, SheetError> {
@@ -130,13 +129,13 @@ impl GoogleSheetsClient {
 }
 
 pub struct ReadSheets {
-	client: GoogleSheetsClient,
+	client: Arc<GoogleSheetsClient>,
 }
 
 impl ReadSheets {
 	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
 		Ok(Self {
-			client: GoogleSheetsClient::new(user_email, client_secret_path)?,
+			client: Arc::new(GoogleSheetsClient::new(user_email, client_secret_path)?),
 		})
 	}
 
@@ -169,13 +168,13 @@ impl ReadSheets {
 }
 
 pub struct WriteToGoogleSheet {
-	client: GoogleSheetsClient,
+	client: Arc<GoogleSheetsClient>,
 }
 
 impl WriteToGoogleSheet {
 	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, SheetError> {
 		Ok(Self {
-			client: GoogleSheetsClient::new(user_email, client_secret_path)?,
+			client: Arc::new(GoogleSheetsClient::new(user_email, client_secret_path)?),
 		})
 	}
 
