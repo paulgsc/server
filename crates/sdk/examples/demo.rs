@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Demonstrate datetime conversion utility
 	let datetime = GoogleSheetsClient::convert_to_rfc_datetime(2024, 3, 15, 14, 30);
-	println!("\nConverted datetime: {}", datetime);
+	println!("\nConverted datetime: {:?}", datetime);
 
 	Ok(())
 }
