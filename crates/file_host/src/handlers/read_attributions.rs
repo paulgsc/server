@@ -16,7 +16,7 @@ pub async fn get(State(_state): State<Arc<CacheStore>>, Path(sheet_id): Path<Str
 	let reader = ReadSheets::new(user_email.clone(), client_secret_file.clone())?;
 
 	println!("\nReading data from sheet...");
-	let range = "default!A1:C4";
-	let _data = reader.read_data("spreadsheet_id", range).await?;
+	let range = "default!A1:B4";
+	let _data = reader.read_data(&sheet_id, range).await?;
 	Ok(Json("hello world"))
 }
