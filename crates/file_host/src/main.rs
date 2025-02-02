@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
 		.route("/metrics", get(metrics::metrics_handler))
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
 
-	app = app.merge(get_attributions(context.clone()));
+	app = app.merge(get_attributions(context.clone())?);
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
