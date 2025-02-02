@@ -1,7 +1,7 @@
 use crate::{GoogleServiceFilePath, SecretFilePathError};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use google_sheets4::yup_oauth2::Error as OAuth2Error;
-use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
+use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod, ServiceAccountAuthenticator};
 use google_sheets4::Error as GoogleSheetsError;
 use google_sheets4::{api::Spreadsheet, hyper_rustls, Sheets};
 use hyper::Error as HyperError;
@@ -84,16 +84,9 @@ impl GoogleSheetsClient {
 		// 	.install_default()
 		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
-		let secret = google_sheets4::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
+		let secret = google_sheets4::yup_oauth2::read_service_account_key(&self.client_secret_path.as_ref()).await?;
 
-		let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
-
-		fs::create_dir_all(cache_path.parent().unwrap()).map_err(SheetError::Io)?;
-
-		let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-			.persist_tokens_to_disk(cache_path)
-			.build()
-			.await?;
+		let auth = ServiceAccountAuthenticator::builder(secret).build().await?;
 
 		let connector = hyper_rustls::HttpsConnectorBuilder::new()
 			.with_native_roots()
@@ -107,6 +100,36 @@ impl GoogleSheetsClient {
 
 		Ok(Sheets::new(client, auth))
 	}
+
+	#[allow(dead_code)]
+	 async fn initialize_oauth_service(&self) -> Result<SheetsClient, SheetError> {
+	 	// rustls::crypto::ring::default_provider()
+	 	// 	.install_default()
+	 	// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+
+	 	let secret = google_sheets4::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
+
+	 	let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
+
+	 	fs::create_dir_all(cache_path.parent().unwrap()).map_err(SheetError::Io)?;
+
+	 	let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
+	 		.persist_tokens_to_disk(cache_path)
+	 		.build()
+	 		.await?;
+
+	 	let connector = hyper_rustls::HttpsConnectorBuilder::new()
+	 		.with_native_roots()
+	 		.unwrap()
+	 		.https_or_http()
+	 		.enable_http1()
+	 		.build();
+
+	 	let executor = hyper_util::rt::TokioExecutor::new();
+	 	let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
+
+	 	Ok(Sheets::new(client, auth))
+	 }
 
 	pub async fn get_service(&self) -> Result<Arc<SheetsClient>, SheetError> {
 		let mut service_guard = self.service.lock().await;
