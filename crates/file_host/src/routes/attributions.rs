@@ -8,7 +8,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 pub fn get_attributions(config: Arc<Config>) -> Router {
 	let cors = CorsLayer::new().allow_methods([Method::GET]).allow_origin(Any);
-	let state = CacheStore::new(config);
+	let state = CacheStore::new(config).unwrap();
 
 	Router::new().route(&format!("/"), get(routes::get)).layer(cors).with_state(Arc::new(state))
 }

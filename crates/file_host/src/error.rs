@@ -37,6 +37,9 @@ pub enum FileHostError {
 
 	#[error("Redis error: {0}")]
 	RedisError(#[from] redis::RedisError),
+
+	#[error("Sheet error: {0}")]
+	SheetError(#[from] sdk::SheetError),
 }
 
 impl FileHostError {
@@ -65,6 +68,7 @@ impl FileHostError {
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}

@@ -10,6 +10,7 @@ edition.workspace = true
 [dependencies]
 # path crates
 nest  = { workspace = true }
+sdk  = { workspace = true }
 
 axum = { workspace = true }
 anyhow = { workspace = true }
