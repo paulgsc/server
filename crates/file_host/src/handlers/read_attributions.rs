@@ -13,10 +13,10 @@ pub async fn get(State(_state): State<Arc<CacheStore>>, Path(sheet_id): Path<Str
 	let client_secret_file = "client_secret_file.json".to_string();
 
 	// Now the ? operator will automatically convert SheetError to FileHostError
-	let reader = ReadSheets::new(user_email.clone(), client_secret_file.clone()).unwrap();
+	let reader = ReadSheets::new(user_email.clone(), client_secret_file.clone())?;
 
 	println!("\nReading data from sheet...");
 	let range = "default!A1:C4";
-	let _data = reader.read_data("spreadsheet_id", range).await.unwrap();
+	let _data = reader.read_data("spreadsheet_id", range).await?;
 	Ok(Json("hello world"))
 }
