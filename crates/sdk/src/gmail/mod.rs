@@ -3,17 +3,25 @@ use base64::{engine::general_purpose::URL_SAFE, Engine};
 use chrono::{DateTime, Utc};
 use google_gmail1::api::{Message, MessagePart};
 use google_gmail1::yup_oauth2::Error as OAuth2Error;
-use google_gmail1::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod};
+use google_gmail1::yup_oauth2::ServiceAccountAuthenticator;
 use google_gmail1::{Error as GmailError, Gmail};
 use hyper::Error as HyperError;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use once_cell::unsync::OnceCell;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
+
+const SCOPES: [&str; 5] = [
+	"https://www.googleapis.com/auth/gmail.readonly",
+	"https://www.googleapis.com/auth/gmail.modify",
+	"https://mail.google.com/",
+	"https://www.googleapis.com/auth/gmail.settings.basic",
+	"https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+];
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type GmailClient = Gmail<HttpsConnectorType>;
@@ -44,11 +52,17 @@ pub enum GmailServiceError {
 	#[error("MIME parsing error: {0}")]
 	MimeParse(#[from] mime::FromStrError),
 
-	#[error("Secret file path error: {0}")]
+	#[error("Base64 decode error: {0}")]
+	Base64(#[from] base64::DecodeError),
+
+	#[error("Secret file path rrror: {0}")]
 	SecretFilePath(#[from] SecretFilePathError),
 
 	#[error("JSON error: {0}")]
 	JsonError(#[from] serde_json::Error),
+
+	#[error("Unexpected error: {0}")]
+	TokenError(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,11 +75,32 @@ pub struct EmailMetadata {
 	pub date: DateTime<Utc>,
 }
 
+impl fmt::Display for EmailMetadata {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(
+			f,
+			"Email ID: {}\nThread ID: {}\nSubject: {}\nFrom: {}\nTo: {}\nDate: {}",
+			self.id,
+			self.thread_id,
+			self.subject,
+			self.from,
+			self.to.join(", "),
+			self.date
+		)
+	}
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmailContent {
 	pub metadata: EmailMetadata,
 	pub body: String,
 	pub attachments: Vec<AttachmentMetadata>,
+}
+
+impl fmt::Display for EmailContent {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}\n\nBody:\n{}\n\nAttachments: {}", self.metadata, self.body, self.attachments.len())
+	}
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,38 +110,54 @@ pub struct AttachmentMetadata {
 	pub size: i32,
 }
 
+pub enum ServiceMode {
+	ServiceAccount,
+	Oauth,
+}
+
+impl Default for ServiceMode {
+	fn default() -> Self {
+		Self::ServiceAccount
+	}
+}
+
+impl FromStr for ServiceMode {
+	type Err = GmailServiceError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s.to_lowercase() {
+			s if ["service_acct", "acct", "service"].contains(&s.as_str()) => Ok(Self::ServiceAccount),
+			s if ["oauth", "2.0"].contains(&s.as_str()) => Ok(Self::Oauth),
+			_ => Err(GmailServiceError::ServiceInit(format!("Incorrect service mode set: '{}'", s))),
+		}
+	}
+}
+
 pub struct GoogleGmailClient {
-	user_email: String,
+	user_email: &'static str,
 	service: OnceCell<Arc<GmailClient>>,
 	client_secret_path: GoogleServiceFilePath,
+	service_mode: ServiceMode,
 }
 
 impl GoogleGmailClient {
-	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, GmailServiceError> {
+	pub fn new(user_email: &'static str, client_secret_path: String, service_option: Option<&str>) -> Result<Self, GmailServiceError> {
 		let validated_path = GoogleServiceFilePath::new(client_secret_path)?;
+		let service_str = service_option.unwrap_or("service");
+		let service_mode = ServiceMode::from_str(service_str)?;
 
 		Ok(Self {
 			user_email,
 			service: OnceCell::new(),
 			client_secret_path: validated_path,
+			service_mode,
 		})
 	}
 
 	async fn initialize_service(&self) -> Result<GmailClient, GmailServiceError> {
-		// rustls::crypto::ring::default_provider()
-		// 	.install_default()
-		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+		let secret = google_gmail1::yup_oauth2::read_service_account_key(&self.client_secret_path.as_ref()).await?;
 
-		let secret = google_gmail1::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
-
-		let cache_path = PathBuf::from("app").join("gmail_pickle").join("token_gmail_v1.json");
-
-		fs::create_dir_all(cache_path.parent().unwrap()).map_err(GmailServiceError::Io)?;
-
-		let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-			.persist_tokens_to_disk(cache_path)
-			.build()
-			.await?;
+		let auth = ServiceAccountAuthenticator::builder(secret).build().await?;
 
 		let connector = hyper_rustls::HttpsConnectorBuilder::new()
 			.with_native_roots()
@@ -118,12 +169,51 @@ impl GoogleGmailClient {
 		let executor = hyper_util::rt::TokioExecutor::new();
 		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
 
+		let service = Gmail::new(client, auth);
+		let auth = &service.auth;
+		auth.get_token(&SCOPES).await?;
+
+		Ok(service)
+	}
+
+	#[allow(dead_code)]
+	async fn initialize_oauth_service(&self) -> Result<GmailClient, GmailServiceError> {
+		// rustls::crypto::ring::default_provider()
+		// 	.install_default()
+		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+
+		let secret = google_gmail1::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
+
+		let connector = hyper_rustls::HttpsConnectorBuilder::new()
+			.with_native_roots()
+			.unwrap()
+			.https_or_http()
+			.enable_http1()
+			.build();
+
+		let executor = hyper_util::rt::TokioExecutor::new();
+		let client = hyper_util::client::legacy::Client::builder(executor.clone()).build(connector.clone());
+
+		let auth = google_gmail1::yup_oauth2::InstalledFlowAuthenticator::with_client(
+			secret,
+			google_gmail1::yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
+			hyper_util::client::legacy::Client::builder(executor).build(connector),
+		)
+		.persist_tokens_to_disk(".googleapis/gmail")
+		.build()
+		.await?;
+
+		auth.token(&SCOPES).await?;
+
 		Ok(Gmail::new(client, auth))
 	}
 
 	pub async fn get_service(&self) -> Result<&Arc<GmailClient>, GmailServiceError> {
 		if self.service.get().is_none() {
-			let service = self.initialize_service().await?;
+			let service = match self.service_mode {
+				ServiceMode::ServiceAccount => self.initialize_service().await?,
+				ServiceMode::Oauth => self.initialize_oauth_service().await?,
+			};
 			self
 				.service
 				.set(Arc::new(service))
@@ -138,55 +228,86 @@ pub struct ReadGmail {
 }
 
 impl ReadGmail {
-	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, GmailServiceError> {
+	pub fn new(user_email: &'static str, client_secret_path: String, service_option: Option<&str>) -> Result<Self, GmailServiceError> {
 		Ok(Self {
-			client: GoogleGmailClient::new(user_email, client_secret_path)?,
+			client: GoogleGmailClient::new(user_email, client_secret_path, service_option)?,
 		})
 	}
 
-	pub async fn list_message(&self, query: Option<&str>, max_results: u32) -> Result<Vec<EmailMetadata>, GmailServiceError> {
+	pub async fn list_message_ids(&self, query: Option<&str>, max_results: u32) -> Result<Vec<String>, GmailServiceError> {
 		let service = self.client.get_service().await?;
-		let mut result = Vec::new();
+		let mut message_ids = Vec::new();
 		let mut page_token = None;
+		let mut total_fetched = 0;
+		let mut consecutive_errors = 0;
+		const MAX_RETRIES: u32 = 3;
 
 		loop {
-			let mut request = service.users().messages_list(&self.client.user_email).max_results(max_results);
+			println!("Fetching messages page. Current count: {}", total_fetched);
 
-			match page_token.as_deref() {
-				Some(token) => request = request.page_token(token),
-				None => {}
+			let mut request = service.users().messages_list(&self.client.user_email);
+
+			let remaining = max_results.saturating_sub(total_fetched);
+			if remaining == 0 {
+				break;
+			}
+			request = request.max_results(remaining);
+
+			if let Some(token) = page_token.as_deref() {
+				request = request.page_token(token);
 			}
 
-			match query {
-				Some(q) => request = request.q(q),
-				None => {}
+			if let Some(q) = query {
+				request = request.q(q);
 			}
 
-			let response = request.doit().await?;
+			println!("Sending request with query: {:?}", query);
 
-			match response.1.messages {
-				Some(messages) => {
-					for message in messages {
-						match message.id {
-							Some(id) => match self.get_message_metadata(&id).await {
-								Ok(metadata) => result.push(metadata),
-								Err(_) => continue,
-							},
-							None => continue,
+			match request.doit().await {
+				Ok(response) => {
+					consecutive_errors = 0;
+
+					match response.1.messages {
+						Some(messages) => {
+							println!("Received {} messages in this page", messages.len());
+
+							for message in messages {
+								if let Some(id) = message.id {
+									message_ids.push(id);
+									total_fetched += 1;
+
+									if total_fetched >= max_results {
+										return Ok(message_ids);
+									}
+								}
+							}
+						}
+						None => {
+							println!("No messages found in this page");
+							break;
 						}
 					}
-				}
-				None => {}
-			}
 
-			page_token = response.1.next_page_token;
-			match page_token {
-				None => break,
-				Some(_) => continue,
+					page_token = response.1.next_page_token;
+
+					if page_token.is_none() {
+						println!("No more pages available");
+						break;
+					}
+				}
+				Err(e) => {
+					println!("API Error: {:?}", e);
+					consecutive_errors += 1;
+					if consecutive_errors >= MAX_RETRIES {
+						return Err(GmailServiceError::Gmail(e));
+					}
+					tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+				}
 			}
 		}
 
-		Ok(result)
+		println!("Total messages fetched: {}", message_ids.len());
+		Ok(message_ids)
 	}
 
 	pub async fn get_message_metadata(&self, message_id: &str) -> Result<EmailMetadata, GmailServiceError> {
@@ -198,24 +319,31 @@ impl ReadGmail {
 		}
 
 		let (_, message) = request.doit().await?;
-		self.parse_message_metadata(message)
+		self.parse_message_metadata(message).await
 	}
 
 	pub async fn get_message_content(&self, message_id: &str) -> Result<EmailContent, GmailServiceError> {
 		let service = self.client.get_service().await?;
+		println!("get message_content starting after init service...");
 		let message = service.users().messages_get(&self.client.user_email, message_id).format("full").doit().await?.1;
+		println!("recieved message, start parsing metadata...");
 
-		let metadata = self.parse_message_metadata(message.clone())?;
+		let metadata = self.parse_message_metadata(message.clone()).await?;
+		println!("finished parsing metadata...");
 		let (body, attachments) = self.parse_message_parts(message.payload)?;
 
 		Ok(EmailContent { metadata, body, attachments })
 	}
 
-	fn parse_message_metadata(&self, message: Message) -> Result<EmailMetadata, GmailServiceError> {
+	async fn parse_message_metadata(&self, message: Message) -> Result<EmailMetadata, GmailServiceError> {
+		println!("begin parsing metadata...");
+		let _ = self.client.get_service().await?;
+		println!("retrieved service...");
 		let headers = message
 			.payload
 			.and_then(|p| p.headers)
 			.ok_or_else(|| GmailServiceError::Message("No headers found".to_string()))?;
+		println!("retrieved headers...");
 
 		let mut subject = String::new();
 		let mut from = String::new();
@@ -285,9 +413,9 @@ pub struct SendGmail {
 }
 
 impl SendGmail {
-	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, GmailServiceError> {
+	pub fn new(user_email: &'static str, client_secret_path: String, service_option: Option<&str>) -> Result<Self, GmailServiceError> {
 		Ok(Self {
-			client: GoogleGmailClient::new(user_email, client_secret_path)?,
+			client: GoogleGmailClient::new(user_email, client_secret_path, service_option)?,
 		})
 	}
 
