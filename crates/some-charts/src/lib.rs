@@ -1,2 +1,2 @@
-mod continuous;
-mod ticks;
+pub mod linear_scale;
+
