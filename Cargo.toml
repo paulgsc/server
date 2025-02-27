@@ -4,7 +4,7 @@
 resolver = "2"
 
 
-members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/chrome_tabs_server", "crates/servers/nfl_server", "crates/splay_diagram", "crates/task_queue", "crates/tuvitu", "crates/webhooks", "crates/foo", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/pkg_cloner",]
+members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/chrome_tabs_server", "crates/servers/nfl_server", "crates/splay_diagram", "crates/task_queue", "crates/tuvitu", "crates/webhooks", "crates/foo", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint",]
 
 exclude = []
 
@@ -30,7 +30,9 @@ edition = "2021"
 nest = { path = "crates/nest" }
 file_reader = { path = "crates/file_reader" }
 nfl_play_parser = { path = "crates/nfl_play_parser" }
+sdk = { path = "crates/sdk" }
 sqlite_macros = { path = "crates/sqlite_macros" }
+enum-name-derive = { path = "crates/enum-name-derive" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
@@ -46,6 +48,7 @@ mime = "0.3.17"
 notify = "6.1.1"
 once_cell = "1.17.1"
 proc-macro2 = "1.0.79"
+prometheus = "0.13.4"
 quote = "1.0.23"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.93"
