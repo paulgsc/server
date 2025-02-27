@@ -7,7 +7,7 @@ use sdk::ReadSheets;
 use std::sync::Arc;
 
 #[axum::debug_handler]
-pub async fn get(State(_state): State<Arc<CacheStore>>, Path(sheet_id): Path<String>) -> Result<Json<&'static str>, FileHostError> {
+pub async fn get(State(_state): State<Arc<CacheStore>>, Path(sheet_id): Path<String>) -> Result<Json<Vec<Vec<std::string::String>>>, FileHostError> {
 	println!("this is the path id: {sheet_id}");
 	let user_email = "foo@gmai.com".to_string();
 	let client_secret_file = "client_secret_file.json".to_string();
@@ -17,6 +17,6 @@ pub async fn get(State(_state): State<Arc<CacheStore>>, Path(sheet_id): Path<Str
 
 	println!("\nReading data from sheet...");
 	let range = "default!A1:B4";
-	let _data = reader.read_data(&sheet_id, range).await?;
-	Ok(Json("hello world"))
+	let data = reader.read_data(&sheet_id, range).await?;
+	Ok(Json(data))
 }
