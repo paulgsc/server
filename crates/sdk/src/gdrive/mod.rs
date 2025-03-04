@@ -5,6 +5,7 @@ use google_drive3::yup_oauth2::Error as OAuth2Error;
 use google_drive3::yup_oauth2::ServiceAccountAuthenticator;
 use google_drive3::Error as GoogleDriveError;
 use google_drive3::{hyper, DriveHub};
+use http_body_util::BodyExt;
 use hyper::Error as HyperError;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -138,7 +139,7 @@ impl ReadDrive {
 			.q(&query)
 			.page_size(page_size)
 			.spaces("drive")
-			.fields("files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
 			.doit()
 			.await?;
 
@@ -151,8 +152,8 @@ impl ReadDrive {
 				name: file.name.unwrap_or_default(),
 				mime_type: file.mime_type.unwrap_or_default(),
 				size: file.size,
-				created_time: file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-				modified_time: file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
+				created_time: file.created_time,
+				modified_time: file.modified_time,
 				web_view_link: file.web_view_link,
 				parents: file.parents.unwrap_or_default(),
 			})
@@ -168,7 +169,7 @@ impl ReadDrive {
 			.await?
 			.files()
 			.get(file_id)
-			.fields("id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents")
+			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
 			.doit()
 			.await?;
 
@@ -179,8 +180,8 @@ impl ReadDrive {
 			name: file.name.ok_or_else(|| DriveError::InvalidMetadata("Missing file name".to_string()))?,
 			mime_type: file.mime_type.ok_or_else(|| DriveError::InvalidMetadata("Missing MIME type".to_string()))?,
 			size: file.size,
-			created_time: file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			modified_time: file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
+			created_time: file.created_time,
+			modified_time: file.modified_time,
 			web_view_link: file.web_view_link,
 			parents: file.parents.unwrap_or_default(),
 		})
@@ -207,12 +208,12 @@ impl ReadDrive {
 			};
 
 			let result = service.files().export(file_id, export_mime_type).doit().await?;
-			let content = hyper::body::to_bytes(result.0.into_body()).await?;
+			let content = result.into_body().collect().await?.to_bytes();
 			fs::write(destination, content)?;
 		} else {
 			// Regular files can be downloaded directly
-			let result = service.files().get(file_id).param("alt", "media").doit().await?;
-			let content = hyper::body::to_bytes(result.0.into_body()).await?;
+			let (response, _file_metadata) = service.files().get(file_id).param("alt", "media").doit().await?;
+			let content = response.into_body().collect().await?.to_bytes();
 			fs::write(destination, content)?;
 		}
 
@@ -229,7 +230,7 @@ impl ReadDrive {
 			.q(query)
 			.page_size(page_size)
 			.spaces("drive")
-			.fields("files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
 			.doit()
 			.await?;
 
@@ -242,8 +243,8 @@ impl ReadDrive {
 				name: file.name.unwrap_or_default(),
 				mime_type: file.mime_type.unwrap_or_default(),
 				size: file.size,
-				created_time: file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-				modified_time: file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
+				created_time: file.created_time,
+				modified_time: file.modified_time,
 				web_view_link: file.web_view_link,
 				parents: file.parents.unwrap_or_default(),
 			})
@@ -276,7 +277,7 @@ impl WriteToDrive {
 			.to_string();
 
 		let content_type = mime_type.unwrap_or("application/octet-stream");
-		let file_content = fs::read(file_path)?;
+		let file_content = fs::File::open(file_path)?;
 
 		let mut file = google_drive3::api::File::default();
 		file.name = Some(file_name);
@@ -292,7 +293,16 @@ impl WriteToDrive {
 			.await?
 			.files()
 			.create(file)
-			.upload(hyper::Body::from(file_content), content_type.parse().unwrap())
+			.use_content_as_indexable_text(true)
+			.supports_team_drives(true)
+			.supports_all_drives(true)
+			.ocr_language("sed")
+			.keep_revision_forever(false)
+			.include_permissions_for_view("Lorem")
+			.include_labels("ea")
+			.ignore_default_visibility(true)
+			.enforce_single_parent(false)
+			.upload(file_content, content_type.parse().unwrap())
 			.await?;
 
 		let uploaded_file = result.1;
@@ -302,35 +312,10 @@ impl WriteToDrive {
 			name: uploaded_file.name.ok_or_else(|| DriveError::InvalidMetadata("Missing file name".to_string()))?,
 			mime_type: uploaded_file.mime_type.ok_or_else(|| DriveError::InvalidMetadata("Missing MIME type".to_string()))?,
 			size: uploaded_file.size,
-			created_time: uploaded_file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			modified_time: uploaded_file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
+			created_time: uploaded_file.created_time,
+			modified_time: uploaded_file.modified_time,
 			web_view_link: uploaded_file.web_view_link,
 			parents: uploaded_file.parents.unwrap_or_default(),
-		})
-	}
-
-	pub async fn create_folder(&self, folder_name: &str, parent_folder_id: Option<&str>) -> Result<FileMetadata, DriveError> {
-		let mut folder = google_drive3::api::File::default();
-		folder.name = Some(folder_name.to_string());
-		folder.mime_type = Some("application/vnd.google-apps.folder".to_string());
-
-		if let Some(parent_id) = parent_folder_id {
-			folder.parents = Some(vec![parent_id.to_string()]);
-		}
-
-		let result = self.client.get_service().await?.files().create(folder).doit().await?;
-
-		let created_folder = result.1;
-
-		Ok(FileMetadata {
-			id: created_folder.id.ok_or_else(|| DriveError::InvalidMetadata("Missing folder ID".to_string()))?,
-			name: created_folder.name.ok_or_else(|| DriveError::InvalidMetadata("Missing folder name".to_string()))?,
-			mime_type: created_folder.mime_type.ok_or_else(|| DriveError::InvalidMetadata("Missing MIME type".to_string()))?,
-			size: created_folder.size,
-			created_time: created_folder.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			modified_time: created_folder.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			web_view_link: created_folder.web_view_link,
-			parents: created_folder.parents.unwrap_or_default(),
 		})
 	}
 
@@ -340,7 +325,7 @@ impl WriteToDrive {
 		}
 
 		let content_type = mime_type.unwrap_or("application/octet-stream");
-		let file_content = fs::read(new_file_path)?;
+		let file_content = fs::File::open(new_file_path)?;
 
 		let file = google_drive3::api::File::default();
 
@@ -350,7 +335,7 @@ impl WriteToDrive {
 			.await?
 			.files()
 			.update(file, file_id)
-			.upload(hyper::Body::from(file_content), content_type.parse().unwrap())
+			.upload(file_content, content_type.parse().unwrap())
 			.await?;
 
 		let updated_file = result.1;
@@ -360,8 +345,8 @@ impl WriteToDrive {
 			name: updated_file.name.ok_or_else(|| DriveError::InvalidMetadata("Missing file name".to_string()))?,
 			mime_type: updated_file.mime_type.ok_or_else(|| DriveError::InvalidMetadata("Missing MIME type".to_string()))?,
 			size: updated_file.size,
-			created_time: updated_file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			modified_time: updated_file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
+			created_time: updated_file.created_time,
+			modified_time: updated_file.modified_time,
 			web_view_link: updated_file.web_view_link,
 			parents: updated_file.parents.unwrap_or_default(),
 		})
@@ -371,32 +356,6 @@ impl WriteToDrive {
 		self.client.get_service().await?.files().delete(file_id).doit().await?;
 
 		Ok(())
-	}
-
-	pub async fn move_file(&self, file_id: &str, new_parent_id: &str, remove_parents: Option<&str>) -> Result<FileMetadata, DriveError> {
-		let result = self
-			.client
-			.get_service()
-			.await?
-			.files()
-			.update(google_drive3::api::File::default(), file_id)
-			.add_parents(new_parent_id)
-			.remove_parents(remove_parents.unwrap_or(""))
-			.doit()
-			.await?;
-
-		let moved_file = result.1;
-
-		Ok(FileMetadata {
-			id: moved_file.id.ok_or_else(|| DriveError::InvalidMetadata("Missing file ID".to_string()))?,
-			name: moved_file.name.ok_or_else(|| DriveError::InvalidMetadata("Missing file name".to_string()))?,
-			mime_type: moved_file.mime_type.ok_or_else(|| DriveError::InvalidMetadata("Missing MIME type".to_string()))?,
-			size: moved_file.size,
-			created_time: moved_file.created_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			modified_time: moved_file.modified_time.and_then(|t| t.parse::<DateTime<Utc>>().ok()),
-			web_view_link: moved_file.web_view_link,
-			parents: moved_file.parents.unwrap_or_default(),
-		})
 	}
 }
 
