@@ -1,5 +1,6 @@
 use crate::{GoogleServiceFilePath, SecretFilePathError};
 use chrono::{DateTime, Utc};
+use google_drive3::api::Scope;
 use google_drive3::hyper_rustls;
 use google_drive3::yup_oauth2::Error as OAuth2Error;
 use google_drive3::yup_oauth2::ServiceAccountAuthenticator;
@@ -50,6 +51,9 @@ pub enum DriveError {
 
 	#[error("Secret file path error: {0}")]
 	SecretFilePath(#[from] SecretFilePathError),
+
+	#[error("Unexpected error: {0}")]
+	TokenError(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -97,6 +101,8 @@ impl GoogleDriveClient {
 		let executor = hyper_util::rt::TokioExecutor::new();
 		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
 
+		auth.token(&[Scope::Full.as_ref()]).await?;
+
 		Ok(DriveHub::new(client, auth))
 	}
 
@@ -138,8 +144,12 @@ impl ReadDrive {
 			.list()
 			.q(&query)
 			.page_size(page_size)
-			.spaces("drive")
-			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.supports_team_drives(true)
+			.supports_all_drives(true)
+			.include_items_from_all_drives(true)
+			.page_size(10)
+			.corpora("allDrives")
+			.add_scope(Scope::Full.as_ref())
 			.doit()
 			.await?;
 
@@ -169,7 +179,10 @@ impl ReadDrive {
 			.await?
 			.files()
 			.get(file_id)
-			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.supports_team_drives(true)
+			.supports_all_drives(true)
+			.include_permissions_for_view("published")
+			.add_scope(Scope::Full.as_ref())
 			.doit()
 			.await?;
 
@@ -231,6 +244,7 @@ impl ReadDrive {
 			.page_size(page_size)
 			.spaces("drive")
 			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.add_scope(Scope::Full.as_ref())
 			.doit()
 			.await?;
 
@@ -296,12 +310,9 @@ impl WriteToDrive {
 			.use_content_as_indexable_text(true)
 			.supports_team_drives(true)
 			.supports_all_drives(true)
-			.ocr_language("sed")
 			.keep_revision_forever(false)
-			.include_permissions_for_view("Lorem")
-			.include_labels("ea")
+			.include_permissions_for_view("published")
 			.ignore_default_visibility(true)
-			.enforce_single_parent(false)
 			.upload(file_content, content_type.parse().unwrap())
 			.await?;
 

@@ -15,12 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	println!("=== Example 1: Listing Recent Emails ===");
 	let gmail_reader = ReadGmail::new(user_email, client_secret_path.clone(), Some("oauth"))?;
 
-
 	// Example 2: Search for specific emails
 	println!("\n=== Example 2: Searching Emails ===");
 	// Search for emails with "important" in subject
 	let search_query = "subject:important";
-	let search_results = gmail_reader.list_message(Some(search_query), 5).await?;
+	let search_results = gmail_reader.list_message_ids(Some(search_query), 5).await?;
 	for result in search_results {
 		println!("Found email: {} - Date: {} - Subject: {}", result.id, result.date, result.subject);
 	}
