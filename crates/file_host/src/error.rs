@@ -23,6 +23,9 @@ pub enum FileHostError {
 	#[error("error in the request body")]
 	UnprocessableEntity { errors: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>> },
 
+	#[error("Provided data is not serializable to JSON: {0}")]
+	NonSerializableData(#[from] serde_json::Error),
+
 	#[error("an internal server error occurred")]
 	Anyhow(#[from] anyhow::Error),
 
@@ -69,6 +72,7 @@ impl FileHostError {
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
