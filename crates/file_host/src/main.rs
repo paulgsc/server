@@ -1,10 +1,11 @@
 mod handlers;
 mod metrics;
 mod routes;
-use crate::routes::get_attributions;
+use crate::routes::{attributions::get_attributions, gdrive::get_gdrive_file};
 use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
+use file_host::rate_limiter::sliding_window::{rate_limit_middleware, SlidingWindowRateLimiter};
 use file_host::Config;
 use file_host::{error::FileHostError, CacheStore};
 use std::sync::Arc;
@@ -24,9 +25,13 @@ async fn main() -> Result<()> {
 
 	let mut app = Router::new()
 		.route("/metrics", get(metrics::metrics_handler))
-		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
+		.layer(axum::middleware::from_fn(metrics::metrics_middleware))
+		.layer(axum::middleware::from_fn_with_state(
+			Arc::new(SlidingWindowRateLimiter::new(context.clone())),
+			rate_limit_middleware,
+		));
 
-	app = app.merge(get_attributions(context.clone())?);
+	app = app.merge(get_attributions(context.clone())?).merge(get_gdrive_file(context.clone())?);
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
@@ -59,4 +64,46 @@ pub fn init_tracing(config: &Config) -> Option<()> {
 		})
 		.init();
 	None
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use axum::{
+		body::Body,
+		extract::ConnectInfo,
+		http::{Request, StatusCode},
+	};
+	use std::net::SocketAddr;
+	use tower::ServiceExt;
+
+	#[tokio::test]
+	async fn test_rate_limiter_without_server() {
+		dotenv::dotenv().ok();
+		let context = Arc::new(Config::parse());
+
+		// Create a test app
+		let app = Router::new().route("/test", get(|| async { "Success" })).layer(axum::middleware::from_fn_with_state(
+			Arc::new(SlidingWindowRateLimiter::new(context.clone())),
+			rate_limit_middleware,
+		));
+
+		let app_service = app.clone().into_service();
+		// Make requests quickly
+		let remote_addr = "127.0.0.1:12345".parse::<SocketAddr>().unwrap();
+
+		// Test with same IP (should trigger rate limit)
+		for i in 1..=12 {
+			// Assuming limit is 10
+			let request = Request::builder().uri("/test").extension(ConnectInfo(remote_addr)).body(Body::empty()).unwrap();
+
+			let response = app_service.clone().oneshot(request).await.unwrap();
+
+			if i <= 10 {
+				assert_eq!(response.status(), StatusCode::OK);
+			} else {
+				assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+			}
+		}
+	}
 }

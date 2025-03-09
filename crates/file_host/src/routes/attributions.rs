@@ -1,12 +1,22 @@
 use crate::handlers::read_attributions as routes;
 use crate::{CacheStore, Config, FileHostError};
 use axum::routing::get;
-use axum::{http::Method, Router};
+use axum::{
+	http::{
+		header::{AUTHORIZATION, CONTENT_TYPE},
+		{HeaderValue, Method},
+	},
+	Router,
+};
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 pub fn get_attributions(config: Arc<Config>) -> Result<Router, FileHostError> {
-	let cors = CorsLayer::new().allow_methods([Method::GET]).allow_origin(Any);
+	let cors = CorsLayer::new()
+		.allow_origin("http://nixos.local:6006".parse::<HeaderValue>().unwrap())
+		.allow_methods([Method::GET])
+		.allow_headers([CONTENT_TYPE, AUTHORIZATION])
+		.allow_credentials(true);
 	let state = CacheStore::new(config)?;
 
 	Ok(Router::new().route("/gsheet/:sheet_id", get(routes::get)).layer(cors).with_state(Arc::new(state)))
