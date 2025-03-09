@@ -13,9 +13,16 @@ pub use config::*;
 pub use routes::*;
 
 #[derive(Clone)]
+pub struct AppState {
+	pub cache_store: CacheStore,
+	pub config: Arc<Config>,
+}
+
+#[derive(Clone)]
 pub struct CacheStore {
 	pub redis_client: Client,
 	pub cache_ttl: u64,
+	pub config: Arc<Config>,
 }
 
 impl CacheStore {
@@ -28,7 +35,7 @@ impl CacheStore {
 		let redis_client = Client::open(redis_url)?;
 		let cache_ttl = config.cache_ttl;
 
-		Ok(Self { redis_client, cache_ttl })
+		Ok(Self { redis_client, cache_ttl, config })
 	}
 
 	async fn reset_cache_ttl(&self, key: &str) -> Result<(), FileHostError> {

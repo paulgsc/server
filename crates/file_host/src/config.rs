@@ -56,6 +56,10 @@ pub struct Config {
 	#[arg(long, env = "LOG_FILE")]
 	pub log_file: Option<String>,
 
+	/// Secret file path
+	#[arg(long, env = "CLIENT_SECRET_FILE")]
+	pub client_secret_file: String,
+
 	/// Enable user registration
 	#[arg(long, env = "ENABLE_USER_REGISTRATION")]
 	pub enable_user_registration: bool,
