@@ -25,13 +25,15 @@ async fn main() -> Result<()> {
 
 	let mut app = Router::new()
 		.route("/metrics", get(metrics::metrics_handler))
+		.merge(get_attributions(context.clone())?)
+		.merge(get_gdrive_file(context.clone())?);
+
+	app = app
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware))
 		.layer(axum::middleware::from_fn_with_state(
 			Arc::new(SlidingWindowRateLimiter::new(context.clone())),
 			rate_limit_middleware,
 		));
-
-	app = app.merge(get_attributions(context.clone())?).merge(get_gdrive_file(context.clone())?);
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
