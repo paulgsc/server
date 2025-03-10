@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod metrics;
+pub mod models;
 pub mod rate_limiter;
 pub mod routes;
 

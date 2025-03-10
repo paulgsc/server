@@ -1,6 +1,7 @@
 mod handlers;
 mod metrics;
 mod routes;
+mod models;
 use crate::routes::{attributions::get_attributions, gdrive::get_gdrive_file};
 use anyhow::Result;
 use axum::{routing::get, Router};

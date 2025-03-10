@@ -1,15 +1,27 @@
-use crate::{AppState, FileHostError};
-use axum::extract::Path;
-use axum::extract::State;
+use crate::{
+	models::gsheet::{validate_range, RangeQuery},
+	AppState, FileHostError,
+};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use sdk::ReadSheets;
 use std::sync::Arc;
 
 #[axum::debug_handler]
-pub async fn get(State(state): State<Arc<AppState>>, Path(sheet_id): Path<String>) -> Result<Json<Vec<Vec<std::string::String>>>, FileHostError> {
+pub async fn get(
+	State(state): State<Arc<AppState>>,
+	Path(sheet_id): Path<String>,
+	Query(range_query): Query<RangeQuery>,
+) -> Result<Json<Vec<Vec<std::string::String>>>, FileHostError> {
 	if let Some(cached_data) = state.cache_store.get_json(&sheet_id).await? {
 		log::info!("Cache hit for key: {}", sheet_id);
 		return Ok(Json(cached_data));
+	}
+
+	let range = range_query.range.ok_or_else(|| FileHostError::InvalidData)?;
+
+	if !validate_range(&range) {
+		return Err(FileHostError::SheetError(sdk::SheetError::InvalidRange(range.into())));
 	}
 
 	let secret_file = state.config.client_secret_file.clone();
@@ -17,9 +29,7 @@ pub async fn get(State(state): State<Arc<AppState>>, Path(sheet_id): Path<String
 
 	let reader = ReadSheets::new(use_email, secret_file)?;
 
-	println!("\nReading data from sheet...");
-	let range = "default!A1:B4";
-	let data = reader.read_data(&sheet_id, range).await?;
+	let data = reader.read_data(&sheet_id, &range).await?;
 
 	if data.len() <= 100 {
 		log::info!("Caching data for key: {}", &sheet_id);
