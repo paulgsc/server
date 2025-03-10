@@ -6,6 +6,21 @@ use axum::Json;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+#[derive(Debug, thiserror::Error)]
+pub enum GSheetDeriveError {
+	#[error("Missing required field {0} at column {1}")]
+	MissingRequiredField(String, String),
+
+	#[error("Failed to parse field {0} at column {1}: {2}")]
+	ParseError(String, String, String),
+
+	#[error("Column {0} not found in header")]
+	ColumnNotFound(String),
+
+	#[error("Missing header row")]
+	MissingHeader,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum FileHostError {
 	#[error("authentication required")]
@@ -43,6 +58,9 @@ pub enum FileHostError {
 
 	#[error("Sheet error: {0}")]
 	SheetError(#[from] sdk::SheetError),
+
+	#[error("Sheet Derive error: {0}")]
+	GSheetError(#[from] GSheetDeriveError),
 }
 
 impl FileHostError {
@@ -72,6 +90,7 @@ impl FileHostError {
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::GSheetError(_) => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}

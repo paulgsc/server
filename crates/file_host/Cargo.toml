@@ -11,6 +11,8 @@ edition.workspace = true
 # path crates
 nest  = { workspace = true }
 sdk  = { workspace = true }
+gsheet_derive  = { workspace = true }
+enum-name-derive  = { workspace = true }
 
 axum = { workspace = true }
 anyhow = { workspace = true }

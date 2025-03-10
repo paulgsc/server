@@ -1,4 +1,4 @@
-use crate::error::FileHostError;
+use crate::error::{FileHostError, GSheetDeriveError};
 use redis::{AsyncCommands, Client};
 use std::sync::Arc;
 
