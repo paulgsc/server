@@ -1,5 +1,5 @@
 use crate::{
-	models::gsheet::{validate_range, Attribution, FromGSheet, RangeQuery},
+	models::gsheet::{validate_range, Attribution, FromGSheet, RangeQuery, VideoChapters},
 	AppState, FileHostError,
 };
 use axum::extract::{Path, Query, State};
@@ -8,7 +8,7 @@ use sdk::ReadSheets;
 use std::sync::Arc;
 
 #[axum::debug_handler]
-pub async fn get(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
+pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
 	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
 		log::info!("Cache hit for key: {}", &id);
 		let attributions = Attribution::from_gsheet(&cached_data, true)?;
@@ -17,10 +17,31 @@ pub async fn get(State(state): State<Arc<AppState>>, Path(id): Path<String>, Que
 
 	let q = extract_and_validate_range(q)?;
 	let data = refetch(&state, &id, &q).await?;
-	log::info!("data is: {:?}", &data);
 
 	let attributions = Attribution::from_gsheet(&data, true)?;
-	log::info!("attributions parsed: {:?}", attributions);
+
+	if data.len() <= 100 {
+		log::info!("Caching data for key: {}", &id);
+		state.cache_store.set_json(&id, &data).await?;
+	} else {
+		log::info!("Data too large to cache (size: {})", data.len());
+	}
+
+	Ok(Json(attributions))
+}
+
+#[axum::debug_handler]
+pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
+	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
+		log::info!("Cache hit for key: {}", &id);
+		let attributions = VideoChapters::from_gsheet(&cached_data, true)?;
+		return Ok(Json(attributions));
+	}
+
+	let q = extract_and_validate_range(q)?;
+	let data = refetch(&state, &id, &q).await?;
+
+	let attributions = VideoChapters::from_gsheet(&data, true)?;
 
 	if data.len() <= 100 {
 		log::info!("Caching data for key: {}", &id);

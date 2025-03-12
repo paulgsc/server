@@ -1,4 +1,7 @@
-use crate::{models::utils::deserialize_url, GSheetDeriveError};
+use crate::{
+	models::utils::{deserialize_color, deserialize_url},
+	GSheetDeriveError,
+};
 use enum_name_derive::EnumFilename;
 use gsheet_derive::FromGSheet;
 use regex::Regex;
@@ -50,6 +53,19 @@ pub struct Attribution {
 	license: String,
 	#[gsheet(column = "G")]
 	thumbnail: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromGSheet)]
+pub struct VideoChapters {
+	#[gsheet(column = "A")]
+	id: u32,
+	#[gsheet(column = "B")]
+	title: String,
+	#[gsheet(column = "C")]
+	#[serde(deserialize_with = "deserialize_color")]
+	color: String,
+	#[gsheet(column = "D")]
+	details: String,
 }
 
 pub trait FromGSheet: Sized {

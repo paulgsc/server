@@ -1,4 +1,4 @@
-use crate::handlers::read_attributions as routes;
+use crate::handlers::read_sheets as routes;
 use crate::{AppState, CacheStore, Config, FileHostError};
 use axum::routing::get;
 use axum::{http::Method, Router};
@@ -13,5 +13,10 @@ pub fn get_gdrive_file(config: Arc<Config>) -> Result<Router, FileHostError> {
 		config: config.clone(),
 	};
 
-	Ok(Router::new().route("/gdrive/:file_id", get(routes::get)).layer(cors).with_state(Arc::new(app_state)))
+	Ok(
+		Router::new()
+			.route("/gdrive/:file_id", get(routes::get_attributions))
+			.layer(cors)
+			.with_state(Arc::new(app_state)),
+	)
 }

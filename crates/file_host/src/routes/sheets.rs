@@ -1,4 +1,4 @@
-use crate::handlers::read_attributions as routes;
+use crate::handlers::read_sheets as routes;
 use crate::{AppState, CacheStore, Config, FileHostError};
 use axum::routing::get;
 use axum::{
@@ -11,7 +11,7 @@ use axum::{
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
-pub fn get_attributions(config: Arc<Config>) -> Result<Router, FileHostError> {
+pub fn get_sheets(config: Arc<Config>) -> Result<Router, FileHostError> {
 	let cors = CorsLayer::new()
 		.allow_origin("http://nixos.local:6006".parse::<HeaderValue>().unwrap())
 		.allow_methods([Method::GET])
@@ -23,5 +23,12 @@ pub fn get_attributions(config: Arc<Config>) -> Result<Router, FileHostError> {
 		config: config.clone(),
 	};
 
-	Ok(Router::new().route("/gsheet/:sheet_id", get(routes::get)).layer(cors).with_state(Arc::new(app_state)))
+	Ok(
+		Router::new()
+		// TODO: Add path validation: something about must start with slashes? 
+			.route("/get_attributions/:sheet_id", get(routes::get_attributions))
+			.route("/get_video_chapters/:sheet_id", get(routes::get_video_chapters))
+			.layer(cors)
+			.with_state(Arc::new(app_state)),
+	)
 }
