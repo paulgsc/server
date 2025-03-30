@@ -179,9 +179,9 @@ pub struct GanttChapter {
 	pub id: Box<str>,
 	pub title: Box<str>,
 	#[serde(rename = "startTime")]
-	pub start_time: Box<str>,
+	pub start_time: i16,
 	#[serde(rename = "endTime")]
-	pub end_time: Box<str>,
+	pub end_time: i16,
 	pub description: Box<str>,
 	pub color: Box<str>,
 	#[serde(rename = "subChapters")]
@@ -193,9 +193,9 @@ pub struct GanttSubChapter {
 	pub id: Box<str>,
 	pub title: Box<str>,
 	#[serde(rename = "startTime")]
-	pub start_time: Box<str>,
+	pub start_time: i16,
 	#[serde(rename = "endTime")]
-	pub end_time: Box<str>,
+	pub end_time: i16,
 	pub description: Box<str>,
 	pub color: Box<str>,
 }

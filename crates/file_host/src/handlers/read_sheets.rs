@@ -81,13 +81,14 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	let mut h: HashMap<Box<str>, GanttChapter> = HashMap::new();
 
 	for row in data.iter().skip(1) {
+		log::info!("row: {:?}", row);
 		let c_id = row[0].trim_matches('"').to_string().into_boxed_str();
 
 		let chapters = h.entry(c_id.clone()).or_insert(GanttChapter {
 			id: c_id,
 			title: row[1].trim_matches('"').to_string().into_boxed_str(),
-			start_time: row[2].trim_matches('"').to_string().into_boxed_str(),
-			end_time: row[3].trim_matches('"').to_string().into_boxed_str(),
+			start_time: row[2].trim_matches('"').parse::<i16>().unwrap_or(0),
+			end_time: row[3].trim_matches('"').parse::<i16>().unwrap_or(0),
 			description: row[4].trim_matches('"').to_string().into_boxed_str(),
 			color: row[5].trim_matches('"').to_string().into_boxed_str(),
 			sub_chapters: Vec::new(),
@@ -96,8 +97,8 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 		chapters.sub_chapters.push(GanttSubChapter {
 			id: row[6].trim_matches('"').to_string().into_boxed_str(),
 			title: row[7].trim_matches('"').to_string().into_boxed_str(),
-			start_time: row[8].trim_matches('"').to_string().into_boxed_str(),
-			end_time: row[9].trim_matches('"').to_string().into_boxed_str(),
+			start_time: row[8].trim_matches('"').parse::<i16>().unwrap_or(0),
+			end_time: row[9].trim_matches('"').parse::<i16>().unwrap_or(0),
 			description: row[10].trim_matches('"').to_string().into_boxed_str(),
 			color: row[11].trim_matches('"').to_string().into_boxed_str(),
 		});
