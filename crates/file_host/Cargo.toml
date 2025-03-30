@@ -14,12 +14,13 @@ sdk  = { workspace = true }
 gsheet_derive  = { workspace = true }
 enum-name-derive  = { workspace = true }
 
-axum = { workspace = true }
+axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
 clap = { workspace = true }
 dotenv = { workspace = true }
 log = "0.4.14"
 lazy_static = { workspace = true }
+futures = { workspace = true }
 prometheus = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }

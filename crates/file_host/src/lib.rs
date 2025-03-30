@@ -9,6 +9,8 @@ pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
 pub mod routes;
+pub mod utils;
+pub mod websocket;
 
 pub use config::*;
 pub use routes::*;

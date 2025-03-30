@@ -174,6 +174,32 @@ pub fn validate_range(range: &str) -> bool {
 	re.is_match(range)
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct GanttChapter {
+	pub id: Box<str>,
+	pub title: Box<str>,
+	#[serde(rename = "startTime")]
+	pub start_time: Box<str>,
+	#[serde(rename = "endTime")]
+	pub end_time: Box<str>,
+	pub description: Box<str>,
+	pub color: Box<str>,
+	#[serde(rename = "subChapters")]
+	pub sub_chapters: Vec<GanttSubChapter>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GanttSubChapter {
+	pub id: Box<str>,
+	pub title: Box<str>,
+	#[serde(rename = "startTime")]
+	pub start_time: Box<str>,
+	#[serde(rename = "endTime")]
+	pub end_time: Box<str>,
+	pub description: Box<str>,
+	pub color: Box<str>,
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

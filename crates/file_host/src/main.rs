@@ -9,6 +9,7 @@ use clap::Parser;
 use file_host::rate_limiter::sliding_window::{rate_limit_middleware, SlidingWindowRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
+	websocket::init_websocket,
 	CacheStore,
 };
 use file_host::{AppState, Config};
@@ -27,10 +28,13 @@ async fn main() -> Result<()> {
 
 	let context = Arc::new(config);
 
+	let ws_state = init_websocket().await;
+
 	let mut app = Router::new()
 		.route("/metrics", get(metrics::metrics_handler))
 		.merge(get_sheets(context.clone())?)
-		.merge(get_gdrive_file(context.clone())?);
+		.merge(get_gdrive_file(context.clone())?)
+		.merge(ws_state.router());
 
 	app = app
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware))
