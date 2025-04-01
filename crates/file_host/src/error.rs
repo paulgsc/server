@@ -56,6 +56,9 @@ pub enum FileHostError {
 	#[error("Redis error: {0}")]
 	RedisError(#[from] redis::RedisError),
 
+	#[error("Polars error: {0}")]
+	PolarsError(#[from] polars::error::PolarsError),
+
 	#[error("Sheet error: {0}")]
 	SheetError(#[from] sdk::SheetError),
 
@@ -89,6 +92,7 @@ impl FileHostError {
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::PolarsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::GSheetError(_) => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,

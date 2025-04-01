@@ -32,6 +32,7 @@ tower = { workspace = true }
 tower-http = { workspace = true, features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
+polars = { version =  "0.46.0", features = ["lazy"] }
 
 [lints]
 workspace = true
