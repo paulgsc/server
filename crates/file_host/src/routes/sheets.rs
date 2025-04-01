@@ -29,6 +29,7 @@ pub fn get_sheets(config: Arc<Config>) -> Result<Router, FileHostError> {
 			.route("/get_attributions/:sheet_id", get(routes::get_attributions))
 			.route("/get_video_chapters/:sheet_id", get(routes::get_video_chapters))
 			.route("/get_gantt/:sheet_id", get(routes::get_gantt))
+			.route("/get_nfl_tennis/:sheet_id", get(routes::get_nfl_tennis))
 			.layer(cors)
 			.with_state(Arc::new(app_state)),
 	)

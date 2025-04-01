@@ -32,93 +32,76 @@ pub struct NFLGameScores {
 	total: i32,
 }
 
-fn calculate_quarter_points(team_q: &[i32], opponent_q: &[i32]) -> f32 {
-	let mut points = 0.0;
-	for (t, o) in team_q.iter().zip(opponent_q.iter()) {
-		points += if t > o {
-			0.25
-		} else if t == o {
-			0.125
-		} else {
-			0.0
-		};
+impl NFLGameScores {
+	pub fn create_dataframe(games: Vec<Self>) -> Result<DataFrame, FileHostError> {
+		let df = DataFrame::new(vec![
+			Series::new("game_id".into(), games.iter().map(|g| g.game_id).collect::<Vec<_>>()).into(),
+			Series::new("team".into(), games.iter().map(|g| g.team.as_str()).collect::<Vec<_>>()).into(),
+			Series::new("home_away".into(), games.iter().map(|g| g.home_away.as_str()).collect::<Vec<_>>()).into(),
+			Series::new("date".into(), games.iter().map(|g| g.date.as_str()).collect::<Vec<_>>()).into(),
+			Series::new("q1".into(), games.iter().map(|g| g.q1).collect::<Vec<_>>()).into(),
+			Series::new("q2".into(), games.iter().map(|g| g.q2).collect::<Vec<_>>()).into(),
+			Series::new("q3".into(), games.iter().map(|g| g.q3).collect::<Vec<_>>()).into(),
+			Series::new("q4".into(), games.iter().map(|g| g.q4).collect::<Vec<_>>()).into(),
+			Series::new("ot".into(), games.iter().map(|g| g.ot).collect::<Vec<_>>()).into(),
+			Series::new("total".into(), games.iter().map(|g| g.total).collect::<Vec<_>>()).into(),
+		])?;
+		Ok(df)
 	}
-	points
-}
 
-pub fn create_dataframe(games: Vec<NFLGameScores>) -> Result<DataFrame, FileHostError> {
-	let df = DataFrame::new(vec![
-		Series::new("game_id".into(), games.iter().map(|g| g.game_id).collect::<Vec<_>>()).into(),
-		Series::new("team".into(), games.iter().map(|g| g.team.as_str()).collect::<Vec<_>>()).into(),
-		Series::new("home_away".into(), games.iter().map(|g| g.home_away.as_str()).collect::<Vec<_>>()).into(),
-		Series::new("date".into(), games.iter().map(|g| g.date.as_str()).collect::<Vec<_>>()).into(),
-		Series::new("q1".into(), games.iter().map(|g| g.q1).collect::<Vec<_>>()).into(),
-		Series::new("q2".into(), games.iter().map(|g| g.q2).collect::<Vec<_>>()).into(),
-		Series::new("q3".into(), games.iter().map(|g| g.q3).collect::<Vec<_>>()).into(),
-		Series::new("q4".into(), games.iter().map(|g| g.q4).collect::<Vec<_>>()).into(),
-		Series::new("ot".into(), games.iter().map(|g| g.ot).collect::<Vec<_>>()).into(),
-		Series::new("total".into(), games.iter().map(|g| g.total).collect::<Vec<_>>()).into(),
-	])?;
-	Ok(df)
-}
+	pub fn get_team_standings(df: &DataFrame) -> Result<Vec<(String, f64)>, FileHostError> {
+		let df_opponents = df.clone().lazy().rename(
+			["team", "q1", "q2", "q3", "q4"],
+			["opponent", "opponent_q1", "opponent_q2", "opponent_q3", "opponent_q4"],
+			false,
+		);
 
-pub fn get_team_standings(df: &DataFrame) -> Result<Vec<(String, f32)>, FileHostError> {
-	let df_opponents = df.clone().lazy().rename(
-		["team", "q1", "q2", "q3", "q4"],
-		["opponent", "opponent_q1", "opponent_q2", "opponent_q3", "opponent_q4"],
-		false,
-	);
+		// Create quarter point calculations for each quarter using Polars' proper comparison methods
+		let q1_points = when(col("q1").gt(col("opponent_q1")))
+			.then(lit(0.25))
+			.when(col("q1").eq(col("opponent_q1")))
+			.then(lit(0.125))
+			.otherwise(lit(0.0));
 
-	let df_merged = df
-		.clone()
-		.lazy()
-		.join(df_opponents, &[col("game_id")], &[col("game_id")], JoinType::Inner.into())
-		.filter(col("team").neq(col("opponent"))) // Ensure no self-matching
-		.with_column(map_multiple(
-			|columns: &mut [Column]| {
-				let series: Vec<Series> = columns
-					.iter_mut()
-					.map(|col| col.as_series())
-					.filter_map(|opt_series| opt_series.map(|series| series.clone()))
-					.collect();
+		let q2_points = when(col("q2").gt(col("opponent_q2")))
+			.then(lit(0.25))
+			.when(col("q2").eq(col("opponent_q2")))
+			.then(lit(0.125))
+			.otherwise(lit(0.0));
 
-				let team_q: Vec<i32> = series[..4].iter().flat_map(|s| s.i32().unwrap().into_iter().flatten()).collect();
+		let q3_points = when(col("q3").gt(col("opponent_q3")))
+			.then(lit(0.25))
+			.when(col("q3").eq(col("opponent_q3")))
+			.then(lit(0.125))
+			.otherwise(lit(0.0));
 
-				let opponent_q: Vec<i32> = series[4..].iter().flat_map(|s| s.i32().unwrap().into_iter().flatten()).collect();
+		let q4_points = when(col("q4").gt(col("opponent_q4")))
+			.then(lit(0.25))
+			.when(col("q4").eq(col("opponent_q4")))
+			.then(lit(0.125))
+			.otherwise(lit(0.0));
 
-				let result_series = Series::new("quarter_points".into(), vec![calculate_quarter_points(&team_q, &opponent_q)]);
+		// Sum all quarter points together
+		let df_merged = df
+			.clone()
+			.lazy()
+			.join(df_opponents, &[col("game_id")], &[col("game_id")], JoinType::Inner.into())
+			.filter(col("team").neq(col("opponent")))
+			.with_column((q1_points + q2_points + q3_points + q4_points).alias("quarter_points"))
+			.collect()?;
 
-				Ok(Some(result_series.into()))
-			},
-			[
-				col("q1"),
-				col("q2"),
-				col("q3"),
-				col("q4"),
-				col("opponent_q1"),
-				col("opponent_q2"),
-				col("opponent_q3"),
-				col("opponent_q4"),
-			],
-			GetOutput::from_type(DataType::Float32),
-		))
-		.collect()?;
+		// Now quarter_points exists in df_merged
+		let aggregated = df_merged
+			.lazy()
+			.group_by(["team"])
+			.agg([col("quarter_points").sum().alias("total_quarter_points")])
+			.sort(vec!["total_quarter_points"], Default::default())
+			.collect()?;
 
-	// Aggregate by team
-	let aggregated = df_merged
-		.lazy()
-		.group_by(["team"])
-		.agg([col("quarter_points").sum().alias("total_quarter_points")])
-		.sort(vec!["total_quarter_points"], Default::default()) 
-		.collect()?;
+		let teams: Vec<String> = aggregated.column("team")?.str()?.into_iter().filter_map(|s| s.map(|s| s.to_string())).collect();
 
-	let teams: Vec<String> = aggregated
-		.column("team")?
-		.str()? // Use `.str()` instead of `.utf8()`
-		.into_iter()
-		.filter_map(|s| s.map(|s| s.to_string()))
-		.collect();
-	let scores: Vec<f32> = aggregated.column("total_quarter_points")?.f32()?.into_iter().map(|f| f.unwrap()).collect();
+		let scores: Vec<f64> = aggregated.column("total_quarter_points")?.f64()?.into_iter().map(|f| f.unwrap()).collect();
 
-	Ok(teams.into_iter().zip(scores.into_iter()).collect())
+		Ok(teams.into_iter().zip(scores.into_iter()).collect())
+	}
 }

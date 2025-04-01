@@ -1,5 +1,6 @@
 use crate::{
 	models::gsheet::{validate_range, Attribution, FromGSheet, GanttChapter, GanttSubChapter, RangeQuery, VideoChapters},
+	models::nfl_tennis::NFLGameScores,
 	AppState, FileHostError,
 };
 use axum::extract::{Path, Query, State};
@@ -81,7 +82,11 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	let mut h: HashMap<Box<str>, GanttChapter> = HashMap::new();
 
 	for row in data.iter().skip(1) {
-		log::info!("row: {:?}", row);
+		if row.len() < 12 {
+			log::error!("Row has less than 12 elements: {:?}", row);
+			continue;
+		}
+
 		let c_id = row[0].trim_matches('"').to_string().into_boxed_str();
 
 		let chapters = h.entry(c_id.clone()).or_insert(GanttChapter {
@@ -105,6 +110,30 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	}
 
 	h.into_values().collect()
+}
+
+#[axum::debug_handler]
+pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<(String, f64)>>, FileHostError> {
+	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
+		log::info!("Cache hit for key: {}", &id);
+		return Ok(Json(cached_data));
+	}
+
+	let q = extract_and_validate_range(q)?;
+	let data = refetch(&state, &id, &q).await?;
+
+	let scores = NFLGameScores::from_gsheet(&data, true)?;
+	let df = NFLGameScores::create_dataframe(scores)?;
+	let standings = NFLGameScores::get_team_standings(&df)?;
+
+	if standings.len() <= 100 {
+		log::info!("Caching data for key: {}", &id);
+		state.cache_store.set_json(&id, &standings).await?;
+	} else {
+		log::info!("Data too large to cache (size: {})", standings.len());
+	}
+
+	Ok(Json(standings))
 }
 
 async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: &str) -> Result<Vec<Vec<String>>, FileHostError> {
