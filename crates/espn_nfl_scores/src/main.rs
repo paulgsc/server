@@ -5,12 +5,15 @@ use crate::config::Config;
 use crate::error::ParserError;
 use clap::Parser;
 use csv::Writer;
+use sdk::{SheetError, WriteToGoogleSheet};
+use serde::Serialize;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
+use tokio;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct TeamScore {
 	game_id: u32,
 	name: String,
@@ -147,7 +150,42 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
 	Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_to_gsheet(spreadsheet_id: &str, sheet_name: &str, scores: Vec<TeamScore>) -> Result<(), Box<dyn std::error::Error>> {
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+
+	let user_email = "aulgondu@gmail.com".to_string();
+	let client_secret_file = ".setup/client_secret_file.json".to_string();
+
+	let writer = WriteToGoogleSheet::new(user_email, client_secret_file)?;
+	let mut records = Vec::new();
+	let headers = vec!["GameID", "Team", "H/A", "Date", "Q1", "Q2", "Q3", "Q4", "OT", "Total"]
+		.into_iter()
+		.map(String::from)
+		.collect::<Vec<String>>();
+	records.insert(0, headers);
+
+	for team in scores {
+		let mut record = vec![team.game_id.to_string(), team.name, team.home_away, team.date];
+
+		for quarter in team.quarters.iter() {
+			record.push(quarter.to_string());
+		}
+		record.push(team.total.to_string());
+
+		if team.quarters.len() < 5 {
+			record.insert(8, "0".to_string());
+		}
+		records.push(record);
+	}
+	writer.write_data_to_sheet(sheet_name, spreadsheet_id, records).await?;
+
+	Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv::dotenv().ok();
 
 	// Load configuration from env.toml
@@ -159,9 +197,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Parse the HTML content to extract scores
 	let scores = parse_scores(&html)?;
 
-	// Write the parsed scores to a CSV file
-	write_to_csv(scores, Path::new(&config.output_file))?;
+	match config.output_file.as_str() {
+		"data.csv" => {
+			write_to_csv(scores, Path::new(&config.output_file))?;
+			println!("CSV file generated successfully!");
+		}
+		"gsheet" => {
+			write_to_gsheet(&config.spreadsheet_id, &config.sheet_name, scores).await?;
+			println!("gsheet file generated successfully!");
+		}
+		_ => eprintln!("Invalid output file type!"),
+	}
 
-	println!("CSV file generated successfully!");
 	Ok(())
 }

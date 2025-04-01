@@ -1,4 +1,3 @@
-use scraper::element_ref::ElementRef;
 use std::io;
 use thiserror::Error;
 
