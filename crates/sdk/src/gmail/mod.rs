@@ -263,7 +263,7 @@ impl ReadGmail {
 
 			println!("Sending request with query: {:?}", query);
 
-			match request.doit().await {
+			match request.add_scopes(&SCOPES).doit().await {
 				Ok(response) => {
 					consecutive_errors = 0;
 
@@ -318,14 +318,21 @@ impl ReadGmail {
 			request = request.add_metadata_headers(header);
 		}
 
-		let (_, message) = request.doit().await?;
+		let (_, message) = request.add_scopes(&SCOPES).doit().await?;
 		self.parse_message_metadata(message).await
 	}
 
 	pub async fn get_message_content(&self, message_id: &str) -> Result<EmailContent, GmailServiceError> {
 		let service = self.client.get_service().await?;
 		println!("get message_content starting after init service...");
-		let message = service.users().messages_get(&self.client.user_email, message_id).format("full").doit().await?.1;
+		let message = service
+			.users()
+			.messages_get(&self.client.user_email, message_id)
+			.format("full")
+			.add_scopes(&SCOPES)
+			.doit()
+			.await?
+			.1;
 		println!("recieved message, start parsing metadata...");
 
 		let metadata = self.parse_message_metadata(message.clone()).await?;

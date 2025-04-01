@@ -8,7 +8,7 @@ use hyper::Error as HyperError;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{to_value, Value};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -17,6 +17,8 @@ use tokio::sync::Mutex;
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type SheetsClient = Sheets<HttpsConnectorType>;
+
+const SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/spreadsheets"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum SheetError {
@@ -52,6 +54,9 @@ pub enum SheetError {
 
 	#[error("Secret file path error: {0}")]
 	SecretFilePath(#[from] SecretFilePathError),
+
+	#[error("Unexpected error: {0}")]
+	TokenError(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -98,38 +103,42 @@ impl GoogleSheetsClient {
 		let executor = hyper_util::rt::TokioExecutor::new();
 		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
 
-		Ok(Sheets::new(client, auth))
+		let service = Sheets::new(client, auth);
+		let auth = &service.auth;
+		auth.get_token(&SCOPES).await?;
+
+		Ok(service)
 	}
 
 	#[allow(dead_code)]
-	 async fn initialize_oauth_service(&self) -> Result<SheetsClient, SheetError> {
-	 	// rustls::crypto::ring::default_provider()
-	 	// 	.install_default()
-	 	// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+	async fn initialize_oauth_service(&self) -> Result<SheetsClient, SheetError> {
+		// rustls::crypto::ring::default_provider()
+		// 	.install_default()
+		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
-	 	let secret = google_sheets4::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
+		let secret = google_sheets4::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
 
-	 	let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
+		let cache_path = PathBuf::from("app").join("gsheets_pickle").join("token_sheets_v4.json");
 
-	 	fs::create_dir_all(cache_path.parent().unwrap()).map_err(SheetError::Io)?;
+		fs::create_dir_all(cache_path.parent().unwrap()).map_err(SheetError::Io)?;
 
-	 	let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-	 		.persist_tokens_to_disk(cache_path)
-	 		.build()
-	 		.await?;
+		let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
+			.persist_tokens_to_disk(cache_path)
+			.build()
+			.await?;
 
-	 	let connector = hyper_rustls::HttpsConnectorBuilder::new()
-	 		.with_native_roots()
-	 		.unwrap()
-	 		.https_or_http()
-	 		.enable_http1()
-	 		.build();
+		let connector = hyper_rustls::HttpsConnectorBuilder::new()
+			.with_native_roots()
+			.unwrap()
+			.https_or_http()
+			.enable_http1()
+			.build();
 
-	 	let executor = hyper_util::rt::TokioExecutor::new();
-	 	let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
+		let executor = hyper_util::rt::TokioExecutor::new();
+		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
 
-	 	Ok(Sheets::new(client, auth))
-	 }
+		Ok(Sheets::new(client, auth))
+	}
 
 	pub async fn get_service(&self) -> Result<Arc<SheetsClient>, SheetError> {
 		let mut service_guard = self.service.lock().await;
@@ -201,9 +210,15 @@ impl WriteToGoogleSheet {
 		})
 	}
 
-	pub async fn write_data_to_sheet(&self, worksheet_name: &str, spreadsheet_id: &str, data: Vec<Vec<String>>) -> Result<(), SheetError> {
-		// Convert Vec<Vec<String>> to Vec<Vec<Value>>
-		let values: Vec<Vec<Value>> = data.into_iter().map(|row| row.into_iter().map(|cell| Value::String(cell)).collect()).collect();
+	pub async fn write_data_to_sheet<T: Serialize>(&self, worksheet_name: &str, spreadsheet_id: &str, data: Vec<T>) -> Result<(), SheetError> {
+		let values: Vec<Vec<Value>> = data
+			.into_iter()
+			.map(|row| match to_value(row) {
+				Ok(serde_json::Value::Object(obj)) => obj.values().map(|v| Self::json_to_sheets_value(v.clone())).collect(),
+				Ok(serde_json::Value::Array(arr)) => arr.into_iter().map(Self::json_to_sheets_value).collect(),
+				_ => vec![],
+			})
+			.collect();
 
 		let request = google_sheets4::api::ValueRange {
 			major_dimension: Some("ROWS".to_string()),
@@ -218,10 +233,39 @@ impl WriteToGoogleSheet {
 			.spreadsheets()
 			.values_append(request, spreadsheet_id, worksheet_name)
 			.value_input_option("RAW")
+			.add_scopes(&SCOPES)
 			.doit()
 			.await?;
 
 		Ok(())
+	}
+
+	fn json_to_sheets_value(json: serde_json::Value) -> Value {
+		match json {
+			serde_json::Value::String(s) => Value::String(s),
+			serde_json::Value::Number(n) => Value::String(n.to_string()),
+			serde_json::Value::Bool(b) => Value::String(b.to_string()),
+			serde_json::Value::Array(arr) => {
+				let array_str = arr
+					.iter()
+					.map(|v| match v {
+						serde_json::Value::String(s) => s.clone(),
+						serde_json::Value::Number(n) => n.to_string(),
+						serde_json::Value::Bool(b) => b.to_string(),
+						serde_json::Value::Array(_) => "[array]".to_string(),
+						serde_json::Value::Object(_) => "[object]".to_string(),
+						serde_json::Value::Null => "null".to_string(),
+					})
+					.collect::<Vec<String>>()
+					.join(",");
+				Value::String(array_str)
+			}
+			serde_json::Value::Object(obj) => {
+				// For nested objects, serialize to JSON string
+				Value::String(serde_json::to_string(&obj).unwrap_or_default())
+			}
+			serde_json::Value::Null => Value::String("".to_string()),
+		}
 	}
 
 	pub async fn create_new_spreadsheet(&self, sheet_name: &str) -> Result<SpreadsheetMetadata, SheetError> {
