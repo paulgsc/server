@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 
+#[derive(Serialize, Deserialize)]
+pub struct DataResponse<T> {
+	pub data: T,
+	pub metadata: Metadata,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Metadata {
+	pub title: String,
+	pub description: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RangeQuery {
 	pub range: Option<String>,

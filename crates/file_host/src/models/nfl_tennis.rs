@@ -8,6 +8,12 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Serialize, Deserialize)]
+pub struct DataItem {
+	name: String,
+	value: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromGSheet)]
 pub struct NFLGameScores {
 	#[gsheet(column = "A")]
@@ -49,7 +55,7 @@ impl NFLGameScores {
 		Ok(df)
 	}
 
-	pub fn get_team_standings(df: &DataFrame) -> Result<Vec<(String, f64)>, FileHostError> {
+	pub fn get_team_standings(df: &DataFrame) -> Result<Vec<DataItem>, FileHostError> {
 		let df_opponents = df.clone().lazy().rename(
 			["team", "q1", "q2", "q3", "q4"],
 			["opponent", "opponent_q1", "opponent_q2", "opponent_q3", "opponent_q4"],
@@ -102,6 +108,7 @@ impl NFLGameScores {
 
 		let scores: Vec<f64> = aggregated.column("total_quarter_points")?.f64()?.into_iter().map(|f| f.unwrap()).collect();
 
-		Ok(teams.into_iter().zip(scores.into_iter()).collect())
+		let result: Vec<DataItem> = teams.into_iter().zip(scores.into_iter()).map(|(name, value)| DataItem { name, value }).collect();
+		Ok(result)
 	}
 }

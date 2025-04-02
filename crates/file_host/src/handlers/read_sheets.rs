@@ -1,6 +1,6 @@
 use crate::{
-	models::gsheet::{validate_range, Attribution, FromGSheet, GanttChapter, GanttSubChapter, RangeQuery, VideoChapters},
-	models::nfl_tennis::NFLGameScores,
+	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, Metadata, RangeQuery, VideoChapters},
+	models::nfl_tennis::{DataItem, NFLGameScores},
 	AppState, FileHostError,
 };
 use axum::extract::{Path, Query, State};
@@ -113,10 +113,20 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 }
 
 #[axum::debug_handler]
-pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<(String, f64)>>, FileHostError> {
+pub async fn get_nfl_tennis(
+	State(state): State<Arc<AppState>>,
+	Path(id): Path<String>,
+	Query(q): Query<RangeQuery>,
+) -> Result<Json<DataResponse<Vec<DataItem>>>, FileHostError> {
 	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
 		log::info!("Cache hit for key: {}", &id);
-		return Ok(Json(cached_data));
+		return Ok(Json(DataResponse {
+			data: cached_data,
+			metadata: Metadata {
+				title: "NFL Tennis Scores".to_string(),
+				description: None,
+			},
+		}));
 	}
 
 	let q = extract_and_validate_range(q)?;
@@ -133,7 +143,13 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 		log::info!("Data too large to cache (size: {})", standings.len());
 	}
 
-	Ok(Json(standings))
+	Ok(Json(DataResponse {
+		data: standings,
+		metadata: Metadata {
+			title: "NFL Tennis Scores".to_string(),
+			description: None,
+		},
+	}))
 }
 
 async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: &str) -> Result<Vec<Vec<String>>, FileHostError> {
