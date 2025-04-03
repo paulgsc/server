@@ -2,9 +2,11 @@ use crate::error::{FileHostError, GSheetDeriveError};
 use redis::{AsyncCommands, Client};
 use std::sync::Arc;
 
+pub mod cache;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod image_processing;
 pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
