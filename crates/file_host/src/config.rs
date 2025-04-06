@@ -99,6 +99,14 @@ pub struct Config {
 	/// Enable development mode
 	#[arg(long, env = "DEV_MODE")]
 	pub dev_mode: bool,
+
+	/// Streaming Chunk Size
+	#[arg(long, env = "BUFFER_SIZE", default_value = "64 * 1024")]
+	pub chunk_size: usize,
+
+	/// Streaming Max Chunk Size
+	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
+	pub max_chunks: usize,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]

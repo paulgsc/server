@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::ptr;
 
-struct LruEntry<K, V> {
-	key: K,
-	value: V,
-	prev: *mut LruEntry<K, V>,
-	next: *mut LruEntry<K, V>,
+pub struct LruEntry<K, V> {
+	pub key: K,
+	pub value: V,
+	pub prev: *mut LruEntry<K, V>,
+	pub next: *mut LruEntry<K, V>,
 }
 
-struct LruCache<K, V>
+pub struct LruCache<K, V>
 where
 	K: Eq + Hash + Clone,
 {
@@ -20,7 +20,7 @@ where
 }
 
 impl<K: Eq + Hash + Clone, V> LruCache<K, V> {
-	fn new(capacity: usize) -> Self {
+	pub fn new(capacity: usize) -> Self {
 		LruCache {
 			map: HashMap::with_capacity(capacity),
 			head: ptr::null_mut(),
@@ -29,7 +29,7 @@ impl<K: Eq + Hash + Clone, V> LruCache<K, V> {
 		}
 	}
 
-	fn get(&mut self, key: &K) -> Option<&V> {
+	pub fn get(&mut self, key: &K) -> Option<&V> {
 		if let Some(&entry_ptr) = self.map.get(key) {
 			unsafe {
 				self.detach(entry_ptr);
@@ -40,7 +40,7 @@ impl<K: Eq + Hash + Clone, V> LruCache<K, V> {
 		None
 	}
 
-	fn put(&mut self, key: K, value: V) {
+	pub fn put(&mut self, key: K, value: V) {
 		if let Some(&entry_ptr) = self.map.get(&key) {
 			unsafe {
 				(*entry_ptr).value = value;
@@ -77,7 +77,7 @@ impl<K: Eq + Hash + Clone, V> LruCache<K, V> {
 		}
 	}
 
-	unsafe fn detach(&mut self, entry_ptr: *mut LruEntry<K, V>) {
+	pub unsafe fn detach(&mut self, entry_ptr: *mut LruEntry<K, V>) {
 		if (*entry_ptr).prev.is_null() {
 			self.head = (*entry_ptr).next;
 		} else {
@@ -91,7 +91,7 @@ impl<K: Eq + Hash + Clone, V> LruCache<K, V> {
 		}
 	}
 
-	unsafe fn attach_front(&mut self, entry_ptr: *mut LruEntry<K, V>) {
+	pub unsafe fn attach_front(&mut self, entry_ptr: *mut LruEntry<K, V>) {
 		(*entry_ptr).prev = ptr::null_mut();
 		(*entry_ptr).next = self.head;
 

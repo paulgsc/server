@@ -10,8 +10,9 @@ use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 #[axum::debug_handler]
 pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
-	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
-		log::info!("Cache hit for key: {}", &id);
+	let cache_key = format!("get_attributions_{}", id);
+	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
+		log::info!("Cache hit for key: {}", &cache_key);
 		let attributions = Attribution::from_gsheet(&cached_data, true)?;
 		return Ok(Json(attributions));
 	}
@@ -22,8 +23,8 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 	let attributions = Attribution::from_gsheet(&data, true)?;
 
 	if data.len() <= 100 {
-		log::info!("Caching data for key: {}", &id);
-		state.cache_store.set_json(&id, &data).await?;
+		log::info!("Caching data for key: {}", &cache_key);
+		state.cache_store.set_json(&cache_key, &data).await?;
 	} else {
 		log::info!("Data too large to cache (size: {})", data.len());
 	}
@@ -33,8 +34,9 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 
 #[axum::debug_handler]
 pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
-	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
-		log::info!("Cache hit for key: {}", &id);
+	let cache_key = format!("get_video_chapters_{}", id);
+	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
+		log::info!("Cache hit for key: {}", &cache_key);
 		let attributions = VideoChapters::from_gsheet(&cached_data, true)?;
 		return Ok(Json(attributions));
 	}
@@ -45,8 +47,8 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 	let attributions = VideoChapters::from_gsheet(&data, true)?;
 
 	if data.len() <= 100 {
-		log::info!("Caching data for key: {}", &id);
-		state.cache_store.set_json(&id, &data).await?;
+		log::info!("Caching data for key: {}", &cache_key);
+		state.cache_store.set_json(&cache_key, &data).await?;
 	} else {
 		log::info!("Data too large to cache (size: {})", data.len());
 	}
@@ -56,8 +58,9 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 
 #[axum::debug_handler]
 pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<GanttChapter>>, FileHostError> {
-	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
-		log::info!("Cache hit for key: {}", &id);
+	let cache_key = format!("get_gantt_{}", id);
+	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
+		log::info!("Cache hit for key: {}", &cache_key);
 		return Ok(Json(cached_data));
 	}
 
@@ -69,8 +72,8 @@ pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String
 	let chapters = naive_gantt_transform(boxed);
 
 	if chapters.len() <= 100 {
-		log::info!("Caching data for key: {}", &id);
-		state.cache_store.set_json(&id, &chapters).await?;
+		log::info!("Caching data for key: {}", &cache_key);
+		state.cache_store.set_json(&cache_key, &chapters).await?;
 	} else {
 		log::info!("Data too large to cache (size: {})", chapters.len());
 	}
@@ -82,7 +85,7 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	let mut h: HashMap<Box<str>, GanttChapter> = HashMap::new();
 
 	for row in data.iter().skip(1) {
-		if row.len() < 12 {
+		if row.len() < 6 {
 			log::error!("Row has less than 12 elements: {:?}", row);
 			continue;
 		}
@@ -99,14 +102,16 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 			sub_chapters: Vec::new(),
 		});
 
-		chapters.sub_chapters.push(GanttSubChapter {
-			id: row[6].trim_matches('"').to_string().into_boxed_str(),
-			title: row[7].trim_matches('"').to_string().into_boxed_str(),
-			start_time: row[8].trim_matches('"').parse::<i16>().unwrap_or(0),
-			end_time: row[9].trim_matches('"').parse::<i16>().unwrap_or(0),
-			description: row[10].trim_matches('"').to_string().into_boxed_str(),
-			color: row[11].trim_matches('"').to_string().into_boxed_str(),
-		});
+		if row.len() >= 12 {
+			chapters.sub_chapters.push(GanttSubChapter {
+				id: row[6].trim_matches('"').to_string().into_boxed_str(),
+				title: row[7].trim_matches('"').to_string().into_boxed_str(),
+				start_time: row[8].trim_matches('"').parse::<i16>().unwrap_or(0),
+				end_time: row[9].trim_matches('"').parse::<i16>().unwrap_or(0),
+				description: row[10].trim_matches('"').to_string().into_boxed_str(),
+				color: row[11].trim_matches('"').to_string().into_boxed_str(),
+			});
+		}
 	}
 
 	h.into_values().collect()
