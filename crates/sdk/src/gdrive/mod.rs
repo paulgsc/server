@@ -7,13 +7,13 @@ use google_drive3::yup_oauth2::ServiceAccountAuthenticator;
 use google_drive3::Error as GoogleDriveError;
 use google_drive3::{hyper, DriveHub};
 use http_body_util::BodyExt;
-use hyper::Error as HyperError;
+use hyper::{body::Bytes, Error as HyperError};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -45,6 +45,9 @@ pub enum DriveError {
 
 	#[error("File not found: {0}")]
 	FileNotFound(String),
+
+	#[error("File too large: {0}")]
+	FileTooLarge(String),
 
 	#[error("Invalid file metadata: {0}")]
 	InvalidMetadata(String),
@@ -200,14 +203,22 @@ impl ReadDrive {
 		})
 	}
 
-	pub async fn download_file(&self, file_id: &str, destination: &Path) -> Result<PathBuf, DriveError> {
+	pub async fn download_file(&self, file_id: &str) -> Result<Bytes, DriveError> {
+		const MAX_IN_MEMORY_SIZE: i64 = 10 * 1024 * 1024;
+
 		// First, get the file metadata to determine if it's a Google Doc or regular file
 		let metadata = self.get_file_metadata(file_id).await?;
+		println!("metadata collected!");
 		let service = self.client.get_service().await?;
+		let content: Bytes;
 
-		// Create parent directories if they don't exist
-		if let Some(parent) = destination.parent() {
-			fs::create_dir_all(parent)?;
+		if let Some(size) = metadata.size {
+			if size > MAX_IN_MEMORY_SIZE {
+				return Err(DriveError::FileTooLarge(format!(
+					"File size {} bytes exceeds the maximum allowed size of {} bytes",
+					size, MAX_IN_MEMORY_SIZE
+				)));
+			}
 		}
 
 		// Handle file download based on MIME type
@@ -221,16 +232,14 @@ impl ReadDrive {
 			};
 
 			let result = service.files().export(file_id, export_mime_type).doit().await?;
-			let content = result.into_body().collect().await?.to_bytes();
-			fs::write(destination, content)?;
+			content = result.into_body().collect().await?.to_bytes();
 		} else {
 			// Regular files can be downloaded directly
-			let (response, _file_metadata) = service.files().get(file_id).param("alt", "media").doit().await?;
-			let content = response.into_body().collect().await?.to_bytes();
-			fs::write(destination, content)?;
+			let (response, _file_metadata) = service.files().get(file_id).param("alt", "media").add_scopes(&[Scope::Full.as_ref()]).doit().await?;
+			content = response.into_body().collect().await?.to_bytes();
 		}
 
-		Ok(destination.to_path_buf())
+		Ok(content)
 	}
 
 	pub async fn search_files(&self, query: &str, page_size: i32) -> Result<Vec<FileMetadata>, DriveError> {
