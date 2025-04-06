@@ -16,6 +16,7 @@ enum-name-derive  = { workspace = true }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
+bytes = { version = "1.10.1" }
 clap = { workspace = true }
 dotenv = { workspace = true }
 log = "0.4.14"
@@ -33,6 +34,7 @@ tower-http = { workspace = true, features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
 polars = { version =  "0.46.0", features = ["lazy"] }
+tokio-stream = "0.1.17"
 
 [lints]
 workspace = true

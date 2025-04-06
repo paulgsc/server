@@ -101,7 +101,7 @@ pub struct Config {
 	pub dev_mode: bool,
 
 	/// Streaming Chunk Size
-	#[arg(long, env = "BUFFER_SIZE", default_value = "64 * 1024")]
+	#[arg(long, env = "BUFFER_SIZE", default_value = "65536")]
 	pub chunk_size: usize,
 
 	/// Streaming Max Chunk Size

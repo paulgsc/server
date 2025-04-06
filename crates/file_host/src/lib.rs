@@ -6,7 +6,7 @@ pub mod cache;
 pub mod config;
 pub mod error;
 pub mod handlers;
-// pub mod streaming_service;
+pub mod streaming_service;
 // pub mod image_processing;
 pub mod metrics;
 pub mod models;

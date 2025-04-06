@@ -1,6 +1,7 @@
 use crate::{cache::lru_cache::LruCache, Config};
 use bytes::Bytes;
 use futures::Stream;
+use futures::TryStreamExt;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ impl StreamingService {
 			max_chunks,
 			chunk_size,
 			semaphore: Arc::new(Semaphore::new(max_chunks)),
-			lru_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(config.cache_ttl))),
+			lru_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(config.cache_ttl.try_into().unwrap()))),
 		}
 	}
 
@@ -87,26 +88,15 @@ impl StreamingService {
 		ReceiverStream::new(rx)
 	}
 
-	/// Stream from remote storage (Google Drive, S3, etc)
-	/// This is a placeholder. Implement with your actual storage client.
-	pub async fn stream_from_storage(&self, object_id: &str) -> io::Result<impl Stream<Item = io::Result<Bytes>> + Send + 'static> {
-		// This would be your implementation to get a reader for the remote storage
-		// For example with GCS:
-		// let object = self.gcs_client.object().download(&bucket, object_id).await?;
-		// return Ok(self.create_stream_with_backpressure(object));
-
-		// For now, we'll just return an error
-		Err(io::Error::new(io::ErrorKind::Other, "Storage client not implemented"))
-	}
-
 	/// Creates a backpressure-aware stream from any AsyncRead source
-	fn create_stream_with_backpressure<R>(&self, reader: R) -> impl Stream<Item = io::Result<Bytes>> + Send + 'static
+	pub fn create_stream_with_backpressure<R>(&self, reader: R) -> impl Stream<Item = io::Result<Bytes>> + Send + 'static
 	where
 		R: AsyncRead + Unpin + Send + 'static,
 	{
 		// Create a channel for our chunks
 		let (tx, rx) = mpsc::channel(self.max_chunks);
-		let semaphore = self.semaphore.clone();
+		let semaphore_producer = self.semaphore.clone();
+		let semaphore_consumer = self.semaphore.clone();
 		let chunk_size = self.chunk_size;
 
 		// Spawn a task to read from the source and send chunks through the channel
@@ -116,7 +106,7 @@ impl StreamingService {
 
 			loop {
 				// Acquire a permit from the semaphore (implements backpressure)
-				let permit = match semaphore.acquire().await {
+				let _ = match semaphore_producer.acquire().await {
 					Ok(permit) => permit,
 					Err(_) => {
 						// Semaphore closed, exit loop.  Important for shutdown.
@@ -150,7 +140,7 @@ impl StreamingService {
 		// Create a stream from the receiver that releases semaphore permits
 		ReceiverStream::new(rx) // Use the tokio_stream version.
 			.inspect_ok(move |_| {
-				semaphore.add_permits(1);
+				semaphore_consumer.add_permits(1);
 			})
 	}
 }
