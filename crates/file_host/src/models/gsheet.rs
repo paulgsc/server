@@ -2,7 +2,7 @@ use crate::{
 	models::utils::{deserialize_color, deserialize_url},
 	GSheetDeriveError,
 };
-use enum_name_derive::EnumFilename;
+use enum_name_derive::EnumFilenameAndFromString;
 use gsheet_derive::FromGSheet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub struct RangeQuery {
 	pub range: Option<String>,
 }
 
-#[derive(EnumFilename, Serialize, std::fmt::Debug, Deserialize)]
+#[derive(EnumFilenameAndFromString, Serialize, std::fmt::Debug, Deserialize)]
 pub enum SourceType {
 	#[filename = "book"]
 	Book,

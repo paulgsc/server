@@ -39,7 +39,7 @@ impl StreamingService {
 
 		if let Some(cached_data) = cache.get(&path_str) {
 			// Serve from cache
-			println!("Serving from cache: {}", path_str); // Add log
+			log::info!("Serving from cache: {}", path_str);
 			let stream = self.create_memory_stream(cached_data.clone());
 			Ok(stream)
 		} else {

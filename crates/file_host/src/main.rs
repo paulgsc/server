@@ -2,7 +2,7 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_file, sheets::get_sheets};
+use crate::routes::{gdrive::get_gdrive_image, sheets::get_sheets};
 use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
 	let mut app = Router::new()
 		.route("/metrics", get(metrics::metrics_handler))
 		.merge(get_sheets(context.clone())?)
-		.merge(get_gdrive_file(context.clone())?)
+		.merge(get_gdrive_image(context.clone())?)
 		.merge(ws_state.router());
 
 	app = app
