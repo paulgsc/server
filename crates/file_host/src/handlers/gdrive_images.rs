@@ -9,6 +9,14 @@ use sdk::ReadDrive;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use std::sync::OnceLock;
+
+static ALLOWED_IMAGE_MIME_TYPES: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+fn allowed_image_mime_types() -> &'static Vec<&'static str> {
+	ALLOWED_IMAGE_MIME_TYPES.get_or_init(|| vec!["image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"])
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct FileMetadata {
 	mime_type: String,
@@ -30,17 +38,25 @@ pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_i
 	if let Some(cached_data) = state.cache_store.get_json::<GDriveResponse>(&cache_key).await? {
 		log::info!("Cache hit for key: {}", &cache_key);
 		let mime_type = cached_data.metadata.mime_type;
-		let response = Response::builder().header(header::CONTENT_TYPE, mime_type).body(axum::body::Body::from(cached_data.data))?;
 
-		return Ok(response);
+		if allowed_image_mime_types().contains(&mime_type.as_str()) {
+			let response = Response::builder().header(header::CONTENT_TYPE, mime_type).body(axum::body::Body::from(cached_data.data))?;
+			return Ok(response);
+		} else {
+			return Err(FileHostError::InvalidMimeType(mime_type.clone()));
+		}
 	}
 
 	let drive_response = refetch(&state, &image_id).await?;
+	let mime_type = &drive_response.metadata.mime_type;
+
+	if !allowed_image_mime_types().contains(&mime_type.as_str()) {
+		return Err(FileHostError::InvalidMimeType(mime_type.clone()));
+	}
 
 	log::info!("Caching data for key: {}", &cache_key);
 	state.cache_store.set_json(&cache_key, &drive_response).await?;
 
-	let mime_type = drive_response.metadata.mime_type;
 	let response = Response::builder()
 		.header(header::CONTENT_TYPE, mime_type)
 		.body(axum::body::Body::from(drive_response.data))?;

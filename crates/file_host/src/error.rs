@@ -35,6 +35,9 @@ pub enum FileHostError {
 	#[error("Invalid Data Schema pased")]
 	InvalidData,
 
+	#[error("Invalid Mime Type: {0}")]
+	InvalidMimeType(String),
+
 	#[error("error in the request body")]
 	UnprocessableEntity { errors: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>> },
 
@@ -97,6 +100,7 @@ impl FileHostError {
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
+			Self::InvalidMimeType(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::PolarsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
