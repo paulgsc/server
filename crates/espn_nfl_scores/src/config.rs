@@ -14,6 +14,9 @@ pub struct Config {
 	/// Path to the output CSV file
 	#[arg(long, env = "CSV_OUTPUT", default_value = "data.csv", value_parser = validate_output)]
 	pub output_file: String,
+	/// Get HTML Soup From Gdrive (cloud) or From Local file (local)
+	#[arg(long, env = "MODE", default_value = "cloud", value_parser = validate_output)]
+	pub mode: String,
 }
 
 impl Config {

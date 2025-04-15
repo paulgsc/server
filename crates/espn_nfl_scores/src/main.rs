@@ -3,13 +3,14 @@ mod error;
 
 use crate::config::Config;
 use crate::error::ParserError;
+use bytes::Bytes;
 use clap::Parser;
 use csv::Writer;
-use sdk::{SheetError, WriteToGoogleSheet};
+use sdk::{DriveError, ReadDrive, SheetError, SheetOperation, WriteToGoogleSheet};
 use serde::Serialize;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use tokio;
 
@@ -179,8 +180,36 @@ async fn write_to_gsheet(spreadsheet_id: &str, sheet_name: &str, scores: Vec<Tea
 		}
 		records.push(record);
 	}
-	writer.write_data_to_sheet(sheet_name, spreadsheet_id, records).await?;
+	writer.write_data_to_sheet(sheet_name, spreadsheet_id, records, SheetOperation::CreateTab).await?;
 
+	Ok(())
+}
+
+async fn read_from_gdrive(file_id: &str) -> Result<Bytes, DriveError> {
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| DriveError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+
+	let user_email = "aulgondu@gmail.com".to_string();
+	let client_secret_path = ".setup/client_secret_file.json".to_string();
+
+	let drive_client = ReadDrive::new(user_email.to_string(), client_secret_path)?;
+	Ok(drive_client.download_file(file_id).await?)
+}
+
+async fn get_nfl_scores(config: &Config, scores: Vec<TeamScore>) -> Result<(), Box<dyn std::error::Error>> {
+	match config.output_file.as_str() {
+		"data.csv" => {
+			write_to_csv(scores, Path::new(&config.output_file))?;
+			println!("CSV file generated successfully!");
+		}
+		"gsheet" => {
+			// TODO: update sheet_name it's now dynamic!
+			write_to_gsheet(&config.spreadsheet_id, &config.sheet_name, scores).await?;
+			println!("gsheet file generated successfully!");
+		}
+		_ => eprintln!("Invalid output file type!"),
+	}
 	Ok(())
 }
 
@@ -191,22 +220,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Load configuration from env.toml
 	let config = Config::parse();
 
-	// Read HTML content from the specified input file
-	let html = read_html_from_file(Path::new(&config.input_file))?;
-
-	// Parse the HTML content to extract scores
-	let scores = parse_scores(&html)?;
-
-	match config.output_file.as_str() {
-		"data.csv" => {
-			write_to_csv(scores, Path::new(&config.output_file))?;
-			println!("CSV file generated successfully!");
+	match config.mode.as_str() {
+		"local" => {
+			let html = read_html_from_file(Path::new(&config.input_file))?;
+			let scores = parse_scores(&html)?;
+			let _ = get_nfl_scores(&config, scores).await?;
 		}
-		"gsheet" => {
-			write_to_gsheet(&config.spreadsheet_id, &config.sheet_name, scores).await?;
-			println!("gsheet file generated successfully!");
+		"cloud" => {
+			loop {
+				println!("\nWould you like to process another file? (y/n)");
+				let mut response = String::new();
+				io::stdout().flush().unwrap();
+				io::stdin().read_line(&mut response).unwrap();
+
+				if response.trim().to_lowercase() != "y" {
+					println!("Exiting program.");
+					break;
+				}
+
+				// Prompt for new file_id
+				println!("Enter new file_id:");
+				let mut new_file_id = String::new();
+				io::stdout().flush().unwrap();
+				io::stdin().read_line(&mut new_file_id).unwrap();
+				let new_file_id = new_file_id.trim();
+
+				let res = read_from_gdrive(&new_file_id).await?;
+				let html = String::from_utf8(res.to_vec()).unwrap();
+				let scores = parse_scores(&html)?;
+				let _ = get_nfl_scores(&config, scores).await?;
+			}
 		}
-		_ => eprintln!("Invalid output file type!"),
+		_ => eprintln!("Invalid mode entered"),
 	}
 
 	Ok(())
