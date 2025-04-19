@@ -55,6 +55,20 @@ impl GoogleServiceFilePath {
 	}
 }
 
+pub(crate) fn column_number_to_letter(mut column: u32) -> String {
+	let mut result = String::new();
+
+	while column > 0 {
+		column -= 1;
+		let remainder = column % 26;
+		let letter = (remainder as u8 + b'A') as char;
+		result.insert(0, letter);
+		column /= 26;
+	}
+
+	result
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

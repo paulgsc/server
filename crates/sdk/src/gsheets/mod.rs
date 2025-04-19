@@ -1,4 +1,4 @@
-use crate::{GoogleServiceFilePath, SecretFilePathError};
+use crate::{util::column_number_to_letter, GoogleServiceFilePath, SecretFilePathError};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use google_sheets4::yup_oauth2::Error as OAuth2Error;
 use google_sheets4::yup_oauth2::{InstalledFlowAuthenticator, InstalledFlowReturnMethod, ServiceAccountAuthenticator};
@@ -9,10 +9,8 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::{to_value, Value};
-use std::fs;
-use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::{collections::HashMap, fs, io, path::PathBuf};
 use tokio::sync::Mutex;
 
 type HttpsConnectorType = HttpsConnector<HttpConnector>;
@@ -39,6 +37,9 @@ pub enum SheetError {
 
 	#[error("Missing credentials file: {0}")]
 	MissingCredentials(String),
+
+	#[error("No Sheets found in spreadsheet")]
+	NoSheetsFound,
 
 	#[error("Service initialization failed: {0}")]
 	ServiceInit(String),
@@ -180,6 +181,51 @@ impl ReadSheets {
 	pub async fn retrieve_metadata(&self, spreadsheet_id: &str) -> Result<Spreadsheet, SheetError> {
 		let result = self.client.get_service().await?.spreadsheets().get(spreadsheet_id).doit().await?;
 		Ok(result.1)
+	}
+
+	pub async fn retrieve_all_sheets_data(&self, spreadsheet_id: &str) -> Result<HashMap<String, Vec<Vec<String>>>, SheetError> {
+		let spreadsheet = self.retrieve_metadata(spreadsheet_id).await?;
+
+		let mut all_data = HashMap::new();
+
+		let sheets = match spreadsheet.sheets {
+			Some(sheets) => sheets,
+			None => return Err(SheetError::NoSheetsFound),
+		};
+
+		for sheet in sheets {
+			let sheet_properties = match sheet.properties {
+				Some(props) => props,
+				None => continue,
+			};
+
+			let sheet_title = match sheet_properties.title {
+				Some(title) => title,
+				None => continue,
+			};
+
+			let _ = match sheet_properties.sheet_id {
+				Some(id) => id,
+				None => continue,
+			};
+
+			let grid_props = match sheet_properties.grid_properties {
+				Some(grid) => grid,
+				None => continue,
+			};
+
+			let row_count = grid_props.row_count.unwrap_or(1000);
+			let col_count = grid_props.column_count.unwrap_or(26); // A-Z
+
+			let last_column = column_number_to_letter(col_count as u32);
+			let range = format!("{}!A1:{}{}", sheet_title, last_column, row_count);
+
+			let sheet_data = self.read_data(spreadsheet_id, &range).await?;
+
+			all_data.insert(sheet_title, sheet_data);
+		}
+
+		Ok(all_data)
 	}
 
 	pub async fn read_data(&self, spreadsheet_id: &str, range: &str) -> Result<Vec<Vec<String>>, SheetError> {
