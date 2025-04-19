@@ -14,6 +14,12 @@ pub struct DataItem {
 	value: f64,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct SheetDataItem {
+	pub name: String,
+	pub standings: Vec<DataItem>,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromGSheet)]
 pub struct NFLGameScores {
 	#[gsheet(column = "A")]

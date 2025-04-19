@@ -1,6 +1,6 @@
 use crate::{
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, Metadata, RangeQuery, VideoChapters},
-	models::nfl_tennis::{DataItem, NFLGameScores},
+	models::nfl_tennis::{NFLGameScores, SheetDataItem},
 	AppState, FileHostError,
 };
 use axum::extract::{Path, Query, State};
@@ -118,11 +118,7 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 }
 
 #[axum::debug_handler]
-pub async fn get_nfl_tennis(
-	State(state): State<Arc<AppState>>,
-	Path(id): Path<String>,
-	Query(q): Query<RangeQuery>,
-) -> Result<Json<DataResponse<Vec<DataItem>>>, FileHostError> {
+pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
 	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
 		log::info!("Cache hit for key: {}", &id);
 		return Ok(Json(DataResponse {
@@ -133,23 +129,34 @@ pub async fn get_nfl_tennis(
 			},
 		}));
 	}
+	let secret_file = state.config.client_secret_file.clone();
+	let use_email = state.config.email_service_url.clone().unwrap_or("".to_string());
 
-	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, &q).await?;
+	let reader = ReadSheets::new(use_email, secret_file)?;
 
-	let scores = NFLGameScores::from_gsheet(&data, true)?;
-	let df = NFLGameScores::create_dataframe(scores)?;
-	let standings = NFLGameScores::get_team_standings(&df)?;
+	let sheet_data = reader.retrieve_all_sheets_data(&id).await?;
 
-	if standings.len() <= 100 {
+	let mut sheet_collection = Vec::new();
+
+	for (sheet_name, data) in sheet_data {
+		let scores = NFLGameScores::from_gsheet(&data, true)?;
+		let df = NFLGameScores::create_dataframe(scores)?;
+		let standings = NFLGameScores::get_team_standings(&df)?;
+
+		let sheet_item = SheetDataItem { name: sheet_name, standings };
+
+		sheet_collection.push(sheet_item);
+	}
+
+	if sheet_collection.len() <= 1000 {
 		log::info!("Caching data for key: {}", &id);
-		state.cache_store.set_json(&id, &standings).await?;
+		state.cache_store.set_json(&id, &sheet_collection).await?;
 	} else {
-		log::info!("Data too large to cache (size: {})", standings.len());
+		log::info!("Data too large to cache (size: {})", sheet_collection.len());
 	}
 
 	Ok(Json(DataResponse {
-		data: standings,
+		data: sheet_collection,
 		metadata: Metadata {
 			title: "NFL Tennis Scores".to_string(),
 			description: None,

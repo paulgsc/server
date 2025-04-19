@@ -71,7 +71,7 @@ async fn refetch(state: &Arc<AppState>, image_id: &str) -> Result<GDriveResponse
 	let reader = ReadDrive::new(use_email, secret_file)?;
 	let file = reader.get_file_metadata(image_id).await?;
 	let bytes = reader.download_file(image_id).await?;
-	let size = file.size.unwrap().try_into().unwrap();
+	let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
 
 	Ok(GDriveResponse {
 		data: bytes,
