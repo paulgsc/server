@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::error::ParserError;
 use clap::Parser;
 use csv::Writer;
-use sdk::{ReadDrive, SheetOperation, WriteToDrive, WriteToGoogleSheet};
+use sdk::{ReadDrive, SheetError, SheetOperation, WriteToDrive, WriteToGoogleSheet};
 use serde::Serialize;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -219,6 +219,9 @@ async fn process_scores(output_meta: OutputMetadata, scores: Vec<TeamScore>, ser
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv::dotenv().ok();
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 	let user_email = "aulgondu@gmail.com".to_string();
 	let client_secret_path = ".setup/client_secret_file.json".to_string();
 	let write_sheet_client = Rc::new(WriteToGoogleSheet::new(user_email.clone(), client_secret_path.clone())?);
@@ -259,7 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let scores = parse_scores(&html)?;
 
 				let file = read_drive_client.get_file_metadata(new_file_id).await?;
-				let output_meta = OutputMetadata::new(&config, Some(file.id));
+				let output_meta = OutputMetadata::new(&config, Some(file.name));
 
 				process_scores(output_meta, scores, write_sheet_client.clone()).await?;
 				write_to_drive_client.delete_file(&new_file_id).await?;
