@@ -533,6 +533,19 @@ impl<'a> Lexer<'a> {
 	}
 }
 
+impl Iterator for Lexer<'_> {
+	type Item = Token;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let token = self.next_token();
+		if token.token_type == TokenType::EOF {
+			None
+		} else {
+			Some(token)
+		}
+	}
+}
+
 impl Token {
 	/// Creates a new token.
 	#[must_use]
@@ -553,9 +566,29 @@ mod tests {
 	#[test]
 	fn test_basic_tags() {
 		let input = "<div></div>";
-		let mut lexer = Lexer::new(input);
-		let token_type = lexer.next_token().token_type;
+		let lexer = Lexer::new(input);
+		let tokens: Vec<TokenType> = lexer.map(|t| t.token_type).collect();
+		assert_eq!(
+			tokens,
+			vec![
+				TokenType::Lt,
+				TokenType::Identifier,
+				TokenType::Gt,
+				TokenType::JSXClosingElementStart,
+				TokenType::Identifier,
+				TokenType::Gt
+			]
+		);
+	}
 
-		assert_eq!(token_type, TokenType::Lt);
+	#[test]
+	fn test_lexer_basic() {
+		let input = "let x = 42;";
+		let lexer = Lexer::new(input);
+		let tokens: Vec<TokenType> = lexer.map(|t| t.token_type).collect();
+		assert_eq!(
+			tokens,
+			vec![TokenType::KeywordLet, TokenType::Identifier, TokenType::Eq, TokenType::Number, TokenType::Semicolon,]
+		);
 	}
 }
