@@ -46,6 +46,12 @@ pub enum DriveError {
 	#[error("File not found: {0}")]
 	FileNotFound(String),
 
+	#[error("OwnersNotFound not found")]
+	OwnersNotFound,
+
+	#[error("OwnerEmailNotFound not found:")]
+	OwnerEmailNotFound,
+
 	#[error("File too large: {0}")]
 	FileTooLarge(String),
 
@@ -275,6 +281,28 @@ impl ReadDrive {
 
 		Ok(metadata)
 	}
+
+	pub async fn get_file_owner(&self, file_id: &str) -> Result<String, DriveError> {
+		let service = self.client.get_service().await?;
+
+		let file = service
+			.files()
+			.get(file_id)
+			.supports_all_drives(true)
+			.add_scope(Scope::Full.as_ref())
+			.param("fields", "owners")
+			.doit()
+			.await?
+			.1;
+
+		match file.owners {
+			Some(owners) if !owners.is_empty() => match &owners[0].email_address {
+				Some(email) => Ok(email.clone()),
+				None => Err(DriveError::OwnerEmailNotFound),
+			},
+			_ => Err(DriveError::OwnersNotFound),
+		}
+	}
 }
 
 pub struct WriteToDrive {
@@ -374,6 +402,44 @@ impl WriteToDrive {
 
 	pub async fn delete_file(&self, file_id: &str) -> Result<(), DriveError> {
 		self.client.get_service().await?.files().delete(file_id).add_scope(Scope::Full.as_ref()).doit().await?;
+
+		Ok(())
+	}
+
+	pub async fn delete_file_with_service_account(&self, file_id: &str) -> Result<(), DriveError> {
+		let read_client = ReadDrive::new(self.client.user_email.clone(), self.client.client_secret_path.clone().as_str().to_string())?;
+
+		let current_owner = read_client.get_file_owner(file_id).await?;
+
+		if current_owner != self.client.user_email.clone() {
+			self.transfer_ownership(file_id).await?;
+
+			// Optional: Add a small delay to ensure the permission change propagates
+			tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+		}
+
+		self.delete_file(file_id).await?;
+
+		Ok(())
+	}
+
+	pub async fn transfer_ownership(&self, file_id: &str) -> Result<(), DriveError> {
+		let service = self.client.get_service().await?;
+		let owner_permission = google_drive3::api::Permission {
+			role: Some("owner".to_string()),
+			type_: Some("user".to_string()),
+			email_address: Some(self.client.user_email.clone()),
+			..Default::default()
+		};
+
+		service
+			.permissions()
+			.create(owner_permission, file_id)
+			.transfer_ownership(true)
+			.supports_all_drives(true)
+			.add_scope(Scope::Full.as_ref())
+			.doit()
+			.await?;
 
 		Ok(())
 	}

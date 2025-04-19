@@ -8,11 +8,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.install_default()
 		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
-	list_files_example().await?;
+	//	list_files_example().await?;
 	//	search_files_example().await?;
 	//	get_file_example().await?;
 	// upload_file_example().await?;
 	//	download_file_example().await?;
+	// delete_file_example().await?;
+	transfer_ownership_example().await?;
 
 	Ok(())
 }
@@ -107,6 +109,29 @@ pub async fn download_file_example() -> Result<(), DriveError> {
 			println!("First 20 bytes (hex): {:?}", &bytes[..bytes.len().min(20)]);
 		}
 	}
+
+	Ok(())
+}
+
+pub async fn transfer_ownership_example() -> Result<(), DriveError> {
+	let client_secret_path = "client_secret_file.json".to_string();
+	let user_email = "some-service@consulting-llc-6302f.iam.gserviceaccount.com".to_string();
+	let drive_client = WriteToDrive::new(user_email.to_string(), client_secret_path)?;
+
+	drive_client.transfer_ownership("1rKo4rhJ22NZK5_zhdry_LIVTAku07oTO").await?;
+
+	println!("Ownershop transfered to service acct successfully");
+
+	Ok(())
+}
+pub async fn delete_file_example() -> Result<(), DriveError> {
+	let client_secret_path = "client_secret_file.json".to_string();
+	let user_email = "aulgondu@gmail.com".to_string();
+	let drive_client = WriteToDrive::new(user_email.to_string(), client_secret_path)?;
+
+	drive_client.delete_file("1_B-BTD0y3iYbyfChvntG6J7q0oumcxkE").await?;
+
+	println!("file deleted successfully!");
 
 	Ok(())
 }
