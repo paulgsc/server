@@ -59,6 +59,12 @@ pub enum SheetError {
 	TokenError(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
+pub enum SheetOperation {
+	CreateTab,
+	Rewrite,
+	Append,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpreadsheetMetadata {
 	pub url: String,
@@ -210,7 +216,7 @@ impl WriteToGoogleSheet {
 		})
 	}
 
-	pub async fn write_data_to_sheet<T: Serialize>(&self, worksheet_name: &str, spreadsheet_id: &str, data: Vec<T>) -> Result<(), SheetError> {
+	pub async fn write_data_to_sheet<T: Serialize>(&self, worksheet_name: &str, spreadsheet_id: &str, data: Vec<T>, operation: SheetOperation) -> Result<(), SheetError> {
 		let values: Vec<Vec<Value>> = data
 			.into_iter()
 			.map(|row| match to_value(row) {
@@ -226,16 +232,57 @@ impl WriteToGoogleSheet {
 			values: Some(values),
 		};
 
-		self
-			.client
-			.get_service()
-			.await?
-			.spreadsheets()
-			.values_append(request, spreadsheet_id, worksheet_name)
-			.value_input_option("RAW")
-			.add_scopes(&SCOPES)
-			.doit()
-			.await?;
+		let service = self.client.get_service().await?;
+
+		match operation {
+			SheetOperation::CreateTab => {
+				// Create a new worksheet tab first
+				let add_sheet_request = google_sheets4::api::BatchUpdateSpreadsheetRequest {
+					requests: Some(vec![google_sheets4::api::Request {
+						add_sheet: Some(google_sheets4::api::AddSheetRequest {
+							properties: Some(google_sheets4::api::SheetProperties {
+								title: Some(worksheet_name.to_string()),
+								..Default::default()
+							}),
+						}),
+						..Default::default()
+					}]),
+					..Default::default()
+				};
+
+				// Add the new sheet/tab
+				service.spreadsheets().batch_update(add_sheet_request, spreadsheet_id).add_scopes(&SCOPES).doit().await?;
+
+				// Then write data to the new sheet/tab
+				service
+					.spreadsheets()
+					.values_update(request, spreadsheet_id, worksheet_name)
+					.value_input_option("RAW")
+					.add_scopes(&SCOPES)
+					.doit()
+					.await?;
+			}
+			SheetOperation::Rewrite => {
+				// Clear existing data and write new data
+				service
+					.spreadsheets()
+					.values_update(request, spreadsheet_id, worksheet_name)
+					.value_input_option("RAW")
+					.add_scopes(&SCOPES)
+					.doit()
+					.await?;
+			}
+			SheetOperation::Append => {
+				// Append data (original functionality)
+				service
+					.spreadsheets()
+					.values_append(request, spreadsheet_id, worksheet_name)
+					.value_input_option("RAW")
+					.add_scopes(&SCOPES)
+					.doit()
+					.await?;
+			}
+		}
 
 		Ok(())
 	}

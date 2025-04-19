@@ -24,14 +24,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Write some sample data
 	let sample_data = vec![
-		// vec!["Name".to_string(), "Age".to_string(), "City".to_string()],
+		vec!["Name".to_string(), "Age".to_string(), "City".to_string()],
 		vec!["Alice".to_string(), "25".to_string(), "New York".to_string()],
 		vec!["Bob".to_string(), "30".to_string(), "San Francisco".to_string()],
 		vec!["Charlie".to_string(), "35".to_string(), "Seattle".to_string()],
 	];
 
 	println!("\nWriting data to sheet...");
-	writer.write_data_to_sheet("testing", "1CN87_6FFZhSS3jYkJ8KobSaXDuUYzCICPRa79lPdc7E", sample_data).await?;
+	writer
+		.write_data_to_sheet("foo foo", "1CN87_6FFZhSS3jYkJ8KobSaXDuUYzCICPRa79lPdc7E", sample_data, SheetOperation::CreateTab)
+		.await?;
 
 	// Demonstrate reading data back
 	// println!("\nReading data from sheet...");

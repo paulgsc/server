@@ -8,11 +8,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.install_default()
 		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
 
-	//	list_files_example().await?;
-	search_files_example().await?;
-	get_file_example().await?;
+	list_files_example().await?;
+	//	search_files_example().await?;
+	//	get_file_example().await?;
 	// upload_file_example().await?;
-	download_file_example().await?;
+	//	download_file_example().await?;
 
 	Ok(())
 }

@@ -373,7 +373,7 @@ impl WriteToDrive {
 	}
 
 	pub async fn delete_file(&self, file_id: &str) -> Result<(), DriveError> {
-		self.client.get_service().await?.files().delete(file_id).doit().await?;
+		self.client.get_service().await?.files().delete(file_id).add_scope(Scope::Full.as_ref()).doit().await?;
 
 		Ok(())
 	}
@@ -389,76 +389,76 @@ mod tests {
 
 	// Mock the Google Drive API client
 	mock! {
-	DriveClient {
-						fn files(&self) -> FilesHub;
-							}
+		DriveClient {
+			fn files(&self) -> FilesHub;
+		}
 
-			pub struct FilesHub;
-					impl Clone for FilesHub {}
+		pub struct FilesHub;
+		impl Clone for FilesHub {}
 
-							trait FilesHub {
-												fn list(&self) -> FilesList;
-															fn get(&self, file_id: &str) -> FilesGet;
-																		fn create(&self, file: File) -> FilesCreate;
-																					fn update(&self, file: File, file_id: &str) -> FilesUpdate;
-																								fn delete(&self, file_id: &str) -> FilesDelete;
-																											fn export(&self, file_id: &str, mime_type: &str) -> FilesExport;
-																												}
+		trait FilesHub {
+			fn list(&self) -> FilesList;
+			fn get(&self, file_id: &str) -> FilesGet;
+			fn create(&self, file: File) -> FilesCreate;
+			fn update(&self, file: File, file_id: &str) -> FilesUpdate;
+			fn delete(&self, file_id: &str) -> FilesDelete;
+			fn export(&self, file_id: &str, mime_type: &str) -> FilesExport;
+		}
 
-									pub struct FilesList;
-											impl Clone for FilesList {}
+		pub struct FilesList;
+		impl Clone for FilesList {}
 
-													trait FilesList {
-																		fn q(&self, query: &str) -> Self;
-																					fn page_size(&self, page_size: i32) -> Self;
-																								fn spaces(&self, spaces: &str) -> Self;
-																											fn fields(&self, fields: &str) -> Self;
-																														fn doit(&self) -> Result<(hyper::Response<hyper::Body>, FileList), google_drive3::Error>;
-																															}
+		trait FilesList {
+			fn q(&self, query: &str) -> Self;
+			fn page_size(&self, page_size: i32) -> Self;
+			fn spaces(&self, spaces: &str) -> Self;
+			fn fields(&self, fields: &str) -> Self;
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, FileList), google_drive3::Error>;
+		}
 
-															pub struct FilesGet;
-																	impl Clone for FilesGet {}
+		pub struct FilesGet;
+		impl Clone for FilesGet {}
 
-																			trait FilesGet {
-																								fn fields(&self, fields: &str) -> Self;
-																											fn param(&self, param_name: &str, param_value: &str) -> Self;
-																														fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-																															}
+		trait FilesGet {
+			fn fields(&self, fields: &str) -> Self;
+			fn param(&self, param_name: &str, param_value: &str) -> Self;
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
+		}
 
-																					pub struct FilesCreate;
-																							impl Clone for FilesCreate {}
+		pub struct FilesCreate;
+		impl Clone for FilesCreate {}
 
-																									trait FilesCreate {
-																														fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
-																																				Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-																																	fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-																																		}
+		trait FilesCreate {
+			fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
+				Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
+		}
 
-																											pub struct FilesUpdate;
-																													impl Clone for FilesUpdate {}
+		pub struct FilesUpdate;
+		impl Clone for FilesUpdate {}
 
-																															trait FilesUpdate {
-																																				fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
-																																										Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-																																							fn add_parents(&self, parents: &str) -> Self;
-																																										fn remove_parents(&self, parents: &str) -> Self;
-																																													fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-																																														}
+		trait FilesUpdate {
+			fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
+				Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
+			fn add_parents(&self, parents: &str) -> Self;
+			fn remove_parents(&self, parents: &str) -> Self;
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
+		}
 
-																																	pub struct FilesDelete;
-																																			impl Clone for FilesDelete {}
+		pub struct FilesDelete;
+		impl Clone for FilesDelete {}
 
-																																					trait FilesDelete {
-																																										fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
-																																											}
+		trait FilesDelete {
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
+		}
 
-																																							pub struct FilesExport;
-																																									impl Clone for FilesExport {}
+		pub struct FilesExport;
+		impl Clone for FilesExport {}
 
-																																											trait FilesExport {
-																																																fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
-																																																	}
-																																											}
+		trait FilesExport {
+			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
+		}
+	}
 
 	#[tokio::test]
 	async fn test_list_files() {
