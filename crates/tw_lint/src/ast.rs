@@ -164,15 +164,15 @@ impl fmt::Display for JSXExpression {
 			Self::BlockStatement(nodes) => {
 				write!(f, "{{ ")?;
 				for node in nodes {
-					write!(f, "{:?}", node)?; // Use Debug for Node
+					write!(f, "{node:?}")?; // Use Debug for Node
 				}
 				write!(f, " }}")
 			}
 			Self::ReturnStatement(expr) => {
-				write!(f, "return {}", expr)
+				write!(f, "return {expr}")
 			}
 			Self::JSXElement(el) => {
-				write!(f, "{:?}", el)
+				write!(f, "{el:?}",)
 			}
 		}
 	}

@@ -22,6 +22,7 @@ pub enum ParserError {
 }
 
 impl Parser {
+	#[must_use]
 	pub fn new(lexer: Lexer) -> Self {
 		let tokens: Vec<Token> = lexer.collect();
 		let mut token_iter = tokens.into_iter().peekable();
@@ -601,7 +602,7 @@ impl Parser {
 		Ok(left)
 	}
 
-	fn is_binary_operator(&self, token_type: TokenType) -> bool {
+	const fn is_binary_operator(&self, token_type: TokenType) -> bool {
 		matches!(
 			token_type,
 			TokenType::Plus
@@ -621,7 +622,7 @@ impl Parser {
 		)
 	}
 
-	fn get_precedence(&self, token_type: TokenType) -> u8 {
+	const fn get_precedence(&self, token_type: TokenType) -> u8 {
 		match token_type {
 			TokenType::PipePipe => 1,
 			TokenType::AmpAmp => 2,
@@ -668,6 +669,16 @@ impl Parser {
 mod tests {
 	use super::*;
 	use crate::lexer::Lexer;
+
+	#[test]
+	fn test_parse_no_err() {
+		let input = "<div className=\"container\">Hello, world!</div>";
+		let lexer = Lexer::new(input);
+		let mut parser = Parser::new(lexer);
+
+		let result = parser.parse();
+		assert!(result.is_ok(), "Expected Ok(_), got {:?}", result);
+	}
 
 	#[test]
 	fn test_parse_simple_jsx_element() {

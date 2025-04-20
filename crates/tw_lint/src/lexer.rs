@@ -185,6 +185,7 @@ static TWO_CHAR_TOKENS: Lazy<HashMap<(char, char), TokenType>> = Lazy::new(|| {
 	m.insert(('|', '|'), TokenType::PipePipe);
 	m.insert(('<', '>'), TokenType::JSXFragmentOpening);
 	m.insert(('/', '>'), TokenType::JSXOpeningElementEnd);
+	m.insert(('<', '/'), TokenType::JSXClosingElementStart);
 	m
 });
 
@@ -281,6 +282,7 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
 	/// Creates a new lexer with the given input string.
+	#[must_use]
 	pub fn new(input: &'a str) -> Self {
 		let mut lexer = Lexer {
 			input,
@@ -336,7 +338,7 @@ impl<'a> Lexer<'a> {
 
 	/// Skips whitespace characters.
 	fn skip_whitespace(&mut self) {
-		self.read_while(|ch| ch.is_whitespace());
+		self.read_while(char::is_whitespace);
 	}
 
 	/// Reads an identifier or keyword.
@@ -490,7 +492,7 @@ impl<'a> Lexer<'a> {
 			if let Some(next_ch) = self.peek_char() {
 				if let Some(next_next_ch) = self.peek_second_char() {
 					if let Some(&token_type) = THREE_CHAR_TOKENS.get(&(ch, next_ch, next_next_ch)) {
-						let literal = format!("{}{}{}", ch, next_ch, next_next_ch);
+						let literal = format!("{ch}{next_ch}{next_next_ch}");
 						self.read_char();
 						self.read_char();
 						self.read_char();
@@ -502,7 +504,7 @@ impl<'a> Lexer<'a> {
 			// Check for two-character tokens
 			if let Some(next_ch) = self.peek_char() {
 				if let Some(&token_type) = TWO_CHAR_TOKENS.get(&(ch, next_ch)) {
-					let literal = format!("{}{}", ch, next_ch);
+					let literal = format!("{ch}{next_ch}");
 					self.read_char();
 					self.read_char();
 					return Token::new(token_type, literal, line, column);
