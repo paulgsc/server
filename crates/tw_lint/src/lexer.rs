@@ -72,6 +72,7 @@ pub enum TokenType {
 	KeywordFalse,
 	KeywordFinally,
 	KeywordFor,
+	KeywordFrom,
 	KeywordFunction,
 	KeywordIf,
 	KeywordImport,
@@ -219,6 +220,7 @@ static KEYWORDS: Lazy<HashMap<&'static str, TokenType>> = Lazy::new(|| {
 	m.insert("false", TokenType::KeywordFalse);
 	m.insert("finally", TokenType::KeywordFinally);
 	m.insert("for", TokenType::KeywordFor);
+	m.insert("from", TokenType::KeywordFrom);
 	m.insert("function", TokenType::KeywordFunction);
 	m.insert("if", TokenType::KeywordIf);
 	m.insert("import", TokenType::KeywordImport);
@@ -271,6 +273,7 @@ static KEYWORDS: Lazy<HashMap<&'static str, TokenType>> = Lazy::new(|| {
 });
 
 /// Represents the lexer, which tokenizes the input string.
+#[derive(Clone)]
 pub struct Lexer<'a> {
 	pub input: &'a str,
 	chars: Chars<'a>,

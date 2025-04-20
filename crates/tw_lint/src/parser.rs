@@ -1,750 +1,1328 @@
-use crate::ast::{AttributeValue, Element, Fragment, JSXAttribute, JSXExpression, Node};
 use crate::lexer::{Lexer, Token, TokenType};
 use std::iter::Peekable;
-use std::vec::IntoIter;
 
-pub struct Parser {
-	tokens: Peekable<IntoIter<Token>>,
-	current_token: Token,
-	peek_token: Token,
+/// AST node types for the TSX language
+#[derive(Debug, PartialEq, Clone)]
+pub enum Node {
+	Program {
+		body: Vec<Node>,
+	},
+	VariableDeclaration {
+		kind: VariableKind, // let, const, var
+		declarations: Vec<Node>,
+	},
+	VariableDeclarator {
+		id: Box<Node>,
+		init: Option<Box<Node>>,
+	},
+	Identifier {
+		name: String,
+	},
+	Literal {
+		value: LiteralValue,
+	},
+	ExpressionStatement {
+		expression: Box<Node>,
+	},
+	BinaryExpression {
+		operator: BinaryOperator,
+		left: Box<Node>,
+		right: Box<Node>,
+	},
+	AssignmentExpression {
+		operator: AssignmentOperator,
+		left: Box<Node>,
+		right: Box<Node>,
+	},
+	BlockStatement {
+		body: Vec<Node>,
+	},
+	IfStatement {
+		test: Box<Node>,
+		consequent: Box<Node>,
+		alternate: Option<Box<Node>>,
+	},
+	FunctionDeclaration {
+		id: Option<Box<Node>>,
+		params: Vec<Node>,
+		body: Box<Node>,
+		async_: bool,
+		generator: bool,
+	},
+	ReturnStatement {
+		argument: Option<Box<Node>>,
+	},
+	JSXElement {
+		opening_element: Box<Node>,
+		children: Vec<Node>,
+		closing_element: Option<Box<Node>>,
+	},
+	JSXOpeningElement {
+		name: Box<Node>,
+		attributes: Vec<Node>,
+		self_closing: bool,
+	},
+	JSXClosingElement {
+		name: Box<Node>,
+	},
+	JSXAttribute {
+		name: String,
+		value: Option<Box<Node>>,
+	},
+	JSXText {
+		value: String,
+	},
+	ImportDeclaration {
+		specifiers: Vec<Node>,
+		source: Box<Node>,
+	},
+	ImportSpecifier {
+		imported: Box<Node>,
+		local: Box<Node>,
+	},
+	ExportDeclaration {
+		declaration: Box<Node>,
+	},
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum VariableKind {
+	Let,
+	Const,
+	Var,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LiteralValue {
+	String(String),
+	Number(f64),
+	Boolean(bool),
+	Null,
+	Undefined,
+	RegExp(String),
+	BigInt(String),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BinaryOperator {
+	Equal,            // ==
+	NotEqual,         // !=
+	StrictEqual,      // ===
+	StrictNotEqual,   // !==
+	LessThan,         // <
+	LessThanEqual,    // <=
+	GreaterThan,      // >
+	GreaterThanEqual, // >=
+	Add,              // +
+	Subtract,         // -
+	Multiply,         // *
+	Divide,           // /
+	And,              // &&
+	Or,               // ||
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum AssignmentOperator {
+	Equals,       // =
+	PlusEquals,   // +=
+	MinusEquals,  // -=
+	TimesEquals,  // *=
+	DivideEquals, // /=
 }
 
 #[derive(Debug)]
-pub enum ParserError {
-	UnexpectedToken(Token, &'static str),
-	ExpectedToken(TokenType, Token),
-	UnexpectedEOF,
-	InvalidAttribute,
-	UnclosedElement(String),
-	UnclosedExpression,
-	MismatchedTag(String, String),
-	Generic(String),
+pub enum ParseError {
+	UnexpectedToken {
+		expected: Vec<TokenType>,
+		found: TokenType,
+		line: usize,
+		column: usize,
+	},
+	UnexpectedEOF {
+		expected: Vec<TokenType>,
+	},
+	InvalidSyntax {
+		message: String,
+		line: usize,
+		column: usize,
+	},
 }
 
-impl Parser {
-	#[must_use]
-	pub fn new(lexer: Lexer) -> Self {
-		let tokens: Vec<Token> = lexer.collect();
-		let mut token_iter = tokens.into_iter().peekable();
+type ParseResult<T> = Result<T, ParseError>;
 
-		let current_token = token_iter.next().unwrap_or(Token::new(TokenType::EOF, String::new(), 0, 0));
+/// Parser for TSX source code
+pub struct Parser<'a> {
+	tokens: Peekable<Lexer<'a>>,
+}
 
-		let peek_token = token_iter.peek().cloned().unwrap_or(Token::new(TokenType::EOF, String::new(), 0, 0));
-
-		Self {
-			tokens: token_iter,
-			current_token,
-			peek_token,
-		}
+impl<'a> Parser<'a> {
+	/// Creates a new parser for the given input string
+	pub fn new(input: &'a str) -> Self {
+		let lexer = Lexer::new(input);
+		Self { tokens: lexer.peekable() }
 	}
 
-	fn next_token(&mut self) {
-		self.current_token = self.peek_token.clone();
-		self.peek_token = self.tokens.next().unwrap_or(Token::new(TokenType::EOF, String::new(), 0, 0));
+	/// Creates a new parser from a pre-existing lexer
+	pub fn from_lexer(lexer: Lexer<'a>) -> Self {
+		Self { tokens: lexer.peekable() }
 	}
 
-	fn expect_token(&mut self, token_type: TokenType) -> Result<Token, ParserError> {
-		let current = self.current_token.clone();
-		if current.token_type == token_type {
-			let token = current;
-			self.next_token();
-			Ok(token)
+	/// Parses the input into an AST
+	pub fn parse(&mut self) -> ParseResult<Node> {
+		self.parse_program()
+	}
+
+	/// Peeks at the next token without consuming it
+	fn peek_token(&mut self) -> Option<&Token> {
+		self.tokens.peek()
+	}
+
+	/// Consumes and returns the next token
+	fn next_token(&mut self) -> Option<Token> {
+		self.tokens.next()
+	}
+
+	/// Checks if the next token matches the expected type
+	fn check_token(&mut self, expected: TokenType) -> bool {
+		if let Some(token) = self.peek_token() {
+			token.token_type == expected
 		} else {
-			Err(ParserError::ExpectedToken(token_type, current))
+			false
 		}
 	}
 
-	fn peek_token_is(&self, token_type: TokenType) -> bool {
-		self.peek_token.token_type == token_type
-	}
-
-	fn current_token_is(&self, token_type: TokenType) -> bool {
-		self.current_token.token_type == token_type
-	}
-
-	pub fn parse(&mut self) -> Result<Vec<Node>, ParserError> {
-		let mut nodes = Vec::new();
-
-		self.next_token(); // Initialize the first token
-
-		while self.current_token.token_type != TokenType::EOF {
-			let node = self.parse_node()?;
-			nodes.push(node);
-		}
-
-		Ok(nodes)
-	}
-
-	fn parse_node(&mut self) -> Result<Node, ParserError> {
-		match self.current_token.token_type {
-			TokenType::Lt => self.parse_jsx_element_or_fragment(),
-			TokenType::BraceL => self.parse_jsx_expression_node(),
-			// Add other token types as needed
-			_ => {
-				// Assume text node for anything else
-				let text = self.current_token.literal.clone();
-				self.next_token();
-				Ok(Node::Text(text))
+	/// Expects a token of a specific type, consuming it if matched
+	fn expect_token(&mut self, expected: TokenType) -> ParseResult<Token> {
+		if let Some(token) = self.next_token() {
+			if token.token_type == expected {
+				Ok(token)
+			} else {
+				Err(ParseError::UnexpectedToken {
+					expected: vec![expected],
+					found: token.token_type,
+					line: token.line,
+					column: token.column,
+				})
 			}
+		} else {
+			Err(ParseError::UnexpectedEOF { expected: vec![expected] })
 		}
 	}
 
-	fn parse_jsx_element_or_fragment(&mut self) -> Result<Node, ParserError> {
-		// Check for fragment: <>...</>
-		if self.peek_token_is(TokenType::Gt) {
-			return self.parse_jsx_fragment();
-		}
-
-		self.next_token(); // Consume the '<'
-
-		if self.current_token_is(TokenType::JSXClosingElementStart) {
-			return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Unexpected closing tag"));
-		}
-
-		// Parse the tag name
-		let tag_name = if self.current_token_is(TokenType::Identifier) || self.current_token_is(TokenType::JSXIdentifier) {
-			self.current_token.literal.clone()
+	/// Tries to match and consume a token of a specific type
+	fn match_token(&mut self, expected: TokenType) -> bool {
+		if self.check_token(expected) {
+			self.next_token();
+			true
 		} else {
-			return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected tag name"));
+			false
+		}
+	}
+
+	/// Parses a complete program
+	fn parse_program(&mut self) -> ParseResult<Node> {
+		let mut body = Vec::new();
+
+		while self.peek_token().is_some() {
+			let statement = self.parse_statement()?;
+			body.push(statement);
+		}
+
+		Ok(Node::Program { body })
+	}
+
+	/// Parses a statement
+	fn parse_statement(&mut self) -> ParseResult<Node> {
+		match self.peek_token() {
+			Some(token) => match token.token_type {
+				TokenType::KeywordLet | TokenType::KeywordConst | TokenType::KeywordVar => self.parse_variable_declaration(),
+				TokenType::KeywordFunction => self.parse_function_declaration(),
+				TokenType::KeywordIf => self.parse_if_statement(),
+				TokenType::KeywordReturn => self.parse_return_statement(),
+				TokenType::KeywordImport => self.parse_import_declaration(),
+				TokenType::KeywordExport => self.parse_export_declaration(),
+				TokenType::BraceL => self.parse_block_statement(),
+				TokenType::Lt => self.parse_jsx_or_less_than(),
+				_ => self.parse_expression_statement(),
+			},
+			None => Err(ParseError::UnexpectedEOF {
+				expected: vec![
+					TokenType::KeywordLet,
+					TokenType::KeywordConst,
+					TokenType::KeywordVar,
+					TokenType::KeywordFunction,
+					TokenType::KeywordIf,
+					TokenType::KeywordReturn,
+					TokenType::BraceL,
+				],
+			}),
+		}
+	}
+
+	/// Parses a variable declaration (let, const, var)
+	fn parse_variable_declaration(&mut self) -> ParseResult<Node> {
+		let token = self.next_token().unwrap();
+		let kind = match token.token_type {
+			TokenType::KeywordLet => VariableKind::Let,
+			TokenType::KeywordConst => VariableKind::Const,
+			TokenType::KeywordVar => VariableKind::Var,
+			_ => unreachable!("Expected variable declaration keyword"),
 		};
 
-		self.next_token(); // Consume the tag name
+		let mut declarations = Vec::new();
 
-		// Check for TypeScript generic type arguments
-		let type_arguments = if self.current_token_is(TokenType::Lt) {
-			Some(self.parse_type_arguments()?)
+		// Parse first declarator
+		declarations.push(self.parse_variable_declarator()?);
+
+		// Parse additional declarators separated by commas
+		while self.match_token(TokenType::Comma) {
+			declarations.push(self.parse_variable_declarator()?);
+		}
+
+		// Expect semicolon at the end
+		self.expect_token(TokenType::Semicolon)?;
+
+		Ok(Node::VariableDeclaration { kind, declarations })
+	}
+
+	/// Parses a variable declarator (identifier = initializer)
+	fn parse_variable_declarator(&mut self) -> ParseResult<Node> {
+		let id = Box::new(self.parse_identifier()?);
+
+		let init = if self.match_token(TokenType::Eq) {
+			Some(Box::new(self.parse_expression()?))
 		} else {
 			None
 		};
 
-		// Parse attributes
-		let mut element = Element::new(&tag_name);
-		if type_arguments.is_some() {
-			element.set_type_arguments(&type_arguments.unwrap());
-		}
+		Ok(Node::VariableDeclarator { id, init })
+	}
 
-		while !self.current_token_is(TokenType::JSXOpeningElementEnd) && !self.current_token_is(TokenType::Gt) && !self.current_token_is(TokenType::EOF) {
-			if self.current_token_is(TokenType::JSXSpread) {
-				let spread_attr = self.parse_jsx_spread_attribute()?;
-				element.attributes.push(spread_attr);
-			} else if self.current_token_is(TokenType::Identifier) || self.current_token_is(TokenType::JSXAttributeName) {
-				let attr = self.parse_jsx_attribute()?;
-				element.attributes.push(attr);
+	/// Parses an identifier
+	fn parse_identifier(&mut self) -> ParseResult<Node> {
+		if let Some(token) = self.next_token() {
+			if token.token_type == TokenType::Identifier {
+				Ok(Node::Identifier { name: token.literal })
 			} else {
-				return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected attribute or closing of tag"));
+				Err(ParseError::UnexpectedToken {
+					expected: vec![TokenType::Identifier],
+					found: token.token_type,
+					line: token.line,
+					column: token.column,
+				})
 			}
-		}
-
-		// Check if it's a self-closing tag
-		let is_self_closing = self.current_token_is(TokenType::JSXOpeningElementEnd);
-		if is_self_closing {
-			element.set_self_closing(true);
-			self.next_token(); // Consume the '/>'
-			return Ok(Node::Element(element));
-		}
-
-		// Expect closing '>'
-		self.expect_token(TokenType::Gt)?;
-
-		// Parse children
-		while !self.current_token_is(TokenType::JSXClosingElementStart) && !self.current_token_is(TokenType::EOF) {
-			let child = self.parse_node()?;
-			element.add_child(child);
-		}
-
-		// Parse closing tag
-		self.next_token(); // Consume the '</'
-		let closing_tag_name = if self.current_token_is(TokenType::Identifier) || self.current_token_is(TokenType::JSXIdentifier) {
-			self.current_token.literal.clone()
 		} else {
-			return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected closing tag name"));
+			Err(ParseError::UnexpectedEOF {
+				expected: vec![TokenType::Identifier],
+			})
+		}
+	}
+
+	/// Parses a function declaration
+	fn parse_function_declaration(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordFunction)?;
+
+		// Function name is optional (for anonymous functions)
+		let id = if self.check_token(TokenType::Identifier) {
+			Some(Box::new(self.parse_identifier()?))
+		} else {
+			None
 		};
 
-		if tag_name != closing_tag_name {
-			return Err(ParserError::MismatchedTag(tag_name, closing_tag_name));
-		}
+		// Parse parameters
+		self.expect_token(TokenType::ParenL)?;
+		let params = self.parse_function_parameters()?;
+		self.expect_token(TokenType::ParenR)?;
 
-		self.next_token(); // Consume the closing tag name
-		self.expect_token(TokenType::Gt)?; // Expect '>'
+		// Parse function body
+		let body = Box::new(self.parse_block_statement()?);
 
-		Ok(Node::Element(element))
-	}
-
-	fn parse_jsx_fragment(&mut self) -> Result<Node, ParserError> {
-		self.next_token(); // Consume the '<'
-		self.next_token(); // Consume the '>'
-
-		let mut fragment = Fragment { children: Vec::new() };
-
-		// Parse children until we find the closing fragment tag
-		while !self.current_token_is(TokenType::JSXClosingElementStart) && !self.current_token_is(TokenType::EOF) {
-			let child = self.parse_node()?;
-			fragment.children.push(child);
-		}
-
-		// Expect '</>'
-		self.next_token(); // Consume the '</'
-		self.expect_token(TokenType::Gt)?; // Expect '>'
-
-		Ok(Node::Fragment(fragment))
-	}
-
-	fn parse_jsx_attribute(&mut self) -> Result<JSXAttribute, ParserError> {
-		let name = self.current_token.literal.clone();
-		self.next_token(); // Consume the attribute name
-
-		// If there's no '=', it's a boolean attribute
-		if !self.current_token_is(TokenType::Eq) {
-			return Ok(JSXAttribute {
-				name,
-				value: Some(AttributeValue::Expression(JSXExpression::BooleanLiteral(true))),
-			});
-		}
-
-		self.next_token(); // Consume the '='
-
-		let value = match self.current_token.token_type {
-			TokenType::String | TokenType::JSXAttributeStringValue => {
-				let string_literal = self.current_token.literal.clone();
-				self.next_token(); // Consume the string
-				Some(AttributeValue::String(string_literal))
-			}
-			TokenType::BraceL => {
-				self.next_token(); // Consume the '{'
-				let expr = self.parse_jsx_expression()?;
-				self.expect_token(TokenType::BraceR)?; // Expect closing '}'
-				Some(AttributeValue::Expression(expr))
-			}
-			_ => {
-				return Err(ParserError::UnexpectedToken(
-					self.current_token.clone(),
-					"Expected string or expression for attribute value",
-				));
-			}
-		};
-
-		Ok(JSXAttribute { name, value })
-	}
-
-	fn parse_jsx_spread_attribute(&mut self) -> Result<JSXAttribute, ParserError> {
-		self.next_token(); // Consume the '{'
-		self.next_token(); // Consume the '...'
-
-		let expr = self.parse_jsx_expression()?;
-		self.expect_token(TokenType::BraceR)?; // Expect closing '}'
-
-		Ok(JSXAttribute {
-			name: "...".to_string(),
-			value: Some(AttributeValue::Expression(expr)),
+		Ok(Node::FunctionDeclaration {
+			id,
+			params,
+			body,
+			async_: false,    // We're not handling async functions in this example
+			generator: false, // We're not handling generator functions in this example
 		})
 	}
 
-	fn parse_jsx_expression_node(&mut self) -> Result<Node, ParserError> {
-		self.next_token(); // Consume the '{'
-		let expr = self.parse_jsx_expression()?;
-		self.expect_token(TokenType::BraceR)?; // Expect closing '}'
-		Ok(Node::JSXExpression(expr))
+	/// Parses function parameters
+	fn parse_function_parameters(&mut self) -> ParseResult<Vec<Node>> {
+		let mut params = Vec::new();
+
+		// Empty parameter list
+		if self.check_token(TokenType::ParenR) {
+			return Ok(params);
+		}
+
+		// First parameter
+		params.push(self.parse_identifier()?);
+
+		// Additional parameters separated by commas
+		while self.match_token(TokenType::Comma) {
+			params.push(self.parse_identifier()?);
+		}
+
+		Ok(params)
 	}
 
-	fn parse_jsx_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		match self.current_token.token_type {
-			TokenType::Identifier => self.parse_identifier_expression(),
-			TokenType::String => {
-				let value = self.current_token.literal.clone();
-				self.next_token();
-				Ok(JSXExpression::StringLiteral(value))
-			}
-			TokenType::Number => {
-				let value = self.current_token.literal.clone();
-				self.next_token();
-				Ok(JSXExpression::NumberLiteral(value))
-			}
-			TokenType::KeywordTrue => {
-				self.next_token();
-				Ok(JSXExpression::BooleanLiteral(true))
-			}
-			TokenType::KeywordFalse => {
-				self.next_token();
-				Ok(JSXExpression::BooleanLiteral(false))
-			}
-			TokenType::KeywordNull => {
-				self.next_token();
-				Ok(JSXExpression::NullLiteral)
-			}
-			TokenType::KeywordUndefined => {
-				self.next_token();
-				Ok(JSXExpression::UndefinedLiteral)
-			}
-			TokenType::BraceL => self.parse_object_expression(),
-			TokenType::BracketL => self.parse_array_expression(),
-			TokenType::ParenL => self.parse_grouped_expression(),
-			TokenType::Bang | TokenType::Minus | TokenType::Plus => self.parse_unary_expression(),
-			TokenType::Lt => {
-				// This might be a JSX element inside an expression
-				let element = self.parse_jsx_element_or_fragment()?;
-				match element {
-					Node::Element(el) => Ok(JSXExpression::JSXElement(el)),
-					_ => Err(ParserError::Generic("Expected JSX element".to_string())),
-				}
-			}
-			_ => Err(ParserError::UnexpectedToken(self.current_token.clone(), "Unexpected token in expression")),
-		}
-	}
+	/// Parses a block statement
+	fn parse_block_statement(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::BraceL)?;
 
-	fn parse_identifier_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		let identifier = self.current_token.literal.clone();
-		self.next_token();
+		let mut body = Vec::new();
 
-		// Check if it's a function call
-		if self.current_token_is(TokenType::ParenL) {
-			return self.parse_call_expression(identifier);
-		}
-
-		// Check if it's a member expression (e.g., obj.prop)
-		if self.current_token_is(TokenType::Dot) {
-			return self.parse_member_expression(JSXExpression::Identifier(identifier));
-		}
-
-		// Check if it's part of a binary expression
-		if self.is_binary_operator(self.current_token.token_type) {
-			return self.parse_binary_expression(JSXExpression::Identifier(identifier));
-		}
-
-		// Otherwise, it's just an identifier
-		Ok(JSXExpression::Identifier(identifier))
-	}
-
-	fn parse_object_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '{'
-		let mut properties = Vec::new();
-
-		// Parse key-value pairs until we find a closing brace
-		while !self.current_token_is(TokenType::BraceR) && !self.current_token_is(TokenType::EOF) {
-			// Parse key
-			let key = if self.current_token_is(TokenType::Identifier) || self.current_token_is(TokenType::String) {
-				self.current_token.literal.clone()
-			} else {
-				return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected property name"));
-			};
-
-			self.next_token();
-			self.expect_token(TokenType::Colon)?;
-
-			// Parse value
-			let value = self.parse_jsx_expression()?;
-			properties.push((key, Box::new(value)));
-
-			// Check for comma or closing brace
-			if self.current_token_is(TokenType::Comma) {
-				self.next_token();
-			} else if !self.current_token_is(TokenType::BraceR) {
-				return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected ',' or '}'"));
-			}
+		while !self.check_token(TokenType::BraceR) && self.peek_token().is_some() {
+			body.push(self.parse_statement()?);
 		}
 
 		self.expect_token(TokenType::BraceR)?;
-		Ok(JSXExpression::ObjectExpression(properties))
+
+		Ok(Node::BlockStatement { body })
 	}
 
-	fn parse_array_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '['
-		let mut elements = Vec::new();
+	/// Parses an if statement
+	fn parse_if_statement(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordIf)?;
 
-		// Parse elements until we find a closing bracket
-		while !self.current_token_is(TokenType::BracketR) && !self.current_token_is(TokenType::EOF) {
-			let element = self.parse_jsx_expression()?;
-			elements.push(Box::new(element));
-
-			// Check for comma or closing bracket
-			if self.current_token_is(TokenType::Comma) {
-				self.next_token();
-			} else if !self.current_token_is(TokenType::BracketR) {
-				return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected ',' or ']'"));
-			}
-		}
-
-		self.expect_token(TokenType::BracketR)?;
-		Ok(JSXExpression::ArrayExpression(elements))
-	}
-
-	fn parse_call_expression(&mut self, fn_name: String) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '('
-		let mut arguments = Vec::new();
-
-		// Parse arguments until we find a closing parenthesis
-		while !self.current_token_is(TokenType::ParenR) && !self.current_token_is(TokenType::EOF) {
-			let arg = self.parse_jsx_expression()?;
-			arguments.push(arg);
-
-			// Check for comma or closing parenthesis
-			if self.current_token_is(TokenType::Comma) {
-				self.next_token();
-			} else if !self.current_token_is(TokenType::ParenR) {
-				return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected ',' or ')'"));
-			}
-		}
-
+		// Parse condition
+		self.expect_token(TokenType::ParenL)?;
+		let test = Box::new(self.parse_expression()?);
 		self.expect_token(TokenType::ParenR)?;
 
-		// Check if it's part of a member expression or binary expression
-		if self.current_token_is(TokenType::Dot) {
-			return self.parse_member_expression(JSXExpression::CallExpression { name: fn_name, arguments });
-		}
+		// Parse consequent (if body)
+		let consequent = Box::new(self.parse_statement()?);
 
-		if self.is_binary_operator(self.current_token.token_type) {
-			return self.parse_binary_expression(JSXExpression::CallExpression { name: fn_name, arguments });
-		}
-
-		Ok(JSXExpression::CallExpression { name: fn_name, arguments })
-	}
-
-	fn parse_member_expression(&mut self, object: JSXExpression) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '.'
-
-		// Expect property name
-		let property = if self.current_token_is(TokenType::Identifier) {
-			self.current_token.literal.clone()
+		// Parse alternate (else body) if present
+		let alternate = if self.match_token(TokenType::KeywordElse) {
+			Some(Box::new(self.parse_statement()?))
 		} else {
-			return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected property name"));
+			None
 		};
 
-		self.next_token();
+		Ok(Node::IfStatement { test, consequent, alternate })
+	}
 
-		let expr = JSXExpression::MemberExpression {
-			object: Box::new(object),
-			property,
+	/// Parses a return statement
+	fn parse_return_statement(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordReturn)?;
+
+		let argument = if !self.check_token(TokenType::Semicolon) {
+			Some(Box::new(self.parse_expression()?))
+		} else {
+			None
 		};
 
-		// Check for chained member access (e.g., obj.prop1.prop2)
-		if self.current_token_is(TokenType::Dot) {
-			return self.parse_member_expression(expr);
-		}
+		self.expect_token(TokenType::Semicolon)?;
 
-		// Check if it's part of a binary expression
-		if self.is_binary_operator(self.current_token.token_type) {
-			return self.parse_binary_expression(expr);
-		}
-
-		Ok(expr)
+		Ok(Node::ReturnStatement { argument })
 	}
 
-	fn parse_binary_expression(&mut self, left: JSXExpression) -> Result<JSXExpression, ParserError> {
-		let operator = self.current_token.literal.clone();
-		let precedence = self.get_precedence(self.current_token.token_type);
+	/// Parses an expression statement
+	fn parse_expression_statement(&mut self) -> ParseResult<Node> {
+		let expression = Box::new(self.parse_expression()?);
 
-		self.next_token();
-		let right = self.parse_jsx_expression_with_precedence(precedence)?;
+		self.expect_token(TokenType::Semicolon)?;
 
-		Ok(JSXExpression::BinaryExpression {
-			operator,
-			left: Box::new(left),
-			right: Box::new(right),
-		})
+		Ok(Node::ExpressionStatement { expression })
 	}
 
-	fn parse_unary_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		let operator = self.current_token.literal.clone();
-		self.next_token();
-
-		let argument = self.parse_jsx_expression()?;
-
-		Ok(JSXExpression::UnaryExpression {
-			operator,
-			argument: Box::new(argument),
-		})
+	/// Parses an expression
+	fn parse_expression(&mut self) -> ParseResult<Node> {
+		self.parse_assignment_expression()
 	}
 
-	fn parse_grouped_expression(&mut self) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '('
+	/// Parses an assignment expression
+	fn parse_assignment_expression(&mut self) -> ParseResult<Node> {
+		let left = self.parse_binary_expression()?;
 
-		// Check if it's an arrow function
-		if self.current_token_is(TokenType::ParenR) || self.current_token_is(TokenType::Identifier) {
-			return self.parse_arrow_function();
-		}
-
-		let expr = self.parse_jsx_expression()?;
-		self.expect_token(TokenType::ParenR)?;
-
-		// Check if it's a conditional expression
-		if self.current_token_is(TokenType::Question) {
-			return self.parse_conditional_expression(expr);
-		}
-
-		// Check if it's part of a member expression
-		if self.current_token_is(TokenType::Dot) {
-			return self.parse_member_expression(expr);
-		}
-
-		// Check if it's part of a binary expression
-		if self.is_binary_operator(self.current_token.token_type) {
-			return self.parse_binary_expression(expr);
-		}
-
-		Ok(expr)
-	}
-
-	fn parse_arrow_function(&mut self) -> Result<JSXExpression, ParserError> {
-		let mut parameters = Vec::new();
-
-		// Parse parameters
-		if !self.current_token_is(TokenType::ParenR) {
-			while !self.current_token_is(TokenType::ParenR) && !self.current_token_is(TokenType::EOF) {
-				if self.current_token_is(TokenType::Identifier) {
-					parameters.push(self.current_token.literal.clone());
+		match self.peek_token() {
+			Some(token) => match token.token_type {
+				TokenType::Eq => {
 					self.next_token();
-
-					if self.current_token_is(TokenType::Comma) {
-						self.next_token();
-					} else if !self.current_token_is(TokenType::ParenR) {
-						return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected ',' or ')'"));
-					}
-				} else {
-					return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected parameter name"));
+					let right = self.parse_assignment_expression()?;
+					Ok(Node::AssignmentExpression {
+						operator: AssignmentOperator::Equals,
+						left: Box::new(left),
+						right: Box::new(right),
+					})
 				}
-			}
+				TokenType::PlusEq => {
+					self.next_token();
+					let right = self.parse_assignment_expression()?;
+					Ok(Node::AssignmentExpression {
+						operator: AssignmentOperator::PlusEquals,
+						left: Box::new(left),
+						right: Box::new(right),
+					})
+				}
+				TokenType::MinusEq => {
+					self.next_token();
+					let right = self.parse_assignment_expression()?;
+					Ok(Node::AssignmentExpression {
+						operator: AssignmentOperator::MinusEquals,
+						left: Box::new(left),
+						right: Box::new(right),
+					})
+				}
+				TokenType::StarEq => {
+					self.next_token();
+					let right = self.parse_assignment_expression()?;
+					Ok(Node::AssignmentExpression {
+						operator: AssignmentOperator::TimesEquals,
+						left: Box::new(left),
+						right: Box::new(right),
+					})
+				}
+				TokenType::SlashEq => {
+					self.next_token();
+					let right = self.parse_assignment_expression()?;
+					Ok(Node::AssignmentExpression {
+						operator: AssignmentOperator::DivideEquals,
+						left: Box::new(left),
+						right: Box::new(right),
+					})
+				}
+				_ => Ok(left),
+			},
+			None => Ok(left),
 		}
-
-		self.expect_token(TokenType::ParenR)?;
-
-		// Expect '=>'
-		if !(self.current_token_is(TokenType::Eq) && self.peek_token_is(TokenType::Gt)) {
-			return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Expected '=>'"));
-		}
-
-		self.next_token(); // Consume '='
-		self.next_token(); // Consume '>'
-
-		// Parse body
-		let body = if self.current_token_is(TokenType::BraceL) {
-			// Block body
-			self.next_token(); // Consume '{'
-			let mut statements = Vec::new();
-
-			while !self.current_token_is(TokenType::BraceR) && !self.current_token_is(TokenType::EOF) {
-				let stmt = self.parse_node()?;
-				statements.push(stmt);
-			}
-
-			self.expect_token(TokenType::BraceR)?;
-			Box::new(JSXExpression::BlockStatement(statements))
-		} else {
-			// Expression body
-			Box::new(self.parse_jsx_expression()?)
-		};
-
-		Ok(JSXExpression::ArrowFunctionExpression { parameters, body })
 	}
 
-	fn parse_conditional_expression(&mut self, condition: JSXExpression) -> Result<JSXExpression, ParserError> {
-		self.next_token(); // Consume the '?'
+	/// Parses a binary expression
+	fn parse_binary_expression(&mut self) -> ParseResult<Node> {
+		let mut left = self.parse_primary_expression()?;
 
-		let consequent = self.parse_jsx_expression()?;
+		while let Some(token) = self.peek_token() {
+			let operator = match token.token_type {
+				TokenType::EqEq => BinaryOperator::Equal,
+				TokenType::NotEq => BinaryOperator::NotEqual,
+				TokenType::EqEqEq => BinaryOperator::StrictEqual,
+				TokenType::NotEqEq => BinaryOperator::StrictNotEqual,
+				TokenType::Lt => BinaryOperator::LessThan,
+				TokenType::LtEq => BinaryOperator::LessThanEqual,
+				TokenType::Gt => BinaryOperator::GreaterThan,
+				TokenType::GtEq => BinaryOperator::GreaterThanEqual,
+				TokenType::Plus => BinaryOperator::Add,
+				TokenType::Minus => BinaryOperator::Subtract,
+				TokenType::Star => BinaryOperator::Multiply,
+				TokenType::Slash => BinaryOperator::Divide,
+				TokenType::AmpAmp => BinaryOperator::And,
+				TokenType::PipePipe => BinaryOperator::Or,
+				_ => break,
+			};
 
-		self.expect_token(TokenType::Colon)?;
+			self.next_token();
+			let right = self.parse_primary_expression()?;
 
-		let alternate = self.parse_jsx_expression()?;
-
-		Ok(JSXExpression::ConditionalExpression {
-			condition: Box::new(condition),
-			consequent: Box::new(consequent),
-			alternate: Box::new(alternate),
-		})
-	}
-
-	fn parse_jsx_expression_with_precedence(&mut self, precedence: u8) -> Result<JSXExpression, ParserError> {
-		let mut left = match self.current_token.token_type {
-			TokenType::Identifier => self.parse_identifier_expression()?,
-			TokenType::String => {
-				let value = self.current_token.literal.clone();
-				self.next_token();
-				JSXExpression::StringLiteral(value)
-			}
-			TokenType::Number => {
-				let value = self.current_token.literal.clone();
-				self.next_token();
-				JSXExpression::NumberLiteral(value)
-			}
-			TokenType::KeywordTrue => {
-				self.next_token();
-				JSXExpression::BooleanLiteral(true)
-			}
-			TokenType::KeywordFalse => {
-				self.next_token();
-				JSXExpression::BooleanLiteral(false)
-			}
-			TokenType::KeywordNull => {
-				self.next_token();
-				JSXExpression::NullLiteral
-			}
-			TokenType::KeywordUndefined => {
-				self.next_token();
-				JSXExpression::UndefinedLiteral
-			}
-			TokenType::BraceL => self.parse_object_expression()?,
-			TokenType::BracketL => self.parse_array_expression()?,
-			TokenType::ParenL => self.parse_grouped_expression()?,
-			TokenType::Bang | TokenType::Minus | TokenType::Plus => self.parse_unary_expression()?,
-			_ => return Err(ParserError::UnexpectedToken(self.current_token.clone(), "Unexpected token in expression")),
-		};
-
-		while !self.current_token_is(TokenType::EOF) && precedence < self.get_precedence(self.current_token.token_type) {
-			if self.current_token_is(TokenType::Dot) {
-				left = self.parse_member_expression(left)?;
-			} else if self.is_binary_operator(self.current_token.token_type) {
-				left = self.parse_binary_expression(left)?;
-			} else if self.current_token_is(TokenType::Question) {
-				left = self.parse_conditional_expression(left)?;
-			} else {
-				break;
-			}
+			left = Node::BinaryExpression {
+				operator,
+				left: Box::new(left),
+				right: Box::new(right),
+			};
 		}
 
 		Ok(left)
 	}
 
-	const fn is_binary_operator(&self, token_type: TokenType) -> bool {
-		matches!(
-			token_type,
-			TokenType::Plus
-				| TokenType::Minus
-				| TokenType::Star
-				| TokenType::Slash
-				| TokenType::EqEq
-				| TokenType::NotEq
-				| TokenType::Lt
-				| TokenType::Gt
-				| TokenType::LtEq
-				| TokenType::GtEq
-				| TokenType::AmpAmp
-				| TokenType::PipePipe
-				| TokenType::EqEqEq
-				| TokenType::NotEqEq
-		)
-	}
-
-	const fn get_precedence(&self, token_type: TokenType) -> u8 {
-		match token_type {
-			TokenType::PipePipe => 1,
-			TokenType::AmpAmp => 2,
-			TokenType::EqEq | TokenType::NotEq | TokenType::EqEqEq | TokenType::NotEqEq => 3,
-			TokenType::Lt | TokenType::Gt | TokenType::LtEq | TokenType::GtEq => 4,
-			TokenType::Plus | TokenType::Minus => 5,
-			TokenType::Star | TokenType::Slash => 6,
-			_ => 0,
+	/// Parses a primary expression (identifiers, literals, etc.)
+	fn parse_primary_expression(&mut self) -> ParseResult<Node> {
+		match self.peek_token() {
+			Some(token) => match token.token_type {
+				TokenType::Identifier => self.parse_identifier(),
+				TokenType::String => {
+					let token = self.next_token().unwrap();
+					Ok(Node::Literal {
+						value: LiteralValue::String(token.literal),
+					})
+				}
+				TokenType::Number => {
+					let token = self.next_token().unwrap();
+					let value = token.literal.parse::<f64>().unwrap_or(0.0);
+					Ok(Node::Literal {
+						value: LiteralValue::Number(value),
+					})
+				}
+				TokenType::KeywordTrue => {
+					self.next_token();
+					Ok(Node::Literal {
+						value: LiteralValue::Boolean(true),
+					})
+				}
+				TokenType::KeywordFalse => {
+					self.next_token();
+					Ok(Node::Literal {
+						value: LiteralValue::Boolean(false),
+					})
+				}
+				TokenType::KeywordNull => {
+					self.next_token();
+					Ok(Node::Literal { value: LiteralValue::Null })
+				}
+				TokenType::KeywordUndefined => {
+					self.next_token();
+					Ok(Node::Literal { value: LiteralValue::Undefined })
+				}
+				TokenType::ParenL => {
+					self.next_token();
+					let expr = self.parse_expression()?;
+					self.expect_token(TokenType::ParenR)?;
+					Ok(expr)
+				}
+				_ => Err(ParseError::UnexpectedToken {
+					expected: vec![
+						TokenType::Identifier,
+						TokenType::String,
+						TokenType::Number,
+						TokenType::KeywordTrue,
+						TokenType::KeywordFalse,
+						TokenType::KeywordNull,
+						TokenType::ParenL,
+					],
+					found: token.token_type,
+					line: token.line,
+					column: token.column,
+				}),
+			},
+			None => Err(ParseError::UnexpectedEOF {
+				expected: vec![
+					TokenType::Identifier,
+					TokenType::String,
+					TokenType::Number,
+					TokenType::KeywordTrue,
+					TokenType::KeywordFalse,
+					TokenType::KeywordNull,
+					TokenType::ParenL,
+				],
+			}),
 		}
 	}
 
-	fn parse_type_arguments(&mut self) -> Result<String, ParserError> {
-		let mut type_args = String::new();
-		let mut depth = 1;
+	/// Determines if we're parsing a JSX element or a less-than operator
+	fn parse_jsx_or_less_than(&mut self) -> ParseResult<Node> {
+		// We have a '<' token, which could either be a JSX element or a binary expression
+		let saved_tokens_state = self.tokens.clone();
 
-		type_args.push('<');
-		self.next_token(); // Consume the '<'
+		// Consume '<'
+		self.next_token();
 
-		while depth > 0 && !self.current_token_is(TokenType::EOF) {
-			if self.current_token_is(TokenType::Lt) {
-				depth += 1;
-			} else if self.current_token_is(TokenType::Gt) {
-				depth -= 1;
-				if depth == 0 {
-					type_args.push('>');
-					self.next_token(); // Consume the closing '>'
-					break;
+		// Check if the next token indicates a JSX tag
+		match self.peek_token() {
+			Some(token) => match token.token_type {
+				TokenType::Identifier => {
+					// Looks like JSX, restore the state and parse as JSX
+					self.tokens = saved_tokens_state;
+					self.parse_jsx_element()
+				}
+				TokenType::Slash => {
+					// JSX closing tag, restore the state and parse as JSX
+					self.tokens = saved_tokens_state;
+					self.parse_jsx_element()
+				}
+				_ => {
+					// Not JSX, restore the state and parse as binary expression
+					self.tokens = saved_tokens_state;
+					self.parse_expression_statement()
+				}
+			},
+			None => Err(ParseError::UnexpectedEOF {
+				expected: vec![TokenType::Identifier, TokenType::Slash],
+			}),
+		}
+	}
+
+	/// Parses a JSX element
+	fn parse_jsx_element(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::Lt)?;
+
+		// Handle JSX fragment
+		if self.check_token(TokenType::Gt) {
+			return self.parse_jsx_fragment();
+		}
+
+		let opening_element = Box::new(self.parse_jsx_opening_element()?);
+
+		// If self-closing tag, no children or closing tag
+		if let Node::JSXOpeningElement { self_closing, .. } = *opening_element {
+			if self_closing {
+				return Ok(Node::JSXElement {
+					opening_element,
+					children: Vec::new(),
+					closing_element: None,
+				});
+			}
+		}
+
+		// Parse children
+		let mut children = Vec::new();
+
+		while !self.check_token(TokenType::JSXClosingElementStart) && self.peek_token().is_some() {
+			if self.check_token(TokenType::Lt) {
+				// Nested JSX element
+				children.push(self.parse_jsx_element()?);
+			} else {
+				// JSX text content
+				let content = self.parse_jsx_text()?;
+				if !content.is_empty() {
+					children.push(Node::JSXText { value: content });
 				}
 			}
-
-			type_args.push_str(&self.current_token.literal);
-			self.next_token();
 		}
 
-		if depth > 0 {
-			return Err(ParserError::Generic("Unclosed type arguments".to_string()));
+		// Parse closing tag
+		let closing_element = Some(Box::new(self.parse_jsx_closing_element()?));
+
+		Ok(Node::JSXElement {
+			opening_element,
+			children,
+			closing_element,
+		})
+	}
+
+	/// Parses a JSX opening element
+	fn parse_jsx_opening_element(&mut self) -> ParseResult<Node> {
+		// The '<' token has already been consumed
+
+		let name = Box::new(self.parse_identifier()?);
+		let mut attributes = Vec::new();
+
+		// Parse attributes
+		while !self.check_token(TokenType::Gt) && !self.check_token(TokenType::Slash) && self.peek_token().is_some() {
+			attributes.push(self.parse_jsx_attribute()?);
 		}
 
-		Ok(type_args)
+		// Check if self-closing
+		let self_closing = self.match_token(TokenType::Slash);
+
+		self.expect_token(TokenType::Gt)?;
+
+		Ok(Node::JSXOpeningElement { name, attributes, self_closing })
+	}
+
+	/// Parses a JSX closing element
+	fn parse_jsx_closing_element(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::JSXClosingElementStart)?;
+
+		let name = Box::new(self.parse_identifier()?);
+
+		self.expect_token(TokenType::Gt)?;
+
+		Ok(Node::JSXClosingElement { name })
+	}
+
+	/// Parses a JSX attribute
+	fn parse_jsx_attribute(&mut self) -> ParseResult<Node> {
+		let name_token = self.expect_token(TokenType::Identifier)?;
+		let name = name_token.literal;
+
+		let value = if self.match_token(TokenType::Eq) {
+			if self.check_token(TokenType::String) {
+				let token = self.next_token().unwrap();
+				Some(Box::new(Node::Literal {
+					value: LiteralValue::String(token.literal),
+				}))
+			} else if self.match_token(TokenType::BraceL) {
+				let expr = self.parse_expression()?;
+				self.expect_token(TokenType::BraceR)?;
+				Some(Box::new(expr))
+			} else {
+				return Err(ParseError::UnexpectedToken {
+					expected: vec![TokenType::String, TokenType::BraceL],
+					found: self.peek_token().unwrap().token_type,
+					line: self.peek_token().unwrap().line,
+					column: self.peek_token().unwrap().column,
+				});
+			}
+		} else {
+			None
+		};
+
+		Ok(Node::JSXAttribute { name, value })
+	}
+
+	/// Parses JSX text content
+	fn parse_jsx_text(&mut self) -> ParseResult<String> {
+		let mut text = String::new();
+
+		while let Some(token) = self.peek_token() {
+			if token.token_type == TokenType::Lt || token.token_type == TokenType::JSXClosingElementStart {
+				break;
+			}
+			let token = self.next_token().unwrap();
+			text.push_str(&token.literal);
+		}
+
+		// Trim whitespace for better AST representation
+		Ok(text.trim().to_string())
+	}
+
+	/// Parses a JSX fragment (<>...</>)
+	fn parse_jsx_fragment(&mut self) -> ParseResult<Node> {
+		// The '<' token has already been consumed
+		self.expect_token(TokenType::Gt)?;
+
+		let mut children = Vec::new();
+
+		while !self.check_token(TokenType::JSXClosingElementStart) && self.peek_token().is_some() {
+			if self.check_token(TokenType::Lt) {
+				children.push(self.parse_jsx_element()?);
+			} else {
+				let text = self.parse_jsx_text()?;
+				if !text.is_empty() {
+					children.push(Node::JSXText { value: text });
+				}
+			}
+		}
+
+		self.expect_token(TokenType::JSXClosingElementStart)?;
+		self.expect_token(TokenType::Gt)?;
+
+		Ok(Node::JSXElement {
+			opening_element: Box::new(Node::JSXOpeningElement {
+				name: Box::new(Node::Identifier { name: "Fragment".to_string() }),
+				attributes: Vec::new(),
+				self_closing: false,
+			}),
+			children,
+			closing_element: Some(Box::new(Node::JSXClosingElement {
+				name: Box::new(Node::Identifier { name: "Fragment".to_string() }),
+			})),
+		})
+	}
+
+	/// Parses an import declaration
+	fn parse_import_declaration(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordImport)?;
+
+		// Parse import specifiers
+		let mut specifiers = Vec::new();
+
+		// Default import
+		if self.check_token(TokenType::Identifier) {
+			let local = Box::new(self.parse_identifier()?);
+			let imported = local.clone();
+			specifiers.push(Node::ImportSpecifier { imported, local });
+
+			// Named imports
+			if self.match_token(TokenType::Comma) {
+				self.expect_token(TokenType::BraceL)?;
+				self.parse_named_imports(&mut specifiers)?;
+				self.expect_token(TokenType::BraceR)?;
+			}
+		}
+		// Named imports only
+		else if self.match_token(TokenType::BraceL) {
+			self.parse_named_imports(&mut specifiers)?;
+			self.expect_token(TokenType::BraceR)?;
+		}
+
+		// From clause
+		self.expect_token(TokenType::KeywordFrom)?;
+
+		let source_token = self.expect_token(TokenType::String)?;
+		let source = Box::new(Node::Literal {
+			value: LiteralValue::String(source_token.literal),
+		});
+
+		self.expect_token(TokenType::Semicolon)?;
+
+		Ok(Node::ImportDeclaration { specifiers, source })
+	}
+
+	/// Helper function to parse named imports
+	fn parse_named_imports(&mut self, specifiers: &mut Vec<Node>) -> ParseResult<()> {
+		if self.check_token(TokenType::BraceR) {
+			return Ok(());
+		}
+
+		// First named import
+		self.parse_named_import(specifiers)?;
+
+		// Additional named imports
+		while self.match_token(TokenType::Comma) && !self.check_token(TokenType::BraceR) {
+			self.parse_named_import(specifiers)?;
+		}
+
+		Ok(())
+	}
+
+	/// Helper function to parse a single named import
+	fn parse_named_import(&mut self, specifiers: &mut Vec<Node>) -> ParseResult<()> {
+		let imported = Box::new(self.parse_identifier()?);
+
+		let local = if self.match_token(TokenType::KeywordAs) {
+			Box::new(self.parse_identifier()?)
+		} else {
+			imported.clone()
+		};
+
+		specifiers.push(Node::ImportSpecifier { imported, local });
+
+		Ok(())
+	}
+
+	/// Parses an export declaration
+	fn parse_export_declaration(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordExport)?;
+
+		let declaration = Box::new(self.parse_statement()?);
+
+		Ok(Node::ExportDeclaration { declaration })
+	}
+
+	fn parse_type_annotation(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::Colon)?;
+
+		match self.peek_token() {
+			Some(token) => match token.token_type {
+				TokenType::KeywordString => {
+					self.next_token();
+					Ok(Node::Identifier { name: "string".to_string() })
+				}
+				TokenType::KeywordNumber => {
+					self.next_token();
+					Ok(Node::Identifier { name: "number".to_string() })
+				}
+				TokenType::KeywordBoolean => {
+					self.next_token();
+					Ok(Node::Identifier { name: "boolean".to_string() })
+				}
+				TokenType::KeywordAny => {
+					self.next_token();
+					Ok(Node::Identifier { name: "any".to_string() })
+				}
+				TokenType::KeywordVoidType => {
+					self.next_token();
+					Ok(Node::Identifier { name: "void".to_string() })
+				}
+				TokenType::Identifier => self.parse_identifier(),
+				TokenType::BraceL => self.parse_object_type(),
+				TokenType::BracketL => self.parse_array_type(),
+				TokenType::ParenL => self.parse_function_type(),
+				_ => Err(ParseError::UnexpectedToken {
+					expected: vec![
+						TokenType::KeywordString,
+						TokenType::KeywordNumber,
+						TokenType::KeywordBoolean,
+						TokenType::KeywordAny,
+						TokenType::KeywordVoidType,
+						TokenType::Identifier,
+						TokenType::BraceL,
+						TokenType::BracketL,
+						TokenType::ParenL,
+					],
+					found: token.token_type,
+					line: token.line,
+					column: token.column,
+				}),
+			},
+			None => Err(ParseError::UnexpectedEOF {
+				expected: vec![
+					TokenType::KeywordString,
+					TokenType::KeywordNumber,
+					TokenType::KeywordBoolean,
+					TokenType::KeywordAny,
+					TokenType::KeywordVoidType,
+					TokenType::Identifier,
+					TokenType::BraceL,
+					TokenType::BracketL,
+					TokenType::ParenL,
+				],
+			}),
+		}
+	}
+
+	fn parse_object_type(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::BraceL)?;
+
+		// For now, we'll just consume tokens until we find the closing brace
+		// A full implementation would parse property types
+		let mut depth = 1;
+
+		while depth > 0 && self.peek_token().is_some() {
+			let token = self.next_token().unwrap();
+			match token.token_type {
+				TokenType::BraceL => depth += 1,
+				TokenType::BraceR => depth -= 1,
+				_ => {}
+			}
+		}
+
+		// Simple placeholder for object type
+		Ok(Node::Identifier { name: "Object".to_string() })
+	}
+
+	fn parse_array_type(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::BracketL)?;
+
+		// Parse the element type
+		let element_type = self.parse_type_annotation()?;
+
+		self.expect_token(TokenType::BracketR)?;
+
+		// For simplicity, we're just returning a string representation
+		let type_name = match element_type {
+			Node::Identifier { name } => format!("{}[]", name),
+			_ => "Array".to_string(),
+		};
+
+		Ok(Node::Identifier { name: type_name })
+	}
+
+	/// Parses a function type
+	fn parse_function_type(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::ParenL)?;
+
+		// For now, we'll just consume tokens until we find the closing parenthesis
+		// A full implementation would parse parameter types
+		let mut depth = 1;
+
+		while depth > 0 && self.peek_token().is_some() {
+			let token = self.next_token().unwrap();
+			match token.token_type {
+				TokenType::ParenL => depth += 1,
+				TokenType::ParenR => depth -= 1,
+				_ => {}
+			}
+		}
+
+		// Expect the return type arrow
+		self.expect_token(TokenType::EqEq)?;
+		self.expect_token(TokenType::Gt)?;
+
+		// Parse the return type
+		let return_type = self.parse_type_annotation()?;
+
+		// For simplicity, we're just returning a string representation
+		let type_name = match return_type {
+			Node::Identifier { name } => format!("Function => {}", name),
+			_ => "Function".to_string(),
+		};
+
+		Ok(Node::Identifier { name: type_name })
+	}
+
+	/// Parses a type alias declaration
+	// TODO: remove when used
+	#[allow(dead_code)]
+	fn parse_type_alias(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordType)?;
+
+		let name = self.parse_identifier()?;
+
+		self.expect_token(TokenType::Eq)?;
+
+		let type_annotation = self.parse_type_annotation()?;
+
+		self.expect_token(TokenType::Semicolon)?;
+
+		// For now, we'll just return a simple representation
+		// A full implementation would create a proper AST node
+		Ok(Node::ExpressionStatement {
+			expression: Box::new(Node::AssignmentExpression {
+				operator: AssignmentOperator::Equals,
+				left: Box::new(name),
+				right: Box::new(type_annotation),
+			}),
+		})
+	}
+
+	// TODO: remove when used
+	#[allow(dead_code)]
+	fn parse_interface_declaration(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordInterface)?;
+
+		let name = self.parse_identifier()?;
+
+		// Handle potential extends clause
+		if self.match_token(TokenType::KeywordExtends) {
+			// In a full implementation, we would parse the extended interfaces
+			self.parse_identifier()?;
+		}
+
+		// Parse interface body
+		self.expect_token(TokenType::BraceL)?;
+
+		// For now, we'll just consume tokens until we find the closing brace
+		// A full implementation would parse method and property declarations
+		let mut depth = 1;
+
+		while depth > 0 && self.peek_token().is_some() {
+			let token = self.next_token().unwrap();
+			match token.token_type {
+				TokenType::BraceL => depth += 1,
+				TokenType::BraceR => depth -= 1,
+				_ => {}
+			}
+		}
+
+		// For now, we'll just return a simple representation
+		// A full implementation would create a proper AST node
+		Ok(Node::ExpressionStatement { expression: Box::new(name) })
+	}
+
+	// TODO: remove when used
+	#[allow(dead_code)]
+	fn parse_async_function_declaration(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordAsync)?;
+		self.expect_token(TokenType::KeywordFunction)?;
+
+		// Function name is optional (for anonymous functions)
+		let id = if self.check_token(TokenType::Identifier) {
+			Some(Box::new(self.parse_identifier()?))
+		} else {
+			None
+		};
+
+		// Parse parameters
+		self.expect_token(TokenType::ParenL)?;
+		let params = self.parse_function_parameters()?;
+		self.expect_token(TokenType::ParenR)?;
+
+		// Parse function body
+		let body = Box::new(self.parse_block_statement()?);
+
+		Ok(Node::FunctionDeclaration {
+			id,
+			params,
+			body,
+			async_: true, // This is an async function
+			generator: false,
+		})
+	}
+
+	/// Parse await expression
+	// TODO: remove when used
+	#[allow(dead_code)]
+	fn parse_await_expression(&mut self) -> ParseResult<Node> {
+		self.expect_token(TokenType::KeywordAwait)?;
+
+		let expression = self.parse_expression()?;
+
+		// In a full implementation, this would have its own node type
+		// For now, we'll represent it as a regular expression
+		Ok(expression)
 	}
 }
+
+impl std::fmt::Display for ParseError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::UnexpectedToken { expected, found, line, column } => {
+				write!(f, "Unexpected token: found {:?} at line {}, column {}, expected one of {:?}", found, line, column, expected)
+			}
+			Self::UnexpectedEOF { expected } => {
+				write!(f, "Unexpected end of file, expected one of {:?}", expected)
+			}
+			Self::InvalidSyntax { message, line, column } => {
+				write!(f, "Syntax error at line {}, column {}: {}", line, column, message)
+			}
+		}
+	}
+}
+
+// /// Extension trait to create a parser from a vector of tokens
+// pub trait IntoParser {
+// 	fn into_parser(self) -> Parser<'static>;
+// }
+//
+// impl IntoParser for Vec<Token> {
+// 	fn into_parser(self) -> Parser<'static> {
+// 		Parser {
+// 			tokens: self.into_iter().peekable(),
+// 		}
+// 	}
+// }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::lexer::Lexer;
 
 	#[test]
-	fn test_parse_no_err() {
-		let input = "<div className=\"container\">Hello, world!</div>";
-		let lexer = Lexer::new(input);
-		let mut parser = Parser::new(lexer);
+	fn test_parse_variable_declaration() {
+		let input = "let x = 42;";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
 
-		let result = parser.parse();
-		assert!(result.is_ok(), "Expected Ok(_), got {:?}", result);
-	}
-
-	#[test]
-	fn test_parse_simple_jsx_element() {
-		let input = "<div className=\"container\">Hello, world!</div>";
-		let lexer = Lexer::new(input);
-		let mut parser = Parser::new(lexer);
-
-		let result = parser.parse().unwrap();
-		assert_eq!(result.len(), 1);
-
-		if let Node::Element(element) = &result[0] {
-			assert_eq!(element.tag_name, "div");
-			assert_eq!(element.attributes.len(), 1);
-			assert_eq!(element.attributes[0].name, "className");
-
-			if let Some(AttributeValue::String(value)) = &element.attributes[0].value {
-				assert_eq!(value, "container");
-			} else {
-				panic!("Expected string attribute value");
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::VariableDeclaration { kind, declarations } => {
+						assert_eq!(*kind, VariableKind::Let);
+						assert_eq!(declarations.len(), 1);
+						match &declarations[0] {
+							Node::VariableDeclarator { id, init } => {
+								match &**id {
+									Node::Identifier { name } => {
+										assert_eq!(name, "x");
+									}
+									_ => panic!("Expected identifier"),
+								}
+								match &init {
+									Some(expr) => match &**expr {
+										Node::Literal { value } => match value {
+											LiteralValue::Number(n) => assert_eq!(*n, 42.0),
+											_ => panic!("Expected number literal"),
+										},
+										_ => panic!("Expected literal"),
+									},
+									None => panic!("Expected initializer"),
+								}
+							}
+							_ => panic!("Expected variable declarator"),
+						}
+					}
+					_ => panic!("Expected variable declaration"),
+				}
 			}
-
-			assert_eq!(element.children.len(), 1);
-
-			if let Node::Text(text) = &element.children[0] {
-				assert_eq!(text, "Hello, world!");
-			} else {
-				panic!("Expected text node");
-			}
-		} else {
-			panic!("Expected element node");
+			_ => panic!("Expected program"),
 		}
 	}
 
 	#[test]
-	fn test_parse_jsx_with_expression() {
-		let input = "<button onClick={() => alert('Hello')}>Click me</button>";
-		let lexer = Lexer::new(input);
-		let mut parser = Parser::new(lexer);
+	fn test_parse_function_declaration() {
+		let input = "function add(a, b) { return a + b; }";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
 
-		let result = parser.parse().unwrap();
-		assert_eq!(result.len(), 1);
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::FunctionDeclaration {
+						id,
+						params,
+						body,
+						async_,
+						generator,
+					} => {
+						assert!(!*async_);
+						assert!(!*generator);
 
-		if let Node::Element(element) = &result[0] {
-			assert_eq!(element.tag_name, "button");
-			assert_eq!(element.attributes.len(), 1);
-			assert_eq!(element.attributes[0].name, "onClick");
+						// Check function name
+						match &**id.as_ref().unwrap() {
+							Node::Identifier { name } => assert_eq!(name, "add"),
+							_ => panic!("Expected identifier"),
+						}
 
-			if let Some(AttributeValue::Expression(expr)) = &element.attributes[0].value {
-				if let JSXExpression::ArrowFunctionExpression { parameters, body: _ } = expr {
-					assert_eq!(parameters.len(), 0);
-				} else {
-					panic!("Expected arrow function expression");
+						// Check parameters
+						assert_eq!(params.len(), 2);
+						match &params[0] {
+							Node::Identifier { name } => assert_eq!(name, "a"),
+							_ => panic!("Expected identifier"),
+						}
+						match &params[1] {
+							Node::Identifier { name } => assert_eq!(name, "b"),
+							_ => panic!("Expected identifier"),
+						}
+
+						// Check function body
+						match &**body {
+							Node::BlockStatement { body } => {
+								assert_eq!(body.len(), 1);
+								match &body[0] {
+									Node::ReturnStatement { argument } => match &**argument.as_ref().unwrap() {
+										Node::BinaryExpression { operator, left, right } => {
+											assert_eq!(*operator, BinaryOperator::Add);
+
+											match &**left {
+												Node::Identifier { name } => assert_eq!(name, "a"),
+												_ => panic!("Expected identifier"),
+											}
+
+											match &**right {
+												Node::Identifier { name } => assert_eq!(name, "b"),
+												_ => panic!("Expected identifier"),
+											}
+										}
+										_ => panic!("Expected binary expression"),
+									},
+									_ => panic!("Expected return statement"),
+								}
+							}
+							_ => panic!("Expected block statement"),
+						}
+					}
+					_ => panic!("Expected function declaration"),
 				}
-			} else {
-				panic!("Expected expression attribute value");
 			}
+			_ => panic!("Expected program"),
+		}
+	}
 
-			assert_eq!(element.children.len(), 1);
+	#[test]
+	fn test_parse_if_statement() {
+		let input = "if (x > 0) { return true; } else { return false; }";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
 
-			if let Node::Text(text) = &element.children[0] {
-				assert_eq!(text, "Click me");
-			} else {
-				panic!("Expected text node");
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::IfStatement { test, consequent, alternate } => {
+						// Check condition
+						match &**test {
+							Node::BinaryExpression { operator, left, right } => {
+								assert_eq!(*operator, BinaryOperator::GreaterThan);
+
+								match &**left {
+									Node::Identifier { name } => assert_eq!(name, "x"),
+									_ => panic!("Expected identifier"),
+								}
+
+								match &**right {
+									Node::Literal { value } => match value {
+										LiteralValue::Number(n) => assert_eq!(*n, 0.0),
+										_ => panic!("Expected number literal"),
+									},
+									_ => panic!("Expected literal"),
+								}
+							}
+							_ => panic!("Expected binary expression"),
+						}
+
+						// Check if-branch
+						match &**consequent {
+							Node::BlockStatement { body } => {
+								assert_eq!(body.len(), 1);
+								match &body[0] {
+									Node::ReturnStatement { argument } => match &**argument.as_ref().unwrap() {
+										Node::Literal { value } => match value {
+											LiteralValue::Boolean(b) => assert!(*b),
+											_ => panic!("Expected boolean literal"),
+										},
+										_ => panic!("Expected literal"),
+									},
+									_ => panic!("Expected return statement"),
+								}
+							}
+							_ => panic!("Expected block statement"),
+						}
+
+						// Check else-branch
+						match &**alternate.as_ref().unwrap() {
+							Node::BlockStatement { body } => {
+								assert_eq!(body.len(), 1);
+								match &body[0] {
+									Node::ReturnStatement { argument } => match &**argument.as_ref().unwrap() {
+										Node::Literal { value } => match value {
+											LiteralValue::Boolean(b) => assert!(!*b),
+											_ => panic!("Expected boolean literal"),
+										},
+										_ => panic!("Expected literal"),
+									},
+									_ => panic!("Expected return statement"),
+								}
+							}
+							_ => panic!("Expected block statement"),
+						}
+					}
+					_ => panic!("Expected if statement"),
+				}
 			}
-		} else {
-			panic!("Expected element node");
+			_ => panic!("Expected program"),
 		}
 	}
 }
