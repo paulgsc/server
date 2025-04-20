@@ -142,6 +142,9 @@ pub enum TokenType {
 
 	// End of file.
 	EOF,
+
+	// Invalid Type
+	Illegal,
 }
 
 // Lookup table for single character tokens
@@ -440,101 +443,91 @@ impl<'a> Lexer<'a> {
 		let line = self.line;
 		let column = self.column;
 
-		if let Some(ch) = self.current_char {
-			// Check for special cases first
-			match ch {
-				'"' | '\'' | '`' => {
-					let string_literal = self.read_string(ch);
-					return Token::new(TokenType::String, string_literal, line, column);
+		if self.current_char.is_none() {
+			return Token::new(TokenType::EOF, String::new(), self.line, self.column);
+		}
+
+		let ch = self.current_char.unwrap();
+		if ch == '"' || ch == '\'' || ch == '`' {
+			let string_literal = self.read_string(ch);
+			return Token::new(TokenType::String, string_literal, line, column);
+		}
+
+		if ch.is_ascii_digit() {
+			let number_literal = self.read_number();
+			if number_literal.ends_with('n') {
+				return Token::new(TokenType::BigInt, number_literal, line, column);
+			}
+			return Token::new(TokenType::Number, number_literal, line, column);
+		}
+		if ch.is_alphabetic() || ch == '_' || ch == '$' {
+			let identifier = self.read_identifier();
+			if let Some(&token_type) = KEYWORDS.get(identifier.as_str()) {
+				return Token::new(token_type, identifier, line, column);
+			}
+			return Token::new(TokenType::Identifier, identifier, line, column);
+		}
+
+		// Special case for comments and regex
+		if ch == '/' {
+			let next_char = self.peek_char();
+			match next_char {
+				Some('/') => {
+					self.read_char();
+					self.read_char();
+					self.skip_line_comment();
+					return self.next_token();
 				}
-				'0'..='9' => {
-					let number_literal = self.read_number();
-					if number_literal.ends_with('n') {
-						return Token::new(TokenType::BigInt, number_literal, line, column);
-					} else {
-						return Token::new(TokenType::Number, number_literal, line, column);
-					}
-				}
-				_ if ch.is_alphabetic() || ch == '_' || ch == '$' => {
-					let identifier = self.read_identifier();
-					if let Some(&token_type) = KEYWORDS.get(identifier.as_str()) {
-						return Token::new(token_type, identifier, line, column);
-					} else {
-						return Token::new(TokenType::Identifier, identifier, line, column);
-					}
+				Some('*') => {
+					self.read_char();
+					self.read_char();
+					self.skip_comment();
+					return self.next_token();
 				}
 				_ => {}
 			}
+		}
 
-			// Special case for comments and regex
-			if ch == '/' {
-				let next_char = self.peek_char();
-				match next_char {
-					Some('/') => {
-						self.read_char();
-						self.read_char();
-						self.skip_line_comment();
-						return self.next_token();
-					}
-					Some('*') => {
-						self.read_char();
-						self.read_char();
-						self.skip_comment();
-						return self.next_token();
-					}
-					Some('>') => {
-						self.read_char();
-						self.read_char();
-						return Token::new(TokenType::JSXClosingElementStart, "</".to_string(), line, column);
-					}
-					_ => {}
-				}
-			}
-
-			// Check for three-character tokens
-			if let Some(next_ch) = self.peek_char() {
-				if let Some(next_next_ch) = self.peek_second_char() {
-					if let Some(&token_type) = THREE_CHAR_TOKENS.get(&(ch, next_ch, next_next_ch)) {
-						let literal = format!("{ch}{next_ch}{next_next_ch}");
-						self.read_char();
-						self.read_char();
-						self.read_char();
-						return Token::new(token_type, literal, line, column);
-					}
-				}
-			}
-
-			// Check for two-character tokens
-			if let Some(next_ch) = self.peek_char() {
-				if let Some(&token_type) = TWO_CHAR_TOKENS.get(&(ch, next_ch)) {
-					let literal = format!("{ch}{next_ch}");
+		// Check for three-character tokens
+		if let Some(next_ch) = self.peek_char() {
+			if let Some(next_next_ch) = self.peek_second_char() {
+				if let Some(&token_type) = THREE_CHAR_TOKENS.get(&(ch, next_ch, next_next_ch)) {
+					let literal = format!("{ch}{next_ch}{next_next_ch}");
+					self.read_char();
 					self.read_char();
 					self.read_char();
 					return Token::new(token_type, literal, line, column);
 				}
 			}
+		}
 
-			// Handle regex as a special case
-			if ch == '/' && !matches!(self.peek_char(), Some('=') | Some('/') | Some('*') | Some('>')) {
-				let regex_literal = self.read_regex();
-				return Token::new(TokenType::RegEx, regex_literal, line, column);
-			}
-
-			// Check for single-character tokens
-			if let Some(&token_type) = SINGLE_CHAR_TOKENS.get(&ch) {
-				let literal = ch.to_string();
+		// Check for two-character tokens
+		if let Some(next_ch) = self.peek_char() {
+			if let Some(&token_type) = TWO_CHAR_TOKENS.get(&(ch, next_ch)) {
+				let literal = format!("{ch}{next_ch}");
+				self.read_char();
 				self.read_char();
 				return Token::new(token_type, literal, line, column);
 			}
+		}
 
-			// If we get here, it's an unknown character
+		// Handle regex as a special case
+		if ch == '/' && !matches!(self.peek_char(), Some('=') | Some('/') | Some('*') | Some('>')) {
+			let regex_literal = self.read_regex();
+			return Token::new(TokenType::RegEx, regex_literal, line, column);
+		}
+
+		// Check for single-character tokens
+		if let Some(&token_type) = SINGLE_CHAR_TOKENS.get(&ch) {
 			let literal = ch.to_string();
 			self.read_char();
-			Token::new(TokenType::Identifier, literal, line, column)
-		} else {
-			// End of file
-			Token::new(TokenType::EOF, String::new(), self.line, self.column)
+			return Token::new(token_type, literal, line, column);
 		}
+
+		// If we get here, it's an unknown character
+		let literal = ch.to_string();
+		self.read_char();
+		Token::new(TokenType::Illegal, literal, line, column)
 	}
 }
 
@@ -569,8 +562,8 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_basic_tags() {
-		let input = "<div></div>";
+	fn test_basic_token_types() {
+		let input = "<div>hello</div>";
 		let lexer = Lexer::new(input);
 		let tokens: Vec<TokenType> = lexer.map(|t| t.token_type).collect();
 		assert_eq!(
@@ -579,6 +572,7 @@ mod tests {
 				TokenType::Lt,
 				TokenType::Identifier,
 				TokenType::Gt,
+				TokenType::Identifier,
 				TokenType::JSXClosingElementStart,
 				TokenType::Identifier,
 				TokenType::Gt
@@ -586,6 +580,45 @@ mod tests {
 		);
 	}
 
+	#[test]
+	fn test_basic_literals() {
+		let input = "<div>hello, world</div>";
+		let lexer = Lexer::new(input);
+		let tokens: Vec<String> = lexer.map(|t| t.literal).collect();
+		assert_eq!(
+			tokens,
+			vec![
+				"<".to_string(),
+				"div".to_string(),
+				">".to_string(),
+				"hello".to_string(),
+				",".to_string(),
+				"world".to_string(),
+				"</".to_string(),
+				"div".to_string(),
+				">".to_string(),
+			]
+		);
+	}
+
+	#[test]
+	fn test_self_closing_tag() {
+		let input = "<input type=\"text\" disabled />";
+		let lexer = Lexer::new(input);
+		let tokens: Vec<TokenType> = lexer.map(|t| t.token_type).collect();
+		assert_eq!(
+			tokens,
+			vec![
+				TokenType::Lt,
+				TokenType::Identifier,
+				TokenType::KeywordType,
+				TokenType::Eq,
+				TokenType::String,
+				TokenType::Identifier,
+				TokenType::JSXOpeningElementEnd
+			]
+		);
+	}
 	#[test]
 	fn test_lexer_basic() {
 		let input = "let x = 42;";

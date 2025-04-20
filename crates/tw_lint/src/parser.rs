@@ -753,7 +753,7 @@ impl<'a> Parser<'a> {
 		}
 
 		// Trim whitespace for better AST representation
-		Ok(text.trim().to_string())
+		Ok(text.to_string())
 	}
 
 	/// Parses a JSX fragment (<>...</>)
@@ -1320,6 +1320,192 @@ mod tests {
 						}
 					}
 					_ => panic!("Expected if statement"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_jsx_element() {
+		let input = "<div className=\"container\">Hello, world!</div>";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::JSXElement {
+						opening_element,
+						children,
+						closing_element,
+					} => {
+						// Check opening tag
+						match &**opening_element {
+							Node::JSXOpeningElement { name, attributes, self_closing } => {
+								assert!(!*self_closing);
+
+								match &**name {
+									Node::Identifier { name } => assert_eq!(name, "div"),
+									_ => panic!("Expected identifier"),
+								}
+
+								assert_eq!(attributes.len(), 1);
+								match &attributes[0] {
+									Node::JSXAttribute { name, value } => {
+										assert_eq!(name, "className");
+										match &**value.as_ref().unwrap() {
+											Node::Literal { value } => match value {
+												LiteralValue::String(s) => assert_eq!(s, "container"),
+												_ => panic!("Expected string literal"),
+											},
+											_ => panic!("Expected literal"),
+										}
+									}
+									_ => panic!("Expected JSX attribute"),
+								}
+							}
+							_ => panic!("Expected JSX opening element"),
+						}
+
+						// Check children
+						assert_eq!(children.len(), 1);
+						match &children[0] {
+							Node::JSXText { value } => assert_eq!(value, "Hello,world!"),
+							_ => panic!("Expected JSX text"),
+						}
+
+						// Check closing tag
+						match &**closing_element.as_ref().unwrap() {
+							Node::JSXClosingElement { name } => match &**name {
+								Node::Identifier { name } => assert_eq!(name, "div"),
+								_ => panic!("Expected identifier"),
+							},
+							_ => panic!("Expected JSX closing element"),
+						}
+					}
+					_ => panic!("Expected JSX element"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_import_declaration() {
+		let input = "import React, { useState } from 'react';";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::ImportDeclaration { specifiers, source } => {
+						assert_eq!(specifiers.len(), 2);
+
+						// Check default import
+						match &specifiers[0] {
+							Node::ImportSpecifier { imported, local } => {
+								match &**imported {
+									Node::Identifier { name } => assert_eq!(name, "React"),
+									_ => panic!("Expected identifier"),
+								}
+								match &**local {
+									Node::Identifier { name } => assert_eq!(name, "React"),
+									_ => panic!("Expected identifier"),
+								}
+							}
+							_ => panic!("Expected import specifier"),
+						}
+
+						// Check named import
+						match &specifiers[1] {
+							Node::ImportSpecifier { imported, local } => {
+								match &**imported {
+									Node::Identifier { name } => assert_eq!(name, "useState"),
+									_ => panic!("Expected identifier"),
+								}
+								match &**local {
+									Node::Identifier { name } => assert_eq!(name, "useState"),
+									_ => panic!("Expected identifier"),
+								}
+							}
+							_ => panic!("Expected import specifier"),
+						}
+
+						// Check source
+						match &**source {
+							Node::Literal { value } => match value {
+								LiteralValue::String(s) => assert_eq!(s, "react"),
+								_ => panic!("Expected string literal"),
+							},
+							_ => panic!("Expected literal"),
+						}
+					}
+					_ => panic!("Expected import declaration"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_complex_expression() {
+		let input = "let result = (a + b) * (c - d / 2);";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		// This is just a basic check for successful parsing
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::VariableDeclaration { kind, declarations } => {
+						assert_eq!(*kind, VariableKind::Let);
+						assert_eq!(declarations.len(), 1);
+					}
+					_ => panic!("Expected variable declaration"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_self_closing_jsx() {
+		let input = "<input type=\"text\" disabled />";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::JSXElement {
+						opening_element,
+						children,
+						closing_element,
+					} => {
+						// Check opening tag
+						match &**opening_element {
+							Node::JSXOpeningElement { name, attributes, self_closing } => {
+								assert!(*self_closing);
+
+								match &**name {
+									Node::Identifier { name } => assert_eq!(name, "input"),
+									_ => panic!("Expected identifier"),
+								}
+
+								assert_eq!(attributes.len(), 2);
+								assert!(closing_element.is_none());
+								assert_eq!(children.len(), 0);
+							}
+							_ => panic!("Expected JSX opening element"),
+						}
+					}
+					_ => panic!("Expected JSX element"),
 				}
 			}
 			_ => panic!("Expected program"),

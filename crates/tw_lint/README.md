@@ -1,4 +1,23 @@
 
+🧠 Analysis Core
+├─ Lexer
+├─ Parser
+├─ AST
+├─ Scope Analyzer
+├─ Symbol Table
+├─ Interpreter (optional)
+
+⚙️ Lint Engine
+├─ Rule Runner
+├─ Rule Plugins
+├─ Diagnostics
+
+🛠 Extras
+├─ Code Fixer
+├─ Config System
+├─ File Scanner
+
+
 # Problem Statements for Building a Rust-Based Tailwind Linter
 
 Here are "LeetCode-style" problem statements that define the key challenges you'll need to solve when building your Tailwind linter in Rust:
