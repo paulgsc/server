@@ -844,11 +844,11 @@ mod tests {
 			tokens,
 			vec![
 				TokenType::Lt,
-				TokenType::Identifier,
-				TokenType::KeywordType,
+				TokenType::JSXIdentifier,
+				TokenType::JSXAttributeName,
 				TokenType::Eq,
-				TokenType::String,
-				TokenType::Identifier,
+				TokenType::JSXAttributeStringValue,
+				TokenType::JSXAttributeName,
 				TokenType::JSXOpeningElementEnd
 			]
 		);

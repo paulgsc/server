@@ -18,6 +18,9 @@ pub enum Node {
 	Identifier {
 		name: String,
 	},
+	JSXIdentifier {
+		name: String,
+	},
 	Literal {
 		value: LiteralValue,
 	},
@@ -301,15 +304,15 @@ impl<'a> Parser<'a> {
 	/// Parses an identifier
 	fn parse_identifier(&mut self) -> ParseResult<Node> {
 		if let Some(token) = self.next_token() {
-			if token.token_type == TokenType::Identifier {
-				Ok(Node::Identifier { name: token.literal })
-			} else {
-				Err(ParseError::UnexpectedToken {
+			match token.token_type {
+				TokenType::Identifier => Ok(Node::Identifier { name: token.literal }),
+				TokenType::JSXIdentifier => Ok(Node::JSXIdentifier { name: token.literal }),
+				_ => Err(ParseError::UnexpectedToken {
 					expected: vec![TokenType::Identifier],
 					found: token.token_type,
 					line: token.line,
 					column: token.column,
-				})
+				}),
 			}
 		} else {
 			Err(ParseError::UnexpectedEOF {
@@ -609,7 +612,7 @@ impl<'a> Parser<'a> {
 		// Check if the next token indicates a JSX tag
 		match self.peek_token() {
 			Some(token) => match token.token_type {
-				TokenType::Identifier => {
+				TokenType::JSXIdentifier => {
 					// Looks like JSX, restore the state and parse as JSX
 					self.tokens = saved_tokens_state;
 					self.parse_jsx_element()
@@ -626,7 +629,7 @@ impl<'a> Parser<'a> {
 				}
 			},
 			None => Err(ParseError::UnexpectedEOF {
-				expected: vec![TokenType::Identifier, TokenType::Slash],
+				expected: vec![TokenType::JSXIdentifier, TokenType::Slash],
 			}),
 		}
 	}
@@ -712,11 +715,11 @@ impl<'a> Parser<'a> {
 
 	/// Parses a JSX attribute
 	fn parse_jsx_attribute(&mut self) -> ParseResult<Node> {
-		let name_token = self.expect_token(TokenType::Identifier)?;
+		let name_token = self.expect_token(TokenType::JSXAttributeName)?;
 		let name = name_token.literal;
 
 		let value = if self.match_token(TokenType::Eq) {
-			if self.check_token(TokenType::String) {
+			if self.check_token(TokenType::JSXAttributeStringValue) {
 				let token = self.next_token().unwrap();
 				Some(Box::new(Node::Literal {
 					value: LiteralValue::String(token.literal),
@@ -1347,7 +1350,7 @@ mod tests {
 								assert!(!*self_closing);
 
 								match &**name {
-									Node::Identifier { name } => assert_eq!(name, "div"),
+									Node::JSXIdentifier { name } => assert_eq!(name, "div"),
 									_ => panic!("Expected identifier"),
 								}
 
@@ -1372,14 +1375,14 @@ mod tests {
 						// Check children
 						assert_eq!(children.len(), 1);
 						match &children[0] {
-							Node::JSXText { value } => assert_eq!(value, "Hello,world!"),
+							Node::JSXText { value } => assert_eq!(value, "Hello, world!"),
 							_ => panic!("Expected JSX text"),
 						}
 
 						// Check closing tag
 						match &**closing_element.as_ref().unwrap() {
 							Node::JSXClosingElement { name } => match &**name {
-								Node::Identifier { name } => assert_eq!(name, "div"),
+								Node::JSXIdentifier { name } => assert_eq!(name, "div"),
 								_ => panic!("Expected identifier"),
 							},
 							_ => panic!("Expected JSX closing element"),
