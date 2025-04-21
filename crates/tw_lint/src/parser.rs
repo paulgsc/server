@@ -690,15 +690,15 @@ impl<'a> Parser<'a> {
 		let mut attributes = Vec::new();
 
 		// Parse attributes
-		while !self.check_token(TokenType::Gt) && !self.check_token(TokenType::Slash) && self.peek_token().is_some() {
+		while !(self.check_token(TokenType::Gt) || self.check_token(TokenType::Slash) || self.check_token(TokenType::JSXOpeningElementEnd)) && self.peek_token().is_some() {
 			attributes.push(self.parse_jsx_attribute()?);
 		}
 
 		// Check if self-closing
-		let self_closing = self.match_token(TokenType::Slash);
-
-		self.expect_token(TokenType::Gt)?;
-
+		let self_closing = self.match_token(TokenType::JSXOpeningElementEnd);
+		if !self_closing {
+			self.expect_token(TokenType::Gt)?;
+		}
 		Ok(Node::JSXOpeningElement { name, attributes, self_closing })
 	}
 
@@ -1497,7 +1497,7 @@ mod tests {
 								assert!(*self_closing);
 
 								match &**name {
-									Node::Identifier { name } => assert_eq!(name, "input"),
+									Node::JSXIdentifier { name } => assert_eq!(name, "input"),
 									_ => panic!("Expected identifier"),
 								}
 
