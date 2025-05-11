@@ -2,7 +2,7 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_image, sheets::get_sheets};
+use crate::routes::{gdrive::get_gdrive_image, obs::get_obs_server, sheets::get_sheets};
 use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
@@ -13,6 +13,7 @@ use file_host::{
 	CacheStore,
 };
 use file_host::{AppState, Config};
+use obs_websocket::{client, ObsConfig};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -30,11 +31,21 @@ async fn main() -> Result<()> {
 
 	let ws_state = init_websocket().await;
 
+	let obs_config = ObsConfig {
+		host: context.obs_host.clone(),
+		port: 4455,
+		password: context.obs_password.clone(),
+	};
+
+	client().update_config(obs_config).await;
+	client().start();
+
 	let mut app = Router::new()
 		.route("/metrics", get(metrics::metrics_handler))
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
-		.merge(ws_state.router());
+		.merge(ws_state.router())
+		.merge(get_obs_server());
 
 	app = app
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware))

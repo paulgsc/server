@@ -85,7 +85,7 @@ pub struct Config {
 	pub redis_url: Option<String>,
 
 	/// Cache TTL in seconds
-	#[arg(long, env = "CACHE_TTL", default_value = "300")]
+	#[arg(long, env = "CACHE_TTL", default_value = "600")]
 	pub cache_ttl: u64,
 
 	/// Enable Prometheus metrics
@@ -107,6 +107,14 @@ pub struct Config {
 	/// Streaming Max Chunk Size
 	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
 	pub max_chunks: usize,
+
+	/// OBS Websocket Server IP Address
+	#[arg(long, env = "OBS_WEBSOCKET_IP")]
+	pub obs_host: String,
+
+	/// OBS Websocket Server Password
+	#[arg(long, env = "OBS_WEBSOCKET_PWD")]
+	pub obs_password: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
