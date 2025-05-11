@@ -5,6 +5,7 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
+// use base64::engine::Engine;
 use futures_util::{
 	sink::SinkExt,
 	stream::{SplitSink, SplitStream, StreamExt},
@@ -12,6 +13,7 @@ use futures_util::{
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+// use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,44 +138,47 @@ impl ObsWebSocketClient {
 
 // Private implementation
 async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadcaster: async_broadcast::Sender<ObsStatus>) {
-	// Get current status immediately
 	let status_snapshot = status.read().await.clone();
-
-	// Split socket for concurrent read/write
 	let (mut sender, mut receiver) = socket.split();
 
-	// Send initial status
 	if let Err(e) = sender.send(Message::Text(serde_json::to_string(&status_snapshot).unwrap())).await {
 		error!("Error sending initial status: {}", e);
 		return;
 	}
 
-	// Create subscription to broadcaster
 	let mut rx = broadcaster.new_receiver();
 
-	// Forward status updates to client
-	let mut send_task = tokio::spawn(async move {
-		while let Ok(status) = rx.recv().await {
-			match serde_json::to_string(&status) {
-				Ok(json) => {
-					if sender.send(Message::Text(json)).await.is_err() {
-						break;
+	let send_task = tokio::spawn(async move {
+		loop {
+			match rx.recv().await {
+				Ok(status) => match serde_json::to_string(&status) {
+					Ok(json) => {
+						if sender.send(Message::Text(json)).await.is_err() {
+							break;
+						}
 					}
+					Err(e) => error!("Failed to serialize status: {}", e),
+				},
+				Err(async_broadcast::RecvError::Closed) => {
+					error!("Broadcaster closed");
+					break;
 				}
-				Err(e) => error!("Failed to serialize status: {}", e),
+				Err(async_broadcast::RecvError::Overflowed(_)) => {
+					error!("Missed messages");
+					continue;
+				}
 			}
 		}
 	});
 
-	// Listen for client messages (could handle commands here)
-	let mut recv_task = tokio::spawn(async move {
+	let recv_task = tokio::spawn(async move {
 		while let Some(Ok(msg)) = receiver.next().await {
 			match msg {
 				Message::Text(text) => {
-					debug!("Received message: {}", text);
-					// Handle client commands here if needed
+					info!("Received message: {}", text);
 				}
-				Message::Close(_) => {
+				Message::Close(frame) => {
+					warn!("Client requested close: {:?}", frame);
 					break;
 				}
 				_ => {}
@@ -181,15 +186,20 @@ async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadc
 		}
 	});
 
-	// Wait for either task to complete
+	// Wait for either task to finish
 	tokio::select! {
-		_ = (&mut send_task) => recv_task.abort(),
-		_ = (&mut recv_task) => send_task.abort(),
+		_ = send_task => {
+			warn!("Send task finished");
+		},
+		_ = recv_task => {
+			warn!("Receive task finished");
+		},
 	}
 }
 
 // Main OBS WebSocket client loop
 async fn obs_websocket_client(config: Arc<RwLock<ObsConfig>>, status: Arc<RwLock<ObsStatus>>, broadcaster: async_broadcast::Sender<ObsStatus>) {
+	info!("Started obs websocket...");
 	let mut reconnect_interval = interval(Duration::from_secs(5));
 
 	loop {
@@ -223,48 +233,125 @@ async fn obs_websocket_client(config: Arc<RwLock<ObsConfig>>, status: Arc<RwLock
 async fn handle_obs_connection(
 	mut sink: SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
 	mut stream: SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>,
-	password: String,
+	_password: String,
 	status: Arc<RwLock<ObsStatus>>,
 	broadcaster: async_broadcast::Sender<ObsStatus>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
 	// Wait for hello message
 	let hello = wait_for_hello(&mut stream).await?;
+	info!("Recieved hello: {:?}", hello);
 
 	// Extract authentication info
-	let authentication = hello
-		.get("d")
-		.and_then(|d| d.get("authentication"))
-		.and_then(Value::as_object)
-		.ok_or("Missing authentication info in hello")?;
+	// let authentication = hello
+	// 	.get("d")
+	// 	.and_then(|d| d.get("authentication"))
+	// 	.and_then(Value::as_object)
+	// 	.ok_or("Missing authentication info in hello")?;
 
-	// Authenticate with OBS
-	if authentication.contains_key("challenge") && authentication.contains_key("salt") {
-		// Handle OBS 5.0+ authentication
-		let _challenge = authentication.get("challenge").and_then(Value::as_str).ok_or("Missing challenge")?;
-		let _salt = authentication.get("salt").and_then(Value::as_str).ok_or("Missing salt")?;
+	// // Authenticate with OBS
+	// if authentication.contains_key("challenge") && authentication.contains_key("salt") {
+	// 	// Handle OBS 5.0+ authentication
+	// 	warn!("Password is: {}", password);
+	// 	let challenge = authentication.get("challenge").and_then(Value::as_str).ok_or("Missing challenge")?;
+	// 	let salt = authentication.get("salt").and_then(Value::as_str).ok_or("Missing salt")?;
 
-		// In a real app, you'd compute the authentication hash properly
-		// For simplicity, we're just sending the password directly
-		let auth_msg = json!({
-			"op": 1,
-			"d": {
-				"authentication": password // In production, use proper auth!
-			}
-		});
+	// 	let mut hasher = Sha256::new();
+	// 	hasher.update(password.as_bytes());
+	// 	hasher.update(salt.as_bytes());
+	// 	let first_hash = hasher.finalize();
 
-		sink.send(TungsteniteMessage::Text(auth_msg.to_string().into())).await?;
-	}
+	// 	let mut second_hasher = Sha256::new();
+	// 	second_hasher.update(&first_hash[..]);
+	// 	second_hasher.update(challenge.as_bytes());
+	// 	let final_hash = second_hasher.finalize();
+
+	// 	let auth = base64::engine::general_purpose::STANDARD.encode(final_hash);
+	// 	let auth_msg = json!({
+	// 		"op": 1,
+	// 		"d": {
+	// 			 "rpcVersion": 1,
+	// 			"authentication": auth
+	// 		}
+	// 	});
+
+	// 	sink.send(TungsteniteMessage::Text(auth_msg.to_string().into())).await?;
+
+	// 	// Wait for authentication response
+	// 	let auth_response = match stream.next().await {
+	// 		Some(Ok(msg)) => msg,
+	// 		Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
+	// 		None => return Err("WebSocket closed unexpectedly".into()),
+	// 	};
+
+	// 	debug!("Auth response: {:?}", auth_response);
+
+	// 	// Parse the authentication response
+	// 	if let TungsteniteMessage::Text(text) = auth_response {
+	// 		let response: Value = serde_json::from_str(&text)?;
+	// 		let op = response.get("op").and_then(Value::as_u64);
+
+	// 		if op != Some(2) {
+	// 			// "Identified" op code
+	// 			return Err(format!("Authentication failed: {:?}", response).into());
+	// 		}
+
+	// 		info!("Successfully authenticated with OBS WebSocket");
+	// 	} else {
+	// 		return Err("Expected text message for auth response".into());
+	// 	}
+	// }
 
 	// Subscribe to events
-	let subscribe_msg = json!({
-		"op": 8,
+	// let subscribe_msg = json!({
+	// 	"op": 8,
+	// 	"d": {
+	// 		"eventSubscriptions": 33
+	// 	}
+	// });
+
+	// info!("Sending event subscription...");
+	// debug!("Subscription message: {}", subscribe_msg);
+	// sink.send(TungsteniteMessage::Text(subscribe_msg.to_string().into())).await?;
+
+	// Send identify message without authentication
+	let identify_msg = json!({
+		"op": 1,  // "Identify" op code
 		"d": {
-			"eventSubscriptions": 33 // Subscribe to general events (streams, recordings, scenes)
+			"rpcVersion": 1,
+			"eventSubscriptions": 33   // Subscribe to all events, or use a specific value
 		}
 	});
-	sink.send(TungsteniteMessage::Text(subscribe_msg.to_string().into())).await?;
+
+	info!("Sending identify message without authentication...");
+	debug!("Identify message: {}", identify_msg);
+	sink.send(TungsteniteMessage::Text(identify_msg.to_string().into())).await?;
+
+	// Wait for identified response
+	let identify_response = match stream.next().await {
+		Some(Ok(msg)) => msg,
+		Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
+		None => return Err("WebSocket closed unexpectedly".into()),
+	};
+
+	debug!("Identify response: {:?}", identify_response);
+
+	// Parse the identification response
+	if let TungsteniteMessage::Text(text) = identify_response {
+		let response: Value = serde_json::from_str(&text)?;
+		let op = response.get("op").and_then(Value::as_u64);
+
+		if op != Some(2) {
+			// "Identified" op code
+			return Err(format!("Identification failed: {response:?}").into());
+		}
+
+		info!("Successfully identified with OBS WebSocket");
+	} else {
+		return Err("Expected text message for identify response".into());
+	}
 
 	// Get initial scene list
+	info!("Requesting initial scene list...");
 	request_scene_list(&mut sink).await?;
 
 	// Set up status polling
@@ -291,6 +378,7 @@ async fn handle_obs_connection(
 					"requestId": format!("stream-{}", request_id)
 				}
 			});
+			debug!("Polling: sending stream status request: {}", status_req);
 			if let Err(e) = sink.send(TungsteniteMessage::Text(status_req.to_string().into())).await {
 				error!("Failed to send stream status request: {}", e);
 				break;
@@ -304,6 +392,7 @@ async fn handle_obs_connection(
 					"requestId": format!("recording-{}", request_id)
 				}
 			});
+			debug!("Polling: sending recording status request: {}", recording_req);
 			if let Err(e) = sink.send(TungsteniteMessage::Text(recording_req.to_string().into())).await {
 				error!("Failed to send recording status request: {}", e);
 				break;
@@ -325,7 +414,9 @@ async fn handle_obs_connection(
 					Some(Ok(TungsteniteMessage::Text(text))) => {
 						process_obs_message(text.to_string(), status.clone(), broadcaster.clone()).await?;
 					}
-					Some(Ok(_)) => {} // Ignore non-text messages
+					Some(Ok(other)) => {
+						debug!("Received non-text WebSocket message: {:?}", other);
+					}
 					Some(Err(e)) => {
 						error!("WebSocket error: {}", e);
 						break;
