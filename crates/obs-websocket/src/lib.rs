@@ -3,6 +3,9 @@
 // This library provides a clean interface to interact with OBS via WebSocket.
 // It follows the singleton pattern and can be easily integrated with any Axum server.
 
+mod auth;
+
+use auth::authenticate;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 // use base64::engine::Engine;
@@ -233,7 +236,7 @@ async fn obs_websocket_client(config: Arc<RwLock<ObsConfig>>, status: Arc<RwLock
 async fn handle_obs_connection(
 	mut sink: SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
 	mut stream: SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>,
-	_password: String,
+	password: String,
 	status: Arc<RwLock<ObsStatus>>,
 	broadcaster: async_broadcast::Sender<ObsStatus>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -241,113 +244,9 @@ async fn handle_obs_connection(
 	let hello = wait_for_hello(&mut stream).await?;
 	info!("Recieved hello: {:?}", hello);
 
-	// Extract authentication info
-	// let authentication = hello
-	// 	.get("d")
-	// 	.and_then(|d| d.get("authentication"))
-	// 	.and_then(Value::as_object)
-	// 	.ok_or("Missing authentication info in hello")?;
-
-	// // Authenticate with OBS
-	// if authentication.contains_key("challenge") && authentication.contains_key("salt") {
-	// 	// Handle OBS 5.0+ authentication
-	// 	warn!("Password is: {}", password);
-	// 	let challenge = authentication.get("challenge").and_then(Value::as_str).ok_or("Missing challenge")?;
-	// 	let salt = authentication.get("salt").and_then(Value::as_str).ok_or("Missing salt")?;
-
-	// 	let mut hasher = Sha256::new();
-	// 	hasher.update(password.as_bytes());
-	// 	hasher.update(salt.as_bytes());
-	// 	let first_hash = hasher.finalize();
-
-	// 	let mut second_hasher = Sha256::new();
-	// 	second_hasher.update(&first_hash[..]);
-	// 	second_hasher.update(challenge.as_bytes());
-	// 	let final_hash = second_hasher.finalize();
-
-	// 	let auth = base64::engine::general_purpose::STANDARD.encode(final_hash);
-	// 	let auth_msg = json!({
-	// 		"op": 1,
-	// 		"d": {
-	// 			 "rpcVersion": 1,
-	// 			"authentication": auth
-	// 		}
-	// 	});
-
-	// 	sink.send(TungsteniteMessage::Text(auth_msg.to_string().into())).await?;
-
-	// 	// Wait for authentication response
-	// 	let auth_response = match stream.next().await {
-	// 		Some(Ok(msg)) => msg,
-	// 		Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
-	// 		None => return Err("WebSocket closed unexpectedly".into()),
-	// 	};
-
-	// 	debug!("Auth response: {:?}", auth_response);
-
-	// 	// Parse the authentication response
-	// 	if let TungsteniteMessage::Text(text) = auth_response {
-	// 		let response: Value = serde_json::from_str(&text)?;
-	// 		let op = response.get("op").and_then(Value::as_u64);
-
-	// 		if op != Some(2) {
-	// 			// "Identified" op code
-	// 			return Err(format!("Authentication failed: {:?}", response).into());
-	// 		}
-
-	// 		info!("Successfully authenticated with OBS WebSocket");
-	// 	} else {
-	// 		return Err("Expected text message for auth response".into());
-	// 	}
-	// }
-
-	// Subscribe to events
-	// let subscribe_msg = json!({
-	// 	"op": 8,
-	// 	"d": {
-	// 		"eventSubscriptions": 33
-	// 	}
-	// });
-
-	// info!("Sending event subscription...");
-	// debug!("Subscription message: {}", subscribe_msg);
-	// sink.send(TungsteniteMessage::Text(subscribe_msg.to_string().into())).await?;
-
-	// Send identify message without authentication
-	let identify_msg = json!({
-		"op": 1,  // "Identify" op code
-		"d": {
-			"rpcVersion": 1,
-			"eventSubscriptions": 33   // Subscribe to all events, or use a specific value
-		}
-	});
-
-	info!("Sending identify message without authentication...");
-	debug!("Identify message: {}", identify_msg);
-	sink.send(TungsteniteMessage::Text(identify_msg.to_string().into())).await?;
-
-	// Wait for identified response
-	let identify_response = match stream.next().await {
-		Some(Ok(msg)) => msg,
-		Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
-		None => return Err("WebSocket closed unexpectedly".into()),
-	};
-
-	debug!("Identify response: {:?}", identify_response);
-
-	// Parse the identification response
-	if let TungsteniteMessage::Text(text) = identify_response {
-		let response: Value = serde_json::from_str(&text)?;
-		let op = response.get("op").and_then(Value::as_u64);
-
-		if op != Some(2) {
-			// "Identified" op code
-			return Err(format!("Identification failed: {response:?}").into());
-		}
-
-		info!("Successfully identified with OBS WebSocket");
-	} else {
-		return Err("Expected text message for identify response".into());
+	// Handle authentication
+	if let Err(e) = authenticate(&hello, &password, &mut sink, &mut stream).await {
+		return Err(e);
 	}
 
 	// Get initial scene list
