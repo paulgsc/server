@@ -11,12 +11,12 @@ use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, Ma
 use tracing::{debug, info, warn};
 
 pub async fn authenticate(
-	hello: &Value,
 	password: &str,
 	sink: &mut SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
 	stream: &mut SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
 	// Check if authentication is required
+	let hello = wait_for_hello(stream).await?;
 	let authentication = hello.get("d").and_then(|d| d.get("authentication")).and_then(Value::as_object);
 
 	// If no authentication is required, just return
@@ -130,4 +130,21 @@ pub async fn maybe_identify(
 	}
 
 	Ok(())
+}
+
+async fn wait_for_hello(stream: &mut SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>) -> Result<Value, Box<dyn Error + Send + Sync>> {
+	while let Some(msg) = stream.next().await {
+		match msg? {
+			TungsteniteMessage::Text(text) => {
+				let json: Value = serde_json::from_str(&text)?;
+
+				if json.get("op").and_then(Value::as_u64) == Some(0) {
+					return Ok(json);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	Err("Connection closed before hello".into())
 }

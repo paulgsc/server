@@ -39,6 +39,7 @@ pub struct ObsWebSocketClient {
 	config: Arc<RwLock<ObsConfig>>,
 	status: Arc<RwLock<ObsStatus>>,
 	broadcaster: async_broadcast::Sender<ObsStatus>,
+	_receiver: async_broadcast::Receiver<ObsStatus>,
 }
 
 /// Configuration for the OBS WebSocket connection
@@ -86,11 +87,12 @@ impl Default for ObsStatus {
 impl ObsWebSocketClient {
 	/// Create a new OBS WebSocket client
 	fn new() -> Self {
-		let (sender, _) = async_broadcast::broadcast(100);
+		let (sender, receiver) = async_broadcast::broadcast(100);
 		Self {
 			config: Arc::new(RwLock::new(ObsConfig::default())),
 			status: Arc::new(RwLock::new(ObsStatus::default())),
 			broadcaster: sender,
+			_receiver: receiver,
 		}
 	}
 
@@ -144,9 +146,18 @@ async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadc
 	let status_snapshot = status.read().await.clone();
 	let (mut sender, mut receiver) = socket.split();
 
-	if let Err(e) = sender.send(Message::Text(serde_json::to_string(&status_snapshot).unwrap())).await {
-		error!("Error sending initial status: {}", e);
-		return;
+	match serde_json::to_string(&status_snapshot) {
+		Ok(res) => {
+			if let Err(e) = sender.send(Message::Text(res)).await {
+				error!("Error sending initial status: {}", e);
+				return;
+			}
+			info!("sent initial status!");
+		}
+		Err(e) => {
+			error!("Serialization failed with error code: {e}");
+			return;
+		}
 	}
 
 	let mut rx = broadcaster.new_receiver();
@@ -159,6 +170,7 @@ async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadc
 						if sender.send(Message::Text(json)).await.is_err() {
 							break;
 						}
+						info!("sent status update?!");
 					}
 					Err(e) => error!("Failed to serialize status: {}", e),
 				},
@@ -189,15 +201,8 @@ async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadc
 		}
 	});
 
-	// Wait for either task to finish
-	tokio::select! {
-		_ = send_task => {
-			warn!("Send task finished");
-		},
-		_ = recv_task => {
-			warn!("Receive task finished");
-		},
-	}
+	// Wait for both tasks to complete
+	let _ = tokio::join!(send_task, recv_task);
 }
 
 // Main OBS WebSocket client loop
@@ -241,17 +246,11 @@ async fn handle_obs_connection(
 	broadcaster: async_broadcast::Sender<ObsStatus>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
 	// Wait for hello message
-	let hello = wait_for_hello(&mut stream).await?;
-	info!("Recieved hello: {:?}", hello);
 
 	// Handle authentication
-	if let Err(e) = authenticate(&hello, &password, &mut sink, &mut stream).await {
-		return Err(e);
-	}
+	authenticate(&password, &mut sink, &mut stream).await?;
 
-	// Get initial scene list
-	info!("Requesting initial scene list...");
-	request_scene_list(&mut sink).await?;
+	fetch_init_state(&mut sink).await?;
 
 	// Set up status polling
 	let (tx, mut rx) = mpsc::channel(10);
@@ -284,6 +283,7 @@ async fn handle_obs_connection(
 			}
 
 			// Request recording status
+			// TODO: Do I care about this?
 			let recording_req = json!({
 				"op": 6,
 				"d": {
@@ -294,6 +294,12 @@ async fn handle_obs_connection(
 			debug!("Polling: sending recording status request: {}", recording_req);
 			if let Err(e) = sink.send(TungsteniteMessage::Text(recording_req.to_string().into())).await {
 				error!("Failed to send recording status request: {}", e);
+				break;
+			}
+
+			// Flush the sink to send all queued messages
+			if let Err(e) = sink.flush().await {
+				error!("Failed to flush sink: {e}");
 				break;
 			}
 
@@ -338,25 +344,7 @@ async fn handle_obs_connection(
 }
 
 // Wait for hello message from OBS
-async fn wait_for_hello(stream: &mut SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>) -> Result<Value, Box<dyn Error + Send + Sync>> {
-	while let Some(msg) = stream.next().await {
-		match msg? {
-			TungsteniteMessage::Text(text) => {
-				let json: Value = serde_json::from_str(&text)?;
-
-				if json.get("op").and_then(Value::as_u64) == Some(0) {
-					return Ok(json);
-				}
-			}
-			_ => {}
-		}
-	}
-
-	Err("Connection closed before hello".into())
-}
-
-// Request scene list from OBS
-async fn request_scene_list(
+async fn fetch_init_state(
 	sink: &mut SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
 	let scene_req = json!({
@@ -366,8 +354,28 @@ async fn request_scene_list(
 			"requestId": "scenes-1"
 		}
 	});
-
+	info!("Requesting initial scene list...");
 	sink.send(TungsteniteMessage::Text(scene_req.to_string().into())).await?;
+
+	let stream_req = json!({
+		"op": 6,
+		"d": {
+			"requestType": "GetStreamStatus",
+			"requestId": "initial-stream-1"
+		}
+	});
+	info!("Requesting initial stream status...");
+	sink.send(TungsteniteMessage::Text(stream_req.to_string().into())).await?;
+
+	let recording_req = json!({
+		"op": 6,
+		"d": {
+			"requestType": "GetRecordStatus",
+			"requestId": "initial-recording-1"
+		}
+	});
+	info!("Requesting initial recording status...");
+	sink.send(TungsteniteMessage::Text(recording_req.to_string().into())).await?;
 
 	Ok(())
 }
