@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub struct DataItem {
 	name: String,
 	value: f64,
+	#[serde(rename = "imageUrl")]
+	favicon: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,6 +44,8 @@ pub struct NFLGameScores {
 	ot: i32,
 	#[gsheet(column = "J")]
 	total: i32,
+	#[gsheet(column = "K")]
+	favicon: String,
 }
 
 impl NFLGameScores {
@@ -57,6 +61,7 @@ impl NFLGameScores {
 			Series::new("q4".into(), games.iter().map(|g| g.q4).collect::<Vec<_>>()).into(),
 			Series::new("ot".into(), games.iter().map(|g| g.ot).collect::<Vec<_>>()).into(),
 			Series::new("total".into(), games.iter().map(|g| g.total).collect::<Vec<_>>()).into(),
+			Series::new("favicon".into(), games.iter().map(|g| g.favicon.as_str()).collect::<Vec<_>>()).into(),
 		])?;
 		Ok(df)
 	}
@@ -105,16 +110,22 @@ impl NFLGameScores {
 		// Now quarter_points exists in df_merged
 		let aggregated = df_merged
 			.lazy()
-			.group_by(["team"])
+			.group_by(["team", "favicon"])
 			.agg([col("quarter_points").sum().alias("total_quarter_points")])
 			.sort(vec!["total_quarter_points"], Default::default())
 			.collect()?;
 
 		let teams: Vec<String> = aggregated.column("team")?.str()?.into_iter().filter_map(|s| s.map(|s| s.to_string())).collect();
 
+		let favicons: Vec<String> = aggregated.column("favicon")?.str()?.into_iter().filter_map(|s| s.map(|s| s.to_string())).collect();
+
 		let scores: Vec<f64> = aggregated.column("total_quarter_points")?.f64()?.into_iter().map(|f| f.unwrap()).collect();
 
-		let result: Vec<DataItem> = teams.into_iter().zip(scores.into_iter()).map(|(name, value)| DataItem { name, value }).collect();
+		let result: Vec<DataItem> = teams
+			.into_iter()
+			.zip(scores.into_iter().zip(favicons.into_iter()))
+			.map(|(name, (value, favicon))| DataItem { name, value, favicon })
+			.collect();
 		Ok(result)
 	}
 }

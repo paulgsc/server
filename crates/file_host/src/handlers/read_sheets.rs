@@ -1,5 +1,5 @@
 use crate::{
-	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, Metadata, RangeQuery, VideoChapters},
+	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
 	AppState, FileHostError,
 };
@@ -18,7 +18,7 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 	}
 
 	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, &q).await?;
+	let data = refetch(&state, &id, Some(&q)).await?;
 
 	let attributions = Attribution::from_gsheet(&data, true)?;
 
@@ -42,7 +42,7 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 	}
 
 	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, &q).await?;
+	let data = refetch(&state, &id, Some(&q)).await?;
 
 	let attributions = VideoChapters::from_gsheet(&data, true)?;
 
@@ -65,7 +65,7 @@ pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String
 	}
 
 	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, &q).await?;
+	let data = refetch(&state, &id, Some(&q)).await?;
 
 	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
 
@@ -164,13 +164,71 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 	}))
 }
 
-async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: &str) -> Result<Vec<Vec<String>>, FileHostError> {
+#[axum::debug_handler]
+pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
+	let cache_key = format!("get_nfl_roster{}", id);
+	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
+		log::info!("Cache hit for key: {}", &cache_key);
+		return Ok(Json(cached_data));
+	}
+
+	let data = refetch(&state, &id, None).await?;
+
+	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
+
+	let roster = naive_roster_transform(boxed);
+
+	if roster.len() <= 100 {
+		log::info!("Caching data for key: {}", &cache_key);
+		state.cache_store.set_json(&cache_key, &roster).await?;
+	} else {
+		log::info!("Data too large to cache (size: {})", roster.len());
+	}
+
+	Ok(Json(roster))
+}
+
+fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
+	log::debug!("stupid data! {:?}", data);
+	data
+		.iter()
+		.skip(1)
+		.filter_map(|row| match row.as_ref() {
+			[id, jersey_number, name, position, draft_pick, label, weight, color, ..] => Some(HexData {
+				id: id.trim_matches('"').parse().unwrap_or(0),
+				jersey_number: jersey_number.trim_matches('"').to_string(),
+				name: name.trim_matches('"').to_string(),
+				position: position.trim_matches('"').to_string(),
+				draft_pick: draft_pick.trim_matches('"').to_string(),
+				label: label.trim_matches('"').to_string(),
+				weight: weight.trim_matches('"').parse().unwrap_or(0.0),
+				color: color.trim_matches('"').parse().unwrap_or(0),
+			}),
+			_ => {
+				log::error!("Row has less than 6 elements: {:?}", row);
+				None
+			}
+		})
+		.collect()
+}
+
+async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
 	let secret_file = state.config.client_secret_file.clone();
 	let use_email = state.config.email_service_url.clone().unwrap_or("".to_string());
 
 	let reader = ReadSheets::new(use_email, secret_file)?;
 
-	let data = reader.read_data(&sheet_id, q).await?;
+	let data = match q {
+		Some(query) => reader.read_data(sheet_id, query).await?,
+		None => {
+			let res = reader.retrieve_all_sheets_data(sheet_id).await?;
+			let (_, v) = match res.into_iter().next() {
+				Some(pair) => pair,
+				None => return Err(FileHostError::UnexpectedSinglePair),
+			};
+			v
+		}
+	};
 
 	Ok(data)
 }

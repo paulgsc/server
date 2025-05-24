@@ -32,7 +32,7 @@ pub enum FileHostError {
 	#[error("request path not found")]
 	NotFound,
 
-	#[error("Invalid Data Schema pased")]
+	#[error("Invalid Data Schema passed")]
 	InvalidData,
 
 	#[error("Invalid Mime Type: {0}")]
@@ -73,6 +73,9 @@ pub enum FileHostError {
 
 	#[error("Response Build Error error: {0}")]
 	ResponseBuildError(#[from] axum::http::Error),
+
+	#[error("Expected exactly one key-value pair, found none")]
+	UnexpectedSinglePair,
 }
 
 impl FileHostError {
@@ -99,6 +102,7 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
+			Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::InvalidMimeType(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,

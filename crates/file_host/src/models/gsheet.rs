@@ -80,6 +80,32 @@ pub struct VideoChapters {
 	details: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, FromGSheet)]
+pub struct HexData {
+	#[gsheet(column = "A")]
+	pub id: usize,
+	/// The value to display in the cell
+	#[gsheet(column = "B")]
+	#[serde(rename = "jerseyNumber")]
+	pub jersey_number: String,
+	#[gsheet(column = "C")]
+	pub name: String,
+	#[gsheet(column = "D")]
+	pub position: String,
+	#[gsheet(column = "E")]
+	#[serde(rename = "draftPick")]
+	pub draft_pick: String,
+	/// The binary label that determines side (e.g., "offense" vs "defense")
+	#[gsheet(column = "F")]
+	pub label: String,
+	/// The weight/rank used for positioning (lower values = higher priority)
+	#[gsheet(column = "G")]
+	pub weight: f32,
+	/// The color to use for this cell
+	#[gsheet(column = "H")]
+	pub color: usize,
+}
+
 pub trait FromGSheet: Sized {
 	#[allow(dead_code)]
 	fn column_mapping() -> Vec<(String, String, bool)>; // (field_name, column_letter, required)
