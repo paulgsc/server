@@ -56,6 +56,7 @@
 
                     # DB
                     sqlite
+                    duckdb
                     # postgresql
 
                     # Audio
