@@ -222,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	rustls::crypto::ring::default_provider()
 		.install_default()
 		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
-	let user_email = "aulgondu@gmail.com".to_string();
+	let user_email = "some-service@consulting-llc-6302f.iam.gserviceaccount.com".to_string();
 	let client_secret_path = ".setup/client_secret_file.json".to_string();
 	let write_sheet_client = Rc::new(WriteToGoogleSheet::new(user_email.clone(), client_secret_path.clone())?);
 
@@ -265,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let output_meta = OutputMetadata::new(&config, Some(file.name));
 
 				process_scores(output_meta, scores, write_sheet_client.clone()).await?;
-				write_to_drive_client.delete_file(&new_file_id).await?;
+				write_to_drive_client.delete_file_with_service_account(&new_file_id).await?;
 				println!("Removed stale html soup from gdrive!");
 			}
 		}

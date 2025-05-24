@@ -1,3 +1,4 @@
+pub mod chatbot_messages;
 pub mod game_clock;
 pub mod play_type;
 pub mod player_dob;

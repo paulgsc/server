@@ -1514,4 +1514,431 @@ mod tests {
 			_ => panic!("Expected program"),
 		}
 	}
+
+	#[test]
+	fn test_parse_nested_object_and_array() {
+		let input = "let data = { users: [{ name: 'John', age: 30, address: { city: 'New York', zip: 10001 } }] };";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::VariableDeclaration { kind, declarations } => {
+						assert_eq!(*kind, VariableKind::Let);
+						assert_eq!(declarations.len(), 1);
+						match &declarations[0] {
+							Node::VariableDeclarator { id, init } => {
+								// Check variable name
+								match &**id {
+									Node::Identifier { name } => assert_eq!(name, "data"),
+									_ => panic!("Expected identifier"),
+								}
+
+								// Check initialization is an object
+								match &**init.as_ref().unwrap() {
+									Node::ObjectExpression { properties } => {
+										assert_eq!(properties.len(), 1);
+										// Check 'users' property
+										match &properties[0] {
+											Node::Property {
+												key,
+												value,
+												kind: _,
+												method: _,
+												computed: _,
+											} => {
+												match &**key {
+													Node::Identifier { name } => assert_eq!(name, "users"),
+													_ => panic!("Expected identifier"),
+												}
+
+												// Check array value
+												match &**value {
+													Node::ArrayExpression { elements } => {
+														assert_eq!(elements.len(), 1);
+														// Check user object in array
+														match &elements[0] {
+															Some(element) => match &**element {
+																Node::ObjectExpression { properties } => {
+																	assert_eq!(properties.len(), 3);
+
+																	// Check for address property (nested object)
+																	let address_prop = properties
+																		.iter()
+																		.find(|p| {
+																			if let Node::Property { key, .. } = p {
+																				if let Node::Identifier { name } = &**key {
+																					return name == "address";
+																				}
+																			}
+																			false
+																		})
+																		.unwrap();
+
+																	// Verify address is an object with city and zip
+																	match address_prop {
+																		Node::Property { value, .. } => match &**value {
+																			Node::ObjectExpression { properties } => {
+																				assert_eq!(properties.len(), 2);
+																			}
+																			_ => panic!("Expected object expression for address"),
+																		},
+																		_ => panic!("Expected property"),
+																	}
+																}
+																_ => panic!("Expected object expression"),
+															},
+															None => panic!("Expected array element"),
+														}
+													}
+													_ => panic!("Expected array expression"),
+												}
+											}
+											_ => panic!("Expected property"),
+										}
+									}
+									_ => panic!("Expected object expression"),
+								}
+							}
+							_ => panic!("Expected variable declarator"),
+						}
+					}
+					_ => panic!("Expected variable declaration"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_async_function_with_try_catch() {
+		let input =
+			"async function fetchData() { try { const response = await fetch('/api/data'); return await response.json(); } catch (error) { console.error(error); return null; } }";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::FunctionDeclaration {
+						id,
+						params,
+						body,
+						async_,
+						generator,
+					} => {
+						assert!(*async_);
+						assert!(!*generator);
+
+						// Check function name
+						match &**id.as_ref().unwrap() {
+							Node::Identifier { name } => assert_eq!(name, "fetchData"),
+							_ => panic!("Expected identifier"),
+						}
+
+						// Check function body contains try-catch
+						match &**body {
+							Node::BlockStatement { body } => {
+								assert_eq!(body.len(), 1);
+								match &body[0] {
+									Node::TryStatement { block, handler, finalizer } => {
+										// Check try block
+										match &**block {
+											Node::BlockStatement { body } => {
+												assert_eq!(body.len(), 2);
+
+												// Check that second statement contains await
+												match &body[1] {
+													Node::ReturnStatement { argument } => {
+														match &**argument.as_ref().unwrap() {
+															Node::AwaitExpression { argument: _ } => {
+																// Correctly found await expression
+															}
+															_ => panic!("Expected await expression"),
+														}
+													}
+													_ => panic!("Expected return statement"),
+												}
+											}
+											_ => panic!("Expected block statement"),
+										}
+
+										// Check catch block exists
+										assert!(handler.is_some());
+										match &**handler.as_ref().unwrap() {
+											Node::CatchClause { param, body } => {
+												// Check error parameter
+												match &**param.as_ref().unwrap() {
+													Node::Identifier { name } => assert_eq!(name, "error"),
+													_ => panic!("Expected identifier"),
+												}
+
+												// Check catch body has 2 statements
+												match &**body {
+													Node::BlockStatement { body } => {
+														assert_eq!(body.len(), 2);
+													}
+													_ => panic!("Expected block statement"),
+												}
+											}
+											_ => panic!("Expected catch clause"),
+										}
+
+										// No finally block
+										assert!(finalizer.is_none());
+									}
+									_ => panic!("Expected try statement"),
+								}
+							}
+							_ => panic!("Expected block statement"),
+						}
+					}
+					_ => panic!("Expected function declaration"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_class_with_methods_and_properties() {
+		let input = "class User { constructor(name, age) { this.name = name; this.age = age; } static fromJSON(json) { return new User(json.name, json.age); } get profile() { return `${this.name} (${this.age})`; } updateAge(newAge) { this.age = newAge; return this; } }";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::ClassDeclaration { id, super_class, body } => {
+						// Check class name
+						match &**id {
+							Node::Identifier { name } => assert_eq!(name, "User"),
+							_ => panic!("Expected identifier"),
+						}
+
+						// No superclass
+						assert!(super_class.is_none());
+
+						// Check class body
+						match &**body {
+							Node::ClassBody { body: methods } => {
+								assert_eq!(methods.len(), 4);
+
+								// Verify constructor exists
+								let constructor = methods
+									.iter()
+									.find(|m| {
+										if let Node::MethodDefinition { key, .. } = m {
+											if let Node::Identifier { name } = &**key {
+												return name == "constructor";
+											}
+										}
+										false
+									})
+									.unwrap();
+
+								// Check constructor has 2 parameters
+								match constructor {
+									Node::MethodDefinition { value, .. } => match &**value {
+										Node::FunctionExpression { params, .. } => {
+											assert_eq!(params.len(), 2);
+										}
+										_ => panic!("Expected function expression"),
+									},
+									_ => panic!("Expected method definition"),
+								}
+
+								// Verify static method exists
+								let static_method = methods
+									.iter()
+									.find(|m| {
+										if let Node::MethodDefinition { key, static_, .. } = m {
+											if let Node::Identifier { name } = &**key {
+												return name == "fromJSON" && *static_;
+											}
+										}
+										false
+									})
+									.unwrap();
+								assert!(static_method.is_some());
+
+								// Verify getter exists
+								let getter = methods
+									.iter()
+									.find(|m| {
+										if let Node::MethodDefinition { key, kind, .. } = m {
+											if let Node::Identifier { name } = &**key {
+												return name == "profile" && *kind == MethodKind::Get;
+											}
+										}
+										false
+									})
+									.unwrap();
+								assert!(getter.is_some());
+
+								// Verify regular method exists
+								let regular_method = methods
+									.iter()
+									.find(|m| {
+										if let Node::MethodDefinition { key, kind, .. } = m {
+											if let Node::Identifier { name } = &**key {
+												return name == "updateAge" && *kind == MethodKind::Method;
+											}
+										}
+										false
+									})
+									.unwrap();
+
+								// Check updateAge method returns this
+								match regular_method {
+									Node::MethodDefinition { value, .. } => {
+										match &**value {
+											Node::FunctionExpression { body, .. } => {
+												match &**body {
+													Node::BlockStatement { body } => {
+														// Check last statement is return this
+														match &body[body.len() - 1] {
+															Node::ReturnStatement { argument } => {
+																match &**argument.as_ref().unwrap() {
+																	Node::ThisExpression => {
+																		// Correctly found this expression
+																	}
+																	_ => panic!("Expected this expression"),
+																}
+															}
+															_ => panic!("Expected return statement"),
+														}
+													}
+													_ => panic!("Expected block statement"),
+												}
+											}
+											_ => panic!("Expected function expression"),
+										}
+									}
+									_ => panic!("Expected method definition"),
+								}
+							}
+							_ => panic!("Expected class body"),
+						}
+					}
+					_ => panic!("Expected class declaration"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
+
+	#[test]
+	fn test_parse_complex_jsx_with_expressions() {
+		let input = "<div className=\"container\">
+					<Header title={user ? user.name : 'Guest'} />
+							<main>
+										{items.map((item, index) => (
+														<Item 
+																			key={index}
+																								name={item.name}
+																													price={item.price}
+																																		onSelect={() => handleSelect(item.id)}
+																																						/>
+																																									))}
+																																												{showSummary && (
+																																																<Summary
+																																																					total={items.reduce((sum, item) => sum + item.price, 0)}
+																																																										discount={discount || 0}
+																																																														/>
+																																																																	)}
+																																																																			</main>
+																																																																					<footer>
+																																																																								<button onClick={handleCheckout} disabled={items.length === 0}>
+																																																																									Checkout {items.length > 0 ? `($${total.toFixed(2)})` : ''}
+																																																																															</button>
+																																																																																	</footer>
+																																																																																		</div>";
+		let mut parser = Parser::new(input);
+		let program = parser.parse().unwrap();
+
+		match program {
+			Node::Program { body } => {
+				assert_eq!(body.len(), 1);
+				match &body[0] {
+					Node::JSXElement {
+						opening_element,
+						children,
+						closing_element,
+					} => {
+						// Check root div
+						match &**opening_element {
+							Node::JSXOpeningElement { name, attributes, self_closing } => {
+								assert!(!*self_closing);
+								match &**name {
+									Node::Identifier { name } => assert_eq!(name, "div"),
+									_ => panic!("Expected identifier"),
+								}
+
+								// Should have className attribute
+								assert_eq!(attributes.len(), 1);
+							}
+							_ => panic!("Expected JSX opening element"),
+						}
+
+						// Should have 3 main children (Header, main, footer) plus whitespace
+						let non_text_children = children
+							.iter()
+							.filter(|child| match child {
+								Node::JSXText { value } => value.trim().is_empty(),
+								_ => true,
+							})
+							.count();
+						assert!(non_text_children >= 3);
+
+						// Find main element
+						let main_element = children
+							.iter()
+							.find(|child| match child {
+								Node::JSXElement { opening_element, .. } => match &**opening_element {
+									Node::JSXOpeningElement { name, .. } => match &**name {
+										Node::Identifier { name } => name == "main",
+										_ => false,
+									},
+									_ => false,
+								},
+								_ => false,
+							})
+							.unwrap();
+
+						// Check main element contains JSX expressions
+						match main_element {
+							Node::JSXElement { children, .. } => {
+								// Should have at least 2 JSX expressions (map and conditional)
+								let jsx_expressions = children
+									.iter()
+									.filter(|child| match child {
+										Node::JSXExpressionContainer { .. } => true,
+										_ => false,
+									})
+									.count();
+								assert!(jsx_expressions >= 2);
+							}
+							_ => panic!("Expected JSX element"),
+						}
+
+						// Check closing element matches
+						match &**closing_element.as_ref().unwrap() {
+							Node::JSXClosingElement { name } => match &**name {
+								Node::Identifier { name } => assert_eq!(name, "div"),
+								_ => panic!("Expected identifier"),
+							},
+							_ => panic!("Expected JSX closing element"),
+						}
+					}
+					_ => panic!("Expected JSX element"),
+				}
+			}
+			_ => panic!("Expected program"),
+		}
+	}
 }

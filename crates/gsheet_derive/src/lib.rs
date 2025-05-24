@@ -96,23 +96,23 @@ pub fn from_gsheet_derive(input: TokenStream) -> TokenStream {
 
 		if is_option {
 			quote! {
-			let #field_name = match get_cell_value(row, #column, header_map, #field_name_str, #required)? {
-										Some(val) if !val.is_empty() => Some(parse_cell(val, #field_name_str, #column)?),
-															_ => None,
-																		};
-					}
+				let #field_name = match get_cell_value(row, #column, header_map, #field_name_str, #required)? {
+					Some(val) if !val.is_empty() => Some(parse_cell(val, #field_name_str, #column)?),
+					_ => None,
+				};
+			}
 		} else if required {
 			quote! {
-			let #field_name = get_cell_value(row, #column, header_map, #field_name_str, #required)?
-				.ok_or_else(|| GSheetDeriveError::MissingRequiredField(#field_name_str.to_string(), #column.to_string()))?;
-			let #field_name = parse_cell(#field_name, #field_name_str, #column)?;
-					}
+				let #field_name = get_cell_value(row, #column, header_map, #field_name_str, #required)?
+					.ok_or_else(|| GSheetDeriveError::MissingRequiredField(#field_name_str.to_string(), #column.to_string()))?;
+				let #field_name = parse_cell(#field_name, #field_name_str, #column)?;
+			}
 		} else {
 			quote! {
-			let #field_name = get_cell_value(row, #column, header_map, #field_name_str, #required)?
-										.unwrap_or_default();
-			let #field_name = parse_cell(#field_name, #field_name_str, #column)?;
-					}
+				let #field_name = get_cell_value(row, #column, header_map, #field_name_str, #required)?
+					.unwrap_or_default();
+				let #field_name = parse_cell(#field_name, #field_name_str, #column)?;
+			}
 		}
 	});
 
@@ -125,20 +125,20 @@ pub fn from_gsheet_derive(input: TokenStream) -> TokenStream {
 	// Generate the impl
 	let expanded = quote! {
 	impl FromGSheet for #name {
-						fn column_mapping() -> Vec<(String, String, bool)> {
-												vec![
-																			#(#column_mappings),*
-																	]
-																				}
+		fn column_mapping() -> Vec<(String, String, bool)> {
+			vec![
+				#(#column_mappings),*
+			]
+		}
 
-									fn from_gsheet_row(row: &[String], header_map: &HashMap<String, usize>) -> Result<Self, GSheetDeriveError> {
-															#(#field_parsers)*
+		fn from_gsheet_row(row: &[String], header_map: &HashMap<String, usize>) -> Result<Self, GSheetDeriveError> {
+			#(#field_parsers)*
 
-															Ok(Self {
-																						#(#field_names),*
-																				})
-																	}
-										}
+			Ok(Self {
+				#(#field_names),*
+			})
+		}
+	}
 	};
 
 	TokenStream::from(expanded)

@@ -17,7 +17,7 @@ This repository contains Docker Compose configuration for running Redis and Redi
 
 The `docker-compose.yml` file sets up:
 - A Redis server (latest version) exposed on port 6379
-- RedisInsight web interface exposed on port 8001
+- RedisInsight web interface exposed on port just check ss -tulnp prop at: http://nixos.local:5540/
 - Both services connected via the 'redis-network' bridge network
 - Health checks to ensure Redis is fully running before RedisInsight starts
 

@@ -2,7 +2,11 @@ use sdk::*;
 
 #[tokio::main]
 async fn main() {
+<<<<<<< Updated upstream
 	let token = "foo foo".to_string();
+=======
+	let token = "foo".to_string();
+>>>>>>> Stashed changes
 
 	let client = GitHubClient::new(token);
 
