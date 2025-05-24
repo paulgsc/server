@@ -2,7 +2,7 @@ use sdk::*;
 
 #[tokio::main]
 async fn main() {
-	let token = "foo".to_string();
+	let token = "foo foo".to_string();
 
 	let client = GitHubClient::new(token);
 
