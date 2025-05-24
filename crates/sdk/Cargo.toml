@@ -26,6 +26,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 google-drive3 = "6.0.0"
+reqwest = { version = "0.12.15", features = ["json"] }
+log = "0.4.27"
 
 [dev-dependencies]
 mockall = "0.13.0"

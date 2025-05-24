@@ -35,18 +35,22 @@ pub struct PackageStatus {
 	pub border_color: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GitHubAuthor {
+	pub login: String,
+}
+
 // GitHub API response types
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GitHubRepository {
 	pub name: String,
 	pub description: Option<String>,
-	pub updated_at: String,
+	pub owner: GitHubAuthor,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GitHubCommit {
 	pub commit: GitHubCommitDetail,
-	pub author: Option<GitHubAuthor>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -60,15 +64,7 @@ pub(crate) struct GitHubCommitAuthor {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct GitHubAuthor {
-	pub login: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct GitHubContributor {
-	pub login: String,
-	pub contributions: u32,
-}
+pub(crate) struct GitHubContributor;
 
 // Define package statuses similar to the frontend
 pub fn get_status_map() -> HashMap<String, PackageStatus> {
@@ -209,30 +205,32 @@ impl GitHubClient {
 	}
 
 	// Fetch all repositories for an organization
-	pub async fn get_repositories(&self, org_name: &str) -> Result<Vec<models::Repository>, GitHubError> {
-		let repos_url = format!("https://api.github.com/orgs/{}/repos?per_page=100", org_name);
-		let github_repos: Vec<models::GitHubRepository> = self.request(&repos_url).await?;
+	pub async fn get_repositories(&self) -> Result<Vec<Repository>, GitHubError> {
+		let repos_url = "https://api.github.com/user/repos?per_page=100&visibility=public&affiliation=owner";
+		let github_repos: Vec<GitHubRepository> = self.request(repos_url).await?;
 
 		let mut repositories = Vec::new();
 
 		for repo in github_repos {
-			// For each repository, fetch its packages (we'll use directories as mock packages)
-			let contents_url = format!("https://api.github.com/repos/{}/{}/contents", org_name, repo.name);
+			let owner = &repo.owner.login; // get the repo owner's login from the API response
+
+			// Fetch repository contents
+			let contents_url = format!("https://api.github.com/repos/{}/{}/contents", owner, repo.name);
 			let contents: Vec<serde_json::Value> = match self.request(&contents_url).await {
 				Ok(contents) => contents,
 				Err(_) => continue, // Skip if we can't fetch contents
 			};
 
 			// Fetch commits to get activity data
-			let commits_url = format!("https://api.github.com/repos/{}/{}/commits?per_page=100", org_name, repo.name);
-			let commits: Vec<models::GitHubCommit> = match self.request(&commits_url).await {
+			let commits_url = format!("https://api.github.com/repos/{}/{}/commits?per_page=100", owner, repo.name);
+			let commits: Vec<GitHubCommit> = match self.request(&commits_url).await {
 				Ok(commits) => commits,
 				Err(_) => vec![], // Use empty vector if we can't fetch commits
 			};
 
 			// Fetch contributors
-			let contributors_url = format!("https://api.github.com/repos/{}/{}/contributors", org_name, repo.name);
-			let contributors: Vec<models::GitHubContributor> = match self.request(&contributors_url).await {
+			let contributors_url = format!("https://api.github.com/repos/{}/{}/contributors", owner, repo.name);
+			let contributors: Vec<GitHubContributor> = match self.request(&contributors_url).await {
 				Ok(contributors) => contributors,
 				Err(_) => vec![], // Use empty vector if we can't fetch contributors
 			};
@@ -257,12 +255,12 @@ impl GitHubClient {
 						};
 
 						// Create package data
-						packages.push(models::Package {
+						packages.push(Package {
 							id: format!("{}-pkg-{}", repo.name, i),
 							name: pkg_name.clone(),
 							description: format!("Package {} in {}", pkg_name, repo.name),
 							last_activity,
-							status: models::get_status(last_activity),
+							status: get_status(last_activity),
 							commit_count: commits.len() as u32,
 							contributors: contributor_count,
 						});
@@ -279,19 +277,19 @@ impl GitHubClient {
 					Utc::now()
 				};
 
-				packages.push(models::Package {
+				packages.push(Package {
 					id: format!("{}-pkg-0", repo.name),
 					name: format!("{}-main", repo.name),
 					description: format!("Main package for {}", repo.name),
 					last_activity,
-					status: models::get_status(last_activity),
+					status: get_status(last_activity),
 					commit_count: commits.len() as u32,
 					contributors: contributor_count,
 				});
 			}
 
 			// Add the repository to our list
-			repositories.push(models::Repository {
+			repositories.push(Repository {
 				name: repo.name,
 				description: repo.description.unwrap_or_else(|| "No description".to_string()),
 				packages,
