@@ -12,6 +12,14 @@ lazy_static! {
 		register_int_counter_vec!("http_requests_total", "Total number of HTTP requests", &["method", "route", "status"]).expect("Failed to register HTTP_REQUESTS_TOTAL");
 	static ref HTTP_REQUEST_DURATION: HistogramVec =
 		register_histogram_vec!("http_request_duration_seconds", "HTTP request duration in seconds", &["method", "route"]).expect("Failed to register HTTP_REQUEST_DURATION");
+	pub static ref OPERATION_DURATION: HistogramVec = register_histogram_vec!(
+		"operation_duration_seconds",
+		"Duration of specific operations in seconds",
+		&["handler", "operation", "cache_hit"]
+	)
+	.expect("Failed to register OPERATION_DURATION");
+	pub static ref CACHE_OPERATIONS: IntCounterVec =
+		register_int_counter_vec!("cache_operations_total", "Total cache operations", &["handler", "operation", "result"]).expect("Failed to register CACHE_OPERATIONS");
 }
 
 /// Middleware for Prometheus metrics collection
