@@ -115,6 +115,6 @@ macro_rules! timed_operation {
 #[macro_export]
 macro_rules! record_cache_op {
 	($handler:expr, $operation:expr, $result:expr) => {
-		CACHE_OPERATIONS.with_label_values(&[$handler, $operation, $result]).inc();
+		CACHE_OPERATIONS.with_label_values(&[$handler, $operation, $result]).inc()
 	};
 }

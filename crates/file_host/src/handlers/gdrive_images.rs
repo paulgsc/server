@@ -1,4 +1,7 @@
-use crate::{AppState, FileHostError};
+use crate::{
+	metrics::{CACHE_OPERATIONS, OPERATION_DURATION},
+	record_cache_op, timed_operation, AppState, FileHostError,
+};
 use axum::{
 	extract::{Path, State},
 	http::header,
@@ -8,6 +11,7 @@ use bytes::Bytes;
 use sdk::ReadDrive;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::instrument;
 
 use std::sync::OnceLock;
 
@@ -32,11 +36,17 @@ struct GDriveResponse {
 }
 
 #[axum::debug_handler]
+#[instrument(name = "serve_gdrive_image", skip(state), fields(image_id))]
 pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_id): Path<String>) -> Result<Response<axum::body::Body>, FileHostError> {
 	let cache_key = format!("get_drive_image{}", image_id);
 
-	if let Some(cached_data) = state.cache_store.get_json::<GDriveResponse>(&cache_key).await? {
-		log::info!("Cache hit for key: {}", &cache_key);
+	let cache_result = timed_operation!("serve_gdrive_image", "cached_check", true, {
+		state.cache_store.get_json::<GDriveResponse>(&cache_key).await
+	})?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_gdrive_image", "get", "hit");
+
 		let mime_type = cached_data.metadata.mime_type;
 
 		if allowed_image_mime_types().contains(&mime_type.as_str()) {
@@ -47,15 +57,18 @@ pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_i
 		}
 	}
 
-	let drive_response = refetch(&state, &image_id).await?;
+	record_cache_op!("serve_gdrive_image", "get", "miss");
+
+	let drive_response = timed_operation!("serve_gdrive_image", "refetch", false, { refetch(&state, &image_id).await })?;
+
 	let mime_type = &drive_response.metadata.mime_type;
 
 	if !allowed_image_mime_types().contains(&mime_type.as_str()) {
 		return Err(FileHostError::InvalidMimeType(mime_type.clone()));
 	}
 
-	log::info!("Caching data for key: {}", &cache_key);
-	state.cache_store.set_json(&cache_key, &drive_response).await?;
+	timed_operation!("serve_gdrive_image", "cache_set", false, { state.cache_store.set_json(&cache_key, &drive_response).await })?;
+	tracing::info!("Caching data for key: {}", &cache_key);
 
 	let response = Response::builder()
 		.header(header::CONTENT_TYPE, mime_type)
@@ -64,13 +77,17 @@ pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_i
 	Ok(response)
 }
 
+#[instrument(name = "refetch", skip(state), fields(image_id))]
 async fn refetch(state: &Arc<AppState>, image_id: &str) -> Result<GDriveResponse, FileHostError> {
 	let secret_file = state.config.client_secret_file.clone();
 	let use_email = state.config.email_service_url.clone().unwrap_or("".to_string());
 
-	let reader = ReadDrive::new(use_email, secret_file)?;
-	let file = reader.get_file_metadata(image_id).await?;
-	let bytes = reader.download_file(image_id).await?;
+	let reader = timed_operation!("refetch", "create_reader", false, { ReadDrive::new(use_email, secret_file) })?;
+
+	let file = timed_operation!("refetch", "get_file_metadata", false, { reader.get_file_metadata(image_id).await })?;
+
+	let bytes = timed_operation!("refetch", "download_file", false, { reader.download_file(image_id).await })?;
+
 	let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
 
 	Ok(GDriveResponse {

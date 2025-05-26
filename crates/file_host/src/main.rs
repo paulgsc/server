@@ -41,19 +41,23 @@ async fn main() -> Result<()> {
 	client().update_config(obs_config).await;
 	client().start();
 
-	let mut app = Router::new()
-		.route("/metrics", get(metrics::metrics_handler))
+	let mut protected_routes = Router::new()
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(ws_state.router())
 		.merge(get_obs_server());
 
-	app = app
-		.layer(axum::middleware::from_fn(metrics::metrics_middleware))
-		.layer(axum::middleware::from_fn_with_state(
-			Arc::new(SlidingWindowRateLimiter::new(context.clone())),
-			rate_limit_middleware,
-		));
+	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
+		Arc::new(SlidingWindowRateLimiter::new(context.clone())),
+		rate_limit_middleware,
+	));
+
+	let public_routes = Router::new().route("/metrics", get(metrics::metrics_handler));
+
+	let app = Router::new()
+		.merge(protected_routes)
+		.merge(public_routes)
+		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;

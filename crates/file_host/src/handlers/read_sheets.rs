@@ -57,49 +57,77 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 }
 
 #[axum::debug_handler]
+#[instrument(name = "get_video_chapters", skip(state), fields(sheet_id = %id))]
 pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
 	let cache_key = format!("get_video_chapters_{}", id);
-	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
-		log::info!("Cache hit for key: {}", &cache_key);
-		let attributions = VideoChapters::from_gsheet(&cached_data, true)?;
-		return Ok(Json(attributions));
+
+	let cache_result = timed_operation!("get_video_chapters", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_video_chapters", "get", "hit");
+
+		let video_chapters = timed_operation!("get_video_chapters", "deserialize_cache", true, { VideoChapters::from_gsheet(&cached_data, true) })?;
+
+		return Ok(Json(video_chapters));
 	}
 
-	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, Some(&q)).await?;
+	record_cache_op!("get_video_chapters", "get", "miss");
 
-	let attributions = VideoChapters::from_gsheet(&data, true)?;
+	let q = timed_operation!("get_video_chapters", "validate_range", false, { extract_and_validate_range(q) })?;
+
+	let data = timed_operation!("get_video_chapters", "fetch_data", false, { refetch(&state, &id, Some(&q)).await })?;
+
+	let video_chapters = timed_operation!("get_video_chapters", "transform_data", false, { VideoChapters::from_gsheet(&data, true) })?;
 
 	if data.len() <= 100 {
-		log::info!("Caching data for key: {}", &cache_key);
-		state.cache_store.set_json(&cache_key, &data).await?;
-	} else {
-		log::info!("Data too large to cache (size: {})", data.len());
+		timed_operation!("get_video_chapters", "cache_set", false, {
+			async {
+				match state.cache_store.set_json(&cache_key, &data).await {
+					Ok(_) => record_cache_op!("get_video_chapters", "set", "success"),
+					Err(_) => record_cache_op!("get_video_chapters", "set", "error"),
+				}
+			}
+		})
+		.await;
 	}
 
-	Ok(Json(attributions))
+	Ok(Json(video_chapters))
 }
 
 #[axum::debug_handler]
+#[instrument(name = "get_gantt", skip(state), fields(sheet_id = %id))]
 pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<GanttChapter>>, FileHostError> {
 	let cache_key = format!("get_gantt_{}", id);
-	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
-		log::info!("Cache hit for key: {}", &cache_key);
+
+	let cache_result = timed_operation!("get_gantt", "cache_check", true, { state.cache_store.get_json(&cache_key).await })?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_gantt", "get", "hit");
 		return Ok(Json(cached_data));
 	}
 
-	let q = extract_and_validate_range(q)?;
-	let data = refetch(&state, &id, Some(&q)).await?;
+	record_cache_op!("get_gantt", "get", "miss");
 
-	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
+	let q = timed_operation!("get_gantt", "validate_range", false, { extract_and_validate_range(q) })?;
 
-	let chapters = naive_gantt_transform(boxed);
+	let data = timed_operation!("get_gantt", "fetch_data", false, { refetch(&state, &id, Some(&q)).await })?;
+
+	let boxed: Box<[Box<[Cow<str>]>]> = timed_operation!("get_gantt", "box_transform", false, {
+		data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>()
+	});
+
+	let chapters = timed_operation!("get_gantt", "gantt_transform", false, { naive_gantt_transform(boxed) });
 
 	if chapters.len() <= 100 {
-		log::info!("Caching data for key: {}", &cache_key);
-		state.cache_store.set_json(&cache_key, &chapters).await?;
-	} else {
-		log::info!("Data too large to cache (size: {})", chapters.len());
+		timed_operation!("get_gantt", "cache_set", false, {
+			async {
+				match state.cache_store.set_json(&cache_key, &chapters).await {
+					Ok(_) => record_cache_op!("get_gantt", "set", "success"),
+					Err(_) => record_cache_op!("get_gantt", "set", "error"),
+				}
+			}
+		})
+		.await;
 	}
 
 	Ok(Json(chapters))
