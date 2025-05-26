@@ -4,7 +4,11 @@ use sdk::*;
 async fn main() {
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 	let token = "foo foo".to_string();
+=======
+	let token = "foo".to_string();
+>>>>>>> Stashed changes
 =======
 	let token = "foo".to_string();
 >>>>>>> Stashed changes

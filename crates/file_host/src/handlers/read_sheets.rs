@@ -1,6 +1,9 @@
 use crate::{
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 	metrics::{CACHE_OPERATIONS, OPERATION_DURATION},
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
@@ -33,6 +36,9 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 =======
 	let q = extract_and_validate_range(q)?;
 	let data = refetch(&state, &id, Some(&q)).await?;
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 	let q = timed_operation!("get_attributions", "validate_range", false, { extract_and_validate_range(q) })?;
@@ -84,6 +90,9 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 =======
 	let q = extract_and_validate_range(q)?;
 	let data = refetch(&state, &id, Some(&q)).await?;
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 	let q = timed_operation!("get_video_chapters", "validate_range", false, { extract_and_validate_range(q) })?;
@@ -124,6 +133,9 @@ pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String
 =======
 	let q = extract_and_validate_range(q)?;
 	let data = refetch(&state, &id, Some(&q)).await?;
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 	let q = timed_operation!("get_gantt", "validate_range", false, { extract_and_validate_range(q) })?;
@@ -255,6 +267,7 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 
 #[axum::debug_handler]
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 #[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
 pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster{}", id);
@@ -293,6 +306,8 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 	} else {
 		tracing::info!("Data too large to cache (size: {})", roster.len());
 =======
+=======
+>>>>>>> Stashed changes
 pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster{}", id);
 	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
@@ -311,6 +326,9 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 		state.cache_store.set_json(&cache_key, &roster).await?;
 	} else {
 		log::info!("Data too large to cache (size: {})", roster.len());
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 	}
 
@@ -342,7 +360,10 @@ fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 }
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 #[instrument(name = "refetch", skip(state), fields(sheet_id))]
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
@@ -353,9 +374,15 @@ async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: Option<&str>) -> Resu
 
 	let data = match q {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 		Some(query) => timed_operation!("refetch", "read_data_with_query", false, { reader.read_data(sheet_id, query).await })?,
 		None => {
 			let res = timed_operation!("refetch", "retrieve_all_sheets", false, { reader.retrieve_all_sheets_data(sheet_id).await })?;
+=======
+		Some(query) => reader.read_data(sheet_id, query).await?,
+		None => {
+			let res = reader.retrieve_all_sheets_data(sheet_id).await?;
+>>>>>>> Stashed changes
 =======
 		Some(query) => reader.read_data(sheet_id, query).await?,
 		None => {
