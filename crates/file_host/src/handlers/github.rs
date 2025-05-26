@@ -22,25 +22,45 @@ pub struct AppState {
 }
 
 #[axum::debug_handler]
+#[instrument(name = "get_repositories", skip(state), fields(sheet_id = %id))]
 async fn get_repositories(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Repository>>, FileHostError> {
-	{
-		let cache = state.repos_cache.read().await;
-		if let Some((repos, cache_time)) = &*cache {
-			let elapsed = cache_time.elapsed().unwrap_or(Duration::from_secs(0));
-			// Cache is valid for 5 minutes
-			if elapsed.as_secs() < 300 {
-				return Ok(Json(repos.clone()));
-			}
-		}
+	let cache_key = format!("get_attributions_{}", id);
+
+	let cache_result = timed_operation!("get_attributions", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_attributions", "get", "hit");
+
+		let attributions = timed_operation!("get_attributions", "deserialzie_cache", true, { Attribution::from_gsheet(&cached_data, true) })?;
+
+		return Ok(Json(attributions));
 	}
+
+	record_cache_op!("get_attributions", "get", "miss");
+
+	let data = timed_operation!("get_attributions", "fetch_data", false, { refetch(&state, &id, Some(&q)).await })?;
 
 	// Cache is invalid or doesn't exist, fetch new data
 	let repositories = state.github_client.get_repositories(&state.org_name).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-	// Update cache
-	{
-		let mut cache = state.repos_cache.write().await;
-		*cache = Some((repositories.clone(), SystemTime::now()));
+	if data.len() <= 100 {
+		timed_operation!("get_attributions", "cache_set", false, {
+			async {
+				match state.cache_store.set_json(&cache_key, &data).await {
+					Ok(_) => {
+						record_cache_op!("get_attributions", "set", "success");
+						tracing::info!("Caching data for key: {}", &cache_key);
+					}
+					Err(e) => {
+						record_cache_op!("get_attributions", "set", "error");
+						tracing::warn!("Failed to cache data: {}", e);
+					}
+				}
+			}
+		})
+		.await;
+	} else {
+		tracing::info!("Data too large to cache (size: {})", data.len());
 	}
 
 	Ok(Json(repositories))

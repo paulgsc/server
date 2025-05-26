@@ -170,9 +170,12 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 }
 
 #[axum::debug_handler]
+#[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id))]
 pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
-	if let Some(cached_data) = state.cache_store.get_json(&id).await? {
-		log::info!("Cache hit for key: {}", &id);
+	let cache_result = timed_operation!("get_nfl_tennis", "cached_check", true, { state.cache_store.get_json(&id).await })?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_nfl_tennis", "get", "hit");
 		return Ok(Json(DataResponse {
 			data: cached_data,
 			metadata: Metadata {
@@ -181,12 +184,15 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 			},
 		}));
 	}
+
+	record_cache_op!("get_nfl_tennis", "get", "miss");
+
 	let secret_file = state.config.client_secret_file.clone();
 	let use_email = state.config.email_service_url.clone().unwrap_or("".to_string());
 
-	let reader = ReadSheets::new(use_email, secret_file)?;
+	let reader = timed_operation!("get_nfl_tennis", "create_reader", false, { ReadSheets::new(use_email, secret_file) })?;
 
-	let sheet_data = reader.retrieve_all_sheets_data(&id).await?;
+	let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, { reader.retrieve_all_sheets_data(&id).await })?;
 
 	let mut sheet_collection = Vec::new();
 
@@ -201,10 +207,23 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 	}
 
 	if sheet_collection.len() <= 1000 {
-		log::info!("Caching data for key: {}", &id);
-		state.cache_store.set_json(&id, &sheet_collection).await?;
+		timed_operation!("get_nfl_tennis", "cache_set", false, {
+			async {
+				match state.cache_store.set_json(&id, &sheet_collection).await {
+					Ok(_) => {
+						record_cache_op!("get_nfl_tennis", "set", "success");
+						tracing::info!("Caching data for key: {}", &id);
+					}
+					Err(e) => {
+						record_cache_op!("get_nfl_tennis", "set", "error");
+						tracing::warn!("Failed to cache data: {}", e);
+					}
+				}
+			}
+		})
+		.await;
 	} else {
-		log::info!("Data too large to cache (size: {})", sheet_collection.len());
+		tracing::info!("Data too large to cache (size: {})", sheet_collection.len());
 	}
 
 	Ok(Json(DataResponse {
@@ -217,24 +236,43 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 }
 
 #[axum::debug_handler]
+#[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
 pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster{}", id);
-	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
-		log::info!("Cache hit for key: {}", &cache_key);
+
+	let cache_result = timed_operation!("get_nfl_roster", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+
+	if let Some(cached_data) = cache_result {
+		record_cache_op!("get_nfl_roster", "get", "hit");
 		return Ok(Json(cached_data));
 	}
 
-	let data = refetch(&state, &id, None).await?;
+	record_cache_op!("get_nfl_roster", "get", "miss");
+
+	let data = timed_operation!("get_nfl_roster", "fetch_data", false, { refetch(&state, &id, None).await })?;
 
 	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
 
-	let roster = naive_roster_transform(boxed);
+	let roster = timed_operation!("get_nfl_roster", "transform_data", false, { naive_roster_transform(boxed) });
 
 	if roster.len() <= 100 {
-		log::info!("Caching data for key: {}", &cache_key);
-		state.cache_store.set_json(&cache_key, &roster).await?;
+		timed_operation!("get_nfl_roster", "cache_set", false, {
+			async {
+				match state.cache_store.set_json(&cache_key, &roster).await {
+					Ok(_) => {
+						record_cache_op!("get_nfl_roster", "set", "success");
+						tracing::info!("Caching data for key: {}", &cache_key);
+					}
+					Err(e) => {
+						record_cache_op!("get_nfl_roster", "set", "error");
+						tracing::warn!("Failed to cache data: {}", e);
+					}
+				}
+			}
+		})
+		.await;
 	} else {
-		log::info!("Data too large to cache (size: {})", roster.len());
+		tracing::info!("Data too large to cache (size: {})", roster.len());
 	}
 
 	Ok(Json(roster))
