@@ -58,3 +58,19 @@ tsconfig.tsbuildinfo
 
 # google api services
 client_secret_file.json
+
+# Docker volumes and data
+prometheus_data/
+grafana_data/
+redis_data/
+redisinsight_data/
+
+
+# Grafana runtime data
+grafana/grafana.db
+grafana/sessions/
+grafana/plugins/
+grafana/png/
+grafana/csv/
+
+
