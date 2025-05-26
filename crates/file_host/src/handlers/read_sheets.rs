@@ -1,5 +1,8 @@
 use crate::{
+<<<<<<< Updated upstream
 	metrics::{CACHE_OPERATIONS, OPERATION_DURATION},
+=======
+>>>>>>> Stashed changes
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
 	record_cache_op, timed_operation, AppState, FileHostError,
@@ -25,7 +28,12 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 		return Ok(Json(attributions));
 	}
 
+<<<<<<< Updated upstream
 	record_cache_op!("get_attributions", "get", "miss");
+=======
+	let q = extract_and_validate_range(q)?;
+	let data = refetch(&state, &id, Some(&q)).await?;
+>>>>>>> Stashed changes
 
 	let q = timed_operation!("get_attributions", "validate_range", false, { extract_and_validate_range(q) })?;
 
@@ -71,7 +79,12 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 		return Ok(Json(video_chapters));
 	}
 
+<<<<<<< Updated upstream
 	record_cache_op!("get_video_chapters", "get", "miss");
+=======
+	let q = extract_and_validate_range(q)?;
+	let data = refetch(&state, &id, Some(&q)).await?;
+>>>>>>> Stashed changes
 
 	let q = timed_operation!("get_video_chapters", "validate_range", false, { extract_and_validate_range(q) })?;
 
@@ -106,7 +119,12 @@ pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String
 		return Ok(Json(cached_data));
 	}
 
+<<<<<<< Updated upstream
 	record_cache_op!("get_gantt", "get", "miss");
+=======
+	let q = extract_and_validate_range(q)?;
+	let data = refetch(&state, &id, Some(&q)).await?;
+>>>>>>> Stashed changes
 
 	let q = timed_operation!("get_gantt", "validate_range", false, { extract_and_validate_range(q) })?;
 
@@ -236,6 +254,7 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 }
 
 #[axum::debug_handler]
+<<<<<<< Updated upstream
 #[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
 pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster{}", id);
@@ -273,6 +292,26 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 		.await;
 	} else {
 		tracing::info!("Data too large to cache (size: {})", roster.len());
+=======
+pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
+	let cache_key = format!("get_nfl_roster{}", id);
+	if let Some(cached_data) = state.cache_store.get_json(&cache_key).await? {
+		log::info!("Cache hit for key: {}", &cache_key);
+		return Ok(Json(cached_data));
+	}
+
+	let data = refetch(&state, &id, None).await?;
+
+	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
+
+	let roster = naive_roster_transform(boxed);
+
+	if roster.len() <= 100 {
+		log::info!("Caching data for key: {}", &cache_key);
+		state.cache_store.set_json(&cache_key, &roster).await?;
+	} else {
+		log::info!("Data too large to cache (size: {})", roster.len());
+>>>>>>> Stashed changes
 	}
 
 	Ok(Json(roster))
@@ -302,7 +341,10 @@ fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 		.collect()
 }
 
+<<<<<<< Updated upstream
 #[instrument(name = "refetch", skip(state), fields(sheet_id))]
+=======
+>>>>>>> Stashed changes
 async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
 	let secret_file = state.config.client_secret_file.clone();
 	let use_email = state.config.email_service_url.clone().unwrap_or("".to_string());
@@ -310,9 +352,15 @@ async fn refetch(state: &Arc<AppState>, sheet_id: &str, q: Option<&str>) -> Resu
 	let reader = timed_operation!("refetch", "create_reader", false, { ReadSheets::new(use_email, secret_file) })?;
 
 	let data = match q {
+<<<<<<< Updated upstream
 		Some(query) => timed_operation!("refetch", "read_data_with_query", false, { reader.read_data(sheet_id, query).await })?,
 		None => {
 			let res = timed_operation!("refetch", "retrieve_all_sheets", false, { reader.retrieve_all_sheets_data(sheet_id).await })?;
+=======
+		Some(query) => reader.read_data(sheet_id, query).await?,
+		None => {
+			let res = reader.retrieve_all_sheets_data(sheet_id).await?;
+>>>>>>> Stashed changes
 			let (_, v) = match res.into_iter().next() {
 				Some(pair) => pair,
 				None => return Err(FileHostError::UnexpectedSinglePair),
