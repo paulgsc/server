@@ -68,6 +68,9 @@ pub enum FileHostError {
 	#[error("Sheet Derive error: {0}")]
 	GSheetError(#[from] GSheetDeriveError),
 
+	#[error("GithubAPI error: {0}")]
+	GitHubAPIError(#[from] sdk::GitHubError),
+
 	#[error("Drive error: {0}")]
 	DriveError(#[from] sdk::DriveError),
 
@@ -110,6 +113,7 @@ impl FileHostError {
 			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::DriveError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::GSheetError(_) => StatusCode::UNPROCESSABLE_ENTITY,
+			Self::GitHubAPIError(_) => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::ResponseBuildError(_) => StatusCode::INTERNAL_SERVER_ERROR,

@@ -115,6 +115,10 @@ pub struct Config {
 	/// OBS Websocket Server Password
 	#[arg(long, env = "OBS_WEBSOCKET_PWD")]
 	pub obs_password: String,
+
+	/// GITHUB API SECRET TOKEN
+	#[arg(long, env = "GITHUB_API_TOKEN")]
+	pub github_token: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
