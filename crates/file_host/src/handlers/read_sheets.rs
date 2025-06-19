@@ -278,7 +278,6 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 }
 
 fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
-	log::debug!("stupid data! {:?}", data);
 	data
 		.iter()
 		.skip(1)

@@ -1,13 +1,11 @@
-use axum::{extract::ws::WebSocketUpgrade, response::IntoResponse, Json};
-use obs_websocket::{client, ObsStatus};
+use axum::{
+	extract::{ws::WebSocketUpgrade, State},
+	response::IntoResponse,
+};
+use obs_websocket::ObsWebSocketWithBroadcast;
+use std::sync::Arc;
 
 #[axum::debug_handler]
-pub async fn get_obs_status() -> Json<ObsStatus> {
-	let status = client().get_status().await;
-	Json(status)
-}
-
-#[axum::debug_handler]
-pub async fn websocket_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-	client().websocket_handler(ws)
+pub async fn websocket_handler(ws: WebSocketUpgrade, State(client): State<Arc<ObsWebSocketWithBroadcast>>) -> impl IntoResponse {
+	client.websocket_handler(ws)
 }

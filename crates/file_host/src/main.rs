@@ -2,7 +2,8 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_image, github::get_repos, obs::get_obs_server, sheets::get_sheets};
+use crate::handlers::obs::websocket_handler;
+use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets};
 use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
@@ -14,7 +15,7 @@ use file_host::{
 	CacheStore,
 };
 use file_host::{AppState, Config};
-use obs_websocket::{client, ObsConfig};
+use obs_websocket::{create_obs_client_with_broadcast, ObsConfig};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -38,15 +39,18 @@ async fn main() -> Result<()> {
 		password: context.obs_password.clone(),
 	};
 
-	client().update_config(obs_config).await;
-	client().start();
+	let client = Arc::new(create_obs_client_with_broadcast(obs_config));
+	let obs_start = client.clone();
+	tokio::spawn(async move {
+		obs_start.start();
+	});
+	let obs_app = Router::new().route("/ws/obs", get(websocket_handler)).with_state(client.clone());
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(get_repos(context.clone())?)
-		.merge(ws_state.router())
-		.merge(get_obs_server());
+		.merge(ws_state.router());
 
 	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
 		Arc::new(SlidingWindowRateLimiter::new(context.clone())),
@@ -58,6 +62,7 @@ async fn main() -> Result<()> {
 	let app = Router::new()
 		.merge(protected_routes)
 		.merge(public_routes)
+		.merge(obs_app)
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
 
 	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
