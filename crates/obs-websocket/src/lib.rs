@@ -9,20 +9,16 @@ mod messages;
 use auth::authenticate;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
-use futures_util::{
-	sink::SinkExt,
-	stream::{SplitSink, SplitStream, StreamExt},
-};
+use futures_util::{sink::SinkExt, stream::StreamExt};
 use messages::{fetch_init_state, process_obs_message, ObsEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
 use tracing::{error, info, warn};
 
 /// Configuration for the OBS WebSocket connection
@@ -76,13 +72,18 @@ impl ObsStatus {
 	}
 }
 
+enum OBSCommand {
+	SendRequest(serde_json::Value),
+	Disconnect,
+}
+
 /// Core OBS WebSocket client - usable by both daemon and Axum server
 pub struct ObsWebSocket {
 	config: Arc<RwLock<ObsConfig>>,
 	status: Arc<RwLock<ObsStatus>>,
-	_stream: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-	sink: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>>,
-	stream_part: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
+	command_tx: Option<tokio::sync::mpsc::UnboundedSender<OBSCommand>>,
+	event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ObsEvent>>,
+	task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ObsWebSocket {
@@ -92,13 +93,13 @@ impl ObsWebSocket {
 		Self {
 			config: Arc::new(RwLock::new(config)),
 			status: Arc::new(RwLock::new(ObsStatus::default())),
-			_stream: None,
-			sink: None,
-			stream_part: None,
+			command_tx: None,
+			event_rx: None,
+			task_handle: None,
 		}
 	}
 
-	/// Connect to OBS WebSocket
+	/// Connect with integrated polling - single connection approach
 	pub async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let config = self.config.read().await;
 		let url = format!("ws://{}:{}", config.host, config.port);
@@ -106,39 +107,121 @@ impl ObsWebSocket {
 		info!("Connecting to OBS WebSocket at {}", url);
 
 		let (ws_stream, _) = connect_async(url).await?;
-		let (sink, stream) = ws_stream.split();
-
-		self.sink = Some(sink);
-		self.stream_part = Some(stream);
+		let (mut sink, mut stream) = ws_stream.split();
 
 		// Handle authentication
-		if let (Some(ref mut sink), Some(ref mut stream)) = (&mut self.sink, &mut self.stream_part) {
-			authenticate(&config.password, sink, stream).await?;
-			fetch_init_state(sink).await?;
-		}
+		authenticate(&config.password, &mut sink, &mut stream).await?;
+		fetch_init_state(&mut sink).await?;
 
-		info!("Connected to OBS WebSocket");
+		// Create channels for communication
+		let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<OBSCommand>();
+		let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<ObsEvent>();
+
+		let status = Arc::clone(&self.status);
+
+		// Single background task that handles both sending and receiving
+		tokio::spawn(async move {
+			let mut interval = interval(Duration::from_secs(1));
+			let mut request_id = 0;
+
+			loop {
+				tokio::select! {
+					// Handle periodic polling
+					_ = interval.tick() => {
+						request_id += 1;
+
+						let requests = vec![
+							json!({
+								"op": 6,
+								"d": {
+									"requestType": "GetStreamStatus",
+									"requestId": format!("stream-{}", request_id)
+								}
+							}),
+							json!({
+								"op": 6,
+								"d": {
+									"requestType": "GetRecordStatus",
+									"requestId": format!("recording-{}", request_id)
+								}
+							})
+						];
+
+						for req in requests {
+							if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
+								error!("Failed to send request: {}", e);
+								return;
+							}
+						}
+
+						if let Err(e) = sink.flush().await {
+							error!("Failed to flush: {}", e);
+							return;
+						}
+					}
+
+					// Handle manual commands from user
+					Some(cmd) = cmd_rx.recv() => {
+						match cmd {
+							OBSCommand::SendRequest(req) => {
+								if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
+									error!("Failed to send manual request: {}", e);
+									return;
+								}
+								if let Err(e) = sink.flush().await {
+									error!("Failed to flush sink: {}", e);
+									return;
+								}
+							}
+							OBSCommand::Disconnect => {
+								info!("Received disconnect command");
+								return;
+							}
+						}
+					}
+
+					// Handle incoming messages
+					msg = stream.next() => {
+						match msg {
+							Some(Ok(TungsteniteMessage::Text(text))) => {
+								if let Ok(event) = process_obs_message(text.to_string(), status.clone()).await {
+									let _ = event_tx.send(event);
+								}
+							}
+							Some(Ok(TungsteniteMessage::Close(_))) => {
+								error!("Connection closed");
+								return;
+							}
+							Some(Err(e)) => {
+								error!("WebSocket error: {}", e);
+								return;
+							}
+							None => {
+								error!("Stream ended");
+								return;
+							}
+							_ => continue,
+						}
+					}
+				}
+			}
+		});
+
+		self.command_tx = Some(cmd_tx);
+		self.event_rx = Some(event_rx);
+
+		info!("Connected to OBS WebSocket with integrated polling");
 		Ok(())
 	}
 
 	/// Get the next event from OBS
 	pub async fn next_event(&mut self) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
-		if let Some(ref mut stream) = self.stream_part {
-			while let Some(message) = stream.next().await {
-				match message? {
-					TungsteniteMessage::Text(text) => {
-						if let Ok(event) = process_obs_message(text.to_string(), self.status.clone()).await {
-							return Ok(event);
-						}
-					}
-					TungsteniteMessage::Close(_) => {
-						return Err("Connection closed".into());
-					}
-					_ => continue,
-				}
+		if let Some(ref mut rx) = self.event_rx {
+			if let Some(event) = rx.recv().await {
+				return Ok(event);
 			}
 		}
-		Err("No stream available".into())
+		Err("No event receiver available or connection closed".into())
 	}
 
 	/// Get current status
@@ -163,57 +246,30 @@ impl ObsWebSocket {
 
 	/// Send a request to OBS
 	pub async fn send_request(&mut self, request: serde_json::Value) -> Result<(), Box<dyn Error + Send + Sync>> {
-		if let Some(ref mut sink) = self.sink {
-			sink.send(TungsteniteMessage::Text(request.to_string().into())).await?;
-			sink.flush().await?;
+		if let Some(ref tx) = self.command_tx {
+			tx.send(OBSCommand::SendRequest(request))?;
+			Ok(())
+		} else {
+			Err("Not connected".into())
 		}
-		Ok(())
-	}
-
-	/// Start status polling
-	pub async fn start_status_polling(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-		let mut interval = interval(Duration::from_secs(1));
-		let mut request_id = 0;
-
-		loop {
-			interval.tick().await;
-			request_id += 1;
-
-			// Request stream status
-			let status_req = json!({
-				"op": 6,
-				"d": {
-					"requestType": "GetStreamStatus",
-					"requestId": format!("stream-{}", request_id)
-				}
-			});
-
-			if let Err(e) = self.send_request(status_req).await {
-				error!("Failed to send stream status request: {}", e);
-				break;
-			}
-
-			// Request recording status
-			let recording_req = json!({
-				"op": 6,
-				"d": {
-					"requestType": "GetRecordStatus",
-					"requestId": format!("recording-{}", request_id)
-				}
-			});
-
-			if let Err(e) = self.send_request(recording_req).await {
-				error!("Failed to send recording status request: {}", e);
-				break;
-			}
-		}
-
-		Ok(())
 	}
 
 	/// Check if connection is alive
 	pub fn is_connected(&self) -> bool {
-		self.sink.is_some() && self.stream_part.is_some()
+		self.command_tx.is_some() && self.event_rx.is_some() && self.task_handle.as_ref().map_or(false, |h| !h.is_finished())
+	}
+
+	/// Disconnect and cleanup
+	pub async fn disconnect(&mut self) {
+		if let Some(tx) = self.command_tx.take() {
+			let _ = tx.send(OBSCommand::Disconnect);
+		}
+
+		if let Some(handle) = self.task_handle.take() {
+			let _ = handle.await;
+		}
+
+		self.event_rx = None;
 	}
 }
 
@@ -285,14 +341,46 @@ impl ObsWebSocketWithBroadcast {
 		})
 	}
 
-	/// Start the client with automatic reconnection and broadcasting
+	/// Start the event handling loop with broadcasting
 	pub fn start(&self) {
 		let broadcaster = self.broadcaster.clone();
+		let status_ref = self.inner.get_status_ref();
 		let config = self.inner.config.clone();
-		let status = self.inner.status.clone();
 
 		tokio::spawn(async move {
-			obs_websocket_client_with_broadcast(config, status, broadcaster).await;
+			loop {
+				let mut obs_client = ObsWebSocket::new(config.read().await.clone());
+
+				match obs_client.connect().await {
+					Ok(_) => {
+						info!("Connected to OBS WebSocket");
+
+						// Event handling loop
+						while obs_client.is_connected() {
+							match obs_client.next_event().await {
+								Ok(event) => {
+									if event.should_broadcast() {
+										let status = status_ref.read().await.clone();
+										if let Err(e) = broadcaster.broadcast(status).await {
+											error!("Failed to broadcast status: {}", e);
+										}
+									}
+								}
+								Err(e) => {
+									error!("OBS WebSocket error: {}", e);
+									break;
+								}
+							}
+						}
+					}
+					Err(e) => {
+						error!("Failed to connect to OBS WebSocket: {}", e);
+					}
+				}
+
+				warn!("OBS connection lost, reconnecting in 5 seconds...");
+				tokio::time::sleep(Duration::from_secs(5)).await;
+			}
 		});
 	}
 }
@@ -359,56 +447,6 @@ async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadc
 	});
 
 	let _ = tokio::join!(send_task, recv_task);
-}
-
-// Background task for broadcast-enabled client
-async fn obs_websocket_client_with_broadcast(config: Arc<RwLock<ObsConfig>>, status: Arc<RwLock<ObsStatus>>, broadcaster: async_broadcast::Sender<ObsStatus>) {
-	info!("Started OBS WebSocket with broadcast...");
-	let mut reconnect_interval = interval(Duration::from_secs(5));
-
-	loop {
-		reconnect_interval.tick().await;
-
-		let config_snapshot = config.read().await.clone();
-		let mut obs_client = ObsWebSocket::new(config_snapshot);
-
-		match obs_client.connect().await {
-			Ok(_) => {
-				info!("Connected to OBS WebSocket");
-
-				// Start status polling in background
-				let mut polling_client = ObsWebSocket::new(obs_client.get_config().await);
-				let _ = polling_client.connect().await;
-
-				tokio::spawn(async move {
-					let _ = polling_client.start_status_polling().await;
-				});
-
-				// Main event loop
-				loop {
-					match obs_client.next_event().await {
-						Ok(event) => {
-							if event.should_broadcast() {
-								let status_snapshot = status.read().await.clone();
-								if let Err(e) = broadcaster.broadcast(status_snapshot).await {
-									error!("Failed to broadcast status: {}", e);
-								}
-							}
-						}
-						Err(e) => {
-							error!("OBS WebSocket error: {}", e);
-							break;
-						}
-					}
-				}
-			}
-			Err(e) => {
-				error!("Failed to connect to OBS WebSocket: {}", e);
-			}
-		}
-
-		warn!("OBS connection lost, reconnecting in 5 seconds...");
-	}
 }
 
 /// Simple client factory for daemon use

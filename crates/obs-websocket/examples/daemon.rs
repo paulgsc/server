@@ -9,6 +9,7 @@ async fn main() {
 
 	// Simple event loop
 	loop {
+		println!("is connection alive: {}", obs_client.is_connected());
 		match obs_client.next_event().await {
 			Ok(event) => {
 				// React to OBS events (launch GUI, etc.)
