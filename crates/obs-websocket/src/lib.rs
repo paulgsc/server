@@ -5,19 +5,19 @@
 
 mod auth;
 mod messages;
+mod polling;
 
 use auth::authenticate;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use messages::{fetch_init_state, process_obs_message, ObsEvent};
+use messages::{fetch_init_state, process_obs_message, ObsEvent, ObsStats};
+use polling::{ObsPollingManager, ObsRequestBuilder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tokio::time::interval;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
 use tracing::{error, info, warn};
 
@@ -29,8 +29,7 @@ pub struct ObsConfig {
 	pub password: String,
 }
 
-/// Current status of OBS
-// TODO: THIS STRUCT MAYBE BETTER NAME, MAYBE WE ALREADY GET THIS FIELDS FOR FREE!
+/// Current status of OBS - Extended with more comprehensive state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObsStatus {
 	pub streaming: bool,
@@ -39,6 +38,16 @@ pub struct ObsStatus {
 	pub recording_timecode: String,
 	pub scenes: Vec<String>,
 	pub current_scene: String,
+	pub sources: Vec<String>,
+	pub inputs: Vec<String>,
+	pub virtual_camera: bool,
+	pub replay_buffer: bool,
+	pub studio_mode: bool,
+	pub current_profile: String,
+	pub current_collection: String,
+	pub current_transition: String,
+	pub version: String,
+	pub stats: ObsStats,
 }
 
 impl Default for ObsConfig {
@@ -60,6 +69,16 @@ impl Default for ObsStatus {
 			recording_timecode: "00:00:00.000".to_string(),
 			scenes: Vec::new(),
 			current_scene: "".to_string(),
+			sources: Vec::new(),
+			inputs: Vec::new(),
+			virtual_camera: false,
+			replay_buffer: false,
+			studio_mode: false,
+			current_profile: "".to_string(),
+			current_collection: "".to_string(),
+			current_transition: "".to_string(),
+			version: "".to_string(),
+			stats: ObsStats::default(),
 		}
 	}
 }
@@ -67,12 +86,23 @@ impl Default for ObsStatus {
 impl ObsStatus {
 	/// Check if two status instances are different enough to warrant broadcasting
 	pub fn has_meaningful_changes(&self, other: &ObsStatus) -> bool {
-		self.streaming != other.streaming || self.recording != other.recording || self.current_scene != other.current_scene || self.scenes != other.scenes
-		// Note: We don't compare timecodes as they change frequently
+		self.streaming != other.streaming
+			|| self.recording != other.recording
+			|| self.current_scene != other.current_scene
+			|| self.scenes != other.scenes
+			|| self.sources != other.sources
+			|| self.inputs != other.inputs
+			|| self.virtual_camera != other.virtual_camera
+			|| self.replay_buffer != other.replay_buffer
+			|| self.studio_mode != other.studio_mode
+			|| self.current_profile != other.current_profile
+			|| self.current_collection != other.current_collection
+			|| self.current_transition != other.current_transition
+		// Note: We don't compare timecodes and stats as they change frequently
 	}
 }
 
-enum OBSCommand {
+pub enum OBSCommand {
 	SendRequest(serde_json::Value),
 	Disconnect,
 }
@@ -84,6 +114,7 @@ pub struct ObsWebSocket {
 	command_tx: Option<tokio::sync::mpsc::UnboundedSender<OBSCommand>>,
 	event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ObsEvent>>,
 	task_handle: Option<tokio::task::JoinHandle<()>>,
+	request_builder: ObsRequestBuilder,
 }
 
 impl ObsWebSocket {
@@ -96,10 +127,11 @@ impl ObsWebSocket {
 			command_tx: None,
 			event_rx: None,
 			task_handle: None,
+			request_builder: ObsRequestBuilder::new(),
 		}
 	}
 
-	/// Connect with integrated polling - single connection approach
+	/// Connect with comprehensive polling using the new polling module
 	pub async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let config = self.config.read().await;
 		let url = format!("ws://{}:{}", config.host, config.port);
@@ -114,103 +146,55 @@ impl ObsWebSocket {
 		fetch_init_state(&mut sink).await?;
 
 		// Create channels for communication
-		let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<OBSCommand>();
+		let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<OBSCommand>();
 		let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<ObsEvent>();
 
 		let status = Arc::clone(&self.status);
 
-		// Single background task that handles both sending and receiving
-		tokio::spawn(async move {
-			let mut interval = interval(Duration::from_secs(1));
-			let mut request_id = 0;
+		// Start the comprehensive polling manager
+		let polling_manager = ObsPollingManager::new();
+		let polling_task = tokio::spawn(async move {
+			polling_manager.start_polling_loop(sink, cmd_rx).await;
+		});
 
-			loop {
-				tokio::select! {
-					// Handle periodic polling
-					_ = interval.tick() => {
-						request_id += 1;
-
-						let requests = vec![
-							json!({
-								"op": 6,
-								"d": {
-									"requestType": "GetStreamStatus",
-									"requestId": format!("stream-{}", request_id)
-								}
-							}),
-							json!({
-								"op": 6,
-								"d": {
-									"requestType": "GetRecordStatus",
-									"requestId": format!("recording-{}", request_id)
-								}
-							})
-						];
-
-						for req in requests {
-							if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
-								error!("Failed to send request: {}", e);
-								return;
-							}
-						}
-
-						if let Err(e) = sink.flush().await {
-							error!("Failed to flush: {}", e);
-							return;
+		let message_task = tokio::spawn(async move {
+			while let Some(msg) = stream.next().await {
+				match msg {
+					Ok(TungsteniteMessage::Text(text)) => {
+						if let Ok(event) = process_obs_message(text.to_string(), status.clone()).await {
+							let _ = event_tx.send(event);
 						}
 					}
-
-					// Handle manual commands from user
-					Some(cmd) = cmd_rx.recv() => {
-						match cmd {
-							OBSCommand::SendRequest(req) => {
-								if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
-									error!("Failed to send manual request: {}", e);
-									return;
-								}
-								if let Err(e) = sink.flush().await {
-									error!("Failed to flush sink: {}", e);
-									return;
-								}
-							}
-							OBSCommand::Disconnect => {
-								info!("Received disconnect command");
-								return;
-							}
-						}
+					Ok(TungsteniteMessage::Close(_)) => {
+						error!("Connection closed");
+						break;
 					}
-
-					// Handle incoming messages
-					msg = stream.next() => {
-						match msg {
-							Some(Ok(TungsteniteMessage::Text(text))) => {
-								if let Ok(event) = process_obs_message(text.to_string(), status.clone()).await {
-									let _ = event_tx.send(event);
-								}
-							}
-							Some(Ok(TungsteniteMessage::Close(_))) => {
-								error!("Connection closed");
-								return;
-							}
-							Some(Err(e)) => {
-								error!("WebSocket error: {}", e);
-								return;
-							}
-							None => {
-								error!("Stream ended");
-								return;
-							}
-							_ => continue,
-						}
+					Err(e) => {
+						error!("WebSocket error: {}", e);
+						break;
 					}
+					_ => continue,
+				}
+			}
+		});
+
+		// Combine both tasks
+		let combined_task = tokio::spawn(async move {
+			tokio::select! {
+				_ = polling_task => {
+					error!("Polling task ended");
+				}
+				_ = message_task => {
+					error!("Message processing task ended");
 				}
 			}
 		});
 
 		self.command_tx = Some(cmd_tx);
 		self.event_rx = Some(event_rx);
+		self.task_handle = Some(combined_task);
 
-		info!("Connected to OBS WebSocket with integrated polling");
+		info!("Connected to OBS WebSocket with comprehensive polling");
 		Ok(())
 	}
 
@@ -252,6 +236,66 @@ impl ObsWebSocket {
 		} else {
 			Err("Not connected".into())
 		}
+	}
+
+	/// Start streaming
+	pub async fn start_stream(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.start_stream();
+		self.send_request(request).await
+	}
+
+	/// Stop streaming
+	pub async fn stop_stream(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.stop_stream();
+		self.send_request(request).await
+	}
+
+	/// Start recording
+	pub async fn start_recording(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.start_recording();
+		self.send_request(request).await
+	}
+
+	/// Stop recording
+	pub async fn stop_recording(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.stop_recording();
+		self.send_request(request).await
+	}
+
+	/// Switch to a specific scene
+	pub async fn switch_scene(&mut self, scene_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.switch_scene(scene_name);
+		self.send_request(request).await
+	}
+
+	/// Mute/unmute audio source
+	pub async fn set_input_mute(&mut self, input_name: &str, muted: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.set_input_mute(input_name, muted);
+		self.send_request(request).await
+	}
+
+	/// Set audio volume
+	pub async fn set_input_volume(&mut self, input_name: &str, volume: f64) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.set_input_volume(input_name, volume);
+		self.send_request(request).await
+	}
+
+	/// Toggle studio mode
+	pub async fn toggle_studio_mode(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.toggle_studio_mode();
+		self.send_request(request).await
+	}
+
+	/// Toggle virtual camera
+	pub async fn toggle_virtual_camera(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.toggle_virtual_camera();
+		self.send_request(request).await
+	}
+
+	/// Toggle replay buffer
+	pub async fn toggle_replay_buffer(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		let request = self.request_builder.toggle_replay_buffer();
+		self.send_request(request).await
 	}
 
 	/// Check if connection is alive
@@ -382,6 +426,47 @@ impl ObsWebSocketWithBroadcast {
 				tokio::time::sleep(Duration::from_secs(5)).await;
 			}
 		});
+	}
+
+	/// Forward convenience methods to inner client
+	pub async fn start_stream(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.start_stream().await
+	}
+
+	pub async fn stop_stream(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.stop_stream().await
+	}
+
+	pub async fn start_recording(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.start_recording().await
+	}
+
+	pub async fn stop_recording(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.stop_recording().await
+	}
+
+	pub async fn switch_scene(&mut self, scene_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.switch_scene(scene_name).await
+	}
+
+	pub async fn set_input_mute(&mut self, input_name: &str, muted: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.set_input_mute(input_name, muted).await
+	}
+
+	pub async fn set_input_volume(&mut self, input_name: &str, volume: f64) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.set_input_volume(input_name, volume).await
+	}
+
+	pub async fn toggle_studio_mode(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.toggle_studio_mode().await
+	}
+
+	pub async fn toggle_virtual_camera(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.toggle_virtual_camera().await
+	}
+
+	pub async fn toggle_replay_buffer(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.toggle_replay_buffer().await
 	}
 }
 
