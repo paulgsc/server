@@ -7,6 +7,8 @@ mod auth;
 mod messages;
 mod polling;
 
+pub use polling::{ObsRequestType, PollingFrequency};
+
 use auth::authenticate;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -132,7 +134,7 @@ impl ObsWebSocket {
 	}
 
 	/// Connect with comprehensive polling using the new polling module
-	pub async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+	pub async fn connect(&mut self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let config = self.config.read().await;
 		let url = format!("ws://{}:{}", config.host, config.port);
 
@@ -152,7 +154,7 @@ impl ObsWebSocket {
 		let status = Arc::clone(&self.status);
 
 		// Start the comprehensive polling manager
-		let polling_manager = ObsPollingManager::new();
+		let polling_manager = ObsPollingManager::from_request_slice(r);
 		let polling_task = tokio::spawn(async move {
 			polling_manager.start_polling_loop(sink, cmd_rx).await;
 		});
@@ -336,8 +338,8 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Connect to OBS
-	pub async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-		self.inner.connect().await
+	pub async fn connect(&mut self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
+		self.inner.connect(r).await
 	}
 
 	/// Handle the next event and broadcast status updates
@@ -386,7 +388,7 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Start the event handling loop with broadcasting
-	pub fn start(&self) {
+	pub fn start(&self, r: Box<[(ObsRequestType, PollingFrequency)]>) {
 		let broadcaster = self.broadcaster.clone();
 		let status_ref = self.inner.get_status_ref();
 		let config = self.inner.config.clone();
@@ -395,7 +397,7 @@ impl ObsWebSocketWithBroadcast {
 			loop {
 				let mut obs_client = ObsWebSocket::new(config.read().await.clone());
 
-				match obs_client.connect().await {
+				match obs_client.connect(&r).await {
 					Ok(_) => {
 						info!("Connected to OBS WebSocket");
 

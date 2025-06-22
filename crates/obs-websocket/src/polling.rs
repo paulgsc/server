@@ -8,6 +8,161 @@ use tracing::{error, info};
 
 pub type WsSink = SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, TungsteniteMessage>;
 
+/// Polling frequency levels
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollingFrequency {
+	High,   // Every second
+	Medium, // Every 5 seconds
+	Low,    // Every 30 seconds
+}
+
+/// All available OBS request types with their parameters
+#[derive(Debug, Clone)]
+pub enum ObsRequestType {
+	// Stream and Recording
+	StreamStatus,
+	StartStream,
+	StopStream,
+	RecordStatus,
+	StartRecord,
+	StopRecord,
+
+	// Scene Management
+	SceneList,
+	CurrentScene,
+	SetCurrentProgramScene(String),
+
+	// Source Management
+	SourcesList,
+	InputsList,
+
+	// Audio Management
+	InputMute(String),
+	SetInputMute(String, String),
+	InputVolume(String),
+	SetInputVolume(String, String),
+
+	// Profile and Collection
+	ProfileList,
+	CurrentProfile,
+	SceneCollectionList,
+	CurrentSceneCollection,
+
+	// Virtual Camera
+	VirtualCamStatus,
+	ToggleVirtualCam,
+
+	// Replay Buffer
+	ReplayBufferStatus,
+	ToggleReplayBuffer,
+
+	// Studio Mode
+	StudioModeStatus,
+	ToggleStudioMode,
+
+	// Stats
+	Stats,
+
+	// Transitions
+	CurrentTransition,
+	TransitionList,
+
+	// Hotkeys
+	HotkeyList,
+
+	// Version
+	Version,
+}
+
+impl ObsRequestType {
+	fn to_polling_request(&self) -> PollingRequest {
+		match self {
+			Self::StreamStatus => PollingRequest::new("GetStreamStatus", "stream"),
+			Self::StartStream => PollingRequest::new("StartStream", "start_stream"),
+			Self::StopStream => PollingRequest::new("StopStream", "stop_stream"),
+			Self::RecordStatus => PollingRequest::new("GetRecordStatus", "record"),
+			Self::StartRecord => PollingRequest::new("StartRecord", "start_record"),
+			Self::StopRecord => PollingRequest::new("StopRecord", "stop_record"),
+			Self::SceneList => PollingRequest::new("GetSceneList", "scenes"),
+			Self::CurrentScene => PollingRequest::new("GetCurrentProgramScene", "current_scene"),
+			Self::SetCurrentProgramScene(scene_name) => PollingRequest::new("GetCurrentProgramScene", "current_scene").with_data(json!({"sceneName": scene_name})),
+			Self::SourcesList => PollingRequest::new("GetSourcesList", "sources"),
+			Self::InputsList => PollingRequest::new("GetInputList", "inputs"),
+			Self::InputMute(input_name) => PollingRequest::new("GetInputMute", "audio_mute").with_data(json!({ "inputName": input_name })),
+			Self::SetInputMute(input_name, muted) => PollingRequest::new("SetInputMute", "set_mute").with_data(json!({ "inputName": input_name, "inputMuted": muted  })),
+			Self::InputVolume(input_name) => PollingRequest::new("GetInputVolume", "audio_volume").with_data(json!({ "inputName": input_name })),
+			Self::SetInputVolume(input_name, volume) => PollingRequest::new("SetInputVolume", "set_volume").with_data(json!({ "inputName": input_name, "inputeVolume": volume  })),
+			Self::ProfileList => PollingRequest::new("GetProfileList", "profiles"),
+			Self::CurrentProfile => PollingRequest::new("GetCurrentProfile", "current_profile"),
+			Self::SceneCollectionList => PollingRequest::new("GetSceneCollectionList", "collections"),
+			Self::CurrentSceneCollection => PollingRequest::new("GetCurrentSceneCollection", "current_collection"),
+			Self::VirtualCamStatus => PollingRequest::new("GetVirtualCamStatus", "virtual_cam"),
+			Self::ToggleVirtualCam => PollingRequest::new("ToggleVirtualCam", "toggle_vcam"),
+			Self::ReplayBufferStatus => PollingRequest::new("GetReplayBufferStatus", "replay_buffer"),
+			Self::ToggleReplayBuffer => PollingRequest::new("ToggleReplayBuffer", "toggle_replay"),
+			Self::StudioModeStatus => PollingRequest::new("GetStudioModeEnabled", "studio_mode"),
+			Self::ToggleStudioMode => PollingRequest::new("ToggleStudioMode", "toggle_studio"),
+			Self::Stats => PollingRequest::new("GetStats", "stats"),
+			Self::CurrentTransition => PollingRequest::new("GetCurrentSceneTransition", "current_transition"),
+			Self::TransitionList => PollingRequest::new("GetSceneTransitionList", "transitions"),
+			Self::HotkeyList => PollingRequest::new("GetHotkeyList", "hotkeys"),
+			Self::Version => PollingRequest::new("GetVersion", "version"),
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct PollingRequest {
+	pub request_type: String,
+	pub prefix: String,
+	pub request_data: Option<serde_json::Value>,
+}
+
+impl PollingRequest {
+	pub fn new(request_type: &str, prefix: &str) -> Self {
+		PollingRequest {
+			request_type: request_type.to_string(),
+			prefix: prefix.to_string(),
+			request_data: None,
+		}
+	}
+
+	pub fn with_data(mut self, data: serde_json::Value) -> Self {
+		self.request_data = Some(data);
+		self
+	}
+}
+
+/// Configuration automatically built from frequency-tagged requests
+#[derive(Debug, Clone)]
+pub struct PollingConfig {
+	pub high_frequency_requests: Vec<PollingRequest>,
+	pub medium_frequency_requests: Vec<PollingRequest>,
+	pub low_frequency_requests: Vec<PollingRequest>,
+}
+
+impl PollingConfig {
+	/// Create configuration from slice of (RequestType, Frequency) tuples
+	pub fn from_request_slice(requests: &[(ObsRequestType, PollingFrequency)]) -> Self {
+		let mut config = Self {
+			high_frequency_requests: Vec::new(),
+			medium_frequency_requests: Vec::new(),
+			low_frequency_requests: Vec::new(),
+		};
+
+		for (request_type, frequency) in requests {
+			let polling_request = request_type.to_polling_request();
+			match frequency {
+				PollingFrequency::High => config.high_frequency_requests.push(polling_request),
+				PollingFrequency::Medium => config.medium_frequency_requests.push(polling_request),
+				PollingFrequency::Low => config.low_frequency_requests.push(polling_request),
+			}
+		}
+
+		config
+	}
+}
+
 /// Comprehensive OBS polling requests
 #[derive(Debug, Clone)]
 pub struct ObsPollingRequests {
@@ -24,127 +179,55 @@ impl ObsPollingRequests {
 		self.request_id
 	}
 
-	// /// Generate all polling requests for comprehensive OBS monitoring
-	// pub fn generate_polling_requests(&mut self) -> Vec<serde_json::Value> {
-	// 	vec![
-	// 		// Stream and Recording Status
-	// 		self.create_request("GetStreamStatus", "stream"),
-	// 		self.create_request("GetRecordStatus", "record"),
-	// 		// Scene Management
-	// 		self.create_request("GetSceneList", "scenes"),
-	// 		self.create_request("GetCurrentProgramScene", "current_scene"),
-	// 		// Source Management
-	// 		self.create_request("GetSourcesList", "sources"),
-	// 		self.create_request("GetInputList", "inputs"),
-	// 		// Audio Management
-	// 		self.create_request("GetInputMute", "audio_mute"),
-	// 		self.create_request("GetInputVolume", "audio_volume"),
-	// 		// Profile and Collection
-	// 		self.create_request("GetProfileList", "profiles"),
-	// 		self.create_request("GetCurrentProfile", "current_profile"),
-	// 		self.create_request("GetSceneCollectionList", "collections"),
-	// 		self.create_request("GetCurrentSceneCollection", "current_collection"),
-	// 		// Virtual Camera
-	// 		self.create_request("GetVirtualCamStatus", "virtual_cam"),
-	// 		// Replay Buffer
-	// 		self.create_request("GetReplayBufferStatus", "replay_buffer"),
-	// 		// Studio Mode
-	// 		self.create_request("GetStudioModeEnabled", "studio_mode"),
-	// 		// Stats
-	// 		self.create_request("GetStats", "stats"),
-	// 		// Transitions
-	// 		self.create_request("GetCurrentSceneTransition", "current_transition"),
-	// 		self.create_request("GetSceneTransitionList", "transitions"),
-	// 		// Filters (we'll get these per source later)
-	// 		// self.create_request("GetSourceFilterList", "filters"),
-
-	// 		// Hotkeys
-	// 		self.create_request("GetHotkeyList", "hotkeys"),
-	// 		// Version info (less frequent)
-	// 		self.create_request("GetVersion", "version"),
-	// 	]
-	// }
-
-	/// Generate high-frequency requests (every second)
-	pub fn generate_high_frequency_requests(&mut self) -> Vec<serde_json::Value> {
-		vec![
-			self.create_request("GetStreamStatus", "stream"),
-			self.create_request("GetRecordStatus", "record"),
-			self.create_request("GetCurrentProgramScene", "current_scene"),
-			self.create_request("GetStats", "stats"),
-		]
+	/// Generate requests from a list of PollingRequest configs
+	pub fn generate_requests(&mut self, requests: &[PollingRequest]) -> Vec<serde_json::Value> {
+		requests.iter().map(|req| self.create_request(req)).collect()
 	}
 
-	/// Generate medium-frequency requests (every 5 seconds)
-	pub fn generate_medium_frequency_requests(&mut self) -> Vec<serde_json::Value> {
-		vec![
-			self.create_request("GetSceneList", "scenes"),
-			self.create_request("GetSourcesList", "sources"),
-			self.create_request("GetInputList", "inputs"),
-			self.create_request("GetVirtualCamStatus", "virtual_cam"),
-			self.create_request("GetReplayBufferStatus", "replay_buffer"),
-			self.create_request("GetStudioModeEnabled", "studio_mode"),
-		]
-	}
-
-	/// Generate low-frequency requests (every 30 seconds)
-	pub fn generate_low_frequency_requests(&mut self) -> Vec<serde_json::Value> {
-		vec![
-			self.create_request("GetProfileList", "profiles"),
-			self.create_request("GetCurrentProfile", "current_profile"),
-			self.create_request("GetSceneCollectionList", "collections"),
-			self.create_request("GetCurrentSceneCollection", "current_collection"),
-			self.create_request("GetCurrentSceneTransition", "current_transition"),
-			self.create_request("GetSceneTransitionList", "transitions"),
-			self.create_request("GetHotkeyList", "hotkeys"),
-			self.create_request("GetVersion", "version"),
-		]
-	}
-
-	fn create_request(&mut self, request_type: &str, prefix: &str) -> serde_json::Value {
+	fn create_request(&mut self, request: &PollingRequest) -> serde_json::Value {
 		let id = self.next_id();
-		json!({
+		let mut json_req = json!({
 			"op": 6,
 			"d": {
-				"requestType": request_type,
-				"requestId": format!("{}-{}", prefix, id)
+				"requestType": request.request_type,
+				"requestId": format!("{}-{}", request.prefix, id)
 			}
-		})
-	}
+		});
 
-	/// Create a request with specific data
-	pub fn create_request_with_data(&mut self, request_type: &str, prefix: &str, data: serde_json::Value) -> serde_json::Value {
-		let id = self.next_id();
-		json!({
-			"op": 6,
-			"d": {
-				"requestType": request_type,
-				"requestId": format!("{}-{}", prefix, id),
-				"requestData": data
-			}
-		})
+		if let Some(data) = &request.request_data {
+			json_req["d"]["requestData"] = data.clone();
+		}
+
+		json_req
 	}
 }
 
-/// Enhanced polling manager with multiple frequency tiers
+/// Configurable polling manager
 pub struct ObsPollingManager {
 	requests: ObsPollingRequests,
+	config: PollingConfig,
 	high_freq_interval: Duration,
 	medium_freq_interval: Duration,
 	low_freq_interval: Duration,
 }
 
 impl ObsPollingManager {
-	pub fn new() -> Self {
+	pub fn new(config: PollingConfig) -> Self {
 		Self {
 			requests: ObsPollingRequests::new(),
+			config,
 			high_freq_interval: Duration::from_secs(1),   // Every second
 			medium_freq_interval: Duration::from_secs(5), // Every 5 seconds
 			low_freq_interval: Duration::from_secs(30),   // Every 30 seconds
 		}
 	}
 
-	/// Main polling loop with multiple frequency tiers
+	/// Create from a slice of (RequestType, Frequency) tuples
+	pub fn from_request_slice(requests: &[(ObsRequestType, PollingFrequency)]) -> Self {
+		Self::new(PollingConfig::from_request_slice(requests))
+	}
+
+	/// Main polling loop with configurable requests
 	pub async fn start_polling_loop(mut self, mut sink: WsSink, mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<crate::OBSCommand>) {
 		let mut high_freq_timer = interval(self.high_freq_interval);
 		let mut medium_freq_timer = interval(self.medium_freq_interval);
@@ -159,28 +242,34 @@ impl ObsPollingManager {
 			tokio::select! {
 				// High frequency polling (1 second)
 				_ = high_freq_timer.tick() => {
-					let requests = self.requests.generate_high_frequency_requests();
-					if let Err(e) = self.send_requests(&mut sink, requests).await {
-						error!("Failed to send high frequency requests: {}", e);
-						return;
+					if !self.config.high_frequency_requests.is_empty() {
+						let requests = self.requests.generate_requests(&self.config.high_frequency_requests);
+						if let Err(e) = self.send_requests(&mut sink, requests).await {
+							error!("Failed to send high frequency requests: {}", e);
+							return;
+						}
 					}
 				}
 
 				// Medium frequency polling (5 seconds)
 				_ = medium_freq_timer.tick() => {
-					let requests = self.requests.generate_medium_frequency_requests();
-					if let Err(e) = self.send_requests(&mut sink, requests).await {
-						error!("Failed to send medium frequency requests: {}", e);
-						return;
+					if !self.config.medium_frequency_requests.is_empty() {
+						let requests = self.requests.generate_requests(&self.config.medium_frequency_requests);
+						if let Err(e) = self.send_requests(&mut sink, requests).await {
+							error!("Failed to send medium frequency requests: {}", e);
+							return;
+						}
 					}
 				}
 
 				// Low frequency polling (30 seconds)
 				_ = low_freq_timer.tick() => {
-					let requests = self.requests.generate_low_frequency_requests();
-					if let Err(e) = self.send_requests(&mut sink, requests).await {
-						error!("Failed to send low frequency requests: {}", e);
-						return;
+					if !self.config.low_frequency_requests.is_empty() {
+						let requests = self.requests.generate_requests(&self.config.low_frequency_requests);
+						if let Err(e) = self.send_requests(&mut sink, requests).await {
+							error!("Failed to send low frequency requests: {}", e);
+							return;
+						}
 					}
 				}
 
@@ -215,32 +304,6 @@ impl ObsPollingManager {
 		sink.flush().await?;
 		Ok(())
 	}
-
-	// /// Send a single request immediately
-	// pub async fn send_immediate_request(
-	// 	&mut self,
-	// 	sink: &mut WsSink,
-	// 	request_type: &str,
-	// 	prefix: &str,
-	// 	data: Option<serde_json::Value>,
-	// ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-	// 	let request = if let Some(data) = data {
-	// 		self.requests.create_request_with_data(request_type, prefix, data)
-	// 	} else {
-	// 		self.requests.create_request(request_type, prefix)
-	// 	};
-
-	// 	sink.send(TungsteniteMessage::Text(request.to_string().into())).await?;
-	// 	sink.flush().await?;
-	// 	Ok(())
-	// }
-
-	// /// Customize polling intervals
-	// pub fn set_intervals(&mut self, high: Duration, medium: Duration, low: Duration) {
-	// 	self.high_freq_interval = high;
-	// 	self.medium_freq_interval = medium;
-	// 	self.low_freq_interval = low;
-	// }
 }
 
 /// Utility functions for specific OBS operations
@@ -257,29 +320,29 @@ impl ObsRequestBuilder {
 
 	/// Start streaming
 	pub fn start_stream(&mut self) -> serde_json::Value {
-		self.requests.create_request("StartStream", "start_stream")
+		self.requests.create_request(&ObsRequestType::StartStream.to_polling_request())
 	}
 
 	/// Stop streaming
 	pub fn stop_stream(&mut self) -> serde_json::Value {
-		self.requests.create_request("StopStream", "stop_stream")
+		self.requests.create_request(&ObsRequestType::StopStream.to_polling_request())
 	}
 
 	/// Start recording
 	pub fn start_recording(&mut self) -> serde_json::Value {
-		self.requests.create_request("StartRecord", "start_record")
+		self.requests.create_request(&ObsRequestType::StartRecord.to_polling_request())
 	}
 
 	/// Stop recording
 	pub fn stop_recording(&mut self) -> serde_json::Value {
-		self.requests.create_request("StopRecord", "stop_record")
+		self.requests.create_request(&ObsRequestType::StopRecord.to_polling_request())
 	}
 
 	/// Switch to a specific scene
 	pub fn switch_scene(&mut self, scene_name: &str) -> serde_json::Value {
 		self
 			.requests
-			.create_request_with_data("SetCurrentProgramScene", "switch_scene", json!({ "sceneName": scene_name }))
+			.create_request(&ObsRequestType::SetCurrentProgramScene(scene_name.to_string()).to_polling_request())
 	}
 
 	// /// Set source visibility
@@ -297,40 +360,30 @@ impl ObsRequestBuilder {
 
 	/// Mute/unmute audio source
 	pub fn set_input_mute(&mut self, input_name: &str, muted: bool) -> serde_json::Value {
-		self.requests.create_request_with_data(
-			"SetInputMute",
-			"set_mute",
-			json!({
-				"inputName": input_name,
-				"inputMuted": muted
-			}),
-		)
+		self
+			.requests
+			.create_request(&ObsRequestType::SetInputMute(input_name.to_string(), muted.to_string()).to_polling_request())
 	}
 
 	/// Set audio volume
 	pub fn set_input_volume(&mut self, input_name: &str, volume: f64) -> serde_json::Value {
-		self.requests.create_request_with_data(
-			"SetInputVolume",
-			"set_volume",
-			json!({
-				"inputName": input_name,
-				"inputVolumeDb": volume
-			}),
-		)
+		self
+			.requests
+			.create_request(&ObsRequestType::SetInputVolume(input_name.to_string(), volume.to_string()).to_polling_request())
 	}
 
 	/// Toggle studio mode
 	pub fn toggle_studio_mode(&mut self) -> serde_json::Value {
-		self.requests.create_request("ToggleStudioMode", "toggle_studio")
+		self.requests.create_request(&ObsRequestType::ToggleStudioMode.to_polling_request())
 	}
 
 	/// Start/stop virtual camera
 	pub fn toggle_virtual_camera(&mut self) -> serde_json::Value {
-		self.requests.create_request("ToggleVirtualCam", "toggle_vcam")
+		self.requests.create_request(&ObsRequestType::ToggleVirtualCam.to_polling_request())
 	}
 
 	/// Start/stop replay buffer
 	pub fn toggle_replay_buffer(&mut self) -> serde_json::Value {
-		self.requests.create_request("ToggleReplayBuffer", "toggle_replay")
+		self.requests.create_request(&ObsRequestType::ToggleReplayBuffer.to_polling_request())
 	}
 }
