@@ -3,7 +3,7 @@ mod metrics;
 mod models;
 mod routes;
 use crate::handlers::obs::websocket_handler;
-use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets};
+use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets, tab_metadata::post_now_playing};
 use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
@@ -15,7 +15,7 @@ use file_host::{
 	CacheStore,
 };
 use file_host::{AppState, Config};
-use obs_websocket::{create_obs_client_with_broadcast, ObsConfig};
+use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -39,10 +39,29 @@ async fn main() -> Result<()> {
 		password: context.obs_password.clone(),
 	};
 
+	let polling_requests = [
+		// High frequency - every second
+		(ObsRequestType::StreamStatus, PollingFrequency::High),
+		(ObsRequestType::RecordStatus, PollingFrequency::High),
+		(ObsRequestType::CurrentScene, PollingFrequency::High),
+		(ObsRequestType::Stats, PollingFrequency::High),
+		// Medium frequency - every 5 seconds
+		(ObsRequestType::SceneList, PollingFrequency::Medium),
+		(ObsRequestType::SourcesList, PollingFrequency::Medium),
+		(ObsRequestType::InputsList, PollingFrequency::Medium),
+		(ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
+		(ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
+		(ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
+		// Low frequency - every 30 seconds
+		(ObsRequestType::ProfileList, PollingFrequency::Low),
+		(ObsRequestType::CurrentProfile, PollingFrequency::Low),
+		(ObsRequestType::Version, PollingFrequency::Low),
+	];
+
 	let client = Arc::new(create_obs_client_with_broadcast(obs_config));
 	let obs_start = client.clone();
 	tokio::spawn(async move {
-		obs_start.start();
+		obs_start.start(Box::new(polling_requests));
 	});
 	let obs_app = Router::new().route("/ws/obs", get(websocket_handler)).with_state(client.clone());
 
@@ -50,6 +69,7 @@ async fn main() -> Result<()> {
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(get_repos(context.clone())?)
+		.merge(post_now_playing(context.clone())?)
 		.merge(ws_state.router());
 
 	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
