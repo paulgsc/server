@@ -1,11 +1,8 @@
-use crate::ObsStatus;
 use futures_util::{sink::SinkExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::error::Error;
-use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, MaybeTlsStream};
 use tracing::{debug, info, warn};
 
@@ -219,7 +216,7 @@ pub async fn fetch_init_state(
 }
 
 /// Parse OBS message and return appropriate event
-pub async fn process_obs_message(text: String, status: Arc<RwLock<ObsStatus>>) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
+pub async fn process_obs_message(text: String) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
 	let json: Value = serde_json::from_str(&text)?;
 	let op = json.get("op").and_then(Value::as_u64).unwrap_or(99);
 
@@ -250,11 +247,6 @@ pub async fn process_obs_message(text: String, status: Arc<RwLock<ObsStatus>>) -
 			return Err(format!("Unknown op code: {}", op).into());
 		}
 	};
-
-	// Update status if needed
-	if event.should_broadcast() {
-		update_status_from_event(&event, status).await;
-	}
 
 	Ok(event)
 }
@@ -576,67 +568,4 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 	};
 
 	Ok(event)
-}
-
-/// Update ObsStatus based on the event
-async fn update_status_from_event(event: &ObsEvent, status: Arc<RwLock<ObsStatus>>) {
-	let mut status_guard = status.write().await;
-
-	match event {
-		ObsEvent::StreamStatusResponse { streaming, timecode }
-		| ObsEvent::StreamStateChanged {
-			streaming,
-			timecode: Some(timecode),
-		} => {
-			status_guard.streaming = *streaming;
-			status_guard.stream_timecode = timecode.clone();
-			debug!("Updated stream status: streaming={}, timecode={}", streaming, timecode);
-		}
-		ObsEvent::StreamStateChanged { streaming, timecode: None } => {
-			status_guard.streaming = *streaming;
-			if !streaming {
-				status_guard.stream_timecode = "00:00:00.000".to_string();
-			}
-			debug!("Updated stream status: streaming={}", streaming);
-		}
-		ObsEvent::RecordingStatusResponse { recording, timecode }
-		| ObsEvent::RecordStateChanged {
-			recording,
-			timecode: Some(timecode),
-		} => {
-			status_guard.recording = *recording;
-			status_guard.recording_timecode = timecode.clone();
-			debug!("Updated recording status: recording={}, timecode={}", recording, timecode);
-		}
-		ObsEvent::RecordStateChanged { recording, timecode: None } => {
-			status_guard.recording = *recording;
-			if !recording {
-				status_guard.recording_timecode = "00:00:00.000".to_string();
-			}
-			debug!("Updated recording status: recording={}", recording);
-		}
-		ObsEvent::SceneListResponse { scenes, current_scene } => {
-			status_guard.scenes = scenes.iter().map(|s| s.name.clone()).collect();
-			status_guard.current_scene = current_scene.clone();
-			debug!("Updated scenes: {} scenes, current: {}", scenes.len(), current_scene);
-		}
-		ObsEvent::CurrentSceneResponse { scene_name } | ObsEvent::CurrentProgramSceneChanged { scene_name } => {
-			status_guard.current_scene = scene_name.clone();
-			debug!("Scene changed to: {}", scene_name);
-		}
-		ObsEvent::VirtualCamStatusResponse { active } | ObsEvent::VirtualcamStateChanged { active } => {
-			debug!("Virtual camera status: {}", active);
-		}
-		ObsEvent::ReplayBufferStatusResponse { active } | ObsEvent::ReplayBufferStateChanged { active } => {
-			status_guard.replay_buffer = *active;
-			debug!("Replay buffer status: {}", active);
-		}
-		ObsEvent::StudioModeResponse { enabled } | ObsEvent::StudioModeStateChanged { enabled } => {
-			status_guard.studio_mode = *enabled;
-			debug!("Studio mode: {}", enabled);
-		}
-		_ => {
-			// No status update needed for other events
-		}
-	}
 }

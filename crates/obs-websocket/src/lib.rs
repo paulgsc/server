@@ -7,13 +7,16 @@ mod auth;
 mod messages;
 mod polling;
 
+pub use messages::ObsEvent;
 pub use polling::{ObsRequestType, PollingFrequency};
 
 use auth::authenticate;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::IntoResponse;
-use futures_util::{sink::SinkExt, stream::StreamExt};
-use messages::{fetch_init_state, process_obs_message, ObsEvent, ObsStats};
+use axum::{
+	extract::{ws::WebSocketUpgrade, State},
+	response::IntoResponse,
+};
+use futures_util::stream::StreamExt;
+use messages::{fetch_init_state, process_obs_message};
 use polling::{ObsPollingManager, ObsRequestBuilder};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -31,27 +34,6 @@ pub struct ObsConfig {
 	pub password: String,
 }
 
-/// Current status of OBS - Extended with more comprehensive state
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObsStatus {
-	pub streaming: bool,
-	pub recording: bool,
-	pub stream_timecode: String,
-	pub recording_timecode: String,
-	pub scenes: Vec<String>,
-	pub current_scene: String,
-	pub sources: Vec<String>,
-	pub inputs: Vec<String>,
-	pub virtual_camera: bool,
-	pub replay_buffer: bool,
-	pub studio_mode: bool,
-	pub current_profile: String,
-	pub current_collection: String,
-	pub current_transition: String,
-	pub version: String,
-	pub stats: ObsStats,
-}
-
 impl Default for ObsConfig {
 	fn default() -> Self {
 		Self {
@@ -59,48 +41,6 @@ impl Default for ObsConfig {
 			port: 4455,
 			password: "pwd".to_string(),
 		}
-	}
-}
-
-impl Default for ObsStatus {
-	fn default() -> Self {
-		Self {
-			streaming: false,
-			recording: false,
-			stream_timecode: "00:00:00.000".to_string(),
-			recording_timecode: "00:00:00.000".to_string(),
-			scenes: Vec::new(),
-			current_scene: "".to_string(),
-			sources: Vec::new(),
-			inputs: Vec::new(),
-			virtual_camera: false,
-			replay_buffer: false,
-			studio_mode: false,
-			current_profile: "".to_string(),
-			current_collection: "".to_string(),
-			current_transition: "".to_string(),
-			version: "".to_string(),
-			stats: ObsStats::default(),
-		}
-	}
-}
-
-impl ObsStatus {
-	/// Check if two status instances are different enough to warrant broadcasting
-	pub fn has_meaningful_changes(&self, other: &ObsStatus) -> bool {
-		self.streaming != other.streaming
-			|| self.recording != other.recording
-			|| self.current_scene != other.current_scene
-			|| self.scenes != other.scenes
-			|| self.sources != other.sources
-			|| self.inputs != other.inputs
-			|| self.virtual_camera != other.virtual_camera
-			|| self.replay_buffer != other.replay_buffer
-			|| self.studio_mode != other.studio_mode
-			|| self.current_profile != other.current_profile
-			|| self.current_collection != other.current_collection
-			|| self.current_transition != other.current_transition
-		// Note: We don't compare timecodes and stats as they change frequently
 	}
 }
 
@@ -112,7 +52,6 @@ pub enum OBSCommand {
 /// Core OBS WebSocket client - usable by both daemon and Axum server
 pub struct ObsWebSocket {
 	config: Arc<RwLock<ObsConfig>>,
-	status: Arc<RwLock<ObsStatus>>,
 	command_tx: Option<tokio::sync::mpsc::UnboundedSender<OBSCommand>>,
 	event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ObsEvent>>,
 	task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -125,7 +64,6 @@ impl ObsWebSocket {
 	pub fn new(config: ObsConfig) -> Self {
 		Self {
 			config: Arc::new(RwLock::new(config)),
-			status: Arc::new(RwLock::new(ObsStatus::default())),
 			command_tx: None,
 			event_rx: None,
 			task_handle: None,
@@ -151,8 +89,6 @@ impl ObsWebSocket {
 		let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<OBSCommand>();
 		let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<ObsEvent>();
 
-		let status = Arc::clone(&self.status);
-
 		// Start the comprehensive polling manager
 		let polling_manager = ObsPollingManager::from_request_slice(r);
 		let polling_task = tokio::spawn(async move {
@@ -163,7 +99,7 @@ impl ObsWebSocket {
 			while let Some(msg) = stream.next().await {
 				match msg {
 					Ok(TungsteniteMessage::Text(text)) => {
-						if let Ok(event) = process_obs_message(text.to_string(), status.clone()).await {
+						if let Ok(event) = process_obs_message(text.to_string()).await {
 							let _ = event_tx.send(event);
 						}
 					}
@@ -208,16 +144,6 @@ impl ObsWebSocket {
 			}
 		}
 		Err("No event receiver available or connection closed".into())
-	}
-
-	/// Get current status
-	pub async fn get_status(&self) -> ObsStatus {
-		self.status.read().await.clone()
-	}
-
-	/// Get status reference for sharing
-	pub fn get_status_ref(&self) -> Arc<RwLock<ObsStatus>> {
-		Arc::clone(&self.status)
 	}
 
 	/// Get current config
@@ -322,8 +248,8 @@ impl ObsWebSocket {
 /// Axum-specific wrapper that adds broadcasting functionality
 pub struct ObsWebSocketWithBroadcast {
 	inner: ObsWebSocket,
-	broadcaster: async_broadcast::Sender<ObsStatus>,
-	_receiver: async_broadcast::Receiver<ObsStatus>,
+	broadcaster: async_broadcast::Sender<ObsEvent>,
+	_receiver: async_broadcast::Receiver<ObsEvent>,
 }
 
 impl ObsWebSocketWithBroadcast {
@@ -348,23 +274,12 @@ impl ObsWebSocketWithBroadcast {
 
 		// Broadcast if the event should trigger an update
 		if event.should_broadcast() {
-			let status = self.inner.get_status().await;
-			if let Err(e) = self.broadcaster.broadcast(status).await {
+			if let Err(e) = self.broadcaster.broadcast(event).await {
 				error!("Failed to broadcast status update: {}", e);
 			}
 		}
 
 		Ok(())
-	}
-
-	/// Get current status
-	pub async fn get_status(&self) -> ObsStatus {
-		self.inner.get_status().await
-	}
-
-	/// Get status reference
-	pub fn get_status_ref(&self) -> Arc<RwLock<ObsStatus>> {
-		self.inner.get_status_ref()
 	}
 
 	/// Update configuration
@@ -373,30 +288,27 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Get a new receiver for status updates
-	pub fn subscribe(&self) -> async_broadcast::Receiver<ObsStatus> {
+	pub fn subscribe(&self) -> async_broadcast::Receiver<ObsEvent> {
 		self.broadcaster.new_receiver()
 	}
 
 	/// Create WebSocket handler for Axum
-	pub fn websocket_handler(&self, ws: WebSocketUpgrade) -> impl IntoResponse {
-		let broadcaster = self.broadcaster.clone();
-		let status = self.inner.get_status_ref();
+	pub fn websocket_handler(&self, ws: WebSocketUpgrade, State(obs_client): State<Arc<ObsWebSocketWithBroadcast>>) -> impl IntoResponse {
+		let obs_receiver = obs_client.subscribe();
 
 		ws.on_upgrade(move |socket| async move {
-			handle_socket(socket, status, broadcaster).await;
+			handle_obs_socket(socket, obs_receiver).await;
 		})
 	}
 
 	/// Start the event handling loop with broadcasting
 	pub fn start(&self, r: Box<[(ObsRequestType, PollingFrequency)]>) {
 		let broadcaster = self.broadcaster.clone();
-		let status_ref = self.inner.get_status_ref();
 		let config = self.inner.config.clone();
 
 		tokio::spawn(async move {
+			let mut obs_client = ObsWebSocket::new(config.read().await.clone());
 			loop {
-				let mut obs_client = ObsWebSocket::new(config.read().await.clone());
-
 				match obs_client.connect(&r).await {
 					Ok(_) => {
 						info!("Connected to OBS WebSocket");
@@ -406,9 +318,8 @@ impl ObsWebSocketWithBroadcast {
 							match obs_client.next_event().await {
 								Ok(event) => {
 									if event.should_broadcast() {
-										let status = status_ref.read().await.clone();
-										if let Err(e) = broadcaster.broadcast(status).await {
-											error!("Failed to broadcast status: {}", e);
+										if let Err(e) = broadcaster.broadcast(event).await {
+											error!("Failed to broadcast event: {}", e);
 										}
 									}
 								}
@@ -473,67 +384,57 @@ impl ObsWebSocketWithBroadcast {
 }
 
 // Private implementation for Axum WebSocket handling
-async fn handle_socket(socket: WebSocket, status: Arc<RwLock<ObsStatus>>, broadcaster: async_broadcast::Sender<ObsStatus>) {
-	let status_snapshot = status.read().await.clone();
+async fn handle_obs_socket(
+	socket: axum::extract::ws::WebSocket,
+	mut obs_receiver: async_broadcast::Receiver<ObsEvent>, // THIS WAS MISSING!
+) {
+	use axum::extract::ws::Message;
+	use futures_util::{sink::SinkExt, stream::StreamExt};
+
 	let (mut sender, mut receiver) = socket.split();
 
-	// Send initial status
-	match serde_json::to_string(&status_snapshot) {
-		Ok(res) => {
-			if let Err(e) = sender.send(Message::Text(res)).await {
-				error!("Error sending initial status: {}", e);
-				return;
-			}
-			info!("Sent initial status!");
-		}
-		Err(e) => {
-			error!("Serialization failed with error: {}", e);
-			return;
-		}
-	}
-
-	let mut rx = broadcaster.new_receiver();
-
+	// Task to handle sending OBS updates to WebSocket client
 	let send_task = tokio::spawn(async move {
-		loop {
-			match rx.recv().await {
-				Ok(status) => match serde_json::to_string(&status) {
-					Ok(json) => {
-						if sender.send(Message::Text(json)).await.is_err() {
-							break;
-						}
-						info!("Sent status update!");
+		while let Ok(event) = obs_receiver.recv().await {
+			match serde_json::to_string(&event) {
+				Ok(json) => {
+					if let Err(e) = sender.send(Message::Text(json)).await {
+						tracing::error!("Failed to send OBS status update: {}", e);
+						break;
 					}
-					Err(e) => error!("Failed to serialize status: {}", e),
-				},
-				Err(async_broadcast::RecvError::Closed) => {
-					error!("Broadcaster closed");
-					break;
+					tracing::info!("Sent OBS status update to WebSocket client");
 				}
-				Err(async_broadcast::RecvError::Overflowed(_)) => {
-					error!("Missed messages");
-					continue;
+				Err(e) => {
+					tracing::error!("Failed to serialize OBS status: {}", e);
 				}
 			}
 		}
 	});
 
+	// Task to handle incoming WebSocket messages
 	let recv_task = tokio::spawn(async move {
-		while let Some(Ok(msg)) = receiver.next().await {
-			match msg {
-				Message::Text(text) => {
-					info!("Received message: {}", text);
+		while let Some(msg_result) = receiver.next().await {
+			match msg_result {
+				Ok(Message::Text(text)) => {
+					tracing::info!("Received WebSocket message: {}", text);
+					// Handle client commands here if needed
 				}
-				Message::Close(frame) => {
-					warn!("Client requested close: {:?}", frame);
+				Ok(Message::Close(frame)) => {
+					tracing::info!("WebSocket client requested close: {:?}", frame);
 					break;
 				}
-				_ => {}
+				Ok(_) => {} // Handle other message types if needed
+				Err(e) => {
+					tracing::error!("WebSocket error: {}", e);
+					break;
+				}
 			}
 		}
 	});
 
+	// Wait for either task to complete
 	let _ = tokio::join!(send_task, recv_task);
+	tracing::info!("WebSocket connection closed");
 }
 
 /// Simple client factory for daemon use
