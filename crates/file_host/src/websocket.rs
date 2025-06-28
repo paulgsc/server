@@ -1,4 +1,5 @@
 use crate::utils::{generate_uuid, string_to_buffer};
+use obs_websocket::ObsEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,6 +45,8 @@ pub enum TimelineEvent {
 		panel_config: PanelConfig,
 		transition: Option<Transition>,
 	},
+	#[serde(rename = "OBS_STATUS_UPDATE")]
+	ObsStatusUpdate { status: ObsEvent },
 	#[serde(rename = "TIMELINE_START")]
 	TimelineStart { timeline_id: String },
 	#[serde(rename = "TIMELINE_PAUSE")]
@@ -144,6 +147,32 @@ impl WebSocketState {
 	pub async fn get_connected_clients(&self) -> Vec<String> {
 		let clients = self.clients.read().await;
 		clients.keys().cloned().collect()
+	}
+
+	pub fn bridge_obs_events(&self, obs_client: Arc<obs_websocket::ObsWebSocketWithBroadcast>) {
+		let broadcaster = self.broadcaster.clone();
+
+		tokio::spawn(async move {
+			// Subscribe to OBS status updates
+			let mut obs_receiver = obs_client.subscribe();
+
+			tracing::info!("Started OBS event bridge to general WebSocket system");
+
+			// Forward OBS events to general WebSocket broadcaster
+			while let Ok(obs_event) = obs_receiver.recv().await {
+				// debug!("obs_status: {:?}", obs_status);
+				let timeline_event = TimelineEvent::ObsStatusUpdate { status: obs_event };
+
+				// Broadcast to all connected WebSocket clients
+				if let Err(e) = broadcaster.send(timeline_event) {
+					tracing::error!("Failed to broadcast OBS status to WebSocket clients: {}", e);
+				} else {
+					tracing::debug!("Broadcasted OBS status update to all WebSocket clients");
+				}
+			}
+
+			tracing::warn!("OBS event bridge ended");
+		});
 	}
 }
 
@@ -273,6 +302,7 @@ async fn handle_socket(socket: WebSocket, state: WebSocketState) {
 									// Handle other events as needed
 									_ => {
 										// Forward to all clients (including the sender)
+										debug!("Ran this for some reason for event: {:?}", event);
 										let _ = state.broadcast(event).await;
 									}
 								}
