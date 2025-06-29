@@ -23,9 +23,9 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
-	#[serde(rename = "obs_status")]
+	#[serde(rename = "obsStatus")]
 	ObsStatus { status: ObsEvent },
-	#[serde(rename = "client_count")]
+	#[serde(rename = "clientCount")]
 	ClientCount { count: usize },
 	#[serde(rename = "ping")]
 	Ping,

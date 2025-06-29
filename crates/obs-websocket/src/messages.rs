@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 /// Represents different types of events from OBS
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ObsEvent {
 	// Stream and Recording Status
 	StreamStatusResponse { streaming: bool, timecode: String },
