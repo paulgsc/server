@@ -11,77 +11,315 @@ use tracing::{debug, info, warn};
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ObsEvent {
 	// Stream and Recording Status
-	StreamStatusResponse { streaming: bool, timecode: String },
-	RecordingStatusResponse { recording: bool, timecode: String },
+	StreamStatusResponse(StreamStatusData),
+	RecordingStatusResponse(RecordingStatusData),
 
 	// Scene Management
-	SceneListResponse { scenes: Vec<SceneInfo>, current_scene: String },
-	CurrentSceneResponse { scene_name: String },
+	SceneListResponse(SceneListData),
+	CurrentSceneResponse(CurrentSceneData),
 
 	// Source Management
-	SourcesListResponse { sources: Vec<SourceInfo> },
-	InputListResponse { inputs: Vec<InputInfo> },
+	SourcesListResponse(SourcesListData),
+	InputListResponse(InputListData),
 
 	// Audio Management
-	AudioMuteResponse { input_name: String, muted: bool },
-	AudioVolumeResponse { input_name: String, volume_db: f64, volume_mul: f64 },
+	AudioMuteResponse(AudioMuteData),
+	AudioVolumeResponse(AudioVolumeData),
 
 	// Profile and Collection Management
-	ProfileListResponse { profiles: Vec<String>, current_profile: String },
-	CurrentProfileResponse { profile_name: String },
-	SceneCollectionListResponse { collections: Vec<String>, current_collection: String },
-	CurrentCollectionResponse { collection_name: String },
+	ProfileListResponse(ProfileListData),
+	CurrentProfileResponse(CurrentProfileData),
+	SceneCollectionListResponse(SceneCollectionListData),
+	CurrentCollectionResponse(CurrentCollectionData),
 
 	// Virtual Camera
-	VirtualCamStatusResponse { active: bool },
+	VirtualCamStatusResponse(VirtualCamStatusData),
 
 	// Replay Buffer
-	ReplayBufferStatusResponse { active: bool },
+	ReplayBufferStatusResponse(ReplayBufferStatusData),
 
 	// Studio Mode
-	StudioModeResponse { enabled: bool },
+	StudioModeResponse(StudioModeData),
 
 	// Statistics
-	StatsResponse { stats: ObsStats },
+	StatsResponse(StatsData),
 
 	// Transitions
-	CurrentTransitionResponse { transition_name: String, transition_duration: u32 },
-	TransitionListResponse { transitions: Vec<TransitionInfo> },
+	CurrentTransitionResponse(CurrentTransitionData),
+	TransitionListResponse(TransitionListData),
 
 	// Filters
-	FilterListResponse { source_name: String, filters: Vec<FilterInfo> },
+	FilterListResponse(FilterListData),
 
 	// Hotkeys
-	HotkeyListResponse { hotkeys: Vec<HotkeyInfo> },
+	HotkeyListResponse(HotkeyListData),
 
 	// Version
-	VersionResponse { obs_version: String, websocket_version: String },
+	VersionResponse(VersionData),
 
 	// Real-time events (op: 5)
-	StreamStateChanged { streaming: bool, timecode: Option<String> },
-	RecordStateChanged { recording: bool, timecode: Option<String> },
-	CurrentProgramSceneChanged { scene_name: String },
-	SceneItemEnableStateChanged { scene_name: String, item_id: u32, enabled: bool },
-	InputMuteStateChanged { input_name: String, muted: bool },
-	InputVolumeChanged { input_name: String, volume_db: f64, volume_mul: f64 },
-	VirtualcamStateChanged { active: bool },
-	ReplayBufferStateChanged { active: bool },
-	StudioModeStateChanged { enabled: bool },
-	CurrentSceneTransitionChanged { transition_name: String },
-	SceneTransitionStarted { transition_name: String },
-	SceneTransitionEnded { transition_name: String },
+	StreamStateChanged(StreamStateData),
+	RecordStateChanged(RecordStateData),
+	CurrentProgramSceneChanged(CurrentProgramSceneData),
+	SceneItemEnableStateChanged(SceneItemEnableStateData),
+	InputMuteStateChanged(InputMuteStateData),
+	InputVolumeChanged(InputVolumeData),
+	VirtualcamStateChanged(VirtualcamStateData),
+	ReplayBufferStateChanged(ReplayBufferStateData),
+	StudioModeStateChanged(StudioModeStateData),
+	CurrentSceneTransitionChanged(CurrentSceneTransitionData),
+	SceneTransitionStarted(SceneTransitionStartedData),
+	SceneTransitionEnded(SceneTransitionEndedData),
 
 	// Generic events for unhandled cases
-	UnknownResponse { request_type: String, data: Value },
-	UnknownEvent { event_type: String, data: Value },
+	UnknownResponse(UnknownResponseData),
+	UnknownEvent(UnknownEventData),
 
 	// Connection events
-	Hello { obs_version: String },
+	Hello(HelloData),
 	Identified,
+}
+
+// Data structures for each enum variant
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamStatusData {
+	pub streaming: bool,
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStatusData {
+	pub recording: bool,
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneListData {
+	pub scenes: Vec<SceneInfo>,
+	pub current_scene: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentSceneData {
+	pub scene_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcesListData {
+	pub sources: Vec<SourceInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputListData {
+	pub inputs: Vec<InputInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioMuteData {
+	pub input_name: String,
+	pub muted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioVolumeData {
+	pub input_name: String,
+	pub volume_db: f64,
+	pub volume_mul: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileListData {
+	pub profiles: Vec<String>,
+	pub current_profile: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentProfileData {
+	pub profile_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneCollectionListData {
+	pub collections: Vec<String>,
+	pub current_collection: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentCollectionData {
+	pub collection_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualCamStatusData {
+	pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayBufferStatusData {
+	pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioModeData {
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsData {
+	pub stats: ObsStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentTransitionData {
+	pub transition_name: String,
+	pub transition_duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionListData {
+	pub transitions: Vec<TransitionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterListData {
+	pub source_name: String,
+	pub filters: Vec<FilterInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyListData {
+	pub hotkeys: Vec<HotkeyInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionData {
+	pub obs_version: String,
+	pub websocket_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamStateData {
+	pub streaming: bool,
+	pub timecode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordStateData {
+	pub recording: bool,
+	pub timecode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentProgramSceneData {
+	pub scene_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneItemEnableStateData {
+	pub scene_name: String,
+	pub item_id: u32,
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputMuteStateData {
+	pub input_name: String,
+	pub muted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputVolumeData {
+	pub input_name: String,
+	pub volume_db: f64,
+	pub volume_mul: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualcamStateData {
+	pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayBufferStateData {
+	pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioModeStateData {
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentSceneTransitionData {
+	pub transition_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransitionStartedData {
+	pub transition_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransitionEndedData {
+	pub transition_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnknownResponseData {
+	pub request_type: String,
+	pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnknownEventData {
+	pub event_type: String,
+	pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelloData {
+	pub obs_version: String,
 }
 
 /// Scene information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SceneInfo {
 	pub name: String,
 	pub index: Option<u32>,
@@ -89,6 +327,7 @@ pub struct SceneInfo {
 
 /// Source information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
 	pub name: String,
 	pub type_id: String,
@@ -97,6 +336,7 @@ pub struct SourceInfo {
 
 /// Input information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InputInfo {
 	pub name: String,
 	pub kind: String,
@@ -105,6 +345,7 @@ pub struct InputInfo {
 
 /// Transition information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TransitionInfo {
 	pub name: String,
 	pub kind: String,
@@ -113,6 +354,7 @@ pub struct TransitionInfo {
 
 /// Filter information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FilterInfo {
 	pub name: String,
 	pub kind: String,
@@ -122,6 +364,7 @@ pub struct FilterInfo {
 
 /// Hotkey information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HotkeyInfo {
 	pub name: String,
 	pub description: String,
@@ -129,6 +372,7 @@ pub struct HotkeyInfo {
 
 /// OBS Statistics structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ObsStats {
 	pub cpu_usage: f64,
 	pub memory_usage: f64,
@@ -165,19 +409,19 @@ impl ObsEvent {
 	/// Check if this event should trigger a status broadcast
 	pub const fn should_broadcast(&self) -> bool {
 		match self {
-			Self::StreamStatusResponse { .. }
-			| Self::RecordingStatusResponse { .. }
-			| Self::SceneListResponse { .. }
-			| Self::CurrentSceneResponse { .. }
-			| Self::VirtualCamStatusResponse { .. }
-			| Self::ReplayBufferStatusResponse { .. }
-			| Self::StudioModeResponse { .. }
-			| Self::StreamStateChanged { .. }
-			| Self::RecordStateChanged { .. }
-			| Self::CurrentProgramSceneChanged { .. }
-			| Self::VirtualcamStateChanged { .. }
-			| Self::ReplayBufferStateChanged { .. }
-			| Self::StudioModeStateChanged { .. } => true,
+			Self::StreamStatusResponse(_)
+			| Self::RecordingStatusResponse(_)
+			| Self::SceneListResponse(_)
+			| Self::CurrentSceneResponse(_)
+			| Self::VirtualCamStatusResponse(_)
+			| Self::ReplayBufferStatusResponse(_)
+			| Self::StudioModeResponse(_)
+			| Self::StreamStateChanged(_)
+			| Self::RecordStateChanged(_)
+			| Self::CurrentProgramSceneChanged(_)
+			| Self::VirtualcamStateChanged(_)
+			| Self::ReplayBufferStateChanged(_)
+			| Self::StudioModeStateChanged(_) => true,
 			_ => false,
 		}
 	}
@@ -198,12 +442,12 @@ pub async fn fetch_init_state(
 
 	for (request_type, request_id) in requests {
 		let request = json!({
-			"op": 6,
-			"d": {
-				"requestType": request_type,
-				"requestId": request_id
-			}
-		});
+		"op": 6,
+					"d": {
+										"requestType": request_type,
+														"requestId": request_id
+																		}
+				});
 
 		debug!("Requesting initial {}: {}", request_type, request);
 		sink.send(TungsteniteMessage::Text(request.to_string().into())).await?;
@@ -228,7 +472,7 @@ pub async fn process_obs_message(text: String) -> Result<ObsEvent, Box<dyn Error
 			let d = json.get("d").and_then(Value::as_object).ok_or("Missing 'd' field in Hello message")?;
 			let obs_version = d.get("obsWebSocketVersion").and_then(Value::as_str).unwrap_or("unknown").to_string();
 
-			ObsEvent::Hello { obs_version }
+			ObsEvent::Hello(HelloData { obs_version })
 		}
 		2 => {
 			// Identified
@@ -264,7 +508,7 @@ fn parse_obs_event(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync
 			} else {
 				Some("00:00:00.000".to_string())
 			};
-			ObsEvent::StreamStateChanged { streaming, timecode }
+			ObsEvent::StreamStateChanged(StreamStateData { streaming, timecode })
 		}
 		"RecordStateChanged" => {
 			let recording = d.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
@@ -273,7 +517,7 @@ fn parse_obs_event(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync
 			} else {
 				Some("00:00:00.000".to_string())
 			};
-			ObsEvent::RecordStateChanged { recording, timecode }
+			ObsEvent::RecordStateChanged(RecordStateData { recording, timecode })
 		}
 		"CurrentProgramSceneChanged" => {
 			let scene_name = d
@@ -281,59 +525,59 @@ fn parse_obs_event(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync
 				.and_then(Value::as_str)
 				.ok_or("Missing sceneName in CurrentProgramSceneChanged event")?
 				.to_string();
-			ObsEvent::CurrentProgramSceneChanged { scene_name }
+			ObsEvent::CurrentProgramSceneChanged(CurrentProgramSceneData { scene_name })
 		}
 		"SceneItemEnableStateChanged" => {
 			let scene_name = d.get("sceneName").and_then(Value::as_str).unwrap_or("").to_string();
 			let item_id = d.get("sceneItemId").and_then(Value::as_u64).unwrap_or(0) as u32;
 			let enabled = d.get("sceneItemEnabled").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::SceneItemEnableStateChanged { scene_name, item_id, enabled }
+			ObsEvent::SceneItemEnableStateChanged(SceneItemEnableStateData { scene_name, item_id, enabled })
 		}
 		"InputMuteStateChanged" => {
 			let input_name = d.get("inputName").and_then(Value::as_str).unwrap_or("").to_string();
 			let muted = d.get("inputMuted").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::InputMuteStateChanged { input_name, muted }
+			ObsEvent::InputMuteStateChanged(InputMuteStateData { input_name, muted })
 		}
 		"InputVolumeChanged" => {
 			let input_name = d.get("inputName").and_then(Value::as_str).unwrap_or("").to_string();
 			let volume_db = d.get("inputVolumeDb").and_then(Value::as_f64).unwrap_or(0.0);
 			let volume_mul = d.get("inputVolumeMul").and_then(Value::as_f64).unwrap_or(1.0);
-			ObsEvent::InputVolumeChanged {
+			ObsEvent::InputVolumeChanged(InputVolumeData {
 				input_name,
 				volume_db,
 				volume_mul,
-			}
+			})
 		}
 		"VirtualcamStateChanged" => {
 			let active = d.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::VirtualcamStateChanged { active }
+			ObsEvent::VirtualcamStateChanged(VirtualcamStateData { active })
 		}
 		"ReplayBufferStateChanged" => {
 			let active = d.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::ReplayBufferStateChanged { active }
+			ObsEvent::ReplayBufferStateChanged(ReplayBufferStateData { active })
 		}
 		"StudioModeStateChanged" => {
 			let enabled = d.get("studioModeEnabled").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::StudioModeStateChanged { enabled }
+			ObsEvent::StudioModeStateChanged(StudioModeStateData { enabled })
 		}
 		"CurrentSceneTransitionChanged" => {
 			let transition_name = d.get("transitionName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::CurrentSceneTransitionChanged { transition_name }
+			ObsEvent::CurrentSceneTransitionChanged(CurrentSceneTransitionData { transition_name })
 		}
 		"SceneTransitionStarted" => {
 			let transition_name = d.get("transitionName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::SceneTransitionStarted { transition_name }
+			ObsEvent::SceneTransitionStarted(SceneTransitionStartedData { transition_name })
 		}
 		"SceneTransitionEnded" => {
 			let transition_name = d.get("transitionName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::SceneTransitionEnded { transition_name }
+			ObsEvent::SceneTransitionEnded(SceneTransitionEndedData { transition_name })
 		}
 		_ => {
 			debug!("Unhandled event type: {}", event_type);
-			ObsEvent::UnknownEvent {
+			ObsEvent::UnknownEvent(UnknownEventData {
 				event_type: event_type.to_string(),
 				data: d.clone().into(),
-			}
+			})
 		}
 	};
 
@@ -350,12 +594,12 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 		"GetStreamStatus" => {
 			let streaming = response_data.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
 			let timecode = response_data.get("outputTimecode").and_then(Value::as_str).unwrap_or("00:00:00.000").to_string();
-			ObsEvent::StreamStatusResponse { streaming, timecode }
+			ObsEvent::StreamStatusResponse(StreamStatusData { streaming, timecode })
 		}
 		"GetRecordStatus" => {
 			let recording = response_data.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
 			let timecode = response_data.get("outputTimecode").and_then(Value::as_str).unwrap_or("00:00:00.000").to_string();
-			ObsEvent::RecordingStatusResponse { recording, timecode }
+			ObsEvent::RecordingStatusResponse(RecordingStatusData { recording, timecode })
 		}
 		"GetSceneList" => {
 			let scenes = response_data
@@ -374,11 +618,11 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 				})
 				.unwrap_or_default();
 			let current_scene = response_data.get("currentProgramSceneName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::SceneListResponse { scenes, current_scene }
+			ObsEvent::SceneListResponse(SceneListData { scenes, current_scene })
 		}
 		"GetCurrentProgramScene" => {
 			let scene_name = response_data.get("sceneName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::CurrentSceneResponse { scene_name }
+			ObsEvent::CurrentSceneResponse(CurrentSceneData { scene_name })
 		}
 		"GetSourcesList" => {
 			let sources = response_data
@@ -397,7 +641,7 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 						.collect()
 				})
 				.unwrap_or_default();
-			ObsEvent::SourcesListResponse { sources }
+			ObsEvent::SourcesListResponse(SourcesListData { sources })
 		}
 		"GetInputList" => {
 			let inputs = response_data
@@ -416,22 +660,22 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 						.collect()
 				})
 				.unwrap_or_default();
-			ObsEvent::InputListResponse { inputs }
+			ObsEvent::InputListResponse(InputListData { inputs })
 		}
 		"GetInputMute" => {
 			let input_name = response_data.get("inputName").and_then(Value::as_str).unwrap_or("").to_string();
 			let muted = response_data.get("inputMuted").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::AudioMuteResponse { input_name, muted }
+			ObsEvent::AudioMuteResponse(AudioMuteData { input_name, muted })
 		}
 		"GetInputVolume" => {
 			let input_name = response_data.get("inputName").and_then(Value::as_str).unwrap_or("").to_string();
 			let volume_db = response_data.get("inputVolumeDb").and_then(Value::as_f64).unwrap_or(0.0);
 			let volume_mul = response_data.get("inputVolumeMul").and_then(Value::as_f64).unwrap_or(1.0);
-			ObsEvent::AudioVolumeResponse {
+			ObsEvent::AudioVolumeResponse(AudioVolumeData {
 				input_name,
 				volume_db,
 				volume_mul,
-			}
+			})
 		}
 		"GetProfileList" => {
 			let profiles = response_data
@@ -440,11 +684,11 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 				.map(|arr| arr.iter().filter_map(|p| p.as_str().map(String::from)).collect())
 				.unwrap_or_default();
 			let current_profile = response_data.get("currentProfileName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::ProfileListResponse { profiles, current_profile }
+			ObsEvent::ProfileListResponse(ProfileListData { profiles, current_profile })
 		}
 		"GetCurrentProfile" => {
 			let profile_name = response_data.get("profileName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::CurrentProfileResponse { profile_name }
+			ObsEvent::CurrentProfileResponse(CurrentProfileData { profile_name })
 		}
 		"GetSceneCollectionList" => {
 			let collections = response_data
@@ -453,23 +697,23 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 				.map(|arr| arr.iter().filter_map(|c| c.as_str().map(String::from)).collect())
 				.unwrap_or_default();
 			let current_collection = response_data.get("currentSceneCollectionName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::SceneCollectionListResponse { collections, current_collection }
+			ObsEvent::SceneCollectionListResponse(SceneCollectionListData { collections, current_collection })
 		}
 		"GetCurrentSceneCollection" => {
 			let collection_name = response_data.get("sceneCollectionName").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::CurrentCollectionResponse { collection_name }
+			ObsEvent::CurrentCollectionResponse(CurrentCollectionData { collection_name })
 		}
 		"GetVirtualCamStatus" => {
 			let active = response_data.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::VirtualCamStatusResponse { active }
+			ObsEvent::VirtualCamStatusResponse(VirtualCamStatusData { active })
 		}
 		"GetReplayBufferStatus" => {
 			let active = response_data.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::ReplayBufferStatusResponse { active }
+			ObsEvent::ReplayBufferStatusResponse(ReplayBufferStatusData { active })
 		}
 		"GetStudioModeEnabled" => {
 			let enabled = response_data.get("studioModeEnabled").and_then(Value::as_bool).unwrap_or(false);
-			ObsEvent::StudioModeResponse { enabled }
+			ObsEvent::StudioModeResponse(StudioModeData { enabled })
 		}
 		"GetStats" => {
 			let stats = ObsStats {
@@ -485,15 +729,15 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 				web_socket_session_incoming_messages: response_data.get("webSocketSessionIncomingMessages").and_then(Value::as_u64).unwrap_or(0),
 				web_socket_session_outgoing_messages: response_data.get("webSocketSessionOutgoingMessages").and_then(Value::as_u64).unwrap_or(0),
 			};
-			ObsEvent::StatsResponse { stats }
+			ObsEvent::StatsResponse(StatsData { stats })
 		}
 		"GetCurrentSceneTransition" => {
 			let transition_name = response_data.get("transitionName").and_then(Value::as_str).unwrap_or("").to_string();
 			let transition_duration = response_data.get("transitionDuration").and_then(Value::as_u64).unwrap_or(0) as u32;
-			ObsEvent::CurrentTransitionResponse {
+			ObsEvent::CurrentTransitionResponse(CurrentTransitionData {
 				transition_name,
 				transition_duration,
-			}
+			})
 		}
 		"GetSceneTransitionList" => {
 			let transitions = response_data
@@ -512,7 +756,7 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 						.collect()
 				})
 				.unwrap_or_default();
-			ObsEvent::TransitionListResponse { transitions }
+			ObsEvent::TransitionListResponse(TransitionListData { transitions })
 		}
 		"GetSourceFilterList" => {
 			let source_name = response_data.get("sourceName").and_then(Value::as_str).unwrap_or("").to_string();
@@ -533,7 +777,7 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 						.collect()
 				})
 				.unwrap_or_default();
-			ObsEvent::FilterListResponse { source_name, filters }
+			ObsEvent::FilterListResponse(FilterListData { source_name, filters })
 		}
 		"GetHotkeyList" => {
 			let hotkeys = response_data
@@ -551,19 +795,19 @@ fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + S
 						.collect()
 				})
 				.unwrap_or_default();
-			ObsEvent::HotkeyListResponse { hotkeys }
+			ObsEvent::HotkeyListResponse(HotkeyListData { hotkeys })
 		}
 		"GetVersion" => {
 			let obs_version = response_data.get("obsVersion").and_then(Value::as_str).unwrap_or("").to_string();
 			let websocket_version = response_data.get("obsWebSocketVersion").and_then(Value::as_str).unwrap_or("").to_string();
-			ObsEvent::VersionResponse { obs_version, websocket_version }
+			ObsEvent::VersionResponse(VersionData { obs_version, websocket_version })
 		}
 		_ => {
 			debug!("Unhandled response type: {}", request_type);
-			ObsEvent::UnknownResponse {
+			ObsEvent::UnknownResponse(UnknownResponseData {
 				request_type: request_type.to_string(),
 				data: response_data.clone(),
-			}
+			})
 		}
 	};
 
