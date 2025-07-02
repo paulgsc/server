@@ -298,10 +298,19 @@ impl ObsPollingManager {
 
 	/// Send a batch of requests to OBS
 	async fn send_requests(&mut self, sink: &mut WsSink, requests: Vec<serde_json::Value>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+		// TODO: Let's not heap allocate stuff?
+		let mut send_errors = Vec::new();
+
 		for req in requests {
-			sink.send(TungsteniteMessage::Text(req.to_string().into())).await?;
+			if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
+				send_errors.push(e);
+			}
 		}
 		sink.flush().await?;
+
+		if !send_errors.is_empty() {
+			return Err(send_errors.into_iter().next().unwrap().into());
+		}
 		Ok(())
 	}
 }
