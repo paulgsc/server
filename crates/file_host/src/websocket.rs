@@ -549,14 +549,25 @@ impl WebSocketFsm {
 			let mut obs_receiver = obs_client.subscribe();
 			info!("OBS event bridge started");
 
-			while let Ok(obs_event) = obs_receiver.recv().await {
-				let event = Event::ObsStatus { status: obs_event };
+			loop {
+				match tokio::time::timeout(Duration::from_secs(45), obs_receiver.recv()).await {
+					Ok(Ok(obs_event)) => {
+						let event = Event::ObsStatus { status: obs_event };
 
-				// Broadcast through our FSM system
-				if let Err(e) = event_broadcast.send(event) {
-					error!("Failed to broadcast OBS event: {}", e);
-				} else {
-					debug!("OBS event broadcasted to all clients");
+						if let Err(e) = event_broadcast.send(event) {
+							error!("Failed to broadcast OBS event: {}", e);
+						} else {
+							debug!("OBS event broadcasted to all clients");
+						}
+					}
+					Ok(Err(e)) => {
+						warn!("OBS receiver error: {}", e);
+						break;
+					}
+					Err(_) => {
+						warn!("OBS receiver timed out waiting for event");
+						continue;
+					}
 				}
 			}
 
