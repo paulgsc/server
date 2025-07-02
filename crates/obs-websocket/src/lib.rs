@@ -118,6 +118,7 @@ impl ObsWebSocket {
 
 		// Handle authentication
 		authenticate(&config.password, &mut sink, &mut stream).await?;
+		info!("Sucessfully connected!");
 		fetch_init_state(&mut sink).await?;
 
 		// Create channels for communication
@@ -131,15 +132,35 @@ impl ObsWebSocket {
 		});
 
 		let message_task = tokio::spawn(async move {
+			let mut consecutive_failures = 0;
+			const MAX_CONSECUTIVE_FAILURES: usize = 10;
+
 			while let Some(msg) = stream.next().await {
 				match msg {
-					Ok(TungsteniteMessage::Text(text)) => {
-						if let Ok(event) = process_obs_message(text.to_string()).await {
-							let _ = event_tx.send(event);
+					Ok(TungsteniteMessage::Text(text)) => match process_obs_message(text.to_string()).await {
+						Ok(event) => {
+							consecutive_failures = 0;
+							if let Err(e) = event_tx.send(event) {
+								error!("Failed to send event channel: {}", e);
+								break;
+							}
 						}
-					}
+						Err(e) => {
+							consecutive_failures += 1;
+							warn!("Failed to process OBS message (failure {}/{}): {}", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+							warn!("Raw message that failed: {}", text);
+
+							// If we have too many consecutive failures, something is seriously wrong
+							if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+								error!("Too many consecutive message processing failures. Breaking connection.");
+								break;
+							}
+
+							continue;
+						}
+					},
 					Ok(TungsteniteMessage::Close(_)) => {
-						error!("Connection closed");
+						warn!("Connection closed");
 						break;
 					}
 					Err(e) => {
@@ -174,8 +195,18 @@ impl ObsWebSocket {
 	/// Get the next event from OBS
 	pub async fn next_event(&mut self) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
 		if let Some(ref mut rx) = self.event_rx {
-			if let Some(event) = rx.recv().await {
-				return Ok(event);
+			match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+				Ok(Some(event)) => {
+					return Ok(event);
+				}
+				Ok(None) => {
+					error!("Event channel closed - OBS connection lost");
+					return Err("Event channel closed".into());
+				}
+				Err(_) => {
+					warn!("Timeout waiting for OBS events - connection may be stuck");
+					return Err("Timeout waiting for events".into());
+				}
 			}
 		}
 		Err("No event receiver available or connection closed".into())
@@ -349,6 +380,7 @@ impl ObsWebSocketWithBroadcast {
 			};
 
 			loop {
+				info!("retry state: {:?}", retry_state);
 				match retry_state {
 					RetryState::Active {
 						consecutive_failures,
@@ -369,10 +401,12 @@ impl ObsWebSocketWithBroadcast {
 								while obs_client.is_connected() {
 									match obs_client.next_event().await {
 										Ok(event) => {
+											info!("Received new event: Attempting to broadcast!");
 											if event.should_broadcast() {
 												if let Err(e) = broadcaster_for_task.broadcast(event).await {
 													error!("Failed to broadcast event: {}", e);
 												}
+												info!("Successfully broadcasted!");
 											}
 										}
 										Err(e) => {
@@ -429,12 +463,14 @@ impl ObsWebSocketWithBroadcast {
 							};
 						} else {
 							// Wait a bit before checking again
+							warn!("wait 30s before next retry!");
 							tokio::time::sleep(Duration::from_secs(30)).await;
 						}
 					}
 				}
 			}
 		});
+		warn!("We exited loop for some reason!");
 
 		BroadcastHandle { task_handle: handle, broadcaster }
 	}

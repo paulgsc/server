@@ -91,7 +91,7 @@ impl ObsRequestType {
 			Self::InputMute(input_name) => PollingRequest::new("GetInputMute", "audio_mute").with_data(json!({ "inputName": input_name })),
 			Self::SetInputMute(input_name, muted) => PollingRequest::new("SetInputMute", "set_mute").with_data(json!({ "inputName": input_name, "inputMuted": muted  })),
 			Self::InputVolume(input_name) => PollingRequest::new("GetInputVolume", "audio_volume").with_data(json!({ "inputName": input_name })),
-			Self::SetInputVolume(input_name, volume) => PollingRequest::new("SetInputVolume", "set_volume").with_data(json!({ "inputName": input_name, "inputeVolume": volume  })),
+			Self::SetInputVolume(input_name, volume) => PollingRequest::new("SetInputVolume", "set_volume").with_data(json!({ "inputName": input_name, "inputVolume": volume  })),
 			Self::ProfileList => PollingRequest::new("GetProfileList", "profiles"),
 			Self::CurrentProfile => PollingRequest::new("GetCurrentProfile", "current_profile"),
 			Self::SceneCollectionList => PollingRequest::new("GetSceneCollectionList", "collections"),

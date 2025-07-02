@@ -442,12 +442,12 @@ pub async fn fetch_init_state(
 
 	for (request_type, request_id) in requests {
 		let request = json!({
-		"op": 6,
-					"d": {
-										"requestType": request_type,
-														"requestId": request_id
-																		}
-				});
+			"op": 6,
+			"d": {
+				"requestType": request_type,
+				"requestId": request_id
+			}
+		});
 
 		debug!("Requesting initial {}: {}", request_type, request);
 		sink.send(TungsteniteMessage::Text(request.to_string().into())).await?;
@@ -588,8 +588,38 @@ fn parse_obs_event(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync
 fn parse_obs_response(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
 	let d = json.get("d").and_then(Value::as_object).ok_or("Missing 'd' field in response message")?;
 	let request_type = d.get("requestType").and_then(Value::as_str).ok_or("Missing requestType in response message")?;
-	let response_data = d.get("responseData").ok_or("Missing responseData in response message")?;
 
+	let request_status = d.get("requestStatus").and_then(Value::as_object);
+	if let Some(status) = request_status {
+		let success = status.get("result").and_then(Value::as_bool).unwrap_or(false);
+		if !success {
+			let code = status.get("code").and_then(Value::as_u64).unwrap_or(0);
+			let comment = status.get("comment").and_then(Value::as_str).unwrap_or("Unknown error");
+
+			warn!("OBS request failed - Type: {}, Code: {}, Comment: {}", request_type, code, comment);
+
+			// Return an error event for failed requests
+			return Ok(ObsEvent::UnknownResponse(UnknownResponseData {
+				request_type: request_type.to_string(),
+				data: json!({
+					"error": true,
+					"code": code,
+					"comment": comment
+				}),
+			}));
+		}
+	}
+
+	let response_data = d.get("responseData");
+	if response_data.is_none() {
+		debug!("No responseData in successful response for: {}", request_type);
+		return Ok(ObsEvent::UnknownResponse(UnknownResponseData {
+			request_type: request_type.to_string(),
+			data: json!({"success": true, "no_data": true}),
+		}));
+	}
+
+	let response_data = response_data.ok_or("Missing responseData in response message")?;
 	let event = match request_type {
 		"GetStreamStatus" => {
 			let streaming = response_data.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
