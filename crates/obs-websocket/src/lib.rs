@@ -79,6 +79,7 @@ enum RetryState {
 	CircuitOpen { opened_at: Instant },
 }
 
+#[derive(Debug)]
 pub enum OBSCommand {
 	SendRequest(serde_json::Value),
 	Disconnect,
@@ -135,39 +136,47 @@ impl ObsWebSocket {
 			let mut consecutive_failures = 0;
 			const MAX_CONSECUTIVE_FAILURES: usize = 10;
 
-			while let Some(msg) = stream.next().await {
-				match msg {
-					Ok(TungsteniteMessage::Text(text)) => match process_obs_message(text.to_string()).await {
-						Ok(event) => {
-							consecutive_failures = 0;
-							if let Err(e) = event_tx.send(event) {
-								error!("Failed to send event channel: {}", e);
+			loop {
+				match stream.next().await {
+					Some(msg) => {
+						match msg {
+							Ok(TungsteniteMessage::Text(text)) => match process_obs_message(text.to_string()).await {
+								Ok(event) => {
+									consecutive_failures = 0;
+									if let Err(e) = event_tx.send(event) {
+										error!("Failed to send event channel: {}", e);
+										break;
+									}
+								}
+								Err(e) => {
+									consecutive_failures += 1;
+									warn!("Failed to process OBS message (failure {}/{}): {}", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+									warn!("Raw message that failed: {}", text);
+
+									// If we have too many consecutive failures, something is seriously wrong
+									if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+										error!("Too many consecutive message processing failures. Breaking connection.");
+										break;
+									}
+
+									continue;
+								}
+							},
+							Ok(TungsteniteMessage::Close(_)) => {
+								warn!("Connection closed");
 								break;
 							}
-						}
-						Err(e) => {
-							consecutive_failures += 1;
-							warn!("Failed to process OBS message (failure {}/{}): {}", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
-							warn!("Raw message that failed: {}", text);
-
-							// If we have too many consecutive failures, something is seriously wrong
-							if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-								error!("Too many consecutive message processing failures. Breaking connection.");
+							Err(e) => {
+								error!("WebSocket error: {}", e);
 								break;
 							}
-
-							continue;
+							_ => continue,
 						}
-					},
-					Ok(TungsteniteMessage::Close(_)) => {
-						warn!("Connection closed");
+					}
+					None => {
+						error!("WebSocket stream closed unexpectedly");
 						break;
 					}
-					Err(e) => {
-						error!("WebSocket error: {}", e);
-						break;
-					}
-					_ => continue,
 				}
 			}
 		});
@@ -401,12 +410,14 @@ impl ObsWebSocketWithBroadcast {
 								while obs_client.is_connected() {
 									match obs_client.next_event().await {
 										Ok(event) => {
-											info!("Received new event: Attempting to broadcast!");
+											info!("Received new event: {:?}", event);
 											if event.should_broadcast() {
 												if let Err(e) = broadcaster_for_task.broadcast(event).await {
 													error!("Failed to broadcast event: {}", e);
 												}
 												info!("Successfully broadcasted!");
+											} else {
+												info!("Event should NOT broadcast - skipping (event type ");
 											}
 										}
 										Err(e) => {
