@@ -89,8 +89,8 @@ pub enum OBSCommand {
 /// Core OBS WebSocket client - usable by both daemon and Axum server
 pub struct ObsWebSocket {
 	config: Arc<RwLock<ObsConfig>>,
-	command_tx: Option<tokio::sync::mpsc::UnboundedSender<OBSCommand>>,
-	event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ObsEvent>>,
+	command_tx: Option<tokio::sync::mpsc::Sender<OBSCommand>>,
+	event_rx: Option<tokio::sync::mpsc::Receiver<ObsEvent>>,
 	task_handle: Option<tokio::task::JoinHandle<()>>,
 	request_builder: ObsRequestBuilder,
 }
@@ -125,14 +125,14 @@ impl ObsWebSocket {
 		// Handle authentication
 		{
 			let mut s_g = s_a.lock().await;
-			authenticate(&config.password, &mut *s_g, &mut stream).await?;
+			authenticate(&config.password, &mut s_g, &mut stream).await?;
 			info!("Sucessfully connected!");
-			fetch_init_state(&mut *s_g).await?;
+			fetch_init_state(&mut s_g).await?;
 		}
 
 		// Create channels for communication
-		let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<OBSCommand>();
-		let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<ObsEvent>();
+		let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<OBSCommand>(10);
+		let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ObsEvent>(10);
 
 		// Start the comprehensive polling manager
 		let polling_manager = ObsPollingManager::from_request_slice(r);
@@ -165,10 +165,14 @@ impl ObsWebSocket {
 										match process_obs_message(text.to_string()).await {
 											Ok(event) => {
 												consecutive_failures = 0;
-												match event_tx.send(event) {
+												match event_tx.try_send(event) {
 													Ok(()) => {
 														info!("Successfully sent event to channel");
 														continue;
+													}
+													Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+														consecutive_failures += 1;
+														error!("Message channel full, dropping message");
 													}
 													Err(e) => {
 														error!("Failed to send event to channel: {}", e);
@@ -316,7 +320,7 @@ impl ObsWebSocket {
 	/// Send a request to OBS
 	async fn send_request(&mut self, request: serde_json::Value) -> Result<(), Box<dyn Error + Send + Sync>> {
 		if let Some(ref tx) = self.command_tx {
-			tx.send(OBSCommand::SendRequest(request))?;
+			tx.try_send(OBSCommand::SendRequest(request))?;
 			Ok(())
 		} else {
 			Err("Not connected".into())
@@ -451,11 +455,14 @@ impl ObsWebSocketWithBroadcast {
 	pub async fn handle_next_event(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let event = self.inner.next_event().await?;
 
-		// Broadcast if the event should trigger an update
 		if event.should_broadcast() {
 			if let Err(e) = self.broadcaster.broadcast(event).await {
-				error!("Failed to broadcast status update: {}", e);
+				error!("Failed to broadcast event: {}", e);
+			} else {
+				info!("Successfully broadcasted!");
 			}
+		} else {
+			info!("Event should NOT broadcast - skipping");
 		}
 
 		Ok(())
@@ -481,116 +488,140 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Start the event handling loop with broadcasting
-	pub fn start(&self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) -> BroadcastHandle {
-		let broadcaster = self.broadcaster.clone();
-		let broadcaster_for_task = self.broadcaster.clone();
-		let config = self.inner.config.clone();
+	pub fn start(self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) -> BroadcastHandle {
+		let b_h = self.broadcaster.clone();
 
 		let handle = tokio::spawn(async move {
-			let mut retry_state = RetryState::Active {
-				consecutive_failures: 0,
-				current_delay: retry_config.initial_delay,
-			};
-
-			loop {
-				info!("retry state: {:?}", retry_state);
-				match retry_state {
-					RetryState::Active {
-						consecutive_failures,
-						current_delay,
-					} => {
-						let mut obs_client = ObsWebSocket::new(config.read().await.clone());
-						match obs_client.connect(&requests).await {
-							Ok(_) => {
-								info!("Connected to OBS WebSocket (attempt {} successful)", consecutive_failures + 1);
-
-								// Reset retry state on successful connection
-								retry_state = RetryState::Active {
-									consecutive_failures: 0,
-									current_delay: retry_config.initial_delay,
-								};
-
-								// Event handling loop
-								loop {
-									let c = obs_client.is_connected();
-									if c {
-										match obs_client.next_event().await {
-											Ok(event) => {
-												info!("Received new event: {:?}", event);
-												if event.should_broadcast() {
-													if let Err(e) = broadcaster_for_task.broadcast(event).await {
-														error!("Failed to broadcast event: {}", e);
-													}
-													info!("Successfully broadcasted!");
-												} else {
-													info!("Event should NOT broadcast - skipping (event type ");
-												}
-											}
-											Err(e) => {
-												warn!("OBS WebSocket event error: {}", e);
-												break; // Will trigger reconnect
-											}
-										}
-									} else {
-										warn!("OBS connection lost, will attempt to reconnect");
-										retry_state = RetryState::CircuitOpen { opened_at: Instant::now() };
-										break;
-									}
-								}
-							}
-							Err(e) => {
-								let new_failures = consecutive_failures + 1;
-								error!("Failed to connect to OBS WebSocket (attempt {}): {}", new_failures, e);
-
-								if new_failures >= retry_config.max_consecutive_failures {
-									error!(
-										"Max consecutive failures ({}) reached. Opening circuit breaker for {} seconds",
-										retry_config.max_consecutive_failures,
-										retry_config.circuit_breaker_timeout.as_secs()
-									);
-
-									retry_state = RetryState::CircuitOpen { opened_at: Instant::now() };
-									continue; // Skip the delay, go straight to circuit breaker logic
-								} else {
-									// Calculate next delay with exponential backoff
-									let next_delay = Duration::from_millis((current_delay.as_millis() as f64 * retry_config.backoff_multiplier) as u64).min(retry_config.max_delay);
-
-									warn!(
-										"Will retry in {} seconds (failure {}/{})",
-										current_delay.as_secs(),
-										new_failures,
-										retry_config.max_consecutive_failures
-									);
-
-									retry_state = RetryState::Active {
-										consecutive_failures: new_failures,
-										current_delay: next_delay,
-									};
-
-									tokio::time::sleep(current_delay).await;
-								}
-							}
-						}
-					}
-
-					RetryState::CircuitOpen { opened_at } => {
-						if opened_at.elapsed() >= retry_config.circuit_breaker_timeout {
-							info!("Circuit breaker timeout elapsed, attempting to reconnect to OBS");
-							retry_state = RetryState::Active {
-								consecutive_failures: 0,
-								current_delay: retry_config.initial_delay,
-							};
-						} else {
-							// Wait a bit before checking again
-							warn!("wait 30s before next retry!");
-							tokio::time::sleep(Duration::from_secs(30)).await;
-						}
-					}
-				}
-			}
+			self.connection_manager_loop(requests, retry_config).await;
 		});
 
-		BroadcastHandle { task_handle: handle, broadcaster }
+		BroadcastHandle {
+			task_handle: handle,
+			broadcaster: b_h,
+		}
+	}
+
+	/// Main connection management loop
+	async fn connection_manager_loop(mut self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) {
+		let mut retry_state = RetryState::Active {
+			consecutive_failures: 0,
+			current_delay: retry_config.initial_delay,
+		};
+
+		loop {
+			info!("Connection manager state: {:?}", retry_state);
+
+			match retry_state {
+				RetryState::Active {
+					consecutive_failures,
+					current_delay,
+				} => {
+					retry_state = self.handle_connection_attempt(&requests, &retry_config, consecutive_failures, current_delay).await;
+				}
+				RetryState::CircuitOpen { opened_at } => {
+					retry_state = Self::handle_circuit_breaker(opened_at, &retry_config).await;
+				}
+			}
+		}
+	}
+
+	/// Handle a single connection attempt
+	async fn handle_connection_attempt(
+		&mut self,
+		requests: &[(ObsRequestType, PollingFrequency)],
+		retry_config: &RetryConfig,
+		consecutive_failures: usize,
+		current_delay: Duration,
+	) -> RetryState {
+		match self.connect(requests).await {
+			Ok(_) => {
+				info!("Connected to OBS WebSocket (attempt {} successful)", consecutive_failures + 1);
+
+				// Run the event processing loop for this connection
+				self.event_processing_loop().await;
+
+				// Connection was lost during operation, try to reconnect immediately
+				info!("Connection lost during operation, attempting to reconnect...");
+				self.disconnect().await;
+
+				// Return to active state with reset failure count
+				RetryState::Active {
+					consecutive_failures: 0,
+					current_delay: retry_config.initial_delay,
+				}
+			}
+			Err(e) => Self::handle_connection_failure(e, consecutive_failures, current_delay, retry_config).await,
+		}
+	}
+
+	/// Handle connection failure and determine next retry state
+	async fn handle_connection_failure(error: Box<dyn Error + Send + Sync>, consecutive_failures: usize, current_delay: Duration, retry_config: &RetryConfig) -> RetryState {
+		let new_failures = consecutive_failures + 1;
+		error!("Failed to connect to OBS WebSocket (attempt {}): {}", new_failures, error);
+
+		if new_failures >= retry_config.max_consecutive_failures {
+			error!(
+				"Max consecutive failures ({}) reached. Opening circuit breaker for {} seconds",
+				retry_config.max_consecutive_failures,
+				retry_config.circuit_breaker_timeout.as_secs()
+			);
+
+			RetryState::CircuitOpen { opened_at: Instant::now() }
+		} else {
+			// Calculate next delay with exponential backoff
+			let next_delay = Duration::from_millis((current_delay.as_millis() as f64 * retry_config.backoff_multiplier) as u64).min(retry_config.max_delay);
+
+			warn!(
+				"Will retry in {} seconds (failure {}/{})",
+				current_delay.as_secs(),
+				new_failures,
+				retry_config.max_consecutive_failures
+			);
+
+			tokio::time::sleep(current_delay).await;
+
+			RetryState::Active {
+				consecutive_failures: new_failures,
+				current_delay: next_delay,
+			}
+		}
+	}
+
+	/// Handle circuit breaker logic
+	async fn handle_circuit_breaker(opened_at: Instant, retry_config: &RetryConfig) -> RetryState {
+		if opened_at.elapsed() >= retry_config.circuit_breaker_timeout {
+			info!("Circuit breaker timeout elapsed, attempting to reconnect to OBS");
+			RetryState::Active {
+				consecutive_failures: 0,
+				current_delay: retry_config.initial_delay,
+			}
+		} else {
+			warn!("Circuit breaker open, waiting 30s before next retry!");
+			tokio::time::sleep(Duration::from_secs(30)).await;
+			RetryState::CircuitOpen { opened_at }
+		}
+	}
+
+	/// Process events for an active connection
+	async fn event_processing_loop(&mut self) {
+		loop {
+			// Check if still connected
+			if !self.is_connected() {
+				warn!("OBS connection lost, exiting event processing loop");
+				break;
+			}
+
+			// Try to get the next event
+			match self.handle_next_event().await {
+				Ok(()) => {
+					continue;
+				}
+				Err(e) => {
+					warn!("OBS WebSocket event error: {}", e);
+					break;
+				}
+			}
+		}
 	}
 
 	/// Forward convenience methods to inner client
