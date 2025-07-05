@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 // Connection state machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +96,6 @@ impl StateManager {
 
 		// Only log and update if state actually changed
 		if old_state != new_state {
-			debug!("State transition: {:?} -> {:?} triggered by {:?}", old_state, new_state, event);
 			*state_guard = new_state;
 
 			// Call state change callback if set

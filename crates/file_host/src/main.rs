@@ -67,7 +67,6 @@ async fn main() -> Result<()> {
 		let obs_task_client = client.clone();
 		tokio::spawn(async move {
 			// Log the startup
-			tracing::info!("OBS background handler started");
 
 			// Keep the handle alive and monitor it
 			tokio::select! {

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, MaybeTlsStream};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub async fn authenticate(
 	password: &str,
@@ -30,9 +30,6 @@ pub async fn authenticate(
 
 	// Handle OBS 5.0+ authentication
 	if let (Some(challenge), Some(salt)) = (authentication.get("challenge").and_then(Value::as_str), authentication.get("salt").and_then(Value::as_str)) {
-		info!("Authentication required, generating auth hash...");
-		debug!("Challenge: {}, Salt: {}", challenge, salt);
-
 		// Generate auth hash according to OBS WebSocket protocol
 		let mut hasher = Sha256::new();
 		hasher.update(password.as_bytes());
@@ -56,7 +53,6 @@ pub async fn authenticate(
 			}
 		});
 
-		debug!("Sending authentication: {}", auth_msg);
 		sink.send(TungsteniteMessage::Text(auth_msg.to_string().into())).await?;
 
 		// Wait for authentication response
@@ -65,8 +61,6 @@ pub async fn authenticate(
 			Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
 			None => return Err("WebSocket closed unexpectedly".into()),
 		};
-
-		debug!("Auth response: {:?}", auth_response);
 
 		// Parse the authentication response
 		if let TungsteniteMessage::Text(text) = auth_response {
@@ -102,8 +96,6 @@ pub async fn maybe_identify(
 			}
 		});
 
-		info!("Sending identify message...");
-		debug!("Identify message: {}", identify_msg);
 		sink.send(TungsteniteMessage::Text(identify_msg.to_string().into())).await?;
 
 		let identify_response = match stream.next().await {
@@ -111,8 +103,6 @@ pub async fn maybe_identify(
 			Some(Err(e)) => return Err(format!("WebSocket error: {e}").into()),
 			None => return Err("WebSocket closed unexpectedly".into()),
 		};
-
-		debug!("Identify response: {:?}", identify_response);
 
 		let text = match identify_response {
 			TungsteniteMessage::Text(t) => t,

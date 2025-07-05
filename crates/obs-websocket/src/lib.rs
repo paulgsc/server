@@ -169,13 +169,11 @@ impl ObsWebSocket {
 
 								match msg {
 									Ok(TungsteniteMessage::Text(text)) => {
-										info!("Received text message from OBS");
 										match process_obs_message(text.to_string()).await {
 											Ok(event) => {
 												consecutive_failures = 0;
 												match event_tx.broadcast(event).await {
 													Ok(_) => {
-														info!("Successfully sent event to channel");
 														continue;
 													}
 													Err(e) => {
@@ -199,7 +197,6 @@ impl ObsWebSocket {
 										}
 									}
 									Ok(TungsteniteMessage::Ping(payload)) => {
-										info!("Received ping from OBS, sending pong response");
 										let mut s_g = s_m.lock().await;
 										if let Err(e) = s_g.send(TungsteniteMessage::Pong(payload)).await {
 											error!("Failed to send pong response: {}", e);
@@ -207,7 +204,6 @@ impl ObsWebSocket {
 										}
 									}
 									Ok(TungsteniteMessage::Pong(_)) => {
-										info!("Received pong from OBS - connection is alive");
 									}
 									Ok(TungsteniteMessage::Close(cl)) => {
 										if let Some(fr) = cl {
@@ -244,13 +240,10 @@ impl ObsWebSocket {
 					}
 
 					_ = ping_i.tick() => {
-						info!("Sending  keep-alive ping to OBS");
 						let mut s_g = s_m.lock().await;
 						if let Err(e) = s_g.send(TungsteniteMessage::Ping(vec![].into())).await {
 							error!("Failed to send keep-alive ping: {}", e);
 							break;
-						} else {
-							info!("Keep-alive ping sent successfully");
 						}
 					}
 
@@ -400,14 +393,6 @@ impl ObsWebSocket {
 			handle.as_ref().map_or(false, |h| !h.is_finished())
 		};
 
-		tracing::debug!(
-			has_command_tx,
-			has_event_rx,
-			task_active,
-			connected = has_command_tx && has_event_rx && task_active,
-			"Evaluated is_connected() state"
-		);
-
 		has_command_tx && has_event_rx && task_active
 	}
 
@@ -473,11 +458,7 @@ impl ObsWebSocketWithBroadcast {
 		if event.should_broadcast() {
 			if let Err(e) = self.broadcaster.broadcast(event).await {
 				error!("Failed to broadcast event: {}", e);
-			} else {
-				info!("Successfully broadcasted!");
 			}
-		} else {
-			info!("Event should NOT broadcast - skipping");
 		}
 
 		Ok(())
@@ -525,8 +506,6 @@ impl ObsWebSocketWithBroadcast {
 		};
 
 		loop {
-			info!("Connection manager state: {:?}", retry_state);
-
 			match retry_state {
 				RetryState::Active {
 					consecutive_failures,
@@ -701,7 +680,6 @@ async fn handle_obs_socket(
 						tracing::error!("Failed to send OBS status update: {}", e);
 						break;
 					}
-					tracing::info!("Sent OBS status update to WebSocket client");
 				}
 				Err(e) => {
 					tracing::error!("Failed to serialize OBS status: {}", e);
@@ -714,12 +692,11 @@ async fn handle_obs_socket(
 	let recv_task = tokio::spawn(async move {
 		while let Some(msg_result) = receiver.next().await {
 			match msg_result {
-				Ok(Message::Text(text)) => {
-					tracing::info!("Received WebSocket message: {}", text);
+				Ok(Message::Text(_)) => {
 					// Handle client commands here if needed
 				}
 				Ok(Message::Close(frame)) => {
-					tracing::info!("WebSocket client requested close: {:?}", frame);
+					warn!("WebSocket client requested close: {:?}", frame);
 					break;
 				}
 				Ok(_) => {} // Handle other message types if needed
@@ -733,7 +710,7 @@ async fn handle_obs_socket(
 
 	// Wait for either task to complete
 	let _ = tokio::join!(send_task, recv_task);
-	tracing::info!("WebSocket connection closed");
+	warn!("WebSocket connection closed");
 }
 
 /// Simple client factory for daemon use

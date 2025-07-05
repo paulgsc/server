@@ -18,7 +18,7 @@ use std::{
 	time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -93,7 +93,6 @@ impl Connection<Connecting> {
 	}
 
 	pub fn establish(self, sender: mpsc::Sender<Message>) -> Result<Connection<Connected>, String> {
-		info!("Connection {:?} transitioning from Connecting to {}", self.id, self.state);
 		Ok(Connection {
 			id: self.id,
 			established_at: self.established_at,
@@ -108,7 +107,6 @@ impl Connection<Connecting> {
 impl Connection<Connected> {
 	pub fn update_ping(&mut self) -> Result<(), String> {
 		self.state.last_ping = Instant::now();
-		debug!("Connection {:?} ping updated", self.id);
 		Ok(())
 	}
 
@@ -126,7 +124,6 @@ impl Connection<Connected> {
 	}
 
 	pub fn disconnect(self, reason: String) -> Result<Connection<Disconnected>, String> {
-		info!("Connection {:?} transitioning from Connected to Disconnected: {}", self.id, reason);
 		Ok(Connection {
 			id: self.id,
 			established_at: self.established_at,
@@ -143,7 +140,6 @@ impl Connection<Connected> {
 
 impl Connection<Stale> {
 	pub fn disconnect(self) -> Result<Connection<Disconnected>, String> {
-		info!("Connection {:?} transitioning from Stale to Disconnected", self.id);
 		Ok(Connection {
 			id: self.id,
 			established_at: self.established_at,
@@ -205,22 +201,16 @@ impl EventMessage<Received> {
 			timestamp: Instant::now(),
 			state: Received { raw },
 		};
-		debug!("Message {:?} entering Received state", message.id);
 		message
 	}
 
 	pub fn parse(self) -> Result<EventMessage<Parsed>, EventMessage<ParseFailed>> {
-		info!("Message {:?} attempting transition from Received to Parsed", self.id);
-
 		match serde_json::from_str::<Event>(&self.state.raw) {
-			Ok(event) => {
-				info!("Message {:?} successfully transitioned to Parsed state", self.id);
-				Ok(EventMessage {
-					id: self.id,
-					timestamp: self.timestamp,
-					state: Parsed { event },
-				})
-			}
+			Ok(event) => Ok(EventMessage {
+				id: self.id,
+				timestamp: self.timestamp,
+				state: Parsed { event },
+			}),
 			Err(e) => {
 				error!("Message {:?} failed to parse, transitioning to ParseFailed: {}", self.id, e);
 				Err(EventMessage {
@@ -235,8 +225,6 @@ impl EventMessage<Received> {
 
 impl EventMessage<Parsed> {
 	pub fn validate(self) -> Result<EventMessage<Validated>, EventMessage<ValidationFailed>> {
-		info!("Message {:?} attempting transition from Parsed to Validated", self.id);
-
 		// Add your business logic validation here
 		match &self.state.event {
 			Event::Error { message } if message.is_empty() => {
@@ -249,22 +237,17 @@ impl EventMessage<Parsed> {
 					},
 				})
 			}
-			_ => {
-				info!("Message {:?} successfully validated", self.id);
-				Ok(EventMessage {
-					id: self.id,
-					timestamp: self.timestamp,
-					state: Validated { event: self.state.event },
-				})
-			}
+			_ => Ok(EventMessage {
+				id: self.id,
+				timestamp: self.timestamp,
+				state: Validated { event: self.state.event },
+			}),
 		}
 	}
 }
 
 impl EventMessage<Validated> {
 	pub fn queue(self) -> Result<EventMessage<Queued>, EventMessage<ValidationFailed>> {
-		info!("Message {:?} transitioning from Validated to Queued", self.id);
-
 		// Here you could add queue capacity checks, rate limiting, etc.
 		Ok(EventMessage {
 			id: self.id,
@@ -279,8 +262,6 @@ impl EventMessage<Validated> {
 
 impl EventMessage<Queued> {
 	pub fn start_broadcast(self) -> Result<EventMessage<Broadcasting>, EventMessage<DeliveryFailed>> {
-		info!("Message {:?} transitioning from Queued to Broadcasting", self.id);
-
 		Ok(EventMessage {
 			id: self.id,
 			timestamp: self.timestamp,
@@ -307,8 +288,6 @@ impl EventMessage<Broadcasting> {
 				},
 			})
 		} else {
-			info!("Message {:?} delivery completed - {} delivered, {} failed", self.id, delivered_count, failed_count);
-
 			Ok(EventMessage {
 				id: self.id,
 				timestamp: self.timestamp,
@@ -406,12 +385,7 @@ impl WebSocketFsm {
 
 		// Complete the delivery based on results
 		match broadcasting.complete_delivery(broadcast_result.delivered, broadcast_result.failed) {
-			Ok(delivered) => {
-				info!(
-					"Message {:?} successfully delivered to {} clients, {} failures",
-					message_id, delivered.state.delivered_count, delivered.state.failed_count
-				);
-			}
+			Ok(_) => {}
 			Err(failed) => {
 				error!("Message {:?} delivery failed: {}", message_id, failed.state.error);
 			}
@@ -421,13 +395,10 @@ impl WebSocketFsm {
 	// Execute the actual broadcast and return results
 	async fn execute_broadcast(&self, event: &Event) -> BroadcastResult {
 		match self.event_broadcast.send(event.clone()) {
-			Ok(receiver_count) => {
-				debug!("Event broadcasted to {} receivers", receiver_count);
-				BroadcastResult {
-					delivered: receiver_count,
-					failed: 0,
-				}
-			}
+			Ok(receiver_count) => BroadcastResult {
+				delivered: receiver_count,
+				failed: 0,
+			},
 			Err(e) => {
 				error!("Failed to broadcast event: {}", e);
 				BroadcastResult { delivered: 0, failed: 1 }
@@ -454,7 +425,6 @@ impl WebSocketFsm {
 		// Broadcast client count update
 		let _ = self.event_broadcast.send(Event::ClientCount { count: new_count });
 
-		info!("Client {:?} connected successfully. Total: {}", client_id, new_count);
 		Ok(std::str::from_utf8(&client_id).unwrap().into())
 	}
 
@@ -470,8 +440,6 @@ impl WebSocketFsm {
 			drop(count);
 
 			let _ = self.event_broadcast.send(Event::ClientCount { count: new_count });
-
-			info!("Client {} disconnected successfully. Total: {}", client_id, new_count);
 		}
 		Ok(())
 	}
@@ -534,7 +502,6 @@ impl WebSocketFsm {
 						drop(count);
 
 						let _ = event_broadcast.send(Event::ClientCount { count: new_count });
-						info!("Removed {} timed out clients. Total: {}", removed_count, new_count);
 					}
 				}
 			}
@@ -557,8 +524,6 @@ impl WebSocketFsm {
 
 						if let Err(e) = event_broadcast.send(event) {
 							error!("Failed to broadcast OBS event: {}", e);
-						} else {
-							debug!("OBS event broadcasted to all clients");
 						}
 					}
 					Ok(Err(e)) => match e {
@@ -611,7 +576,7 @@ impl WebSocketFsm {
 						if let Some(connected) = connections_guard.remove(&client_id) {
 							match connected.disconnect("Send failed".to_string()) {
 								Ok(_disconnected) => {
-									info!("Removed failed client: {}", client_id);
+									warn!("Removed failed client: {}", client_id);
 								}
 								Err(e) => {
 									error!("Failed to disconnect client {}: {}", client_id, e);
@@ -697,7 +662,6 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 		match result {
 			Ok(msg) => match msg {
 				Message::Text(text) => {
-					debug!("Received message from {}: {}", client_id, text);
 					state.process_message(&client_id, text).await;
 				}
 				Message::Ping(_) => {
@@ -711,7 +675,7 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 					}
 				}
 				Message::Close(reason) => {
-					info!("Client {} closed: {:?}", client_id, reason);
+					warn!("Client {} closed: {:?}", client_id, reason);
 					break;
 				}
 				_ => {} // Ignore other message types
