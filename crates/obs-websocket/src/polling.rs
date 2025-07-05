@@ -1,12 +1,14 @@
 use futures_util::sink::SinkExt;
 use futures_util::stream::SplitSink;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, WebSocketStream};
-use tracing::{error, info};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 pub type WsSink = SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, TungsteniteMessage>;
+pub type SharedSink = Arc<tokio::sync::Mutex<WsSink>>;
 
 /// Polling frequency levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,87 +230,186 @@ impl ObsPollingManager {
 	}
 
 	/// Main polling loop with configurable requests
-	pub async fn start_polling_loop(mut self, mut sink: WsSink, mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<crate::OBSCommand>) {
+	#[instrument(skip(self, sink, cmd_rx))]
+	pub async fn start_polling_loop(mut self, mut sink: SharedSink, mut cmd_rx: tokio::sync::mpsc::Receiver<crate::OBSCommand>) {
+		info!("Starting polling loop");
+
 		let mut high_freq_timer = interval(self.high_freq_interval);
 		let mut medium_freq_timer = interval(self.medium_freq_interval);
 		let mut low_freq_timer = interval(self.low_freq_interval);
+
+		info!(
+			"Created timers - High: {:?}, Medium: {:?}, Low: {:?}",
+			self.high_freq_interval, self.medium_freq_interval, self.low_freq_interval
+		);
 
 		// Skip the first tick to avoid immediate execution
 		high_freq_timer.tick().await;
 		medium_freq_timer.tick().await;
 		low_freq_timer.tick().await;
 
+		info!("Skipped initial timer ticks, entering main loop");
+
+		let mut loop_counter = 0u64;
+		let mut high_freq_counter = 0u64;
+		let mut medium_freq_counter = 0u64;
+		let mut low_freq_counter = 0u64;
+		let mut cmd_counter = 0u64;
+
 		loop {
+			loop_counter += 1;
+
+			// Log every 100 iterations to show we're alive
+			if loop_counter % 100 == 0 {
+				debug!(
+					"Polling loop iteration {}, counters - High: {}, Medium: {}, Low: {}, Commands: {}",
+					loop_counter, high_freq_counter, medium_freq_counter, low_freq_counter, cmd_counter
+				);
+			}
+
 			tokio::select! {
 				// High frequency polling (1 second)
 				_ = high_freq_timer.tick() => {
+					high_freq_counter += 1;
+					debug!("High frequency timer tick #{}", high_freq_counter);
+
 					if !self.config.high_frequency_requests.is_empty() {
+						trace!("Processing {} high frequency requests", self.config.high_frequency_requests.len());
 						let requests = self.requests.generate_requests(&self.config.high_frequency_requests);
-						if let Err(e) = self.send_requests(&mut sink, requests).await {
-							error!("Failed to send high frequency requests: {}", e);
+						if let Err(e) = self.send_requests(&mut sink, requests, "high_frequency").await {
+							error!("Failed to send high frequency requests (tick #{}): {}", high_freq_counter, e);
+							warn!("Polling loop exiting due to high frequency request failure");
 							return;
 						}
+						trace!("High frequency requests sent successfully");
+					} else {
+						trace!("No high frequency requests configured, skipping");
 					}
 				}
 
 				// Medium frequency polling (5 seconds)
 				_ = medium_freq_timer.tick() => {
+					medium_freq_counter += 1;
+					debug!("Medium frequency timer tick #{}", medium_freq_counter);
+
 					if !self.config.medium_frequency_requests.is_empty() {
+						trace!("Processing {} medium frequency requests", self.config.medium_frequency_requests.len());
 						let requests = self.requests.generate_requests(&self.config.medium_frequency_requests);
-						if let Err(e) = self.send_requests(&mut sink, requests).await {
-							error!("Failed to send medium frequency requests: {}", e);
+						if let Err(e) = self.send_requests(&mut sink, requests, "medium_frequency").await {
+							error!("Failed to send medium frequency requests (tick #{}): {}", medium_freq_counter, e);
+							warn!("Polling loop exiting due to medium frequency request failure");
 							return;
 						}
+						trace!("Medium frequency requests sent successfully");
+					} else {
+						trace!("No medium frequency requests configured, skipping");
 					}
 				}
 
 				// Low frequency polling (30 seconds)
 				_ = low_freq_timer.tick() => {
+					low_freq_counter += 1;
+					info!("Low frequency timer tick #{}", low_freq_counter);
+
 					if !self.config.low_frequency_requests.is_empty() {
+						trace!("Processing {} low frequency requests", self.config.low_frequency_requests.len());
 						let requests = self.requests.generate_requests(&self.config.low_frequency_requests);
-						if let Err(e) = self.send_requests(&mut sink, requests).await {
-							error!("Failed to send low frequency requests: {}", e);
+						if let Err(e) = self.send_requests(&mut sink, requests, "low_frequency").await {
+							error!("Failed to send low frequency requests (tick #{}): {}", low_freq_counter, e);
+							warn!("Polling loop exiting due to low frequency request failure");
 							return;
 						}
+						trace!("Low frequency requests sent successfully");
+					} else {
+						trace!("No low frequency requests configured, skipping");
 					}
 				}
 
 				// Handle manual commands
 				Some(cmd) = cmd_rx.recv() => {
+					cmd_counter += 1;
+					debug!("Received command #{}: {:?}", cmd_counter, cmd);
+
 					match cmd {
 						crate::OBSCommand::SendRequest(req) => {
-							if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
-								error!("Failed to send manual request: {}", e);
+							trace!("Sending manual request: {}", req);
+							let mut s_g = sink.lock().await;
+							if let Err(e) = s_g.send(TungsteniteMessage::Text(req.to_string().into())).await {
+								error!("Failed to send manual request (command #{}): {}", cmd_counter, e);
+								warn!("Polling loop exiting due to manual request send failure");
 								return;
 							}
-							if let Err(e) = sink.flush().await {
-								error!("Failed to flush sink: {}", e);
+							if let Err(e) = s_g.flush().await {
+								error!("Failed to flush sink after manual request (command #{}): {}", cmd_counter, e);
+								warn!("Polling loop exiting due to manual request flush failure");
 								return;
 							}
+							debug!("Manual request sent and flushed successfully");
 						}
 						crate::OBSCommand::Disconnect => {
-							info!("Received disconnect command");
+							info!("Received disconnect command (command #{})", cmd_counter);
+							warn!("Polling loop exiting due to disconnect command");
 							return;
 						}
 					}
+				}
+
+				// This should never happen, but if it does, we want to know
+				else => {
+					error!("All tokio::select! branches completed without matching - this should not happen!");
+					error!("Loop counters at exit - Total: {}, High: {}, Medium: {}, Low: {}, Commands: {}",
+						loop_counter, high_freq_counter, medium_freq_counter, low_freq_counter, cmd_counter);
+					warn!("Polling loop exiting due to unexpected select! completion");
+					return;
 				}
 			}
 		}
 	}
 
 	/// Send a batch of requests to OBS
-	async fn send_requests(&mut self, sink: &mut WsSink, requests: Vec<serde_json::Value>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	async fn send_requests(&mut self, sink: &mut SharedSink, requests: Vec<serde_json::Value>, fq: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+		let rq_cnt = requests.len();
+		trace!("Sending {} {} requests", rq_cnt, fq);
+
 		// TODO: Let's not heap allocate stuff?
 		let mut send_errors = Vec::new();
+		let mut succ = 0;
 
-		for req in requests {
-			if let Err(e) = sink.send(TungsteniteMessage::Text(req.to_string().into())).await {
-				send_errors.push(e);
+		for (i, req) in requests.iter().enumerate() {
+			trace!("Sending request {}/{}: {}", i + 1, rq_cnt, req);
+			let mut s_g = sink.lock().await;
+			match s_g.send(TungsteniteMessage::Text(req.to_string().into())).await {
+				Ok(_) => {
+					succ += 1;
+					trace!("Request {}/{} sent successfully", i + 1, rq_cnt);
+				}
+				Err(e) => {
+					error!("Failed to send request {}/{}: {}", i + 1, rq_cnt, e);
+					send_errors.push(e);
+				}
 			}
 		}
-		sink.flush().await?;
+
+		trace!("Flushing sink after sending {} requests", rq_cnt);
+		let mut s_g = sink.lock().await;
+		match s_g.flush().await {
+			Ok(_) => {
+				debug!(
+					"Successfully sent and flushed {} {} requests ({} successful, {} failed)",
+					rq_cnt,
+					fq,
+					succ,
+					send_errors.len()
+				);
+			}
+			Err(e) => {
+				error!("Failed to flush sink after {} requests: {}", rq_cnt, e);
+				return Err(e.into());
+			}
+		}
 
 		if !send_errors.is_empty() {
+			warn!("Encountered {} send errors out of {} requests", send_errors.len(), rq_cnt);
 			return Err(send_errors.into_iter().next().unwrap().into());
 		}
 		Ok(())

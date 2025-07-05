@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::error::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, MaybeTlsStream};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 /// Represents different types of requests that can be sent to OBS
 #[derive(Debug, Clone, Serialize)]
@@ -755,39 +755,143 @@ pub async fn fetch_init_state(
 }
 
 /// Parse OBS message and return appropriate event
+#[instrument(skip(text), fields(message_len = text.len()))]
 pub async fn process_obs_message(text: String) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
-	let json: Value = serde_json::from_str(&text)?;
-	let op = json.get("op").and_then(Value::as_u64).unwrap_or(99);
+	trace!("Starting to process OBS message of {} bytes", text.len());
+
+	// Parse JSON with detailed error handling
+	let json: Value = match serde_json::from_str(&text) {
+		Ok(json) => {
+			trace!("Successfully parsed JSON from OBS message");
+			json
+		}
+		Err(e) => {
+			error!("Failed to parse JSON from OBS message: {}", e);
+			return Err(format!("JSON parse error: {e}").into());
+		}
+	};
+
+	// Extract op code with detailed logging
+	let op = match json.get("op") {
+		Some(op_value) => {
+			match op_value.as_u64() {
+				Some(op_code) => {
+					debug!("Extracted op code: {}", op_code);
+					op_code
+				}
+				None => {
+					error!("Invalid op field in message: {}", text);
+					99 // Default fallback
+				}
+			}
+		}
+		None => {
+			error!("Missing op field in message: {}", text);
+			99 // Default fallback
+		}
+	};
 
 	debug!("Processing OBS message with op: {}", op);
 
 	let event = match op {
 		0 => {
-			// Hello message
-			let d = json.get("d").and_then(Value::as_object).ok_or("Missing 'd' field in Hello message")?;
-			let obs_version = d.get("obsWebSocketVersion").and_then(Value::as_str).unwrap_or("unknown").to_string();
-
-			ObsEvent::Hello(HelloData { obs_version })
+			info!("Processing Hello message (op=0)");
+			match process_hello_message(&json) {
+				Ok(event) => {
+					info!("Successfully processed Hello message");
+					event
+				}
+				Err(e) => {
+					error!("Failed to process Hello message: {}", e);
+					return Err(e);
+				}
+			}
 		}
 		2 => {
-			// Identified
+			trace!("Identified message JSON: {}", json);
 			ObsEvent::Identified
 		}
 		5 => {
-			// Event from OBS
-			parse_obs_event(&json)?
+			debug!("Processing OBS Event message (op=5)");
+			match parse_obs_event(&json) {
+				Ok(event) => {
+					debug!("Successfully parsed OBS event: {:?}", event);
+					event
+				}
+				Err(e) => {
+					error!("Failed to parse OBS event: {}", e);
+					return Err(format!("OBS event parse error: {}", e).into());
+				}
+			}
 		}
 		7 => {
-			// Request response from OBS
-			parse_obs_response(&json)?
+			debug!("Processing OBS Response message (op=7)");
+			match parse_obs_response(&json) {
+				Ok(response) => {
+					debug!("Successfully parsed OBS response: {:?}", response);
+					response
+				}
+				Err(e) => {
+					error!("Failed to parse OBS response: {}", e);
+					return Err(format!("OBS response parse error: {}", e).into());
+				}
+			}
 		}
 		_ => {
-			warn!("Unknown OBS operation code: {}", op);
+			error!("Unknown op code {} in message: {}", op, text);
 			return Err(format!("Unknown op code: {}", op).into());
 		}
 	};
 
+	trace!("Successfully processed OBS message, returning event: {:?}", event);
 	Ok(event)
+}
+
+/// Helper function to process Hello messages with detailed tracing
+#[instrument(skip(json))]
+fn process_hello_message(json: &Value) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
+	trace!("Extracting 'd' field from Hello message");
+
+	let d = match json.get("d") {
+		Some(d_value) => match d_value.as_object() {
+			Some(d_obj) => {
+				trace!("Found 'd' object with {} fields", d_obj.len());
+				d_obj
+			}
+			None => {
+				error!("'d' field exists but is not an object: {:?}", d_value);
+				return Err("'d' field is not an object in Hello message".into());
+			}
+		},
+		None => {
+			error!("Missing 'd' field in Hello message");
+			return Err("Missing 'd' field in Hello message".into());
+		}
+	};
+
+	trace!("Extracting obsWebSocketVersion from Hello message");
+	let obs_version = match d.get("obsWebSocketVersion") {
+		Some(version_value) => match version_value.as_str() {
+			Some(version_str) => {
+				info!("Found OBS WebSocket version: {}", version_str);
+				version_str.to_string()
+			}
+			None => {
+				warn!("obsWebSocketVersion exists but is not a string: {:?}", version_value);
+				warn!("Using 'unknown' as fallback version");
+				"unknown".to_string()
+			}
+		},
+		None => {
+			warn!("No obsWebSocketVersion field found in Hello message");
+			warn!("Using 'unknown' as fallback version");
+			"unknown".to_string()
+		}
+	};
+
+	let hello_data = HelloData { obs_version };
+	info!("Created Hello event with version: {}", hello_data.obs_version);
+	Ok(ObsEvent::Hello(hello_data))
 }
 
 /// Parse OBS event messages (op: 5)

@@ -41,31 +41,31 @@ async fn main() -> Result<()> {
 	let polling_requests = [
 		// High frequency - every second
 		(ObsRequestType::StreamStatus, PollingFrequency::High),
-		// (ObsRequestType::RecordStatus, PollingFrequency::High),
-		// (ObsRequestType::CurrentScene, PollingFrequency::High),
-		// (ObsRequestType::Stats, PollingFrequency::High),
-		// // Medium frequency - every 5 seconds
-		// (ObsRequestType::SceneList, PollingFrequency::Medium),
-		// (ObsRequestType::SourcesList, PollingFrequency::Medium),
-		// (ObsRequestType::InputsList, PollingFrequency::Medium),
-		// (ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
-		// (ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
-		// (ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
-		// // Low frequency - every 30 seconds
-		// (ObsRequestType::ProfileList, PollingFrequency::Low),
-		// (ObsRequestType::CurrentProfile, PollingFrequency::Low),
-		// (ObsRequestType::Version, PollingFrequency::Low),
+		(ObsRequestType::RecordStatus, PollingFrequency::High),
+		(ObsRequestType::CurrentScene, PollingFrequency::High),
+		(ObsRequestType::Stats, PollingFrequency::High),
+		// Medium frequency - every 5 seconds
+		(ObsRequestType::SceneList, PollingFrequency::Medium),
+		(ObsRequestType::SourcesList, PollingFrequency::Medium),
+		(ObsRequestType::InputsList, PollingFrequency::Medium),
+		(ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
+		(ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
+		(ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
+		// Low frequency - every 30 seconds
+		(ObsRequestType::ProfileList, PollingFrequency::Low),
+		(ObsRequestType::CurrentProfile, PollingFrequency::Low),
+		(ObsRequestType::Version, PollingFrequency::Low),
 	];
 
 	let retry_config = RetryConfig::default();
 
 	let client = Arc::new(create_obs_client_with_broadcast(obs_config));
 	let obs_client = client.clone();
+	let obs_handle = obs_client.start(Box::new(polling_requests), retry_config);
 
-	let obs_handle = {
+	let obs_monitor = {
+		let obs_task_client = client.clone();
 		tokio::spawn(async move {
-			let handle = obs_client.start(Box::new(polling_requests), retry_config);
-
 			// Log the startup
 			tracing::info!("OBS background handler started");
 
@@ -73,15 +73,17 @@ async fn main() -> Result<()> {
 			tokio::select! {
 				_ = tokio::signal::ctrl_c() => {
 					tracing::info!("Received shutdown signal, stopping OBS handler...");
-					handle.stop().await;
+					obs_task_client.disconnect().await;
+					obs_handle.stop().await;
 				}
 				_ = async {
 					// Monitor the handle and restart if it fails
 					loop {
-						if !handle.is_running() {
+						if !obs_handle.is_running() {
 							tracing::error!("OBS background handler stopped unexpectedly");
 							break;
 						}
+						tracing::warn!("going to sleep for 30s");
 						tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 					}
 				} => {
@@ -130,8 +132,9 @@ async fn main() -> Result<()> {
 
 	// Clean shutdown
 	tracing::info!("Shutting down...");
-	obs_handle.abort();
-	let _ = obs_handle.await;
+	client.disconnect().await;
+	obs_monitor.abort();
+	let _ = obs_monitor.await;
 
 	Ok(())
 }

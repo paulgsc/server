@@ -17,6 +17,7 @@ obs-websocket  = { workspace = true }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
+async-broadcast = "0.7.2"
 bytes = { version = "1.10.1" }
 clap = { workspace = true }
 dotenv = { workspace = true }

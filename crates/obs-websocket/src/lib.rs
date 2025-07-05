@@ -11,6 +11,7 @@ mod polling;
 pub use messages::ObsEvent;
 pub use polling::{ObsRequestType, PollingFrequency};
 
+use async_broadcast::{broadcast, Receiver, Sender};
 use auth::authenticate;
 use axum::{
 	extract::{ws::WebSocketUpgrade, State},
@@ -89,9 +90,9 @@ pub enum OBSCommand {
 /// Core OBS WebSocket client - usable by both daemon and Axum server
 pub struct ObsWebSocket {
 	config: Arc<RwLock<ObsConfig>>,
-	command_tx: Option<tokio::sync::mpsc::Sender<OBSCommand>>,
-	event_rx: Option<tokio::sync::mpsc::Receiver<ObsEvent>>,
-	task_handle: Option<tokio::task::JoinHandle<()>>,
+	command_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<OBSCommand>>>>,
+	event_rx: Arc<RwLock<Option<Receiver<ObsEvent>>>>,
+	task_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 	request_builder: ObsRequestBuilder,
 }
 
@@ -101,15 +102,15 @@ impl ObsWebSocket {
 	fn new(config: ObsConfig) -> Self {
 		Self {
 			config: Arc::new(RwLock::new(config)),
-			command_tx: None,
-			event_rx: None,
-			task_handle: None,
+			command_tx: Arc::new(RwLock::new(None)),
+			event_rx: Arc::new(RwLock::new(None)),
+			task_handle: Arc::new(RwLock::new(None)),
 			request_builder: ObsRequestBuilder::new(),
 		}
 	}
 
 	/// Connect with comprehensive polling using the new polling module
-	async fn connect(&mut self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
+	async fn connect(&self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let config = self.config.read().await;
 		let url = format!("ws://{}:{}", config.host, config.port);
 
@@ -118,6 +119,7 @@ impl ObsWebSocket {
 		let (ws_stream, _) = connect_async(url).await?;
 		let (sink, mut stream) = ws_stream.split();
 
+		// TODO: should this be RWLock
 		let s_a = Arc::new(tokio::sync::Mutex::new(sink));
 		let s_p = s_a.clone();
 		let s_m = s_a.clone();
@@ -132,7 +134,13 @@ impl ObsWebSocket {
 
 		// Create channels for communication
 		let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<OBSCommand>(10);
-		let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ObsEvent>(10);
+		let (mut event_tx, event_rx): (Sender<ObsEvent>, Receiver<ObsEvent>) = broadcast(3);
+
+		event_tx.set_overflow(true);
+		event_tx.set_await_active(false);
+
+		*self.command_tx.write().await = Some(cmd_tx);
+		*self.event_rx.write().await = Some(event_rx);
 
 		// Start the comprehensive polling manager
 		let polling_manager = ObsPollingManager::from_request_slice(r);
@@ -165,14 +173,10 @@ impl ObsWebSocket {
 										match process_obs_message(text.to_string()).await {
 											Ok(event) => {
 												consecutive_failures = 0;
-												match event_tx.try_send(event) {
-													Ok(()) => {
+												match event_tx.broadcast(event).await {
+													Ok(_) => {
 														info!("Successfully sent event to channel");
 														continue;
-													}
-													Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-														consecutive_failures += 1;
-														error!("Message channel full, dropping message");
 													}
 													Err(e) => {
 														error!("Failed to send event to channel: {}", e);
@@ -278,23 +282,22 @@ impl ObsWebSocket {
 			}
 		});
 
-		self.command_tx = Some(cmd_tx);
-		self.event_rx = Some(event_rx);
-		self.task_handle = Some(combined_task);
+		*self.task_handle.write().await = Some(combined_task);
 
 		info!("Connected to OBS WebSocket with comprehensive polling");
 		Ok(())
 	}
 
 	/// Get the next event from OBS
-	async fn next_event(&mut self) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
-		if let Some(ref mut rx) = self.event_rx {
+	async fn next_event(&self) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
+		let mut event_rx = self.event_rx.write().await;
+		if let Some(ref mut rx) = *event_rx {
 			match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
-				Ok(Some(event)) => {
+				Ok(Ok(event)) => {
 					return Ok(event);
 				}
-				Ok(None) => {
-					error!("Event channel closed - OBS connection lost");
+				Ok(Err(e)) => {
+					error!("Event channel closed - OBS connection lost: {}", e);
 					return Err("Event channel closed".into());
 				}
 				Err(_) => {
@@ -313,13 +316,14 @@ impl ObsWebSocket {
 	}
 
 	/// Update configuration
-	async fn update_config(&mut self, config: ObsConfig) {
+	async fn update_config(&self, config: ObsConfig) {
 		*self.config.write().await = config;
 	}
 
 	/// Send a request to OBS
 	async fn send_request(&mut self, request: serde_json::Value) -> Result<(), Box<dyn Error + Send + Sync>> {
-		if let Some(ref tx) = self.command_tx {
+		let tx = self.command_tx.read().await;
+		if let Some(ref tx) = *tx {
 			tx.try_send(OBSCommand::SendRequest(request))?;
 			Ok(())
 		} else {
@@ -388,10 +392,13 @@ impl ObsWebSocket {
 	}
 
 	/// Check if connection is alive
-	fn is_connected(&self) -> bool {
-		let has_command_tx = self.command_tx.is_some();
-		let has_event_rx = self.event_rx.is_some();
-		let task_active = self.task_handle.as_ref().map_or(false, |h| !h.is_finished());
+	async fn is_connected(&self) -> bool {
+		let has_command_tx = self.command_tx.read().await.is_some();
+		let has_event_rx = self.event_rx.read().await.is_some();
+		let task_active = {
+			let handle = self.task_handle.read().await;
+			handle.as_ref().map_or(false, |h| !h.is_finished())
+		};
 
 		tracing::debug!(
 			has_command_tx,
@@ -405,54 +412,62 @@ impl ObsWebSocket {
 	}
 
 	/// Disconnect and cleanup
-	async fn disconnect(&mut self) {
-		if let Some(tx) = self.command_tx.take() {
+	async fn disconnect(&self) {
+		if let Some(tx) = self.command_tx.read().await.as_ref() {
 			let _ = tx.send(OBSCommand::Disconnect);
 		}
 
-		if let Some(handle) = self.task_handle.take() {
+		if let Some(handle) = self.task_handle.write().await.take() {
+			handle.abort();
 			let _ = handle.await;
 		}
 
-		self.event_rx = None;
+		*self.command_tx.write().await = None;
+		*self.event_rx.write().await = None;
 	}
 }
 
 /// Axum-specific wrapper that adds broadcasting functionality
 pub struct ObsWebSocketWithBroadcast {
 	inner: ObsWebSocket,
-	broadcaster: async_broadcast::Sender<ObsEvent>,
-	_receiver: async_broadcast::Receiver<ObsEvent>,
+	broadcaster: Sender<ObsEvent>,
+	receiver: Receiver<ObsEvent>,
 }
 
 impl ObsWebSocketWithBroadcast {
 	/// Create new broadcaster-enabled OBS client
 	pub fn new(config: ObsConfig) -> Self {
-		let (sender, receiver) = async_broadcast::broadcast(100);
+		let (mut sender, receiver) = broadcast(3);
+
+		// Returns an error immediately if no active receivers exist
+		sender.set_await_active(false);
+		// Drops the oldest message instead of blocking.
+		sender.set_overflow(true);
+
 		Self {
 			inner: ObsWebSocket::new(config),
 			broadcaster: sender,
-			_receiver: receiver,
+			receiver: receiver,
 		}
 	}
 
 	/// Connect to OBS
-	pub async fn connect(&mut self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
+	pub async fn connect(&self, r: &[(ObsRequestType, PollingFrequency)]) -> Result<(), Box<dyn Error + Send + Sync>> {
 		self.inner.connect(r).await
 	}
 
 	/// Disconnect from OBS
-	pub async fn disconnect(&mut self) {
+	pub async fn disconnect(&self) {
 		self.inner.disconnect().await;
 	}
 
 	/// Is Connected to OBS (true | false)
-	pub fn is_connected(&self) -> bool {
-		self.inner.is_connected()
+	pub async fn is_connected(&self) -> bool {
+		self.inner.is_connected().await
 	}
 
 	/// Handle the next event and broadcast status updates
-	pub async fn handle_next_event(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+	pub async fn handle_next_event(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
 		let event = self.inner.next_event().await?;
 
 		if event.should_broadcast() {
@@ -469,13 +484,13 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Update configuration
-	pub async fn update_config(&mut self, config: ObsConfig) {
+	pub async fn update_config(&self, config: ObsConfig) {
 		self.inner.update_config(config).await;
 	}
 
 	/// Get a new receiver for status updates
-	pub fn subscribe(&self) -> async_broadcast::Receiver<ObsEvent> {
-		self.broadcaster.new_receiver()
+	pub fn subscribe(&self) -> Receiver<ObsEvent> {
+		self.receiver.clone()
 	}
 
 	/// Create WebSocket handler for Axum
@@ -488,11 +503,12 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Start the event handling loop with broadcasting
-	pub fn start(self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) -> BroadcastHandle {
+	pub fn start(self: Arc<Self>, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) -> BroadcastHandle {
+		let c = self.clone();
 		let b_h = self.broadcaster.clone();
 
 		let handle = tokio::spawn(async move {
-			self.connection_manager_loop(requests, retry_config).await;
+			c.connection_manager_loop(requests, retry_config).await;
 		});
 
 		BroadcastHandle {
@@ -502,7 +518,7 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Main connection management loop
-	async fn connection_manager_loop(mut self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) {
+	async fn connection_manager_loop(&self, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) {
 		let mut retry_state = RetryState::Active {
 			consecutive_failures: 0,
 			current_delay: retry_config.initial_delay,
@@ -527,21 +543,21 @@ impl ObsWebSocketWithBroadcast {
 
 	/// Handle a single connection attempt
 	async fn handle_connection_attempt(
-		&mut self,
+		&self,
 		requests: &[(ObsRequestType, PollingFrequency)],
 		retry_config: &RetryConfig,
 		consecutive_failures: usize,
 		current_delay: Duration,
 	) -> RetryState {
 		match self.connect(requests).await {
-			Ok(_) => {
+			Ok(()) => {
 				info!("Connected to OBS WebSocket (attempt {} successful)", consecutive_failures + 1);
 
 				// Run the event processing loop for this connection
 				self.event_processing_loop().await;
 
 				// Connection was lost during operation, try to reconnect immediately
-				info!("Connection lost during operation, attempting to reconnect...");
+				warn!("Connection lost during operation, attempting to reconnect...");
 				self.disconnect().await;
 
 				// Return to active state with reset failure count
@@ -603,10 +619,10 @@ impl ObsWebSocketWithBroadcast {
 	}
 
 	/// Process events for an active connection
-	async fn event_processing_loop(&mut self) {
+	async fn event_processing_loop(&self) {
 		loop {
 			// Check if still connected
-			if !self.is_connected() {
+			if !self.is_connected().await {
 				warn!("OBS connection lost, exiting event processing loop");
 				break;
 			}
@@ -669,7 +685,7 @@ impl ObsWebSocketWithBroadcast {
 // Private implementation for Axum WebSocket handling
 async fn handle_obs_socket(
 	socket: axum::extract::ws::WebSocket,
-	mut obs_receiver: async_broadcast::Receiver<ObsEvent>, // THIS WAS MISSING!
+	mut obs_receiver: Receiver<ObsEvent>, // THIS WAS MISSING!
 ) {
 	use axum::extract::ws::Message;
 	use futures_util::{sink::SinkExt, stream::StreamExt};
@@ -732,12 +748,12 @@ pub fn create_obs_client_with_broadcast(config: ObsConfig) -> ObsWebSocketWithBr
 
 pub struct BroadcastHandle {
 	task_handle: tokio::task::JoinHandle<()>,
-	broadcaster: async_broadcast::Sender<ObsEvent>,
+	broadcaster: Sender<ObsEvent>,
 }
 
 impl BroadcastHandle {
 	/// Get a new receiver for status updates
-	pub fn subscribe(&self) -> async_broadcast::Receiver<ObsEvent> {
+	pub fn subscribe(&self) -> Receiver<ObsEvent> {
 		self.broadcaster.new_receiver()
 	}
 

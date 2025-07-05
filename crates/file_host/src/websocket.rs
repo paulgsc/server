@@ -550,6 +550,7 @@ impl WebSocketFsm {
 			info!("OBS event bridge started");
 
 			loop {
+				// TODO: remove the hardcoded value and impl configuration value
 				match tokio::time::timeout(Duration::from_secs(45), obs_receiver.recv()).await {
 					Ok(Ok(obs_event)) => {
 						let event = Event::ObsStatus { status: obs_event };
@@ -560,12 +561,19 @@ impl WebSocketFsm {
 							debug!("OBS event broadcasted to all clients");
 						}
 					}
-					Ok(Err(e)) => {
-						warn!("OBS receiver error: {}", e);
-						break;
-					}
+					Ok(Err(e)) => match e {
+						async_broadcast::RecvError::Closed => {
+							error!("OBS receiver error: {}", e);
+							break;
+						}
+						async_broadcast::RecvError::Overflowed(count) => {
+							warn!("OBS receiver lagged behind by {} messages, continuing", count);
+							continue;
+						}
+					},
 					Err(_) => {
 						warn!("OBS receiver timed out waiting for event");
+						warn!("Is OBS connected {}", obs_client.is_connected().await);
 						continue;
 					}
 				}
