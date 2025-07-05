@@ -87,11 +87,21 @@ pub enum OBSCommand {
 	Disconnect,
 }
 
+struct TracedReceiver<T> {
+	inner: Receiver<T>,
+}
+
+impl<T> Drop for TracedReceiver<T> {
+	fn drop(&mut self) {
+		warn!("🚨 Receiver dropped here:");
+	}
+}
+
 /// Core OBS WebSocket client - usable by both daemon and Axum server
 pub struct ObsWebSocket {
 	config: Arc<RwLock<ObsConfig>>,
 	command_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<OBSCommand>>>>,
-	event_rx: Arc<RwLock<Option<Receiver<ObsEvent>>>>,
+	event_rx: Arc<RwLock<Option<TracedReceiver<ObsEvent>>>>,
 	task_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 	request_builder: ObsRequestBuilder,
 }
@@ -140,7 +150,7 @@ impl ObsWebSocket {
 		event_tx.set_await_active(false);
 
 		*self.command_tx.write().await = Some(cmd_tx);
-		*self.event_rx.write().await = Some(event_rx);
+		*self.event_rx.write().await = Some(TracedReceiver { inner: event_rx });
 
 		// Start the comprehensive polling manager
 		let polling_manager = ObsPollingManager::from_request_slice(r);
@@ -285,7 +295,7 @@ impl ObsWebSocket {
 	async fn next_event(&self) -> Result<ObsEvent, Box<dyn Error + Send + Sync>> {
 		let mut event_rx = self.event_rx.write().await;
 		if let Some(ref mut rx) = *event_rx {
-			match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+			match tokio::time::timeout(Duration::from_secs(30), rx.inner.recv()).await {
 				Ok(Ok(event)) => {
 					return Ok(event);
 				}
@@ -416,7 +426,7 @@ impl ObsWebSocket {
 pub struct ObsWebSocketWithBroadcast {
 	inner: ObsWebSocket,
 	broadcaster: Sender<ObsEvent>,
-	receiver: Receiver<ObsEvent>,
+	receiver: TracedReceiver<ObsEvent>,
 }
 
 impl ObsWebSocketWithBroadcast {
@@ -432,7 +442,7 @@ impl ObsWebSocketWithBroadcast {
 		Self {
 			inner: ObsWebSocket::new(config),
 			broadcaster: sender,
-			receiver: receiver,
+			receiver: TracedReceiver { inner: receiver },
 		}
 	}
 
@@ -471,7 +481,7 @@ impl ObsWebSocketWithBroadcast {
 
 	/// Get a new receiver for status updates
 	pub fn subscribe(&self) -> Receiver<ObsEvent> {
-		self.receiver.clone()
+		self.receiver.inner.clone()
 	}
 
 	/// Create WebSocket handler for Axum
@@ -612,7 +622,7 @@ impl ObsWebSocketWithBroadcast {
 					continue;
 				}
 				Err(e) => {
-					warn!("OBS WebSocket event error: {}", e);
+					error!("OBS WebSocket event error: {}", e);
 					break;
 				}
 			}
@@ -662,10 +672,7 @@ impl ObsWebSocketWithBroadcast {
 }
 
 // Private implementation for Axum WebSocket handling
-async fn handle_obs_socket(
-	socket: axum::extract::ws::WebSocket,
-	mut obs_receiver: Receiver<ObsEvent>, // THIS WAS MISSING!
-) {
+async fn handle_obs_socket(socket: axum::extract::ws::WebSocket, mut obs_receiver: Receiver<ObsEvent>) {
 	use axum::extract::ws::Message;
 	use futures_util::{sink::SinkExt, stream::StreamExt};
 
