@@ -9,7 +9,6 @@ edition.workspace = true
 
 [dependencies]
 # path crates
-nest  = { workspace = true }
 sdk  = { workspace = true }
 gsheet_derive  = { workspace = true }
 enum-name-derive  = { workspace = true }
@@ -37,6 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
 polars = { version =  "0.46.0", features = ["lazy"] }
 tokio-stream = "0.1.17"
+dashmap = "6.1.0"
 
 [lints]
 workspace = true

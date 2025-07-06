@@ -10,7 +10,7 @@ use file_host::rate_limiter::sliding_window::{rate_limit_middleware, SlidingWind
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	record_cache_op, timed_operation,
-	websocket::init_websocket,
+	websocket::{init_websocket, Event, NowPlaying, WebSocketFsm},
 	CacheStore,
 };
 use file_host::{AppState, Config};
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(get_repos(context.clone())?)
-		.merge(post_now_playing(context.clone())?);
+		.merge(post_now_playing(ws_state.clone())?);
 
 	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
 		Arc::new(SlidingWindowRateLimiter::new(context.clone())),

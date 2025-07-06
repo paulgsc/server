@@ -9,11 +9,12 @@ use axum::{
 	routing::get,
 	Router,
 };
+use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
 use obs_websocket::ObsEvent;
 use serde::{Deserialize, Serialize};
 use std::{
-	collections::HashMap,
+	collections::HashSet,
 	fmt,
 	sync::Arc,
 	time::{Duration, Instant},
@@ -21,24 +22,65 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum EventType {
+	ObsStatus,
+	ClientCount,
+	Ping,
+	Pong,
+	Error,
+	TabMetaData,
+}
+
+#[derive(Clone, Serialize, Debug, Deserialize)]
+pub struct NowPlaying {
+	title: String,
+	channel: String,
+	video_id: String,
+	current_time: u32,
+	duration: u32,
+	thumbnail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[serde(rename_all = "camelCase")]
 pub enum Event {
-	#[serde(rename = "obsStatus")]
 	ObsStatus { status: ObsEvent },
-	#[serde(rename = "clientCount")]
+	TabMetaData { data: NowPlaying },
 	ClientCount { count: usize },
-	#[serde(rename = "ping")]
 	Ping,
-	#[serde(rename = "pong")]
 	Pong,
-	#[serde(rename = "error")]
 	Error { message: String },
+	Subscribe { event_types: Vec<EventType> },
+	Unsubscribe { event_types: Vec<EventType> },
+}
+
+impl Event {
+	pub fn get_type(&self) -> EventType {
+		match self {
+			Self::Ping => EventType::Ping,
+			Self::Pong => EventType::Pong,
+			Self::Error { .. } => EventType::Error,
+			Self::Subscribe { .. } => EventType::Ping,
+			Self::Unsubscribe { .. } => EventType::Ping,
+			Self::ClientCount { .. } => EventType::ClientCount,
+			Self::ObsStatus { .. } => EventType::ObsStatus,
+			Self::TabMetaData { .. } => EventType::TabMetaData,
+		}
+	}
+}
+
+impl From<NowPlaying> for Event {
+	fn from(data: NowPlaying) -> Self {
+		Event::TabMetaData { data }
+	}
 }
 
 #[derive(Debug, Clone)]
 pub enum ConnectionState {
-	Active { last_ping: Instant, sender: Sender<Message> },
+	Active { last_ping: Instant },
 	Stale { last_ping: Instant, reason: String },
 	Disconnected { reason: String, disconnected_at: Instant },
 }
@@ -65,26 +107,25 @@ pub struct Connection {
 	pub id: [u8; 32],
 	pub established_at: Instant,
 	pub state: ConnectionState,
+	pub sender: Sender<Event>,
+	pub subscriptions: HashSet<EventType>,
 }
 
 // FSM Transitions - Strictly Enforced
 impl Connection {
-	pub fn new() -> Self {
+	pub fn new(sender: Sender<Event>) -> Self {
+		let mut subscriptions = HashSet::new();
+		subscriptions.insert(EventType::Ping);
+		subscriptions.insert(EventType::Pong);
+		subscriptions.insert(EventType::Error);
+
 		Self {
 			id: generate_uuid(),
 			established_at: Instant::now(),
-			state: ConnectionState::Active {
-				last_ping: Instant::now(),
-				sender: broadcast(100).0, // Increased buffer size
-			},
-		}
-	}
-
-	pub fn activate(&mut self, sender: Sender<Message>) {
-		self.state = ConnectionState::Active {
-			last_ping: Instant::now(),
+			state: ConnectionState::Active { last_ping: Instant::now() },
 			sender,
-		};
+			subscriptions,
+		}
 	}
 
 	pub fn update_ping(&mut self) -> Result<(), String> {
@@ -94,6 +135,18 @@ impl Connection {
 				Ok(())
 			}
 			_ => Err("Cannot update ping on non-active connection".to_string()),
+		}
+	}
+
+	pub fn subscribe(&mut self, event_types: Vec<EventType>) {
+		for t in event_types {
+			self.subscriptions.insert(t);
+		}
+	}
+
+	pub fn unsubscribe(&mut self, event_types: Vec<EventType>) {
+		for t in event_types {
+			self.subscriptions.remove(&t);
 		}
 	}
 
@@ -126,16 +179,17 @@ impl Connection {
 		}
 	}
 
-	pub async fn send_event(&self, event: &Event) -> Result<(), String> {
-		match &self.state {
-			ConnectionState::Active { sender, .. } => {
-				let msg = serde_json::to_string(event).map_err(|e| format!("Serialize error: {}", e))?;
+	pub fn is_subscribed_to(&self, event_type: &EventType) -> bool {
+		self.subscriptions.contains(event_type)
+	}
 
-				sender.broadcast(Message::Text(msg)).await.map_err(|e| format!("Send error: {}", e))?;
-				Ok(())
-			}
-			_ => Err("Cannot send to non-active connection".to_string()),
+	pub async fn send_event(&self, event: Event) -> Result<(), String> {
+		if !self.is_active() {
+			return Err("Cannot send to non-active connection".to_string());
 		}
+
+		self.sender.broadcast(event).await.map_err(|_| "Failed to send event to client channel".to_string())?;
+		Ok(())
 	}
 }
 
@@ -227,13 +281,10 @@ impl EventMessage {
 #[derive(Clone)]
 pub struct WebSocketFsm {
 	// Active connections - only Connected state stored here
-	connections: Arc<RwLock<HashMap<String, Connection>>>,
+	connections: Arc<DashMap<String, Connection>>,
 
 	// Event broadcaster
 	sender: Sender<Event>,
-
-	// Keep a persistent receiver to prevent channel closure
-	_persistent_receiver: Arc<tokio::sync::RwLock<Receiver<Event>>>,
 
 	// Client count for metrics
 	client_count: Arc<RwLock<usize>>,
@@ -241,15 +292,50 @@ pub struct WebSocketFsm {
 
 impl WebSocketFsm {
 	pub fn new() -> Self {
-		let (mut sender, persistent_receiver) = broadcast(100);
+		let (mut sender, mut receiver) = broadcast::<Event>(100);
 
 		sender.set_await_active(true);
 		sender.set_overflow(true);
 
+		let connections = Arc::new(DashMap::<String, Connection>::new());
+		let conn_fan = connections.clone();
+
+		tokio::spawn(async move {
+			loop {
+				match receiver.recv().await {
+					Ok(event) => {
+						let event_type = event.get_type();
+
+						for entry in conn_fan.iter() {
+							let conn = entry.value();
+
+							if conn.is_active() && conn.is_subscribed_to(&event_type) {
+								match conn.send_event(event.clone()).await {
+									Ok(_) => {}
+									Err(e) => {
+										warn!("Failed to send event to client {:?}: {}", conn.id, e);
+									}
+								}
+							}
+						}
+					}
+					Err(e) => match e {
+						async_broadcast::RecvError::Closed => {
+							error!("OBS reciever channel closed: {}", e);
+							break;
+						}
+						async_broadcast::RecvError::Overflowed(count) => {
+							warn!("OBS receiver lagged behind by {} messages, continuing", count);
+							continue;
+						}
+					},
+				}
+			}
+		});
+
 		Self {
-			connections: Arc::new(RwLock::new(HashMap::new())),
+			connections,
 			sender,
-			_persistent_receiver: Arc::new(tokio::sync::RwLock::new(persistent_receiver)),
 			client_count: Arc::new(RwLock::new(0)),
 		}
 	}
@@ -273,12 +359,24 @@ impl WebSocketFsm {
 			}
 		};
 
-		// Handle pong separately - update connection state
-		if let Some(Event::Pong) = message.get_event() {
-			if let Err(e) = self.update_client_ping(client_id).await {
-				warn!("Failed to update ping for client {}: {}", client_id, e);
+		if let Some(event) = message.get_event() {
+			match event {
+				Event::Pong => {
+					if let Err(e) = self.update_client_ping(client_id).await {
+						warn!("Failed to update ping for client {}: {}", client_id, e);
+					}
+					return;
+				}
+				Event::Subscribe { event_types } => {
+					self.handle_subscription(client_id, event_types.clone(), true).await;
+					return;
+				}
+				Event::Unsubscribe { event_types } => {
+					self.handle_subscription(client_id, event_types.clone(), false).await;
+					return;
+				}
+				_ => {}
 			}
-			return;
 		}
 
 		// Validate
@@ -298,7 +396,17 @@ impl WebSocketFsm {
 		}
 	}
 
-	async fn broadcast_event(&self, event: &Event) -> ProcessResult {
+	async fn handle_subscription(&self, client_id: &str, event_types: Vec<EventType>, subscribe: bool) {
+		if let Some(mut conn) = self.connections.get_mut(client_id) {
+			if subscribe {
+				conn.subscribe(event_types.clone());
+			} else {
+				conn.unsubscribe(event_types.clone());
+			}
+		}
+	}
+
+	pub async fn broadcast_event(&self, event: &Event) -> ProcessResult {
 		let receiver_count = self.sender.receiver_count();
 
 		match self.sender.broadcast(event.clone()).await {
@@ -315,33 +423,27 @@ impl WebSocketFsm {
 
 	// Add new connection through FSM
 	pub async fn add_connection(&self, client_id: &str) -> Result<Receiver<Event>, String> {
-		let mut connection = Connection::new();
-		let (mut sender, _) = broadcast(100); // This is for individual client messages, not events
+		let (mut sender, receiver) = broadcast::<Event>(100); // This is for individual client messages, not events
 
 		sender.set_await_active(true);
 		sender.set_overflow(true);
 
-		connection.activate(sender);
+		let connection = Connection::new(sender);
 
-		self.connections.write().await.insert(client_id.to_string(), connection);
-
+		self.connections.insert(client_id.to_string(), connection);
 		self.update_client_count_and_broadcast(1).await;
 
 		// Return a receiver for the main event broadcast
-		Ok(self.sender.new_receiver())
+		Ok(receiver)
 	}
 
 	// Remove connection through FSM
 	pub async fn remove_connection(&self, client_id: &str, reason: String) -> Result<(), String> {
-		let mut connections = self.connections.write().await;
-
-		if let Some(mut connection) = connections.remove(client_id) {
+		if let Some((_, mut connection)) = self.connections.remove(client_id) {
 			connection.disconnect(reason)?;
-
-			drop(connections);
+			drop(connection);
 			self.update_client_count_and_broadcast(-1).await;
 		}
-
 		Ok(())
 	}
 
@@ -372,29 +474,26 @@ impl WebSocketFsm {
 				let mut stale_clients = Vec::new();
 
 				// Find stale connections
-				{
-					let mut connections_guard = connections.write().await;
-					for (client_id, connection) in connections_guard.iter_mut() {
-						if connection.is_stale(timeout) {
-							if let Err(e) = connection.mark_stale("Timeout".to_string()) {
-								error!("Failed to mark client {} as stale: {}", client_id, e);
-							} else {
-								stale_clients.push(client_id.clone());
-							}
+				for mut entry in connections.iter_mut() {
+					let conn = entry.value_mut();
+					if conn.is_stale(timeout) {
+						if let Err(e) = conn.mark_stale("Timeout".to_string()) {
+							error!("Failed to mark client {:?} as stale: {}", conn.id, e);
+						} else {
+							stale_clients.push(conn.id.clone());
 						}
 					}
 				}
 
 				// Remove stale connections through FSM
 				if !stale_clients.is_empty() {
-					let mut connections_guard = connections.write().await;
 					let mut removed_count = 0;
 
 					for client_id in stale_clients {
-						if let Some(mut connection) = connections_guard.remove(&client_id) {
-							if connection.disconnect("Timeout".to_string()).is_ok() {
+						if let Some((_, mut conn)) = connections.remove(std::str::from_utf8(&client_id).unwrap()) {
+							if conn.disconnect("Timeout".to_string()).is_ok() {
 								removed_count += 1;
-								warn!("Client {} timed out and disconnected", client_id);
+								warn!("Client {:?} timed out and disconnected", client_id);
 							}
 						}
 					}
@@ -468,19 +567,17 @@ impl WebSocketFsm {
 	}
 
 	async fn send_error_to_client(&self, client_id: &str, error: &str) {
-		let connections = self.connections.read().await;
-		if let Some(connection) = connections.get(client_id) {
+		if let Some(connection) = self.connections.get(client_id) {
 			let error_event = Event::Error { message: error.to_string() };
-			let _ = connection.send_event(&error_event).await;
+			let _ = connection.send_event(error_event).await;
 		}
 	}
 
 	async fn update_client_ping(&self, client_id: &str) -> Result<(), String> {
-		let mut connections = self.connections.write().await;
-		if let Some(connection) = connections.get_mut(client_id) {
+		if let Some(mut connection) = self.connections.get_mut(client_id) {
 			connection.update_ping()
 		} else {
-			Err(format!("Client {} not found", client_id))
+			Err(format!("Client {:?} not found", client_id))
 		}
 	}
 

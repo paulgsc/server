@@ -7,14 +7,15 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod streaming_service;
+pub mod websocket;
 // pub mod image_processing;
 pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
 pub mod routes;
 pub mod utils;
-pub mod websocket;
 
+pub use crate::websocket::{Event, NowPlaying, WebSocketFsm};
 pub use config::*;
 pub use metrics::{CACHE_OPERATIONS, OPERATION_DURATION};
 pub use routes::*;
