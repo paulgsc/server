@@ -75,7 +75,7 @@ impl Connection {
 			established_at: Instant::now(),
 			state: ConnectionState::Active {
 				last_ping: Instant::now(),
-				sender: broadcast(10).0,
+				sender: broadcast(100).0, // Increased buffer size
 			},
 		}
 	}
@@ -221,13 +221,19 @@ impl EventMessage {
 	}
 }
 
+// TODO: FIX BELOW
+// *********** Code above is working vvvvvvvvvvvvvvvv Code below is now working for reason
+
 #[derive(Clone)]
 pub struct WebSocketFsm {
 	// Active connections - only Connected state stored here
 	connections: Arc<RwLock<HashMap<String, Connection>>>,
 
 	// Event broadcaster
-	event_broadcast: Sender<Event>,
+	sender: Sender<Event>,
+
+	// Keep a persistent receiver to prevent channel closure
+	_persistent_receiver: Arc<tokio::sync::RwLock<Receiver<Event>>>,
 
 	// Client count for metrics
 	client_count: Arc<RwLock<usize>>,
@@ -235,11 +241,15 @@ pub struct WebSocketFsm {
 
 impl WebSocketFsm {
 	pub fn new() -> Self {
-		let (event_broadcast, _) = broadcast(10);
+		let (mut sender, persistent_receiver) = broadcast(100);
+
+		sender.set_await_active(true);
+		sender.set_overflow(true);
 
 		Self {
 			connections: Arc::new(RwLock::new(HashMap::new())),
-			event_broadcast,
+			sender,
+			_persistent_receiver: Arc::new(tokio::sync::RwLock::new(persistent_receiver)),
 			client_count: Arc::new(RwLock::new(0)),
 		}
 	}
@@ -289,9 +299,9 @@ impl WebSocketFsm {
 	}
 
 	async fn broadcast_event(&self, event: &Event) -> ProcessResult {
-		let receiver_count = self.event_broadcast.receiver_count();
+		let receiver_count = self.sender.receiver_count();
 
-		match self.event_broadcast.broadcast(event.clone()).await {
+		match self.sender.broadcast(event.clone()).await {
 			Ok(_) => ProcessResult {
 				delivered: receiver_count,
 				failed: 0,
@@ -304,9 +314,12 @@ impl WebSocketFsm {
 	}
 
 	// Add new connection through FSM
-	pub async fn add_connection(&self, client_id: &str) -> Result<Receiver<Message>, String> {
+	pub async fn add_connection(&self, client_id: &str) -> Result<Receiver<Event>, String> {
 		let mut connection = Connection::new();
-		let (sender, receiver) = broadcast(10);
+		let (mut sender, _) = broadcast(100); // This is for individual client messages, not events
+
+		sender.set_await_active(true);
+		sender.set_overflow(true);
 
 		connection.activate(sender);
 
@@ -314,7 +327,8 @@ impl WebSocketFsm {
 
 		self.update_client_count_and_broadcast(1).await;
 
-		Ok(receiver)
+		// Return a receiver for the main event broadcast
+		Ok(self.sender.new_receiver())
 	}
 
 	// Remove connection through FSM
@@ -341,14 +355,14 @@ impl WebSocketFsm {
 		let new_count = *count;
 		drop(count);
 
-		let _ = self.event_broadcast.broadcast(Event::ClientCount { count: new_count }).await;
+		let _ = self.sender.broadcast(Event::ClientCount { count: new_count }).await;
 	}
 
 	// FSM-aware timeout checker
 	pub fn start_timeout_monitor(&self, timeout: Duration) {
 		let connections = self.connections.clone();
 		let client_count = self.client_count.clone();
-		let event_broadcast = self.event_broadcast.clone();
+		let sender = self.sender.clone();
 
 		tokio::spawn(async move {
 			let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -391,34 +405,44 @@ impl WebSocketFsm {
 						let new_count = *count;
 						drop(count);
 
-						let _ = event_broadcast.broadcast(Event::ClientCount { count: new_count }).await;
+						let _ = sender.broadcast(Event::ClientCount { count: new_count }).await;
 					}
 				}
 			}
 		});
 	}
 
-	// OBS Bridge - FSM compliant
 	pub fn bridge_obs_events(&self, obs_client: Arc<obs_websocket::ObsWebSocketWithBroadcast>) {
-		let event_broadcast = self.event_broadcast.clone();
+		let sender = self.sender.clone();
 
 		tokio::spawn(async move {
 			let mut obs_receiver = obs_client.subscribe();
 			info!("OBS event bridge started");
 
 			loop {
-				// TODO: remove the hardcoded value and impl configuration value
 				match tokio::time::timeout(Duration::from_secs(45), obs_receiver.recv()).await {
 					Ok(Ok(obs_event)) => {
 						let event = Event::ObsStatus { status: obs_event };
 
-						if let Err(e) = event_broadcast.broadcast(event).await {
-							error!("Failed to broadcast OBS event: {}", e);
+						// Always try to broadcast - the persistent receiver should keep the channel open
+						match sender.broadcast(event.clone()).await {
+							Ok(_) => {
+								// Successfully broadcasted
+							}
+							Err(e) => {
+								error!("Event broadcast channel closed unexpectedly: {}", e);
+								error!("Receiver count: {}", sender.receiver_count());
+								error!("Is closed: {}", sender.is_closed());
+
+								// This shouldn't happen with persistent receiver, but let's handle it
+								tokio::time::sleep(Duration::from_millis(100)).await;
+								continue;
+							}
 						}
 					}
 					Ok(Err(e)) => match e {
 						async_broadcast::RecvError::Closed => {
-							error!("OBS receiver error: {}", e);
+							error!("OBS receiver channel closed: {}", e);
 							break;
 						}
 						async_broadcast::RecvError::Overflowed(count) => {
@@ -427,8 +451,13 @@ impl WebSocketFsm {
 						}
 					},
 					Err(_) => {
-						warn!("OBS receiver timed out waiting for event");
-						warn!("Is OBS connected {}", obs_client.is_connected().await);
+						// Timeout waiting for OBS event
+						let is_connected = obs_client.is_connected().await;
+						if !is_connected {
+							warn!("OBS connection lost, bridge will retry when reconnected");
+							// Sleep a bit longer when disconnected to avoid busy waiting
+							tokio::time::sleep(Duration::from_secs(5)).await;
+						}
 						continue;
 					}
 				}
@@ -471,7 +500,7 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 	let client_id = generate_uuid();
 
 	// Add connection through FSM
-	let mut message_receiver = match state.add_connection(std::str::from_utf8(&client_id).unwrap().into()).await {
+	let mut event_receiver = match state.add_connection(std::str::from_utf8(&client_id).unwrap().into()).await {
 		Ok(rx) => rx,
 		Err(e) => {
 			error!("Failed to add connection: {}", e);
@@ -486,13 +515,21 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 		error!("Failed to send initial ping: {}", e);
 	}
 
-	// Forward messages from channel to websocket
+	// Forward events from broadcast channel to websocket
 	let forward_task = {
 		let client_id = client_id.clone();
 		tokio::spawn(async move {
-			while let Ok(msg) = message_receiver.recv().await {
+			while let Ok(event) = event_receiver.recv().await {
+				let msg = match serde_json::to_string(&event) {
+					Ok(json) => Message::Text(json),
+					Err(e) => {
+						error!("Failed to serialize event for client {:?}: {}", client_id, e);
+						continue;
+					}
+				};
+
 				if let Err(e) = sender.send(msg).await {
-					error!("Failed to forward message to client {:?}: {}", client_id, e);
+					error!("Failed to forward event to client {:?}: {}", client_id, e);
 					break;
 				}
 			}
