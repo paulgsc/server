@@ -1,4 +1,5 @@
 use crate::utils::generate_uuid;
+use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
 	extract::{
 		ws::{Message, WebSocket, WebSocketUpgrade},
@@ -17,7 +18,7 @@ use std::{
 	sync::Arc,
 	time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,269 +36,187 @@ pub enum Event {
 	Error { message: String },
 }
 
-pub struct Connecting;
-pub struct Connected {
-	pub sender: mpsc::Sender<Message>,
-	pub last_ping: Instant,
-}
-pub struct Stale {
-	pub sender: mpsc::Sender<Message>,
-	pub last_ping: Instant,
-	pub reason: String,
-}
-pub struct Disconnected {
-	pub reason: String,
+#[derive(Debug, Clone)]
+pub enum ConnectionState {
+	Active { last_ping: Instant, sender: Sender<Message> },
+	Stale { last_ping: Instant, reason: String },
+	Disconnected { reason: String, disconnected_at: Instant },
 }
 
-impl fmt::Display for Connecting {
+impl fmt::Display for ConnectionState {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "State: Connecting")
-	}
-}
-
-impl fmt::Display for Connected {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "State: Connected (last ping: {:?})", self.last_ping)
-	}
-}
-
-impl fmt::Display for Stale {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "State: Stale (last ping: {:?}, reason: {})", self.last_ping, self.reason)
-	}
-}
-
-impl fmt::Display for Disconnected {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "State: Disconnected (reason: {})", self.reason)
+		match self {
+			Self::Active { last_ping, .. } => {
+				write!(f, "Active (last_ping: {:?})", last_ping)
+			}
+			Self::Stale { last_ping, reason } => {
+				write!(f, "Stale (last_ping: {:?}, reason: {})", last_ping, reason)
+			}
+			Self::Disconnected { reason, disconnected_at } => {
+				write!(f, "Disconnected (reason: {}, at: {:?})", reason, disconnected_at)
+			}
+		}
 	}
 }
 
 // Connection FSM container
 #[derive(Debug)]
-pub struct Connection<S> {
+pub struct Connection {
 	pub id: [u8; 32],
 	pub established_at: Instant,
-	pub state: S,
+	pub state: ConnectionState,
 }
 
 // FSM Transitions - Strictly Enforced
-impl Connection<Connecting> {
+impl Connection {
 	pub fn new() -> Self {
-		let connection = Self {
+		Self {
 			id: generate_uuid(),
 			established_at: Instant::now(),
-			state: Connecting,
-		};
-		connection
-	}
-
-	pub fn establish(self, sender: mpsc::Sender<Message>) -> Result<Connection<Connected>, String> {
-		Ok(Connection {
-			id: self.id,
-			established_at: self.established_at,
-			state: Connected {
-				sender,
+			state: ConnectionState::Active {
 				last_ping: Instant::now(),
+				sender: broadcast(10).0,
 			},
-		})
+		}
 	}
-}
 
-impl Connection<Connected> {
+	pub fn activate(&mut self, sender: Sender<Message>) {
+		self.state = ConnectionState::Active {
+			last_ping: Instant::now(),
+			sender,
+		};
+	}
+
 	pub fn update_ping(&mut self) -> Result<(), String> {
-		self.state.last_ping = Instant::now();
+		match &mut self.state {
+			ConnectionState::Active { last_ping, .. } => {
+				*last_ping = Instant::now();
+				Ok(())
+			}
+			_ => Err("Cannot update ping on non-active connection".to_string()),
+		}
+	}
+
+	pub fn mark_stale(&mut self, reason: String) -> Result<(), String> {
+		match &self.state {
+			ConnectionState::Active { last_ping, .. } => {
+				self.state = ConnectionState::Stale { last_ping: *last_ping, reason };
+				Ok(())
+			}
+			_ => Err("Can only mark active connections as stale".to_string()),
+		}
+	}
+
+	pub fn disconnect(&mut self, reason: String) -> Result<(), String> {
+		self.state = ConnectionState::Disconnected {
+			reason,
+			disconnected_at: Instant::now(),
+		};
 		Ok(())
 	}
 
-	pub fn mark_stale(self, reason: String) -> Result<Connection<Stale>, String> {
-		warn!("{:?} transitioning from {} to Stale: {}", self.id, self.state, reason);
-		Ok(Connection {
-			id: self.id,
-			established_at: self.established_at,
-			state: Stale {
-				sender: self.state.sender,
-				last_ping: self.state.last_ping,
-				reason,
-			},
-		})
+	pub fn is_active(&self) -> bool {
+		matches!(self.state, ConnectionState::Active { .. })
 	}
 
-	pub fn disconnect(self, reason: String) -> Result<Connection<Disconnected>, String> {
-		Ok(Connection {
-			id: self.id,
-			established_at: self.established_at,
-			state: Disconnected { reason },
-		})
+	pub fn is_stale(&self, timeout: Duration) -> bool {
+		match &self.state {
+			ConnectionState::Active { last_ping, .. } => Instant::now().duration_since(*last_ping) > timeout,
+			_ => false,
+		}
 	}
 
 	pub async fn send_event(&self, event: &Event) -> Result<(), String> {
-		let msg = serde_json::to_string(event).map_err(|e| format!("Serialize error: {}", e))?;
+		match &self.state {
+			ConnectionState::Active { sender, .. } => {
+				let msg = serde_json::to_string(event).map_err(|e| format!("Serialize error: {}", e))?;
 
-		self.state.sender.send(Message::Text(msg)).await.map_err(|e| format!("Send error: {}", e))
+				sender.broadcast(Message::Text(msg)).await.map_err(|e| format!("Send error: {}", e))?;
+				Ok(())
+			}
+			_ => Err("Cannot send to non-active connection".to_string()),
+		}
 	}
-}
-
-impl Connection<Stale> {
-	pub fn disconnect(self) -> Result<Connection<Disconnected>, String> {
-		Ok(Connection {
-			id: self.id,
-			established_at: self.established_at,
-			state: Disconnected {
-				reason: format!("Stale connection: {}", self.state.reason),
-			},
-		})
-	}
-}
-
-// Message states
-pub struct Received {
-	pub raw: String,
-}
-pub struct Parsed {
-	pub event: Event,
-}
-pub struct Validated {
-	pub event: Event,
-}
-pub struct Queued {
-	pub event: Event,
-	pub queued_at: Instant,
-}
-pub struct Broadcasting {
-	pub event: Event,
-	pub started_at: Instant,
-}
-pub struct Delivered {
-	pub event: Event,
-	pub delivered_count: usize,
-	pub failed_count: usize,
-	pub completed_at: Instant,
-}
-pub struct DeliveryFailed {
-	pub event: Event,
-	pub error: String,
-	pub failed_at: Instant,
-}
-pub struct ParseFailed {
-	pub error: String,
-}
-pub struct ValidationFailed {
-	pub error: String,
 }
 
 // Message FSM container
-pub struct EventMessage<S> {
+#[derive(Debug)]
+pub enum MessageState {
+	Received { raw: String },
+	Parsed { event: Event },
+	Validated { event: Event },
+	Processed { event: Event, result: ProcessResult },
+	Failed { error: String },
+}
+
+#[derive(Debug)]
+pub struct ProcessResult {
+	pub delivered: usize,
+	pub failed: usize,
+}
+
+#[derive(Debug)]
+pub struct EventMessage {
 	pub id: [u8; 32],
 	pub timestamp: Instant,
-	pub state: S,
+	pub state: MessageState,
 }
 
 // FSM Transitions with Result handling
-impl EventMessage<Received> {
+impl EventMessage {
 	pub fn new(raw: String) -> Self {
 		let message = Self {
 			id: generate_uuid(),
 			timestamp: Instant::now(),
-			state: Received { raw },
+			state: MessageState::Received { raw },
 		};
 		message
 	}
 
-	pub fn parse(self) -> Result<EventMessage<Parsed>, EventMessage<ParseFailed>> {
-		match serde_json::from_str::<Event>(&self.state.raw) {
-			Ok(event) => Ok(EventMessage {
-				id: self.id,
-				timestamp: self.timestamp,
-				state: Parsed { event },
-			}),
-			Err(e) => {
-				error!("Message {:?} failed to parse, transitioning to ParseFailed: {}", self.id, e);
-				Err(EventMessage {
-					id: self.id,
-					timestamp: self.timestamp,
-					state: ParseFailed { error: e.to_string() },
-				})
-			}
+	pub fn parse(&mut self) -> Result<(), String> {
+		match &self.state {
+			MessageState::Received { raw } => match serde_json::from_str::<Event>(raw) {
+				Ok(event) => {
+					self.state = MessageState::Parsed { event };
+					Ok(())
+				}
+				Err(e) => {
+					let error = format!("Parse error: {}", e);
+					self.state = MessageState::Failed { error: error.clone() };
+					Err(error)
+				}
+			},
+			_ => Err("Can only parse received messages".to_string()),
 		}
 	}
-}
 
-impl EventMessage<Parsed> {
-	pub fn validate(self) -> Result<EventMessage<Validated>, EventMessage<ValidationFailed>> {
-		// Add your business logic validation here
-		match &self.state.event {
-			Event::Error { message } if message.is_empty() => {
-				error!("Message {:?} validation failed: empty error message", self.id);
-				Err(EventMessage {
-					id: self.id,
-					timestamp: self.timestamp,
-					state: ValidationFailed {
-						error: "Error event cannot have empty message".to_string(),
-					},
-				})
-			}
-			_ => Ok(EventMessage {
-				id: self.id,
-				timestamp: self.timestamp,
-				state: Validated { event: self.state.event },
-			}),
+	pub fn validate(&mut self) -> Result<(), String> {
+		match &self.state {
+			MessageState::Parsed { event } => match event {
+				Event::Error { message } if message.is_empty() => {
+					let error = "Error event cannot have empty message".to_string();
+					self.state = MessageState::Failed { error: error.clone() };
+					Err(error)
+				}
+				_ => {
+					self.state = MessageState::Validated { event: event.clone() };
+					Ok(())
+				}
+			},
+			_ => Err("Can only validate parsed messages".to_string()),
 		}
 	}
-}
 
-impl EventMessage<Validated> {
-	pub fn queue(self) -> Result<EventMessage<Queued>, EventMessage<ValidationFailed>> {
-		// Here you could add queue capacity checks, rate limiting, etc.
-		Ok(EventMessage {
-			id: self.id,
-			timestamp: self.timestamp,
-			state: Queued {
-				event: self.state.event,
-				queued_at: Instant::now(),
-			},
-		})
+	pub fn mark_processed(&mut self, result: ProcessResult) {
+		if let MessageState::Validated { event } = &self.state {
+			self.state = MessageState::Processed { event: event.clone(), result };
+		}
 	}
-}
 
-impl EventMessage<Queued> {
-	pub fn start_broadcast(self) -> Result<EventMessage<Broadcasting>, EventMessage<DeliveryFailed>> {
-		Ok(EventMessage {
-			id: self.id,
-			timestamp: self.timestamp,
-			state: Broadcasting {
-				event: self.state.event,
-				started_at: Instant::now(),
-			},
-		})
-	}
-}
-
-impl EventMessage<Broadcasting> {
-	pub fn complete_delivery(self, delivered_count: usize, failed_count: usize) -> Result<EventMessage<Delivered>, EventMessage<DeliveryFailed>> {
-		if delivered_count == 0 && failed_count > 0 {
-			error!("Message {:?} delivery completely failed - {} failures, 0 delivered", self.id, failed_count);
-
-			Err(EventMessage {
-				id: self.id,
-				timestamp: self.timestamp,
-				state: DeliveryFailed {
-					event: self.state.event,
-					error: format!("All {} delivery attempts failed", failed_count),
-					failed_at: Instant::now(),
-				},
-			})
-		} else {
-			Ok(EventMessage {
-				id: self.id,
-				timestamp: self.timestamp,
-				state: Delivered {
-					event: self.state.event,
-					delivered_count,
-					failed_count,
-					completed_at: Instant::now(),
-				},
-			})
+	pub fn get_event(&self) -> Option<&Event> {
+		match &self.state {
+			MessageState::Parsed { event } | MessageState::Validated { event } | MessageState::Processed { event, .. } => Some(event),
+			_ => None,
 		}
 	}
 }
@@ -305,10 +224,10 @@ impl EventMessage<Broadcasting> {
 #[derive(Clone)]
 pub struct WebSocketFsm {
 	// Active connections - only Connected state stored here
-	connections: Arc<RwLock<HashMap<String, Connection<Connected>>>>,
+	connections: Arc<RwLock<HashMap<String, Connection>>>,
 
 	// Event broadcaster
-	event_broadcast: broadcast::Sender<Event>,
+	event_broadcast: Sender<Event>,
 
 	// Client count for metrics
 	client_count: Arc<RwLock<usize>>,
@@ -316,7 +235,7 @@ pub struct WebSocketFsm {
 
 impl WebSocketFsm {
 	pub fn new() -> Self {
-		let (event_broadcast, _) = broadcast::channel(1000);
+		let (event_broadcast, _) = broadcast(10);
 
 		Self {
 			connections: Arc::new(RwLock::new(HashMap::new())),
@@ -331,21 +250,21 @@ impl WebSocketFsm {
 
 	// Process incoming message through FSM pipeline with proper error handling
 	pub async fn process_message(&self, client_id: &str, raw_message: String) {
-		let message = EventMessage::new(raw_message);
+		let mut message = EventMessage::new(raw_message);
 		let message_id = message.id;
 
 		// Parse
-		let parsed = match message.parse() {
+		match message.parse() {
 			Ok(p) => p,
 			Err(failed) => {
-				error!("Message {:?} parse failed for client {}: {}", message_id, client_id, failed.state.error);
-				self.send_error_to_client(client_id, &failed.state.error).await;
+				error!("Message {:?} parse failed for client {}: {}", message_id, client_id, failed);
+				self.send_error_to_client(client_id, &failed).await;
 				return;
 			}
 		};
 
 		// Handle pong separately - update connection state
-		if matches!(parsed.state.event, Event::Pong) {
+		if let Some(Event::Pong) = message.get_event() {
 			if let Err(e) = self.update_client_ping(client_id).await {
 				warn!("Failed to update ping for client {}: {}", client_id, e);
 			}
@@ -353,95 +272,76 @@ impl WebSocketFsm {
 		}
 
 		// Validate
-		let validated = match parsed.validate() {
+		match message.validate() {
 			Ok(v) => v,
 			Err(failed) => {
-				error!("Message {:?} validation failed for client {}: {}", message_id, client_id, failed.state.error);
-				self.send_error_to_client(client_id, &failed.state.error).await;
+				error!("Message {:?} validation failed for client {}: {}", message_id, client_id, failed);
+				self.send_error_to_client(client_id, &failed).await;
 				return;
 			}
 		};
 
-		// Queue
-		let queued = match validated.queue() {
-			Ok(q) => q,
-			Err(failed) => {
-				error!("Message {:?} queueing failed for client {}: {}", message_id, client_id, failed.state.error);
-				return;
-			}
-		};
-
-		// Start broadcasting
-		let broadcasting = match queued.start_broadcast() {
-			Ok(b) => b,
-			Err(failed) => {
-				error!("Message {:?} failed to start broadcast: {}", message_id, failed.state.error);
-				return;
-			}
-		};
-
-		// Execute the actual broadcast
-		let broadcast_result = self.execute_broadcast(&broadcasting.state.event).await;
-
-		// Complete the delivery based on results
-		match broadcasting.complete_delivery(broadcast_result.delivered, broadcast_result.failed) {
-			Ok(_) => {}
-			Err(failed) => {
-				error!("Message {:?} delivery failed: {}", message_id, failed.state.error);
-			}
+		// Process (broadcast)
+		if let Some(event) = message.get_event() {
+			let result = self.broadcast_event(event).await;
+			message.mark_processed(result);
 		}
 	}
 
-	// Execute the actual broadcast and return results
-	async fn execute_broadcast(&self, event: &Event) -> BroadcastResult {
-		match self.event_broadcast.send(event.clone()) {
-			Ok(receiver_count) => BroadcastResult {
+	async fn broadcast_event(&self, event: &Event) -> ProcessResult {
+		let receiver_count = self.event_broadcast.receiver_count();
+
+		match self.event_broadcast.broadcast(event.clone()).await {
+			Ok(_) => ProcessResult {
 				delivered: receiver_count,
 				failed: 0,
 			},
 			Err(e) => {
 				error!("Failed to broadcast event: {}", e);
-				BroadcastResult { delivered: 0, failed: 1 }
+				ProcessResult { delivered: 0, failed: 1 }
 			}
 		}
 	}
 
 	// Add new connection through FSM
-	pub async fn add_connection(&self, sender: mpsc::Sender<Message>) -> Result<String, String> {
-		let connecting = Connection::new();
-		let client_id = connecting.id;
+	pub async fn add_connection(&self, client_id: &str) -> Result<Receiver<Message>, String> {
+		let mut connection = Connection::new();
+		let (sender, receiver) = broadcast(10);
 
-		let connected = connecting.establish(sender).map_err(|e| format!("Failed to establish connection: {}", e))?;
+		connection.activate(sender);
 
-		// Store only Connected connections
-		self.connections.write().await.insert(std::str::from_utf8(&client_id).unwrap().into(), connected);
+		self.connections.write().await.insert(client_id.to_string(), connection);
 
-		// Update count and broadcast
-		let mut count = self.client_count.write().await;
-		*count += 1;
-		let new_count = *count;
-		drop(count);
+		self.update_client_count_and_broadcast(1).await;
 
-		// Broadcast client count update
-		let _ = self.event_broadcast.send(Event::ClientCount { count: new_count });
-
-		Ok(std::str::from_utf8(&client_id).unwrap().into())
+		Ok(receiver)
 	}
 
 	// Remove connection through FSM
 	pub async fn remove_connection(&self, client_id: &str, reason: String) -> Result<(), String> {
-		if let Some(connected) = self.connections.write().await.remove(client_id) {
-			let _disconnected = connected.disconnect(reason).map_err(|e| format!("Failed to disconnect: {}", e))?;
+		let mut connections = self.connections.write().await;
 
-			// Update count and broadcast
-			let mut count = self.client_count.write().await;
-			*count = count.saturating_sub(1);
-			let new_count = *count;
-			drop(count);
+		if let Some(mut connection) = connections.remove(client_id) {
+			connection.disconnect(reason)?;
 
-			let _ = self.event_broadcast.send(Event::ClientCount { count: new_count });
+			drop(connections);
+			self.update_client_count_and_broadcast(-1).await;
 		}
+
 		Ok(())
+	}
+
+	async fn update_client_count_and_broadcast(&self, delta: isize) {
+		let mut count = self.client_count.write().await;
+		if delta > 0 {
+			*count += delta as usize;
+		} else {
+			*count = count.saturating_sub((-delta) as usize)
+		}
+		let new_count = *count;
+		drop(count);
+
+		let _ = self.event_broadcast.broadcast(Event::ClientCount { count: new_count }).await;
 	}
 
 	// FSM-aware timeout checker
@@ -455,45 +355,35 @@ impl WebSocketFsm {
 
 			loop {
 				interval.tick().await;
-				let now = Instant::now();
 				let mut stale_clients = Vec::new();
 
 				// Find stale connections
 				{
-					let connections_guard = connections.read().await;
-					for (client_id, connection) in connections_guard.iter() {
-						if now.duration_since(connection.state.last_ping) > timeout {
-							stale_clients.push(client_id.clone());
+					let mut connections_guard = connections.write().await;
+					for (client_id, connection) in connections_guard.iter_mut() {
+						if connection.is_stale(timeout) {
+							if let Err(e) = connection.mark_stale("Timeout".to_string()) {
+								error!("Failed to mark client {} as stale: {}", client_id, e);
+							} else {
+								stale_clients.push(client_id.clone());
+							}
 						}
 					}
 				}
 
 				// Remove stale connections through FSM
 				if !stale_clients.is_empty() {
-					let removed_count = {
-						let mut connections_guard = connections.write().await;
-						let mut removed = 0;
+					let mut connections_guard = connections.write().await;
+					let mut removed_count = 0;
 
-						for client_id in stale_clients {
-							if let Some(connected) = connections_guard.remove(&client_id) {
-								match connected.mark_stale("Timeout".to_string()) {
-									Ok(stale) => match stale.disconnect() {
-										Ok(_disconnected) => {
-											removed += 1;
-											warn!("Client {} timed out and disconnected", client_id);
-										}
-										Err(e) => {
-											error!("Failed to disconnect stale client {}: {}", client_id, e);
-										}
-									},
-									Err(e) => {
-										error!("Failed to mark client {} as stale: {}", client_id, e);
-									}
-								}
+					for client_id in stale_clients {
+						if let Some(mut connection) = connections_guard.remove(&client_id) {
+							if connection.disconnect("Timeout".to_string()).is_ok() {
+								removed_count += 1;
+								warn!("Client {} timed out and disconnected", client_id);
 							}
 						}
-						removed
-					};
+					}
 
 					if removed_count > 0 {
 						let mut count = client_count.write().await;
@@ -501,7 +391,7 @@ impl WebSocketFsm {
 						let new_count = *count;
 						drop(count);
 
-						let _ = event_broadcast.send(Event::ClientCount { count: new_count });
+						let _ = event_broadcast.broadcast(Event::ClientCount { count: new_count }).await;
 					}
 				}
 			}
@@ -522,7 +412,7 @@ impl WebSocketFsm {
 					Ok(Ok(obs_event)) => {
 						let event = Event::ObsStatus { status: obs_event };
 
-						if let Err(e) = event_broadcast.send(event) {
+						if let Err(e) = event_broadcast.broadcast(event).await {
 							error!("Failed to broadcast OBS event: {}", e);
 						}
 					}
@@ -548,47 +438,6 @@ impl WebSocketFsm {
 		});
 	}
 
-	// Start the main broadcast loop
-	pub fn start_broadcast_loop(&self) {
-		let connections = self.connections.clone();
-		let mut event_receiver = self.event_broadcast.subscribe();
-
-		tokio::spawn(async move {
-			while let Ok(event) = event_receiver.recv().await {
-				// Why do we need a vec dst?
-				let mut failed_clients = Vec::new();
-
-				// Send to all connected clients
-				{
-					let connections_guard = connections.read().await;
-					for (client_id, connection) in connections_guard.iter() {
-						if let Err(e) = connection.send_event(&event).await {
-							warn!("Failed to send to client {}: {}", client_id, e);
-							failed_clients.push(client_id.clone());
-						}
-					}
-				}
-
-				// Remove failed clients through FSM
-				if !failed_clients.is_empty() {
-					let mut connections_guard = connections.write().await;
-					for client_id in failed_clients {
-						if let Some(connected) = connections_guard.remove(&client_id) {
-							match connected.disconnect("Send failed".to_string()) {
-								Ok(_disconnected) => {
-									warn!("Removed failed client: {}", client_id);
-								}
-								Err(e) => {
-									error!("Failed to disconnect client {}: {}", client_id, e);
-								}
-							}
-						}
-					}
-				}
-			}
-		});
-	}
-
 	async fn send_error_to_client(&self, client_id: &str, error: &str) {
 		let connections = self.connections.read().await;
 		if let Some(connection) = connections.get(client_id) {
@@ -611,13 +460,6 @@ impl WebSocketFsm {
 	}
 }
 
-// Helper struct for broadcast results
-#[derive(Debug)]
-struct BroadcastResult {
-	delivered: usize,
-	failed: usize,
-}
-
 async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebSocketFsm>) -> impl IntoResponse {
 	ws.on_upgrade(|socket| handle_socket(socket, state))
 }
@@ -626,11 +468,11 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 	let (mut sender, mut receiver) = socket.split();
 
 	// Create client channel
-	let (tx, mut rx) = mpsc::channel::<Message>(100);
+	let client_id = generate_uuid();
 
 	// Add connection through FSM
-	let client_id = match state.add_connection(tx).await {
-		Ok(id) => id,
+	let mut message_receiver = match state.add_connection(std::str::from_utf8(&client_id).unwrap().into()).await {
+		Ok(rx) => rx,
 		Err(e) => {
 			error!("Failed to add connection: {}", e);
 			return;
@@ -648,9 +490,9 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 	let forward_task = {
 		let client_id = client_id.clone();
 		tokio::spawn(async move {
-			while let Some(msg) = rx.recv().await {
+			while let Ok(msg) = message_receiver.recv().await {
 				if let Err(e) = sender.send(msg).await {
-					error!("Failed to forward message to client {}: {}", client_id, e);
+					error!("Failed to forward message to client {:?}: {}", client_id, e);
 					break;
 				}
 			}
@@ -662,34 +504,37 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 		match result {
 			Ok(msg) => match msg {
 				Message::Text(text) => {
-					state.process_message(&client_id, text).await;
+					state.process_message(std::str::from_utf8(&client_id).unwrap().into(), text).await;
 				}
 				Message::Ping(_) => {
-					if let Err(e) = state.update_client_ping(&client_id).await {
-						warn!("Failed to update ping for {}: {}", client_id, e);
+					if let Err(e) = state.update_client_ping(std::str::from_utf8(&client_id).unwrap().into()).await {
+						warn!("Failed to update ping for {:?}: {}", client_id, e);
 					}
 				}
 				Message::Pong(_) => {
-					if let Err(e) = state.update_client_ping(&client_id).await {
-						warn!("Failed to update pong for {}: {}", client_id, e);
+					if let Err(e) = state.update_client_ping(std::str::from_utf8(&client_id).unwrap().into()).await {
+						warn!("Failed to update pong for {:?}: {}", client_id, e);
 					}
 				}
 				Message::Close(reason) => {
-					warn!("Client {} closed: {:?}", client_id, reason);
+					warn!("Client {:?} closed: {:?}", client_id, reason);
 					break;
 				}
 				_ => {} // Ignore other message types
 			},
 			Err(e) => {
-				error!("WebSocket error for {}: {}", client_id, e);
+				error!("WebSocket error for {:?}: {}", client_id, e);
 				break;
 			}
 		}
 	}
 
 	// Clean up through FSM
-	if let Err(e) = state.remove_connection(&client_id, "Connection closed".to_string()).await {
-		error!("Failed to remove connection {}: {}", client_id, e);
+	if let Err(e) = state
+		.remove_connection(std::str::from_utf8(&client_id).unwrap().into(), "Connection closed".to_string())
+		.await
+	{
+		error!("Failed to remove connection {:?}: {}", client_id, e);
 	}
 	forward_task.abort();
 }
@@ -698,7 +543,6 @@ pub async fn init_websocket() -> WebSocketFsm {
 	let state = WebSocketFsm::new();
 
 	// Start FSM processes
-	state.start_broadcast_loop();
 	state.start_timeout_monitor(Duration::from_secs(120));
 
 	info!("FSM WebSocket system initialized");
