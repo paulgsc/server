@@ -62,6 +62,9 @@
                     # Audio
                     alsa-lib
 
+                    # Grafana
+                    jsonnet
+
                 ];
 
                 shellHook = ''
