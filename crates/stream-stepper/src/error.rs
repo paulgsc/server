@@ -21,4 +21,7 @@ pub enum ChapterError {
 
 	#[error("Chapter not found: {0}")]
 	ChapterNotFound(String),
+
+	#[error("Timeline generation error: {0}")]
+	TimelineGeneration(String),
 }

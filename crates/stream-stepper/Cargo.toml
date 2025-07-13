@@ -13,5 +13,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+
 [lints]
 workspace = true

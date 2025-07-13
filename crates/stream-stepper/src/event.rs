@@ -1,74 +1,80 @@
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 
+/// Events that can modify the timeline state at time t
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TimelineEvent {
-	ChapterObservation {
+	/// Start a new chapter
+	StartChapter {
 		uid: Uid,
 		context: Context,
-		time_range: TimeRange,
+		start_time: Timestamp,
 		payload: Payload,
 	},
 
-	CloseChapter {
-		uid: Uid,
-		end_time: Timestamp,
-		final_payload: Option<Payload>,
-	},
+	/// End an active chapter
+	EndChapter { uid: Uid, end_time: Timestamp, final_payload: Option<Payload> },
 
-	RemoveChapter {
-		uid: Uid,
-	},
+	/// Update payload of an existing chapter (retroactive updates)
+	UpdatePayload { uid: Uid, payload: Payload },
 
-	UpdatePayload {
-		uid: Uid,
-		payload: Payload,
-	},
+	/// Update context/title of an existing chapter
+	UpdateContext { uid: Uid, context: Context },
 
-	UpdateContext {
-		uid: Uid,
-		context: Context,
-	},
+	/// Remove a chapter completely
+	RemoveChapter { uid: Uid },
 
-	ExtendChapter {
-		uid: Uid,
-		extend_to: Timestamp,
-	},
+	/// Extend an active chapter's effective end time
+	ExtendChapter { uid: Uid, extend_to: Timestamp },
 
+	/// Mark a chapter as completed with final data
+	CompleteChapter { uid: Uid, completion_time: Timestamp, final_payload: Payload },
+
+	/// Clear all chapters (stream reset)
 	ClearAll,
-
-	AdvanceTime {
-		current_time: Timestamp,
-	},
 }
 
 impl TimelineEvent {
+	/// Get the UID associated with this event, if any
 	pub fn uid(&self) -> Option<&str> {
 		match self {
-			Self::ChapterObservation { uid, .. }
-			| Self::CloseChapter { uid, .. }
-			| Self::RemoveChapter { uid, .. }
-			| Self::UpdatePayload { uid, .. }
-			| Self::UpdateContext { uid, .. }
-			| Self::ExtendChapter { uid, .. } => Some(uid),
+			TimelineEvent::StartChapter { uid, .. }
+			| TimelineEvent::EndChapter { uid, .. }
+			| TimelineEvent::UpdatePayload { uid, .. }
+			| TimelineEvent::UpdateContext { uid, .. }
+			| TimelineEvent::RemoveChapter { uid, .. }
+			| TimelineEvent::ExtendChapter { uid, .. }
+			| TimelineEvent::CompleteChapter { uid, .. } => Some(uid),
 			_ => None,
 		}
 	}
 
-	pub fn time_stamp(&self) -> Option<Timestamp> {
+	/// Get the primary timestamp associated with this event
+	pub fn timestamp(&self) -> Option<Timestamp> {
 		match self {
-			Self::ChapterObservation { time_range, .. } => Some(time_range.start),
-			Self::CloseChapter { end_time, .. } => Some(*end_time),
-			Self::ExtendChapter { extend_to, .. } => Some(*extend_to),
-			Self::AdvanceTime { current_time, .. } => Some(*current_time),
+			TimelineEvent::StartChapter { start_time, .. } => Some(*start_time),
+			TimelineEvent::EndChapter { end_time, .. } => Some(*end_time),
+			TimelineEvent::ExtendChapter { extend_to, .. } => Some(*extend_to),
+			TimelineEvent::CompleteChapter { completion_time, .. } => Some(*completion_time),
 			_ => None,
 		}
 	}
 
+	/// Check if this event creates a new chapter
+	pub fn creates_chapter(&self) -> bool {
+		matches!(self, TimelineEvent::StartChapter { .. })
+	}
+
+	/// Check if this event modifies existing chapter timing
 	pub fn modifies_timing(&self) -> bool {
 		matches!(
 			self,
-			Self::ChapterObservation { .. } | Self::CloseChapter { .. } | Self::ExtendChapter { .. } | Self::AdvanceTime { .. }
+			TimelineEvent::EndChapter { .. } | TimelineEvent::ExtendChapter { .. } | TimelineEvent::CompleteChapter { .. }
 		)
+	}
+
+	/// Check if this event is a retroactive update
+	pub fn is_retroactive_update(&self) -> bool {
+		matches!(self, TimelineEvent::UpdatePayload { .. } | TimelineEvent::UpdateContext { .. })
 	}
 }
