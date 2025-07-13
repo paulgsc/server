@@ -17,8 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	println!("attempting to get metadata...");
 	let metadata = reader.get_video_metadata("av15VfIIo7I").await?;
-	println!("{:#?}", metadata);  // Pretty prints the entire struct
-
+	println!("{:#?}", metadata); // Pretty prints the entire struct
 
 	Ok(())
 }

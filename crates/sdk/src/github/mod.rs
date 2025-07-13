@@ -1,9 +1,6 @@
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
-use std::error::Error;
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -20,9 +17,10 @@ pub struct Package {
 	pub id: String,
 	pub name: String,
 	pub description: String,
-	#[serde(with = "chrono::serde::ts_milliseconds")]
+	#[serde(with = "chrono::serde::ts_milliseconds", rename = "lastActivity")]
 	pub last_activity: DateTime<Utc>,
 	pub status: PackageStatus,
+	#[serde(rename = "commitCount")]
 	pub commit_count: u32,
 	pub contributors: u32,
 }
@@ -144,30 +142,16 @@ pub fn get_status(last_activity: DateTime<Utc>) -> PackageStatus {
 	}
 }
 
-// Custom error type for GitHub client
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
-	RequestFailed(reqwest::Error),
-	ApiError(u16, String),
+	#[error("Error Parsing request: {0}")]
 	ParseError(String),
-}
 
-impl fmt::Display for GitHubError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			GitHubError::RequestFailed(err) => write!(f, "Request failed: {}", err),
-			GitHubError::ApiError(status, message) => write!(f, "API error {}: {}", status, message),
-			GitHubError::ParseError(err) => write!(f, "Parse error: {}", err),
-		}
-	}
-}
+	#[error("Gitihub API returned an error (HTTP {0}): {1}")]
+	ApiError(u16, String),
 
-impl Error for GitHubError {}
-
-impl From<reqwest::Error> for GitHubError {
-	fn from(err: reqwest::Error) -> Self {
-		GitHubError::RequestFailed(err)
-	}
+	#[error("Request failed error: {0}")]
+	RequestFailed(#[from] reqwest::Error),
 }
 
 pub struct GitHubClient {
@@ -176,10 +160,10 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-	pub fn new(token: String) -> Self {
-		let client = Client::builder().timeout(std::time::Duration::from_secs(10)).build().expect("Failed to create HTTP client");
+	pub fn new(token: String) -> Result<Self, GitHubError> {
+		let client = Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
 
-		Self { client, token }
+		Ok(Self { client, token })
 	}
 
 	// Helper function to make GitHub API requests
