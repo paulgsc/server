@@ -31,18 +31,23 @@ OTHER DEALINGS IN THE SOFTWARE.
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 // TODO:  I'm pretty sure no more need for this past stone age!
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::fs;
+use google_apis_common::auth::GetToken;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
+use hyper::{body::Body, Method, Request, Response, Uri};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use std::io;
+use std::{
+	borrow::BorrowMut,
+	cell::RefCell,
+	collections::{BTreeMap, HashMap},
+	io::{Read, Seek},
+	time::Duration,
+};
+use tokio::time::sleep;
 // TODO: Wai?
 use std::mem;
-// TODO: Wai?
-use std::thread::sleep;
-// TODO: Wai?
-use std::time::Duration;
 
 pub use crate::cmn::{
 	remove_json_null_values, CallBuilder, DefaultDelegate, Delegate, Error, ErrorResponse, MethodInfo, MethodsBuilder, MultiPartReader, NestedType, Part, ReadSeek,
@@ -91,7 +96,7 @@ pub struct YouTubeAnalytics<C, A> {
 impl<'a, C, A> YouTubeAnalytics<C, A>
 where
 	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	A: GetToken,
 {
 	pub fn new(client: C, authenticator: A) -> YouTubeAnalytics<C, A> {
 		YouTubeAnalytics {
@@ -445,7 +450,7 @@ where
 	_end_date: Option<String>,
 	_dimensions: Option<String>,
 	_currency: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -454,21 +459,20 @@ impl<'a, C, A> CallBuilder for ReportQueryCall<'a, C, A> {}
 
 impl<'a, C, A> ReportQueryCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: Clone + Send + Sync + 'static,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, QueryResponse)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
-		use std::io::{Read, Seek};
+	pub async fn doit(mut self) -> Result<(Response<Full<Bytes>>, QueryResponse)> {
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.reports.query",
-			http_method: hyper::method::Method::Get,
+			http_method: Method::GET,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(13 + self._additional_params.len());
 		if let Some(value) = self._start_index {
 			params.push(("startIndex", value.to_string()));
@@ -503,6 +507,7 @@ where
 		if let Some(value) = self._currency {
 			params.push(("currency", value.to_string()));
 		}
+
 		for &field in [
 			"alt",
 			"startIndex",
@@ -535,10 +540,22 @@ where
 			self._scopes.insert(Scope::YoutubeReadonly.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string
+		let query_string = params
+			.iter()
+			.map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+			.collect::<Vec<_>>()
+			.join("&");
+
+		if !query_string.is_empty() {
+			url.push('?');
+			url.push_str(&query_string);
+		}
+
+		let uri: Uri = url.parse().map_err(|_| Error::InvalidUri(url.clone()))?;
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -548,51 +565,66 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Get, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone());
 
-				dlg.pre_request();
-				req.send()
-			};
+			let auth_header_value = format!("Bearer {}", token.access_token);
+
+			let req = Request::builder()
+				.method(Method::GET)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, auth_header_value)
+				.body(Body::empty())
+				.map_err(|e| Error::RequestBuild(e))?;
+
+			dlg.pre_request();
+
+			let client = &self.hub.client;
+			let req_result = client.request(req).await;
 
 			match req_result {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						sleep(Duration::from_secs(d as u64)).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					if !status.is_success() {
+						let (parts, body) = res.into_parts();
+						let body_bytes = hyper::body::to_bytes(body).await.map_err(Error::BodyRead)?;
+						let json_err = String::from_utf8_lossy(&body_bytes).to_string();
+
+						let reconstructed_res = Response::from_parts(parts, Body::from(body_bytes.clone()));
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(&reconstructed_res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							sleep(Duration::from_secs(d as u64)).await;
 							continue;
 						}
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => {
+								let error_res = Response::from_parts(reconstructed_res.into_parts().0, Body::from(body_bytes));
+								Err(Error::Failure(error_res))
+							}
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					let (parts, body) = res.into_parts();
+					let body_bytes = hyper::body::to_bytes(body).await.map_err(Error::BodyRead)?;
+					let json_response = String::from_utf8_lossy(&body_bytes).to_string();
+
+					let result_value = match json::from_str(&json_response) {
+						Ok(decoded) => {
+							let response = Response::from_parts(parts, Body::from(body_bytes));
+							(response, decoded)
+						}
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response, err));
 						}
 					};
 
@@ -658,7 +690,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> ReportQueryCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> ReportQueryCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -692,7 +724,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_request: GroupItem,
 	_on_behalf_of_content_owner: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -701,31 +733,34 @@ impl<'a, C, A> CallBuilder for GroupItemInsertCall<'a, C, A> {}
 
 impl<'a, C, A> GroupItemInsertCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: BorrowMut<Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>>,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, GroupItem)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
+	pub async fn doit(mut self) -> Result<(hyper::Response<Full<Bytes>>, GroupItem)> {
 		use std::io::{Read, Seek};
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
+
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.groupItems.insert",
-			http_method: hyper::method::Method::Post,
+			http_method: Method::POST,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(4 + self._additional_params.len());
 		if let Some(value) = self._on_behalf_of_content_owner {
 			params.push(("onBehalfOfContentOwner", value.to_string()));
 		}
+
 		for &field in ["alt", "onBehalfOfContentOwner"].iter() {
 			if self._additional_params.contains_key(field) {
 				dlg.finished(false);
 				return Err(Error::FieldClash(field));
 			}
 		}
+
 		for (name, value) in self._additional_params.iter() {
 			params.push((&name, value.clone()));
 		}
@@ -737,9 +772,19 @@ where
 			self._scopes.insert(Scope::Youtube.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string manually for more control
+		if !params.is_empty() {
+			url.push('?');
+			for (i, (key, value)) in params.iter().enumerate() {
+				if i > 0 {
+					url.push('&');
+				}
+				url.push_str(&format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)));
+			}
+		}
 
-		let mut json_mime_type = mime::Mime(mime::TopLevel::Application, mime::SubLevel::Json, Default::default());
+		let uri: Uri = url.parse().map_err(|e| Error::UriParseError(e))?;
+
 		let mut request_value_reader = {
 			let mut value = json::value::to_value(&self._request).expect("serde to work");
 			remove_json_null_values(&mut value);
@@ -750,8 +795,12 @@ where
 		let request_size = request_value_reader.seek(io::SeekFrom::End(0)).unwrap();
 		request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
 
+		// Read the entire body into memory for Hyper 1.x
+		let mut body_bytes = Vec::new();
+		request_value_reader.read_to_end(&mut body_bytes).unwrap();
+
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -761,57 +810,67 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Post, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone())
-					.header(ContentType(json_mime_type.clone()))
-					.header(ContentLength(request_size as u64))
-					.body(&mut request_value_reader);
 
-				dlg.pre_request();
-				req.send()
+			// Build request with modern Hyper APIs
+			let mut req = Request::builder()
+				.method(Method::POST)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, format!("Bearer {}", token.access_token))
+				.header(CONTENT_TYPE, "application/json")
+				.header(CONTENT_LENGTH, request_size.to_string())
+				.body(Full::new(Bytes::from(body_bytes.clone())))
+				.map_err(|e| Error::RequestBuildError(e))?;
+
+			dlg.pre_request();
+
+			let req_result = {
+				let mut client = self.hub.client.borrow_mut();
+				client.request(req).await
 			};
 
 			match req_result {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						tokio::time::sleep(d).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					if !status.is_success() {
+						let body_bytes = res.into_body().collect().await.map(|collected| collected.to_bytes()).unwrap_or_else(|_| Bytes::new());
+						let json_err = String::from_utf8_lossy(&body_bytes);
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(&status, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							tokio::time::sleep(d).await;
 							continue;
 						}
+
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => Err(Error::Failure(status)),
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					let (parts, body) = res.into_parts();
+					let body_bytes = body.collect().await.map(|collected| collected.to_bytes()).unwrap_or_else(|_| Bytes::new());
+					let json_response = String::from_utf8_lossy(&body_bytes);
+
+					let decoded_result = match json::from_str(&json_response) {
+						Ok(decoded) => decoded,
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response.to_string(), err));
 						}
 					};
+
+					// Reconstruct response with Full<Bytes> body
+					let response = hyper::Response::from_parts(parts, Full::new(body_bytes.clone()));
+					let result_value = (response, decoded_result);
 
 					dlg.finished(true);
 					return Ok(result_value);
@@ -830,7 +889,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupItemInsertCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupItemInsertCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -864,7 +923,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_on_behalf_of_content_owner: Option<String>,
 	_group_id: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -873,21 +932,21 @@ impl<'a, C, A> CallBuilder for GroupItemListCall<'a, C, A> {}
 
 impl<'a, C, A> GroupItemListCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: BorrowMut<Client<hyper_rustls::HttpsConnector<HttpConnector>, Empty<Bytes>>>,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, ListGroupItemsResponse)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
-		use std::io::{Read, Seek};
+	pub async fn doit(mut self) -> Result<(hyper::Response<http_body_util::Full<Bytes>>, ListGroupItemsResponse)> {
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
+
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.groupItems.list",
-			http_method: hyper::method::Method::Get,
+			http_method: Method::GET,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(4 + self._additional_params.len());
 		if let Some(value) = self._on_behalf_of_content_owner {
 			params.push(("onBehalfOfContentOwner", value.to_string()));
@@ -895,12 +954,14 @@ where
 		if let Some(value) = self._group_id {
 			params.push(("groupId", value.to_string()));
 		}
+
 		for &field in ["alt", "onBehalfOfContentOwner", "groupId"].iter() {
 			if self._additional_params.contains_key(field) {
 				dlg.finished(false);
 				return Err(Error::FieldClash(field));
 			}
 		}
+
 		for (name, value) in self._additional_params.iter() {
 			params.push((&name, value.clone()));
 		}
@@ -912,10 +973,21 @@ where
 			self._scopes.insert(Scope::YoutubeReadonly.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string manually for more control
+		if !params.is_empty() {
+			url.push('?');
+			for (i, (key, value)) in params.iter().enumerate() {
+				if i > 0 {
+					url.push('&');
+				}
+				url.push_str(&format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)));
+			}
+		}
+
+		let uri: Uri = url.parse().map_err(|e| Error::UriParseError(e))?;
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -925,53 +997,65 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Get, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone());
 
-				dlg.pre_request();
-				req.send()
+			// Build request with modern Hyper APIs - GET request with empty body
+			let req = Request::builder()
+				.method(Method::GET)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, format!("Bearer {}", token.access_token))
+				.body(Empty::<Bytes>::new())
+				.map_err(|e| Error::RequestBuildError(e))?;
+
+			dlg.pre_request();
+
+			let req_result = {
+				let mut client = self.hub.client.borrow_mut();
+				client.request(req).await
 			};
 
 			match req_result {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						tokio::time::sleep(d).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					if !status.is_success() {
+						let body_bytes = res.into_body().collect().await.map(|collected| collected.to_bytes()).unwrap_or_else(|_| Bytes::new());
+						let json_err = String::from_utf8_lossy(&body_bytes);
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(&status, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							tokio::time::sleep(d).await;
 							continue;
 						}
+
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => Err(Error::Failure(status)),
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					let (parts, body) = res.into_parts();
+					let body_bytes = body.collect().await.map(|collected| collected.to_bytes()).unwrap_or_else(|_| Bytes::new());
+					let json_response = String::from_utf8_lossy(&body_bytes);
+
+					let decoded_result = match json::from_str(&json_response) {
+						Ok(decoded) => decoded,
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response.to_string(), err));
 						}
 					};
+
+					// Reconstruct response with Full<Bytes> body
+					let response = hyper::Response::from_parts(parts, http_body_util::Full::new(body_bytes.clone()));
+					let result_value = (response, decoded_result);
 
 					dlg.finished(true);
 					return Ok(result_value);
@@ -990,7 +1074,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupItemListCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupItemListCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1024,7 +1108,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_on_behalf_of_content_owner: Option<String>,
 	_id: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -1034,7 +1118,7 @@ impl<'a, C, A> CallBuilder for GroupItemDeleteCall<'a, C, A> {}
 impl<'a, C, A> GroupItemDeleteCall<'a, C, A>
 where
 	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	A: GetToken,
 {
 	pub fn doit(mut self) -> Result<(hyper::client::Response, EmptyResponse)> {
 		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
@@ -1075,7 +1159,7 @@ where
 		let url = hyper::Url::parse_with_params(&url, params).unwrap();
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -1090,7 +1174,7 @@ where
 				let mut client = &mut *self.hub.client.borrow_mut();
 				let mut req = client
 					.borrow_mut()
-					.request(hyper::method::Method::Delete, url.clone())
+					.request(Method::Delete, url.clone())
 					.header(UserAgent(self.hub._user_agent.clone()))
 					.header(auth_header.clone());
 
@@ -1150,7 +1234,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupItemDeleteCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupItemDeleteCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1184,7 +1268,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_on_behalf_of_content_owner: Option<String>,
 	_id: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -1194,7 +1278,7 @@ impl<'a, C, A> CallBuilder for GroupDeleteCall<'a, C, A> {}
 impl<'a, C, A> GroupDeleteCall<'a, C, A>
 where
 	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	A: GetToken,
 {
 	pub fn doit(mut self) -> Result<(hyper::client::Response, EmptyResponse)> {
 		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
@@ -1235,7 +1319,7 @@ where
 		let url = hyper::Url::parse_with_params(&url, params).unwrap();
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -1250,7 +1334,7 @@ where
 				let mut client = &mut *self.hub.client.borrow_mut();
 				let mut req = client
 					.borrow_mut()
-					.request(hyper::method::Method::Delete, url.clone())
+					.request(Method::Delete, url.clone())
 					.header(UserAgent(self.hub._user_agent.clone()))
 					.header(auth_header.clone());
 
@@ -1310,7 +1394,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupDeleteCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupDeleteCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1344,7 +1428,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_request: Group,
 	_on_behalf_of_content_owner: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -1353,57 +1437,69 @@ impl<'a, C, A> CallBuilder for GroupInsertCall<'a, C, A> {}
 
 impl<'a, C, A> GroupInsertCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: std::borrow::BorrowMut<Client<HttpConnector>>,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, Group)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
-		use std::io::{Read, Seek};
+	pub async fn doit(mut self) -> Result<(Response<Full<Bytes>>, Group)> {
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
+
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.groups.insert",
-			http_method: hyper::method::Method::Post,
+			http_method: Method::POST,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(4 + self._additional_params.len());
 		if let Some(value) = self._on_behalf_of_content_owner {
-			params.push(("onBehalfOfContentOwner", value.to_string()));
+			params.push(("onBehalfOfContentOwner", value));
 		}
+
 		for &field in ["alt", "onBehalfOfContentOwner"].iter() {
 			if self._additional_params.contains_key(field) {
 				dlg.finished(false);
 				return Err(Error::FieldClash(field));
 			}
 		}
+
 		for (name, value) in self._additional_params.iter() {
-			params.push((&name, value.clone()));
+			params.push((name, value.clone()));
 		}
 
 		params.push(("alt", "json".to_string()));
 
 		let mut url = self.hub._base_url.clone() + "v2/groups";
-		if self._scopes.len() == 0 {
+		if self._scopes.is_empty() {
 			self._scopes.insert(Scope::Youtube.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string manually for more control
+		if !params.is_empty() {
+			url.push('?');
+			for (i, (key, value)) in params.iter().enumerate() {
+				if i > 0 {
+					url.push('&');
+				}
+				url.push_str(&urlencoding::encode(key));
+				url.push('=');
+				url.push_str(&urlencoding::encode(value));
+			}
+		}
 
-		let mut json_mime_type = mime::Mime(mime::TopLevel::Application, mime::SubLevel::Json, Default::default());
-		let mut request_value_reader = {
-			let mut value = json::value::to_value(&self._request).expect("serde to work");
-			remove_json_null_values(&mut value);
-			let mut dst = io::Cursor::new(Vec::with_capacity(128));
-			json::to_writer(&mut dst, &value).unwrap();
-			dst
-		};
-		let request_size = request_value_reader.seek(io::SeekFrom::End(0)).unwrap();
-		request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
+		let uri: Uri = url.parse().map_err(|e| Error::InvalidUri(e))?;
+
+		// Prepare request body
+		let mut request_value = json::value::to_value(&self._request).expect("serde to work");
+		remove_json_null_values(&mut request_value);
+
+		let request_json = json::to_string(&request_value).unwrap();
+		let request_bytes = Bytes::from(request_json);
+		let content_length = request_bytes.len();
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -1413,60 +1509,70 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Post, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone())
-					.header(ContentType(json_mime_type.clone()))
-					.header(ContentLength(request_size as u64))
-					.body(&mut request_value_reader);
 
-				dlg.pre_request();
-				req.send()
-			};
+			let req = Request::builder()
+				.method(Method::POST)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, format!("Bearer {}", token.access_token))
+				.header(CONTENT_TYPE, "application/json")
+				.header(CONTENT_LENGTH, content_length)
+				.body(Body::from(request_bytes.clone()))
+				.map_err(|e| Error::RequestBuild(e))?;
 
-			match req_result {
+			dlg.pre_request();
+
+			let mut client = self.hub.client.borrow_mut();
+			let res = client.request(req).await;
+
+			match res {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						sleep(d).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					let (parts, body) = res.into_parts();
+
+					if !status.is_success() {
+						// Collect body bytes using modern http-body-util approach
+						let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+						let body_bytes = collected.to_bytes();
+						let json_err = String::from_utf8_lossy(&body_bytes);
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(status, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							sleep(d).await;
 							continue;
 						}
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => Err(Error::Failure(status)),
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					// Collect body bytes for successful response
+					let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+					let body_bytes = collected.to_bytes();
+					let json_response = String::from_utf8_lossy(&body_bytes);
+
+					let decoded: Group = match json::from_str(&json_response) {
+						Ok(decoded) => decoded,
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response.to_string(), err));
 						}
 					};
 
 					dlg.finished(true);
-					return Ok(result_value);
+
+					// Reconstruct response with original body for return
+					let response = Response::from_parts(parts, Body::from(body_bytes));
+					return Ok((response, decoded));
 				}
 			}
 		}
@@ -1482,7 +1588,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupInsertCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupInsertCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1501,8 +1607,10 @@ where
 		S: AsRef<str>,
 	{
 		match scope.into() {
-			Some(scope) => self._scopes.insert(scope.as_ref().to_string(), ()),
-			None => None,
+			Some(scope) => {
+				self._scopes.insert(scope.as_ref().to_string(), ());
+			}
+			None => {}
 		};
 		self
 	}
@@ -1518,7 +1626,7 @@ where
 	_on_behalf_of_content_owner: Option<String>,
 	_mine: Option<bool>,
 	_id: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -1527,55 +1635,70 @@ impl<'a, C, A> CallBuilder for GroupListCall<'a, C, A> {}
 
 impl<'a, C, A> GroupListCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: std::borrow::BorrowMut<Client<HttpConnector>>,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, ListGroupsResponse)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
-		use std::io::{Read, Seek};
+	pub async fn doit(mut self) -> Result<(Response<Full<Bytes>>, ListGroupsResponse)> {
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
+
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.groups.list",
-			http_method: hyper::method::Method::Get,
+			http_method: Method::GET,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(6 + self._additional_params.len());
 		if let Some(value) = self._page_token {
-			params.push(("pageToken", value.to_string()));
+			params.push(("pageToken", value));
 		}
 		if let Some(value) = self._on_behalf_of_content_owner {
-			params.push(("onBehalfOfContentOwner", value.to_string()));
+			params.push(("onBehalfOfContentOwner", value));
 		}
 		if let Some(value) = self._mine {
 			params.push(("mine", value.to_string()));
 		}
 		if let Some(value) = self._id {
-			params.push(("id", value.to_string()));
+			params.push(("id", value));
 		}
+
 		for &field in ["alt", "pageToken", "onBehalfOfContentOwner", "mine", "id"].iter() {
 			if self._additional_params.contains_key(field) {
 				dlg.finished(false);
 				return Err(Error::FieldClash(field));
 			}
 		}
+
 		for (name, value) in self._additional_params.iter() {
-			params.push((&name, value.clone()));
+			params.push((name, value.clone()));
 		}
 
 		params.push(("alt", "json".to_string()));
 
 		let mut url = self.hub._base_url.clone() + "v2/groups";
-		if self._scopes.len() == 0 {
+		if self._scopes.is_empty() {
 			self._scopes.insert(Scope::YoutubeReadonly.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string manually for more control
+		if !params.is_empty() {
+			url.push('?');
+			for (i, (key, value)) in params.iter().enumerate() {
+				if i > 0 {
+					url.push('&');
+				}
+				url.push_str(&urlencoding::encode(key));
+				url.push('=');
+				url.push_str(&urlencoding::encode(value));
+			}
+		}
+
+		let uri: Uri = url.parse().map_err(|e| Error::InvalidUri(e))?;
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -1585,56 +1708,68 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Get, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone());
 
-				dlg.pre_request();
-				req.send()
-			};
+			let req = Request::builder()
+				.method(Method::GET)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, format!("Bearer {}", token.access_token))
+				.body(Body::empty())
+				.map_err(|e| Error::RequestBuild(e))?;
 
-			match req_result {
+			dlg.pre_request();
+
+			let mut client = self.hub.client.borrow_mut();
+			let res = client.request(req).await;
+
+			match res {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						sleep(d).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					let (parts, body) = res.into_parts();
+
+					if !status.is_success() {
+						// Collect body bytes using modern http-body-util approach
+						let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+						let body_bytes = collected.to_bytes();
+						let json_err = String::from_utf8_lossy(&body_bytes);
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(status, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							sleep(d).await;
 							continue;
 						}
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => Err(Error::Failure(status)),
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					// Collect body bytes for successful response
+					let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+					let body_bytes = collected.to_bytes();
+					let json_response = String::from_utf8_lossy(&body_bytes);
+
+					let decoded: ListGroupsResponse = match json::from_str(&json_response) {
+						Ok(decoded) => decoded,
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response.to_string(), err));
 						}
 					};
 
 					dlg.finished(true);
-					return Ok(result_value);
+
+					// Reconstruct response with original body for return
+					let response = Response::from_parts(parts, Body::from(body_bytes));
+					return Ok((response, decoded));
 				}
 			}
 		}
@@ -1660,7 +1795,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupListCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupListCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1679,8 +1814,10 @@ where
 		S: AsRef<str>,
 	{
 		match scope.into() {
-			Some(scope) => self._scopes.insert(scope.as_ref().to_string(), ()),
-			None => None,
+			Some(scope) => {
+				self._scopes.insert(scope.as_ref().to_string(), ());
+			}
+			None => {}
 		};
 		self
 	}
@@ -1694,7 +1831,7 @@ where
 	hub: &'a YouTubeAnalytics<C, A>,
 	_request: Group,
 	_on_behalf_of_content_owner: Option<String>,
-	_delegate: Option<&'a mut Delegate>,
+	_delegate: Option<&'a mut dyn Delegate>,
 	_additional_params: HashMap<String, String>,
 	_scopes: BTreeMap<String, ()>,
 }
@@ -1703,57 +1840,69 @@ impl<'a, C, A> CallBuilder for GroupUpdateCall<'a, C, A> {}
 
 impl<'a, C, A> GroupUpdateCall<'a, C, A>
 where
-	C: BorrowMut<hyper::Client>,
-	A: oauth2::GetToken,
+	C: std::borrow::BorrowMut<Client<HttpConnector, Full<Bytes>>>,
+	A: GetToken,
 {
-	pub fn doit(mut self) -> Result<(hyper::client::Response, Group)> {
-		use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Location, UserAgent};
-		use std::io::{Read, Seek};
+	pub async fn doit(mut self) -> Result<(Response<Full<Bytes>>, Group)> {
 		let mut dd = DefaultDelegate;
-		let mut dlg: &mut Delegate = match self._delegate {
+		let mut dlg: &mut dyn Delegate = match self._delegate {
 			Some(d) => d,
 			None => &mut dd,
 		};
+
 		dlg.begin(MethodInfo {
 			id: "youtubeAnalytics.groups.update",
-			http_method: hyper::method::Method::Put,
+			http_method: Method::PUT,
 		});
+
 		let mut params: Vec<(&str, String)> = Vec::with_capacity(4 + self._additional_params.len());
 		if let Some(value) = self._on_behalf_of_content_owner {
-			params.push(("onBehalfOfContentOwner", value.to_string()));
+			params.push(("onBehalfOfContentOwner", value));
 		}
+
 		for &field in ["alt", "onBehalfOfContentOwner"].iter() {
 			if self._additional_params.contains_key(field) {
 				dlg.finished(false);
 				return Err(Error::FieldClash(field));
 			}
 		}
+
 		for (name, value) in self._additional_params.iter() {
-			params.push((&name, value.clone()));
+			params.push((name, value.clone()));
 		}
 
 		params.push(("alt", "json".to_string()));
 
 		let mut url = self.hub._base_url.clone() + "v2/groups";
-		if self._scopes.len() == 0 {
+		if self._scopes.is_empty() {
 			self._scopes.insert(Scope::Youtube.as_ref().to_string(), ());
 		}
 
-		let url = hyper::Url::parse_with_params(&url, params).unwrap();
+		// Build query string manually for more control
+		if !params.is_empty() {
+			url.push('?');
+			for (i, (key, value)) in params.iter().enumerate() {
+				if i > 0 {
+					url.push('&');
+				}
+				url.push_str(&urlencoding::encode(key));
+				url.push('=');
+				url.push_str(&urlencoding::encode(value));
+			}
+		}
 
-		let mut json_mime_type = mime::Mime(mime::TopLevel::Application, mime::SubLevel::Json, Default::default());
-		let mut request_value_reader = {
-			let mut value = json::value::to_value(&self._request).expect("serde to work");
-			remove_json_null_values(&mut value);
-			let mut dst = io::Cursor::new(Vec::with_capacity(128));
-			json::to_writer(&mut dst, &value).unwrap();
-			dst
-		};
-		let request_size = request_value_reader.seek(io::SeekFrom::End(0)).unwrap();
-		request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
+		let uri: Uri = url.parse().map_err(|e| Error::InvalidUri(e))?;
+
+		// Prepare request body
+		let mut request_value = json::value::to_value(&self._request).expect("serde to work");
+		remove_json_null_values(&mut request_value);
+
+		let request_json = json::to_string(&request_value).unwrap();
+		let request_bytes = Bytes::from(request_json);
+		let content_length = request_bytes.len();
 
 		loop {
-			let token = match self.hub.auth.borrow_mut().token(self._scopes.keys()) {
+			let token = match self.hub.auth.borrow_mut().get_token(self._scopes.keys()) {
 				Ok(token) => token,
 				Err(err) => match dlg.token(&*err) {
 					Some(token) => token,
@@ -1763,60 +1912,70 @@ where
 					}
 				},
 			};
-			let auth_header = Authorization(Bearer { token: token.access_token });
-			request_value_reader.seek(io::SeekFrom::Start(0)).unwrap();
-			let mut req_result = {
-				let mut client = &mut *self.hub.client.borrow_mut();
-				let mut req = client
-					.borrow_mut()
-					.request(hyper::method::Method::Put, url.clone())
-					.header(UserAgent(self.hub._user_agent.clone()))
-					.header(auth_header.clone())
-					.header(ContentType(json_mime_type.clone()))
-					.header(ContentLength(request_size as u64))
-					.body(&mut request_value_reader);
 
-				dlg.pre_request();
-				req.send()
-			};
+			let req = Request::builder()
+				.method(Method::PUT)
+				.uri(uri.clone())
+				.header(USER_AGENT, self.hub._user_agent.clone())
+				.header(AUTHORIZATION, format!("Bearer {}", token.access_token))
+				.header(CONTENT_TYPE, "application/json")
+				.header(CONTENT_LENGTH, content_length)
+				.body(Full::new(request_bytes.clone()))
+				.map_err(|e| Error::RequestBuild(e))?;
 
-			match req_result {
+			dlg.pre_request();
+
+			let mut client = self.hub.client.borrow_mut();
+			let res = client.request(req).await;
+
+			match res {
 				Err(err) => {
 					if let oauth2::Retry::After(d) = dlg.http_error(&err) {
-						sleep(d);
+						sleep(d).await;
 						continue;
 					}
 					dlg.finished(false);
 					return Err(Error::HttpError(err));
 				}
-				Ok(mut res) => {
-					if !res.status.is_success() {
-						let mut json_err = String::new();
-						res.read_to_string(&mut json_err).unwrap();
-						if let oauth2::Retry::After(d) = dlg.http_failure(&res, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
-							sleep(d);
+				Ok(res) => {
+					let status = res.status();
+					let (parts, body) = res.into_parts();
+
+					if !status.is_success() {
+						// Collect body bytes using modern http-body-util approach
+						let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+						let body_bytes = collected.to_bytes();
+						let json_err = String::from_utf8_lossy(&body_bytes);
+
+						if let oauth2::Retry::After(d) = dlg.http_failure(status, json::from_str(&json_err).ok(), json::from_str(&json_err).ok()) {
+							sleep(d).await;
 							continue;
 						}
 						dlg.finished(false);
 						return match json::from_str::<ErrorResponse>(&json_err) {
-							Err(_) => Err(Error::Failure(res)),
+							Err(_) => Err(Error::Failure(status)),
 							Ok(serr) => Err(Error::BadRequest(serr)),
 						};
 					}
-					let result_value = {
-						let mut json_response = String::new();
-						res.read_to_string(&mut json_response).unwrap();
-						match json::from_str(&json_response) {
-							Ok(decoded) => (res, decoded),
-							Err(err) => {
-								dlg.response_json_decode_error(&json_response, &err);
-								return Err(Error::JsonDecodeError(json_response, err));
-							}
+
+					// Collect body bytes for successful response
+					let collected = body.collect().await.map_err(|e| Error::BodyRead(e))?;
+					let body_bytes = collected.to_bytes();
+					let json_response = String::from_utf8_lossy(&body_bytes);
+
+					let decoded: Group = match json::from_str(&json_response) {
+						Ok(decoded) => decoded,
+						Err(err) => {
+							dlg.response_json_decode_error(&json_response, &err);
+							return Err(Error::JsonDecodeError(json_response.to_string(), err));
 						}
 					};
 
 					dlg.finished(true);
-					return Ok(result_value);
+
+					// Reconstruct response with Full<Bytes> body for return
+					let response = Response::from_parts(parts, Full::new(body_bytes));
+					return Ok((response, decoded));
 				}
 			}
 		}
@@ -1832,7 +1991,7 @@ where
 		self
 	}
 
-	pub fn delegate(mut self, new_value: &'a mut Delegate) -> GroupUpdateCall<'a, C, A> {
+	pub fn delegate(mut self, new_value: &'a mut dyn Delegate) -> GroupUpdateCall<'a, C, A> {
 		self._delegate = Some(new_value);
 		self
 	}
@@ -1851,8 +2010,10 @@ where
 		S: AsRef<str>,
 	{
 		match scope.into() {
-			Some(scope) => self._scopes.insert(scope.as_ref().to_string(), ()),
-			None => None,
+			Some(scope) => {
+				self._scopes.insert(scope.as_ref().to_string(), ());
+			}
+			None => {}
 		};
 		self
 	}

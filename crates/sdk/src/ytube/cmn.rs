@@ -1,8 +1,8 @@
-use bytes::Bytes;
 use http::header::{InvalidHeaderValue, ToStrError};
 use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use hyper::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
-use hyper::{body::Body, HeaderMap, Method, Request, Response, StatusCode};
+use hyper::{body::Body, uri::InvalidUri, HeaderMap, Method, Request, Response, StatusCode};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use mime::Mime;
 use oauth2::{self, Retry, TokenType};
@@ -160,6 +160,8 @@ pub enum Error {
 	Failure(StatusCode),
 	HeaderError(InvalidHeaderValue),
 	HeaderParseError(ToStrError),
+	InvalidUri(InvalidUri),
+	BodyRead(String),
 }
 
 impl Display for Error {

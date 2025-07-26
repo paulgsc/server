@@ -16,10 +16,10 @@ google-gmail1 = "6.0.0"
 google-sheets4 = "6.0.0"
 google-youtube3 = "6.0.0"
 http-body-util = "0.1"
-hyper = { version = "1.5"  }
+hyper = { version = "1.5" }
 hyper-rustls = { version = "0.27", default-features = false }
 hyper-util = { version = "0.1.9", features = ["client", "tokio"] }
-mime = { workspace = true }
+mime.workspace = true
 once_cell = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -28,8 +28,12 @@ tokio = { workspace = true, features = ["full"] }
 google-drive3 = "6.0.0"
 reqwest = { version = "0.12.15", features = ["json"] }
 log = "0.4.27"
+oauth2 = "4.4"
 google-youtubeanalytics2 = "1.0.8"
 yup-oauth2 = "12.1.0"
+urlencoding = "2.1"
+http = "1.3.1"
+google-apis-common = "7.0.0"
 
 [dev-dependencies]
 mockall = "0.13.0"

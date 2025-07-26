@@ -1,10 +1,10 @@
 use sdk::*;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let token = "foo".to_string();
 
-	let client = GitHubClient::new(token);
+	let client = GitHubClient::new(token)?;
 
 	match client.get_repositories().await {
 		Ok(repos) => {
@@ -17,4 +17,6 @@ async fn main() {
 			eprintln!("Error fetching repos: {:?}", err);
 		}
 	}
+
+	Ok(())
 }
