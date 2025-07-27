@@ -4,7 +4,7 @@ mod models;
 mod routes;
 use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets, tab_metadata::post_now_playing};
 use anyhow::Result;
-use axum::{routing::get, Router};
+use axum::{error_handling::HandleErrorLayer, routing::get, Router};
 use clap::Parser;
 use file_host::rate_limiter::sliding_window::{rate_limit_middleware, SlidingWindowRateLimiter};
 use file_host::{
@@ -16,11 +16,23 @@ use file_host::{
 use file_host::{AppState, Config};
 use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::add_extension::AddExtensionLayer;
-use tower_http::trace::TraceLayer;
+use tokio::{net::TcpListener, time::Duration};
+use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
+use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{filter::EnvFilter, fmt::format::JsonFields, util::SubscriberInitExt, Layer};
+
+async fn handle_tower_error(error: BoxError) -> FileHostError {
+	if error.is::<tower::timeout::error::Elapsed>() {
+		tracing::warn!("Request timeout: {}", error);
+		FileHostError::RequestTimeout
+	} else if error.is::<tower::load_shed::error::Overloaded>() {
+		tracing::warn!("Service overloaded: {}", error);
+		FileHostError::ServiceOverloaded
+	} else {
+		tracing::error!("Unhandled tower error: {}", error);
+		FileHostError::TowerError(error)
+	}
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -83,7 +95,7 @@ async fn main() -> Result<()> {
 							break;
 						}
 						tracing::warn!("going to sleep for 30s");
-						tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+						tokio::time::sleep(Duration::from_secs(30)).await;
 					}
 				} => {
 					tracing::error!("OBS background handler monitoring ended");
@@ -113,7 +125,17 @@ async fn main() -> Result<()> {
 		.merge(ws_state.router())
 		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
 
-	let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
+	let app = app.layer(
+		ServiceBuilder::new()
+			.layer(TraceLayer::new_for_http())
+			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
+			.layer(RequestBodyLimitLayer::new(context.clone().max_request_size * 1024 * 1024))
+			.layer(ConcurrencyLimitLayer::new(context.clone().max_concurrent_req))
+			.layer(TimeoutLayer::new(Duration::from_millis(context.clone().task_timeout_ms)))
+			.layer(LoadShedLayer::new())
+			.layer(AddExtensionLayer::new(context)),
+	);
+
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);
 	let server = axum::serve(listener, app);

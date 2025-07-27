@@ -79,6 +79,15 @@ pub enum FileHostError {
 
 	#[error("Expected exactly one key-value pair, found none")]
 	UnexpectedSinglePair,
+
+	#[error("Request timeout")]
+	RequestTimeout,
+
+	#[error("Service temporarily overloaded")]
+	ServiceOverloaded,
+
+	#[error("Unexpected Tower Service error: {0}")]
+	TowerError(#[from] tower::BoxError),
 }
 
 impl FileHostError {
@@ -117,6 +126,9 @@ impl FileHostError {
 			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::ResponseBuildError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
+			Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
+			Self::TowerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 }
