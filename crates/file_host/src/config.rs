@@ -104,6 +104,18 @@ pub struct Config {
 	#[arg(long, env = "BUFFER_SIZE", default_value = "65536")]
 	pub chunk_size: usize,
 
+	/// Individual request payload lmit in MB
+	#[arg(long, env = "MAX_REQUEST_SIZE_MB", default_value = "10")]
+	pub max_request_size: usize,
+
+	/// Active request limit
+	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", default_value = "100")]
+	pub max_concurrent_req: usize,
+
+	/// Hard timeout for any operation
+	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000")]
+	pub task_timeout_ms: u64,
+
 	/// Streaming Max Chunk Size
 	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
 	pub max_chunks: usize,
