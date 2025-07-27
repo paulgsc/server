@@ -20,8 +20,8 @@ use std::{
 		atomic::{AtomicU64, Ordering},
 		Arc,
 	},
-	time::{Duration, Instant},
 };
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 // Connection ID type for type safety
@@ -291,11 +291,12 @@ impl Connection {
 	}
 
 	pub fn update_ping(&mut self) -> Result<ConnectionState, String> {
+		let now = Instant::now();
 		let old_state = self.state.clone();
 		match &mut self.state {
 			ConnectionState::Active { last_ping } => {
-				*last_ping = Instant::now();
-				self.last_message_at = Instant::now();
+				*last_ping = now;
+				self.last_message_at = now;
 				Ok(old_state)
 			}
 			_ => Err("Cannot update ping on non-active connection".to_string()),

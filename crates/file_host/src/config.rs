@@ -41,7 +41,7 @@ pub struct Config {
 	pub api_version: String,
 
 	/// Rate limit (requests per minute)
-	#[arg(long, env = "RATE_LIMIT", default_value = "10")]
+	#[arg(long, env = "RATE_LIMIT", default_value = "60")]
 	pub rate_limit: u32,
 
 	/// Enable CORS
