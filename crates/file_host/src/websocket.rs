@@ -1,4 +1,4 @@
-use crate::utils::generate_uuid;
+use crate::{utils::generate_uuid, UtteranceMetadata};
 use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
 	extract::{
@@ -82,6 +82,7 @@ pub enum EventType {
 	Pong,
 	Error,
 	TabMetaData,
+	Utterance,
 }
 
 #[derive(Clone, Serialize, Debug, Deserialize)]
@@ -106,6 +107,7 @@ pub enum Event {
 	Error { message: String },
 	Subscribe { event_types: Vec<EventType> },
 	Unsubscribe { event_types: Vec<EventType> },
+	Utterance { text: String, metadata: UtteranceMetadata },
 }
 
 impl Event {
@@ -119,6 +121,7 @@ impl Event {
 			Self::ClientCount { .. } => EventType::ClientCount,
 			Self::ObsStatus { .. } => EventType::ObsStatus,
 			Self::TabMetaData { .. } => EventType::TabMetaData,
+			Self::Utterance { .. } => EventType::Utterance,
 		}
 	}
 }
@@ -126,6 +129,19 @@ impl Event {
 impl From<NowPlaying> for Event {
 	fn from(data: NowPlaying) -> Self {
 		Event::TabMetaData { data }
+	}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UtterancePrompt {
+	pub text: String,
+	pub metadata: UtteranceMetadata,
+}
+
+impl From<UtterancePrompt> for Event {
+	fn from(UtterancePrompt { text, metadata }: UtterancePrompt) -> Self {
+		Event::Utterance { text, metadata }
 	}
 }
 
@@ -267,7 +283,7 @@ pub struct Connection {
 
 impl Connection {
 	pub fn new() -> (Self, Receiver<Event>) {
-		let (mut sender, receiver) = broadcast::<Event>(100);
+		let (mut sender, receiver) = broadcast::<Event>(1);
 		sender.set_await_active(false); // Prevent blocking on slow clients
 		sender.set_overflow(true);
 

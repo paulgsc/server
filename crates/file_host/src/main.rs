@@ -2,19 +2,18 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets, tab_metadata::post_now_playing};
+use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance};
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, routing::get, Router};
 use clap::Parser;
-use file_host::rate_limiter::sliding_window::{rate_limit_middleware, SlidingWindowRateLimiter};
+use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	record_cache_op, timed_operation,
 	websocket::{init_websocket, Event, NowPlaying, WebSocketFsm},
-	CacheStore,
+	AppState, CacheStore, Config, UtterancePrompt,
 };
-use file_host::{AppState, Config};
-use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
+// use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
 use std::sync::Arc;
 use tokio::{net::TcpListener, time::Duration};
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -44,76 +43,77 @@ async fn main() -> Result<()> {
 
 	let ws_state = init_websocket().await;
 
-	let obs_config = ObsConfig {
-		host: context.obs_host.clone(),
-		port: 4455,
-		password: context.obs_password.clone(),
-	};
+	// let obs_config = ObsConfig {
+	// 	host: context.obs_host.clone(),
+	// 	port: 4455,
+	// 	password: context.obs_password.clone(),
+	// };
 
-	let polling_requests = [
-		// High frequency - every second
-		(ObsRequestType::StreamStatus, PollingFrequency::High),
-		(ObsRequestType::RecordStatus, PollingFrequency::High),
-		(ObsRequestType::CurrentScene, PollingFrequency::High),
-		(ObsRequestType::Stats, PollingFrequency::High),
-		// Medium frequency - every 5 seconds
-		(ObsRequestType::SceneList, PollingFrequency::Medium),
-		(ObsRequestType::SourcesList, PollingFrequency::Medium),
-		(ObsRequestType::InputsList, PollingFrequency::Medium),
-		(ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
-		(ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
-		(ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
-		// Low frequency - every 30 seconds
-		(ObsRequestType::ProfileList, PollingFrequency::Low),
-		(ObsRequestType::CurrentProfile, PollingFrequency::Low),
-		(ObsRequestType::Version, PollingFrequency::Low),
-	];
+	// let polling_requests = [
+	// 	// High frequency - every second
+	// 	(ObsRequestType::StreamStatus, PollingFrequency::High),
+	// 	(ObsRequestType::RecordStatus, PollingFrequency::High),
+	// 	(ObsRequestType::CurrentScene, PollingFrequency::High),
+	// 	(ObsRequestType::Stats, PollingFrequency::High),
+	// 	// Medium frequency - every 5 seconds
+	// 	(ObsRequestType::SceneList, PollingFrequency::Medium),
+	// 	(ObsRequestType::SourcesList, PollingFrequency::Medium),
+	// 	(ObsRequestType::InputsList, PollingFrequency::Medium),
+	// 	(ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
+	// 	(ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
+	// 	(ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
+	// 	// Low frequency - every 30 seconds
+	// 	(ObsRequestType::ProfileList, PollingFrequency::Low),
+	// 	(ObsRequestType::CurrentProfile, PollingFrequency::Low),
+	// 	(ObsRequestType::Version, PollingFrequency::Low),
+	// ];
 
-	let retry_config = RetryConfig::default();
+	// let retry_config = RetryConfig::default();
 
-	let client = Arc::new(create_obs_client_with_broadcast(obs_config));
-	let obs_client = client.clone();
-	let obs_handle = obs_client.start(Box::new(polling_requests), retry_config);
+	// let client = Arc::new(create_obs_client_with_broadcast(obs_config));
+	// let obs_client = client.clone();
+	// let obs_handle = obs_client.start(Box::new(polling_requests), retry_config);
 
-	let obs_monitor = {
-		let obs_task_client = client.clone();
-		tokio::spawn(async move {
-			// Log the startup
+	// let obs_monitor = {
+	// 	let obs_task_client = client.clone();
+	// 	tokio::spawn(async move {
+	// 		// Log the startup
 
-			// Keep the handle alive and monitor it
-			tokio::select! {
-				_ = tokio::signal::ctrl_c() => {
-					tracing::info!("Received shutdown signal, stopping OBS handler...");
-					obs_task_client.disconnect().await;
-					obs_handle.stop().await;
-				}
-				_ = async {
-					// Monitor the handle and restart if it fails
-					loop {
-						if !obs_handle.is_running() {
-							tracing::error!("OBS background handler stopped unexpectedly");
-							break;
-						}
-						tracing::warn!("going to sleep for 30s");
-						tokio::time::sleep(Duration::from_secs(30)).await;
-					}
-				} => {
-					tracing::error!("OBS background handler monitoring ended");
-				}
-			}
-		})
-	};
+	// 		// Keep the handle alive and monitor it
+	// 		tokio::select! {
+	// 			_ = tokio::signal::ctrl_c() => {
+	// 				tracing::info!("Received shutdown signal, stopping OBS handler...");
+	// 				obs_task_client.disconnect().await;
+	// 				obs_handle.stop().await;
+	// 			}
+	// 			_ = async {
+	// 				// Monitor the handle and restart if it fails
+	// 				loop {
+	// 					if !obs_handle.is_running() {
+	// 						tracing::error!("OBS background handler stopped unexpectedly");
+	// 						break;
+	// 					}
+	// 					tracing::warn!("going to sleep for 30s");
+	// 					tokio::time::sleep(Duration::from_secs(30)).await;
+	// 				}
+	// 			} => {
+	// 				tracing::error!("OBS background handler monitoring ended");
+	// 			}
+	// 		}
+	// 	})
+	// };
 
-	ws_state.bridge_obs_events(client.clone());
+	// ws_state.bridge_obs_events(client.clone());
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets(context.clone())?)
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(get_repos(context.clone())?)
-		.merge(post_now_playing(ws_state.clone())?);
+		.merge(post_now_playing(ws_state.clone())?)
+		.merge(post_utterance(ws_state.clone())?);
 
 	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
-		Arc::new(SlidingWindowRateLimiter::new(context.clone())),
+		Arc::new(TokenBucketRateLimiter::new(context.clone())),
 		rate_limit_middleware,
 	));
 
@@ -153,9 +153,9 @@ async fn main() -> Result<()> {
 
 	// Clean shutdown
 	tracing::info!("Shutting down...");
-	client.disconnect().await;
-	obs_monitor.abort();
-	let _ = obs_monitor.await;
+	// client.disconnect().await;
+	// obs_monitor.abort();
+	// let _ = obs_monitor.await;
 
 	Ok(())
 }

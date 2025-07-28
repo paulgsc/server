@@ -15,10 +15,10 @@ pub mod rate_limiter;
 pub mod routes;
 pub mod utils;
 
-pub use crate::websocket::{Event, NowPlaying, WebSocketFsm};
+pub use crate::websocket::{Event, NowPlaying, UtterancePrompt, WebSocketFsm};
 pub use config::*;
+pub use handlers::utterance::UtteranceMetadata;
 pub use metrics::{CACHE_OPERATIONS, OPERATION_DURATION};
-pub use routes::*;
 
 #[derive(Clone)]
 pub struct AppState {

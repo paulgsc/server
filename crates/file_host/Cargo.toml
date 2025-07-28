@@ -30,13 +30,14 @@ serde_json = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["fs"] }
+tower = { workspace = true , features = ["limit", "load-shed"] }
+tower-http = { workspace = true, features = ["fs", "limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
 polars = { version =  "0.46.0", features = ["lazy"] }
 tokio-stream = "0.1.17"
 dashmap = "6.1.0"
+hex = "0.4.3"
 
 [lints]
 workspace = true

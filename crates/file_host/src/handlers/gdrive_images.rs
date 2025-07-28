@@ -68,7 +68,6 @@ pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_i
 	}
 
 	timed_operation!("serve_gdrive_image", "cache_set", false, { state.cache_store.set_json(&cache_key, &drive_response).await })?;
-	tracing::info!("Caching data for key: {}", &cache_key);
 
 	let response = Response::builder()
 		.header(header::CONTENT_TYPE, mime_type)

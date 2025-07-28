@@ -2,8 +2,9 @@ use crate::{
 	metrics::{CACHE_OPERATIONS, OPERATION_DURATION},
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
-	record_cache_op, timed_operation, AppState, FileHostError,
+	AppState, FileHostError,
 };
+use crate::{record_cache_op, timed_operation};
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use sdk::ReadSheets;
@@ -38,18 +39,17 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 				match state.cache_store.set_json(&cache_key, &data).await {
 					Ok(_) => {
 						record_cache_op!("get_attributions", "set", "success");
-						tracing::info!("Caching data for key: {}", &cache_key);
 					}
 					Err(e) => {
 						record_cache_op!("get_attributions", "set", "error");
-						tracing::warn!("Failed to cache data: {}", e);
+						tracing::error!("Failed to cache data: {}", e);
 					}
 				}
 			}
 		})
 		.await;
 	} else {
-		tracing::info!("Data too large to cache (size: {})", data.len());
+		tracing::warn!("Data too large to cache (size: {})", data.len());
 	}
 
 	Ok(Json(attributions))
@@ -211,11 +211,10 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 				match state.cache_store.set_json(&id, &sheet_collection).await {
 					Ok(_) => {
 						record_cache_op!("get_nfl_tennis", "set", "success");
-						tracing::info!("Caching data for key: {}", &id);
 					}
 					Err(e) => {
 						record_cache_op!("get_nfl_tennis", "set", "error");
-						tracing::warn!("Failed to cache data: {}", e);
+						tracing::error!("Failed to cache data: {}", e);
 					}
 				}
 			}
@@ -260,11 +259,10 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 				match state.cache_store.set_json(&cache_key, &roster).await {
 					Ok(_) => {
 						record_cache_op!("get_nfl_roster", "set", "success");
-						tracing::info!("Caching data for key: {}", &cache_key);
 					}
 					Err(e) => {
 						record_cache_op!("get_nfl_roster", "set", "error");
-						tracing::warn!("Failed to cache data: {}", e);
+						tracing::error!("Failed to cache data: {}", e);
 					}
 				}
 			}
