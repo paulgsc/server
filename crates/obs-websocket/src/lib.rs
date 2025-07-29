@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 /// Configuration for the OBS WebSocket connection
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +94,7 @@ struct TracedReceiver<T> {
 impl<T> Drop for TracedReceiver<T> {
 	fn drop(&mut self) {
 		warn!("🚨 Receiver dropped here:");
+		tracing::trace!("{:?}", std::backtrace::Backtrace::force_capture());
 	}
 }
 
@@ -124,7 +125,7 @@ impl ObsWebSocket {
 		let config = self.config.read().await;
 		let url = format!("ws://{}:{}", config.host, config.port);
 
-		info!("Connecting to OBS WebSocket at {}", url);
+		// info!("Connecting to OBS WebSocket at {}", url);
 
 		let (ws_stream, _) = connect_async(url).await?;
 		let (sink, mut stream) = ws_stream.split();
@@ -138,7 +139,7 @@ impl ObsWebSocket {
 		{
 			let mut s_g = s_a.lock().await;
 			authenticate(&config.password, &mut s_g, &mut stream).await?;
-			info!("Sucessfully connected!");
+			// info!("Sucessfully connected!");
 			fetch_init_state(&mut s_g).await?;
 		}
 
@@ -266,7 +267,7 @@ impl ObsWebSocket {
 							);
 							break;
 						} else {
-							info!("Health check: last activity {:?} ago", el);
+							// info!("Health check: last activity {:?} ago", el);
 						}
 					}
 				}
@@ -287,7 +288,7 @@ impl ObsWebSocket {
 
 		*self.task_handle.write().await = Some(combined_task);
 
-		info!("Connected to OBS WebSocket with comprehensive polling");
+		// info!("Connected to OBS WebSocket with comprehensive polling");
 		Ok(())
 	}
 
@@ -425,7 +426,7 @@ impl ObsWebSocket {
 /// Axum-specific wrapper that adds broadcasting functionality
 pub struct ObsWebSocketWithBroadcast {
 	inner: ObsWebSocket,
-	broadcaster: Sender<ObsEvent>,
+	sender: Sender<ObsEvent>,
 	receiver: TracedReceiver<ObsEvent>,
 }
 
@@ -435,13 +436,13 @@ impl ObsWebSocketWithBroadcast {
 		let (mut sender, receiver) = broadcast(3);
 
 		// Returns an error immediately if no active receivers exist
-		sender.set_await_active(false);
+		sender.set_await_active(true);
 		// Drops the oldest message instead of blocking.
 		sender.set_overflow(true);
 
 		Self {
 			inner: ObsWebSocket::new(config),
-			broadcaster: sender,
+			sender,
 			receiver: TracedReceiver { inner: receiver },
 		}
 	}
@@ -466,7 +467,7 @@ impl ObsWebSocketWithBroadcast {
 		let event = self.inner.next_event().await?;
 
 		if event.should_broadcast() {
-			if let Err(e) = self.broadcaster.broadcast(event).await {
+			if let Err(e) = self.sender.broadcast(event).await {
 				error!("Failed to broadcast event: {}", e);
 			}
 		}
@@ -496,7 +497,7 @@ impl ObsWebSocketWithBroadcast {
 	/// Start the event handling loop with broadcasting
 	pub fn start(self: Arc<Self>, requests: Box<[(ObsRequestType, PollingFrequency)]>, retry_config: RetryConfig) -> BroadcastHandle {
 		let c = self.clone();
-		let b_h = self.broadcaster.clone();
+		let b_h = self.sender.clone();
 
 		let handle = tokio::spawn(async move {
 			c.connection_manager_loop(requests, retry_config).await;
@@ -540,7 +541,7 @@ impl ObsWebSocketWithBroadcast {
 	) -> RetryState {
 		match self.connect(requests).await {
 			Ok(()) => {
-				info!("Connected to OBS WebSocket (attempt {} successful)", consecutive_failures + 1);
+				// info!("Connected to OBS WebSocket (attempt {} successful)", consecutive_failures + 1);
 
 				// Run the event processing loop for this connection
 				self.event_processing_loop().await;
@@ -595,7 +596,7 @@ impl ObsWebSocketWithBroadcast {
 	/// Handle circuit breaker logic
 	async fn handle_circuit_breaker(opened_at: Instant, retry_config: &RetryConfig) -> RetryState {
 		if opened_at.elapsed() >= retry_config.circuit_breaker_timeout {
-			info!("Circuit breaker timeout elapsed, attempting to reconnect to OBS");
+			// info!("Circuit breaker timeout elapsed, attempting to reconnect to OBS");
 			RetryState::Active {
 				consecutive_failures: 0,
 				current_delay: retry_config.initial_delay,
