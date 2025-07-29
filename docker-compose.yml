@@ -1,11 +1,74 @@
 services:
+  file-host:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      target: runtime
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-dev}
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+        VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD)}
+    container_name: file-host-server
+    ports:
+      - '3000:3000'
+    environment:
+      # Logging and debugging
+      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=1
+
+      # Performance tuning
+      - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
+      - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
+
+      # Service connections
+      - REDIS_URL=redis://redis:6379
+
+      # Authentication and secrets
+      - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
+      - HMAC_KEY=${HMAC_KEY:-placeholder}
+      - GITHUB_API_TOKEN=${GITHUB_API_TOKEN:-placeholder}
+
+      # External services
+      - EMAIL_SERVICE_URL=${EMAIL_SERVICE_URL:-aulgondu@gmail.com}
+      - OBS_WEBSOCKET_PWD=${OBS_WEBSOCKET_PWD:-QVNJXLc0ipLSwohv}
+      - OBS_WEBSOCKET_IP=${OBS_WEBSOCKET_IP:-10.0.0.25}
+
+      # Application paths
+      - DATA_DIR=/app/data
+      - CONFIG_DIR=/app/config
+    volumes:
+      # Data persistence
+      - ./data:/app/data:rw
+
+      # Secrets (read-only for security)
+      - ./client_secret_file.json:/app/secrets/client_secret_file.json:ro
+
+      # Configuration files (if needed)
+      - ./config:/app/config:ro
+
+      # Optional: logs directory if your app writes logs to files
+      - ./logs:/app/logs:rw
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3000/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   redis:
     image: redis:latest
     container_name: some-redis
     ports:
       - '6379:6379'
-    # volumes:
-    #   - redis_data:/data
+    volumes:
+      # Persist Redis data
+      - redis_data:/data
     networks:
       - monitoring-network
     restart: unless-stopped
@@ -17,10 +80,12 @@ services:
 
   redisinsight:
     image: redislabs/redisinsight:latest
+    container_name: redisinsight
     ports:
       - '5540:5540'
-    # volumes:
-    #   - redisinsight_data:/db
+    volumes:
+      # Persist RedisInsight data
+      - redisinsight_data:/db
     networks:
       - monitoring-network
     depends_on:
@@ -36,7 +101,7 @@ services:
     ports:
       - '9090:9090'
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
       - monitoring-network
@@ -48,6 +113,9 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
+    depends_on:
+      file-host:
+        condition: service_healthy
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9090/']
       interval: 30s
@@ -61,23 +129,39 @@ services:
       - '3001:3000'
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/generated:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring-network
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
       - GF_USERS_ALLOW_SIGN_UP=false
       # - GF_INSTALL_PLUGINS=redis-datasource
     depends_on:
       prometheus:
         condition: service_healthy
+      dashboard-builder:
+        condition: service_healthy
     healthcheck:
-      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1']
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1']
       interval: 30s
       timeout: 10s
       retries: 3
+
+  dashboard-builder:
+    build:
+      dockerfile: Dockerfile.grafana.builder
+    container_name: dashboard-builder
+    volumes:
+      - ./:/workspace:ro
+      - ./grafana/generated:/workspace/generated:rw
+    command: /bin/sh -c "cd /workspace && .scripts/grafana/build.sh"
+    healthcheck:
+      test: ['CMD', 'test', '-f', '/workspace/generated/.build_complete']
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 networks:
   monitoring-network:
@@ -85,7 +169,10 @@ networks:
 
 volumes:
   prometheus_data:
+    driver: local
   grafana_data:
-#   redis_data:
-#   redisinsight_data:
-
+    driver: local
+  redis_data:
+    driver: local
+  redisinsight_data:
+    driver: local

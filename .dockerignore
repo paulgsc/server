@@ -1,0 +1,238 @@
+# ----------------------------------------------------------------------
+# Core Build System & Git
+# ----------------------------------------------------------------------
+.git/
+.gitignore
+.gitmodules
+.gitattributes
+.github/ # CI/CD configurations, usually not needed in the final image
+.travis.yml
+.gitlab-ci.yml
+.circleci/
+.vscode/ # Editor configurations
+.idea/ # IDE configurations (e.g. IntelliJ)
+*.swp # Vim swap files
+*.swo
+*~ # Emacs backup files / Linux temporary files
+.#* # Emacs auto-save files
+.hg/ # Mercurial repository
+.bzr/ # Bazaar repository
+
+# ----------------------------------------------------------------------
+# Dependencies & Build Artifacts (Language Agnostic)
+# ----------------------------------------------------------------------
+node_modules/ # Node.js dependencies
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.yarn/
+vendor/ # Go, PHP, or other language dependencies
+target/ # Java Maven/Gradle, Rust build output
+build/ # Generic build output directory
+dist/ # Generic distribution directory
+out/ # Generic output directory
+*.log # Application logs
+logs/
+*.tmp # Temporary files
+tmp/ # Temporary directory
+.DS_Store # macOS specific
+.AppleDouble # macOS specific
+.LSOverride # macOS specific
+Thumbs.db # Windows specific
+ehthumbs.db # Windows specific
+Desktop.ini # Windows specific
+.nyc_output/ # Jest coverage output
+.nfs* # Linux specific
+
+# ----------------------------------------------------------------------
+# Python Specific
+# ----------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+venv/ # Python virtual environment
+.venv/ # Another common name for virtual environment
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/ # Jupyter notebooks checkpoints
+.Python # Python specific
+*.so # Python shared objects
+
+# ----------------------------------------------------------------------
+# Node.js Specific
+# ----------------------------------------------------------------------
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pids/ # Process IDs
+*.pid
+*.seed
+.npm/
+.yarn-cache/
+.eslintcache
+.next/ # Next.js build output
+.nuxt/ # Nuxt.js build output
+
+# ----------------------------------------------------------------------
+# Java Specific
+# ----------------------------------------------------------------------
+*.class
+*.jar
+*.war
+*.ear
+target/
+build/
+.gradle/
+gradle/ # Gradle wrapper (if you don't need it in the image)
+gradlew
+gradlew.bat
+
+# ----------------------------------------------------------------------
+# Go Specific
+# ----------------------------------------------------------------------
+*.test
+*.prof
+go.sum
+go.mod # Sometimes you might want to include go.mod/go.sum, sometimes not.
+
+# ----------------------------------------------------------------------
+# Ruby Specific
+# ----------------------------------------------------------------------
+vendor/bundle/
+.bundle/
+Gemfile.lock
+log/
+tmp/
+public/assets/ # Rails assets
+.byebug_history
+
+# ----------------------------------------------------------------------
+# PHP Specific
+# ----------------------------------------------------------------------
+vendor/ # Composer dependencies
+composer.lock
+web/app_dev.php # Symfony dev controller
+var/cache/ # Symfony cache
+var/logs/ # Symfony logs
+
+# ----------------------------------------------------------------------
+# Rust Specific
+# ----------------------------------------------------------------------
+# Keep Cargo.lock for reproducible builds in containers (uncomment if desired)
+# Cargo.lock
+
+# Monorepo - ignore unrelated crates to reduce context size
+crates/*/target/
+# !crates/file_host/
+# !crates/sdk/
+# !crates/gsheet_derive/
+# !crates/enum-name-derive/
+# !crates/obs-websocket/
+# !crates/nest/
+# !crates/file_reader/
+# !crates/espn_nfl_scores/
+# crates/nfl_play_parser/
+# crates/nfl_scenarios/
+# crates/noobgit/
+# crates/servers/chrome_tabs_server/
+# crates/servers/nfl_server/
+# crates/splay_diagram/
+# crates/task_queue/
+# crates/tuvitu/
+# crates/webhooks/
+# crates/foo/
+# crates/sqlite_macros/
+# crates/animations/
+# crates/audio_capture/
+# crates/tw_lint/
+# crates/leaderboard/
+# crates/some-mujik/
+# crates/some-redact/
+# crates/stream-stepper/
+# crates/some-utils/
+
+# ----------------------------------------------------------------------
+# Frontend Specific
+# ----------------------------------------------------------------------
+dist/
+build/
+.cache/ # Webpack/Babel cache
+public/ # If only compiled assets are served, source files can be ignored
+src/ # If frontend is built separately, source can be ignored
+*.map # Source maps
+
+# ----------------------------------------------------------------------
+# Documentation & Configuration Files
+# ----------------------------------------------------------------------
+README.md
+LICENSE
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+CHANGELOG.md
+docs/
+*.md
+.editorconfig
+.prettierrc
+.prettierignore
+.env # Environment variables (should not be committed or included in image directly)
+.env.*
+*.env
+config.toml
+config.json
+settings.ini
+
+# ----------------------------------------------------------------------
+# Docker Specific (itself)
+# ----------------------------------------------------------------------
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+docker-stack.yml
+docker-compose*.yml
+*.dockerfile
+Dockerfile.*
+!Dockerfile # Exclude Dockerfile if using ADD . in your Dockerfile, but typically you include it for context
+
+# ----------------------------------------------------------------------
+# Testing
+# ----------------------------------------------------------------------
+tests/ # If tests are not needed in the final image
+e2e/
+spec/
+features/
+coverage/
+benches/
+examples/
+
+# ----------------------------------------------------------------------
+# Miscellaneous Files
+# ----------------------------------------------------------------------
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bak # Backup files
+*.backup
+*.old
+*.orig
+*.db
+*.sqlite
+*.sqlite3
+client_secret_file.json
+*secret*.*
+*secret*
+
+# ----------------------------------------------------------------------
+# IDE Files (Generic)
+# ----------------------------------------------------------------------
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
