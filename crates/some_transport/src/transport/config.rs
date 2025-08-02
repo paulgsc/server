@@ -1,6 +1,10 @@
 use super::error::{ConfigError, TransportError};
 use crate::connection::endpoint::{ConnectionInfo, ConnectionStatistics, Endpoint};
-use crate::message::{content::OutgoingMessage, error::SendError, metadata::MessageId};
+use crate::message::{
+	content::{OutgoingMessage, TransportMessage},
+	error::SendError,
+	metadata::MessageId,
+};
 use crate::protocol::types::CloseCode;
 use bytes::Bytes;
 use tokio::sync::oneshot;
@@ -92,7 +96,7 @@ pub enum TransportCommand {
 	},
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum TransportEvent {
 	StateChanged {
 		from: TransportStateInfo,
@@ -134,7 +138,7 @@ pub enum TransportEvent {
 	},
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum TransportStateInfo {
 	Idle,
 	Connecting { endpoint: Endpoint },
