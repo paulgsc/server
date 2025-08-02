@@ -10,6 +10,198 @@ use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, Message
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct TransportConfig {
+	pub connection: ConnectionConfig,
+	pub tls: TlsConfig,
+	pub compression: CompressionConfig,
+	pub flow_control: FlowControlConfig,
+	pub timeouts: TimeoutConfig,
+	pub buffer_sizes: BufferConfig,
+	pub keepalive: KeepaliveConfig,
+}
+
+impl Default for TransportConfig {
+	fn default() -> Self {
+		Self {
+			connection: ConnectionConfig::default(),
+			tls: TlsConfig::default(),
+			compression: CompressionConfig::default(),
+			flow_control: FlowControlConfig::default(),
+			timeouts: TimeoutConfig::default(),
+			buffer_size: BufferConfig::default(),
+			keep_alive: KeepaliveConfig::default(),
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectionConfig {
+	pub connect_timeout: Duration,
+	pub handshake_timeout: Duration,
+	pub close_timeout: Duration,
+	pub max_frame_size: usize,
+	pub max_message_size: usize,
+	pub subprotocols: Vec<String>,
+	pub custom_headers: HashMap<String, String>,
+}
+
+impl Default for ConnectionConfig {
+	fn default() -> Self {
+		Self {
+			connect_timeout: Duration::from_secs(10),
+			handshake_timeout: Duration::from_secs(10),
+			close_timeout: Duration::from_secs(10),
+			max_frame_size: 64 * 1024,          // 64 KB
+			max_message_size: 16 * 1024 * 1024, // 16 MB
+			subprotocols: Vec::new(),
+			custom_headers: HashMap::new(),
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+	pub enabled: bool,
+	pub verify_hostname: bool,
+	pub ca_certificates: Option<Vec<Certificate>>,
+	pub client_certificate: Option<ClientCertificate>,
+	pub cipher_suites: Vec<CipherSuite>,
+	pub protocol_versions: Vec<ProtocolVersion>,
+}
+
+impl Default for TlsConfig {
+	fn default() -> Self {
+		Self {
+			enabled: true,
+			verify_hostname: true,
+			ca_certificates: None,     // Use system certs by default (common behavior)
+			client_certificate: None,  // Not required unless mutual TLS
+			cipher_suites: Vec::new(), // Empty means "use rustls defaults" if your library supports that
+			protocol_versions: vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionConfig {
+	pub enabled: bool,
+	pub algorithm: CompressionAlgorithm,
+	pub window_bits: u8,
+	pub compression_level: u8,
+	pub threshold: usize, // Minimum message size to compress
+}
+impl Default for CompressionConfig {
+	fn default() -> Self {
+		Self {
+			enabled: false,                           // Disable by default unless explicitly needed
+			algorithm: CompressionAlgorithm::Deflate, // Common choice
+			window_bits: 15,                          // Typical max for deflate
+			compression_level: 6,                     // Balanced compression
+			threshold: 1024,                          // Only compress messages >1KB
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct FlowControlConfig {
+	pub send_buffer_size: usize,
+	pub receive_buffer_size: usize,
+	pub backpressure_threshold: usize,
+	pub max_pending_frames: usize,
+	pub credit_based_flow_control: bool,
+}
+
+impl Default for FlowControlConfig {
+	fn default() -> Self {
+		Self {
+			send_buffer_size: 64 * 1024,       // 64 KB
+			receive_buffer_size: 64 * 1024,    // 64 KB
+			backpressure_threshold: 32 * 1024, // Trigger at ~32 KB buffered
+			max_pending_frames: 100,           // Limit in-flight frames
+			credit_based_flow_control: false,  // Simpler byte-based by default
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeoutConfig {
+	pub ping_interval: Duration,
+	pub pong_timeout: Duration,
+	pub idle_timeout: Duration,
+	pub write_timeout: Duration,
+	pub read_timeout: Duration,
+}
+
+impl Default for TimeoutConfig {
+	fn default() -> Self {
+		Self {
+			ping_interval: Duration::from_secs(30),
+			pong_timeout: Duration::from_secs(10),
+			idle_timeout: Duration::from_secs(90),
+			write_timeout: Duration::from_secs(10),
+			read_timeout: Duration::from_secs(10),
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct BufferConfig {
+	pub send_queue_size: usize,
+	pub receive_queue_size: usize,
+	pub frame_buffer_size: usize,
+	pub message_buffer_size: usize,
+}
+
+impl Default for BufferConfig {
+	fn default() -> Self {
+		Self {
+			send_queue_size: 100,           // Max queued outbound messages
+			receive_queue_size: 100,        // Max unprocessed inbound messages
+			frame_buffer_size: 16 * 1024,   // 16 KB per frame
+			message_buffer_size: 16 * 1024, // 16 KB partial message buffering
+		}
+	}
+}
+
+impl BufferConfig {
+	pub fn max_send_queue_size(&self) -> usize {
+		self.send_queue_size * 10 // Default multiplier
+	}
+
+	pub fn max_receive_queue_size(&self) -> usize {
+		self.receive_queue_size * 10 // Default multiplier
+	}
+
+	pub fn queue_policy(&self) -> QueuePolicy {
+		QueuePolicy::DropOldest // Default policy
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct KeepaliveConfig {
+	pub enabled: bool,
+	pub interval: Duration,
+	pub timeout: Duration,
+	pub max_failures: u32,
+}
+
+impl Default for KeepaliveConfig {
+	fn default() -> Self {
+		Self {
+			enabled: true,
+			interval: Duration::from_secs(30),
+			timeout: Duration::from_secs(15),
+			max_failures: 3,
+		}
+	}
+}
+
+impl KeepaliveConfig {
+	pub fn idle_timeout(&self) -> std::time::Duration {
+		self.timeout * 4 // Default: 4x the ping timeout
+	}
+}
 #[derive(Debug, Clone, Copy)]
 pub enum DeliveryMode {
 	BestEffort,
