@@ -9,7 +9,6 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	record_cache_op, timed_operation,
 	websocket::{init_websocket, Event, NowPlaying, WebSocketFsm},
 	AppState, CacheStore, Config, UtterancePrompt,
 };
@@ -118,13 +117,13 @@ async fn main() -> Result<()> {
 		rate_limit_middleware,
 	));
 
-	let public_routes = Router::new().route("/metrics", get(metrics::metrics_handler));
+	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
 	let app = Router::new()
 		.merge(protected_routes)
 		.merge(public_routes)
 		.merge(ws_state.router())
-		.layer(axum::middleware::from_fn(metrics::metrics_middleware));
+		.layer(axum::middleware::from_fn(metrics::http::metrics_middleware));
 
 	let app = app.layer(
 		ServiceBuilder::new()

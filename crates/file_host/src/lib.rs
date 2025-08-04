@@ -18,7 +18,7 @@ pub mod utils;
 pub use crate::websocket::{Event, NowPlaying, UtterancePrompt, WebSocketFsm};
 pub use config::*;
 pub use handlers::utterance::UtteranceMetadata;
-pub use metrics::{CACHE_OPERATIONS, OPERATION_DURATION};
+pub use metrics::http::*;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -90,32 +90,4 @@ impl CacheStore {
 
 		Ok(data)
 	}
-}
-
-#[macro_export]
-macro_rules! timed_operation {
-	($handler:expr, $operation:expr, $cache_hit:expr, $body:block) => {{
-		let start = std::time::Instant::now();
-		let result = $body;
-		let duration = start.elapsed().as_secs_f64();
-
-		OPERATION_DURATION.with_label_values(&[$handler, $operation, &$cache_hit.to_string()]).observe(duration);
-
-		tracing::info!(
-			handler = $handler,
-			operation = $operation,
-			duration_ms = duration * 1000.0,
-			cache_hit = $cache_hit,
-			"Operation completed"
-		);
-
-		result
-	}};
-}
-
-#[macro_export]
-macro_rules! record_cache_op {
-	($handler:expr, $operation:expr, $result:expr) => {
-		CACHE_OPERATIONS.with_label_values(&[$handler, $operation, $result]).inc()
-	};
 }

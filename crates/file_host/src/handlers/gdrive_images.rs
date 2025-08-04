@@ -1,5 +1,5 @@
 use crate::{
-	metrics::{CACHE_OPERATIONS, OPERATION_DURATION},
+	metrics::http::{CACHE_OPERATIONS, OPERATION_DURATION},
 	record_cache_op, timed_operation, AppState, FileHostError,
 };
 use axum::{
