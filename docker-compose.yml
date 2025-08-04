@@ -37,16 +37,9 @@ services:
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
-      # Data persistence
       - ./data:/app/data:rw
-
-      # Secrets (read-only for security)
       - ./client_secret_file.json:/app/secrets/client_secret_file.json:ro
-
-      # Configuration files (if needed)
       - ./config:/app/config:ro
-
-      # Optional: logs directory if your app writes logs to files
       - ./logs:/app/logs:rw
     networks:
       - monitoring-network
@@ -54,12 +47,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ['CMD-SHELL', 'curl -f http://localhost:3000/health || exit 1']
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 
   redis:
     image: redis:latest
@@ -67,7 +54,6 @@ services:
     ports:
       - '6379:6379'
     volumes:
-      # Persist Redis data
       - redis_data:/data
     networks:
       - monitoring-network
@@ -84,15 +70,14 @@ services:
     ports:
       - '5540:5540'
     volumes:
-      # Persist RedisInsight data
       - redisinsight_data:/db
     networks:
       - monitoring-network
+    environment:
+      - REDIS_URI=redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
-    environment:
-      - REDIS_URI=redis://redis:6379
     restart: unless-stopped
 
   prometheus:
@@ -137,12 +122,11 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
       - GF_USERS_ALLOW_SIGN_UP=false
-      # - GF_INSTALL_PLUGINS=redis-datasource
     depends_on:
       prometheus:
         condition: service_healthy
       dashboard-builder:
-        condition: service_healthy
+        condition: service_completed_successfully
     healthcheck:
       test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1']
       interval: 30s
@@ -151,17 +135,20 @@ services:
 
   dashboard-builder:
     build:
+      context: .
       dockerfile: Dockerfile.grafana.builder
     container_name: dashboard-builder
     volumes:
-      - ./:/workspace:ro
-      - ./grafana/generated:/workspace/generated:rw
-    command: /bin/sh -c "cd /workspace && .scripts/grafana/build.sh"
-    healthcheck:
-      test: ['CMD', 'test', '-f', '/workspace/generated/.build_complete']
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      - ./grafana/dashboards:/workspace
+      - ./grafana/generated:/generated:rw
+    command: ./build.sh
+    restart: 'no'
+    # Optional healthcheck (uncomment if needed)
+    # healthcheck:
+    #   test: ['CMD', 'test', '-f', '/workspace/generated/.build_complete']
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 10
 
 networks:
   monitoring-network:
