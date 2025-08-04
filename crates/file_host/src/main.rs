@@ -2,7 +2,7 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_image, github::get_repos, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance};
+use crate::routes::{gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance};
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, routing::get, Router};
 use clap::Parser;
@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
 		.merge(get_gdrive_image(context.clone())?)
 		.merge(get_repos(context.clone())?)
 		.merge(post_now_playing(ws_state.clone())?)
+		.merge(get_health()?)
 		.merge(post_utterance(ws_state.clone())?);
 
 	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
