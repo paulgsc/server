@@ -19,6 +19,7 @@ pub use crate::websocket::{Event, NowPlaying, UtterancePrompt, WebSocketFsm};
 pub use config::*;
 pub use handlers::utterance::UtteranceMetadata;
 pub use metrics::http::*;
+pub use metrics::ws::*;
 
 #[derive(Clone)]
 pub struct AppState {

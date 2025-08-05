@@ -1,3 +1,4 @@
+use crate::*;
 use crate::{utils::generate_uuid, UtteranceMetadata};
 use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
@@ -512,25 +513,24 @@ impl WebSocketFsm {
 				match receiver.recv().await {
 					Ok(event) => {
 						let event_type = event.get_type();
-						let start_time = Instant::now();
+						let event_type_str = format!("{:?}", event_type);
 
-						let broadcast_outcome = Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await;
+						let broadcast_outcome = timed_broadcast!(&event_type_str, { Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await });
+
 						match broadcast_outcome {
 							BroadcastOutcome::NoSubscribers => continue,
-							BroadcastOutcome::Completed { delivered, failed } => {
-								let duration = start_time.elapsed();
+							BroadcastOutcome::Completed { failed, .. } => {
 								metrics_clone.broadcast_attempt(failed == 0);
-
-								debug!("Event {:?} broadcast: {} delivered, {} failed, took {:?}", event_type, delivered, failed, duration);
 							}
 						}
 					}
 					Err(e) => match e {
 						async_broadcast::RecvError::Closed => {
-							error!("Main event receiver channel closed: {}", e);
+							record_ws_error!("channel_closed", "main_receiver", e);
 							break;
 						}
 						async_broadcast::RecvError::Overflowed(count) => {
+							record_ws_error!("channel_overflow", "main_receiver");
 							warn!("Main receiver lagged behind by {} messages, continuing", count);
 							continue;
 						}
@@ -538,6 +538,9 @@ impl WebSocketFsm {
 				}
 			}
 		});
+
+		record_system_event!("fsm_initialized");
+		update_resource_usage!("active_connections", 0.0);
 
 		Self {
 			connections,
@@ -577,6 +580,7 @@ impl WebSocketFsm {
 					Ok(_) => delivered += 1,
 					Err(e) => {
 						failed += 1;
+						record_ws_error!("send_failed", "broadcast", e);
 						warn!("Failed to send event {:?} to client {}: {}", event_type, connection_id, e);
 					}
 				}
@@ -977,15 +981,47 @@ impl WebSocketFsm {
 
 	// Health check endpoint data
 	pub async fn get_health_status(&self) -> HealthStatus {
-		let metrics = self.get_metrics();
-		let connection_states = self.get_connection_state_distribution().await;
+		let health_result: Result<HealthStatus, ()> = health_check!("health_status", {
+			let metrics = self.get_metrics();
+			let connection_states = self.get_connection_state_distribution().await;
 
-		HealthStatus {
-			total_connections: self.connections.len(),
-			metrics,
-			connection_states,
-			sender_receiver_count: self.sender.receiver_count(),
-			sender_is_closed: self.sender.is_closed(),
+			// Check system invariants
+			check_invariant!(!self.sender.is_closed(), "sender_state", "Main sender channel is closed");
+
+			check_invariant!(
+				self.sender.receiver_count() > 0 || self.connections.is_empty(),
+				"receiver_count",
+				"No receivers but connections exist",
+				expected: "receivers > 0 or connections == 0",
+				actual: format!("receivers: {}, connections: {}", self.sender.receiver_count(), self.connections.len())
+			);
+
+			Ok(HealthStatus {
+				total_connections: self.connections.len(),
+				metrics,
+				connection_states,
+				sender_receiver_count: self.sender.receiver_count(),
+				sender_is_closed: self.sender.is_closed(),
+			})
+		});
+
+		match health_result {
+			Ok(status) => status,
+			Err(_) => {
+				record_ws_error!("health_check_failed", "health_status");
+				// Return degraded status
+				HealthStatus {
+					total_connections: self.connections.len(),
+					metrics: self.get_metrics(),
+					connection_states: ConnectionStateDistribution {
+						active: 0,
+						stale: 0,
+						disconnected: 0,
+					},
+					sender_receiver_count: 0,
+					sender_is_closed: true,
+				}
+			}
 		}
 	}
 
@@ -1133,18 +1169,22 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 }
 
 pub async fn init_websocket() -> WebSocketFsm {
+	record_system_event!("websocket_init_started");
 	let state = WebSocketFsm::new();
 
-	// Start FSM processes
+	// Start FSM processes with instrumentation
 	state.start_timeout_monitor(Duration::from_secs(120));
 
-	// Start system event monitoring for debugging
+	// Start system event monitoring for debugging with enhanced instrumentation
 	let system_events = state.subscribe_to_system_events();
 	tokio::spawn(async move {
 		let mut events = system_events;
+		record_system_event!("system_event_monitor_started");
+
 		while let Ok(event) = events.recv().await {
 			match event {
 				SystemEvent::ConnectionStateChanged { connection_id, from, to } => {
+					record_system_event!("connection_state_changed", connection_id = connection_id, from_state = from, to_state = to);
 					info!("Connection {} state: {} -> {}", connection_id, from, to);
 				}
 				SystemEvent::MessageProcessed {
@@ -1153,6 +1193,14 @@ pub async fn init_websocket() -> WebSocketFsm {
 					duration,
 					result,
 				} => {
+					record_system_event!(
+						"message_processed",
+						message_id = message_id,
+						connection_id = connection_id,
+						duration_ms = duration.as_millis(),
+						delivered = result.delivered,
+						failed = result.failed
+					);
 					debug!(
 						"Message {} from {} processed in {:?}: {} delivered, {} failed",
 						message_id, connection_id, duration, result.delivered, result.failed
@@ -1163,6 +1211,7 @@ pub async fn init_websocket() -> WebSocketFsm {
 					error,
 					affected_connections,
 				} => {
+					record_system_event!("broadcast_failed", event_type = event_type, error = error, affected_connections = affected_connections);
 					error!("Broadcast failed for {:?} affecting {} connections: {}", event_type, affected_connections, error);
 				}
 				SystemEvent::ConnectionCleanup {
@@ -1170,13 +1219,17 @@ pub async fn init_websocket() -> WebSocketFsm {
 					reason,
 					resources_freed,
 				} => {
+					record_system_event!("connection_cleanup", connection_id = connection_id, reason = reason, resources_freed = resources_freed);
 					info!("Connection {} cleaned up (reason: {}, resources freed: {})", connection_id, reason, resources_freed);
 				}
 			}
 		}
+
+		record_system_event!("system_event_monitor_ended");
 	});
 
-	info!("Enhanced FSM WebSocket system initialized with full observability");
+	record_system_event!("websocket_init_completed");
+	info!("Enhanced FSM WebSocket system initialized with full observability and instrumentation");
 	state
 }
 
