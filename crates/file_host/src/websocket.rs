@@ -740,6 +740,10 @@ impl WebSocketFsm {
 		let connection_id = connection.id.clone();
 
 		self.connections.insert(client_key.clone(), connection);
+		record_connection_event!("created", connection_id);
+		update_connection_state!("", "active");
+		update_resource_usage!("active_connections", self.connections.len() as f64);
+
 		self.metrics.connection_created();
 
 		info!("Connection {} added successfully", connection_id);
