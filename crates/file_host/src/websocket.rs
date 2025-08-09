@@ -551,7 +551,6 @@ impl WebSocketFsm {
 	}
 
 	/// Broadcasts an event to all subscribed and active connections
-	/// Returns (delivered_count, failed_count)
 	async fn broadcast_event_to_subscribers(connections: &Arc<DashMap<String, Connection>>, event: Event, event_type: &EventType) -> BroadcastOutcome {
 		let mut delivered = 0;
 		let mut failed = 0;
@@ -600,12 +599,12 @@ impl WebSocketFsm {
 		let connection_id = if let Some(conn) = self.connections.get(client_key) {
 			conn.id.clone()
 		} else {
+			record_ws_error!("connection_not_found", "message_processing");
 			error!("Cannot process message for unknown client: {}", client_key);
 			return;
 		};
 
 		let mut message = EventMessage::new(connection_id.clone(), raw_message);
-		let start_time = Instant::now();
 
 		// Update message count
 		if let Some(mut conn) = self.connections.get_mut(client_key) {
@@ -614,7 +613,8 @@ impl WebSocketFsm {
 
 		// Parse
 		if let Err(e) = message.parse() {
-			error!("Message {} parse failed for client {}: {}", message.id, connection_id, e);
+			record_message_result!("unknown", "parse_failed", connection_id: connection_id);
+			record_ws_error!("parse_error", "message", e);
 			self.metrics.message_processed(false);
 			self.send_error_to_client(client_key, &e).await;
 			return;
@@ -622,20 +622,25 @@ impl WebSocketFsm {
 
 		// Handle control messages immediately
 		if let Some(event) = message.get_event() {
+			let event_type_str = format!("{:?}", event.get_type());
+
 			match event {
 				Event::Pong => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
 					if let Err(e) = self.update_client_ping(client_key).await {
-						error!("Failed to update ping for client {}: {}", connection_id, e);
+						record_ws_error!("ping_update_failed", "connection", e);
 					}
 					self.metrics.message_processed(true);
 					return;
 				}
 				Event::Subscribe { event_types } => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
 					self.handle_subscription(client_key, event_types.clone(), true).await;
 					self.metrics.message_processed(true);
 					return;
 				}
 				Event::Unsubscribe { event_types } => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
 					self.handle_subscription(client_key, event_types.clone(), false).await;
 					self.metrics.message_processed(true);
 					return;
@@ -646,7 +651,8 @@ impl WebSocketFsm {
 
 		// Validate
 		if let Err(e) = message.validate() {
-			error!("Message {} validation failed for client {}: {}", message.id, connection_id, e);
+			record_message_result!("unknown", "validation_failed", connection_id: connection_id);
+			record_ws_error!("validation_error", "message", e);
 			self.metrics.message_processed(false);
 			self.send_error_to_client(client_key, &e).await;
 			return;
@@ -654,9 +660,12 @@ impl WebSocketFsm {
 
 		// Process (broadcast)
 		if let Some(event) = message.get_event() {
-			let result = self.broadcast_event(event).await;
-			let duration = start_time.elapsed();
+			let event_type_str = format!("{:?}", event.get_type());
+			let start_time = Instant::now();
 
+			let result = timed_ws_operation!(&event_type_str, "process", { self.broadcast_event(event).await });
+
+			let duration = start_time.elapsed();
 			let process_result = ProcessResult {
 				delivered: result.delivered,
 				failed: result.failed,
@@ -664,18 +673,18 @@ impl WebSocketFsm {
 			};
 
 			message.mark_processed(process_result.clone());
+			record_message_result!(&event_type_str, "success", connection_id: connection_id);
 			self.metrics.message_processed(true);
 
 			// Emit system event for monitoring
-			let _ = self
-				.system_events
-				.broadcast(SystemEvent::MessageProcessed {
-					message_id: message.id.clone(),
-					connection_id,
-					duration,
-					result: process_result,
-				})
-				.await;
+			record_system_event!(
+				"message_processed",
+				message_id = message.id,
+				connection_id = connection_id,
+				delivered = process_result.delivered,
+				failed = process_result.failed,
+				duration_ms = duration.as_millis()
+			);
 		}
 	}
 
@@ -687,13 +696,8 @@ impl WebSocketFsm {
 				conn.unsubscribe(event_types.clone())
 			};
 
-			debug!(
-				"Client {} {} {} event types: {:?}",
-				conn.id,
-				if subscribe { "subscribed to" } else { "unsubscribed from" },
-				changed_count,
-				event_types
-			);
+			let operation = if subscribe { "subscribe" } else { "unsubscribe" };
+			record_subscription_change!(operation, &event_types, changed_count, conn.id);
 		}
 	}
 
@@ -754,29 +758,23 @@ impl WebSocketFsm {
 		if let Some((_, mut connection)) = self.connections.remove(client_key) {
 			let connection_id = connection.id.clone();
 			let was_active = connection.is_active();
+			let duration = connection.established_at.elapsed();
 
 			// Transition to disconnected state
 			let old_state = connection.disconnect(reason.clone())?;
 			self.metrics.connection_removed(was_active);
 
-			// Emit system events
-			let _ = self
-				.system_events
-				.broadcast(SystemEvent::ConnectionStateChanged {
-					connection_id: connection_id.clone(),
-					from: old_state,
-					to: connection.state.clone(),
-				})
-				.await;
+			// Use comprehensive cleanup macro
+			cleanup_connection!(connection_id, &reason, duration, true);
+			update_resource_usage!("active_connections", self.connections.len() as f64);
 
-			let _ = self
-				.system_events
-				.broadcast(SystemEvent::ConnectionCleanup {
-					connection_id: connection_id.clone(),
-					reason: reason.clone(),
-					resources_freed: true,
-				})
-				.await;
+			// Emit system events
+			record_system_event!(
+				"connection_state_changed",
+				connection_id = connection_id,
+				from_state = old_state,
+				to_state = connection.state
+			);
 
 			info!("Connection {} removed: {}", connection_id, reason);
 
@@ -789,14 +787,13 @@ impl WebSocketFsm {
 	async fn broadcast_client_count(&self) {
 		let count = self.connections.len();
 		let _ = self.sender.broadcast(Event::ClientCount { count }).await;
-		debug!("Broadcasted client count: {}", count);
+		update_resource_usage!("active_connections", count as f64);
 	}
 
 	// Enhanced timeout monitor with invariant checking
 	pub fn start_timeout_monitor(&self, timeout: Duration) {
 		let connections = self.connections.clone();
 		let metrics = self.metrics.clone();
-		let system_events = self.system_events.clone();
 		let sender = self.sender.clone();
 
 		tokio::spawn(async move {
@@ -805,16 +802,32 @@ impl WebSocketFsm {
 			loop {
 				interval.tick().await;
 
-				// Check invariants
-				let total_connections = connections.len();
-				let metrics_snapshot = metrics.get_snapshot();
-				let expected_active = metrics_snapshot.total_created - metrics_snapshot.total_removed;
+				// Comprehensive health check with instrumentation
+				let health_result: Result<(), String> = health_check!("timeout_monitor", {
+					let total_connections = connections.len();
+					let metrics_snapshot = metrics.get_snapshot();
 
-				if total_connections as u64 != expected_active {
-					warn!("Connection count invariant violated: actual={}, expected={}", total_connections, expected_active);
+					// Check invariants
+					let expected_active = metrics_snapshot.total_created - metrics_snapshot.total_removed;
+					check_invariant!(
+						total_connections as u64 == expected_active,
+						"connection_count",
+						"Connection count mismatch",
+						expected: expected_active,
+						actual: total_connections as u64
+					);
+
+					// Log comprehensive health snapshot
+					log_health_snapshot!(metrics, total_connections);
+
+					Ok(())
+				});
+
+				if health_result.is_err() {
+					record_ws_error!("health_check_failed", "timeout_monitor");
 				}
 
-				// Find stale connections (collect keys to avoid holding iterator during modifications)
+				// Find and process stale connections
 				let stale_connection_keys: Vec<String> = connections
 					.iter()
 					.filter_map(|entry| {
@@ -827,7 +840,7 @@ impl WebSocketFsm {
 					})
 					.collect();
 
-				// Process stale connections
+				// Process stale connections with instrumentation
 				let mut cleaned_up = 0;
 				for client_key in stale_connection_keys {
 					if let Some(mut entry) = connections.get_mut(&client_key) {
@@ -835,48 +848,33 @@ impl WebSocketFsm {
 						let connection_id = conn.id.clone();
 
 						if let Ok(old_state) = conn.mark_stale("Timeout".to_string()) {
+							update_connection_state!("active", "stale");
 							metrics.connection_marked_stale();
 
-							// Emit state change event
-							let _ = system_events
-								.broadcast(SystemEvent::ConnectionStateChanged {
-									connection_id: connection_id.clone(),
-									from: old_state,
-									to: conn.state.clone(),
-								})
-								.await;
+							record_system_event!("connection_state_changed", connection_id = connection_id, from_state = old_state, to_state = conn.state);
 
 							warn!("Connection {} marked as stale due to timeout", connection_id);
 						}
 					}
 
-					// Remove stale connection
+					// Remove stale connection with cleanup instrumentation
 					if let Some((_, mut conn)) = connections.remove(&client_key) {
 						let connection_id = conn.id.clone();
+						let duration = conn.established_at.elapsed();
 						let _ = conn.disconnect("Timeout cleanup".to_string());
 						cleaned_up += 1;
 
-						let _ = system_events
-							.broadcast(SystemEvent::ConnectionCleanup {
-								connection_id,
-								reason: "Timeout cleanup".to_string(),
-								resources_freed: true,
-							})
-							.await;
+						cleanup_connection!(connection_id, "Timeout cleanup", duration, true);
 					}
 				}
 
 				if cleaned_up > 0 {
+					record_system_event!("cleanup_completed", connections_cleaned = cleaned_up);
 					info!("Cleaned up {} stale connections", cleaned_up);
 					let count = connections.len();
 					let _ = sender.broadcast(Event::ClientCount { count }).await;
+					update_resource_usage!("active_connections", count as f64);
 				}
-
-				// Log periodic health metrics
-				debug!(
-					"Connection health: total={}, active={}, stale={}, msgs_processed={}, msgs_failed={}",
-					total_connections, metrics_snapshot.current_active, metrics_snapshot.current_stale, metrics_snapshot.messages_processed, metrics_snapshot.messages_failed
-				);
 			}
 		});
 	}
@@ -941,6 +939,7 @@ impl WebSocketFsm {
 		if let Some(connection) = self.connections.get(client_key) {
 			let error_event = Event::Error { message: error.to_string() };
 			if let Err(e) = connection.send_event(error_event).await {
+				record_ws_error!("error_send_failed", "connection", e);
 				warn!("Failed to send error to client {}: {}", connection.id, e);
 			}
 		}
@@ -953,20 +952,23 @@ impl WebSocketFsm {
 				Ok(old_state) => {
 					// Emit state change event if there was a transition
 					if !matches!(old_state, ConnectionState::Active { .. }) {
-						let _ = self
-							.system_events
-							.broadcast(SystemEvent::ConnectionStateChanged {
-								connection_id,
-								from: old_state,
-								to: connection.state.clone(),
-							})
-							.await;
+						update_connection_state!("stale", "active");
+						record_system_event!(
+							"connection_state_changed",
+							connection_id = connection_id,
+							from_state = old_state,
+							to_state = connection.state
+						);
 					}
 					Ok(())
 				}
-				Err(e) => Err(format!("Failed to update ping for {}: {}", connection_id, e)),
+				Err(e) => {
+					record_ws_error!("ping_update_failed", "connection", &e);
+					Err(format!("Failed to update ping for {}: {}", connection_id, e))
+				}
 			}
 		} else {
+			record_ws_error!("ping_update_no_connection", "connection");
 			Err(format!("Client {} not found", client_key))
 		}
 	}
