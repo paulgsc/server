@@ -203,33 +203,38 @@ macro_rules! record_message_result {
 }
 
 /// Macro for timing and recording broadcast operations
+/// Macro for timing and recording broadcast operations
 #[macro_export]
 macro_rules! timed_broadcast {
 	($event_type:expr, $body:block) => {{
 		let start = std::time::Instant::now();
 		let result = $body;
 		let duration = start.elapsed().as_secs_f64();
-
 		WS_BROADCAST_DURATION.with_label_values(&[$event_type]).observe(duration);
 
 		// Record the broadcast operation result
 		match &result {
-			$crate::websocket::BroadcastOutcome::NoSubscribers => {
-				WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "no_subscribers"]).inc();
-			}
-			$crate::websocket::BroadcastOutcome::Completed { delivered, failed } => {
-				WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "success"]).inc();
-
-				WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "delivered"]).inc_by(*delivered as u64);
-
-				if *failed > 0 {
-					WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "failed"]).inc_by(*failed as u64);
+			Ok(broadcast_outcome) => match broadcast_outcome {
+				$crate::websocket::BroadcastOutcome::NoSubscribers => {
+					WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "no_subscribers"]).inc();
 				}
+				$crate::websocket::BroadcastOutcome::Completed {
+					process_result: ProcessResult { failed, delivered, .. },
+				} => {
+					WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "success"]).inc();
+					WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "delivered"]).inc_by(*delivered as u64);
+					if *failed > 0 {
+						WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "failed"]).inc_by(*failed as u64);
+					}
+				}
+			},
+			Err(_error) => {
+				// Handle the error case - record error metrics
+				WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "error"]).inc();
 			}
 		}
 
 		tracing::debug!(event_type = $event_type, duration_ms = duration * 1000.0, "Broadcast operation completed");
-
 		result
 	}};
 }

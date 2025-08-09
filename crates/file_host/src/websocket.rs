@@ -478,7 +478,7 @@ impl EventMessage {
 
 pub enum BroadcastOutcome {
 	NoSubscribers,
-	Completed { delivered: u32, failed: u32 },
+	Completed { process_result: ProcessResult },
 }
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -515,12 +515,20 @@ impl WebSocketFsm {
 						let event_type = event.get_type();
 						let event_type_str = format!("{:?}", event_type);
 
-						let broadcast_outcome = timed_broadcast!(&event_type_str, { Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await });
+						let broadcast_outcome: Result<BroadcastOutcome, String> =
+							timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await) });
 
 						match broadcast_outcome {
-							BroadcastOutcome::NoSubscribers => continue,
-							BroadcastOutcome::Completed { failed, .. } => {
-								metrics_clone.broadcast_attempt(failed == 0);
+							Ok(broadcast_outcome) => match broadcast_outcome {
+								BroadcastOutcome::NoSubscribers => continue,
+								BroadcastOutcome::Completed {
+									process_result: ProcessResult { failed, .. },
+								} => {
+									metrics_clone.broadcast_attempt(failed == 0);
+								}
+							},
+							Err(_) => {
+								record_ws_error!("channel_closed", "main_receiver");
 							}
 						}
 					}
@@ -552,6 +560,7 @@ impl WebSocketFsm {
 
 	/// Broadcasts an event to all subscribed and active connections
 	async fn broadcast_event_to_subscribers(connections: &Arc<DashMap<String, Connection>>, event: Event, event_type: &EventType) -> BroadcastOutcome {
+		let start_time = Instant::now();
 		let mut delivered = 0;
 		let mut failed = 0;
 
@@ -585,8 +594,11 @@ impl WebSocketFsm {
 				}
 			}
 		}
+		let duration = start_time.elapsed();
 
-		BroadcastOutcome::Completed { delivered, failed }
+		let process_result = ProcessResult { delivered, failed, duration };
+
+		BroadcastOutcome::Completed { process_result }
 	}
 
 	pub fn router(self) -> Router {
@@ -702,38 +714,44 @@ impl WebSocketFsm {
 	}
 
 	pub async fn broadcast_event(&self, event: &Event) -> ProcessResult {
-		let start_time = Instant::now();
+		let event_type_str = format!("{:?}", event.get_type());
 		let receiver_count = self.sender.receiver_count();
 
-		match self.sender.broadcast(event.clone()).await {
-			Ok(_) => {
-				let duration = start_time.elapsed();
-				ProcessResult {
-					delivered: receiver_count,
-					failed: 0,
-					duration,
+		let result = timed_broadcast!(&event_type_str, {
+			match self.sender.broadcast(event.clone()).await {
+				Ok(_) => Ok(BroadcastOutcome::Completed {
+					process_result: ProcessResult {
+						delivered: receiver_count,
+						failed: 0,
+						duration: Duration::default(),
+					},
+				}),
+				Err(e) => {
+					record_ws_error!("broadcast_failed", "main_channel", e);
+					self.metrics.broadcast_attempt(false);
+
+					// Emit system event for monitoring
+					record_system_event!("broadcast_failed", event_type = event.get_type(), error = e, affected_connections = receiver_count);
+
+					Err(format!("Broadcast failed: {}", e))
 				}
 			}
-			Err(e) => {
-				error!("Failed to broadcast event: {}", e);
-				self.metrics.broadcast_attempt(false);
+		});
 
-				// Emit system event for monitoring
-				let _ = self
-					.system_events
-					.broadcast(SystemEvent::BroadcastFailed {
-						event_type: event.get_type(),
-						error: e.to_string(),
-						affected_connections: receiver_count,
-					})
-					.await;
-
-				ProcessResult {
+		match result {
+			Ok(broadcast_outcome) => match broadcast_outcome {
+				BroadcastOutcome::Completed { process_result } => process_result,
+				BroadcastOutcome::NoSubscribers => ProcessResult {
 					delivered: 0,
-					failed: 1,
-					duration: start_time.elapsed(),
-				}
-			}
+					failed: 0,
+					duration: Duration::default(),
+				},
+			},
+			Err(_) => ProcessResult {
+				delivered: 0,
+				failed: 1,
+				duration: Duration::default(),
+			},
 		}
 	}
 
@@ -890,15 +908,15 @@ impl WebSocketFsm {
 			loop {
 				match tokio::time::timeout(Duration::from_secs(45), obs_receiver.recv()).await {
 					Ok(Ok(obs_event)) => {
-						let start_time = Instant::now();
 						let event = Event::ObsStatus { status: obs_event };
 						let event_type = event.get_type();
 
 						let broadcast_outcome = Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await;
 						match broadcast_outcome {
 							BroadcastOutcome::NoSubscribers => continue,
-							BroadcastOutcome::Completed { delivered, failed } => {
-								let duration = start_time.elapsed();
+							BroadcastOutcome::Completed {
+								process_result: ProcessResult { delivered, failed, duration },
+							} => {
 								metrics.broadcast_attempt(failed == 0);
 								debug!("Event {:?} broadcast: {} delivered, {} failed, took {:?}", event_type, delivered, failed, duration);
 
