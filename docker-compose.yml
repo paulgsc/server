@@ -1,3 +1,4 @@
+---
 services:
   file-host:
     build:
@@ -149,6 +150,19 @@ services:
     #   interval: 10s
     #   timeout: 5s
     #   retries: 10
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    networks:
+      - monitoring-network
+    ports:
+      - '9100:9100'
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+    volumes:
+      - '/:/host:ro,rslave'
 
 networks:
   monitoring-network:
