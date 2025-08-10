@@ -13,7 +13,7 @@ use file_host::{
 	AppState, CacheStore, Config, UtterancePrompt,
 };
 // use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);
-	let server = axum::serve(listener, app);
+	let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
 
 	tokio::select! {
 		result = server => {

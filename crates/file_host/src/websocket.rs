@@ -3,8 +3,9 @@ use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
 	extract::{
 		ws::{Message, WebSocket, WebSocketUpgrade},
-		State,
+		ConnectInfo, State,
 	},
+	http::HeaderMap,
 	response::IntoResponse,
 	routing::get,
 	Router,
@@ -12,7 +13,7 @@ use axum::{
 use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Serialize;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -23,7 +24,7 @@ pub mod types;
 
 pub(crate) use broadcast::spawn_event_forwarder;
 pub use broadcast::BroadcastOutcome;
-pub(crate) use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
+pub(crate) use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake, ClientLimits};
 pub use connection::{Connection, ConnectionId};
 pub(crate) use message::process_incoming_messages;
 pub use message::{EventMessage, MessageState, ProcessResult};
@@ -34,6 +35,7 @@ pub use types::*;
 pub struct WebSocketFsm {
 	connections: Arc<DashMap<String, Connection>>,
 	sender: Sender<Event>,
+	limits: ClientLimits,
 	metrics: Arc<ConnectionMetrics>,
 	system_events: Sender<SystemEvent>,
 }
@@ -101,6 +103,7 @@ impl WebSocketFsm {
 		Self {
 			connections,
 			sender,
+			limits: ClientLimits::default(),
 			metrics,
 			system_events: system_sender,
 		}
@@ -108,101 +111,6 @@ impl WebSocketFsm {
 
 	pub fn router(self) -> Router {
 		Router::new().route("/ws", get(websocket_handler)).with_state(self)
-	}
-
-	// Enhanced message processing with full traceability
-	pub async fn process_message(&self, client_key: &str, raw_message: String) {
-		// Get connection ID for correlation
-		let connection_id = if let Some(conn) = self.connections.get(client_key) {
-			conn.id.clone()
-		} else {
-			record_ws_error!("connection_not_found", "message_processing");
-			error!("Cannot process message for unknown client: {}", client_key);
-			return;
-		};
-
-		let mut message = EventMessage::new(connection_id.clone(), raw_message);
-
-		// Update message count
-		if let Some(mut conn) = self.connections.get_mut(client_key) {
-			conn.increment_message_count();
-		}
-
-		// Parse
-		if let Err(e) = message.parse() {
-			record_message_result!("unknown", "parse_failed", connection_id: connection_id);
-			record_ws_error!("parse_error", "message", e);
-			self.metrics.message_processed(false);
-			self.send_error_to_client(client_key, &e).await;
-			return;
-		}
-
-		// Handle control messages immediately
-		if let Some(event) = message.get_event() {
-			let event_type_str = format!("{:?}", event.get_type());
-
-			match event {
-				Event::Pong => {
-					record_message_result!(&event_type_str, "success", connection_id: connection_id);
-					if let Err(e) = self.update_client_ping(client_key).await {
-						record_ws_error!("ping_update_failed", "connection", e);
-					}
-					self.metrics.message_processed(true);
-					return;
-				}
-				Event::Subscribe { event_types } => {
-					record_message_result!(&event_type_str, "success", connection_id: connection_id);
-					self.handle_subscription(client_key, event_types.clone(), true).await;
-					self.metrics.message_processed(true);
-					return;
-				}
-				Event::Unsubscribe { event_types } => {
-					record_message_result!(&event_type_str, "success", connection_id: connection_id);
-					self.handle_subscription(client_key, event_types.clone(), false).await;
-					self.metrics.message_processed(true);
-					return;
-				}
-				_ => {}
-			}
-		}
-
-		// Validate
-		if let Err(e) = message.validate() {
-			record_message_result!("unknown", "validation_failed", connection_id: connection_id);
-			record_ws_error!("validation_error", "message", e);
-			self.metrics.message_processed(false);
-			self.send_error_to_client(client_key, &e).await;
-			return;
-		}
-
-		// Process (broadcast)
-		if let Some(event) = message.get_event() {
-			let event_type_str = format!("{:?}", event.get_type());
-			let start_time = Instant::now();
-
-			let result = timed_ws_operation!(&event_type_str, "process", { self.broadcast_event(event).await });
-
-			let duration = start_time.elapsed();
-			let process_result = ProcessResult {
-				delivered: result.delivered,
-				failed: result.failed,
-				duration,
-			};
-
-			message.mark_processed(process_result.clone());
-			record_message_result!(&event_type_str, "success", connection_id: connection_id);
-			self.metrics.message_processed(true);
-
-			// Emit system event for monitoring
-			record_system_event!(
-				"message_processed",
-				message_id = message.id,
-				connection_id = connection_id,
-				delivered = process_result.delivered,
-				failed = process_result.failed,
-				duration_ms = duration.as_millis()
-			);
-		}
 	}
 
 	async fn handle_subscription(&self, client_key: &str, event_types: Vec<EventType>, subscribe: bool) {
@@ -350,23 +258,26 @@ pub struct ConnectionStateDistribution {
 	pub disconnected: usize,
 }
 
-async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebSocketFsm>) -> impl IntoResponse {
-	ws.on_upgrade(|socket| handle_socket(socket, state))
+async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebSocketFsm>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
+	ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr))
 }
 
 // Orchestrates the WebSocket connection lifecycle
-async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
+async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMap, addr: SocketAddr) {
 	let (mut sender, receiver) = socket.split();
 
 	// Establish connection through FSM
-	let (client_key, event_receiver) = match establish_connection(&state).await {
+	let (conn_key, event_receiver) = match establish_connection(&state, &headers, &addr).await {
 		Ok(connection) => connection,
-		Err(_) => return, // Error already logged in establish_connection
+		Err(_) => {
+			record_ws_error!("connection refused", "handle_socket");
+			return;
+		} // Error already logged in establish_connection
 	};
 
 	// Send initial handshake
-	if let Err(_) = send_initial_handshake(&mut sender, &client_key).await {
-		clear_connection(&state, &client_key).await;
+	if let Err(_) = send_initial_handshake(&mut sender, &conn_key).await {
+		clear_connection(&state, &conn_key).await;
 		return;
 	}
 
@@ -374,13 +285,13 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
 	state.broadcast_client_count().await;
 
 	// Start event forwarding task
-	let forward_task = spawn_event_forwarder(sender, event_receiver, client_key.clone());
+	let forward_task = spawn_event_forwarder(sender, event_receiver, conn_key.clone());
 
 	// Process incoming messages
-	let message_count = process_incoming_messages(receiver, &state, &client_key).await;
+	let message_count = process_incoming_messages(receiver, &state, &conn_key).await;
 
 	// Clean up connection
-	cleanup_connection_with_stats(&state, &client_key, message_count, forward_task).await;
+	cleanup_connection_with_stats(&state, &conn_key, message_count, forward_task).await;
 }
 
 pub async fn init_websocket() -> WebSocketFsm {

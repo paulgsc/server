@@ -90,8 +90,105 @@ impl EventMessage {
 	}
 }
 
+impl WebSocketFsm {
+	// Enhanced message processing with full traceability
+	pub async fn process_message(&self, conn_key: &str, raw_message: String) {
+		// Get connection ID for correlation
+		let connection_id = if let Some(conn) = self.connections.get(conn_key) {
+			conn.id.clone()
+		} else {
+			record_ws_error!("connection_not_found", "message_processing");
+			error!("Cannot process message for unknown client: {}", conn_key);
+			return;
+		};
+
+		let mut message = EventMessage::new(connection_id.clone(), raw_message);
+
+		// Update message count
+		if let Some(mut conn) = self.connections.get_mut(conn_key) {
+			conn.increment_message_count();
+		}
+
+		// Parse
+		if let Err(e) = message.parse() {
+			record_message_result!("unknown", "parse_failed", connection_id: connection_id);
+			record_ws_error!("parse_error", "message", e);
+			self.metrics.message_processed(false);
+			self.send_error_to_client(conn_key, &e).await;
+			return;
+		}
+
+		// Handle control messages immediately
+		if let Some(event) = message.get_event() {
+			let event_type_str = format!("{:?}", event.get_type());
+
+			match event {
+				Event::Pong => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
+					if let Err(e) = self.update_client_ping(conn_key).await {
+						record_ws_error!("ping_update_failed", "connection", e);
+					}
+					self.metrics.message_processed(true);
+					return;
+				}
+				Event::Subscribe { event_types } => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
+					self.handle_subscription(conn_key, event_types.clone(), true).await;
+					self.metrics.message_processed(true);
+					return;
+				}
+				Event::Unsubscribe { event_types } => {
+					record_message_result!(&event_type_str, "success", connection_id: connection_id);
+					self.handle_subscription(conn_key, event_types.clone(), false).await;
+					self.metrics.message_processed(true);
+					return;
+				}
+				_ => {}
+			}
+		}
+
+		// Validate
+		if let Err(e) = message.validate() {
+			record_message_result!("unknown", "validation_failed", connection_id: connection_id);
+			record_ws_error!("validation_error", "message", e);
+			self.metrics.message_processed(false);
+			self.send_error_to_client(conn_key, &e).await;
+			return;
+		}
+
+		// Process (broadcast)
+		if let Some(event) = message.get_event() {
+			let event_type_str = format!("{:?}", event.get_type());
+			let start_time = Instant::now();
+
+			let result = timed_ws_operation!(&event_type_str, "process", { self.broadcast_event(event).await });
+
+			let duration = start_time.elapsed();
+			let process_result = ProcessResult {
+				delivered: result.delivered,
+				failed: result.failed,
+				duration,
+			};
+
+			message.mark_processed(process_result.clone());
+			record_message_result!(&event_type_str, "success", connection_id: connection_id);
+			self.metrics.message_processed(true);
+
+			// Emit system event for monitoring
+			record_system_event!(
+				"message_processed",
+				message_id = message.id,
+				connection_id = connection_id,
+				delivered = process_result.delivered,
+				failed = process_result.failed,
+				duration_ms = duration.as_millis()
+			);
+		}
+	}
+}
+
 // Processes all incoming messages from the WebSocket
-pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, client_key: &str) -> u64 {
+pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, conn_key: &str) -> u64 {
 	let mut message_count = 0u64;
 
 	while let Some(result) = receiver.next().await {
@@ -99,13 +196,13 @@ pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocke
 
 		match result {
 			Ok(msg) => {
-				if let Err(_) = handle_websocket_message(msg, state, client_key, message_count).await {
+				if let Err(_) = handle_websocket_message(msg, state, conn_key, message_count).await {
 					break;
 				}
 			}
 			Err(e) => {
 				record_ws_error!("websocket_error", "connection", e);
-				error!("WebSocket error for {} (msg #{}): {}", client_key, message_count, e);
+				error!("WebSocket error for {} (msg #{}): {}", conn_key, message_count, e);
 				break;
 			}
 		}
@@ -115,26 +212,26 @@ pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocke
 }
 
 // Handles a single WebSocket message based on its type
-async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, client_key: &str, message_count: u64) -> Result<(), ()> {
+async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: &str, message_count: u64) -> Result<(), ()> {
 	match msg {
-		Message::Text(text) => handle_text_message(text, state, client_key, message_count).await,
-		Message::Ping(_) => handle_ping_message(state, client_key).await,
-		Message::Pong(_) => handle_pong_message(state, client_key).await,
-		Message::Close(reason) => handle_close_message(client_key, reason).await,
+		Message::Text(text) => handle_text_message(text, state, conn_key, message_count).await,
+		Message::Ping(_) => handle_ping_message(state, conn_key).await,
+		Message::Pong(_) => handle_pong_message(state, conn_key).await,
+		Message::Close(reason) => handle_close_message(conn_key, reason).await,
 		_ => {
-			debug!("Ignored message type from {}", client_key);
+			debug!("Ignored message type from {}", conn_key);
 			Ok(())
 		}
 	}
 }
 
 // Handles text messages from clients
-async fn handle_text_message(text: String, state: &WebSocketFsm, client_key: &str, message_count: u64) -> Result<(), ()> {
-	record_system_event!("message_received", connection_id = client_key, message_number = message_count, size_bytes = text.len());
-	debug!("Received message #{} from {}: {} chars", message_count, client_key, text.len());
+async fn handle_text_message(text: String, state: &WebSocketFsm, conn_key: &str, message_count: u64) -> Result<(), ()> {
+	record_system_event!("message_received", connection_id = conn_key, message_number = message_count, size_bytes = text.len());
+	debug!("Received message #{} from {}: {} chars", message_count, conn_key, text.len());
 
 	let processing_result: Result<(), String> = timed_ws_operation!("websocket", "process_message", {
-		state.process_message(client_key, text).await;
+		state.process_message(conn_key, text).await;
 		Ok(())
 	});
 
@@ -146,34 +243,34 @@ async fn handle_text_message(text: String, state: &WebSocketFsm, client_key: &st
 }
 
 // Handles ping messages
-async fn handle_ping_message(state: &WebSocketFsm, client_key: &str) -> Result<(), ()> {
-	record_system_event!("ping_received", connection_id = client_key);
-	debug!("Received WebSocket ping from {}", client_key);
+async fn handle_ping_message(state: &WebSocketFsm, conn_key: &str) -> Result<(), ()> {
+	record_system_event!("ping_received", connection_id = conn_key);
+	debug!("Received WebSocket ping from {}", conn_key);
 
-	if let Err(e) = state.update_client_ping(client_key).await {
+	if let Err(e) = state.update_client_ping(conn_key).await {
 		record_ws_error!("ping_handling_failed", "websocket", e);
-		warn!("Failed to update ping for {}: {}", client_key, e);
+		warn!("Failed to update ping for {}: {}", conn_key, e);
 	}
 
 	Ok(())
 }
 
 // Handles pong messages
-async fn handle_pong_message(state: &WebSocketFsm, client_key: &str) -> Result<(), ()> {
-	record_system_event!("pong_received", connection_id = client_key);
-	debug!("Received WebSocket pong from {}", client_key);
+async fn handle_pong_message(state: &WebSocketFsm, conn_key: &str) -> Result<(), ()> {
+	record_system_event!("pong_received", connection_id = conn_key);
+	debug!("Received WebSocket pong from {}", conn_key);
 
-	if let Err(e) = state.update_client_ping(client_key).await {
+	if let Err(e) = state.update_client_ping(conn_key).await {
 		record_ws_error!("pong_handling_failed", "websocket", e);
-		warn!("Failed to update pong for {}: {}", client_key, e);
+		warn!("Failed to update pong for {}: {}", conn_key, e);
 	}
 
 	Ok(())
 }
 
 // Handles close messages
-async fn handle_close_message(client_key: &str, reason: Option<CloseFrame<'_>>) -> Result<(), ()> {
-	record_system_event!("close_received", connection_id = client_key, reason = reason);
-	info!("Client {} closed connection: {:?}", client_key, reason);
+async fn handle_close_message(conn_key: &str, reason: Option<CloseFrame<'_>>) -> Result<(), ()> {
+	record_system_event!("close_received", connection_id = conn_key, reason = reason);
+	info!("Client {} closed connection: {:?}", conn_key, reason);
 	Err(()) // Signal to break the message processing loop
 }

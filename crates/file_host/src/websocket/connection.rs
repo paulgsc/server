@@ -2,9 +2,10 @@ use super::*;
 use crate::utils::generate_uuid;
 use async_broadcast::{broadcast, Receiver, Sender};
 use axum::extract::ws::{Message, WebSocket};
+use axum::http::HeaderMap;
 use futures::stream::SplitSink;
-use std::{collections::HashSet, fmt};
-use tokio::time::{Duration, Instant};
+use std::{collections::HashSet, fmt, net::SocketAddr};
+use tokio::time::Duration;
 use tracing::info;
 // Connection ID type for type safety
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -35,19 +36,69 @@ impl fmt::Display for ConnectionId {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientId(String);
+
+impl ClientId {
+	pub fn from_request(headers: &HeaderMap, addr: &SocketAddr) -> Self {
+		// Priority order for client identification:
+		// 1. X-Client-ID (for authenticated clients)
+		// 2. X-Forwarded-For + User-Agent hash (for proxied clients)
+		// 3. IP + User-Agent hash (for direct clients)
+		// 4. IP only (fallback)
+
+		if let Some(client_id) = headers.get("x-client-id").and_then(|v| v.to_str().ok()) {
+			if !client_id.is_empty() && client_id.len() <= 64 {
+				return Self(format!("auth:{}", client_id));
+			}
+		}
+
+		let user_agent = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
+
+		let user_agent_hash = {
+			use std::hash::{Hash, Hasher};
+			let mut hasher = std::collections::hash_map::DefaultHasher::new();
+			user_agent.hash(&mut hasher);
+			hasher.finish()
+		};
+
+		// Check for forwarded IP (behind proxy/load balancer)
+		if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+			if let Some(client_ip) = forwarded_for.split(',').next().map(|s| s.trim()) {
+				return Self(format!("proxy:{}:{:x}", client_ip, user_agent_hash));
+			}
+		}
+
+		// Real connecting IP
+		Self(format!("direct:{}:{:x}", addr.ip(), user_agent_hash))
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
+impl fmt::Display for ClientId {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0)
+	}
+}
+
 #[derive(Debug)]
 pub struct Connection {
 	pub id: ConnectionId,
+	pub client_id: ClientId,
 	pub established_at: Instant,
 	pub state: ConnectionState,
 	pub sender: Sender<Event>,
 	pub subscriptions: HashSet<EventType>,
 	pub message_count: u64,
 	pub last_message_at: Instant,
+	pub source_addr: SocketAddr,
 }
 
 impl Connection {
-	pub fn new() -> (Self, Receiver<Event>) {
+	pub fn new(client_id: ClientId, source_addr: SocketAddr) -> (Self, Receiver<Event>) {
 		let (mut sender, receiver) = broadcast::<Event>(1);
 		sender.set_await_active(false);
 		sender.set_overflow(true);
@@ -60,12 +111,14 @@ impl Connection {
 
 		let connection = Self {
 			id: ConnectionId::new(),
+			client_id,
 			established_at: Instant::now(),
 			state: ConnectionState::Active { last_ping: Instant::now() },
 			sender,
 			subscriptions,
 			message_count: 0,
 			last_message_at: Instant::now(),
+			source_addr,
 		};
 
 		(connection, receiver)
@@ -153,24 +206,37 @@ impl Connection {
 	}
 }
 
+#[derive(Debug, Clone)]
+pub struct ClientLimits {
+	pub max_connections_per_client: usize,
+	pub max_total_connections: usize,
+	pub enforce_limits: bool,
+}
+
+impl Default for ClientLimits {
+	fn default() -> Self {
+		Self {
+			max_connections_per_client: 3,
+			max_total_connections: 50,
+			enforce_limits: true,
+		}
+	}
+}
 impl WebSocketFsm {
 	/// Adds a connection, removing any stale or duplicate from same key first
-	pub async fn add_connection(&self) -> Result<(String, Receiver<Event>), String> {
-		let (connection, receiver) = Connection::new();
+	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), String> {
+		let client_id = ClientId::from_request(headers, addr);
+
+		if self.limits.enforce_limits {
+			self.enforce_client_limits(&client_id).await?;
+		}
+
+		let (connection, receiver) = Connection::new(client_id.clone(), *addr);
 		let client_key = connection.id.as_string();
 		let connection_id = connection.id.clone();
 
-		// --- Proactive duplicate cleanup ---
-		if let Some((_, mut old_conn)) = self.connections.remove(&client_key) {
-			let old_id = old_conn.id.clone();
-			let duration = old_conn.established_at.elapsed();
-			let _ = old_conn.disconnect("Replaced by new connection".into());
-
-			cleanup_connection!(old_id, "Replaced by new connection", duration, true);
-			self.metrics.connection_removed(old_conn.is_active());
-		}
-
 		self.connections.insert(client_key.clone(), connection);
+
 		record_connection_event!("created", connection_id);
 		update_connection_state!("", "active");
 		update_resource_usage!("active_connections", self.connections.len() as f64);
@@ -181,9 +247,51 @@ impl WebSocketFsm {
 		Ok((client_key, receiver))
 	}
 
+	async fn enforce_client_limits(&self, client_id: &ClientId) -> Result<(), String> {
+		let curr_conn = self.get_conn_count(client_id).await;
+
+		if curr_conn >= self.limits.max_connections_per_client {
+			error!("Client {} exceeded connection limit ({}/{})", client_id, curr_conn, self.limits.max_connections_per_client);
+			return Err(format!(
+				"Client {} exceeded connection limit ({}/{})",
+				client_id, curr_conn, self.limits.max_connections_per_client
+			));
+		}
+
+		if self.connections.len() >= self.limits.max_total_connections {
+			error!("Server connection limit reached ({}/{})", self.connections.len(), self.limits.max_total_connections);
+			return Err(format!(
+				"Server connection limit reached ({}/{})",
+				self.connections.len(),
+				self.limits.max_total_connections
+			));
+		}
+
+		Ok(())
+	}
+
+	async fn get_conn_count(&self, client_id: &ClientId) -> usize {
+		self
+			.connections
+			.iter()
+			.filter(|entry| entry.value().client_id == *client_id && entry.value().is_active())
+			.count()
+	}
+
+	// Get connections by client ID
+	pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> {
+		self
+			.connections
+			.iter()
+			.filter(|entry| entry.value().client_id == *client_id)
+			.map(|entry| entry.key().clone())
+			.collect()
+	}
+
 	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), String> {
 		if let Some((_, mut connection)) = self.connections.remove(client_key) {
 			let connection_id = connection.id.clone();
+			let client_id = connection.client_id.clone();
 			let was_active = connection.is_active();
 			let duration = connection.established_at.elapsed();
 
@@ -196,6 +304,7 @@ impl WebSocketFsm {
 			record_system_event!(
 				"connection_state_changed",
 				connection_id = connection_id,
+				client_id = client_id,
 				from_state = old_state,
 				to_state = connection.state
 			);
@@ -235,6 +344,20 @@ impl WebSocketFsm {
 							actual: total_connections as u64
 					);
 
+					let mut client_counts: std::collections::HashMap<ClientId, usize> = std::collections::HashMap::new();
+					for entry in connections.iter() {
+						if entry.value().is_active() {
+							*client_counts.entry(entry.value().client_id.clone()).or_insert(0) += 1;
+						}
+					}
+
+					for (client_id, count) in client_counts.iter() {
+						if *count > 10 {
+							// Warning threshold
+							record_system_event!("client_high_connection_count", client_id = client_id, count = count);
+						}
+					}
+
 					log_health_snapshot!(metrics, total_connections);
 					Ok(())
 				});
@@ -258,11 +381,18 @@ impl WebSocketFsm {
 					for client_key in chunk {
 						if let Some((_, mut conn)) = connections.remove(client_key) {
 							let connection_id = conn.id.clone();
+							let client_id = conn.client_id.clone();
 							let duration = conn.established_at.elapsed();
 							let _ = conn.disconnect("Timeout cleanup".into());
 
 							cleanup_connection!(connection_id, "Timeout cleanup", duration, true);
-							record_system_event!("connection_state_changed", connection_id = connection_id, from_state = conn.state, to_state = conn.state);
+							record_system_event!(
+								"connection_state_changed",
+								connection_id = connection_id,
+								client_id = client_id,
+								from_state = conn.state,
+								to_state = conn.state
+							);
 							metrics.connection_marked_stale();
 							cleaned_up += 1;
 						}
@@ -282,8 +412,8 @@ impl WebSocketFsm {
 	}
 }
 
-pub(crate) async fn establish_connection(state: &WebSocketFsm) -> Result<(String, Receiver<Event>), ()> {
-	match state.add_connection().await {
+pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), ()> {
+	match state.add_connection(headers, addr).await {
 		Ok((key, rx)) => {
 			record_system_event!("websocket_established", connection_id = key);
 			info!("WebSocket connection established: {}", key);
@@ -298,12 +428,12 @@ pub(crate) async fn establish_connection(state: &WebSocketFsm) -> Result<(String
 }
 
 // Sends initial handshake (ping) to client
-pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>, client_key: &str) -> Result<(), ()> {
+pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>, conn_key: &str) -> Result<(), ()> {
 	let ping_event = Event::Ping;
 	if let Ok(msg) = serde_json::to_string(&ping_event) {
 		if let Err(e) = sender.send(Message::Text(msg)).await {
 			record_ws_error!("initial_ping_failed", "websocket", e);
-			error!("Failed to send initial ping to {}: {}", client_key, e);
+			error!("Failed to send initial ping to {}: {}", conn_key, e);
 			return Err(());
 		}
 	}
@@ -311,30 +441,30 @@ pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Mes
 }
 
 // Basic connection cleanup
-pub(crate) async fn clear_connection(state: &WebSocketFsm, client_key: &str) {
+pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {
 	let cleanup_result = health_check!("connection_cleanup", {
-		state.remove_connection(client_key, "Connection failed during setup".to_string()).await
+		state.remove_connection(conn_key, "Connection failed during setup".to_string()).await
 	});
 
 	if let Err(e) = cleanup_result {
 		record_ws_error!("cleanup_failed", "websocket", e);
-		error!("Failed to remove connection {}: {}", client_key, e);
+		error!("Failed to remove connection {}: {}", conn_key, e);
 	}
 }
 
 // Comprehensive connection cleanup with statistics
-pub(crate) async fn cleanup_connection_with_stats(state: &WebSocketFsm, client_key: &str, message_count: u64, forward_task: tokio::task::JoinHandle<()>) {
-	record_system_event!("websocket_cleanup_started", connection_id = client_key, total_messages_processed = message_count);
-	info!("Cleaning up connection {} after {} messages", client_key, message_count);
+pub(crate) async fn cleanup_connection_with_stats(state: &WebSocketFsm, conn_key: &str, message_count: u64, forward_task: tokio::task::JoinHandle<()>) {
+	record_system_event!("websocket_cleanup_started", connection_id = conn_key, total_messages_processed = message_count);
+	info!("Cleaning up connection {} after {} messages", conn_key, message_count);
 
-	let cleanup_result = health_check!("connection_cleanup", { state.remove_connection(client_key, "Connection closed".to_string()).await });
+	let cleanup_result = health_check!("connection_cleanup", { state.remove_connection(conn_key, "Connection closed".to_string()).await });
 
 	if let Err(e) = cleanup_result {
 		record_ws_error!("cleanup_failed", "websocket", e);
-		error!("Failed to remove connection {}: {}", client_key, e);
+		error!("Failed to remove connection {}: {}", conn_key, e);
 	}
 
 	forward_task.abort();
-	record_system_event!("websocket_cleanup_completed", connection_id = client_key);
-	info!("Connection {} cleanup completed", client_key);
+	record_system_event!("websocket_cleanup_completed", connection_id = conn_key);
+	info!("Connection {} cleanup completed", conn_key);
 }

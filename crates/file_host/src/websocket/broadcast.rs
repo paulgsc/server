@@ -37,8 +37,8 @@ impl WebSocketFsm {
 		}
 
 		// Send to each subscribed connection
-		for (client_key, connection_id) in subscribed_connections {
-			if let Some(conn) = connections.get(&client_key) {
+		for (conn_key, connection_id) in subscribed_connections {
+			if let Some(conn) = connections.get(&conn_key) {
 				match conn.send_event(event.clone()).await {
 					Ok(_) => delivered += 1,
 					Err(e) => {
@@ -162,38 +162,38 @@ impl WebSocketFsm {
 }
 
 // Spawns task to forward events from broadcast channel to WebSocket
-pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, mut event_receiver: Receiver<Event>, client_key: String) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, mut event_receiver: Receiver<Event>, conn_key: String) -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		let mut message_count = 0u64;
 
 		while let Ok(event) = event_receiver.recv().await {
 			message_count += 1;
 
-			if let Err(_) = forward_single_event(&mut sender, &event, &client_key, message_count).await {
+			if let Err(_) = forward_single_event(&mut sender, &event, &conn_key, message_count).await {
 				break;
 			}
 
 			// Log periodic forwarding stats
 			if message_count % 100 == 0 {
-				record_system_event!("forward_milestone", connection_id = client_key, messages_forwarded = message_count);
-				debug!("Forwarded {} messages to client {}", message_count, client_key);
+				record_system_event!("forward_milestone", connection_id = conn_key, messages_forwarded = message_count);
+				debug!("Forwarded {} messages to client {}", message_count, conn_key);
 			}
 		}
 
-		record_system_event!("forward_ended", connection_id = client_key, total_messages = message_count);
-		debug!("Event forwarding ended for client {} after {} messages", client_key, message_count);
+		record_system_event!("forward_ended", connection_id = conn_key, total_messages = message_count);
+		debug!("Event forwarding ended for client {} after {} messages", conn_key, message_count);
 	})
 }
 
 // Forwards a single event to the WebSocket client
-async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, client_key: &str, message_count: u64) -> Result<(), ()> {
+async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, conn_key: &str, message_count: u64) -> Result<(), ()> {
 	let result = timed_ws_operation!("forward", "serialize", { serde_json::to_string(event) });
 
 	let msg = match result {
 		Ok(json) => Message::Text(json),
 		Err(e) => {
 			record_ws_error!("serialization_failed", "forward", e);
-			error!("Failed to serialize event for client {}: {}", client_key, e);
+			error!("Failed to serialize event for client {}: {}", conn_key, e);
 			return Err(());
 		}
 	};
@@ -202,7 +202,7 @@ async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event:
 
 	if let Err(e) = send_result {
 		record_ws_error!("forward_send_failed", "forward", e);
-		error!("Failed to forward event to client {} (msg #{}): {}", client_key, message_count, e);
+		error!("Failed to forward event to client {} (msg #{}): {}", conn_key, message_count, e);
 		return Err(());
 	}
 
