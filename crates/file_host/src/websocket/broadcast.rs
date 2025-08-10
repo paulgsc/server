@@ -1,5 +1,8 @@
 use super::*;
+use async_broadcast::Receiver;
+use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
+use futures::stream::SplitSink;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
@@ -156,4 +159,52 @@ impl WebSocketFsm {
 		let _ = self.sender.broadcast(Event::ClientCount { count }).await;
 		update_resource_usage!("active_connections", count as f64);
 	}
+}
+
+// Spawns task to forward events from broadcast channel to WebSocket
+pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, mut event_receiver: Receiver<Event>, client_key: String) -> tokio::task::JoinHandle<()> {
+	tokio::spawn(async move {
+		let mut message_count = 0u64;
+
+		while let Ok(event) = event_receiver.recv().await {
+			message_count += 1;
+
+			if let Err(_) = forward_single_event(&mut sender, &event, &client_key, message_count).await {
+				break;
+			}
+
+			// Log periodic forwarding stats
+			if message_count % 100 == 0 {
+				record_system_event!("forward_milestone", connection_id = client_key, messages_forwarded = message_count);
+				debug!("Forwarded {} messages to client {}", message_count, client_key);
+			}
+		}
+
+		record_system_event!("forward_ended", connection_id = client_key, total_messages = message_count);
+		debug!("Event forwarding ended for client {} after {} messages", client_key, message_count);
+	})
+}
+
+// Forwards a single event to the WebSocket client
+async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, client_key: &str, message_count: u64) -> Result<(), ()> {
+	let result = timed_ws_operation!("forward", "serialize", { serde_json::to_string(event) });
+
+	let msg = match result {
+		Ok(json) => Message::Text(json),
+		Err(e) => {
+			record_ws_error!("serialization_failed", "forward", e);
+			error!("Failed to serialize event for client {}: {}", client_key, e);
+			return Err(());
+		}
+	};
+
+	let send_result = timed_ws_operation!("forward", "send", { sender.send(msg).await });
+
+	if let Err(e) = send_result {
+		record_ws_error!("forward_send_failed", "forward", e);
+		error!("Failed to forward event to client {} (msg #{}): {}", client_key, message_count, e);
+		return Err(());
+	}
+
+	Ok(())
 }

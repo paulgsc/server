@@ -21,8 +21,11 @@ pub mod connection;
 pub mod message;
 pub mod types;
 
+pub(crate) use broadcast::spawn_event_forwarder;
 pub use broadcast::BroadcastOutcome;
-pub use connection::Connection;
+pub(crate) use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
+pub use connection::{Connection, ConnectionId};
+pub(crate) use message::process_incoming_messages;
 pub use message::{EventMessage, MessageState, ProcessResult};
 pub use types::*;
 
@@ -351,141 +354,33 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebSocketFs
 	ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
+// Orchestrates the WebSocket connection lifecycle
 async fn handle_socket(socket: WebSocket, state: WebSocketFsm) {
-	let (mut sender, mut receiver) = socket.split();
+	let (mut sender, receiver) = socket.split();
 
-	// Create connection through FSM with proper resource management and instrumentation
-	let (client_key, mut event_receiver) = match state.add_connection().await {
-		Ok((key, rx)) => (key, rx),
-		Err(e) => {
-			record_ws_error!("connection_creation_failed", "websocket", e);
-			error!("Failed to add connection: {}", e);
-			return;
-		}
+	// Establish connection through FSM
+	let (client_key, event_receiver) = match establish_connection(&state).await {
+		Ok(connection) => connection,
+		Err(_) => return, // Error already logged in establish_connection
 	};
 
-	record_system_event!("websocket_established", connection_id = client_key);
-	info!("WebSocket connection established: {}", client_key);
-
-	// Send initial ping with instrumentation
-	let ping_event = Event::Ping;
-	if let Ok(msg) = serde_json::to_string(&ping_event) {
-		if let Err(e) = sender.send(Message::Text(msg)).await {
-			record_ws_error!("initial_ping_failed", "websocket", e);
-			error!("Failed to send initial ping to {}: {}", client_key, e);
-		}
+	// Send initial handshake
+	if let Err(_) = send_initial_handshake(&mut sender, &client_key).await {
+		clear_connection(&state, &client_key).await;
+		return;
 	}
 
 	// Broadcast updated client count
 	state.broadcast_client_count().await;
 
-	// Forward events from broadcast channel to websocket with instrumentation
-	let forward_task = {
-		let client_key_clone = client_key.clone();
-		tokio::spawn(async move {
-			let mut message_count = 0u64;
+	// Start event forwarding task
+	let forward_task = spawn_event_forwarder(sender, event_receiver, client_key.clone());
 
-			while let Ok(event) = event_receiver.recv().await {
-				message_count += 1;
+	// Process incoming messages
+	let message_count = process_incoming_messages(receiver, &state, &client_key).await;
 
-				let result = timed_ws_operation!("forward", "serialize", { serde_json::to_string(&event) });
-
-				let msg = match result {
-					Ok(json) => Message::Text(json),
-					Err(e) => {
-						record_ws_error!("serialization_failed", "forward", e);
-						error!("Failed to serialize event for client {}: {}", client_key_clone, e);
-						continue;
-					}
-				};
-
-				let send_result = timed_ws_operation!("forward", "send", { sender.send(msg).await });
-
-				if let Err(e) = send_result {
-					record_ws_error!("forward_send_failed", "forward", e);
-					error!("Failed to forward event to client {} (msg #{}): {}", client_key_clone, message_count, e);
-					break;
-				}
-
-				// Log periodic forwarding stats
-				if message_count % 100 == 0 {
-					record_system_event!("forward_milestone", connection_id = client_key_clone, messages_forwarded = message_count);
-					debug!("Forwarded {} messages to client {}", message_count, client_key_clone);
-				}
-			}
-
-			record_system_event!("forward_ended", connection_id = client_key_clone, total_messages = message_count);
-			debug!("Event forwarding ended for client {} after {} messages", client_key_clone, message_count);
-		})
-	};
-
-	// Process incoming messages with enhanced error handling and instrumentation
-	let mut message_count = 0u64;
-	while let Some(result) = receiver.next().await {
-		message_count += 1;
-
-		match result {
-			Ok(msg) => match msg {
-				Message::Text(text) => {
-					record_system_event!("message_received", connection_id = client_key, message_number = message_count, size_bytes = text.len());
-					debug!("Received message #{} from {}: {} chars", message_count, client_key, text.len());
-
-					let processing_result: Result<(), String> = timed_ws_operation!("websocket", "process_message", {
-						state.process_message(&client_key, text).await;
-						Ok(())
-					});
-
-					if processing_result.is_err() {
-						record_ws_error!("message_processing_failed", "websocket");
-					}
-				}
-				Message::Ping(_) => {
-					record_system_event!("ping_received", connection_id = client_key);
-					debug!("Received WebSocket ping from {}", client_key);
-					if let Err(e) = state.update_client_ping(&client_key).await {
-						record_ws_error!("ping_handling_failed", "websocket", e);
-						warn!("Failed to update ping for {}: {}", client_key, e);
-					}
-				}
-				Message::Pong(_) => {
-					record_system_event!("pong_received", connection_id = client_key);
-					debug!("Received WebSocket pong from {}", client_key);
-					if let Err(e) = state.update_client_ping(&client_key).await {
-						record_ws_error!("pong_handling_failed", "websocket", e);
-						warn!("Failed to update pong for {}: {}", client_key, e);
-					}
-				}
-				Message::Close(reason) => {
-					record_system_event!("close_received", connection_id = client_key, reason = reason);
-					info!("Client {} closed connection: {:?}", client_key, reason);
-					break;
-				}
-				_ => {
-					debug!("Ignored message type from {}", client_key);
-				}
-			},
-			Err(e) => {
-				record_ws_error!("websocket_error", "connection", e);
-				error!("WebSocket error for {} (msg #{}): {}", client_key, message_count, e);
-				break;
-			}
-		}
-	}
-
-	// Clean up through FSM with comprehensive logging and instrumentation
-	record_system_event!("websocket_cleanup_started", connection_id = client_key, total_messages_processed = message_count);
-	info!("Cleaning up connection {} after {} messages", client_key, message_count);
-
-	let cleanup_result = health_check!("connection_cleanup", { state.remove_connection(&client_key, "Connection closed".to_string()).await });
-
-	if let Err(e) = cleanup_result {
-		record_ws_error!("cleanup_failed", "websocket", e);
-		error!("Failed to remove connection {}: {}", client_key, e);
-	}
-
-	forward_task.abort();
-	record_system_event!("websocket_cleanup_completed", connection_id = client_key);
-	info!("Connection {} cleanup completed", client_key);
+	// Clean up connection
+	cleanup_connection_with_stats(&state, &client_key, message_count, forward_task).await;
 }
 
 pub async fn init_websocket() -> WebSocketFsm {

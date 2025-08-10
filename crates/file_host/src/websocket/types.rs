@@ -1,4 +1,4 @@
-use super::ProcessResult;
+use super::{ConnectionId, ProcessResult};
 use crate::{utils::generate_uuid, UtteranceMetadata};
 use obs_websocket::ObsEvent;
 use serde::{Deserialize, Serialize};
@@ -7,35 +7,6 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::time::{Duration, Instant};
-
-// Connection ID type for type safety
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConnectionId([u8; 32]);
-
-impl ConnectionId {
-	pub fn new() -> Self {
-		Self(generate_uuid())
-	}
-
-	pub fn from_buffer(buffer: [u8; 32]) -> Self {
-		Self(buffer)
-	}
-
-	pub fn as_string(&self) -> String {
-		// Convert to hex string for reliable string representation
-		hex::encode(&self.0)
-	}
-
-	pub fn as_bytes(&self) -> &[u8; 32] {
-		&self.0
-	}
-}
-
-impl fmt::Display for ConnectionId {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.as_string())
-	}
-}
 
 // Message correlation ID for tracing
 #[derive(Debug, Clone, PartialEq, Eq)]
