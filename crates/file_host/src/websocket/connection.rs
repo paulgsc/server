@@ -7,6 +7,7 @@ use futures::stream::SplitSink;
 use std::{collections::HashSet, fmt, net::SocketAddr};
 use tokio::time::Duration;
 use tracing::info;
+
 // Connection ID type for type safety
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConnectionId([u8; 32]);
@@ -177,12 +178,17 @@ impl Connection {
 		matches!(self.state, ConnectionState::Active { .. })
 	}
 
-	pub fn is_stale(&self, timeout: Duration) -> bool {
+	// Helper method to check if connection should be marked as stale
+	pub fn should_be_stale(&self, timeout: Duration) -> bool {
 		match &self.state {
 			ConnectionState::Active { last_ping } => Instant::now().duration_since(*last_ping) > timeout,
-			ConnectionState::Stale { .. } => true,
 			_ => false,
 		}
+	}
+
+	// Check if connection is already in stale state
+	pub fn is_stale(&self) -> bool {
+		matches!(self.state, ConnectionState::Stale { .. })
 	}
 
 	pub fn is_subscribed_to(&self, event_type: &EventType) -> bool {
@@ -222,14 +228,11 @@ impl Default for ClientLimits {
 		}
 	}
 }
+
 impl WebSocketFsm {
 	/// Adds a connection, removing any stale or duplicate from same key first
 	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), String> {
 		let client_id = ClientId::from_request(headers, addr);
-
-		if self.limits.enforce_limits {
-			self.enforce_client_limits(&client_id).await?;
-		}
 
 		let (connection, receiver) = Connection::new(client_id.clone(), *addr);
 		let client_key = connection.id.as_string();
@@ -245,37 +248,6 @@ impl WebSocketFsm {
 
 		info!("Connection {} added successfully", connection_id);
 		Ok((client_key, receiver))
-	}
-
-	async fn enforce_client_limits(&self, client_id: &ClientId) -> Result<(), String> {
-		let curr_conn = self.get_conn_count(client_id).await;
-
-		if curr_conn >= self.limits.max_connections_per_client {
-			error!("Client {} exceeded connection limit ({}/{})", client_id, curr_conn, self.limits.max_connections_per_client);
-			return Err(format!(
-				"Client {} exceeded connection limit ({}/{})",
-				client_id, curr_conn, self.limits.max_connections_per_client
-			));
-		}
-
-		if self.connections.len() >= self.limits.max_total_connections {
-			error!("Server connection limit reached ({}/{})", self.connections.len(), self.limits.max_total_connections);
-			return Err(format!(
-				"Server connection limit reached ({}/{})",
-				self.connections.len(),
-				self.limits.max_total_connections
-			));
-		}
-
-		Ok(())
-	}
-
-	async fn get_conn_count(&self, client_id: &ClientId) -> usize {
-		self
-			.connections
-			.iter()
-			.filter(|entry| entry.value().client_id == *client_id && entry.value().is_active())
-			.count()
 	}
 
 	// Get connections by client ID
@@ -315,14 +287,15 @@ impl WebSocketFsm {
 		Ok(())
 	}
 
-	/// Optimized timeout monitor with batch cleanup and zero-alloc scanning
+	/// Optimized timeout monitor with proper state transitions
 	pub fn start_timeout_monitor(&self, timeout: Duration) {
 		let connections = self.connections.clone();
 		let metrics = self.metrics.clone();
 		let sender = self.sender.clone();
 
+		let mut keys_to_mark_stale: Vec<String> = Vec::with_capacity(64);
 		let mut keys_to_remove: Vec<String> = Vec::with_capacity(64);
-		let interval_duration = Duration::from_secs(10); // faster than 30s for responsiveness
+		let interval_duration = Duration::from_secs(10);
 
 		tokio::spawn(async move {
 			let mut interval = tokio::time::interval(interval_duration);
@@ -361,19 +334,62 @@ impl WebSocketFsm {
 					log_health_snapshot!(metrics, total_connections);
 					Ok(())
 				});
+
 				if health_result.is_err() {
 					record_ws_error!("health_check_failed", "timeout_monitor");
 				}
 
-				// Collect stale keys without allocating each loop
+				// Step 1: Mark active connections as stale if they've timed out
+				keys_to_mark_stale.clear();
+				for entry in connections.iter() {
+					let connection = entry.value();
+					if connection.should_be_stale(timeout) {
+						keys_to_mark_stale.push(entry.key().clone());
+					}
+				}
+
+				// Mark connections as stale
+				let mut newly_stale = 0usize;
+				for client_key in &keys_to_mark_stale {
+					if let Some(mut entry) = connections.get_mut(client_key) {
+						let connection = entry.value_mut();
+						if connection.is_active() {
+							let connection_id = connection.id.clone();
+							let client_id = connection.client_id.clone();
+
+							if let Ok(old_state) = connection.mark_stale("Connection timeout".to_string()) {
+								record_system_event!(
+									"connection_state_changed",
+									connection_id = connection_id,
+									client_id = client_id,
+									from_state = old_state,
+									to_state = connection.state
+								);
+
+								metrics.connection_marked_stale();
+
+								update_resource_usage!("active_connections", connections.iter().filter(|e| e.value().is_active()).count() as f64);
+								update_resource_usage!("stale_connections", connections.iter().filter(|e| e.value().is_stale()).count() as f64);
+
+								newly_stale += 1;
+							}
+						}
+					}
+				}
+
+				if newly_stale > 0 {
+					info!("Marked {} connections as stale", newly_stale);
+				}
+
+				// Step 2: Collect connections that are in stale state for removal
 				keys_to_remove.clear();
 				for entry in connections.iter() {
-					if entry.value().is_stale(timeout) {
+					if entry.value().is_stale() {
 						keys_to_remove.push(entry.key().clone());
 					}
 				}
 
-				// Batch cleanup
+				// Step 3: Remove stale connections in batches
 				const BATCH_SIZE: usize = 64;
 				let mut cleaned_up = 0usize;
 
@@ -383,17 +399,18 @@ impl WebSocketFsm {
 							let connection_id = conn.id.clone();
 							let client_id = conn.client_id.clone();
 							let duration = conn.established_at.elapsed();
-							let _ = conn.disconnect("Timeout cleanup".into());
+							let old_state = conn.state.clone();
 
-							cleanup_connection!(connection_id, "Timeout cleanup", duration, true);
+							let _ = conn.disconnect("Stale connection cleanup".into());
+
+							cleanup_connection!(connection_id, "Stale connection cleanup", duration, true);
 							record_system_event!(
 								"connection_state_changed",
 								connection_id = connection_id,
 								client_id = client_id,
-								from_state = conn.state,
+								from_state = old_state,
 								to_state = conn.state
 							);
-							metrics.connection_marked_stale();
 							cleaned_up += 1;
 						}
 					}

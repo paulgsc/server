@@ -9,7 +9,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	websocket::{init_websocket, Event, NowPlaying, WebSocketFsm},
+	websocket::{init_websocket, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying, WebSocketFsm},
 	AppState, CacheStore, Config, UtterancePrompt,
 };
 // use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
@@ -37,10 +37,26 @@ async fn main() -> Result<()> {
 	dotenv::dotenv().ok();
 	let config = Config::parse();
 	let _ = init_tracing(&config);
-
 	let context = Arc::new(config);
-
 	let ws_state = init_websocket().await;
+
+	// Create connection limiter with configuration
+	let connection_limits = ConnectionLimitConfig {
+		max_per_client: 2,
+		max_global: 10,
+		acquire_timeout: Duration::from_secs(10),
+		enable_queuing: true,
+		queue_size_per_client: 3,
+		max_queue_time: Duration::from_secs(30),
+	};
+
+	let connection_limiter = ConnectionLimiter::new(connection_limits);
+
+	// Start cleanup task for inactive client states
+	connection_limiter.clone().start_cleanup_task(
+		Duration::from_secs(300),  // cleanup every 5 minutes
+		Duration::from_secs(3600), // remove clients inactive for 1 hour
+	);
 
 	// let obs_config = ObsConfig {
 	// 	host: context.obs_host.clone(),
@@ -117,12 +133,26 @@ async fn main() -> Result<()> {
 		rate_limit_middleware,
 	));
 
+	// Add connection stats endpoint
+	// let stats_route = Router::new()
+	// 	.route(
+	// 		"/connection-stats",
+	// 		axum::routing::get({
+	// 			let limiter = connection_limiter.clone();
+	// 			move || async move {
+	// 				let stats = limiter.get_stats().await;
+	// 				axum::Json(stats)
+	// 			}
+	// 		}),
+	// 	)
+	// 	.with_state(connection_limiter);
+
 	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
 	let app = Router::new()
 		.merge(protected_routes)
 		.merge(public_routes)
-		.merge(ws_state.router())
+		.merge(ws_state.router(connection_limiter.clone()))
 		.layer(axum::middleware::from_fn(metrics::http::metrics_middleware));
 
 	let app = app.layer(

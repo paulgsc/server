@@ -217,7 +217,7 @@ async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: 
 		Message::Text(text) => handle_text_message(text, state, conn_key, message_count).await,
 		Message::Ping(_) => handle_ping_message(state, conn_key).await,
 		Message::Pong(_) => handle_pong_message(state, conn_key).await,
-		Message::Close(reason) => handle_close_message(conn_key, reason).await,
+		Message::Close(reason) => handle_close_message(state, conn_key, reason).await,
 		_ => {
 			debug!("Ignored message type from {}", conn_key);
 			Ok(())
@@ -269,8 +269,9 @@ async fn handle_pong_message(state: &WebSocketFsm, conn_key: &str) -> Result<(),
 }
 
 // Handles close messages
-async fn handle_close_message(conn_key: &str, reason: Option<CloseFrame<'_>>) -> Result<(), ()> {
+async fn handle_close_message(state: &WebSocketFsm, conn_key: &str, reason: Option<CloseFrame<'_>>) -> Result<(), ()> {
 	record_system_event!("close_received", connection_id = conn_key, reason = reason);
+	state.remove_connection(&conn_key, "WebSocket closed".into()).await.ok();
 	info!("Client {} closed connection: {:?}", conn_key, reason);
 	Err(()) // Signal to break the message processing loop
 }

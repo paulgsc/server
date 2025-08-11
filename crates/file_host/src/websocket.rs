@@ -2,13 +2,14 @@ use crate::*;
 use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
 	extract::{
-		ws::{Message, WebSocket, WebSocketUpgrade},
+		ws::{Message, WebSocketUpgrade},
 		ConnectInfo, State,
 	},
 	http::HeaderMap,
+	middleware::from_fn_with_state,
 	response::IntoResponse,
 	routing::get,
-	Router,
+	Extension, Router,
 };
 use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
@@ -20,14 +21,17 @@ use tracing::{debug, error, info, warn};
 pub mod broadcast;
 pub mod connection;
 pub mod message;
+pub mod middleware;
 pub mod types;
 
-pub(crate) use broadcast::spawn_event_forwarder;
+use broadcast::spawn_event_forwarder;
 pub use broadcast::BroadcastOutcome;
-pub(crate) use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake, ClientLimits};
+use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
 pub use connection::{Connection, ConnectionId};
-pub(crate) use message::process_incoming_messages;
+use message::process_incoming_messages;
 pub use message::{EventMessage, MessageState, ProcessResult};
+use middleware::ConnectionGuard;
+pub use middleware::{connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter};
 pub use types::*;
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -35,7 +39,6 @@ pub use types::*;
 pub struct WebSocketFsm {
 	connections: Arc<DashMap<String, Connection>>,
 	sender: Sender<Event>,
-	limits: ClientLimits,
 	metrics: Arc<ConnectionMetrics>,
 	system_events: Sender<SystemEvent>,
 }
@@ -103,14 +106,16 @@ impl WebSocketFsm {
 		Self {
 			connections,
 			sender,
-			limits: ClientLimits::default(),
 			metrics,
 			system_events: system_sender,
 		}
 	}
 
-	pub fn router(self) -> Router {
-		Router::new().route("/ws", get(websocket_handler)).with_state(self)
+	pub fn router(self, conn_limiter: Arc<ConnectionLimiter>) -> Router {
+		Router::new()
+			.route("/ws", get(websocket_handler))
+			.with_state(self)
+			.layer(from_fn_with_state(conn_limiter.clone(), connection_limit_middleware))
 	}
 
 	async fn handle_subscription(&self, client_key: &str, event_types: Vec<EventType>, subscribe: bool) {
@@ -258,12 +263,24 @@ pub struct ConnectionStateDistribution {
 	pub disconnected: usize,
 }
 
-async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebSocketFsm>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
-	ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr))
+async fn websocket_handler(
+	ws: WebSocketUpgrade,
+	State(state): State<WebSocketFsm>,
+	ConnectInfo(addr): ConnectInfo<SocketAddr>,
+	headers: HeaderMap,
+	Extension(connection_guard): Extension<ConnectionGuard>,
+) -> impl IntoResponse {
+	ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr, connection_guard))
 }
 
 // Orchestrates the WebSocket connection lifecycle
-async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMap, addr: SocketAddr) {
+async fn handle_socket(
+	socket: axum::extract::ws::WebSocket,
+	state: WebSocketFsm,
+	headers: HeaderMap,
+	addr: SocketAddr,
+	_connection_guard: ConnectionGuard, // Keep this alive for the duration of the connection
+) {
 	let (mut sender, receiver) = socket.split();
 
 	// Establish connection through FSM
