@@ -159,6 +159,7 @@ impl Connection {
 		match &self.state {
 			ConnectionState::Active { last_ping } => {
 				self.state = ConnectionState::Stale { last_ping: *last_ping, reason };
+				update_connection_state!(old_state.as_str(), "disconnected");
 				Ok(old_state)
 			}
 			_ => Err("Can only mark active connections as stale".to_string()),
@@ -171,6 +172,7 @@ impl Connection {
 			reason,
 			disconnected_at: Instant::now(),
 		};
+		update_connection_state!(old_state.as_str(), "disconnected");
 		Ok(old_state)
 	}
 
@@ -269,6 +271,8 @@ impl WebSocketFsm {
 
 			let old_state = connection.disconnect(reason.clone())?;
 			self.metrics.connection_removed(was_active);
+
+			update_connection_state!(old_state.as_str(), "disconnected");
 
 			cleanup_connection!(connection_id, &reason, duration, true);
 			update_resource_usage!("active_connections", self.connections.len() as f64);

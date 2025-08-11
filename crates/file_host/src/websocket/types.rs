@@ -107,6 +107,16 @@ pub enum ConnectionState {
 	Disconnected { reason: String, disconnected_at: Instant },
 }
 
+impl ConnectionState {
+	pub fn as_str(&self) -> &'static str {
+		match self {
+			ConnectionState::Active { .. } => "active",
+			ConnectionState::Stale { .. } => "stale",
+			ConnectionState::Disconnected { .. } => "disconnected",
+		}
+	}
+}
+
 impl fmt::Display for ConnectionState {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
