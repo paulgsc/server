@@ -60,11 +60,6 @@ lazy_static! {
 	&["event_type"]
 		).expect("Failed to register WS_SUBSCRIPTIONS");
 
-		pub static ref WS_SUBSCRIPTION_OPERATIONS: IntCounterVec = register_int_counter_vec!(
-	"ws_subscription_operations_total",
-	"Subscription operations",
-	&["operation", "event_type"] // operation: "subscribe", "unsubscribe"
-		).expect("Failed to register WS_SUBSCRIPTION_OPERATIONS");
 
 		// Health and invariant metrics
 		pub static ref WS_INVARIANT_VIOLATIONS: IntCounterVec = register_int_counter_vec!(
@@ -237,38 +232,6 @@ macro_rules! timed_broadcast {
 		tracing::debug!(event_type = $event_type, duration_ms = duration * 1000.0, "Broadcast operation completed");
 		result
 	}};
-}
-
-/// Macro for recording subscription changes
-#[macro_export]
-macro_rules! record_subscription_change {
-    ($operation:expr, $event_types:expr, $changed_count:expr, $connection_id:expr) => {
-	for event_type in $event_types {
-	    WS_SUBSCRIPTION_OPERATIONS
-		.with_label_values(&[$operation, &format!("{:?}", event_type)])
-		.inc();
-
-	    // Update active subscription gauge
-	    let event_type_str = format!("{:?}", event_type);
-	    match $operation {
-		"subscribe" => WS_SUBSCRIPTIONS
-		    .with_label_values(&[&event_type_str])
-		    .inc(),
-		"unsubscribe" => WS_SUBSCRIPTIONS
-		    .with_label_values(&[&event_type_str])
-		    .dec(),
-		_ => {}
-	    }
-	}
-
-	tracing::debug!(
-	    operation = $operation,
-	    changed_count = $changed_count,
-	    connection_id = %$connection_id,
-	    event_types = ?$event_types,
-	    "Subscription change recorded"
-	);
-    };
 }
 
 /// Macro for checking and recording invariant violations

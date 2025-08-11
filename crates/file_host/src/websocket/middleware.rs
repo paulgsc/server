@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
-use super::connection::ClientId;
+use super::connection::core::ClientId;
 
 // === Configuration ===
 

@@ -26,8 +26,8 @@ pub mod types;
 
 use broadcast::spawn_event_forwarder;
 pub use broadcast::BroadcastOutcome;
-use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
-pub use connection::{Connection, ConnectionId};
+use connection::core::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
+pub use connection::core::{Connection, ConnectionId};
 use message::process_incoming_messages;
 pub use message::{EventMessage, MessageState, ProcessResult};
 use middleware::ConnectionGuard;
@@ -120,14 +120,11 @@ impl WebSocketFsm {
 
 	async fn handle_subscription(&self, client_key: &str, event_types: Vec<EventType>, subscribe: bool) {
 		if let Some(mut conn) = self.connections.get_mut(client_key) {
-			let changed_count = if subscribe {
+			let _ = if subscribe {
 				conn.subscribe(event_types.clone())
 			} else {
 				conn.unsubscribe(event_types.clone())
 			};
-
-			let operation = if subscribe { "subscribe" } else { "unsubscribe" };
-			record_subscription_change!(operation, &event_types, changed_count, conn.id);
 		}
 	}
 
