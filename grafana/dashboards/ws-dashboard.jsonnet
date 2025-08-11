@@ -33,42 +33,49 @@ local utils = import 'lib/ws-utils.libsonnet';
 
     // Row 2: Connection Stats and Distribution
     panels.wsConnectionStateDistribution { gridPos: utils.gridPos(0, 9, 8, 6), id: 5 },
-    panels.totalMessages { gridPos: utils.gridPos(8, 9, 4, 3), id: 6 },
-    panels.totalBroadcasts { gridPos: utils.gridPos(12, 9, 4, 3), id: 7 },
-    panels.messageSuccessRate { gridPos: utils.gridPos(16, 9, 4, 3), id: 8 },
-    panels.broadcastSuccessRate { gridPos: utils.gridPos(20, 9, 4, 3), id: 9 },
-    panels.avgConnectionDuration { gridPos: utils.gridPos(8, 12, 4, 3), id: 10 },
+    panels.avgConnectionDuration { gridPos: utils.gridPos(8, 9, 4, 3), id: 10 },
+    panels.wsClientConnections { gridPos: utils.gridPos(12, 9, 12, 6), id: 11 },
 
     // Row 3: Message Processing
-    utils.row('Message Processing', 0, 15) { id: 11 },
-    panels.wsMessageRate { gridPos: utils.gridPos(0, 16, 12, 8), id: 12 },
-    panels.wsMessageProcessingDuration { gridPos: utils.gridPos(12, 16, 12, 8), id: 13 },
+    utils.row('Message Processing', 0, 15) { id: 12 },
+    panels.wsMessageRate { gridPos: utils.gridPos(0, 16, 12, 8), id: 13 },
+    panels.wsSubscriptionOperations { gridPos: utils.gridPos(12, 16, 12, 8), id: 14 },
 
-    // Row 4: Message Type Distribution
-    panels.wsMessageTypeDistribution { gridPos: utils.gridPos(0, 24, 12, 6), id: 14 },
+    // Row 4: Subscriptions
+    panels.wsActiveSubscriptions { gridPos: utils.gridPos(0, 24, 12, 8), id: 15 },
 
-    // Row 5: Broadcast Operations
-    utils.row('Broadcast Operations', 0, 30) { id: 15 },
-    panels.wsBroadcastOperations { gridPos: utils.gridPos(0, 31, 8, 8), id: 16 },
-    panels.wsBroadcastDelivery { gridPos: utils.gridPos(8, 31, 8, 8), id: 17 },
-    panels.wsBroadcastDuration { gridPos: utils.gridPos(16, 31, 8, 8), id: 18 },
+    // Row 5: Monitoring & Errors
+    utils.row('Monitoring & Errors', 0, 32) { id: 16 },
+    panels.wsTimeoutMonitorOperations { gridPos: utils.gridPos(0, 33, 8, 8), id: 17 },
+    panels.wsErrors { gridPos: utils.gridPos(8, 33, 16, 8), id: 18 },
 
-    // Row 6: Subscriptions
-    utils.row('Subscriptions', 0, 39) { id: 19 },
-    panels.wsActiveSubscriptions { gridPos: utils.gridPos(0, 40, 12, 8), id: 20 },
-    panels.wsSubscriptionOperations { gridPos: utils.gridPos(12, 40, 12, 8), id: 21 },
-
-    // Row 7: Health Monitoring
-    utils.row('Health & Monitoring', 0, 48) { id: 22 },
-    panels.wsHealthChecks { gridPos: utils.gridPos(0, 49, 8, 8), id: 23 },
-    panels.wsResourceUsage { gridPos: utils.gridPos(8, 49, 8, 8), id: 24 },
-    panels.wsInvariantViolations { gridPos: utils.gridPos(16, 49, 8, 8), id: 25 },
-
-    // Row 8: Error Analysis
-    utils.row('Error Analysis', 0, 57) { id: 26 },
-    panels.wsErrors { gridPos: utils.gridPos(0, 58, 12, 8), id: 27 },
-    panels.wsSystemEvents { gridPos: utils.gridPos(12, 58, 12, 8), id: 28 },
-    panels.wsTopErrors { gridPos: utils.gridPos(0, 66, 24, 10), id: 29 },
+    // Row 6: Error Analysis
+    utils.row('Error Analysis', 0, 41) { id: 19 },
+    {
+      title: 'Top Connection Errors (Last 1h)',
+      type: 'table',
+      targets: [
+        {
+          expr: 'topk(10, increase(ws_connection_errors_total[1h])) by (error_type, phase)',
+          format: 'table',
+          instant: true,
+          legendFormat: '{{error_type}} - {{phase}}',
+          refId: 'A',
+        },
+      ],
+      fieldConfig: {
+        defaults: {
+          thresholds: { mode: 'absolute', steps: [{ value: null, color: 'green' }, { value: 5, color: 'red' }] },
+        },
+        overrides: [],
+      },
+      options: { showHeader: true, displayMode: 'color-text' },
+      transformations: [
+        { id: 'organize', options: { excludeByName: { Time: true, __name__: true }, renameByName: { Value: 'Count' } } },
+      ],
+      gridPos: utils.gridPos(0, 42, 24, 10),
+      id: 20,
+    },
   ],
   refresh: '5s',
   schemaVersion: 38,
@@ -87,7 +94,7 @@ local utils = import 'lib/ws-utils.libsonnet';
         multi: true,
         name: 'instance',
         options: [],
-        query: 'label_values(ws_connections_total, instance)',
+        query: 'label_values(ws_connection_lifecycle_total, instance)',
         queryType: '',
         refresh: 1,
         regex: '',
@@ -107,7 +114,7 @@ local utils = import 'lib/ws-utils.libsonnet';
         multi: true,
         name: 'event_type',
         options: [],
-        query: 'label_values(ws_broadcast_operations_total, event_type)',
+        query: 'label_values(ws_connection_subscriptions, event_type)',
         queryType: '',
         refresh: 1,
         regex: '',
@@ -137,7 +144,7 @@ local utils = import 'lib/ws-utils.libsonnet';
   },
   timezone: '',
   title: 'WebSocket Metrics Dashboard',
-  uid: 'websocket-dashboard',
+  uid: 'websocket-dashboard-v2',
   version: 1,
   weekStart: '',
 }

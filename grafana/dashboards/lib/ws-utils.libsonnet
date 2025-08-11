@@ -1,22 +1,37 @@
-{
+// utils.libsonnet
+// Shared utilities for Grafana dashboards with Jsonnet
+// Use: local utils = import 'utils.libsonnet';
+
+local utils = {
   // Grid positioning utility
-  gridPos(x, y, w, h): {
+  gridPos(x, y, w, h):: {
     x: x,
     y: y,
     w: w,
     h: h,
   },
 
-  // Standard panel heights
-  panelHeights: {
-    stat: 4,
-    timeseries: 8,
-    table: 10,
-    piechart: 6,
-    row: 1,
+  // Row helper for dashboard organization
+  row(title, x, y):: {
+    datasource: {
+      type: 'datasource',
+      uid: 'ws_grafana',
+    },
+    gridPos: { x: x, y: y, w: 24, h: 1 },
+    id: null,
+    title: title,
+    type: 'row',
   },
 
-  // Color palettes for different metric types
+  // Standard panel heights
+  panelHeights: {
+    stat: 3,
+    timeseries: 5,
+    table: 8,
+    piechart: 5,
+  },
+
+  // Color palettes
   colors: {
     success: '#73BF69',
     warning: '#FF9830',
@@ -30,176 +45,178 @@
     successRate: {
       mode: 'absolute',
       steps: [
-        { color: $.colors.critical, value: null },
-        { color: $.colors.warning, value: 0.9 },
-        { color: $.colors.success, value: 0.95 },
+        { value: null, color: utils.colors.critical },
+        { value: 0.9, color: utils.colors.warning },
+        { value: 0.95, color: utils.colors.success },
       ],
     },
     latency: {
       mode: 'absolute',
       steps: [
-        { color: $.colors.success, value: null },
-        { color: $.colors.warning, value: 0.1 },
-        { color: $.colors.critical, value: 0.5 },
+        { value: null, color: utils.colors.success },
+        { value: 0.1, color: utils.colors.warning },
+        { value: 0.5, color: utils.colors.critical },
       ],
     },
     errorCount: {
       mode: 'absolute',
       steps: [
-        { color: $.colors.success, value: null },
-        { color: $.colors.warning, value: 1 },
-        { color: $.colors.critical, value: 5 },
+        { value: null, color: utils.colors.success },
+        { value: 1, color: utils.colors.warning },
+        { value: 5, color: utils.colors.critical },
       ],
     },
   },
 
-  // Standard datasource configuration
+  // Default datasource (can be overridden)
   datasource: {
     type: 'prometheus',
-    uid: '${DS_PROMETHEUS}',
+    uid: '$datasource',  // Grafana template var
   },
 
-  // Row panel helper
-  row(title, x, y, w=24): {
-    collapsed: false,
-    gridPos: $.gridPos(x, y, w, 1),  // Changed from self.gridPos to $.gridPos
-    id: null,
-    panels: [],
-    title: title,
-    type: 'row',
-  },
-
-  // Common field config for timeseries
-  timeseriesFieldConfig: {
-    defaults: {
-      color: {
-        mode: 'palette-classic',
-      },
-      custom: {
-        axisLabel: '',
-        axisPlacement: 'auto',
-        barAlignment: 0,
-        drawStyle: 'line',
-        fillOpacity: 10,
-        gradientMode: 'none',
-        hideFrom: {
-          legend: false,
-          tooltip: false,
-          vis: false,
+  // === Field Config Templates ===
+  fieldConfig: {
+    // Base for all time series
+    timeseries: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          axisLabel: '',
+          axisPlacement: 'auto',
+          barAlignment: 0,
+          drawStyle: 'line',
+          fillOpacity: 10,
+          gradientMode: 'none',
+          hideFrom: { legend: false, tooltip: false, viz: false },
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          pointSize: 5,
+          scaleDistribution: { type: 'linear' },
+          showPoints: 'never',
+          spanNulls: false,
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
         },
-        lineInterpolation: 'linear',
-        lineWidth: 1,
-        pointSize: 5,
-        scaleDistribution: {
-          type: 'linear',
-        },
-        showPoints: 'never',
-        spanNulls: false,
-        stacking: {
-          group: 'A',
-          mode: 'none',
-        },
-        thresholdsStyle: {
-          mode: 'off',
-        },
+        mappings: [],
+        thresholds: { mode: 'absolute', steps: [{ value: null, color: 'green' }] },
       },
-      mappings: [],
-      thresholds: {
-        mode: 'absolute',
-        steps: [
-          {
-            color: 'green',
-            value: null,
-          },
-        ],
+    },
+
+    // Base for stat panels
+    stat: {
+      defaults: {
+        color: { mode: 'thresholds' },
+        mappings: [],
+        thresholds: { mode: 'absolute', steps: [{ value: null, color: 'green' }] },
+        unit: 'short',
       },
     },
   },
 
-  // Common field config for stat panels
-  statFieldConfig: {
-    defaults: {
-      color: {
-        mode: 'thresholds',
-      },
-      mappings: [],
-      thresholds: {
-        mode: 'absolute',
-        steps: [
-          {
-            color: 'green',
-            value: null,
-          },
-        ],
-      },
+  // === Display Options ===
+  options: {
+    timeseries: {
+      legend: { calcs: [], displayMode: 'list', placement: 'bottom' },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+    stat: {
+      colorMode: 'value',
+      graphMode: 'none',
+      justifyMode: 'auto',
+      orientation: 'auto',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
+      textMode: 'auto',
+    },
+    table: {
+      showHeader: true,
+      displayMode: 'auto',
     },
   },
 
-  // Common options for timeseries
-  timeseriesOptions: {
-    legend: {
-      calcs: [],
-      displayMode: 'list',
-      placement: 'bottom',
-    },
-    tooltip: {
-      mode: 'multi',
-      sort: 'none',
-    },
-  },
+  // === Query Helpers (with cluster/job filtering) ===
+  // Common filter for all queries
+  local commonFilter = 'cluster=~"$cluster",job=~"$job"',
 
-  // Common options for stat panels
-  statOptions: {
-    colorMode: 'value',
-    graphMode: 'area',
-    justifyMode: 'auto',
-    orientation: 'auto',
-    reduceOptions: {
-      calcs: ['lastNotNull'],
-      fields: '',
-      values: false,
-    },
-    textMode: 'auto',
-  },
+  // rate(metric, interval="5m", extraLabels="")
+  rate(metric, interval='5m', extraLabels='')::
+    'rate(' + metric + '{' + commonFilter +
+    (if extraLabels != '' then ', ' + extraLabels else '') + '}[' + interval + '])',
 
-  // Helper for creating rate queries
-  rateQuery(metric, labels='', interval='5m'): 
-    'rate(' + metric + (if labels != '' then '{' + labels + '}' else '') + '[' + interval + '])',
+  // increase(metric, interval="1h", extraLabels="")
+  increase(metric, interval='1h', extraLabels='')::
+    'increase(' + metric + '{' + commonFilter +
+    (if extraLabels != '' then ', ' + extraLabels else '') + '}[' + interval + '])',
 
-  // Helper for creating histogram quantile queries
-  histogramQuantile(quantile, metric, labels='', interval='5m', groupBy=''):
-    'histogram_quantile(' + quantile + ', rate(' + metric + '_bucket' + 
-    (if labels != '' then '{' + labels + '}' else '') + '[' + interval + '])' +
-    (if groupBy != '' then ') by (' + groupBy + ')' else ''),
+  // histogramQuantile(0.95, "ws_message_duration_seconds", 'type="subscribe"', 'by(type)')
+  histogramQuantile(quantile, metric, extraLabels='', groupBy='')::
+    'histogram_quantile(' + quantile + ', ' +
+    'sum(rate(' + metric + '_bucket{' + commonFilter +
+    (if extraLabels != '' then ', ' + extraLabels else '') + '}[5m])) ' +
+    'by (le' + (if groupBy != '' then ', ' + groupBy else '') + '))',
 
-  // Helper for creating increase queries
-  increaseQuery(metric, labels='', interval='5m'):
-    'increase(' + metric + (if labels != '' then '{' + labels + '}' else '') + '[' + interval + '])',
+  // sum(rate(...)) by(labels)
+  sumRate(metric, extraLabels='', byLabels='')::
+    'sum(' + self.rate(metric, '5m', extraLabels) + ')' +
+    (if byLabels != '' then ' by (' + byLabels + ')' else ''),
 
-  // Template variables
+  // topk(5, increase(...))
+  topK(k, metric, interval='1h', extraLabels='')::
+    'topk(' + k + ', ' + self.increase(metric, interval, extraLabels) + ')',
+
+  // === Template Variables ===
   templateVars: {
+    cluster: {
+      name: 'cluster',
+      type: 'query',
+      dataSource: utils.datasource,
+      query: 'label_values(up, cluster)',
+      refresh: 1,
+      includeAll: true,
+      multi: true,
+      allValue: '.*',
+      label: 'Cluster',
+    },
+    job: {
+      name: 'job',
+      type: 'query',
+      dataSource: utils.datasource,
+      query: 'label_values(up{cluster=~"$cluster"}, job)',
+      refresh: 1,
+      includeAll: true,
+      multi: true,
+      allValue: '.*',
+      label: 'Job',
+    },
     instance: {
       name: 'instance',
       type: 'query',
-      datasource: $.datasource,  // Changed from self.datasource to $.datasource
+      dataSource: utils.datasource,
       query: 'label_values(ws_connections_total, instance)',
       refresh: 1,
-      sort: 1,
-      multi: true,
       includeAll: true,
+      multi: true,
       allValue: '.*',
+      label: 'Instance',
     },
     event_type: {
       name: 'event_type',
       type: 'query',
-      datasource: $.datasource,  // Changed from self.datasource to $.datasource
+      dataSource: utils.datasource,
       query: 'label_values(ws_broadcast_operations_total, event_type)',
       refresh: 1,
-      sort: 1,
-      multi: true,
       includeAll: true,
+      multi: true,
       allValue: '.*',
+      label: 'Event Type',
+    },
+    interval: {
+      name: 'interval',
+      type: 'interval',
+      label: 'Resolution',
+      default: '1m',
+      options: ['10s', '30s', '1m', '5m', '10m', '30m', '1h'],
     },
   },
-}
+};
 
+utils

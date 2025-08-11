@@ -1,39 +1,33 @@
 local utils = import 'utils.libsonnet';
 
 {
-  // Connection Lifecycle Panels
+  // === Connection Lifecycle Panels ===
+
   wsConnectionsActive: {
     title: 'Active WebSocket Connections',
     type: 'stat',
     targets: [
       {
-        expr: 'sum(ws_connections_active{state="active"})',
+        expr: 'sum(ws_connection_states{state="active"})',
         legendFormat: 'Active',
         refId: 'A',
       },
       {
-        expr: 'sum(ws_connections_active{state="stale"})',
+        expr: 'sum(ws_connection_states{state="stale"})',
         legendFormat: 'Stale',
         refId: 'B',
       },
     ],
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'thresholds',
-        },
+        color: { mode: 'thresholds' },
         mappings: [],
         thresholds: {
           mode: 'absolute',
           steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'red',
-              value: 1000,
-            },
+            { value: null, color: 'green' },
+            { value: 100, color: 'orange' },
+            { value: 500, color: 'red' },
           ],
         },
         unit: 'short',
@@ -44,147 +38,169 @@ local utils = import 'utils.libsonnet';
       graphMode: 'area',
       justifyMode: 'auto',
       orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
       textMode: 'auto',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
     },
   },
-  messageSuccessRate: {
-    title: 'Message Success Rate',
+
+  wsStaleConnections: {
+    title: 'Stale Connections',
     type: 'stat',
     targets: [
       {
-        expr: 'sum(rate(ws_messages_total{result="success"}[5m])) / sum(rate(ws_messages_total[5m]))',
-        legendFormat: 'Success Rate',
+        expr: 'sum(ws_connection_states{state="stale"})',
+        legendFormat: 'Stale',
         refId: 'A',
       },
     ],
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'thresholds',
-        },
+        color: { mode: 'thresholds' },
         mappings: [],
-        max: 1,
-        min: 0,
         thresholds: {
           mode: 'absolute',
           steps: [
-            {
-              color: 'red',
-              value: null,
-            },
-            {
-              color: 'yellow',
-              value: 0.9,
-            },
-            {
-              color: 'green',
-              value: 0.95,
-            },
+            { value: null, color: 'green' },
+            { value: 5, color: 'orange' },
+            { value: 20, color: 'red' },
           ],
         },
-        unit: 'percentunit',
+        unit: 'short',
       },
     },
     options: {
       colorMode: 'value',
-      graphMode: 'area',
-      justifyMode: 'auto',
-      orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
+      graphMode: 'none',
       textMode: 'auto',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
     },
   },
-  broadcastSuccessRate: {
-    title: 'Broadcast Success Rate',
-    type: 'stat',
+
+  wsConnectionStateDistribution: {
+    title: 'Connection State Distribution',
+    type: 'timeseries',
+    targets: [
+      { expr: 'ws_connection_states{state="active"}', legendFormat: 'Active', refId: 'A' },
+      { expr: 'ws_connection_states{state="stale"}', legendFormat: 'Stale', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'short',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  wsConnectionRate: {
+    title: 'Connection Rate (Created/Removed)',
+    type: 'timeseries',
+    targets: [
+      { expr: 'rate(ws_connection_lifecycle_total{event="created"}[5m])', legendFormat: 'Created/sec', refId: 'A' },
+      { expr: 'rate(ws_connection_lifecycle_total{event="removed"}[5m])', legendFormat: 'Removed/sec', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'ops',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  wsConnectionDuration: {
+    title: 'Connection Duration (p95)',
+    type: 'timeseries',
     targets: [
       {
-        expr: 'sum(rate(ws_broadcast_operations_total{result="success"}[5m])) / sum(rate(ws_broadcast_operations_total[5m]))',
-        legendFormat: 'Success Rate',
+        expr: 'histogram_quantile(0.95, sum(rate(ws_connection_duration_seconds_bucket[5m])) by (le, end_reason))',
+        legendFormat: '{{end_reason}}',
         refId: 'A',
       },
     ],
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'thresholds',
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
         },
-        mappings: [],
-        max: 1,
-        min: 0,
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'red',
-              value: null,
-            },
-            {
-              color: 'yellow',
-              value: 0.9,
-            },
-            {
-              color: 'green',
-              value: 0.95,
-            },
-          ],
-        },
-        unit: 'percentunit',
+        unit: 's',
       },
     },
     options: {
-      colorMode: 'value',
-      graphMode: 'area',
-      justifyMode: 'auto',
-      orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
-      textMode: 'auto',
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
     },
   },
+
   avgConnectionDuration: {
     title: 'Avg Connection Duration',
     type: 'stat',
     targets: [
       {
-        expr: 'rate(ws_connection_duration_seconds_sum[5m]) / rate(ws_connection_duration_seconds_count[5m])',
+        expr: 'avg(rate(ws_connection_duration_seconds_sum[5m]) / rate(ws_connection_duration_seconds_count[5m]))',
         legendFormat: 'Average',
         refId: 'A',
       },
     ],
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'thresholds',
-        },
+        color: { mode: 'thresholds' },
         mappings: [],
         thresholds: {
           mode: 'absolute',
           steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'yellow',
-              value: 300,
-            },
-            {
-              color: 'red',
-              value: 600,
-            },
+            { value: null, color: 'green' },
+            { value: 300, color: 'orange' },
+            { value: 600, color: 'red' },
           ],
         },
         unit: 's',
@@ -195,1274 +211,295 @@ local utils = import 'utils.libsonnet';
       graphMode: 'area',
       justifyMode: 'auto',
       orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
       textMode: 'auto',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
     },
   },
-  // Connection State Distribution
-  wsConnectionStateDistribution: {
-    title: 'Connection State Distribution',
-    type: 'piechart',
+
+  // === Message Processing Panels ===
+
+  wsMessageRate: {
+    title: 'Message Processing Rate',
+    type: 'timeseries',
     targets: [
-      {
-        expr: 'ws_connections_active{state="active"}',
-        legendFormat: 'Active',
-        refId: 'A',
-      },
-      {
-        expr: 'ws_connections_active{state="stale"}',
-        legendFormat: 'Stale',
-        refId: 'B',
-      },
-      {
-        expr: 'ws_connections_active{state="disconnected"}',
-        legendFormat: 'Disconnected',
-        refId: 'C',
-      },
+      { expr: 'rate(ws_connection_messages_total[5m])', legendFormat: '{{message_type}}', refId: 'A' },
     ],
-    options: {
-      reduceOptions: {
-        values: false,
-        calcs: ['lastNotNull'],
-        fields: '',
-      },
-      pieType: 'pie',
-      tooltip: {
-        mode: 'single',
-        sort: 'none',
-      },
-      legend: {
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-    },
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
+        color: { mode: 'palette-classic' },
         custom: {
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
         },
-        mappings: [],
+        unit: 'msgps',
       },
     },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
   },
-  // Message Type Distribution
+
   wsMessageTypeDistribution: {
-    title: 'Message Type Distribution (Last 5m)',
-    type: 'piechart',
+    title: 'Message Type Distribution',
+    type: 'timeseries',
     targets: [
-      {
-        expr: 'increase(ws_messages_total[5m]) by (type)',
-        legendFormat: '{{type}}',
-        refId: 'A',
-      },
+      { expr: 'rate(ws_connection_messages_total[5m])', legendFormat: '{{message_type}}', refId: 'A' },
     ],
-    options: {
-      reduceOptions: {
-        values: false,
-        calcs: ['lastNotNull'],
-        fields: '',
-      },
-      pieType: 'pie',
-      tooltip: {
-        mode: 'single',
-        sort: 'none',
-      },
-      legend: {
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-    },
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
+        color: { mode: 'palette-classic' },
         custom: {
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'normal' },
+          thresholdsStyle: { mode: 'off' },
         },
-        mappings: [],
+        unit: 'msgps',
       },
     },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
   },
-  // Top Error Types Table
+
+  // === Subscription Panels ===
+
+  wsActiveSubscriptions: {
+    title: 'Active Subscriptions by Event Type',
+    type: 'timeseries',
+    targets: [
+      { expr: 'ws_connection_subscriptions', legendFormat: '{{event_type}}', refId: 'A' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'normal' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'short',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  wsSubscriptionOperations: {
+    title: 'Subscription Changes (Rate)',
+    type: 'timeseries',
+    targets: [
+      { expr: 'rate(ws_connection_messages_total{message_type="subscribe"}[5m])', legendFormat: 'Subscribe', refId: 'A' },
+      { expr: 'rate(ws_connection_messages_total{message_type="unsubscribe"}[5m])', legendFormat: 'Unsubscribe', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'ops',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  // === Client & System Monitoring ===
+
+  wsClientConnections: {
+    title: 'Client Type Distribution',
+    type: 'timeseries',
+    targets: [
+      { expr: 'ws_client_connections', legendFormat: '{{client_type}}', refId: 'A' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'normal' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'short',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  wsTimeoutMonitorOperations: {
+    title: 'Timeout Monitor Operations',
+    type: 'timeseries',
+    targets: [
+      { expr: 'rate(ws_timeout_monitor_operations_total{operation="mark_stale", result="success"}[5m])', legendFormat: 'Mark Stale', refId: 'A' },
+      { expr: 'rate(ws_timeout_monitor_operations_total{operation="cleanup", result="success"}[5m])', legendFormat: 'Cleanup', refId: 'B' },
+      { expr: 'rate(ws_timeout_monitor_operations_total{operation="health_check", result="success"}[5m])', legendFormat: 'Health Check', refId: 'C' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'ops',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
+  // === Error Monitoring ===
+
+  wsErrors: {
+    title: 'Connection Error Rate',
+    type: 'timeseries',
+    targets: [
+      { expr: 'rate(ws_connection_errors_total[5m])', legendFormat: '{{error_type}} - {{phase}}', refId: 'A' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'palette-classic' },
+        custom: {
+          drawStyle: 'line',
+          lineInterpolation: 'linear',
+          lineWidth: 1,
+          fillOpacity: 10,
+          showPoints: 'never',
+          pointSize: 5,
+          barAlignment: 0,
+          axisPlacement: 'auto',
+          axisLabel: '',
+          scaleDistribution: { type: 'linear' },
+          hideFrom: { legend: false, tooltip: false, vis: false },
+          stacking: { group: 'A', mode: 'none' },
+          thresholdsStyle: { mode: 'off' },
+        },
+        unit: 'eps',
+      },
+    },
+    options: {
+      legend: { displayMode: 'list', placement: 'bottom', calcs: [] },
+      tooltip: { mode: 'multi', sort: 'none' },
+    },
+  },
+
   wsTopErrors: {
-    title: 'Top Error Types (Last Hour)',
+    title: 'Top Connection Errors (Last 1h)',
     type: 'table',
     targets: [
       {
-        expr: 'topk(10, increase(ws_errors_total[1h])) by (error_type, component)',
-        legendFormat: '{{error_type}} - {{component}}',
-        refId: 'A',
+        expr: 'topk(10, increase(ws_connection_errors_total[1h])) by (error_type, phase)',
         format: 'table',
         instant: true,
+        legendFormat: '{{error_type}} - {{phase}}',
+        refId: 'A',
       },
     ],
     fieldConfig: {
       defaults: {
-        color: {
-          mode: 'thresholds',
+        color: { mode: 'thresholds' },
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { value: null, color: 'green' },
+            { value: 5, color: 'red' },
+          ],
         },
         custom: {
           align: 'auto',
           displayMode: 'auto',
           inspect: false,
         },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'red',
-              value: 10,
-            },
-          ],
-        },
       },
+      overrides: [],
     },
     options: {
       showHeader: true,
+      displayMode: 'color-text',
     },
     transformations: [
       {
         id: 'organize',
         options: {
-          excludeByName: {
-            Time: true,
-            '__name__': true,
-            job: true,
-            instance: true,
-          },
-          indexByName: {},
-          renameByName: {
-            component: 'Component',
-            error_type: 'Error Type',
-            Value: 'Count',
-          },
+          excludeByName: { Time: true, __name__: true },
+          renameByName: { Value: 'Count' },
         },
       },
     ],
-  },
-
-  // === Time Series Panels Start Here ===
-
-  wsConnectionRate: {
-    title: 'Connection Rate',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_connections_total{outcome="created"}[5m])',
-        legendFormat: 'Created/sec',
-        refId: 'A',
-      },
-      {
-        expr: 'rate(ws_connections_total{outcome="removed"}[5m])',
-        legendFormat: 'Removed/sec',
-        refId: 'B',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'reqps',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsConnectionDuration: {
-    title: 'Connection Duration',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'histogram_quantile(0.50, rate(ws_connection_duration_seconds_bucket[5m])) by (reason)',
-        legendFormat: 'p50 - {{reason}}',
-        refId: 'A',
-      },
-      {
-        expr: 'histogram_quantile(0.95, rate(ws_connection_duration_seconds_bucket[5m])) by (reason)',
-        legendFormat: 'p95 - {{reason}}',
-        refId: 'B',
-      },
-      {
-        expr: 'histogram_quantile(0.99, rate(ws_connection_duration_seconds_bucket[5m])) by (reason)',
-        legendFormat: 'p99 - {{reason}}',
-        refId: 'C',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 's',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Message Processing Panels
-  wsMessageRate: {
-    title: 'Message Processing Rate',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_messages_total{result="success"}[5m]) by (type)',
-        legendFormat: 'Success - {{type}}',
-        refId: 'A',
-      },
-      {
-        expr: 'rate(ws_messages_total{result="failed"}[5m]) by (type)',
-        legendFormat: 'Failed - {{type}}',
-        refId: 'B',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'reqps',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsMessageProcessingDuration: {
-    title: 'Message Processing Duration',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'histogram_quantile(0.50, rate(ws_message_processing_duration_seconds_bucket[5m])) by (type, stage)',
-        legendFormat: 'p50 - {{type}}/{{stage}}',
-        refId: 'A',
-      },
-      {
-        expr: 'histogram_quantile(0.95, rate(ws_message_processing_duration_seconds_bucket[5m])) by (type, stage)',
-        legendFormat: 'p95 - {{type}}/{{stage}}',
-        refId: 'B',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 's',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Broadcast Panels
-  wsBroadcastOperations: {
-    title: 'Broadcast Operations',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_broadcast_operations_total{result="success"}[5m]) by (event_type)',
-        legendFormat: 'Success - {{event_type}}',
-        refId: 'A',
-      },
-      {
-        expr: 'rate(ws_broadcast_operations_total{result="failed"}[5m]) by (event_type)',
-        legendFormat: 'Failed - {{event_type}}',
-        refId: 'B',
-      },
-      {
-        expr: 'rate(ws_broadcast_operations_total{result="no_subscribers"}[5m]) by (event_type)',
-        legendFormat: 'No Subscribers - {{event_type}}',
-        refId: 'C',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'ops',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsBroadcastDelivery: {
-    title: 'Broadcast Message Delivery',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_broadcast_delivery_total{outcome="delivered"}[5m]) by (event_type)',
-        legendFormat: 'Delivered - {{event_type}}',
-        refId: 'A',
-      },
-      {
-        expr: 'rate(ws_broadcast_delivery_total{outcome="failed"}[5m]) by (event_type)',
-        legendFormat: 'Failed - {{event_type}}',
-        refId: 'B',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'msgps',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsBroadcastDuration: {
-    title: 'Broadcast Duration',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'histogram_quantile(0.50, rate(ws_broadcast_duration_seconds_bucket[5m])) by (event_type)',
-        legendFormat: 'p50 - {{event_type}}',
-        refId: 'A',
-      },
-      {
-        expr: 'histogram_quantile(0.95, rate(ws_broadcast_duration_seconds_bucket[5m])) by (event_type)',
-        legendFormat: 'p95 - {{event_type}}',
-        refId: 'B',
-      },
-      {
-        expr: 'histogram_quantile(0.99, rate(ws_broadcast_duration_seconds_bucket[5m])) by (event_type)',
-        legendFormat: 'p99 - {{event_type}}',
-        refId: 'C',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 's',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Subscription Panels
-  wsActiveSubscriptions: {
-    title: 'Active Subscriptions by Event Type',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'ws_subscriptions_active by (event_type)',
-        legendFormat: '{{event_type}}',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'normal',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'short',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsSubscriptionOperations: {
-    title: 'Subscription Operations',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_subscription_operations_total{operation="subscribe"}[5m]) by (event_type)',
-        legendFormat: 'Subscribe - {{event_type}}',
-        refId: 'A',
-      },
-      {
-        expr: 'rate(ws_subscription_operations_total{operation="unsubscribe"}[5m]) by (event_type)',
-        legendFormat: 'Unsubscribe - {{event_type}}',
-        refId: 'B',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'ops',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Health and Monitoring Panels
-  wsInvariantViolations: {
-    title: 'Invariant Violations',
-    type: 'stat',
-    targets: [
-      {
-        expr: 'increase(ws_invariant_violations_total[1h]) by (invariant_type)',
-        legendFormat: '{{invariant_type}}',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'thresholds',
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'yellow',
-              value: 1,
-            },
-            {
-              color: 'red',
-              value: 5,
-            },
-          ],
-        },
-        unit: 'short',
-      },
-    },
-    options: {
-      colorMode: 'background',
-      graphMode: 'area',
-      justifyMode: 'auto',
-      orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
-      textMode: 'auto',
-    },
-  },
-  wsHealthChecks: {
-    title: 'Health Check Success Rate',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_health_checks_total{result="success"}[5m]) / rate(ws_health_checks_total[5m]) by (check_type)',
-        legendFormat: '{{check_type}}',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        max: 1,
-        min: 0,
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'red',
-              value: 0.9,
-            },
-          ],
-        },
-        unit: 'percentunit',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsResourceUsage: {
-    title: 'Resource Usage',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'ws_resource_usage{resource_type="active_connections"}',
-        legendFormat: 'Active Connections',
-        refId: 'A',
-      },
-      {
-        expr: 'ws_resource_usage{resource_type="total_connections"}',
-        legendFormat: 'Total Connections',
-        refId: 'B',
-      },
-      {
-        expr: 'ws_resource_usage{resource_type="pending_messages"}',
-        legendFormat: 'Pending Messages',
-        refId: 'C',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'short',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Error Panels
-  wsErrors: {
-    title: 'WebSocket Errors',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_errors_total[5m]) by (error_type, component)',
-        legendFormat: '{{component}}/{{error_type}}',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'eps',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  wsSystemEvents: {
-    title: 'System Events',
-    type: 'timeseries',
-    targets: [
-      {
-        expr: 'rate(ws_system_events_total[5m]) by (event_type)',
-        legendFormat: '{{event_type}}',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'palette-classic',
-        },
-        custom: {
-          axisLabel: '',
-          axisPlacement: 'auto',
-          barAlignment: 0,
-          drawStyle: 'line',
-          fillOpacity: 10,
-          gradientMode: 'none',
-          hideFrom: {
-            legend: false,
-            tooltip: false,
-            vis: false,
-          },
-          lineInterpolation: 'linear',
-          lineWidth: 1,
-          pointSize: 5,
-          scaleDistribution: {
-            type: 'linear',
-          },
-          showPoints: 'never',
-          spanNulls: false,
-          stacking: {
-            group: 'A',
-            mode: 'none',
-          },
-          thresholdsStyle: {
-            mode: 'off',
-          },
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-          ],
-        },
-        unit: 'eps',
-      },
-    },
-    options: {
-      legend: {
-        calcs: [],
-        displayMode: 'list',
-        placement: 'bottom',
-      },
-      tooltip: {
-        mode: 'multi',
-        sort: 'none',
-      },
-    },
-  },
-  // Summary Stat Panels
-  totalMessages: {
-    title: 'Total Messages Processed',
-    type: 'stat',
-    targets: [
-      {
-        expr: 'sum(ws_messages_total)',
-        legendFormat: 'Total',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'thresholds',
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'red',
-              value: 10000,
-            },
-          ],
-        },
-        unit: 'short',
-      },
-    },
-    options: {
-      colorMode: 'value',
-      graphMode: 'area',
-      justifyMode: 'auto',
-      orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
-      textMode: 'auto',
-    },
-  },
-  totalBroadcasts: {
-    title: 'Total Broadcasts',
-    type: 'stat',
-    targets: [
-      {
-        expr: 'sum(ws_broadcast_operations_total)',
-        legendFormat: 'Total',
-        refId: 'A',
-      },
-    ],
-    fieldConfig: {
-      defaults: {
-        color: {
-          mode: 'thresholds',
-        },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            {
-              color: 'green',
-              value: null,
-            },
-            {
-              color: 'red',
-              value: 1000,
-            },
-          ],
-        },
-        unit: 'short',
-      },
-    },
-    options: {
-      colorMode: 'value',
-      graphMode: 'area',
-      justifyMode: 'auto',
-      orientation: 'auto',
-      reduceOptions: {
-        calcs: ['lastNotNull'],
-        fields: '',
-        values: false,
-      },
-      textMode: 'auto',
-    },
   },
 }
-
