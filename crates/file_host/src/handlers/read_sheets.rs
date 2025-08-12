@@ -16,7 +16,7 @@ use tracing::instrument;
 pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
 	let cache_key = format!("get_attributions_{}", id);
 
-	let cache_result = timed_operation!("get_attributions", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+	let cache_result = timed_operation!("get_attributions", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_attributions", "get", "hit");
@@ -36,7 +36,7 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 	if data.len() <= 100 {
 		timed_operation!("get_attributions", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&cache_key, &data).await {
+				match state.cache_store.set(&cache_key, &data, None).await {
 					Ok(_) => {
 						record_cache_op!("get_attributions", "set", "success");
 					}
@@ -60,7 +60,7 @@ pub async fn get_attributions(State(state): State<Arc<AppState>>, Path(id): Path
 pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
 	let cache_key = format!("get_video_chapters_{}", id);
 
-	let cache_result = timed_operation!("get_video_chapters", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+	let cache_result = timed_operation!("get_video_chapters", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_video_chapters", "get", "hit");
@@ -81,7 +81,7 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 	if data.len() <= 100 {
 		timed_operation!("get_video_chapters", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&cache_key, &data).await {
+				match state.cache_store.set(&cache_key, &data, None).await {
 					Ok(_) => record_cache_op!("get_video_chapters", "set", "success"),
 					Err(_) => record_cache_op!("get_video_chapters", "set", "error"),
 				}
@@ -98,7 +98,7 @@ pub async fn get_video_chapters(State(state): State<Arc<AppState>>, Path(id): Pa
 pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<GanttChapter>>, FileHostError> {
 	let cache_key = format!("get_gantt_{}", id);
 
-	let cache_result = timed_operation!("get_gantt", "cache_check", true, { state.cache_store.get_json(&cache_key).await })?;
+	let cache_result = timed_operation!("get_gantt", "cache_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_gantt", "get", "hit");
@@ -120,7 +120,7 @@ pub async fn get_gantt(State(state): State<Arc<AppState>>, Path(id): Path<String
 	if chapters.len() <= 100 {
 		timed_operation!("get_gantt", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&cache_key, &chapters).await {
+				match state.cache_store.set(&cache_key, &chapters, None).await {
 					Ok(_) => record_cache_op!("get_gantt", "set", "success"),
 					Err(_) => record_cache_op!("get_gantt", "set", "error"),
 				}
@@ -171,7 +171,7 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 #[axum::debug_handler]
 #[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id))]
 pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
-	let cache_result = timed_operation!("get_nfl_tennis", "cached_check", true, { state.cache_store.get_json(&id).await })?;
+	let cache_result = timed_operation!("get_nfl_tennis", "cached_check", true, { state.cache_store.get(&id).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_nfl_tennis", "get", "hit");
@@ -208,7 +208,7 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 	if sheet_collection.len() <= 1000 {
 		timed_operation!("get_nfl_tennis", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&id, &sheet_collection).await {
+				match state.cache_store.set(&id, &sheet_collection, None).await {
 					Ok(_) => {
 						record_cache_op!("get_nfl_tennis", "set", "success");
 					}
@@ -238,7 +238,7 @@ pub async fn get_nfl_tennis(State(state): State<Arc<AppState>>, Path(id): Path<S
 pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster{}", id);
 
-	let cache_result = timed_operation!("get_nfl_roster", "cached_check", true, { state.cache_store.get_json(&cache_key).await })?;
+	let cache_result = timed_operation!("get_nfl_roster", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_nfl_roster", "get", "hit");
@@ -256,7 +256,7 @@ pub async fn get_nfl_roster(State(state): State<Arc<AppState>>, Path(id): Path<S
 	if roster.len() <= 100 {
 		timed_operation!("get_nfl_roster", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&cache_key, &roster).await {
+				match state.cache_store.set(&cache_key, &roster, None).await {
 					Ok(_) => {
 						record_cache_op!("get_nfl_roster", "set", "success");
 					}

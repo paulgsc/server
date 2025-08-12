@@ -40,9 +40,7 @@ struct GDriveResponse {
 pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_id): Path<String>) -> Result<Response<axum::body::Body>, FileHostError> {
 	let cache_key = format!("get_drive_image{}", image_id);
 
-	let cache_result = timed_operation!("serve_gdrive_image", "cached_check", true, {
-		state.cache_store.get_json::<GDriveResponse>(&cache_key).await
-	})?;
+	let cache_result = timed_operation!("serve_gdrive_image", "cached_check", true, { state.cache_store.get::<GDriveResponse>(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_gdrive_image", "get", "hit");
@@ -67,7 +65,7 @@ pub async fn serve_gdrive_image(State(state): State<Arc<AppState>>, Path(image_i
 		return Err(FileHostError::InvalidMimeType(mime_type.clone()));
 	}
 
-	timed_operation!("serve_gdrive_image", "cache_set", false, { state.cache_store.set_json(&cache_key, &drive_response).await })?;
+	timed_operation!("serve_gdrive_image", "cache_set", false, { state.cache_store.set(&cache_key, &drive_response, None).await })?;
 
 	let response = Response::builder()
 		.header(header::CONTENT_TYPE, mime_type)

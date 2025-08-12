@@ -1,5 +1,5 @@
 use crate::handlers::read_sheets as routes;
-use crate::{AppState, CacheStore, Config, FileHostError};
+use crate::{AppState, CacheConfig, CacheStore, Config, FileHostError};
 use axum::routing::get;
 use axum::{
 	http::{
@@ -17,7 +17,7 @@ pub fn get_sheets(config: Arc<Config>) -> Result<Router, FileHostError> {
 		.allow_methods([Method::GET])
 		.allow_headers([CONTENT_TYPE, AUTHORIZATION])
 		.allow_credentials(true);
-	let state = CacheStore::new(config.clone())?;
+	let state = CacheStore::new(CacheConfig::default())?;
 	let app_state = AppState {
 		cache_store: state,
 		config: config.clone(),

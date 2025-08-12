@@ -13,9 +13,7 @@ use sdk::{GitHubClient, Repository};
 pub async fn get_github_repos(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Repository>>, FileHostError> {
 	let cache_key = format!("get_github_repos");
 
-	let cache_result = timed_operation!("get_github_repos", "cached_check", true, {
-		state.cache_store.get_json::<Vec<Repository>>(&cache_key).await
-	})?;
+	let cache_result = timed_operation!("get_github_repos", "cached_check", true, { state.cache_store.get::<Vec<Repository>>(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
 		record_cache_op!("get_github_repos", "get", "hit");
@@ -30,7 +28,7 @@ pub async fn get_github_repos(State(state): State<Arc<AppState>>) -> Result<Json
 	if data.len() <= 1000 {
 		timed_operation!("get_github_repos", "cache_set", false, {
 			async {
-				match state.cache_store.set_json(&cache_key, &data).await {
+				match state.cache_store.set(&cache_key, &data, None).await {
 					Ok(_) => {
 						record_cache_op!("get_github_repos", "set", "success");
 						tracing::info!("Caching data for key: {}", &cache_key);

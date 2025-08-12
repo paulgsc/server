@@ -10,7 +10,7 @@ use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRa
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	websocket::{init_websocket, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying, WebSocketFsm},
-	AppState, CacheStore, Config, UtterancePrompt,
+	AppState, CacheConfig, CacheStore, Config, UtterancePrompt,
 };
 // use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
 use std::{net::SocketAddr, sync::Arc};
