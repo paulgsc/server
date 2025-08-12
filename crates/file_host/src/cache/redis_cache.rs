@@ -2,12 +2,14 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use log::{info, warn};
-use redis::{AsyncCommands, Client, RedisError};
+use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::io::Write;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+use crate::error::FileHostError;
 
 //  cache entry with metadata
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,17 +23,17 @@ pub struct CacheEntry<T> {
 }
 
 impl<T> CacheEntry<T> {
-	pub fn new(data: T, ttl: u64) -> Self {
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+	pub fn new(data: T, ttl: u64) -> Result<Self, FileHostError> {
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| FileHostError::Anyhow(e.into()))?.as_secs();
 
-		Self {
+		Ok(Self {
 			data,
 			content_type: None,
 			created_at: now,
 			ttl,
 			access_count: 1,
 			last_accessed: now,
-		}
+		})
 	}
 
 	pub fn with_content_type(mut self, content_type: String) -> Self {
@@ -39,9 +41,10 @@ impl<T> CacheEntry<T> {
 		self
 	}
 
-	pub fn touch(&mut self) {
+	pub fn touch(&mut self) -> Result<(), FileHostError> {
 		self.access_count += 1;
-		self.last_accessed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		self.last_accessed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| FileHostError::Anyhow(e.into()))?.as_secs();
+		Ok(())
 	}
 }
 
@@ -79,7 +82,7 @@ pub struct CacheStore {
 }
 
 impl CacheStore {
-	pub fn new(config: CacheConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+	pub fn new(config: CacheConfig) -> Result<Self, FileHostError> {
 		let redis_client = Client::open(config.redis_url.as_str())?;
 		Ok(Self { redis_client, config })
 	}
@@ -89,11 +92,10 @@ impl CacheStore {
 		format!("{}{}", self.config.key_prefix, key)
 	}
 
-	// Retry mechanism for Redis operations
-	async fn with_retry<F, T, E>(&self, mut operation: F) -> Result<T, E>
+	// Retry mechanism for Redis operations, now returning a concrete FileHostError
+	async fn with_retry<F, T>(&self, mut operation: F) -> Result<T, FileHostError>
 	where
-		F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>,
-		E: std::fmt::Debug,
+		F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, FileHostError>> + Send>>,
 	{
 		let mut last_error = None;
 
@@ -114,7 +116,7 @@ impl CacheStore {
 	}
 
 	// Compression helpers
-	fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+	fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>, FileHostError> {
 		if !self.config.enable_compression || data.len() < self.config.compression_threshold {
 			return Ok(data.to_vec());
 		}
@@ -124,7 +126,7 @@ impl CacheStore {
 		Ok(encoder.finish()?)
 	}
 
-	fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+	fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>, FileHostError> {
 		if !self.config.enable_compression {
 			return Ok(data.to_vec());
 		}
@@ -139,11 +141,11 @@ impl CacheStore {
 	}
 
 	// Generic set method with compression and metadata
-	pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), FileHostError> {
 		let cache_key = self.make_key(key);
 		let ttl = ttl.unwrap_or(self.config.default_ttl);
 
-		let entry = CacheEntry::new(data, ttl);
+		let entry = CacheEntry::new(data, ttl)?;
 		let serialized = serde_json::to_vec(&entry)?;
 		let compressed = self.compress_data(&serialized)?;
 
@@ -157,7 +159,7 @@ impl CacheStore {
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
 					let _: () = con.set_ex(&cache_key, compressed, ttl).await?;
-					Result::<_, RedisError>::Ok(())
+					Result::<_, FileHostError>::Ok(())
 				})
 			})
 			.await?;
@@ -167,7 +169,7 @@ impl CacheStore {
 	}
 
 	// Generic get method with decompression and touch
-	pub async fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, FileHostError> {
 		let cache_key = self.make_key(key);
 
 		let data: Option<Vec<u8>> = self
@@ -178,7 +180,7 @@ impl CacheStore {
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
 					let result: Option<Vec<u8>> = con.get(&cache_key).await?;
-					Result::<_, RedisError>::Ok(result)
+					Result::<_, FileHostError>::Ok(result)
 				})
 			})
 			.await?;
@@ -189,8 +191,8 @@ impl CacheStore {
 				let mut entry: CacheEntry<T> = serde_json::from_slice(&decompressed)?;
 
 				// Touch the entry (update access info)
-				entry.touch();
-				self.touch_entry(key).await.ok(); // Update in Redis async
+				entry.touch()?;
+				self.touch_entry(key).await.map_err(|e| warn!("Failed to touch cache entry {}: {}", key, e)).ok(); // Log the error instead of silently failing
 
 				info!("Cache hit: {} (accessed {} times)", key, entry.access_count);
 				Ok(Some(entry.data))
@@ -200,11 +202,11 @@ impl CacheStore {
 	}
 
 	// Specialized method for binary data (audio, images, etc.)
-	pub async fn set_binary(&self, key: &str, data: &[u8], content_type: Option<String>, ttl: Option<u64>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn set_binary(&self, key: &str, data: &[u8], content_type: Option<String>, ttl: Option<u64>) -> Result<(), FileHostError> {
 		let cache_key = self.make_key(key);
 		let ttl = ttl.unwrap_or(self.config.default_ttl);
 
-		let mut entry = CacheEntry::new(data.to_vec(), ttl);
+		let mut entry = CacheEntry::new(data.to_vec(), ttl)?;
 		if let Some(ct) = content_type {
 			entry = entry.with_content_type(ct);
 		}
@@ -222,7 +224,7 @@ impl CacheStore {
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
 					let _: () = con.set_ex(&cache_key, compressed, ttl).await?;
-					Result::<_, RedisError>::Ok(())
+					Result::<_, FileHostError>::Ok(())
 				})
 			})
 			.await?;
@@ -232,7 +234,7 @@ impl CacheStore {
 	}
 
 	// Get binary data with metadata
-	pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, FileHostError> {
 		let cache_key = self.make_key(key);
 
 		let data: Option<Vec<u8>> = self
@@ -243,7 +245,7 @@ impl CacheStore {
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
 					let result: Option<Vec<u8>> = con.get(&cache_key).await?;
-					Result::<_, RedisError>::Ok(result)
+					Result::<_, FileHostError>::Ok(result)
 				})
 			})
 			.await?;
@@ -253,8 +255,8 @@ impl CacheStore {
 				let decompressed = self.decompress_data(&compressed_data)?;
 				let mut entry: CacheEntry<Vec<u8>> = serde_json::from_slice(&decompressed)?;
 
-				entry.touch();
-				self.touch_entry(key).await.ok();
+				entry.touch()?;
+				self.touch_entry(key).await.map_err(|e| warn!("Failed to touch binary cache entry {}: {}", key, e)).ok();
 
 				info!("Binary cache hit: {} ({} bytes)", key, entry.data.len());
 				Ok(Some((entry.data, entry.content_type)))
@@ -264,19 +266,19 @@ impl CacheStore {
 	}
 
 	// Touch an entry (update access metadata)
-	async fn touch_entry(&self, key: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+	async fn touch_entry(&self, key: &str) -> Result<(), FileHostError> {
 		let cache_key = self.make_key(key);
+		let ttl = self.config.default_ttl;
 
 		self
 			.with_retry(|| {
 				let redis_client = self.redis_client.clone();
 				let cache_key = cache_key.clone();
-				let ttl = self.config.default_ttl;
 
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
-					let _: () = con.expire(&cache_key, ttl.try_into().unwrap()).await?;
-					Result::<_, RedisError>::Ok(())
+					let _: () = con.expire(&cache_key, ttl.try_into()?).await?;
+					Result::<_, FileHostError>::Ok(())
 				})
 			})
 			.await?;
@@ -285,7 +287,7 @@ impl CacheStore {
 	}
 
 	// Delete specific key
-	pub async fn delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn delete(&self, key: &str) -> Result<bool, FileHostError> {
 		let cache_key = self.make_key(key);
 
 		let deleted: i32 = self
@@ -296,7 +298,7 @@ impl CacheStore {
 				Box::pin(async move {
 					let mut con = redis_client.get_multiplexed_async_connection().await?;
 					let result: i32 = con.del(&cache_key).await?;
-					Result::<_, RedisError>::Ok(result)
+					Result::<_, FileHostError>::Ok(result)
 				})
 			})
 			.await?;
@@ -305,7 +307,7 @@ impl CacheStore {
 	}
 
 	// Flush all cache entries with the configured prefix
-	pub async fn flush_all(&self) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+	pub async fn flush_all(&self) -> Result<u64, FileHostError> {
 		let pattern = format!("{}*", self.config.key_prefix);
 
 		let deleted: u64 = self
@@ -324,7 +326,7 @@ impl CacheStore {
 
 					// Delete all matching keys
 					let deleted: i32 = con.del(&keys).await?;
-					Result::<_, RedisError>::Ok(deleted as u64)
+					Result::<_, FileHostError>::Ok(deleted as u64)
 				})
 			})
 			.await?;

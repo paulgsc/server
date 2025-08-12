@@ -88,6 +88,9 @@ pub enum FileHostError {
 
 	#[error("Unexpected Tower Service error: {0}")]
 	TowerError(#[from] tower::BoxError),
+
+	#[error("I/O error: {0}")]
+	IoError(#[from] std::io::Error),
 }
 
 impl FileHostError {
@@ -129,6 +132,7 @@ impl FileHostError {
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
 			Self::TowerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::IoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 }
