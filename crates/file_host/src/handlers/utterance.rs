@@ -1,4 +1,4 @@
-use crate::{Event, UtterancePrompt, WebSocketFsm};
+use crate::{AppState, Event, UtterancePrompt};
 use axum::{
 	extract::{Json, State},
 	http::StatusCode,
@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 #[axum::debug_handler]
-#[instrument(name = "utterance", skip(ws))]
-pub async fn utterance(State(ws): State<WebSocketFsm>, Json(payload): Json<UtterancePrompt>) -> StatusCode {
+#[instrument(name = "utterance", skip(state))]
+pub async fn utterance(State(state): State<AppState>, Json(payload): Json<UtterancePrompt>) -> StatusCode {
 	let event = Event::from(payload);
 
-	let _ = ws.broadcast_event(&event).await;
+	let _ = state.ws.broadcast_event(&event).await;
 
 	StatusCode::OK
 }

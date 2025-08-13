@@ -4,15 +4,16 @@ mod models;
 mod routes;
 use crate::routes::{gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance};
 use anyhow::Result;
-use axum::{error_handling::HandleErrorLayer, routing::get, Router};
+use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, routing::get, Router};
 use clap::Parser;
 use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	websocket::{init_websocket, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying, WebSocketFsm},
+	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying},
 	AppState, CacheConfig, CacheStore, Config, UtterancePrompt,
 };
 // use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
+use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -37,7 +38,26 @@ async fn main() -> Result<()> {
 	dotenv::dotenv().ok();
 	let config = Config::parse();
 	let _ = init_tracing(&config);
-	let context = Arc::new(config);
+
+	let config = Arc::new(config);
+	let cache_store = CacheStore::new(CacheConfig::default())?;
+
+	let secret_file = config.client_secret_file.clone();
+	let use_email = config.email_service_url.clone().unwrap_or("".to_string());
+	let gsheet_reader = ReadSheets::new(use_email.clone(), secret_file.clone())?;
+	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
+	let github_client = GitHubClient::new(config.github_token.clone())?;
+	let ws = init_websocket().await;
+
+	let app_state = AppState {
+		cache_store: cache_store.into(),
+		gsheet_reader: gsheet_reader.into(),
+		gdrive_reader: gdrive_reader.into(),
+		github_client: github_client.into(),
+		ws,
+		config: config.clone(),
+	};
+
 	let ws_state = init_websocket().await;
 
 	// Create connection limiter with configuration
@@ -121,17 +141,14 @@ async fn main() -> Result<()> {
 	// ws_state.bridge_obs_events(client.clone());
 
 	let mut protected_routes = Router::new()
-		.merge(get_sheets(context.clone())?)
-		.merge(get_gdrive_image(context.clone())?)
-		.merge(get_repos(context.clone())?)
-		.merge(post_now_playing(ws_state.clone())?)
-		.merge(get_health()?)
-		.merge(post_utterance(ws_state.clone())?);
+		.merge(get_sheets())
+		.merge(get_gdrive_image())
+		.merge(get_repos())
+		.merge(post_now_playing())
+		.merge(get_health())
+		.merge(post_utterance());
 
-	protected_routes = protected_routes.layer(axum::middleware::from_fn_with_state(
-		Arc::new(TokenBucketRateLimiter::new(context.clone())),
-		rate_limit_middleware,
-	));
+	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(config.clone())), rate_limit_middleware));
 
 	// Add connection stats endpoint
 	// let stats_route = Router::new()
@@ -149,21 +166,19 @@ async fn main() -> Result<()> {
 
 	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
-	let app = Router::new()
-		.merge(protected_routes)
-		.merge(public_routes)
-		.merge(ws_state.router(connection_limiter.clone()))
-		.layer(axum::middleware::from_fn(metrics::http::metrics_middleware));
+	let app = Router::new().merge(protected_routes).merge(public_routes).merge(ws_state.router()).with_state(app_state);
 
 	let app = app.layer(
 		ServiceBuilder::new()
+			.layer(from_fn_with_state(connection_limiter.clone(), connection_limit_middleware))
+			.layer(axum::middleware::from_fn(metrics::http::metrics_middleware))
 			.layer(TraceLayer::new_for_http())
 			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
-			.layer(RequestBodyLimitLayer::new(context.clone().max_request_size * 1024 * 1024))
-			.layer(ConcurrencyLimitLayer::new(context.clone().max_concurrent_req))
-			.layer(TimeoutLayer::new(Duration::from_millis(context.clone().task_timeout_ms)))
+			.layer(RequestBodyLimitLayer::new(config.clone().max_request_size * 1024 * 1024))
+			.layer(ConcurrencyLimitLayer::new(config.clone().max_concurrent_req))
+			.layer(TimeoutLayer::new(Duration::from_millis(config.clone().task_timeout_ms)))
 			.layer(LoadShedLayer::new())
-			.layer(AddExtensionLayer::new(context)),
+			.layer(AddExtensionLayer::new(config)),
 	);
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;

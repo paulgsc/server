@@ -3,10 +3,9 @@ use async_broadcast::{broadcast, Receiver, Sender};
 use axum::{
 	extract::{
 		ws::{Message, WebSocketUpgrade},
-		ConnectInfo, State,
+		ConnectInfo, FromRef, State,
 	},
 	http::HeaderMap,
-	middleware::from_fn_with_state,
 	response::IntoResponse,
 	routing::get,
 	Extension, Router,
@@ -31,7 +30,7 @@ pub use connection::core::{Connection, ConnectionId};
 use message::process_incoming_messages;
 pub use message::{EventMessage, MessageState, ProcessResult};
 use middleware::ConnectionGuard;
-pub use middleware::{connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter};
+pub use middleware::{ConnectionLimitConfig, ConnectionLimiter};
 pub use types::*;
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -111,11 +110,12 @@ impl WebSocketFsm {
 		}
 	}
 
-	pub fn router(self, conn_limiter: Arc<ConnectionLimiter>) -> Router {
-		Router::new()
-			.route("/ws", get(websocket_handler))
-			.with_state(self)
-			.layer(from_fn_with_state(conn_limiter.clone(), connection_limit_middleware))
+	pub fn router<S>(self) -> Router<S>
+	where
+		S: Clone + Send + Sync + 'static,
+		AppState: FromRef<S>,
+	{
+		Router::new().route("/ws", get(websocket_handler))
 	}
 
 	async fn handle_subscription(&self, client_key: &str, event_types: Vec<EventType>, subscribe: bool) {
@@ -262,12 +262,12 @@ pub struct ConnectionStateDistribution {
 
 async fn websocket_handler(
 	ws: WebSocketUpgrade,
-	State(state): State<WebSocketFsm>,
+	State(state): State<AppState>,
 	ConnectInfo(addr): ConnectInfo<SocketAddr>,
 	headers: HeaderMap,
 	Extension(connection_guard): Extension<ConnectionGuard>,
 ) -> impl IntoResponse {
-	ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr, connection_guard))
+	ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, connection_guard))
 }
 
 // Orchestrates the WebSocket connection lifecycle

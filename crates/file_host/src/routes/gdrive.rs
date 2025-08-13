@@ -1,22 +1,15 @@
 use crate::handlers::gdrive_images as routes;
-use crate::{AppState, CacheConfig, CacheStore, Config, FileHostError};
+use crate::AppState;
 use axum::routing::get;
-use axum::{http::Method, Router};
-use std::sync::Arc;
+use axum::{extract::FromRef, http::Method, Router};
 use tower_http::cors::{Any, CorsLayer};
 
-pub fn get_gdrive_image(config: Arc<Config>) -> Result<Router, FileHostError> {
+pub fn get_gdrive_image<S>() -> Router<S>
+where
+	S: Clone + Send + Sync + 'static,
+	AppState: FromRef<S>,
+{
 	let cors = CorsLayer::new().allow_methods([Method::GET]).allow_origin(Any);
-	let state = CacheStore::new(CacheConfig::default())?;
-	let app_state = AppState {
-		cache_store: state,
-		config: config.clone(),
-	};
 
-	Ok(
-		Router::new()
-			.route("/gdrive/image/:image_id", get(routes::serve_gdrive_image))
-			.layer(cors)
-			.with_state(Arc::new(app_state)),
-	)
+	Router::new().route("/gdrive/image/:image_id", get(routes::serve_gdrive_image)).layer(cors)
 }

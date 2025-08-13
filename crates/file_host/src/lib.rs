@@ -1,4 +1,5 @@
 use crate::error::{FileHostError, GSheetDeriveError};
+use axum::extract::FromRef;
 use std::sync::Arc;
 
 pub mod cache;
@@ -19,11 +20,38 @@ pub use config::*;
 pub use handlers::utterance::UtteranceMetadata;
 pub use metrics::http::*;
 pub use metrics::ws::*;
+use sdk::{GitHubClient, ReadDrive, ReadSheets};
 
 pub use cache::{CacheConfig, CacheStore};
 
 #[derive(Clone)]
 pub struct AppState {
-	pub cache_store: CacheStore,
+	pub cache_store: Arc<CacheStore>,
+	pub gsheet_reader: Arc<ReadSheets>,
+	pub gdrive_reader: Arc<ReadDrive>,
+	pub github_client: Arc<GitHubClient>,
+	pub ws: WebSocketFsm,
+	// TODO: might remove the Arc here!
 	pub config: Arc<Config>,
+}
+
+// Implement for the non-Arc field `CacheStore`
+impl FromRef<AppState> for Arc<CacheStore> {
+	fn from_ref(state: &AppState) -> Self {
+		state.cache_store.clone()
+	}
+}
+
+// Implement for the Arc-wrapped field `ReadSheets`
+impl FromRef<AppState> for Arc<ReadSheets> {
+	fn from_ref(state: &AppState) -> Self {
+		state.gsheet_reader.clone()
+	}
+}
+
+// Implement for your `Config`
+impl FromRef<AppState> for Arc<Config> {
+	fn from_ref(state: &AppState) -> Self {
+		state.config.clone()
+	}
 }

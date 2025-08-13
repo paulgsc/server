@@ -3,14 +3,13 @@ use crate::{
 	record_cache_op, timed_operation, AppState, FileHostError,
 };
 use axum::{extract::State, Json};
-use std::sync::Arc;
 use tracing::instrument;
 
-use sdk::{GitHubClient, Repository};
+use sdk::Repository;
 
 #[axum::debug_handler]
 #[instrument(name = "get_github_repos", skip(state))]
-pub async fn get_github_repos(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Repository>>, FileHostError> {
+pub async fn get_github_repos(State(state): State<AppState>) -> Result<Json<Vec<Repository>>, FileHostError> {
 	let cache_key = format!("get_github_repos");
 
 	let cache_result = timed_operation!("get_github_repos", "cached_check", true, { state.cache_store.get::<Vec<Repository>>(&cache_key).await })?;
@@ -23,7 +22,7 @@ pub async fn get_github_repos(State(state): State<Arc<AppState>>) -> Result<Json
 
 	record_cache_op!("get_github_repos", "get", "miss");
 
-	let data = timed_operation!("get_github_repos", "fetch_data", false, { refetch(&state,).await })?;
+	let data = timed_operation!("get_github_repos", "fetch_data", false, { refetch(state.clone(),).await })?;
 
 	if data.len() <= 1000 {
 		timed_operation!("get_github_repos", "cache_set", false, {
@@ -49,10 +48,8 @@ pub async fn get_github_repos(State(state): State<Arc<AppState>>) -> Result<Json
 }
 
 #[instrument(name = "refetch", skip(state))]
-async fn refetch(state: &Arc<AppState>) -> Result<Vec<Repository>, FileHostError> {
-	let client = timed_operation!("refetch", "create_github_client", false, { GitHubClient::new(state.config.github_token.clone()) })?;
-
-	let data = timed_operation!("refetch", "get_repositories", false, { client.get_repositories().await })?;
+async fn refetch(state: AppState) -> Result<Vec<Repository>, FileHostError> {
+	let data = timed_operation!("refetch", "get_repositories", false, { state.github_client.get_repositories().await })?;
 
 	Ok(data)
 }
