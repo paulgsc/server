@@ -1,5 +1,3 @@
-local utils = import 'utils.libsonnet';
-
 {
   // === Connection Lifecycle Panels ===
 
