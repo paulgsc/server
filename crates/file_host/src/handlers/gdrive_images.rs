@@ -1,7 +1,4 @@
-use crate::{
-	metrics::http::{CACHE_OPERATIONS, OPERATION_DURATION},
-	record_cache_op, timed_operation, AppState, FileHostError,
-};
+use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, FileHostError};
 use axum::{
 	extract::{Path, State},
 	http::header,
@@ -41,8 +38,6 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 	let cache_result = timed_operation!("serve_gdrive_image", "cached_check", true, { state.cache_store.get::<GDriveResponse>(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_gdrive_image", "get", "hit");
-
 		let mime_type = cached_data.metadata.mime_type;
 
 		if allowed_image_mime_types().contains(&mime_type.as_str()) {
@@ -52,8 +47,6 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 			return Err(FileHostError::InvalidMimeType(mime_type.clone()));
 		}
 	}
-
-	record_cache_op!("serve_gdrive_image", "get", "miss");
 
 	let drive_response = timed_operation!("serve_gdrive_image", "refetch", false, { refetch(state.clone(), &image_id).await })?;
 

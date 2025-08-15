@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
 	let _ = init_tracing(&config);
 
 	let config = Arc::new(config);
-	let cache_store = CacheStore::new(CacheConfig::default())?;
+	let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
 
 	let secret_file = config.client_secret_file.clone();
 	let use_email = config.email_service_url.clone().unwrap_or("".to_string());

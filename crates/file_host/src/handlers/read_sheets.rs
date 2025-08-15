@@ -1,10 +1,10 @@
+use crate::timed_operation;
 use crate::{
-	metrics::http::{CACHE_OPERATIONS, OPERATION_DURATION},
+	metrics::http::OPERATION_DURATION,
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
 	AppState, FileHostError,
 };
-use crate::{record_cache_op, timed_operation};
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use std::{borrow::Cow, collections::HashMap};
@@ -18,38 +18,20 @@ pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<Stri
 	let cache_result = timed_operation!("get_attributions", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_attributions", "get", "hit");
-
 		let attributions = timed_operation!("get_attributions", "deserialzie_cache", true, { Attribution::from_gsheet(&cached_data, true) })?;
 
 		return Ok(Json(attributions));
 	}
 
-	record_cache_op!("get_attributions", "get", "miss");
 	let q = timed_operation!("get_attributions", "validate_range", false, { extract_and_validate_range(q) })?;
 
 	let data = timed_operation!("get_attributions", "fetch_data", false, { refetch(state.clone(), &id, Some(&q)).await })?;
 
 	let attributions = timed_operation!("get_attributions_", "tranform_data", false, { Attribution::from_gsheet(&data, true) })?;
 
-	if data.len() <= 100 {
-		timed_operation!("get_attributions", "cache_set", false, {
-			async {
-				match state.cache_store.set(&cache_key, &data, None).await {
-					Ok(_) => {
-						record_cache_op!("get_attributions", "set", "success");
-					}
-					Err(e) => {
-						record_cache_op!("get_attributions", "set", "error");
-						tracing::error!("Failed to cache data: {}", e);
-					}
-				}
-			}
-		})
-		.await;
-	} else {
-		tracing::warn!("Data too large to cache (size: {})", data.len());
-	}
+	timed_operation!("get_attributions", "cache_set", false, {
+		state.cache_store.set(&cache_key, &data, None).await?;
+	});
 
 	Ok(Json(attributions))
 }
@@ -62,14 +44,10 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 	let cache_result = timed_operation!("get_video_chapters", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_video_chapters", "get", "hit");
-
 		let video_chapters = timed_operation!("get_video_chapters", "deserialize_cache", true, { VideoChapters::from_gsheet(&cached_data, true) })?;
 
 		return Ok(Json(video_chapters));
 	}
-
-	record_cache_op!("get_video_chapters", "get", "miss");
 
 	let q = timed_operation!("get_video_chapters", "validate_range", false, { extract_and_validate_range(q) })?;
 
@@ -77,17 +55,9 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 
 	let video_chapters = timed_operation!("get_video_chapters", "transform_data", false, { VideoChapters::from_gsheet(&data, true) })?;
 
-	if data.len() <= 100 {
-		timed_operation!("get_video_chapters", "cache_set", false, {
-			async {
-				match state.cache_store.set(&cache_key, &data, None).await {
-					Ok(_) => record_cache_op!("get_video_chapters", "set", "success"),
-					Err(_) => record_cache_op!("get_video_chapters", "set", "error"),
-				}
-			}
-		})
-		.await;
-	}
+	timed_operation!("get_video_chapters", "cache_set", false, {
+		state.cache_store.set(&cache_key, &data, None).await?;
+	});
 
 	Ok(Json(video_chapters))
 }
@@ -100,11 +70,8 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 	let cache_result = timed_operation!("get_gantt", "cache_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_gantt", "get", "hit");
 		return Ok(Json(cached_data));
 	}
-
-	record_cache_op!("get_gantt", "get", "miss");
 
 	let q = timed_operation!("get_gantt", "validate_range", false, { extract_and_validate_range(q) })?;
 
@@ -116,17 +83,9 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 
 	let chapters = timed_operation!("get_gantt", "gantt_transform", false, { naive_gantt_transform(boxed) });
 
-	if chapters.len() <= 100 {
-		timed_operation!("get_gantt", "cache_set", false, {
-			async {
-				match state.cache_store.set(&cache_key, &chapters, None).await {
-					Ok(_) => record_cache_op!("get_gantt", "set", "success"),
-					Err(_) => record_cache_op!("get_gantt", "set", "error"),
-				}
-			}
-		})
-		.await;
-	}
+	timed_operation!("get_gantt", "cache_set", false, {
+		state.cache_store.set(&cache_key, &chapters, None).await?;
+	});
 
 	Ok(Json(chapters))
 }
@@ -173,7 +132,6 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 	let cache_result = timed_operation!("get_nfl_tennis", "cached_check", true, { state.cache_store.get(&id).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_nfl_tennis", "get", "hit");
 		return Ok(Json(DataResponse {
 			data: cached_data,
 			metadata: Metadata {
@@ -182,8 +140,6 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 			},
 		}));
 	}
-
-	record_cache_op!("get_nfl_tennis", "get", "miss");
 
 	let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, {
 		state.gsheet_reader.retrieve_all_sheets_data(&id).await
@@ -201,24 +157,9 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 		sheet_collection.push(sheet_item);
 	}
 
-	if sheet_collection.len() <= 1000 {
-		timed_operation!("get_nfl_tennis", "cache_set", false, {
-			async {
-				match state.cache_store.set(&id, &sheet_collection, None).await {
-					Ok(_) => {
-						record_cache_op!("get_nfl_tennis", "set", "success");
-					}
-					Err(e) => {
-						record_cache_op!("get_nfl_tennis", "set", "error");
-						tracing::error!("Failed to cache data: {}", e);
-					}
-				}
-			}
-		})
-		.await;
-	} else {
-		tracing::info!("Data too large to cache (size: {})", sheet_collection.len());
-	}
+	timed_operation!("get_nfl_tennis", "cache_set", false, {
+		state.cache_store.set(&id, &sheet_collection, None).await?;
+	});
 
 	Ok(Json(DataResponse {
 		data: sheet_collection,
@@ -237,11 +178,8 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 	let cache_result = timed_operation!("get_nfl_roster", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_nfl_roster", "get", "hit");
 		return Ok(Json(cached_data));
 	}
-
-	record_cache_op!("get_nfl_roster", "get", "miss");
 
 	let data = timed_operation!("get_nfl_roster", "fetch_data", false, { refetch(state.clone(), &id, None).await })?;
 
@@ -249,24 +187,9 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 
 	let roster = timed_operation!("get_nfl_roster", "transform_data", false, { naive_roster_transform(boxed) });
 
-	if roster.len() <= 100 {
-		timed_operation!("get_nfl_roster", "cache_set", false, {
-			async {
-				match state.cache_store.set(&cache_key, &roster, None).await {
-					Ok(_) => {
-						record_cache_op!("get_nfl_roster", "set", "success");
-					}
-					Err(e) => {
-						record_cache_op!("get_nfl_roster", "set", "error");
-						tracing::error!("Failed to cache data: {}", e);
-					}
-				}
-			}
-		})
-		.await;
-	} else {
-		tracing::info!("Data too large to cache (size: {})", roster.len());
-	}
+	timed_operation!("get_nfl_roster", "cache_set", false, {
+		state.cache_store.set(&cache_key, &roster, None).await?;
+	});
 
 	Ok(Json(roster))
 }

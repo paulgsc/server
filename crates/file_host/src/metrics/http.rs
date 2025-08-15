@@ -18,8 +18,6 @@ lazy_static! {
 		&["handler", "operation", "cache_hit"]
 	)
 	.expect("Failed to register OPERATION_DURATION");
-	pub static ref CACHE_OPERATIONS: IntCounterVec =
-		register_int_counter_vec!("cache_operations_total", "Total cache operations", &["handler", "operation", "result"]).expect("Failed to register CACHE_OPERATIONS");
 }
 
 /// Middleware for Prometheus metrics collection
@@ -76,11 +74,4 @@ macro_rules! timed_operation {
 
 		result
 	}};
-}
-
-#[macro_export]
-macro_rules! record_cache_op {
-	($handler:expr, $operation:expr, $result:expr) => {
-		CACHE_OPERATIONS.with_label_values(&[$handler, $operation, $result]).inc()
-	};
 }

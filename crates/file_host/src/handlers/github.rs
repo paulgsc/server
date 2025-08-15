@@ -1,7 +1,4 @@
-use crate::{
-	metrics::http::{CACHE_OPERATIONS, OPERATION_DURATION},
-	record_cache_op, timed_operation, AppState, FileHostError,
-};
+use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, FileHostError};
 use axum::{extract::State, Json};
 use tracing::instrument;
 
@@ -15,34 +12,14 @@ pub async fn get_github_repos(State(state): State<AppState>) -> Result<Json<Vec<
 	let cache_result = timed_operation!("get_github_repos", "cached_check", true, { state.cache_store.get::<Vec<Repository>>(&cache_key).await })?;
 
 	if let Some(cached_data) = cache_result {
-		record_cache_op!("get_github_repos", "get", "hit");
-
 		return Ok(Json(cached_data));
 	}
 
-	record_cache_op!("get_github_repos", "get", "miss");
-
 	let data = timed_operation!("get_github_repos", "fetch_data", false, { refetch(state.clone(),).await })?;
 
-	if data.len() <= 1000 {
-		timed_operation!("get_github_repos", "cache_set", false, {
-			async {
-				match state.cache_store.set(&cache_key, &data, None).await {
-					Ok(_) => {
-						record_cache_op!("get_github_repos", "set", "success");
-						tracing::info!("Caching data for key: {}", &cache_key);
-					}
-					Err(e) => {
-						record_cache_op!("get_github_repos", "set", "error");
-						tracing::warn!("Failed to cache data: {}", e);
-					}
-				}
-			}
-		})
-		.await;
-	} else {
-		tracing::info!("Data too large to cache (size: {})", data.len());
-	}
+	timed_operation!("get_github_repos", "cache_set", false, {
+		state.cache_store.set(&cache_key, &data, None).await?;
+	});
 
 	Ok(Json(data))
 }
