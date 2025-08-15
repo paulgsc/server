@@ -299,7 +299,7 @@ async fn handle_socket(
 	state.broadcast_client_count().await;
 
 	// Start event forwarding task
-	let forward_task = spawn_event_forwarder(sender, event_receiver, conn_key.clone());
+	let forward_task = spawn_event_forwarder(sender, event_receiver, state.clone(), conn_key.clone());
 
 	// Process incoming messages
 	let message_count = process_incoming_messages(receiver, &state, &conn_key).await;

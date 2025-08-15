@@ -162,7 +162,12 @@ impl WebSocketFsm {
 }
 
 // Spawns task to forward events from broadcast channel to WebSocket
-pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, mut event_receiver: Receiver<Event>, conn_key: String) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_event_forwarder(
+	mut sender: SplitSink<WebSocket, Message>,
+	mut event_receiver: Receiver<Event>,
+	state: WebSocketFsm,
+	conn_key: String,
+) -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		let mut message_count = 0u64;
 
@@ -180,6 +185,8 @@ pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, m
 			}
 		}
 
+		// Enforce invariant: receiver gone → connection gone
+		let _ = state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
 		record_system_event!("forward_ended", connection_id = conn_key, total_messages = message_count);
 		debug!("Event forwarding ended for client {} after {} messages", conn_key, message_count);
 	})
