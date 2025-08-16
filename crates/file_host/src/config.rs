@@ -16,6 +16,10 @@ pub struct Config {
 	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30")]
 	pub connection_timeout: u64,
 
+	/// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded.
+	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256")]
+	pub max_in_flight: u64,
+
 	/// Server host
 	#[arg(long, env = "HOST", default_value = "127.0.0.1")]
 	pub host: String,

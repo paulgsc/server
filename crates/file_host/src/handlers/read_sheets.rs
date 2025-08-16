@@ -13,25 +13,17 @@ use tracing::instrument;
 #[axum::debug_handler]
 #[instrument(name = "get_attributions", skip(state), fields(sheet_id = %id))]
 pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
-	let cache_key = format!("get_attributions_{}", id);
+	let range = extract_and_validate_range(q)?;
+	let cache_key = format!("get_attributions_{}_{}", id, range);
 
-	let cache_result = timed_operation!("get_attributions", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
+	let (raw_data, was_cached) = state
+		.dedup_cache
+		.get_or_fetch(&cache_key, || async {
+			timed_operation!("get_attributions", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
+		})
+		.await?;
 
-	if let Some(cached_data) = cache_result {
-		let attributions = timed_operation!("get_attributions", "deserialzie_cache", true, { Attribution::from_gsheet(&cached_data, true) })?;
-
-		return Ok(Json(attributions));
-	}
-
-	let q = timed_operation!("get_attributions", "validate_range", false, { extract_and_validate_range(q) })?;
-
-	let data = timed_operation!("get_attributions", "fetch_data", false, { refetch(state.clone(), &id, Some(&q)).await })?;
-
-	let attributions = timed_operation!("get_attributions_", "tranform_data", false, { Attribution::from_gsheet(&data, true) })?;
-
-	timed_operation!("get_attributions", "cache_set", false, {
-		state.cache_store.set(&cache_key, &data, None).await?;
-	});
+	let attributions = timed_operation!("get_attributions", "transform_data", !was_cached, { Attribution::from_gsheet(&raw_data, true) })?;
 
 	Ok(Json(attributions))
 }
@@ -39,25 +31,17 @@ pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<Stri
 #[axum::debug_handler]
 #[instrument(name = "get_video_chapters", skip(state), fields(sheet_id = %id))]
 pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
-	let cache_key = format!("get_video_chapters_{}", id);
+	let range = extract_and_validate_range(q)?;
+	let cache_key = format!("get_video_chapters_{}_{}", id, range);
 
-	let cache_result = timed_operation!("get_video_chapters", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
+	let (raw_data, was_cached) = state
+		.dedup_cache
+		.get_or_fetch(&cache_key, || async {
+			timed_operation!("get_video_chapters", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
+		})
+		.await?;
 
-	if let Some(cached_data) = cache_result {
-		let video_chapters = timed_operation!("get_video_chapters", "deserialize_cache", true, { VideoChapters::from_gsheet(&cached_data, true) })?;
-
-		return Ok(Json(video_chapters));
-	}
-
-	let q = timed_operation!("get_video_chapters", "validate_range", false, { extract_and_validate_range(q) })?;
-
-	let data = timed_operation!("get_video_chapters", "fetch_data", false, { refetch(state.clone(), &id, Some(&q)).await })?;
-
-	let video_chapters = timed_operation!("get_video_chapters", "transform_data", false, { VideoChapters::from_gsheet(&data, true) })?;
-
-	timed_operation!("get_video_chapters", "cache_set", false, {
-		state.cache_store.set(&cache_key, &data, None).await?;
-	});
+	let video_chapters = timed_operation!("get_video_chapters", "transform_data", !was_cached, { VideoChapters::from_gsheet(&raw_data, true) })?;
 
 	Ok(Json(video_chapters))
 }
@@ -65,31 +49,113 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 #[axum::debug_handler]
 #[instrument(name = "get_gantt", skip(state), fields(sheet_id = %id))]
 pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<GanttChapter>>, FileHostError> {
-	let cache_key = format!("get_gantt_{}", id);
+	let range = extract_and_validate_range(q)?;
+	let cache_key = format!("get_gantt_{}_{}", id, range);
 
-	let cache_result = timed_operation!("get_gantt", "cache_check", true, { state.cache_store.get(&cache_key).await })?;
+	let (gantt_chapters, _) = state
+		.dedup_cache
+		.get_or_fetch(&cache_key, || async {
+			// Fetch raw data
+			let raw_data = timed_operation!("get_gantt", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })?;
 
-	if let Some(cached_data) = cache_result {
-		return Ok(Json(cached_data));
-	}
+			// Transform the data
+			let boxed: Box<[Box<[Cow<str>]>]> = timed_operation!("get_gantt", "box_transform", false, {
+				raw_data
+					.into_iter()
+					.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
+					.collect::<Box<[_]>>()
+			});
 
-	let q = timed_operation!("get_gantt", "validate_range", false, { extract_and_validate_range(q) })?;
+			let chapters = timed_operation!("get_gantt", "gantt_transform", false, { naive_gantt_transform(boxed) });
 
-	let data = timed_operation!("get_gantt", "fetch_data", false, { refetch(state.clone(), &id, Some(&q)).await })?;
+			Ok(chapters)
+		})
+		.await?;
 
-	let boxed: Box<[Box<[Cow<str>]>]> = timed_operation!("get_gantt", "box_transform", false, {
-		data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>()
-	});
-
-	let chapters = timed_operation!("get_gantt", "gantt_transform", false, { naive_gantt_transform(boxed) });
-
-	timed_operation!("get_gantt", "cache_set", false, {
-		state.cache_store.set(&cache_key, &chapters, None).await?;
-	});
-
-	Ok(Json(chapters))
+	Ok(Json(gantt_chapters))
 }
 
+#[axum::debug_handler]
+#[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id))]
+pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
+	let cache_key = format!("get_nfl_tennis_{}", id);
+
+	let (sheet_collection, _) = state
+		.dedup_cache
+		.get_or_fetch(&cache_key, || async {
+			let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, {
+				state.gsheet_reader.retrieve_all_sheets_data(&id).await
+			})?;
+
+			let mut collection = Vec::new();
+
+			for (sheet_name, data) in sheet_data {
+				let scores = NFLGameScores::from_gsheet(&data, true)?;
+				let df = NFLGameScores::create_dataframe(scores)?;
+				let standings = NFLGameScores::get_team_standings(&df)?;
+
+				let sheet_item = SheetDataItem { name: sheet_name, standings };
+				collection.push(sheet_item);
+			}
+
+			Ok(collection)
+		})
+		.await?;
+
+	Ok(Json(DataResponse {
+		data: sheet_collection,
+		metadata: Metadata {
+			title: "NFL Tennis Scores".to_string(),
+			description: None,
+		},
+	}))
+}
+
+#[axum::debug_handler]
+#[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
+pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
+	let cache_key = format!("get_nfl_roster_{}", id);
+
+	let (roster, _) = state
+		.dedup_cache
+		.get_or_fetch(&cache_key, || async {
+			// Fetch raw data
+			let raw_data = timed_operation!("get_nfl_roster", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, None).await })?;
+
+			// Transform the data
+			let boxed: Box<[Box<[Cow<str>]>]> = raw_data
+				.into_iter()
+				.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
+				.collect::<Box<[_]>>();
+
+			let roster = timed_operation!("get_nfl_roster", "transform_data", false, { naive_roster_transform(boxed) });
+
+			Ok(roster)
+		})
+		.await?;
+
+	Ok(Json(roster))
+}
+
+// Helper function that replaces the old refetch function
+#[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id))]
+async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
+	let data = match range {
+		Some(query) => timed_operation!("fetch_sheet_data", "read_data_with_query", false, { state.gsheet_reader.read_data(sheet_id, query).await })?,
+		None => {
+			let res = timed_operation!("fetch_sheet_data", "retrieve_all_sheets", false, {
+				state.gsheet_reader.retrieve_all_sheets_data(sheet_id).await
+			})?;
+
+			let (_, data) = res.into_iter().next().ok_or(FileHostError::UnexpectedSinglePair)?;
+			data
+		}
+	};
+
+	Ok(data)
+}
+
+// Keep existing transformation functions unchanged
 fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	let mut h: HashMap<Box<str>, GanttChapter> = HashMap::new();
 
@@ -126,74 +192,6 @@ fn naive_gantt_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<GanttChapter> {
 	h.into_values().collect()
 }
 
-#[axum::debug_handler]
-#[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id))]
-pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
-	let cache_result = timed_operation!("get_nfl_tennis", "cached_check", true, { state.cache_store.get(&id).await })?;
-
-	if let Some(cached_data) = cache_result {
-		return Ok(Json(DataResponse {
-			data: cached_data,
-			metadata: Metadata {
-				title: "NFL Tennis Scores".to_string(),
-				description: None,
-			},
-		}));
-	}
-
-	let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, {
-		state.gsheet_reader.retrieve_all_sheets_data(&id).await
-	})?;
-
-	let mut sheet_collection = Vec::new();
-
-	for (sheet_name, data) in sheet_data {
-		let scores = NFLGameScores::from_gsheet(&data, true)?;
-		let df = NFLGameScores::create_dataframe(scores)?;
-		let standings = NFLGameScores::get_team_standings(&df)?;
-
-		let sheet_item = SheetDataItem { name: sheet_name, standings };
-
-		sheet_collection.push(sheet_item);
-	}
-
-	timed_operation!("get_nfl_tennis", "cache_set", false, {
-		state.cache_store.set(&id, &sheet_collection, None).await?;
-	});
-
-	Ok(Json(DataResponse {
-		data: sheet_collection,
-		metadata: Metadata {
-			title: "NFL Tennis Scores".to_string(),
-			description: None,
-		},
-	}))
-}
-
-#[axum::debug_handler]
-#[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
-pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
-	let cache_key = format!("get_nfl_roster{}", id);
-
-	let cache_result = timed_operation!("get_nfl_roster", "cached_check", true, { state.cache_store.get(&cache_key).await })?;
-
-	if let Some(cached_data) = cache_result {
-		return Ok(Json(cached_data));
-	}
-
-	let data = timed_operation!("get_nfl_roster", "fetch_data", false, { refetch(state.clone(), &id, None).await })?;
-
-	let boxed: Box<[Box<[Cow<str>]>]> = data.into_iter().map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>()).collect::<Box<[_]>>();
-
-	let roster = timed_operation!("get_nfl_roster", "transform_data", false, { naive_roster_transform(boxed) });
-
-	timed_operation!("get_nfl_roster", "cache_set", false, {
-		state.cache_store.set(&cache_key, &roster, None).await?;
-	});
-
-	Ok(Json(roster))
-}
-
 fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 	data
 		.iter()
@@ -215,23 +213,6 @@ fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 			}
 		})
 		.collect()
-}
-
-#[instrument(name = "refetch", skip(state), fields(sheet_id))]
-async fn refetch(state: AppState, sheet_id: &str, q: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
-	let data = match q {
-		Some(query) => timed_operation!("refetch", "read_data_with_query", false, { state.gsheet_reader.read_data(sheet_id, query).await })?,
-		None => {
-			let res = timed_operation!("refetch", "retrieve_all_sheets", false, { state.gsheet_reader.retrieve_all_sheets_data(sheet_id).await })?;
-			let (_, v) = match res.into_iter().next() {
-				Some(pair) => pair,
-				None => return Err(FileHostError::UnexpectedSinglePair),
-			};
-			v
-		}
-	};
-
-	Ok(data)
 }
 
 fn extract_and_validate_range(q: RangeQuery) -> Result<String, FileHostError> {

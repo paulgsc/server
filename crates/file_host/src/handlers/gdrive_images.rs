@@ -6,9 +6,8 @@ use axum::{
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
-
 use std::sync::OnceLock;
+use tracing::instrument;
 
 static ALLOWED_IMAGE_MIME_TYPES: OnceLock<Vec<&'static str>> = OnceLock::new();
 
@@ -31,45 +30,42 @@ struct GDriveResponse {
 }
 
 #[axum::debug_handler]
-#[instrument(name = "serve_gdrive_image", skip(state), fields(image_id))]
+#[instrument(name = "serve_gdrive_image", skip(state), fields(image_id = %image_id))]
 pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): Path<String>) -> Result<Response<axum::body::Body>, FileHostError> {
-	let cache_key = format!("get_drive_image{}", image_id);
+	let cache_key = format!("get_drive_image_binary_{}", image_id);
 
-	let cache_result = timed_operation!("serve_gdrive_image", "cached_check", true, { state.cache_store.get::<GDriveResponse>(&cache_key).await })?;
+	// Use binary cache for potentially better compression and performance
+	let ((data, content_type), _) = state
+		.dedup_cache
+		.get_or_fetch_binary(&cache_key, || async {
+			let drive_response = fetch_gdrive_file(state.clone(), &image_id).await?;
+			let mime_type = drive_response.metadata.mime_type.clone();
 
-	if let Some(cached_data) = cache_result {
-		let mime_type = cached_data.metadata.mime_type;
+			// Return as binary data with content type
+			Ok((drive_response.data.to_vec(), Some(mime_type)))
+		})
+		.await?;
 
-		if allowed_image_mime_types().contains(&mime_type.as_str()) {
-			let response = Response::builder().header(header::CONTENT_TYPE, mime_type).body(axum::body::Body::from(cached_data.data))?;
-			return Ok(response);
-		} else {
-			return Err(FileHostError::InvalidMimeType(mime_type.clone()));
-		}
+	let mime_type = content_type.as_deref().unwrap_or("application/octet-stream");
+
+	// Validate mime type
+	if !allowed_image_mime_types().contains(&mime_type) {
+		return Err(FileHostError::InvalidMimeType(mime_type.to_string()));
 	}
 
-	let drive_response = timed_operation!("serve_gdrive_image", "refetch", false, { refetch(state.clone(), &image_id).await })?;
-
-	let mime_type = &drive_response.metadata.mime_type;
-
-	if !allowed_image_mime_types().contains(&mime_type.as_str()) {
-		return Err(FileHostError::InvalidMimeType(mime_type.clone()));
-	}
-
-	timed_operation!("serve_gdrive_image", "cache_set", false, { state.cache_store.set(&cache_key, &drive_response, None).await })?;
-
-	let response = Response::builder()
-		.header(header::CONTENT_TYPE, mime_type)
-		.body(axum::body::Body::from(drive_response.data))?;
+	// Build and return response
+	let response = Response::builder().header(header::CONTENT_TYPE, mime_type).body(axum::body::Body::from(data))?;
 
 	Ok(response)
 }
 
-#[instrument(name = "refetch", skip(state), fields(image_id))]
-async fn refetch(state: AppState, image_id: &str) -> Result<GDriveResponse, FileHostError> {
-	let file = timed_operation!("refetch", "get_file_metadata", false, { state.gdrive_reader.get_file_metadata(image_id).await })?;
+/// Fetch file from Google Drive with metadata
+#[instrument(name = "fetch_gdrive_file", skip(state), fields(image_id))]
+async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, FileHostError> {
+	// Fetch metadata and file content
+	let file = timed_operation!("fetch_gdrive_file", "get_file_metadata", false, { state.gdrive_reader.get_file_metadata(image_id).await })?;
 
-	let bytes = timed_operation!("refetch", "download_file", false, { state.gdrive_reader.download_file(image_id).await })?;
+	let bytes = timed_operation!("fetch_gdrive_file", "download_file", false, { state.gdrive_reader.download_file(image_id).await })?;
 
 	let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
 
@@ -82,4 +78,58 @@ async fn refetch(state: AppState, image_id: &str) -> Result<GDriveResponse, File
 			mime_type: file.mime_type,
 		},
 	})
+}
+
+/// Optimized version that caches metadata and file data separately
+/// This can be useful if you frequently need just metadata without the full file
+#[axum::debug_handler]
+#[instrument(name = "serve_gdrive_image_optimized", skip(state), fields(image_id = %image_id))]
+pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(image_id): Path<String>) -> Result<Response<axum::body::Body>, FileHostError> {
+	let metadata_cache_key = format!("gdrive_metadata_{}", image_id);
+	let file_cache_key = format!("gdrive_file_{}", image_id);
+
+	// First, get or fetch metadata (smaller, faster)
+	let (metadata, _) = state
+		.dedup_cache
+		.get_or_fetch(&metadata_cache_key, || async {
+			let file = timed_operation!("serve_gdrive_image_optimized", "get_file_metadata", false, {
+				state.gdrive_reader.get_file_metadata(&image_id).await
+			})?;
+
+			let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
+			let metadata = FileMetadata {
+				size,
+				id: file.id,
+				name: file.name,
+				mime_type: file.mime_type,
+			};
+
+			Ok(metadata)
+		})
+		.await?;
+
+	// Validate mime type early
+	if !allowed_image_mime_types().contains(&metadata.mime_type.as_str()) {
+		return Err(FileHostError::InvalidMimeType(metadata.mime_type.clone()));
+	}
+
+	// Then get or fetch the actual file data using binary cache
+	let ((data, _), _) = state
+		.dedup_cache
+		.get_or_fetch_binary(&file_cache_key, || async {
+			let bytes = timed_operation!("serve_gdrive_image_optimized", "download_file", false, {
+				state.gdrive_reader.download_file(&image_id).await
+			})?;
+
+			Ok((bytes.to_vec(), Some(metadata.mime_type.clone())))
+		})
+		.await?;
+
+	// Build and return response
+	let response = Response::builder()
+		.header(header::CONTENT_TYPE, &metadata.mime_type)
+		.header(header::CONTENT_LENGTH, data.len().to_string())
+		.body(axum::body::Body::from(data))?;
+
+	Ok(response)
 }

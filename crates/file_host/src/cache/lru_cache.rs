@@ -78,7 +78,7 @@ impl DedupCache {
 	#[instrument(skip(self, fetcher))]
 	pub async fn get_or_fetch<T, F, Fut>(&self, id: &str, fetcher: F) -> Result<(T, bool), FileHostError>
 	where
-		T: Clone + Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>,
+		T: Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>,
 		F: FnOnce() -> Fut + Send,
 		Fut: Future<Output = Result<T, FileHostError>> + Send,
 	{
@@ -89,7 +89,7 @@ impl DedupCache {
 	#[instrument(skip(self, fetcher))]
 	pub async fn get_or_fetch_with_ttl<T, F, Fut>(&self, id: &str, ttl: Option<u64>, fetcher: F) -> Result<(T, bool), FileHostError>
 	where
-		T: Clone + Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>,
+		T: Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>,
 		F: FnOnce() -> Fut + Send,
 		Fut: Future<Output = Result<T, FileHostError>> + Send,
 	{

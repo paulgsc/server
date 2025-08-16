@@ -22,11 +22,11 @@ pub use metrics::http::*;
 pub use metrics::ws::*;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 
-pub use cache::{CacheConfig, CacheStore};
+pub use cache::{CacheConfig, CacheStore, DedupCache};
 
 #[derive(Clone)]
 pub struct AppState {
-	pub cache_store: Arc<CacheStore>,
+	pub dedup_cache: Arc<DedupCache>,
 	pub gsheet_reader: Arc<ReadSheets>,
 	pub gdrive_reader: Arc<ReadDrive>,
 	pub github_client: Arc<GitHubClient>,
@@ -35,10 +35,10 @@ pub struct AppState {
 	pub config: Arc<Config>,
 }
 
-// Implement for the non-Arc field `CacheStore`
-impl FromRef<AppState> for Arc<CacheStore> {
+// Implement for the non-Arc field `DedupCache`
+impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
-		state.cache_store.clone()
+		state.dedup_cache.clone()
 	}
 }
 

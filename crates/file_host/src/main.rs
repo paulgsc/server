@@ -10,7 +10,7 @@ use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRa
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying},
-	AppState, CacheConfig, CacheStore, Config, UtterancePrompt,
+	AppState, CacheConfig, CacheStore, Config, DedupCache, UtterancePrompt,
 };
 // use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
 
 	let config = Arc::new(config);
 	let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
+	let dedup_cache = DedupCache::new(cache_store.into(), config.max_in_flight.clone());
 
 	let secret_file = config.client_secret_file.clone();
 	let use_email = config.email_service_url.clone().unwrap_or("".to_string());
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
 	let ws = init_websocket().await;
 
 	let app_state = AppState {
-		cache_store: cache_store.into(),
+		dedup_cache: dedup_cache.into(),
 		gsheet_reader: gsheet_reader.into(),
 		gdrive_reader: gdrive_reader.into(),
 		github_client: github_client.into(),
