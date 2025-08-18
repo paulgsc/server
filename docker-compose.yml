@@ -1,20 +1,13 @@
 ---
 services:
   file-host:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-      target: runtime
-      args:
-        BUILD_VERSION: ${BUILD_VERSION:-dev}
-        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
-        VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD)}
+    image: pgathondu/self-hosting-maishatu:latest
     container_name: file-host-server
     ports:
       - '3000:3000'
     environment:
       # Logging and debugging
-      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_LOG=${RUST_LOG:-debug}
       - RUST_BACKTRACE=1
 
       # Performance tuning
