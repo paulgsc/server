@@ -4,11 +4,12 @@ pub mod http;
 
 use crate::http::Error;
 use anyhow::{Context, Result};
+use some_services::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use sqlx::sqlite::SqlitePoolOptions;
 use tracing_subscriber::{filter::EnvFilter, fmt::format::JsonFields, util::SubscriberInitExt, Layer};
 
 use crate::config::Config;
-use axum::Router;
+use axum::{middleware::from_fn_with_state, Router};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
@@ -98,7 +99,15 @@ impl<M: MigrationHandler> ApiBuilder<M> {
 			}
 		}
 
-		let app = app.layer(ServiceBuilder::new().layer(AddExtensionLayer::new(context)).layer(TraceLayer::new_for_http()));
+		let app = app.layer(
+			ServiceBuilder::new()
+				.layer(from_fn_with_state(
+					Arc::new(TokenBucketRateLimiter::new(context.config.rate_limit.clone())),
+					rate_limit_middleware,
+				))
+				.layer(AddExtensionLayer::new(context))
+				.layer(TraceLayer::new_for_http()),
+		);
 		let listener = TcpListener::bind("127.0.0.1:8000").await?;
 		tracing::debug!("listening on {}", listener.local_addr()?);
 		axum::serve(listener, app).await?;

@@ -12,6 +12,8 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+some-services = { workspace = true }
+
 axum = "0.7"
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
