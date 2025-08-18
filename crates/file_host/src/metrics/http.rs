@@ -1,15 +1,22 @@
 use axum::{
 	body::Body,
+	extract::ConnectInfo,
 	http::{Request, Response, StatusCode},
 	middleware::Next,
 };
 use lazy_static::lazy_static;
 use prometheus::{register_histogram_vec, register_int_counter_vec, Encoder, HistogramVec, IntCounterVec, TextEncoder};
-use std::time::Instant;
+use std::{net::SocketAddr, time::Instant};
 
 lazy_static! {
 	static ref HTTP_REQUESTS_TOTAL: IntCounterVec =
 		register_int_counter_vec!("http_requests_total", "Total number of HTTP requests", &["method", "route", "status"]).expect("Failed to register HTTP_REQUESTS_TOTAL");
+	pub static ref HTTP_REQUESTS_TOTAL_BY_CLIENT: IntCounterVec = register_int_counter_vec!(
+		"http_requests_total_by_client",
+		"HTTP requests by method, route, status, and client IP",
+		&["method", "route", "status", "client_ip"]
+	)
+	.expect("Failed to register HTTP_REQUESTS_TOTAL_BY_CLIENT");
 	static ref HTTP_REQUEST_DURATION: HistogramVec =
 		register_histogram_vec!("http_request_duration_seconds", "HTTP request duration in seconds", &["method", "route"]).expect("Failed to register HTTP_REQUEST_DURATION");
 	pub static ref OPERATION_DURATION: HistogramVec = register_histogram_vec!(
@@ -21,7 +28,8 @@ lazy_static! {
 }
 
 /// Middleware for Prometheus metrics collection
-pub async fn metrics_middleware(req: Request<Body>, next: Next) -> Response<Body> {
+pub async fn metrics_middleware(ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request<Body>, next: Next) -> Response<Body> {
+	let client_ip = addr.ip().to_string();
 	let method = req.method().to_string();
 	let path = normalize_path(req.uri().path());
 
@@ -32,6 +40,7 @@ pub async fn metrics_middleware(req: Request<Body>, next: Next) -> Response<Body
 	let status = response.status().as_u16().to_string();
 
 	HTTP_REQUESTS_TOTAL.with_label_values(&[&method, &path, &status]).inc();
+	HTTP_REQUESTS_TOTAL_BY_CLIENT.with_label_values(&[&method, &path, &status, &client_ip]).inc();
 	HTTP_REQUEST_DURATION.with_label_values(&[&method, &path]).observe(duration);
 
 	response
