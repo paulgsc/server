@@ -1,3 +1,51 @@
+use bytes::Bytes;
+use garde::Validate;
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime};
+
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct GetAudioRequest {
+	#[garde(length(min = 1, max = 100))]
+	pub id: String,
+
+	#[garde(skip)]
+	#[serde(default)]
+	pub force_refresh: bool,
+
+	#[garde(skip)]
+	pub range_request: Option<RangeRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct SearchAudioRequest {
+	#[garde(length(max = 200,))]
+	pub query: Option<String>,
+
+	#[garde(length(max = 50,))]
+	pub voice: Option<String>,
+
+	#[garde(range(min = 1, max = 100,))]
+	pub limit: Option<u32>,
+
+	#[garde(range(min = 0,))]
+	pub offset: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct CachedAudio {
+	pub data: Bytes,
+	pub content_type: String,
+	pub etag: String,
+	pub last_modified: SystemTime,
+	pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RangeRequest {
+	pub start: Option<u64>,
+	pub end: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AudioSearchParams {
 	pub q: Option<String>,
@@ -12,8 +60,6 @@ pub struct AudioMetadata {
 	pub name: String,
 	pub mime_type: String,
 	pub size: Option<i64>,
-	pub created_time: Option<chrono::DateTime<chrono::Utc>>,
-	pub modified_time: Option<chrono::DateTime<chrono::Utc>>,
 	pub web_view_link: Option<String>,
 	pub voice_id: Option<String>,
 	pub text_preview: Option<String>,
@@ -35,30 +81,9 @@ pub struct ErrorResponse {
 	pub details: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CacheEntry {
-	pub data: Bytes,
-	pub content_type: String,
-	pub created_at: SystemTime,
-	pub ttl: Duration,
-}
-
-impl CacheEntry {
-	pub fn is_expired(&self) -> bool {
-		SystemTime::now().duration_since(self.created_at).unwrap_or(Duration::from_secs(0)) > self.ttl
-	}
-}
-
 // ============================================================================
 // Application State
 // ============================================================================
-
-#[derive(Clone)]
-pub struct AppState {
-	pub drive_client: Arc<ReadDrive>,
-	pub cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
-	pub config: AudioConfig,
-}
 
 #[derive(Debug, Clone)]
 pub struct AudioConfig {
