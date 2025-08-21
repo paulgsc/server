@@ -9,7 +9,7 @@ pub enum PollingFrequency {
 }
 
 /// All available OBS request types with their parameters
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ObsRequestType {
 	// Stream and Recording
 	StreamStatus,
@@ -122,6 +122,94 @@ impl PollingRequest {
 	pub fn with_data(mut self, data: serde_json::Value) -> Self {
 		self.request_data = Some(data);
 		self
+	}
+}
+
+impl From<&ObsRequestType> for PollingRequest {
+	fn from(req: &ObsRequestType) -> Self {
+		req.to_polling_request()
+	}
+}
+
+impl From<ObsRequestType> for PollingRequest {
+	fn from(req: ObsRequestType) -> Self {
+		req.to_polling_request()
+	}
+}
+
+impl From<&PollingRequest> for ObsRequestType {
+	fn from(req: &PollingRequest) -> Self {
+		// Handle requests with data first (parametrized variants)
+		if let Some(data) = &req.request_data {
+			match req.request_type.as_str() {
+				"SetCurrentProgramScene" => {
+					if let Some(scene_name) = data.get("sceneName").and_then(|v| v.as_str()) {
+						return Self::SetCurrentProgramScene(scene_name.to_string());
+					}
+				}
+				"GetInputMute" => {
+					if let Some(input_name) = data.get("inputName").and_then(|v| v.as_str()) {
+						return Self::InputMute(input_name.to_string());
+					}
+				}
+				"SetInputMute" => {
+					if let (Some(input_name), Some(muted)) = (data.get("inputName").and_then(|v| v.as_str()), data.get("inputMuted").and_then(|v| v.as_str())) {
+						return Self::SetInputMute(input_name.to_string(), muted.to_string());
+					}
+				}
+				"GetInputVolume" => {
+					if let Some(input_name) = data.get("inputName").and_then(|v| v.as_str()) {
+						return Self::InputVolume(input_name.to_string());
+					}
+				}
+				"SetInputVolume" => {
+					if let (Some(input_name), Some(volume)) = (data.get("inputName").and_then(|v| v.as_str()), data.get("inputVolume").and_then(|v| v.as_str())) {
+						return Self::SetInputVolume(input_name.to_string(), volume.to_string());
+					}
+				}
+				_ => {}
+			}
+		}
+
+		// Handle requests without data (simple variants)
+		match req.request_type.as_str() {
+			"GetStreamStatus" => Self::StreamStatus,
+			"StartStream" => Self::StartStream,
+			"StopStream" => Self::StopStream,
+			"GetRecordStatus" => Self::RecordStatus,
+			"StartRecord" => Self::StartRecord,
+			"StopRecord" => Self::StopRecord,
+			"GetSceneList" => Self::SceneList,
+			"GetCurrentProgramScene" => Self::CurrentScene,
+			"GetSourcesList" => Self::SourcesList,
+			"GetInputList" => Self::InputsList,
+			"GetProfileList" => Self::ProfileList,
+			"GetCurrentProfile" => Self::CurrentProfile,
+			"GetSceneCollectionList" => Self::SceneCollectionList,
+			"GetCurrentSceneCollection" => Self::CurrentSceneCollection,
+			"GetVirtualCamStatus" => Self::VirtualCamStatus,
+			"ToggleVirtualCam" => Self::ToggleVirtualCam,
+			"GetReplayBufferStatus" => Self::ReplayBufferStatus,
+			"ToggleReplayBuffer" => Self::ToggleReplayBuffer,
+			"GetStudioModeEnabled" => Self::StudioModeStatus,
+			"ToggleStudioMode" => Self::ToggleStudioMode,
+			"GetStats" => Self::Stats,
+			"GetCurrentSceneTransition" => Self::CurrentTransition,
+			"GetSceneTransitionList" => Self::TransitionList,
+			"GetHotkeyList" => Self::HotkeyList,
+			"GetVersion" => Self::Version,
+			_ => {
+				// Fallback - this shouldn't happen with valid data, but provides safety
+				// We could panic here or return a Result instead if preferred
+				Self::Version // or some other safe default
+			}
+		}
+	}
+}
+
+impl From<PollingRequest> for ObsRequestType {
+	fn from(req: PollingRequest) -> Self {
+		Self::from(&req)
 	}
 }
 

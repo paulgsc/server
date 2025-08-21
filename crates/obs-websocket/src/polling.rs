@@ -10,14 +10,14 @@ use tracing::{error, info, instrument};
 pub type WsSink = SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, TungsteniteMessage>;
 pub type SharedSink = Arc<tokio::sync::Mutex<WsSink>>;
 
-mod config;
+pub mod config;
 mod error;
 mod manager;
 mod request_builder;
 mod requests;
 
-pub(crate) use config::*;
-pub(crate) use error::*;
-pub(crate) use manager::*;
-pub(crate) use request_builder::*;
-pub(crate) use requests::*;
+pub use config::*;
+pub use error::*;
+pub use manager::*;
+pub use request_builder::*;
+pub use requests::*;

@@ -29,7 +29,7 @@ impl ObsPollingManager {
 
 	/// Create from a slice of (RequestType, Frequency) tuples
 	pub fn from_request_slice(requests: &[(ObsRequestType, PollingFrequency)], command_executor: CommandExecutor) -> Self {
-		Self::new(PollingConfig::from_request_slice(requests), command_executor)
+		Self::new(PollingConfig::from(requests), command_executor)
 	}
 
 	/// Main polling loop with configurable requests and command handling

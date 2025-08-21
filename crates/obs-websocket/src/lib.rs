@@ -9,15 +9,16 @@ use thiserror::Error;
 
 mod auth;
 mod config;
-mod core;
+pub mod core;
 mod messages;
 mod polling;
 
 use auth::authenticate;
-use config::ObsConfig;
-use core::*;
+pub use config::ObsConfig;
+pub use core::*;
 use messages::*;
-use polling::{ObsPollingManager, ObsRequestBuilder, ObsRequestType, PollingFrequency};
+use polling::{ObsPollingManager, ObsRequestBuilder};
+pub use polling::{ObsRequestType, PollingConfig, PollingFrequency};
 
 /// Errors for obs-websocket crate
 #[derive(Debug, Error)]
@@ -38,6 +39,7 @@ pub enum ObsWebsocketError {
 /// Core OBS WebSocket manager with state machine guarantees
 pub struct ObsWebSocketManager {
 	obs_connection: ObsConnection,
+	#[allow(dead_code)]
 	retry_policy: RetryPolicy,
 	_state_actor_handle: tokio::task::JoinHandle<()>, // Keep actor alive
 }
