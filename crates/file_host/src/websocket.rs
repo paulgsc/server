@@ -68,7 +68,7 @@ impl WebSocketFsm {
 						let event_type_str = format!("{:?}", event_type);
 
 						let broadcast_outcome: Result<BroadcastOutcome, String> =
-							timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await) });
+							timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(conn_fan.clone(), event, &event_type).await) });
 
 						match broadcast_outcome {
 							Ok(broadcast_outcome) => match broadcast_outcome {

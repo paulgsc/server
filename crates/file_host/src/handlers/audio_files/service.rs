@@ -1,254 +1,111 @@
-use crate::handlers::audio_files::{
-	types::*,
-	validation::{contract::*, core::*},
-};
-use crate::{CacheStore, ReadDrive};
+use super::{AudioConfig, AudioMetadata, AudioSearchResponse, CachedAudio, GetAudioRequest, SearchAudioRequest};
+use crate::{AudioServiceError, DedupCache, DedupError, FileHostError, ReadDrive};
+use bytes::Bytes;
+use garde::Validate;
+use sdk::FileMetadata;
 use std::sync::Arc;
-use thiserror::Error;
-use tokio::time::{Duration, Instant};
+use tracing::{info, instrument, warn};
 
-#[derive(Debug, Error)]
-pub enum AudioServiceError {
-	#[error("Invalid audio file ID: {id}")]
-	InvalidFileId {
-		id: String,
-		#[source]
-		source: Option<anyhow::Error>,
-	},
-
-	#[error("Unsupported audio type: {mime_type}")]
-	UnsupportedAudioType { mime_type: String },
-
-	#[error("Failed to validate audio metadata")]
-	ValidationFailed {
-		#[from]
-		source: ValidationError,
-	},
-
-	#[error("Search query is too complex or malformed")]
-	InvalidSearchQuery {
-		query: Option<String>,
-		#[source]
-		source: Option<anyhow::Error>,
-	},
-
-	#[error("Audio download failed")]
-	DownloadFailed {
-		id: String,
-		#[source]
-		source: anyhow::Error,
-	},
-
-	#[error("Metadata retrieval failed")]
-	MetadataFetchFailed {
-		id: String,
-		#[source]
-		source: anyhow::Error,
-	},
-
-	#[error("Search timed out")]
-	SearchTimeout,
-
-	#[error("Search failed due to backend issue")]
-	SearchFailed {
-		#[source]
-		source: anyhow::Error,
-	},
-
-	#[error("Quota exceeded on file storage backend")]
-	QuotaExceeded,
-
-	#[error("Internal logic error: {message}")]
-	Internal {
-		message: String,
-		#[source]
-		source: Option<anyhow::Error>,
-	},
-}
-
-#[async_trait::async_trait]
-pub trait AudioService: Send + Sync + Clone + 'static {
-	type Error: std::error::Error + Send + Sync + 'static;
-
-	async fn get_audio(&mut self, req: GetAudioRequest) -> Result<(CachedAudio, bool), Self::Error>;
-	async fn search_audio(&mut self, req: SearchAudioRequest) -> Result<AudioSearchResponse, Self::Error>;
-}
-
-// ========== UNIFIED REQUEST FOR TOWER SERVICE ==========
-
-#[derive(Debug, Clone, Validate)]
-pub enum AudioServiceRequest {
-	#[validate]
-	Get(GetAudioRequest),
-	#[validate]
-	Search(SearchAudioRequest),
-}
-
-#[derive(Debug)]
-pub enum AudioServiceResponse {
-	Get((CachedAudio, bool)),
-	Search(AudioSearchResponse),
-}
-
-#[derive(Clone)]
-pub struct CoreAudioService {
+pub struct AudioService {
 	drive_client: Arc<ReadDrive>,
-	cache: Arc<CacheStore>,
-	validator: AudioValidtor,
+	cache: Arc<DedupCache>,
+	supported_mime_types: Vec<String>,
+	audio_folder_id: Option<String>,
+	max_file_size: u64,
+	cache_ttl: Option<u64>,
 }
 
-impl CoreAudioService {
-	pub fn new() -> Result<Self, FileHostError> {
-		let validator = AudioValidtor::basic_validator(ValidationConstraints::default());
-
-		Ok(Self { validator })
+impl AudioService {
+	pub fn new(drive_client: Arc<ReadDrive>, cache: Arc<DedupCache>, config: AudioConfig) -> Self {
+		Self {
+			drive_client,
+			cache,
+			supported_mime_types: config.supported_mime_types,
+			audio_folder_id: config.audio_folder_id,
+			max_file_size: config.max_file_size as u64,
+			cache_ttl: config.cache_ttl.as_secs().into(),
+		}
 	}
 
-	async fn fetch_and_validate_audio(&self, id: &str) -> Result<CachedAudio, AudioServiceError> {
-		let span = tracing::Span::current();
-		span.record("audio_id", &id);
-
-		let start_time = Instant::now();
-
-		// Get metadata
-		let metadata = self.drive_client.get_file_metadata(id).await.map_err(|e| AudioServiceError::MetadataFetchFailed {
-			id: id.to_string(),
-			source: e.into(),
+	#[instrument(skip(self), fields(audio_id = %req.id, force_refresh = req.force_refresh.unwrap_or(false)))]
+	pub async fn get_audio(&self, req: GetAudioRequest) -> Result<(CachedAudio, bool), FileHostError> {
+		req.validate().map_err(|e| AudioServiceError::ValidationFailed {
+			message: format!("Invalid request: {}", e),
 		})?;
 
-		// Validate before download
-		self.validator.validate_complete(&metadata).map_err(|e| AudioServiceError::ValidationFailed { source: e })?;
+		self.validate_file_id(&req.id)?;
 
-		// Download
-		let audio_data = self.drive_client.download_file(id).await.map_err(|e| AudioServiceError::DownloadFailed {
-			id: id.to_string(),
-			source: e.into(),
-		})?;
+		let cache_key = format!("audio:{}", req.id);
 
-		let download_duration = start_time.elapsed();
-		tracing::info!("Downloaded audio {} in {:?} ({} bytes)", id, download_duration, audio_data.len());
-
-		let etag = self.generate_etag(&audio_data, &metadata);
-
-		let last_modified = metadata
-			.modified_time
-			.as_deref()
-			.and_then(|t| t.parse::<std::time::SystemTime>().ok())
-			.unwrap_or_else(std::time::SystemTime::now);
-
-		Ok(CachedAudio {
-			audio_data,
-			content_type: metadata.mime_type,
-			etag,
-			last_modified,
-			size: audio_data.len() as u64,
-		})
-	}
-
-	fn generate_etag(&self, data: &Bytes, metadata: &sdk::FileMetadata) -> String {
-		use std::collections::hash_map::DefaultHasher;
-		use std::hash::{Hash, Hasher};
-
-		let mut hasher = DefaultHasher::new();
-		data.len().hash(&mut hasher);
-		metadata.modified_time.hash(&mut hasher);
-		metadata.mime_type.hash(&mut hasher);
-
-		format!("\"{}\"", hasher.finish())
-	}
-}
-
-#[async_trait::async_trait]
-impl AudioService for CoreAudioService {
-	type Error = FileHostError;
-
-	async fn get_audio(&mut self, req: GetAudioRequest) -> Result<(CachedAudio, bool), Self::Error> {
-		// Validate request first
-		req.validate().map_err(|e| AudioServiceError::InvalidFileId {
-			id: req.id.clone(),
-			source: Some(e.into()),
-		})?;
-
-		if req.force_refresh {
-			let audio = self.fetch_and_validate_audio(&req.id).await?;
-			return Ok((audio, false));
+		// Handle force refresh by deleting from cache first
+		if req.force_refresh.unwrap_or(false) {
+			if let Err(e) = self.cache.delete(&cache_key).await {
+				warn!("Failed to delete cache entry for force refresh: {}", e);
+			}
 		}
 
-		self
+		// Use DedupCache's get_or_fetch_with_ttl to handle everything automatically
+		let (audio, was_cached) = self
 			.cache
-			.get_or_fetch(&req.id, || async {
-				self.fetch_and_validate_audio(&req.id).await.map_err(Into::into) // AudioServiceError → FileHostError
-			})
-			.await
+			.get_or_fetch_with_ttl(&cache_key, self.cache_ttl, || async { self.fetch_audio(&req.id).await })
+			.await?;
+
+		if was_cached {
+			info!("Cache hit for audio: {}", req.id);
+		} else {
+			info!("Cache miss for audio: {}", req.id);
+		}
+
+		// Return inverted boolean - DedupCache returns true if cached, we want true if fetched
+		Ok((audio, !was_cached))
 	}
 
-	async fn search_audio(&mut self, req: SearchAudioRequest) -> Result<AudioSearchResponse, Self::Error> {
-		// Validate request
-		req.validate().map_err(|e| AudioServiceError::InvalidSearchQuery {
-			query: req.query.clone(),
-			source: Some(e.into()),
+	#[instrument(skip(self), fields(query = ?req.query, voice = ?req.voice, limit = req.limit, offset = req.offset))]
+	pub async fn search_audio(&self, req: SearchAudioRequest) -> Result<AudioSearchResponse, AudioServiceError> {
+		req.validate().map_err(|e| AudioServiceError::ValidationFailed {
+			message: format!("Invalid search request: {}", e),
 		})?;
 
-		let limit = req.limit.unwrap_or(20).min(100) as i32;
-		let offset = req.offset.unwrap_or(0);
+		let limit = req.limit.unwrap_or(20).min(100);
+		let offset = req.offset.unwrap_or(0) as usize;
 
-		let sanitized_query = req.query.as_ref().map(|q| sanitize_search_query(q)).filter(|q| !q.is_empty());
-		let mut query_parts = Vec::new();
+		let query = self.build_search_query(&req)?;
 
-		if let Some(folder_id) = &self.validator.config().audio_folder_id {
-			if !folder_id.contains("..") && !folder_id.contains('/') {
-				query_parts.push(format!("'{}' in parents", folder_id));
-			}
-		}
-
-		let mime_filter = self
-			.validator
-			.supported_types()
-			.iter()
-			.map(|mime| format!("mimeType='{}'", mime.replace('\'', "")))
-			.collect::<Vec<_>>()
-			.join(" or ");
-		query_parts.push(format!("({})", mime_filter));
-
-		if let Some(q) = &sanitized_query {
-			query_parts.push(format!("name contains '{}'", q));
-		}
-
-		if let Some(voice) = &req.voice {
-			let sv = sanitize_search_query(voice);
-			if !sv.is_empty() {
-				query_parts.push(format!("name contains '{}'", sv));
-			}
-		}
-
-		let full_query = query_parts.join(" and ");
-
-		let files = tokio::time::timeout(Duration::from_secs(10), self.drive_client.search_files(&full_query, limit + 10)).await?;
+		let files = self
+			.drive_client
+			.search_files(&query, (limit + 10) as i32)
+			.await
+			.map_err(|_| AudioServiceError::SearchFailed)?;
 
 		let total = files.len();
-		let start = (offset as usize).min(total);
+		let start = offset.min(total);
 		let end = (start + limit as usize).min(total);
-		let paginated = &files[start..end];
 
-		let results = paginated
+		let results: Result<Vec<AudioMetadata>, AudioServiceError> = files[start..end]
 			.iter()
-			.filter(|f| self.validator.is_audio_type(&f.mime_type))
-			.map(|f| AudioMetadata {
-				id: f.id.clone(),
-				name: f.name.clone(),
-				mime_type: f.mime_type.clone(),
-				size: f.size,
-				created_time: f.created_time.clone(),
-				modified_time: f.modified_time.clone(),
-				web_view_link: f.web_view_link.clone(),
-				voice_id: extract_voice_id_from_name(&f.name),
-				text_preview: extract_text_preview_from_name(&f.name),
-				duration_seconds: None,
+			.filter(|f| self.is_supported_audio_type(&f.mime_type))
+			.map(|f| {
+				Ok(AudioMetadata {
+					id: f.id.clone(),
+					name: f.name.clone(),
+					mime_type: f.mime_type.clone(),
+					size: f.size.map(|val| val.try_into()).transpose()?,
+					created_time: f.created_time.clone(),
+					modified_time: f.modified_time.clone(),
+					web_view_link: f.web_view_link.clone(),
+					voice_id: extract_voice_id(&f.name),
+					text_preview: extract_text_preview(&f.name),
+					duration_seconds: None,
+				})
 			})
 			.collect();
 
+		let results: Vec<AudioMetadata> = results?;
+
 		let has_more = total > end;
-		let next_offset = if has_more { Some(offset + limit as u32) } else { None };
+		let next_offset = if has_more { Some((offset + limit as usize) as u32) } else { None };
+
+		info!("Audio search completed: {} results, has_more: {}", results.len(), has_more);
 
 		Ok(AudioSearchResponse {
 			results,
@@ -256,5 +113,136 @@ impl AudioService for CoreAudioService {
 			has_more,
 			next_offset,
 		})
+	}
+
+	#[instrument(skip(self), fields(audio_id = %id))]
+	async fn fetch_audio(&self, id: &str) -> Result<CachedAudio, DedupError> {
+		let metadata = self
+			.drive_client
+			.get_file_metadata(id)
+			.await
+			.map_err(|_| AudioServiceError::MetadataFetchFailed { id: id.to_string() })?;
+
+		self.validate_audio_metadata(&metadata)?;
+
+		let data = self
+			.drive_client
+			.download_file(id)
+			.await
+			.map_err(|_| AudioServiceError::DownloadFailed { id: id.to_string() })?;
+
+		let etag = self.generate_etag(&data, &metadata);
+		let last_modified = metadata.modified_time;
+
+		info!("Successfully fetched audio: {} ({} bytes)", id, data.len());
+
+		Ok(CachedAudio {
+			audio_data: data.clone(),
+			content_type: metadata.mime_type,
+			etag,
+			last_modified,
+			size: data.len() as u64,
+		})
+	}
+
+	fn validate_file_id(&self, id: &str) -> Result<(), AudioServiceError> {
+		if id.is_empty() || id.len() > 100 {
+			return Err(AudioServiceError::InvalidFileId { id: id.to_string() });
+		}
+
+		if id.contains("..") || id.contains('/') || id.contains('\\') {
+			return Err(AudioServiceError::InvalidFileId { id: id.to_string() });
+		}
+
+		Ok(())
+	}
+
+	fn validate_audio_metadata(&self, metadata: &FileMetadata) -> Result<(), AudioServiceError> {
+		if !self.is_supported_audio_type(&metadata.mime_type) {
+			return Err(AudioServiceError::UnsupportedAudioType {
+				mime_type: metadata.mime_type.clone(),
+			});
+		}
+
+		if let Some(size) = metadata.size {
+			let size = size.try_into()?;
+			if size > self.max_file_size {
+				return Err(AudioServiceError::FileTooLarge { size });
+			}
+		}
+
+		Ok(())
+	}
+
+	fn is_supported_audio_type(&self, mime_type: &str) -> bool {
+		self.supported_mime_types.contains(&mime_type.to_lowercase())
+	}
+
+	fn build_search_query(&self, req: &SearchAudioRequest) -> Result<String, AudioServiceError> {
+		let mut query_parts = Vec::new();
+
+		// Folder constraint
+		if let Some(folder_id) = &self.audio_folder_id {
+			if folder_id.contains("..") || folder_id.contains('/') {
+				return Err(AudioServiceError::InvalidSearchQuery {
+					query: Some("Invalid folder ID in config".to_string()),
+				});
+			}
+			query_parts.push(format!("'{}' in parents", folder_id));
+		}
+
+		// MIME type filter
+		let mime_filter = self.supported_mime_types.iter().map(|mime| format!("mimeType='{}'", mime)).collect::<Vec<_>>().join(" or ");
+		query_parts.push(format!("({})", mime_filter));
+
+		// Search terms
+		if let Some(q) = &req.query {
+			let clean = sanitize_search_term(q);
+			if !clean.is_empty() {
+				query_parts.push(format!("name contains '{}'", clean));
+			}
+		}
+
+		if let Some(voice) = &req.voice {
+			let clean = sanitize_search_term(voice);
+			if !clean.is_empty() {
+				query_parts.push(format!("name contains '{}'", clean));
+			}
+		}
+
+		Ok(query_parts.join(" and "))
+	}
+
+	fn generate_etag(&self, data: &Bytes, metadata: &FileMetadata) -> String {
+		use std::collections::hash_map::DefaultHasher;
+		use std::hash::{Hash, Hasher};
+
+		let mut hasher = DefaultHasher::new();
+		data.len().hash(&mut hasher);
+		metadata.modified_time.hash(&mut hasher);
+		format!("\"{}\"", hasher.finish())
+	}
+}
+
+// Helper functions
+fn sanitize_search_term(s: &str) -> String {
+	s.trim()
+		.chars()
+		.filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '-' || *c == '_')
+		.collect::<String>()
+		.replace('\'', "\\'")
+}
+
+fn extract_voice_id(name: &str) -> Option<String> {
+	name.split('_').nth(1).map(|s| s.to_string())
+}
+
+fn extract_text_preview(name: &str) -> Option<String> {
+	let stem = name.split('.').next().unwrap_or("");
+	let parts: Vec<&str> = stem.split('_').collect();
+	if parts.len() > 2 {
+		Some(parts[2..].join(" "))
+	} else {
+		None
 	}
 }

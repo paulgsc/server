@@ -3,8 +3,9 @@ use async_broadcast::Receiver;
 use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
 use futures::stream::SplitSink;
+use obs_websocket::ObsBroadcastManager;
 use std::sync::Arc;
-use tokio::time::{Duration, Instant};
+use tokio::time::{timeout, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 pub enum BroadcastOutcome {
@@ -14,7 +15,7 @@ pub enum BroadcastOutcome {
 
 impl WebSocketFsm {
 	/// Broadcasts an event to all subscribed and active connections
-	pub(crate) async fn broadcast_event_to_subscribers(connections: &Arc<DashMap<String, Connection>>, event: Event, event_type: &EventType) -> BroadcastOutcome {
+	pub(crate) async fn broadcast_event_to_subscribers(connections: Arc<DashMap<String, Connection>>, event: Event, event_type: &EventType) -> BroadcastOutcome {
 		let start_time = Instant::now();
 		let mut delivered = 0;
 		let mut failed = 0;
@@ -98,21 +99,22 @@ impl WebSocketFsm {
 		}
 	}
 
-	pub fn bridge_obs_events(&self, obs_client: Arc<obs_websocket::ObsWebSocketWithBroadcast>) {
+	pub fn bridge_obs_events(&self, obs_manager: Arc<ObsBroadcastManager>) {
 		let metrics = self.metrics.clone();
 		let conn_fan = self.connections.clone();
 
 		tokio::spawn(async move {
-			let mut obs_receiver = obs_client.subscribe();
-			info!("OBS event bridge started");
+			let mut obs_receiver = obs_manager.subscribe();
+			info!("OBS event bridge started with new manager");
 
 			loop {
-				match tokio::time::timeout(Duration::from_secs(45), obs_receiver.recv()).await {
+				match timeout(Duration::from_secs(45), obs_receiver.recv()).await {
 					Ok(Ok(obs_event)) => {
 						let event = Event::ObsStatus { status: obs_event };
 						let event_type = event.get_type();
 
-						let broadcast_outcome = Self::broadcast_event_to_subscribers(&conn_fan, event, &event_type).await;
+						let broadcast_outcome = Self::broadcast_event_to_subscribers(conn_fan.clone(), event, &event_type).await;
+
 						match broadcast_outcome {
 							BroadcastOutcome::NoSubscribers => continue,
 							BroadcastOutcome::Completed {
@@ -120,10 +122,8 @@ impl WebSocketFsm {
 							} => {
 								metrics.broadcast_attempt(failed == 0);
 								debug!("Event {:?} broadcast: {} delivered, {} failed, took {:?}", event_type, delivered, failed, duration);
-
 								if failed != 0 {
 									tokio::time::sleep(Duration::from_millis(100)).await;
-									continue;
 								}
 							}
 						}
@@ -139,17 +139,25 @@ impl WebSocketFsm {
 						}
 					},
 					Err(_) => {
-						// Timeout - check connection status
-						let is_connected = obs_client.is_connected().await;
-						if !is_connected {
-							warn!("OBS connection lost, bridge will retry when reconnected");
-							tokio::time::sleep(Duration::from_secs(5)).await;
+						// Timeout - check connection status using the new interface
+						match obs_manager.is_healthy().await {
+							Ok(true) => {
+								// Connection is healthy, timeout was just due to no events
+								continue;
+							}
+							Ok(false) => {
+								warn!("OBS connection unhealthy, waiting for reconnection");
+								tokio::time::sleep(Duration::from_secs(5)).await;
+							}
+							Err(e) => {
+								error!("Failed to check OBS health: {}", e);
+								tokio::time::sleep(Duration::from_secs(5)).await;
+							}
 						}
 						continue;
 					}
 				}
 			}
-
 			warn!("OBS event bridge ended");
 		});
 	}

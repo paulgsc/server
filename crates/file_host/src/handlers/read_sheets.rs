@@ -3,7 +3,7 @@ use crate::{
 	metrics::http::OPERATION_DURATION,
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
-	AppState, FileHostError,
+	AppState, DedupError, FileHostError,
 };
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -139,7 +139,7 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 
 // Helper function that replaces the old refetch function
 #[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id))]
-async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
+async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, DedupError> {
 	let data = match range {
 		Some(query) => timed_operation!("fetch_sheet_data", "read_data_with_query", false, { state.gsheet_reader.read_data(sheet_id, query).await })?,
 		None => {
@@ -147,7 +147,7 @@ async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) 
 				state.gsheet_reader.retrieve_all_sheets_data(sheet_id).await
 			})?;
 
-			let (_, data) = res.into_iter().next().ok_or(FileHostError::UnexpectedSinglePair)?;
+			let (_, data) = res.into_iter().next().ok_or(DedupError::UnexpectedSinglePair)?;
 			data
 		}
 	};
@@ -215,10 +215,10 @@ fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 		.collect()
 }
 
-fn extract_and_validate_range(q: RangeQuery) -> Result<String, FileHostError> {
-	let range = q.range.ok_or(FileHostError::InvalidData)?;
+fn extract_and_validate_range(q: RangeQuery) -> Result<String, DedupError> {
+	let range = q.range.ok_or(DedupError::TypeMismatch("range is required".to_string()))?;
 	if !validate_range(&range) {
-		return Err(FileHostError::SheetError(sdk::SheetError::InvalidRange(range.into())));
+		return Err(DedupError::SheetError(sdk::SheetError::InvalidRange(range.into())));
 	}
 	Ok(range)
 }

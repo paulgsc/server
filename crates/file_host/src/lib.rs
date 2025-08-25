@@ -22,7 +22,8 @@ pub use metrics::http::*;
 pub use metrics::ws::*;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 
-pub use cache::{CacheConfig, CacheStore, DedupCache};
+pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
+pub use handlers::audio_files::error::AudioServiceError;
 
 #[derive(Clone)]
 pub struct AppState {

@@ -1,6 +1,6 @@
 use crate::{
 	models::gsheet::{get_cell_value, parse_cell, FromGSheet},
-	FileHostError, GSheetDeriveError,
+	DedupError, GSheetDeriveError,
 };
 use gsheet_derive::FromGSheet;
 use polars::lazy::dsl::*;
@@ -49,7 +49,7 @@ pub struct NFLGameScores {
 }
 
 impl NFLGameScores {
-	pub fn create_dataframe(games: Vec<Self>) -> Result<DataFrame, FileHostError> {
+	pub fn create_dataframe(games: Vec<Self>) -> Result<DataFrame, DedupError> {
 		let df = DataFrame::new(vec![
 			Series::new("game_id".into(), games.iter().map(|g| g.game_id).collect::<Vec<_>>()).into(),
 			Series::new("team".into(), games.iter().map(|g| g.team.as_str()).collect::<Vec<_>>()).into(),
@@ -66,7 +66,7 @@ impl NFLGameScores {
 		Ok(df)
 	}
 
-	pub fn get_team_standings(df: &DataFrame) -> Result<Vec<DataItem>, FileHostError> {
+	pub fn get_team_standings(df: &DataFrame) -> Result<Vec<DataItem>, DedupError> {
 		let df_opponents = df.clone().lazy().rename(
 			["team", "q1", "q2", "q3", "q4"],
 			["opponent", "opponent_q1", "opponent_q2", "opponent_q3", "opponent_q4"],

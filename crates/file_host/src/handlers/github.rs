@@ -1,4 +1,4 @@
-use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, FileHostError};
+use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, DedupError, FileHostError};
 use axum::{extract::State, Json};
 use sdk::Repository;
 use tracing::instrument;
@@ -20,7 +20,7 @@ pub async fn get_github_repos(State(state): State<AppState>) -> Result<Json<Vec<
 
 /// Fetch repositories from GitHub API
 #[instrument(name = "fetch_github_repositories", skip(state))]
-async fn fetch_github_repositories(state: AppState) -> Result<Vec<Repository>, FileHostError> {
+async fn fetch_github_repositories(state: AppState) -> Result<Vec<Repository>, DedupError> {
 	let repositories = timed_operation!("fetch_github_repositories", "get_repositories", false, { state.github_client.get_repositories().await })?;
 
 	Ok(repositories)

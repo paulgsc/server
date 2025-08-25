@@ -43,6 +43,7 @@ moka = { version =  "0.12.10", features = ["future", "sync"] }
 garde = { version =  "0.22.0", features = ["full"] }
 sha2 = "0.10.9"
 uuid = "1.18.0"
+chrono.workspace = true
 
 [lints]
 workspace = true

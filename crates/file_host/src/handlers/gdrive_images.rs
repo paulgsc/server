@@ -1,4 +1,4 @@
-use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, FileHostError};
+use crate::{metrics::http::OPERATION_DURATION, timed_operation, AppState, DedupError, FileHostError};
 use axum::{
 	extract::{Path, State},
 	http::header,
@@ -61,7 +61,7 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 
 /// Fetch file from Google Drive with metadata
 #[instrument(name = "fetch_gdrive_file", skip(state), fields(image_id))]
-async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, FileHostError> {
+async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, DedupError> {
 	// Fetch metadata and file content
 	let file = timed_operation!("fetch_gdrive_file", "get_file_metadata", false, { state.gdrive_reader.get_file_metadata(image_id).await })?;
 

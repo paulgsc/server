@@ -11,7 +11,6 @@ use std::{
 };
 use tokio::time::sleep;
 
-use crate::error::FileHostError;
 use crate::Config;
 
 // Instrumentation imports
@@ -38,17 +37,15 @@ pub enum CacheError {
 
 	#[error("Serialization/deserialization failed: {0}")]
 	SerializationError(#[from] serde_json::Error),
-}
 
-impl From<CacheError> for FileHostError {
-	fn from(cache_error: CacheError) -> Self {
-		match cache_error {
-			CacheError::RedisConnectionError(redis_err) => FileHostError::RedisError(redis_err),
-			CacheError::CompressionError(io_err) => FileHostError::IoError(io_err),
-			CacheError::SerializationError(serde_err) => FileHostError::NonSerializableData(serde_err),
-			_ => FileHostError::Anyhow(anyhow::anyhow!("Cache error: {}", cache_error)),
-		}
-	}
+	#[error("System time error: {0}")]
+	SystemTimeError(#[from] std::time::SystemTimeError),
+
+	#[error("Integer conversion error: {0}")]
+	TryFromIntError(#[from] std::num::TryFromIntError),
+
+	#[error("Generic error: {0}")]
+	Generic(#[from] anyhow::Error),
 }
 
 // Safe metric initialization with error handling
@@ -86,7 +83,6 @@ static CACHE_RETRIES_TOTAL: LazyLock<Result<CounterVec, CacheError>> =
 static CACHE_COMPRESSIONS_TOTAL: LazyLock<Result<IntCounter, CacheError>> =
 	LazyLock::new(|| register_int_counter_safe("cache_compressions_total", "Total number of compression operations"));
 
-// Performance histograms
 // Performance histograms
 static CACHE_OPERATION_DURATION: LazyLock<Result<HistogramVec, CacheError>> = LazyLock::new(|| {
 	register_histogram_vec_safe(
@@ -168,8 +164,8 @@ pub struct CacheEntry<T> {
 }
 
 impl<T> CacheEntry<T> {
-	pub fn new(data: T, ttl: u64) -> Result<Self, FileHostError> {
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| FileHostError::Anyhow(e.into()))?.as_secs();
+	pub fn new(data: T, ttl: u64) -> Result<Self, CacheError> {
+		let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
 		// Record TTL metric
 		if let Ok(histogram) = &*CACHE_TTL_SECONDS {
@@ -191,9 +187,9 @@ impl<T> CacheEntry<T> {
 		self
 	}
 
-	pub fn touch(&mut self) -> Result<(), FileHostError> {
+	pub fn touch(&mut self) -> Result<(), CacheError> {
 		self.access_count += 1;
-		self.last_accessed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| FileHostError::Anyhow(e.into()))?.as_secs();
+		self.last_accessed = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 		Ok(())
 	}
 
@@ -253,7 +249,7 @@ pub struct CacheStore {
 }
 
 impl CacheStore {
-	pub fn new(config: CacheConfig) -> Result<Self, FileHostError> {
+	pub fn new(config: CacheConfig) -> Result<Self, CacheError> {
 		let redis_client = Client::open(config.redis_url.as_str())?;
 		Ok(Self { redis_client, config })
 	}
@@ -264,9 +260,9 @@ impl CacheStore {
 	}
 
 	// Retry mechanism for Redis operations with instrumentation
-	async fn with_retry<F, T>(&self, operation_name: &str, mut operation: F) -> Result<T, FileHostError>
+	async fn with_retry<F, T>(&self, operation_name: &str, mut operation: F) -> Result<T, CacheError>
 	where
-		F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, FileHostError>> + Send>>,
+		F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, CacheError>> + Send>>,
 	{
 		let start_time = Instant::now();
 		let mut last_error = None;
@@ -319,7 +315,7 @@ impl CacheStore {
 	}
 
 	// Compression helpers with instrumentation
-	fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>, FileHostError> {
+	fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>, CacheError> {
 		if !self.config.enable_compression || data.len() < self.config.compression_threshold {
 			return Ok(data.to_vec());
 		}
@@ -357,7 +353,7 @@ impl CacheStore {
 		Ok(compressed)
 	}
 
-	fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>, FileHostError> {
+	fn decompress_data(&self, data: &[u8]) -> Result<Vec<u8>, CacheError> {
 		if !self.config.enable_compression {
 			return Ok(data.to_vec());
 		}
@@ -382,7 +378,7 @@ impl CacheStore {
 
 	// Generic set method with compression and metadata
 	#[instrument(skip(self, data), fields(key = %key, ttl = ?ttl))]
-	pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), FileHostError> {
+	pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), CacheError> {
 		let cache_key = self.make_key(key);
 		let ttl = ttl.unwrap_or(self.config.default_ttl);
 
@@ -407,7 +403,7 @@ impl CacheStore {
 					}
 
 					let _: () = con.set_ex(&cache_key, compressed, ttl).await?;
-					Result::<_, FileHostError>::Ok(())
+					Result::<_, CacheError>::Ok(())
 				})
 			})
 			.await?;
@@ -418,7 +414,7 @@ impl CacheStore {
 
 	// Generic get method with decompression and touch
 	#[instrument(skip(self), fields(key = %key))]
-	pub async fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, FileHostError> {
+	pub async fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, CacheError> {
 		let cache_key = self.make_key(key);
 
 		let data: Option<Vec<u8>> = self
@@ -436,7 +432,7 @@ impl CacheStore {
 					}
 
 					let result: Option<Vec<u8>> = con.get(&cache_key).await?;
-					Result::<_, FileHostError>::Ok(result)
+					Result::<_, CacheError>::Ok(result)
 				})
 			})
 			.await?;
@@ -484,7 +480,7 @@ impl CacheStore {
 
 	// Specialized method for binary data (audio, images, etc.)
 	#[instrument(skip(self, data), fields(key = %key, data_size = data.len(), content_type = ?content_type, ttl = ?ttl))]
-	pub async fn set_binary(&self, key: &str, data: &[u8], content_type: Option<String>, ttl: Option<u64>) -> Result<(), FileHostError> {
+	pub async fn set_binary(&self, key: &str, data: &[u8], content_type: Option<String>, ttl: Option<u64>) -> Result<(), CacheError> {
 		let cache_key = self.make_key(key);
 		let ttl = ttl.unwrap_or(self.config.default_ttl);
 
@@ -513,7 +509,7 @@ impl CacheStore {
 					}
 
 					let _: () = con.set_ex(&cache_key, compressed, ttl).await?;
-					Result::<_, FileHostError>::Ok(())
+					Result::<_, CacheError>::Ok(())
 				})
 			})
 			.await?;
@@ -524,7 +520,7 @@ impl CacheStore {
 
 	// Get binary data with metadata
 	#[instrument(skip(self), fields(key = %key))]
-	pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, FileHostError> {
+	pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, CacheError> {
 		let cache_key = self.make_key(key);
 
 		let data: Option<Vec<u8>> = self
@@ -542,7 +538,7 @@ impl CacheStore {
 					}
 
 					let result: Option<Vec<u8>> = con.get(&cache_key).await?;
-					Result::<_, FileHostError>::Ok(result)
+					Result::<_, CacheError>::Ok(result)
 				})
 			})
 			.await?;
@@ -593,7 +589,7 @@ impl CacheStore {
 	}
 
 	// Touch an entry (update access metadata)
-	async fn touch_entry(&self, key: &str) -> Result<(), FileHostError> {
+	async fn touch_entry(&self, key: &str) -> Result<(), CacheError> {
 		let cache_key = self.make_key(key);
 		let ttl = self.config.default_ttl;
 
@@ -612,7 +608,7 @@ impl CacheStore {
 					}
 
 					let _: () = con.expire(&cache_key, ttl.try_into()?).await?;
-					Result::<_, FileHostError>::Ok(())
+					Result::<_, CacheError>::Ok(())
 				})
 			})
 			.await?;
@@ -622,7 +618,7 @@ impl CacheStore {
 
 	// Delete specific key
 	#[instrument(skip(self), fields(key = %key))]
-	pub async fn delete(&self, key: &str) -> Result<bool, FileHostError> {
+	pub async fn delete(&self, key: &str) -> Result<bool, CacheError> {
 		let cache_key = self.make_key(key);
 
 		let deleted: i32 = self
@@ -640,7 +636,7 @@ impl CacheStore {
 					}
 
 					let result: i32 = con.del(&cache_key).await?;
-					Result::<_, FileHostError>::Ok(result)
+					Result::<_, CacheError>::Ok(result)
 				})
 			})
 			.await?;
@@ -650,7 +646,7 @@ impl CacheStore {
 
 	// Flush all cache entries with the configured prefix
 	#[instrument(skip(self))]
-	pub async fn flush_all(&self) -> Result<u64, FileHostError> {
+	pub async fn flush_all(&self) -> Result<u64, CacheError> {
 		let pattern = format!("{}*", self.config.key_prefix);
 
 		let deleted: u64 = self
@@ -675,7 +671,7 @@ impl CacheStore {
 
 					// Delete all matching keys
 					let deleted: i32 = con.del(&keys).await?;
-					Result::<_, FileHostError>::Ok(deleted as u64)
+					Result::<_, CacheError>::Ok(deleted as u64)
 				})
 			})
 			.await?;

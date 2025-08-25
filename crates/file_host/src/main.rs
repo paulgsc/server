@@ -2,7 +2,9 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
-use crate::routes::{gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance};
+use crate::routes::{
+	audio_files::get_audio, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance,
+};
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, routing::get, Router};
 use clap::Parser;
@@ -10,9 +12,9 @@ use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRa
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying},
-	AppState, CacheConfig, CacheStore, Config, DedupCache, UtterancePrompt,
+	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
-// use obs_websocket::{create_obs_client_with_broadcast, ObsConfig, ObsRequestType, PollingFrequency, RetryConfig};
+use obs_websocket::{create_obs_broadcast_manager, ObsConfig, ObsRequestType, PollingConfig, PollingFrequency};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
@@ -79,72 +81,51 @@ async fn main() -> Result<()> {
 		Duration::from_secs(3600), // remove clients inactive for 1 hour
 	);
 
-	// let obs_config = ObsConfig {
-	// 	host: context.obs_host.clone(),
-	// 	port: 4455,
-	// 	password: context.obs_password.clone(),
-	// };
+	let obs_config = ObsConfig::default();
+	let client = Arc::new(create_obs_broadcast_manager(obs_config));
+	let obs_client = client.clone();
 
-	// let polling_requests = [
-	// 	// High frequency - every second
-	// 	(ObsRequestType::StreamStatus, PollingFrequency::High),
-	// 	(ObsRequestType::RecordStatus, PollingFrequency::High),
-	// 	(ObsRequestType::CurrentScene, PollingFrequency::High),
-	// 	(ObsRequestType::Stats, PollingFrequency::High),
-	// 	// Medium frequency - every 5 seconds
-	// 	(ObsRequestType::SceneList, PollingFrequency::Medium),
-	// 	(ObsRequestType::SourcesList, PollingFrequency::Medium),
-	// 	(ObsRequestType::InputsList, PollingFrequency::Medium),
-	// 	(ObsRequestType::VirtualCamStatus, PollingFrequency::Medium),
-	// 	(ObsRequestType::InputMute("Desktop Audio".to_string()), PollingFrequency::Medium),
-	// 	(ObsRequestType::InputVolume("Microphone".to_string()), PollingFrequency::Medium),
-	// 	// Low frequency - every 30 seconds
-	// 	(ObsRequestType::ProfileList, PollingFrequency::Low),
-	// 	(ObsRequestType::CurrentProfile, PollingFrequency::Low),
-	// 	(ObsRequestType::Version, PollingFrequency::Low),
-	// ];
+	let requests = PollingConfig::default();
+	let request_boxed_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
 
-	// let retry_config = RetryConfig::default();
+	let mut obs_handle = obs_client.start(request_boxed_slice);
 
-	// let client = Arc::new(create_obs_client_with_broadcast(obs_config));
-	// let obs_client = client.clone();
-	// let obs_handle = obs_client.start(Box::new(polling_requests), retry_config);
+	let obs_monitor = {
+		let obs_task_client = client.clone();
+		tokio::spawn(async move {
+			// Log the startup
 
-	// let obs_monitor = {
-	// 	let obs_task_client = client.clone();
-	// 	tokio::spawn(async move {
-	// 		// Log the startup
+			// Keep the handle alive and monitor it
+			tokio::select! {
+				_ = tokio::signal::ctrl_c() => {
+					tracing::info!("Received shutdown signal, stopping OBS handler...");
+					let _ = obs_task_client.disconnect().await;
+					let _ = obs_handle.stop().await;
+				}
+				_ = async {
+					// Monitor the handle and restart if it fails
+					loop {
+						if !obs_handle.is_running() {
+							tracing::error!("OBS background handler stopped unexpectedly");
+							break;
+						}
+						tracing::warn!("going to sleep for 30s");
+						tokio::time::sleep(Duration::from_secs(30)).await;
+					}
+				} => {
+					tracing::error!("OBS background handler monitoring ended");
+				}
+			}
+		})
+	};
 
-	// 		// Keep the handle alive and monitor it
-	// 		tokio::select! {
-	// 			_ = tokio::signal::ctrl_c() => {
-	// 				tracing::info!("Received shutdown signal, stopping OBS handler...");
-	// 				obs_task_client.disconnect().await;
-	// 				obs_handle.stop().await;
-	// 			}
-	// 			_ = async {
-	// 				// Monitor the handle and restart if it fails
-	// 				loop {
-	// 					if !obs_handle.is_running() {
-	// 						tracing::error!("OBS background handler stopped unexpectedly");
-	// 						break;
-	// 					}
-	// 					tracing::warn!("going to sleep for 30s");
-	// 					tokio::time::sleep(Duration::from_secs(30)).await;
-	// 				}
-	// 			} => {
-	// 				tracing::error!("OBS background handler monitoring ended");
-	// 			}
-	// 		}
-	// 	})
-	// };
-
-	// ws_state.bridge_obs_events(client.clone());
+	ws_state.bridge_obs_events(client.clone());
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
 		.merge(get_gdrive_image())
 		.merge(get_repos())
+		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
 		.merge(post_utterance());
@@ -199,9 +180,9 @@ async fn main() -> Result<()> {
 
 	// Clean shutdown
 	tracing::info!("Shutting down...");
-	// client.disconnect().await;
-	// obs_monitor.abort();
-	// let _ = obs_monitor.await;
+	let _ = client.disconnect().await;
+	obs_monitor.abort();
+	let _ = obs_monitor.await;
 
 	Ok(())
 }

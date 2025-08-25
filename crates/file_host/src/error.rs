@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::header::WWW_AUTHENTICATE;
-use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
+use axum::http::{HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use std::borrow::Cow;
@@ -56,29 +56,14 @@ pub enum FileHostError {
 	#[error("Encoded Date Conversion failed: {0}")]
 	InvalidEncodedDate(String),
 
-	#[error("Redis error: {0}")]
-	RedisError(#[from] redis::RedisError),
-
-	#[error("Polars error: {0}")]
-	PolarsError(#[from] polars::error::PolarsError),
-
-	#[error("Sheet error: {0}")]
-	SheetError(#[from] sdk::SheetError),
-
 	#[error("Sheet Derive error: {0}")]
 	GSheetError(#[from] GSheetDeriveError),
 
-	#[error("GithubAPI error: {0}")]
-	GitHubAPIError(#[from] sdk::GitHubError),
-
-	#[error("Drive error: {0}")]
-	DriveError(#[from] sdk::DriveError),
+	#[error("Redis error: {0}")]
+	RedisError(#[from] redis::RedisError),
 
 	#[error("Response Build Error error: {0}")]
 	ResponseBuildError(#[from] axum::http::Error),
-
-	#[error("Expected exactly one key-value pair, found none")]
-	UnexpectedSinglePair,
 
 	#[error("Request timeout")]
 	RequestTimeout,
@@ -91,6 +76,15 @@ pub enum FileHostError {
 
 	#[error("I/O error: {0}")]
 	IoError(#[from] std::io::Error),
+
+	#[error("Dedup Cache Error: {0}")]
+	DedupCacheError(#[from] crate::cache::DedupError),
+
+	#[error("CacheStore Error: {0}")]
+	CacheStoreError(#[from] crate::cache::CacheError),
+
+	#[error("Audio File Fetch Error: {0}")]
+	AudioFetchError(#[from] crate::AudioServiceError),
 }
 
 impl FileHostError {
@@ -117,15 +111,9 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::MaxRecordLimitExceeded => StatusCode::BAD_REQUEST,
-			Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::IntegerConversionError(_) => StatusCode::BAD_REQUEST,
 			Self::InvalidMimeType(_) => StatusCode::BAD_REQUEST,
 			Self::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-			Self::PolarsError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-			Self::SheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-			Self::DriveError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-			Self::GSheetError(_) => StatusCode::UNPROCESSABLE_ENTITY,
-			Self::GitHubAPIError(_) => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::NonSerializableData(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::ResponseBuildError(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,6 +121,10 @@ impl FileHostError {
 			Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
 			Self::TowerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::IoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
+			Self::DedupCacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::CacheStoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::GSheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 }
@@ -146,29 +138,16 @@ impl IntoResponse for FileHostError {
 					errors: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>>,
 				}
 
-				return (StatusCode::UNPROCESSABLE_ENTITY, Json(Errors { errors })).into_response();
+				(StatusCode::UNPROCESSABLE_ENTITY, Json(Errors { errors })).into_response()
 			}
-			Self::Unauthorized => {
-				return (
-					self.status_code(),
-					[(WWW_AUTHENTICATE, HeaderValue::from_static("Token"))].into_iter().collect::<HeaderMap>(),
-					self.to_string(),
-				)
-					.into_response();
-			}
-
+			Self::Unauthorized => (self.status_code(), [(WWW_AUTHENTICATE, HeaderValue::from_static("Token"))], self.to_string()).into_response(),
 			Self::Anyhow(ref e) => {
 				log::error!("Generic error: {:?}", e);
+				(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
 			}
-
-			Self::MaxRecordLimitExceeded => {
-				return (StatusCode::BAD_REQUEST, self.to_string()).into_response();
-			}
-
-			// Other errors get mapped normally.
-			_ => (),
+			Self::MaxRecordLimitExceeded => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
+			// All other errors fall back
+			_ => (self.status_code(), self.to_string()).into_response(),
 		}
-
-		(self.status_code(), self.to_string()).into_response()
 	}
 }
