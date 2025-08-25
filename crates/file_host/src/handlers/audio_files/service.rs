@@ -4,7 +4,7 @@ use bytes::Bytes;
 use garde::Validate;
 use sdk::FileMetadata;
 use std::sync::Arc;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 pub struct AudioService {
 	drive_client: Arc<ReadDrive>,
@@ -29,11 +29,20 @@ impl AudioService {
 
 	#[instrument(skip(self), fields(audio_id = %req.id, force_refresh = req.force_refresh.unwrap_or(false)))]
 	pub async fn get_audio(&self, req: GetAudioRequest) -> Result<(CachedAudio, bool), FileHostError> {
-		req.validate().map_err(|e| AudioServiceError::ValidationFailed {
-			message: format!("Invalid request: {}", e),
-		})?;
+		if let Err(e) = req.validate() {
+			error!("Audio request validation failed for id {}: {}", req.id, e);
+			return Err(
+				AudioServiceError::ValidationFailed {
+					message: format!("Invalid request: {}", e),
+				}
+				.into(),
+			);
+		}
 
-		self.validate_file_id(&req.id)?;
+		if let Err(e) = self.validate_file_id(&req.id) {
+			error!("Invalid file ID provided: {}", req.id);
+			return Err(e.into());
+		}
 
 		let cache_key = format!("audio:{}", req.id);
 
@@ -45,10 +54,17 @@ impl AudioService {
 		}
 
 		// Use DedupCache's get_or_fetch_with_ttl to handle everything automatically
-		let (audio, was_cached) = self
+		let (audio, was_cached) = match self
 			.cache
 			.get_or_fetch_with_ttl(&cache_key, self.cache_ttl, || async { self.fetch_audio(&req.id).await })
-			.await?;
+			.await
+		{
+			Ok(result) => result,
+			Err(e) => {
+				error!("Failed to get or fetch audio for id {}: {}", req.id, e);
+				return Err(e.into());
+			}
+		};
 
 		if was_cached {
 			info!("Cache hit for audio: {}", req.id);
@@ -117,19 +133,26 @@ impl AudioService {
 
 	#[instrument(skip(self), fields(audio_id = %id))]
 	async fn fetch_audio(&self, id: &str) -> Result<CachedAudio, DedupError> {
-		let metadata = self
-			.drive_client
-			.get_file_metadata(id)
-			.await
-			.map_err(|_| AudioServiceError::MetadataFetchFailed { id: id.to_string() })?;
+		let metadata = match self.drive_client.get_file_metadata(id).await {
+			Ok(metadata) => metadata,
+			Err(e) => {
+				error!("Failed to fetch metadata for audio file {}: {}", id, e);
+				return Err(AudioServiceError::MetadataFetchFailed { id: id.to_string() }.into());
+			}
+		};
 
-		self.validate_audio_metadata(&metadata)?;
+		if let Err(e) = self.validate_audio_metadata(&metadata) {
+			error!("Audio metadata validation failed for file {}: {}", id, e);
+			return Err(e.into());
+		}
 
-		let data = self
-			.drive_client
-			.download_file(id)
-			.await
-			.map_err(|_| AudioServiceError::DownloadFailed { id: id.to_string() })?;
+		let data = match self.drive_client.download_file(id).await {
+			Ok(data) => data,
+			Err(e) => {
+				error!("Failed to download audio file {}: {}", id, e);
+				return Err(AudioServiceError::DownloadFailed { id: id.to_string() }.into());
+			}
+		};
 
 		let etag = self.generate_etag(&data, &metadata);
 		let last_modified = metadata.modified_time;
