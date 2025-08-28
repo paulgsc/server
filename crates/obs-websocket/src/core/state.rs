@@ -28,6 +28,8 @@ pub enum StateError {
 	InvalidTransition { from: ConnectionState, to: ConnectionState },
 	#[error("Connection error: {0}")]
 	ConnectionError(String),
+	#[error("Transition error: {0}")]
+	TransitionError(String),
 	#[error("Command execution failed: {0}")]
 	CommandFailed(String),
 	#[error("Event processing failed: {0}")]
@@ -253,15 +255,19 @@ impl StateHandle {
 	/// Check if connected
 	pub async fn is_connected(&self) -> Result<bool, StateError> {
 		let (tx, rx) = oneshot::channel();
-		self.sender.send(StateMessage::IsConnected(tx)).await.map_err(|_| StateError::ActorUnavailable)?;
-		rx.await.map_err(|_| StateError::ActorUnavailable)
+		self
+			.sender
+			.send(StateMessage::IsConnected(tx))
+			.await
+			.map_err(|e| StateError::ConnectionError(e.to_string()))?;
+		rx.await.map_err(|e| StateError::ConnectionError(e.to_string()))
 	}
 
 	/// Check if can execute commands
 	pub async fn can_execute_commands(&self) -> Result<bool, StateError> {
 		let (tx, rx) = oneshot::channel();
 		self.sender.send(StateMessage::CanExecuteCommands(tx)).await.map_err(|_| StateError::ActorUnavailable)?;
-		rx.await.map_err(|_| StateError::ActorUnavailable)
+		rx.await.map_err(|e| StateError::CommandFailed(e.to_string()))
 	}
 
 	/// Get command sender (for internal use)
@@ -274,8 +280,12 @@ impl StateHandle {
 	/// Execute a state transition
 	pub async fn transition(&self, transition: StateTransition) -> Result<(), StateError> {
 		let (tx, rx) = oneshot::channel();
-		self.sender.send(StateMessage::Transition(transition, tx)).await.map_err(|_| StateError::ActorUnavailable)?;
-		rx.await.map_err(|_| StateError::ActorUnavailable)?
+		self
+			.sender
+			.send(StateMessage::Transition(transition, tx))
+			.await
+			.map_err(|e| StateError::TransitionError(e.to_string()))?;
+		rx.await.map_err(|e| StateError::TransitionError(e.to_string()))?
 	}
 
 	/// Convenience methods for common transitions
