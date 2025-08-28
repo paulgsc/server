@@ -38,66 +38,22 @@ pub use types::*;
 pub struct WebSocketFsm {
 	connections: Arc<DashMap<String, Connection>>,
 	sender: Sender<Event>,
+	event_rcv: Receiver<Event>,
 	metrics: Arc<ConnectionMetrics>,
 	system_events: Sender<SystemEvent>,
+	_sys_rcv: Receiver<SystemEvent>,
 }
 
 impl WebSocketFsm {
+	/// Creates a new WebSocketFsm instance - only responsible for initialization
 	pub fn new() -> Self {
-		let (mut sender, receiver) = broadcast::<Event>(1000); // Larger buffer for main channel
+		let (mut sender, event_rcv) = broadcast::<Event>(1000);
 		sender.set_await_active(false);
 		sender.set_overflow(true);
 
-		let (system_sender, _system_receiver) = broadcast::<SystemEvent>(500);
-
+		let (system_sender, _sys_rcv) = broadcast::<SystemEvent>(500);
 		let connections = Arc::new(DashMap::<String, Connection>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
-
-		// Event distribution task
-		let conn_fan = connections.clone();
-		let metrics_clone = metrics.clone();
-		// let system_events_clone = system_sender.clone();
-
-		tokio::spawn(async move {
-			let mut receiver = receiver;
-
-			loop {
-				match receiver.recv().await {
-					Ok(event) => {
-						let event_type = event.get_type();
-						let event_type_str = format!("{:?}", event_type);
-
-						let broadcast_outcome: Result<BroadcastOutcome, String> =
-							timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(conn_fan.clone(), event, &event_type).await) });
-
-						match broadcast_outcome {
-							Ok(broadcast_outcome) => match broadcast_outcome {
-								BroadcastOutcome::NoSubscribers => continue,
-								BroadcastOutcome::Completed {
-									process_result: ProcessResult { failed, .. },
-								} => {
-									metrics_clone.broadcast_attempt(failed == 0);
-								}
-							},
-							Err(_) => {
-								record_ws_error!("channel_closed", "main_receiver");
-							}
-						}
-					}
-					Err(e) => match e {
-						async_broadcast::RecvError::Closed => {
-							record_ws_error!("channel_closed", "main_receiver", e);
-							break;
-						}
-						async_broadcast::RecvError::Overflowed(count) => {
-							record_ws_error!("channel_overflow", "main_receiver");
-							warn!("Main receiver lagged behind by {} messages, continuing", count);
-							continue;
-						}
-					},
-				}
-			}
-		});
 
 		record_system_event!("fsm_initialized");
 		update_resource_usage!("active_connections", 0.0);
@@ -105,9 +61,15 @@ impl WebSocketFsm {
 		Self {
 			connections,
 			sender,
+			event_rcv,
 			metrics,
 			system_events: system_sender,
+			_sys_rcv,
 		}
+	}
+
+	pub fn start(&self) {
+		self.spawn_event_distribution_task();
 	}
 
 	pub fn router<S>(self) -> Router<S>
@@ -311,6 +273,9 @@ async fn handle_socket(
 pub async fn init_websocket() -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
 	let state = WebSocketFsm::new();
+
+	// Start the websocket main process
+	state.start();
 
 	// Start FSM processes with instrumentation
 	state.start_timeout_monitor(Duration::from_secs(120));

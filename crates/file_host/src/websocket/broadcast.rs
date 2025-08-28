@@ -3,9 +3,9 @@ use async_broadcast::Receiver;
 use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
 use futures::stream::SplitSink;
-use obs_websocket::ObsBroadcastManager;
+use obs_websocket::{ObsConfig, ObsRequestType, ObsWebSocketManager, PollingConfig, PollingFrequency, RetryConfig};
 use std::sync::Arc;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 pub enum BroadcastOutcome {
@@ -14,8 +14,83 @@ pub enum BroadcastOutcome {
 }
 
 impl WebSocketFsm {
+	/// Spawns the event distribution task - single responsibility
+	pub fn spawn_event_distribution_task(&self) {
+		let receiver = self.event_rcv.clone();
+		let connections = self.connections.clone();
+		let metrics = self.metrics.clone();
+
+		tokio::spawn(async move {
+			Self::event_distribution_loop(receiver, connections, metrics).await;
+		});
+
+		let _ = self.bridge_obs_events();
+	}
+
+	/// Event distribution loop - isolated logic
+	async fn event_distribution_loop(mut receiver: broadcast::Receiver<Event>, connections: Arc<DashMap<String, Connection>>, metrics: Arc<ConnectionMetrics>) {
+		loop {
+			match receiver.recv().await {
+				Ok(event) => {
+					Self::handle_event_broadcast(event, connections.clone(), &metrics).await;
+				}
+				Err(e) => {
+					if Self::handle_receiver_error(e) {
+						break; // Exit loop on closed channel
+					}
+					// Continue on overflow
+				}
+			}
+		}
+	}
+
+	/// Handles broadcasting a single event
+	async fn handle_event_broadcast(event: Event, connections: Arc<DashMap<String, Connection>>, metrics: &Arc<ConnectionMetrics>) {
+		let event_type = event.get_type();
+		let event_type_str = format!("{:?}", event_type);
+
+		let broadcast_outcome: Result<BroadcastOutcome, String> =
+			timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(event, &event_type, connections).await) });
+
+		Self::handle_broadcast_outcome(broadcast_outcome, metrics);
+	}
+
+	/// Handles the result of a broadcast operation
+	fn handle_broadcast_outcome(broadcast_outcome: Result<BroadcastOutcome, String>, metrics: &Arc<ConnectionMetrics>) {
+		match broadcast_outcome {
+			Ok(broadcast_outcome) => match broadcast_outcome {
+				BroadcastOutcome::NoSubscribers => {
+					// Nothing to do
+				}
+				BroadcastOutcome::Completed {
+					process_result: ProcessResult { failed, .. },
+				} => {
+					metrics.broadcast_attempt(failed == 0);
+				}
+			},
+			Err(_) => {
+				record_ws_error!("channel_closed", "main_receiver");
+			}
+		}
+	}
+
+	/// Handles receiver errors, returns true if should exit loop
+	fn handle_receiver_error(error: async_broadcast::RecvError) -> bool {
+		match error {
+			async_broadcast::RecvError::Closed => {
+				record_ws_error!("channel_closed", "main_receiver", error);
+				true // Exit the loop
+			}
+			async_broadcast::RecvError::Overflowed(count) => {
+				record_ws_error!("channel_overflow", "main_receiver");
+				warn!("Main receiver lagged behind by {} messages, continuing", count);
+				false // Continue processing
+			}
+		}
+	}
+
 	/// Broadcasts an event to all subscribed and active connections
-	pub(crate) async fn broadcast_event_to_subscribers(connections: Arc<DashMap<String, Connection>>, event: Event, event_type: &EventType) -> BroadcastOutcome {
+	pub(crate) async fn broadcast_event_to_subscribers(event: Event, event_type: &EventType, connections: Arc<DashMap<String, Connection>>) -> BroadcastOutcome {
 		let start_time = Instant::now();
 		let mut delivered = 0;
 		let mut failed = 0;
@@ -99,67 +174,87 @@ impl WebSocketFsm {
 		}
 	}
 
-	pub fn bridge_obs_events(&self, obs_manager: Arc<ObsBroadcastManager>) {
+	pub fn bridge_obs_events(&self) -> tokio::task::JoinHandle<()> {
 		let metrics = self.metrics.clone();
 		let conn_fan = self.connections.clone();
 
 		tokio::spawn(async move {
-			let mut obs_receiver = obs_manager.subscribe();
-			info!("OBS event bridge started with new manager");
+			info!("Starting OBS event bridge with internal manager");
+
+			let obs_config = ObsConfig::default();
+			let obs_manager = ObsWebSocketManager::new(obs_config, RetryConfig::default());
 
 			loop {
-				match timeout(Duration::from_secs(45), obs_receiver.recv()).await {
-					Ok(Ok(obs_event)) => {
-						let event = Event::ObsStatus { status: obs_event };
-						let event_type = event.get_type();
-
-						let broadcast_outcome = Self::broadcast_event_to_subscribers(conn_fan.clone(), event, &event_type).await;
-
-						match broadcast_outcome {
-							BroadcastOutcome::NoSubscribers => continue,
-							BroadcastOutcome::Completed {
-								process_result: ProcessResult { delivered, failed, duration },
-							} => {
-								metrics.broadcast_attempt(failed == 0);
-								debug!("Event {:?} broadcast: {} delivered, {} failed, took {:?}", event_type, delivered, failed, duration);
-								if failed != 0 {
-									tokio::time::sleep(Duration::from_millis(100)).await;
-								}
-							}
-						}
+				tokio::select! {
+					// Handle shutdown signal
+					_ = tokio::signal::ctrl_c() => {
+						info!("Shutting down OBS bridge");
+						let _ = obs_manager.disconnect().await;
+						break;
 					}
-					Ok(Err(e)) => match e {
-						async_broadcast::RecvError::Closed => {
-							error!("OBS receiver channel closed: {}", e);
-							break;
-						}
-						async_broadcast::RecvError::Overflowed(count) => {
-							warn!("OBS receiver lagged behind by {} messages, continuing", count);
-							continue;
-						}
-					},
-					Err(_) => {
-						// Timeout - check connection status using the new interface
-						match obs_manager.is_healthy().await {
-							Ok(true) => {
-								// Connection is healthy, timeout was just due to no events
-								continue;
-							}
-							Ok(false) => {
-								warn!("OBS connection unhealthy, waiting for reconnection");
-								tokio::time::sleep(Duration::from_secs(5)).await;
+
+					// Main connection loop
+					result = async {
+						let requests = PollingConfig::default();
+						let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
+
+						match obs_manager.connect(&request_slice).await {
+							Ok(()) => {
+								info!("Connected to OBS WebSocket");
+
+								obs_manager.stream_events(|obs_event| {
+									let metrics = metrics.clone();
+									let conn_fan = conn_fan.clone();
+
+									Box::pin(async move {
+										let event = Event::ObsStatus { status: obs_event };
+										let event_type = event.get_type();
+
+										let broadcast_outcome = Self::broadcast_event_to_subscribers(
+											event, &event_type
+											,conn_fan
+										).await;
+
+										match broadcast_outcome {
+											BroadcastOutcome::NoSubscribers => {
+												warn!("no subscribers for obs!")
+											}
+											BroadcastOutcome::Completed {
+												process_result: ProcessResult { delivered, failed, .. },
+											} => {
+
+												metrics.broadcast_attempt(failed == 0);
+												debug!(
+													"Event {:?} broadcast: {} delivered, {} failed",
+													event_type, delivered, failed
+												);
+											}
+
+										}
+									})
+								}).await
 							}
 							Err(e) => {
-								error!("Failed to check OBS health: {}", e);
-								tokio::time::sleep(Duration::from_secs(5)).await;
+								error!("Failed to connect to OBS: {}", e);
+								Err(e)
 							}
 						}
-						continue;
+					} => {
+						if let Err(e) = result {
+							error!("OBS connection error: {}", e);
+						}
+
+						// Clean disconnect before retry
+						let _ = obs_manager.disconnect().await;
+
+						// Retry delay
+						tokio::time::sleep(Duration::from_secs(5)).await;
 					}
 				}
 			}
-			warn!("OBS event bridge ended");
-		});
+
+			info!("OBS event bridge ended");
+		})
 	}
 
 	pub(crate) async fn broadcast_client_count(&self) {

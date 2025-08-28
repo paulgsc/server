@@ -14,7 +14,6 @@ use file_host::{
 	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying},
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
-use obs_websocket::{create_obs_broadcast_manager, ObsConfig, ObsRequestType, PollingConfig, PollingFrequency};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
@@ -81,46 +80,6 @@ async fn main() -> Result<()> {
 		Duration::from_secs(3600), // remove clients inactive for 1 hour
 	);
 
-	let obs_config = ObsConfig::default();
-	let client = Arc::new(create_obs_broadcast_manager(obs_config));
-	let obs_client = client.clone();
-
-	let requests = PollingConfig::default();
-	let request_boxed_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
-
-	let mut obs_handle = obs_client.start(request_boxed_slice);
-
-	let obs_monitor = {
-		let obs_task_client = client.clone();
-		tokio::spawn(async move {
-			// Log the startup
-
-			// Keep the handle alive and monitor it
-			tokio::select! {
-				_ = tokio::signal::ctrl_c() => {
-					tracing::info!("Received shutdown signal, stopping OBS handler...");
-					let _ = obs_task_client.disconnect().await;
-					let _ = obs_handle.stop().await;
-				}
-				_ = async {
-					// Monitor the handle and restart if it fails
-					loop {
-						if !obs_handle.is_running() {
-							tracing::error!("OBS background handler stopped unexpectedly");
-							break;
-						}
-						tracing::warn!("going to sleep for 30s");
-						tokio::time::sleep(Duration::from_secs(30)).await;
-					}
-				} => {
-					tracing::error!("OBS background handler monitoring ended");
-				}
-			}
-		})
-	};
-
-	ws_state.bridge_obs_events(client.clone());
-
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
 		.merge(get_gdrive_image())
@@ -180,9 +139,6 @@ async fn main() -> Result<()> {
 
 	// Clean shutdown
 	tracing::info!("Shutting down...");
-	let _ = client.disconnect().await;
-	obs_monitor.abort();
-	let _ = obs_monitor.await;
 
 	Ok(())
 }
