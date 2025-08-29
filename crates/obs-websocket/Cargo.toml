@@ -25,6 +25,7 @@ sha2 = "0.10.9"
 base64 = "0.22.1"
 thiserror.workspace = true
 uuid = { version =  "1.18.0", features = ["v4"] }
+tokio-util = "0.7.16"
 
 [lints]
 workspace = true
