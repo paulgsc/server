@@ -49,11 +49,15 @@ pub enum ConnectionError {
 /// Connection manager that handles the WebSocket connection lifecycle
 pub struct ConnectionManager {
 	state_handle: StateHandle,
+	msg_handler: MessageHandler,
 }
 
 impl ConnectionManager {
 	pub fn new(state_handle: StateHandle) -> Self {
-		Self { state_handle }
+		Self {
+			state_handle,
+			msg_handler: MessageHandler::new(),
+		}
 	}
 
 	/// Establish connection and set up communication channels
@@ -180,7 +184,7 @@ impl ConnectionManager {
 		authenticate(&config.password, &mut sink_guard, stream).await?;
 
 		// Fetch initial state
-		fetch_init_state(&mut sink_guard).await?;
+		self.msg_handler.initialize(&mut sink_guard).await?;
 
 		Ok(())
 	}
@@ -194,6 +198,7 @@ impl ConnectionManager {
 		requests: &[(ObsRequestType, PollingFrequency)],
 	) -> JoinHandle<()> {
 		let sink_for_polling = sink.clone();
+		let message_processor = self.msg_handler.processor();
 		let state_handle = self.state_handle.clone();
 		let cmd_exec = CommandExecutor::new(self.state_handle.clone());
 		let polling_manager = ObsPollingManager::from_request_slice(requests, cmd_exec);
@@ -203,7 +208,7 @@ impl ConnectionManager {
 		});
 
 		let message_task = tokio::spawn(async move {
-			message_processing_loop(stream, sink, event_tx, state_handle).await;
+			message_processing_loop(stream, sink, event_tx, state_handle, message_processor).await;
 		});
 
 		tokio::spawn(async move {
@@ -224,6 +229,7 @@ async fn message_processing_loop(
 	sink: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>>>,
 	event_tx: async_broadcast::Sender<ObsEvent>,
 	state_handle: StateHandle,
+	message_processor: MessageProcessor,
 ) {
 	let mut last_activity = Instant::now();
 	let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -236,7 +242,7 @@ async fn message_processing_loop(
 					Some(Ok(TungsteniteMessage::Text(text))) => {
 						last_activity = Instant::now();
 						// TODO: need to update the message mod to work with expected type directly
-						if let Ok(event) = process_obs_message(text.to_string()).await {
+						 if let Ok(event) = message_processor.process_message(text.to_string()).await {
 							let _ = event_tx.broadcast(event).await;
 						}
 					}

@@ -14,8 +14,7 @@ mod polling;
 use auth::authenticate;
 pub use config::ObsConfig;
 pub use core::*;
-pub use messages::ObsEvent;
-use messages::{fetch_init_state, process_obs_message};
+pub use messages::{MessageHandler, MessageProcessor, ObsEvent};
 use polling::{ObsPollingManager, ObsRequestBuilder};
 pub use polling::{ObsRequestType, PollingConfig, PollingFrequency};
 

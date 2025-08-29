@@ -2,6 +2,7 @@ use super::{ConnectionState, StateError, StateHandle};
 use crate::ObsEvent;
 use futures_util::future;
 use std::time::Duration;
+use tracing::{debug, error, trace, warn};
 
 pub struct EventHandler {
 	state_handle: StateHandle,
@@ -52,25 +53,26 @@ impl EventHandler {
 	where
 		F: FnMut(ObsEvent) -> future::BoxFuture<'static, ()>,
 	{
+		trace!("starting event stream loop");
 		loop {
 			match self.next_event().await {
 				Ok(event) => {
 					handler(event).await;
 				}
 				Err(StateError::NotConnected) => {
-					// Clean disconnection
+					warn!("disconnected cleanly (NotConnected)");
 					break Ok(());
 				}
 				Err(StateError::EventFailed(msg)) if msg.contains("channel closed") => {
-					// Channel closed, clean exit
-					break Ok(());
+					warn!(%msg, "channel closed, exiting cleanly");
+					break Err(StateError::EventFailed(msg));
 				}
 				Err(StateError::EventFailed(msg)) if msg.contains("Timeout") => {
-					// Timeout is not fatal, continue
+					debug!(%msg, "timeout, continuing loop");
 					continue;
 				}
 				Err(e) => {
-					// Other errors are fatal
+					error!(error = ?e, "fatal error, aborting event stream");
 					break Err(e);
 				}
 			}
