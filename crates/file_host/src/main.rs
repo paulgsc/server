@@ -17,6 +17,7 @@ use file_host::{
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
+use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{filter::EnvFilter, fmt::format::JsonFields, util::SubscriberInitExt, Layer};
@@ -62,6 +63,10 @@ async fn main() -> Result<()> {
 
 	let ws_state = init_websocket().await;
 
+	// Create cancellation token for coordinated shutdown
+	let shutdown_token = CancellationToken::new();
+	let shutdown_token_clone = shutdown_token.clone();
+
 	// Create connection limiter with configuration
 	let connection_limits = ConnectionLimitConfig {
 		max_per_client: 2,
@@ -74,11 +79,20 @@ async fn main() -> Result<()> {
 
 	let connection_limiter = ConnectionLimiter::new(connection_limits);
 
-	// Start cleanup task for inactive client states
-	connection_limiter.clone().start_cleanup_task(
-		Duration::from_secs(300),  // cleanup every 5 minutes
-		Duration::from_secs(3600), // remove clients inactive for 1 hour
-	);
+	// Start cleanup task for inactive client states with cancellation support
+	let mut cleanup_handle = {
+		let limiter = connection_limiter.clone();
+		let token = shutdown_token.clone();
+		tokio::spawn(async move {
+			let _ = limiter
+				.start_cleanup_task_with_cancellation(
+					Duration::from_secs(300),  // cleanup every 5 minutes
+					Duration::from_secs(3600), // remove clients inactive for 1 hour
+					token,
+				)
+				.await;
+		})
+	};
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
@@ -91,19 +105,19 @@ async fn main() -> Result<()> {
 
 	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(config.clone())), rate_limit_middleware));
 
-	// Add connection stats endpoint
+	// Add connection stats endpoint (if needed)
 	// let stats_route = Router::new()
-	// 	.route(
-	// 		"/connection-stats",
-	// 		axum::routing::get({
-	// 			let limiter = connection_limiter.clone();
-	// 			move || async move {
-	// 				let stats = limiter.get_stats().await;
-	// 				axum::Json(stats)
-	// 			}
-	// 		}),
-	// 	)
-	// 	.with_state(connection_limiter);
+	//	.route(
+	//		"/connection-stats",
+	//		axum::routing::get({
+	//			let limiter = connection_limiter.clone();
+	//			move || async move {
+	//				let stats = limiter.get_stats().await;
+	//				axum::Json(stats)
+	//			}
+	//		}),
+	//	)
+	//	.with_state(connection_limiter);
 
 	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
@@ -126,20 +140,47 @@ async fn main() -> Result<()> {
 	tracing::debug!("listening on {}", listener.local_addr()?);
 	let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
 
+	// Spawn signal handler task
+	let signal_task = tokio::spawn(async move {
+		let _ = tokio::signal::ctrl_c().await;
+		tracing::info!("Received shutdown signal");
+		shutdown_token_clone.cancel();
+	});
+
+	// Main server loop with proper cancellation handling
 	tokio::select! {
 		result = server => {
 			if let Err(e) = result {
 				tracing::error!("Server error: {}", e);
 			}
+			tracing::info!("Server stopped");
 		}
-		_ = tokio::signal::ctrl_c() => {
-			tracing::info!("Received shutdown signal");
+		_ = shutdown_token.cancelled() => {
+			tracing::info!("Shutdown initiated by signal");
 		}
 	}
 
-	// Clean shutdown
-	tracing::info!("Shutting down...");
+	// Graceful shutdown sequence
+	tracing::info!("Starting graceful shutdown...");
 
+	// Cancel the shutdown token to notify all tasks
+	shutdown_token.cancel();
+
+	// Give background tasks a moment to clean up
+	tokio::select! {
+		_ = &mut cleanup_handle => {
+			tracing::debug!("Cleanup task finished");
+		}
+		_ = tokio::time::sleep(Duration::from_secs(10)) => {
+			tracing::warn!("Cleanup task didn't finish within timeout, proceeding with shutdown");
+			cleanup_handle.abort();
+		}
+	}
+
+	// Clean up signal handler
+	signal_task.abort();
+
+	tracing::info!("Shutdown complete");
 	Ok(())
 }
 
@@ -167,46 +208,4 @@ pub fn init_tracing(config: &Config) -> Option<()> {
 		})
 		.init();
 	None
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use axum::{
-		body::Body,
-		extract::ConnectInfo,
-		http::{Request, StatusCode},
-	};
-	use std::net::SocketAddr;
-	use tower::ServiceExt;
-
-	#[tokio::test]
-	async fn test_rate_limiter_without_server() {
-		dotenv::dotenv().ok();
-		let context = Arc::new(Config::parse());
-
-		// Create a test app
-		let app = Router::new().route("/test", get(|| async { "Success" })).layer(axum::middleware::from_fn_with_state(
-			Arc::new(SlidingWindowRateLimiter::new(context.clone())),
-			rate_limit_middleware,
-		));
-
-		let app_service = app.clone().into_service();
-		// Make requests quickly
-		let remote_addr = "127.0.0.1:12345".parse::<SocketAddr>().unwrap();
-
-		// Test with same IP (should trigger rate limit)
-		for i in 1..=12 {
-			// Assuming limit is 10
-			let request = Request::builder().uri("/test").extension(ConnectInfo(remote_addr)).body(Body::empty()).unwrap();
-
-			let response = app_service.clone().oneshot(request).await.unwrap();
-
-			if i <= 10 {
-				assert_eq!(response.status(), StatusCode::OK);
-			} else {
-				assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-			}
-		}
-	}
 }

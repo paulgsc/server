@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::connection::core::ClientId;
@@ -168,6 +169,38 @@ impl ConnectionLimiter {
 				self.cleanup_inactive(threshold).await;
 			}
 		});
+	}
+
+	pub fn start_cleanup_task_with_cancellation(self: Arc<Self>, interval: Duration, threshold: Duration, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+		tokio::spawn(async move {
+			let mut ticker = tokio::time::interval(interval);
+
+			loop {
+				tokio::select! {
+					// Check for cancellation first
+					_ = cancel_token.cancelled() => {
+						tracing::info!("Connection limiter cleanup task shutting down");
+						break;
+					}
+					// Wait for next tick
+					_ = ticker.tick() => {
+						tokio::select! {
+							// Allow cancellation during cleanup operation
+							_ = cancel_token.cancelled() => {
+								tracing::info!("Connection limiter cleanup interrupted during operation");
+								break;
+							}
+							// Perform cleanup
+							_ = self.cleanup_inactive(threshold) => {
+								tracing::debug!("Connection limiter cleanup completed");
+							}
+						}
+					}
+				}
+			}
+
+			tracing::info!("Connection limiter cleanup task ended");
+		})
 	}
 
 	async fn cleanup_inactive(&self, threshold: Duration) {

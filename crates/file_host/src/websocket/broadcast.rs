@@ -6,6 +6,7 @@ use futures::stream::SplitSink;
 use obs_websocket::{ObsConfig, ObsRequestType, ObsWebSocketManager, PollingConfig, PollingFrequency, RetryConfig};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub enum BroadcastOutcome {
@@ -184,11 +185,22 @@ impl WebSocketFsm {
 			let obs_config = ObsConfig::default();
 			let obs_manager = ObsWebSocketManager::new(obs_config, RetryConfig::default());
 
+			// Create a cancellation token to coordinate shutdown
+			let cancel_token = CancellationToken::new();
+			let cancel_token_clone = cancel_token.clone();
+
+			// Spawn a task to handle shutdown signal
+			let shutdown_task = tokio::spawn(async move {
+				let _ = tokio::signal::ctrl_c().await;
+				tracing::info!("Shutdown signal received");
+				cancel_token_clone.cancel();
+			});
+
 			loop {
 				tokio::select! {
-					// Handle shutdown signal
-					_ = tokio::signal::ctrl_c() => {
-						info!("Shutting down OBS bridge");
+					// Check for cancellation
+					_ = cancel_token.cancelled() => {
+						tracing::info!("Shutting down OBS bridge");
 						let _ = obs_manager.disconnect().await;
 						break;
 					}
@@ -247,12 +259,23 @@ impl WebSocketFsm {
 						// Clean disconnect before retry
 						let _ = obs_manager.disconnect().await;
 
-						// Retry delay
-						tokio::time::sleep(Duration::from_secs(5)).await;
+						// Cancellable retry delay
+						tokio::select! {
+							_ = cancel_token.cancelled() => {
+								tracing::info!("Shutdown during retry delay");
+								break;
+							}
+							_ = tokio::time::sleep(Duration::from_secs(5)) => {
+								// Continue to next retry
+							}
+						}
+
 					}
 				}
 			}
 
+			// Clean up shutdown task
+			shutdown_task.abort();
 			info!("OBS event bridge ended");
 		})
 	}
