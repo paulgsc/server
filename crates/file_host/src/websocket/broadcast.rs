@@ -133,6 +133,14 @@ impl WebSocketFsm {
 		let event_type_str = format!("{:?}", event.get_type());
 		let receiver_count = self.sender.receiver_count();
 
+		if self.sender.receiver_count() == 0 {
+			return ProcessResult {
+				delivered: 0,
+				failed: 0,
+				duration: Duration::default(),
+			};
+		}
+
 		let result = timed_broadcast!(&event_type_str, {
 			match self.sender.broadcast(event.clone()).await {
 				Ok(_) => Ok(BroadcastOutcome::Completed {
