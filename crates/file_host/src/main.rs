@@ -11,7 +11,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::{rate_limit_middleware, TokenBucketRateLimiter};
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, NowPlaying},
+	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, EventType, NowPlaying},
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
@@ -50,18 +50,19 @@ async fn main() -> Result<()> {
 	let gsheet_reader = ReadSheets::new(use_email.clone(), secret_file.clone())?;
 	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
 	let github_client = GitHubClient::new(config.github_token.clone())?;
-	let ws = init_websocket().await;
+	let ws_state = init_websocket().await;
 
 	let app_state = AppState {
 		dedup_cache: dedup_cache.into(),
 		gsheet_reader: gsheet_reader.into(),
 		gdrive_reader: gdrive_reader.into(),
 		github_client: github_client.into(),
-		ws,
+		ws: ws_state.clone(),
 		config: config.clone(),
 	};
 
-	let ws_state = init_websocket().await;
+	let ws_bridge = Arc::new(ws_state.clone()); // Arc<WebSocketFsm>
+	ws_bridge.clone().bridge_obs_events(EventType::ObsStatus);
 
 	// Create cancellation token for coordinated shutdown
 	let shutdown_token = CancellationToken::new();

@@ -1,13 +1,11 @@
 use super::*;
-use async_broadcast::Receiver;
+use async_broadcast::{Receiver, RecvError};
 use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
 use futures::stream::SplitSink;
-use obs_websocket::{ObsConfig, ObsRequestType, ObsWebSocketManager, PollingConfig, PollingFrequency, RetryConfig};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub enum BroadcastOutcome {
 	NoSubscribers,
@@ -24,8 +22,6 @@ impl WebSocketFsm {
 		tokio::spawn(async move {
 			Self::event_distribution_loop(receiver, connections, metrics).await;
 		});
-
-		let _ = self.bridge_obs_events();
 	}
 
 	/// Event distribution loop - isolated logic
@@ -76,13 +72,13 @@ impl WebSocketFsm {
 	}
 
 	/// Handles receiver errors, returns true if should exit loop
-	fn handle_receiver_error(error: async_broadcast::RecvError) -> bool {
+	fn handle_receiver_error(error: RecvError) -> bool {
 		match error {
-			async_broadcast::RecvError::Closed => {
+			RecvError::Closed => {
 				record_ws_error!("channel_closed", "main_receiver", error);
 				true // Exit the loop
 			}
-			async_broadcast::RecvError::Overflowed(count) => {
+			RecvError::Overflowed(count) => {
 				record_ws_error!("channel_overflow", "main_receiver");
 				warn!("Main receiver lagged behind by {} messages, continuing", count);
 				false // Continue processing
@@ -175,111 +171,6 @@ impl WebSocketFsm {
 		}
 	}
 
-	pub fn bridge_obs_events(&self) -> tokio::task::JoinHandle<()> {
-		let metrics = self.metrics.clone();
-		let conn_fan = self.connections.clone();
-
-		tokio::spawn(async move {
-			info!("Starting OBS event bridge with internal manager");
-
-			let obs_config = ObsConfig::default();
-			let obs_manager = ObsWebSocketManager::new(obs_config, RetryConfig::default());
-
-			// Create a cancellation token to coordinate shutdown
-			let cancel_token = CancellationToken::new();
-			let cancel_token_clone = cancel_token.clone();
-
-			// Spawn a task to handle shutdown signal
-			let shutdown_task = tokio::spawn(async move {
-				let _ = tokio::signal::ctrl_c().await;
-				tracing::info!("Shutdown signal received");
-				cancel_token_clone.cancel();
-			});
-
-			loop {
-				tokio::select! {
-					// Check for cancellation
-					_ = cancel_token.cancelled() => {
-						tracing::info!("Shutting down OBS bridge");
-						let _ = obs_manager.disconnect().await;
-						break;
-					}
-
-					// Main connection loop
-					result = async {
-						let requests = PollingConfig::default();
-						let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
-
-						match obs_manager.connect(&request_slice).await {
-							Ok(()) => {
-								info!("Connected to OBS WebSocket");
-
-								obs_manager.stream_events(|obs_event| {
-									let metrics = metrics.clone();
-									let conn_fan = conn_fan.clone();
-
-									Box::pin(async move {
-										let event = Event::ObsStatus { status: obs_event };
-										let event_type = event.get_type();
-
-										let broadcast_outcome = Self::broadcast_event_to_subscribers(
-											event, &event_type
-											,conn_fan
-										).await;
-
-										match broadcast_outcome {
-											BroadcastOutcome::NoSubscribers => {
-												warn!("no subscribers for obs!")
-											}
-											BroadcastOutcome::Completed {
-												process_result: ProcessResult { delivered, failed, .. },
-											} => {
-
-												metrics.broadcast_attempt(failed == 0);
-												debug!(
-													"Event {:?} broadcast: {} delivered, {} failed",
-													event_type, delivered, failed
-												);
-											}
-
-										}
-									})
-								}).await
-							}
-							Err(e) => {
-								error!("Failed to connect to OBS: {}", e);
-								Err(e)
-							}
-						}
-					} => {
-						if let Err(e) = result {
-							error!("OBS connection error: {}", e);
-						}
-
-						// Clean disconnect before retry
-						let _ = obs_manager.disconnect().await;
-
-						// Cancellable retry delay
-						tokio::select! {
-							_ = cancel_token.cancelled() => {
-								tracing::info!("Shutdown during retry delay");
-								break;
-							}
-							_ = tokio::time::sleep(Duration::from_secs(5)) => {
-								// Continue to next retry
-							}
-						}
-
-					}
-				}
-			}
-
-			// Clean up shutdown task
-			shutdown_task.abort();
-			info!("OBS event bridge ended");
-		})
-	}
-
 	pub(crate) async fn broadcast_client_count(&self) {
 		let count = self.connections.len();
 		let _ = self.sender.broadcast(Event::ClientCount { count }).await;
@@ -288,6 +179,7 @@ impl WebSocketFsm {
 }
 
 // Spawns task to forward events from broadcast channel to WebSocket
+
 pub(crate) fn spawn_event_forwarder(
 	mut sender: SplitSink<WebSocket, Message>,
 	mut event_receiver: Receiver<Event>,
@@ -297,21 +189,40 @@ pub(crate) fn spawn_event_forwarder(
 	tokio::spawn(async move {
 		let mut message_count = 0u64;
 
-		while let Ok(event) = event_receiver.recv().await {
-			message_count += 1;
+		loop {
+			match event_receiver.recv().await {
+				Ok(event) => {
+					message_count += 1;
 
-			if let Err(_) = forward_single_event(&mut sender, &event, &conn_key, message_count).await {
-				break;
-			}
+					if let Err(e) = forward_single_event(&mut sender, &event, &conn_key, message_count).await {
+						record_ws_error!("forward single event error", "forward");
+						error!("Error forwarding single event: {:?}", e);
+						break; // Fatal: stop forwarding
+					}
 
-			// Log periodic forwarding stats
-			if message_count % 100 == 0 {
-				record_system_event!("forward_milestone", connection_id = conn_key, messages_forwarded = message_count);
-				debug!("Forwarded {} messages to client {}", message_count, conn_key);
+					if message_count % 100 == 0 {
+						record_system_event!("forward_milestone", connection_id = conn_key, messages_forwarded = message_count);
+						debug!("Forwarded {} messages to client {}", message_count, conn_key);
+					}
+				}
+
+				Err(RecvError::Overflowed(n)) => {
+					// Client is lagging behind — warn, skip, but continue
+					warn!(skipped = n, connection_id = conn_key, "Event receiver lagged, skipped {} messages", n);
+					record_ws_error!("Event receiver lagged, skipped {} messages", "forward", n);
+					continue;
+				}
+
+				Err(RecvError::Closed) => {
+					// Fatal: channel closed → stop loop
+					error!(connection_id = conn_key, "Event channel closed, ending forwarder");
+					record_ws_error!("Event channel closed unexpectedly", "forward");
+					break;
+				}
 			}
 		}
 
-		// Enforce invariant: receiver gone → connection gone
+		// Invariant: receiver gone → connection gone
 		let _ = state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
 		record_system_event!("forward_ended", connection_id = conn_key, total_messages = message_count);
 		debug!("Event forwarding ended for client {} after {} messages", conn_key, message_count);

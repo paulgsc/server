@@ -14,13 +14,18 @@ use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Serialize;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::time::{Duration, Instant};
+use tokio::{
+	sync::Notify,
+	time::{Duration, Instant},
+};
 use tracing::{debug, error, info, warn};
 
 pub mod broadcast;
 pub mod connection;
 pub mod message;
 pub mod middleware;
+pub mod notify;
+pub mod obs;
 pub mod types;
 
 use broadcast::spawn_event_forwarder;
@@ -37,11 +42,16 @@ pub use types::*;
 #[derive(Clone)]
 pub struct WebSocketFsm {
 	connections: Arc<DashMap<String, Connection>>,
+
 	sender: Sender<Event>,
 	event_rcv: Receiver<Event>,
-	metrics: Arc<ConnectionMetrics>,
+
 	system_events: Sender<SystemEvent>,
 	_sys_rcv: Receiver<SystemEvent>,
+
+	metrics: Arc<ConnectionMetrics>,
+
+	subscriber_notify: Arc<Notify>,
 }
 
 impl WebSocketFsm {
@@ -55,6 +65,8 @@ impl WebSocketFsm {
 		let connections = Arc::new(DashMap::<String, Connection>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
 
+		let subscriber_notify = Arc::new(Notify::new());
+
 		record_system_event!("fsm_initialized");
 		update_resource_usage!("active_connections", 0.0);
 
@@ -65,6 +77,7 @@ impl WebSocketFsm {
 			metrics,
 			system_events: system_sender,
 			_sys_rcv,
+			subscriber_notify,
 		}
 	}
 
@@ -87,6 +100,9 @@ impl WebSocketFsm {
 			} else {
 				conn.unsubscribe(event_types.clone())
 			};
+
+			// Notify FSM that subscriber state changed
+			self.update_subscriber_state();
 		}
 	}
 
@@ -272,6 +288,7 @@ async fn handle_socket(
 
 pub async fn init_websocket() -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
+
 	let state = WebSocketFsm::new();
 
 	// Start the websocket main process
