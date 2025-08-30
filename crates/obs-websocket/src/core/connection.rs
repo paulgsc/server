@@ -96,7 +96,9 @@ impl ConnectionManager {
 		event_tx.set_await_active(false); // Don't wait when broadcasting
 
 		// Update state with communication channels
+		// Store both sender and receiver
 		self.state_handle.set_command_sender(cmd_tx).await?;
+		self.state_handle.set_event_sender(event_tx.clone()).await?;
 		self.state_handle.set_event_receiver(event_rx).await?;
 
 		// Start connection tasks

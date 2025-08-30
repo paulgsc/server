@@ -38,6 +38,8 @@ pub enum StateError {
 	NotConnected,
 	#[error("State actor unavailable")]
 	ActorUnavailable,
+	#[error("Channel Overflow {0}")]
+	ChannelOverflow(String),
 }
 
 /// Messages sent to the state actor
@@ -56,6 +58,7 @@ pub enum StateMessage {
 	// Resource management
 	SetCommandSender(tokio::sync::mpsc::Sender<InternalCommand>),
 	SetEventReceiver(async_broadcast::Receiver<ObsEvent>),
+	SetEventSender(async_broadcast::Sender<ObsEvent>),
 	SetConnectionHandle(tokio::task::JoinHandle<()>),
 	TakeCommandSender(oneshot::Sender<Option<tokio::sync::mpsc::Sender<InternalCommand>>>),
 	TakeEventReceiver(oneshot::Sender<Option<async_broadcast::Receiver<ObsEvent>>>),
@@ -73,16 +76,18 @@ pub struct ObsState {
 	connection_state: ConnectionState,
 	command_sender: Option<tokio::sync::mpsc::Sender<InternalCommand>>,
 	event_receiver: Option<async_broadcast::Receiver<ObsEvent>>,
+	event_sender: Option<async_broadcast::Sender<ObsEvent>>,
 	connection_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ObsState {
-	fn new(config: ObsConfig) -> Self {
+	const fn new(config: ObsConfig) -> Self {
 		Self {
 			config,
 			connection_state: ConnectionState::Disconnected,
 			command_sender: None,
 			event_receiver: None,
+			event_sender: None,
 			connection_handle: None,
 		}
 	}
@@ -190,6 +195,9 @@ impl StateActor {
 				}
 				StateMessage::SetEventReceiver(receiver) => {
 					self.state.event_receiver = Some(receiver);
+				}
+				StateMessage::SetEventSender(sender) => {
+					self.state.event_sender = Some(sender);
 				}
 				StateMessage::SetConnectionHandle(handle) => {
 					self.state.connection_handle = Some(handle);
@@ -327,6 +335,10 @@ impl StateHandle {
 
 	pub async fn set_event_receiver(&self, receiver: async_broadcast::Receiver<ObsEvent>) -> Result<(), StateError> {
 		self.sender.send(StateMessage::SetEventReceiver(receiver)).await.map_err(|_| StateError::ActorUnavailable)
+	}
+
+	pub async fn set_event_sender(&self, sender: async_broadcast::Sender<ObsEvent>) -> Result<(), StateError> {
+		self.sender.send(StateMessage::SetEventSender(sender)).await.map_err(|_| StateError::ActorUnavailable)
 	}
 
 	pub async fn set_connection_handle(&self, handle: tokio::task::JoinHandle<()>) -> Result<(), StateError> {

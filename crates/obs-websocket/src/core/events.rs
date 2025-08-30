@@ -1,5 +1,6 @@
 use super::{ConnectionState, StateError, StateHandle};
 use crate::ObsEvent;
+use async_broadcast::RecvError;
 use futures_util::future;
 use std::time::Duration;
 use tracing::{debug, error, trace, warn};
@@ -33,8 +34,17 @@ impl EventHandler {
 				let _ = self.state_handle.set_event_receiver(receiver).await;
 				Ok(event)
 			}
-			Ok(Err(_)) => {
-				// Channel closed, transition to disconnected
+			Ok(Err(RecvError::Overflowed(n))) => {
+				// Non-fatal: we skipped some messages
+				warn!(skipped = n, "Event receiver lagged behind, skipped {n} messages");
+				// Put the receiver back and keep going
+				let _ = self.state_handle.set_event_receiver(receiver).await;
+				// Keep returning next event rather than disconnecting
+				Err(StateError::ChannelOverflow(format!("Skipped {n} messages")))
+			}
+			Ok(Err(RecvError::Closed)) => {
+				// Fatal: channel closed
+				error!("Event channel closed, disconnecting");
 				let _ = self.state_handle.transition_to_disconnected().await;
 				Err(StateError::EventFailed("Event channel closed".into()))
 			}
@@ -69,6 +79,10 @@ impl EventHandler {
 				}
 				Err(StateError::EventFailed(msg)) if msg.contains("Timeout") => {
 					debug!(%msg, "timeout, continuing loop");
+					continue;
+				}
+				Err(StateError::ChannelOverflow(e)) => {
+					error!("channel has overflowed, messages skipped: {}", e);
 					continue;
 				}
 				Err(e) => {
