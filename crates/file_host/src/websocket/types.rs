@@ -1,6 +1,6 @@
 use super::{ConnectionId, ProcessResult};
 use crate::{utils::generate_uuid, UtteranceMetadata};
-use obs_websocket::ObsEvent;
+use obs_websocket::{ObsCommand, ObsEvent};
 use serde::{Deserialize, Serialize};
 use std::{
 	fmt,
@@ -32,6 +32,7 @@ impl fmt::Display for MessageId {
 #[serde(rename_all = "camelCase")]
 pub enum EventType {
 	ObsStatus,
+	ObsCommand,
 	ClientCount,
 	Ping,
 	Pong,
@@ -55,6 +56,7 @@ pub struct NowPlaying {
 #[serde(rename_all = "camelCase")]
 pub enum Event {
 	ObsStatus { status: ObsEvent },
+	ObsCmd { cmd: ObsCommand },
 	TabMetaData { data: NowPlaying },
 	ClientCount { count: usize },
 	Ping,
@@ -75,6 +77,7 @@ impl Event {
 			Self::Unsubscribe { .. } => EventType::Ping,
 			Self::ClientCount { .. } => EventType::ClientCount,
 			Self::ObsStatus { .. } => EventType::ObsStatus,
+			Self::ObsCmd { .. } => EventType::ObsCommand,
 			Self::TabMetaData { .. } => EventType::TabMetaData,
 			Self::Utterance { .. } => EventType::Utterance,
 		}

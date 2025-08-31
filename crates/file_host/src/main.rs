@@ -2,6 +2,7 @@ mod handlers;
 mod metrics;
 mod models;
 mod routes;
+
 use crate::routes::{
 	audio_files::get_audio, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance,
 };
@@ -14,6 +15,8 @@ use file_host::{
 	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, EventType, NowPlaying},
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
+// use futures::{sink::SinkExt, stream::StreamExt};
+use obs_websocket::{ObsRequestType, PollingConfig, PollingFrequency};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
@@ -51,6 +54,12 @@ async fn main() -> Result<()> {
 	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
 	let github_client = GitHubClient::new(config.github_token.clone())?;
 	let ws_state = init_websocket().await;
+
+	// Connect to obs websocket
+	let requests = PollingConfig::default();
+	let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
+	ws_state.obs_manager.connect(&request_slice).await?;
+	tracing::info!("Connected to OBS WebSocket");
 
 	let app_state = AppState {
 		dedup_cache: dedup_cache.into(),
@@ -104,7 +113,8 @@ async fn main() -> Result<()> {
 		.merge(get_health())
 		.merge(post_utterance());
 
-	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(config.clone())), rate_limit_middleware));
+	let max_requests = config.clone().max_request_size.try_into()?;
+	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
 
 	// Add connection stats endpoint (if needed)
 	// let stats_route = Router::new()
@@ -166,6 +176,10 @@ async fn main() -> Result<()> {
 
 	// Cancel the shutdown token to notify all tasks
 	shutdown_token.cancel();
+
+	// First, shut down WebSocket connections gracefully
+	tracing::info!("Shutting down WebSocket connections...");
+	ws_bridge.shutdown().await;
 
 	// Give background tasks a moment to clean up
 	tokio::select! {

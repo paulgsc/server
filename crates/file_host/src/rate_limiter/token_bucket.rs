@@ -1,4 +1,3 @@
-use crate::Config;
 use axum::{body::Body, extract::State, http::Response, middleware::Next, response::IntoResponse};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -12,8 +11,7 @@ pub struct TokenBucketRateLimiter {
 }
 
 impl TokenBucketRateLimiter {
-	pub fn new(config: Arc<Config>) -> Self {
-		let max_tokens = config.rate_limit as u32;
+	pub fn new(max_tokens: u32) -> Self {
 		Self {
 			max_tokens,
 			refill_rate: max_tokens / 60,       // refill over 60 seconds

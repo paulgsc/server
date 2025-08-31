@@ -12,6 +12,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
+use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
 use serde::Serialize;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
@@ -26,6 +27,7 @@ pub mod message;
 pub mod middleware;
 pub mod notify;
 pub mod obs;
+pub mod shutdown;
 pub mod types;
 
 use broadcast::spawn_event_forwarder;
@@ -52,6 +54,8 @@ pub struct WebSocketFsm {
 	metrics: Arc<ConnectionMetrics>,
 
 	subscriber_notify: Arc<Notify>,
+
+	pub obs_manager: Arc<ObsWebSocketManager>,
 }
 
 impl WebSocketFsm {
@@ -67,6 +71,9 @@ impl WebSocketFsm {
 
 		let subscriber_notify = Arc::new(Notify::new());
 
+		let obs_config = ObsConfig::default();
+		let obs_manager = Arc::new(ObsWebSocketManager::new(obs_config, RetryConfig::default()));
+
 		record_system_event!("fsm_initialized");
 		update_resource_usage!("active_connections", 0.0);
 
@@ -78,6 +85,7 @@ impl WebSocketFsm {
 			system_events: system_sender,
 			_sys_rcv,
 			subscriber_notify,
+			obs_manager,
 		}
 	}
 

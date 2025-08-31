@@ -93,6 +93,7 @@ impl WebSocketFsm {
 		let mut failed = 0;
 
 		// Collect active connections that are subscribed to this event type
+		// TODO: do we really need an O(N) lookup!
 		let subscribed_connections: Vec<_> = connections
 			.iter()
 			.filter_map(|entry| {

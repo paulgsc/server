@@ -1,9 +1,8 @@
-use crate::Config;
 use axum::{body::Body, extract::State, http::Response, middleware::Next, response::IntoResponse};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct SlidingWindowRateLimiter {
@@ -13,9 +12,9 @@ pub struct SlidingWindowRateLimiter {
 }
 
 impl SlidingWindowRateLimiter {
-	pub fn new(config: Arc<Config>) -> Self {
+	pub fn new(max_requests: usize) -> Self {
 		Self {
-			max_requests: config.rate_limit as usize,
+			max_requests,
 			window_size: Duration::from_secs(60),
 			request_timestamps: Arc::new(Mutex::new(VecDeque::new())),
 		}
