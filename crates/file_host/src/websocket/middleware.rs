@@ -87,6 +87,17 @@ impl ConnectionLimiter {
 
 		let client_state = self.get_or_create_client(client_id);
 
+		// Add explicit client limit check
+		let client_available = client_state.semaphore.available_permits();
+		let client_active = client_state.capacity - client_available;
+		if client_available == 0 {
+			return Err(ConnectionLimitError::ClientLimitExceeded {
+				client_id: client_id.to_string(),
+				current: client_active,
+				limit: client_state.capacity,
+			});
+		}
+
 		// Check queue limits
 		if self.config.enable_queuing {
 			let queued = client_state.queued_count.load(std::sync::atomic::Ordering::Relaxed);
