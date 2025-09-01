@@ -43,12 +43,12 @@ impl ObsInitializer {
 
 		for (request_type, request_id) in &self.config.requests {
 			let request = json!({
-			"op": 6,
-							"d": {
-														"requestType": request_type.as_str(),
-																			"requestId": request_id
-																							}
-					});
+				"op": 6,
+				"d": {
+					"requestType": request_type.as_str(),
+					"requestId": request_id
+				}
+			});
 
 			trace!("Sending initialization request: {} ({})", request_type.as_str(), request_id);
 

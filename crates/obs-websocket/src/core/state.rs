@@ -36,6 +36,8 @@ pub enum StateError {
 	EventFailed(String),
 	#[error("Not connected")]
 	NotConnected,
+	#[error("No Recievers")]
+	NoReceivers,
 	#[error("State actor unavailable")]
 	ActorUnavailable,
 	#[error("Channel Overflow {0}")]
@@ -310,6 +312,7 @@ impl StateHandle {
 	}
 
 	pub async fn transition_to_disconnected(&self) -> Result<(), StateError> {
+		tracing::warn!("transitioned to disconnected");
 		self.transition(StateTransition::ConnectionLost).await
 	}
 

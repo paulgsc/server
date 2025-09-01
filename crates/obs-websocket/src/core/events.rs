@@ -24,7 +24,7 @@ impl EventHandler {
 		// Take the event receiver temporarily
 		let mut receiver = match self.state_handle.take_event_receiver().await? {
 			Some(receiver) => receiver,
-			None => return Err(StateError::NotConnected),
+			None => return Err(StateError::NoReceivers),
 		};
 
 		// Try to receive an event with timeout
