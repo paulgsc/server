@@ -38,8 +38,7 @@ pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {
 				// Main connection loop
 				result = async {
 					let requests = PollingConfig::default();
-					let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
-					match obs_manager.connect(&request_slice).await {
+					match obs_manager.connect(requests).await {
 						Ok(()) => {
 							tracing::info!("Connected to OBS WebSocket");
 							obs_manager.stream_events(|obs_event| {

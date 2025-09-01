@@ -1,6 +1,16 @@
 use super::*;
+use tokio::sync::mpsc;
+use tracing::{error, info, instrument, warn};
 
-/// Configurable polling manager
+/// Messages for the outbound worker
+#[derive(Debug)]
+enum OutboundMessage {
+	Poll(Vec<serde_json::Value>),
+	Command(serde_json::Value),
+	Disconnect,
+}
+
+/// Configurable polling manager with outbound worker
 pub struct ObsPollingManager {
 	requests: ObsPollingRequests,
 	config: PollingConfig,
@@ -8,33 +18,84 @@ pub struct ObsPollingManager {
 	high_freq_interval: Duration,
 	medium_freq_interval: Duration,
 	low_freq_interval: Duration,
+	outbound_tx: mpsc::Sender<OutboundMessage>,
 }
 
 impl ObsPollingManager {
-	pub fn new(config: PollingConfig, command_executor: CommandExecutor) -> Self {
-		Self::with_id_strategy(config, command_executor, RequestIdStrategy::Uuid)
+	pub fn new(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink) -> Self {
+		Self::with_id_strategy(config, command_executor, sink, RequestIdStrategy::Uuid)
 	}
 
 	/// Create with specific ID generation strategy
-	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, id_strategy: RequestIdStrategy) -> Self {
+	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink, id_strategy: RequestIdStrategy) -> Self {
+		// Create bounded channel - adjust capacity as needed (512 seems reasonable)
+		let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundMessage>(512);
+
+		// Spawn the outbound worker task
+		tokio::spawn(Self::outbound_worker(sink, outbound_rx));
+
 		Self {
 			requests: ObsPollingRequests::with_strategy(id_strategy),
 			config,
 			command_executor,
-			high_freq_interval: Duration::from_secs(1),   // Every second
-			medium_freq_interval: Duration::from_secs(5), // Every 5 seconds
-			low_freq_interval: Duration::from_secs(30),   // Every 30 seconds
+			high_freq_interval: Duration::from_secs(1),
+			medium_freq_interval: Duration::from_secs(5),
+			low_freq_interval: Duration::from_secs(30),
+			outbound_tx,
 		}
 	}
 
-	/// Create from a slice of (RequestType, Frequency) tuples
-	pub fn from_request_slice(requests: &[(ObsRequestType, PollingFrequency)], command_executor: CommandExecutor) -> Self {
-		Self::new(PollingConfig::from(requests), command_executor)
+	/// The outbound worker: handles ALL network I/O to prevent DDOS
+	async fn outbound_worker(sink: SharedSink, mut rx: mpsc::Receiver<OutboundMessage>) {
+		info!("Starting OBS outbound worker");
+
+		while let Some(msg) = rx.recv().await {
+			let mut s_g = sink.lock().await;
+
+			match msg {
+				OutboundMessage::Poll(batch) => {
+					if batch.is_empty() {
+						continue;
+					}
+
+					let batch_size = batch.len();
+
+					for req in batch {
+						if let Ok(request_text) = serde_json::to_string(&req) {
+							if let Err(e) = s_g.send(TungsteniteMessage::Text(request_text.into())).await {
+								error!("Poll request send failed: {}", e);
+							}
+						}
+					}
+
+					if let Err(e) = s_g.flush().await {
+						error!("Failed to flush poll batch of {}: {}", batch_size, e);
+					}
+				}
+				OutboundMessage::Command(cmd) => {
+					if let Ok(request_text) = serde_json::to_string(&cmd) {
+						if let Err(e) = s_g.send(TungsteniteMessage::Text(request_text.into())).await {
+							error!("Command send failed: {}", e);
+						} else if let Err(e) = s_g.flush().await {
+							error!("Command flush failed: {}", e);
+						} else {
+							info!("Successfully sent command request");
+						}
+					}
+				}
+				OutboundMessage::Disconnect => {
+					warn!("Disconnect requested, outbound worker exiting");
+					return;
+				}
+			}
+		}
+
+		warn!("Outbound worker channel closed, worker exiting");
 	}
 
 	/// Main polling loop with configurable requests and command handling
-	#[instrument(skip(self, sink, cmd_rx))]
-	pub async fn start_polling_loop(self, sink: SharedSink, mut cmd_rx: tokio::sync::mpsc::Receiver<InternalCommand>) -> Result<(), PollingError> {
+	#[instrument(skip(self, cmd_rx))]
+	pub async fn start_polling_loop(self, mut cmd_rx: mpsc::Receiver<InternalCommand>) -> Result<(), PollingError> {
 		let mut high_freq_timer = interval(self.high_freq_interval);
 		let mut medium_freq_timer = interval(self.medium_freq_interval);
 		let mut low_freq_timer = interval(self.low_freq_interval);
@@ -49,6 +110,7 @@ impl ObsPollingManager {
 		let mut medium_freq_counter = 0u64;
 		let mut low_freq_counter = 0u64;
 		let mut cmd_counter = 0u64;
+		let mut dropped_polls = 0u64;
 
 		info!(
 			"Starting OBS polling loop with {} high, {} medium, {} low frequency requests",
@@ -61,147 +123,92 @@ impl ObsPollingManager {
 			loop_counter += 1;
 
 			tokio::select! {
-				// High frequency polling (1 second)
-				_ = high_freq_timer.tick() => {
-					high_freq_counter += 1;
+					// High frequency polling (1 second)
+					_ = high_freq_timer.tick() => {
+							high_freq_counter += 1;
 
-					if !self.config.high_frequency_requests.is_empty() {
-						let requests = self.requests.generate_requests(&self.config.high_frequency_requests);
-						if let Err(e) = self.send_requests(&sink, requests).await {
-							error!("Failed to send high frequency requests (tick #{}): {}", high_freq_counter, e);
-							return Err(PollingError::CriticalLoopTermination {
-								reason: format!("High frequency request failure on tick #{}: {}", high_freq_counter, e)
-							});
-						}
-					}
-				}
+							if !self.config.high_frequency_requests.is_empty() {
+									let requests = self.requests.generate_requests(&self.config.high_frequency_requests);
 
-				// Medium frequency polling (5 seconds)
-				_ = medium_freq_timer.tick() => {
-					medium_freq_counter += 1;
-
-					if !self.config.medium_frequency_requests.is_empty() {
-						let requests = self.requests.generate_requests(&self.config.medium_frequency_requests);
-						if let Err(e) = self.send_requests(&sink, requests).await {
-							error!("Failed to send medium frequency requests (tick #{}): {}", medium_freq_counter, e);
-							return Err(PollingError::CriticalLoopTermination {
-								reason: format!("Medium frequency request failure on tick #{}: {}", medium_freq_counter, e)
-							});
-						}
-					}
-				}
-
-				// Low frequency polling (30 seconds)
-				_ = low_freq_timer.tick() => {
-					low_freq_counter += 1;
-
-					if !self.config.low_frequency_requests.is_empty() {
-						let requests = self.requests.generate_requests(&self.config.low_frequency_requests);
-						if let Err(e) = self.send_requests(&sink, requests).await {
-							error!("Failed to send low frequency requests (tick #{}): {}", low_freq_counter, e);
-							return Err(PollingError::CriticalLoopTermination {
-								reason: format!("Low frequency request failure on tick #{}: {}", low_freq_counter, e)
-							});
-						}
-					}
-				}
-
-				// Handle internal commands (Execute or Disconnect)
-				Some(internal_cmd) = cmd_rx.recv() => {
-					cmd_counter += 1;
-
-					match internal_cmd {
-						InternalCommand::Execute(obs_cmd) => {
-							// First validate the command through the executor
-							if let Err(e) = self.command_executor.execute(obs_cmd.clone()).await {
-								error!("Command validation failed (command #{}): {:?} - Error: {}", cmd_counter, obs_cmd, e);
-								// Continue processing other commands even if this one fails validation
-								continue;
+									// Use try_send for polls - drop if queue is full (backpressure)
+									if let Err(mpsc::error::TrySendError::Full(_)) =
+											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											dropped_polls += 1;
+											warn!("Dropped high frequency poll batch #{} - outbound queue full", high_freq_counter);
+									}
 							}
-
-							// Build the request using the command executor's builder
-							let request = self.command_executor.build_request(&obs_cmd);
-
-							// Send the request
-							if let Err(e) = self.send_single_request(&sink, request).await {
-								error!("Failed to send command request (command #{}): {}", cmd_counter, e);
-								return Err(PollingError::CriticalLoopTermination {
-									reason: format!("Command request send failure on command #{}: {}", cmd_counter, e)
-								});
-							}
-
-							info!("Successfully executed command #{}: {:?}", cmd_counter, obs_cmd);
-						}
-						InternalCommand::Disconnect => {
-							info!("Received disconnect command, exiting polling loop gracefully");
-							return Ok(());
-						}
 					}
-				}
 
-				// Channel closed unexpectedly
-				else => {
-					error!("Command channel closed unexpectedly after {} loop iterations", loop_counter);
-					error!("Loop counters at exit - Total: {}, High: {}, Medium: {}, Low: {}, Commands: {}",
-						loop_counter, high_freq_counter, medium_freq_counter, low_freq_counter, cmd_counter);
-					return Err(PollingError::ChannelClosed);
-				}
+					// Medium frequency polling (5 seconds)
+					_ = medium_freq_timer.tick() => {
+							medium_freq_counter += 1;
+
+							if !self.config.medium_frequency_requests.is_empty() {
+									let requests = self.requests.generate_requests(&self.config.medium_frequency_requests);
+
+									if let Err(mpsc::error::TrySendError::Full(_)) =
+											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											dropped_polls += 1;
+											warn!("Dropped medium frequency poll batch #{} - outbound queue full", medium_freq_counter);
+									}
+							}
+					}
+
+					// Low frequency polling (30 seconds)
+					_ = low_freq_timer.tick() => {
+							low_freq_counter += 1;
+
+							if !self.config.low_frequency_requests.is_empty() {
+									let requests = self.requests.generate_requests(&self.config.low_frequency_requests);
+
+									if let Err(mpsc::error::TrySendError::Full(_)) =
+											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											dropped_polls += 1;
+											warn!("Dropped low frequency poll batch #{} - outbound queue full", low_freq_counter);
+									}
+							}
+					}
+
+					// Handle internal commands (Execute or Disconnect)
+					Some(internal_cmd) = cmd_rx.recv() => {
+							cmd_counter += 1;
+
+							match internal_cmd {
+									InternalCommand::Execute(obs_cmd) => {
+
+											// Build the request using the command executor's builder
+											let request = self.command_executor.build_request(&obs_cmd);
+
+											// Commands are higher priority - await send to ensure delivery
+											if let Err(e) = self.outbound_tx.send(OutboundMessage::Command(request)).await {
+													error!("Failed to queue command #{}: {}", cmd_counter, e);
+													return Err(PollingError::CriticalLoopTermination {
+															reason: format!("Command queue failure on command #{}: {}", cmd_counter, e)
+													});
+											}
+
+											info!("Successfully queued command #{}: {:?}", cmd_counter, obs_cmd);
+									}
+									InternalCommand::Disconnect => {
+											info!("Received disconnect command, shutting down gracefully");
+											let _ = self.outbound_tx.send(OutboundMessage::Disconnect).await;
+											return Ok(());
+									}
+							}
+					}
+
+					// Channel closed unexpectedly
+					else => {
+							error!("Command channel closed unexpectedly after {} loop iterations", loop_counter);
+							error!("Loop counters at exit - Total: {}, High: {}, Medium: {}, Low: {}, Commands: {}, Dropped polls: {}",
+									loop_counter, high_freq_counter, medium_freq_counter, low_freq_counter, cmd_counter, dropped_polls);
+
+							// Try to signal outbound worker to shut down
+							let _ = self.outbound_tx.send(OutboundMessage::Disconnect).await;
+
+							return Err(PollingError::ChannelClosed);
+					}
 			}
 		}
-	}
-
-	/// Send a batch of requests to OBS
-	async fn send_requests(&self, sink: &SharedSink, requests: Vec<serde_json::Value>) -> Result<(), PollingError> {
-		if requests.is_empty() {
-			return Ok(());
-		}
-
-		let total_count = requests.len();
-		let mut send_errors = Vec::new();
-
-		// Send all requests
-		{
-			let mut s_g = sink.lock().await;
-			for (i, req) in requests.iter().enumerate() {
-				let request_text = serde_json::to_string(req)?;
-				if let Err(e) = s_g.send(TungsteniteMessage::Text(request_text.into())).await {
-					error!("Failed to send request {}/{}: {}", i + 1, total_count, e);
-					send_errors.push(e);
-				}
-			}
-
-			// Flush all requests at once
-			if let Err(e) = s_g.flush().await {
-				return Err(PollingError::FlushFailure {
-					request_count: total_count,
-					error: e,
-				});
-			}
-		}
-
-		// Check if any sends failed
-		if !send_errors.is_empty() {
-			let failed_count = send_errors.len();
-			let first_error = send_errors.into_iter().next().unwrap();
-
-			return Err(PollingError::BatchSendFailure {
-				failed_count,
-				total_count,
-				first_error,
-			});
-		}
-
-		Ok(())
-	}
-
-	/// Send a single request to OBS (used for commands)
-	async fn send_single_request(&self, sink: &SharedSink, request: serde_json::Value) -> Result<(), PollingError> {
-		let mut s_g = sink.lock().await;
-		let request_text = serde_json::to_string(&request)?;
-
-		s_g.send(TungsteniteMessage::Text(request_text.into())).await?;
-		s_g.flush().await.map_err(|e| PollingError::FlushFailure { request_count: 1, error: e })?;
-
-		Ok(())
 	}
 }

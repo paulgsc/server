@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, WebSocketStream};
-use tracing::{error, info, instrument};
+use tracing::error;
 
 pub type WsSink = SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, TungsteniteMessage>;
 pub type SharedSink = Arc<tokio::sync::Mutex<WsSink>>;

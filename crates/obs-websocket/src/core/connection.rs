@@ -61,7 +61,7 @@ impl ConnectionManager {
 	}
 
 	/// Establish connection and set up communication channels
-	pub async fn establish_connection(&self, requests: &[(ObsRequestType, PollingFrequency)]) -> Result<(), ConnectionError> {
+	pub async fn establish_connection(&self, polling_config: PollingConfig) -> Result<(), ConnectionError> {
 		// Transition to connecting state
 		self.state_handle.transition_to_connecting().await?;
 
@@ -102,7 +102,7 @@ impl ConnectionManager {
 		self.state_handle.set_event_receiver(event_rx).await?;
 
 		// Start connection tasks
-		let connection_handle = self.start_connection_tasks(sink, stream, cmd_rx, event_tx, requests).await;
+		let connection_handle = self.start_connection_tasks(sink, stream, cmd_rx, event_tx, polling_config).await;
 		self.state_handle.set_connection_handle(connection_handle).await?;
 
 		// Transition to connected state
@@ -197,16 +197,15 @@ impl ConnectionManager {
 		stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 		cmd_rx: mpsc::Receiver<InternalCommand>,
 		event_tx: async_broadcast::Sender<ObsEvent>,
-		requests: &[(ObsRequestType, PollingFrequency)],
+		config: PollingConfig,
 	) -> JoinHandle<()> {
-		let sink_for_polling = sink.clone();
 		let message_processor = self.msg_handler.processor();
 		let state_handle = self.state_handle.clone();
-		let cmd_exec = CommandExecutor::new(self.state_handle.clone());
-		let polling_manager = ObsPollingManager::from_request_slice(requests, cmd_exec);
+		let command_executor = CommandExecutor::new(self.state_handle.clone());
+		let polling_manager = ObsPollingManager::new(config, command_executor, sink.clone());
 
 		let polling_task = tokio::spawn(async move {
-			let _ = polling_manager.start_polling_loop(sink_for_polling, cmd_rx).await;
+			let _ = polling_manager.start_polling_loop(cmd_rx).await;
 		});
 
 		let message_task = tokio::spawn(async move {
@@ -330,8 +329,8 @@ impl ObsConnection {
 	}
 
 	/// Connect to OBS with polling requests
-	pub async fn connect(&self, requests: &[(ObsRequestType, PollingFrequency)]) -> Result<(), ConnectionError> {
-		self.connection_manager.establish_connection(requests).await
+	pub async fn connect(&self, config: PollingConfig) -> Result<(), ConnectionError> {
+		self.connection_manager.establish_connection(config).await
 	}
 
 	/// Disconnect from OBS

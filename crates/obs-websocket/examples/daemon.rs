@@ -7,9 +7,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let obs_client = create_obs_manager(config);
 
 	let requests = PollingConfig::default();
-	let request_boxed_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
 
-	obs_client.connect(&request_boxed_slice).await?;
+	obs_client.connect(requests).await?;
 
 	// Simple event loop
 	loop {

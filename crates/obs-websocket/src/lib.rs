@@ -57,8 +57,8 @@ impl ObsWebSocketManager {
 	}
 
 	/// Connect with polling configuration
-	pub async fn connect(&self, requests: &[(ObsRequestType, PollingFrequency)]) -> Result<(), ObsWebsocketError> {
-		self.obs_connection.connect(requests).await?;
+	pub async fn connect(&self, config: PollingConfig) -> Result<(), ObsWebsocketError> {
+		self.obs_connection.connect(config).await?;
 		Ok(())
 	}
 

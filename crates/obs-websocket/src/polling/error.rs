@@ -9,21 +9,6 @@ pub enum PollingError {
 	#[error("State validation error: {0}")]
 	StateValidation(#[from] StateError),
 
-	#[error("Failed to send {failed_count} out of {total_count} requests")]
-	BatchSendFailure {
-		failed_count: usize,
-		total_count: usize,
-		#[source]
-		first_error: tokio_tungstenite::tungstenite::Error,
-	},
-
-	#[error("Failed to flush WebSocket sink after sending {request_count} requests")]
-	FlushFailure {
-		request_count: usize,
-		#[source]
-		error: tokio_tungstenite::tungstenite::Error,
-	},
-
 	#[error("Command channel closed unexpectedly")]
 	ChannelClosed,
 
