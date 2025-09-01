@@ -1,6 +1,6 @@
 use crate::websocket::{BroadcastOutcome, Event, EventType};
 use crate::WebSocketFsm;
-use obs_websocket::{ObsConfig, ObsRequestType, ObsWebSocketManager, PollingConfig, PollingFrequency, RetryConfig};
+use obs_websocket::{ObsWebSocketManager, PollingConfig};
 use std::sync::Arc;
 use tokio::{task::JoinHandle, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -17,19 +17,16 @@ impl WebSocketFsm {
 		tokio::spawn(async move {
 			info!("Starting OBS bridge FSM (lazy subscriber-driven)");
 
-			let obs_config = ObsConfig::default();
-			let obs_manager = Arc::new(ObsWebSocketManager::new(obs_config, RetryConfig::default()));
-
 			loop {
 				tokio::select! {
 					_ = cancel_token.cancelled() => {
 						info!("Bridge task cancelled for {:?}", event_type);
 						break;
 					}
-					_ = fsm.wait_for_subscriber(event_type.clone()) => {
+						_ = fsm.wait_for_subscriber_group(&event_type) => {
 						info!("Subscriber(s) present for {:?} → connecting OBS", event_type);
 
-						if let Err(e) = fsm.clone().run_obs_session(&obs_manager, &cancel_token, event_type.clone()).await {
+						if let Err(e) = fsm.clone().run_obs_session(&fsm.obs_manager, &cancel_token, event_type.clone()).await {
 							error!("OBS session ended with error: {e}");
 						}
 
@@ -42,30 +39,34 @@ impl WebSocketFsm {
 
 	async fn run_obs_session(self: Arc<Self>, obs_manager: &Arc<ObsWebSocketManager>, cancel_token: &CancellationToken, event_type: EventType) -> anyhow::Result<()> {
 		let requests = PollingConfig::default();
-		let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
 
-		obs_manager.connect(&request_slice).await?;
+		obs_manager.connect(requests).await?;
 		let obs_manager_stream_task = obs_manager.clone();
 		info!("Connected to OBS WebSocket");
 
 		let stream_task = tokio::spawn({
 			let metrics = self.metrics.clone();
 			let connections = self.connections.clone();
+			let ev_ty = event_type.clone();
 
 			async move {
 				obs_manager_stream_task
 					.stream_events(|obs_event| {
 						let metrics = metrics.clone();
 						let connections = connections.clone();
+						let ev_ty = ev_ty.clone();
 						Box::pin(async move {
-							let event = Event::ObsStatus { status: obs_event };
-							let event_type_name = event.get_type();
+							// Only stream ObsStatus, even if ObsCommand subscribers exist
+							if ev_ty.is_stream_origin() {
+								let event = Event::ObsStatus { status: obs_event };
+								let event_type_name = event.get_type();
 
-							let outcome = Self::broadcast_event_to_subscribers(event, &event_type_name, connections.clone()).await;
+								let outcome = Self::broadcast_event_to_subscribers(event, &event_type_name, connections.clone()).await;
 
-							if let BroadcastOutcome::Completed { process_result } = outcome {
-								metrics.broadcast_attempt(process_result.failed == 0);
-								debug!("Event {:?}: {} delivered, {} failed", event_type_name, process_result.delivered, process_result.failed);
+								if let BroadcastOutcome::Completed { process_result } = outcome {
+									metrics.broadcast_attempt(process_result.failed == 0);
+									debug!("Event {:?}: {} delivered, {} failed", event_type_name, process_result.delivered, process_result.failed);
+								}
 							}
 						})
 					})
@@ -74,10 +75,9 @@ impl WebSocketFsm {
 		});
 
 		// Wait until either cancelled or no subscribers for this event type
-		let conn = self.connections.clone();
 		let sub_notify = self.subscriber_notify.clone();
 		loop {
-			let has_subs = &conn.iter().any(|entry| entry.value().is_active() && entry.value().is_subscribed_to(&event_type));
+			let has_subs = self.has_subscriber_for_group(&event_type);
 
 			if !has_subs {
 				info!("No subscribers for {:?} → disconnecting OBS", event_type);

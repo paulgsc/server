@@ -16,7 +16,6 @@ use file_host::{
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
 // use futures::{sink::SinkExt, stream::StreamExt};
-use obs_websocket::{ObsRequestType, PollingConfig, PollingFrequency};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
@@ -54,12 +53,6 @@ async fn main() -> Result<()> {
 	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
 	let github_client = GitHubClient::new(config.github_token.clone())?;
 	let ws_state = init_websocket().await;
-
-	// Connect to obs websocket
-	let requests = PollingConfig::default();
-	let request_slice: Box<[(ObsRequestType, PollingFrequency)]> = requests.into();
-	ws_state.obs_manager.connect(&request_slice).await?;
-	tracing::info!("Connected to OBS WebSocket");
 
 	let app_state = AppState {
 		dedup_cache: dedup_cache.into(),

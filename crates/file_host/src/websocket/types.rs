@@ -3,6 +3,7 @@ use crate::{utils::generate_uuid, UtteranceMetadata};
 use obs_websocket::{ObsCommand, ObsEvent};
 use serde::{Deserialize, Serialize};
 use std::{
+	collections::HashSet,
 	fmt,
 	sync::atomic::{AtomicU64, Ordering},
 };
@@ -39,6 +40,24 @@ pub enum EventType {
 	Error,
 	TabMetaData,
 	Utterance,
+}
+
+impl EventType {
+	/// Which event actually drives streaming from OBS
+	pub fn is_stream_origin(&self) -> bool {
+		matches!(self, EventType::ObsStatus)
+	}
+
+	/// Returns the set of EventTypes that can trigger OBS streaming
+	pub fn lazy_trigger_group(&self) -> HashSet<EventType> {
+		match self {
+			EventType::ObsStatus | EventType::ObsCommand => {
+				// Both can trigger OBS streaming
+				[EventType::ObsStatus, EventType::ObsCommand].into_iter().collect()
+			}
+			_ => [self.clone()].into_iter().collect(), // others are independent
+		}
+	}
 }
 
 #[derive(Clone, Serialize, Debug, Deserialize)]

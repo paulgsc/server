@@ -1,3 +1,5 @@
+pub mod retry;
+
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH}; // For writing into buffer
 

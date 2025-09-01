@@ -1,6 +1,8 @@
 use super::*;
+use crate::utils::retry::retry_async;
 use axum::extract::ws::{CloseFrame, WebSocket};
 use futures::stream::SplitStream;
+use obs_websocket::ObsCommand;
 use tokio::time::{Duration, Instant};
 
 // Enhanced message FSM with correlation tracking
@@ -161,7 +163,23 @@ impl WebSocketFsm {
 			let event_type_str = format!("{:?}", event.get_type());
 			let start_time = Instant::now();
 
-			let result = timed_ws_operation!(&event_type_str, "process", { self.broadcast_event(event).await });
+			let result = match event {
+				Event::ObsCmd { cmd } => {
+					// Handle OBS commands with graceful failure and retry
+					self.handle_obs_command(cmd.clone(), &connection_id).await;
+
+					// Return success immediately - command is handled asynchronously
+					ProcessResult {
+						delivered: 1,
+						failed: 0,
+						duration: start_time.elapsed(),
+					}
+				}
+				_ => {
+					// Handle other events (broadcasting)
+					timed_ws_operation!(&event_type_str, "process", { self.broadcast_event(event).await })
+				}
+			};
 
 			let duration = start_time.elapsed();
 			let process_result = ProcessResult {
@@ -184,6 +202,51 @@ impl WebSocketFsm {
 				duration_ms = duration.as_millis()
 			);
 		}
+	}
+
+	// Non-blocking OBS command handler with retry logic
+	async fn handle_obs_command(&self, cmd: ObsCommand, connection_id: &ConnectionId) {
+		// Clone necessary data for the async task
+		let obs_manager = self.obs_manager.clone(); // Assuming you have access to ObsWebSocketManager
+		let connection_id = connection_id.to_string();
+
+		// Spawn non-blocking task for command execution
+		tokio::spawn(async move {
+			let cmd_clone = cmd.clone();
+			let start_time = Instant::now();
+			let result = retry_async(
+				|| obs_manager.execute_command(cmd_clone.clone()),
+				3,                          // max attempts
+				Duration::from_millis(100), // base backoff
+				2,                          // exponential factor
+			)
+			.await;
+
+			match result {
+				Ok(_) => {
+					// log success
+					let duration = start_time.elapsed();
+					record_system_event!(
+						"obs_command_success",
+						connection_id = connection_id,
+						command = format!("{:?}", cmd),
+						duration_ms = duration.as_millis()
+					);
+				}
+				Err(e) => {
+					// log final failure
+					let duration = start_time.elapsed();
+					record_ws_error!("obs_command_final_failure", "command_execution", &e);
+					record_system_event!(
+						"obs_command_failed",
+						connection_id = connection_id,
+						command = format!("{:?}", cmd),
+						error = e.to_string(),
+						duration_ms = duration.as_millis()
+					);
+				}
+			}
+		});
 	}
 }
 

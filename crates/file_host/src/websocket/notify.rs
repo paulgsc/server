@@ -2,28 +2,29 @@ use crate::websocket::EventType;
 use crate::WebSocketFsm;
 
 impl WebSocketFsm {
-	/// Wait until at least one connection is subscribed to the given event type
-	pub async fn wait_for_subscriber(&self, event_type: EventType) {
+	/// Returns true if any subscriber exists for any EventType in the group
+	pub fn has_subscriber_for_group(&self, event_type: &EventType) -> bool {
+		let group = event_type.lazy_trigger_group();
+		self.connections.iter().any(|entry| {
+			let conn = entry.value();
+			conn.is_active() && group.iter().any(|et| conn.is_subscribed_to(et))
+		})
+	}
+
+	/// Wait for any subscriber in the group
+	pub async fn wait_for_subscriber_group(&self, event_type: &EventType) {
 		loop {
-			let any_subs = self
-				.connections
-				.iter()
-				.any(|entry| entry.value().is_active() && entry.value().is_subscribed_to(&event_type));
-			if any_subs {
+			if self.has_subscriber_for_group(event_type) {
 				return;
 			}
 			self.subscriber_notify.notified().await;
 		}
 	}
 
-	/// Wait until no connection is subscribed to the given event type
-	pub async fn wait_for_no_subscribers(&self, event_type: EventType) {
+	/// Wait until no subscribers in the group
+	pub async fn wait_for_no_subscribers_group(&self, event_type: &EventType) {
 		loop {
-			let any_subs = self
-				.connections
-				.iter()
-				.any(|entry| entry.value().is_active() && entry.value().is_subscribed_to(&event_type));
-			if !any_subs {
+			if !self.has_subscriber_for_group(event_type) {
 				return;
 			}
 			self.subscriber_notify.notified().await;
