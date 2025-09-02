@@ -12,7 +12,6 @@ enum OutboundMessage {
 
 /// Configurable polling manager with outbound worker
 pub struct ObsPollingManager {
-	requests: ObsPollingRequests,
 	config: PollingConfig,
 	command_executor: CommandExecutor,
 	high_freq_interval: Duration,
@@ -23,11 +22,11 @@ pub struct ObsPollingManager {
 
 impl ObsPollingManager {
 	pub fn new(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink) -> Self {
-		Self::with_id_strategy(config, command_executor, sink, RequestIdStrategy::Uuid)
+		Self::with_id_strategy(config, command_executor, sink)
 	}
 
 	/// Create with specific ID generation strategy
-	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink, id_strategy: RequestIdStrategy) -> Self {
+	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink) -> Self {
 		// Create bounded channel - adjust capacity as needed (512 seems reasonable)
 		let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundMessage>(512);
 
@@ -35,7 +34,6 @@ impl ObsPollingManager {
 		tokio::spawn(Self::outbound_worker(sink, outbound_rx));
 
 		Self {
-			requests: ObsPollingRequests::with_strategy(id_strategy),
 			config,
 			command_executor,
 			high_freq_interval: Duration::from_secs(1),
@@ -119,6 +117,8 @@ impl ObsPollingManager {
 			self.config.low_frequency_requests.len()
 		);
 
+		let (high_freq, medium_freq, low_freq) = self.config.generate_all_requests();
+
 		loop {
 			loop_counter += 1;
 
@@ -128,11 +128,10 @@ impl ObsPollingManager {
 							high_freq_counter += 1;
 
 							if !self.config.high_frequency_requests.is_empty() {
-									let requests = self.requests.generate_requests(&self.config.high_frequency_requests);
 
 									// Use try_send for polls - drop if queue is full (backpressure)
 									if let Err(mpsc::error::TrySendError::Full(_)) =
-											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											self.outbound_tx.try_send(OutboundMessage::Poll(high_freq.clone())) {
 											dropped_polls += 1;
 											warn!("Dropped high frequency poll batch #{} - outbound queue full", high_freq_counter);
 									}
@@ -144,10 +143,9 @@ impl ObsPollingManager {
 							medium_freq_counter += 1;
 
 							if !self.config.medium_frequency_requests.is_empty() {
-									let requests = self.requests.generate_requests(&self.config.medium_frequency_requests);
 
 									if let Err(mpsc::error::TrySendError::Full(_)) =
-											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											self.outbound_tx.try_send(OutboundMessage::Poll(medium_freq.clone())) {
 											dropped_polls += 1;
 											warn!("Dropped medium frequency poll batch #{} - outbound queue full", medium_freq_counter);
 									}
@@ -159,10 +157,9 @@ impl ObsPollingManager {
 							low_freq_counter += 1;
 
 							if !self.config.low_frequency_requests.is_empty() {
-									let requests = self.requests.generate_requests(&self.config.low_frequency_requests);
 
 									if let Err(mpsc::error::TrySendError::Full(_)) =
-											self.outbound_tx.try_send(OutboundMessage::Poll(requests)) {
+											self.outbound_tx.try_send(OutboundMessage::Poll(low_freq.clone())) {
 											dropped_polls += 1;
 											warn!("Dropped low frequency poll batch #{} - outbound queue full", low_freq_counter);
 									}

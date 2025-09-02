@@ -65,6 +65,10 @@ pub enum ObsRequestType {
 	#[allow(dead_code)]
 	SetSourceFilterEnabled,
 
+	// Service Management
+	SetStreamServiceSettings,
+	GetStreamServiceSettings,
+
 	// Unknown/Unhandled
 	Unknown(String),
 }
@@ -111,6 +115,8 @@ impl ObsRequestType {
 			Self::SetStudioModeEnabled => "SetStudioModeEnabled",
 			Self::GetSourceFilter => "GetSourceFilter",
 			Self::SetSourceFilterEnabled => "SetSourceFilterEnabled",
+			Self::SetStreamServiceSettings => "SetStreamServiceSettings",
+			Self::GetStreamServiceSettings => "GetStreamServiceSettings",
 			Self::Unknown(s) => s,
 		}
 	}
@@ -153,6 +159,8 @@ impl ObsRequestType {
 			"GetSourceFilterList" => Self::GetSourceFilterList,
 			"GetHotkeyList" => Self::GetHotkeyList,
 			"GetVersion" => Self::GetVersion,
+			"SetStreamServiceSettings" => Self::SetStreamServiceSettings,
+			"GetStreamServiceSettings" => Self::GetStreamServiceSettings,
 			unknown => Self::Unknown(unknown.to_string()),
 		}
 	}
@@ -246,7 +254,9 @@ pub struct RequestData<T>
 where
 	T: Serialize,
 {
+	#[serde(rename = "requestType")]
 	pub t: ObsRequestType,
+	#[serde(rename = "requestId")]
 	pub id: String,
 	#[serde(flatten)]
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -295,6 +305,35 @@ pub struct SetSourceFilterEnabledParams {
 	pub n: String,
 	pub f: String,
 	pub b: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SetStreamServiceSettingsParams {
+	#[serde(rename = "streamServiceType")]
+	pub service_type: String,
+	#[serde(rename = "streamServiceSettings")]
+	pub settings: StreamServiceSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamServiceSettings {
+	#[serde(rename = "key", skip_serializing_if = "Option::is_none")]
+	pub stream_key: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub server: Option<String>,
+	// YouTube-specific settings
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub title: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub game: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub privacy: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub unlisted: Option<bool>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tags: Option<Vec<String>>,
 }
 
 /// Represents different types of events from OBS
@@ -369,6 +408,9 @@ pub enum ObsEvent {
 	// Connection events
 	Hello(HelloData),
 	Identified,
+
+	// Service Management
+	StreamServiceSettingsResponse(StreamServiceSettingsData),
 }
 
 // Data structures for each enum variant
@@ -606,6 +648,47 @@ pub struct UnknownEventData {
 #[serde(rename_all = "camelCase")]
 pub struct HelloData {
 	pub obs_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamServiceSettingsData {
+	pub stream_service_type: String,
+	pub stream_service_settings: StreamServiceSettingsResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamServiceSettingsResponse {
+	pub key: Option<String>,
+	pub server: Option<String>,
+	pub title: Option<String>,
+	pub description: Option<String>,
+	pub game: Option<String>,
+	pub privacy: Option<String>,
+	pub unlisted: Option<bool>,
+	pub tags: Option<Vec<String>>,
+}
+
+// Add this enum for YouTube privacy settings:
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum YouTubePrivacy {
+	#[serde(rename = "public")]
+	Public,
+	#[serde(rename = "unlisted")]
+	Unlisted,
+	#[serde(rename = "private")]
+	Private,
+}
+
+impl YouTubePrivacy {
+	pub fn as_str(&self) -> &str {
+		match self {
+			Self::Public => "public",
+			Self::Unlisted => "unlisted",
+			Self::Private => "private",
+		}
+	}
 }
 
 /// Scene information structure

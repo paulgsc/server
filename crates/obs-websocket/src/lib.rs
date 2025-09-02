@@ -16,7 +16,7 @@ pub use config::ObsConfig;
 pub use core::*;
 pub use messages::{MessageHandler, MessageProcessor, ObsEvent};
 use polling::{ObsPollingManager, ObsRequestBuilder};
-pub use polling::{ObsRequestType, PollingConfig, PollingFrequency};
+pub use polling::{PollingConfig, PollingFrequency};
 
 /// Errors for obs-websocket crate
 #[derive(Debug, Error)]

@@ -3,7 +3,7 @@ mod error;
 mod extractor;
 mod parsers;
 mod processor;
-mod types;
+pub mod types;
 
 use futures_util::{sink::SinkExt, stream::SplitSink};
 use serde_json::json;
@@ -20,8 +20,7 @@ use error::ObsMessagesError;
 use extractor::JsonExtractor;
 use parsers::{EventMessageParser, HelloMessageParser, ResponseMessageParser};
 use processor::ObsMessageProcessor;
-use types::HelloData;
-pub use types::{ObsEvent, ObsRequestType};
+pub use types::*;
 
 type Result<T> = std::result::Result<T, ObsMessagesError>;
 type WebSocketSink = SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>;

@@ -1,83 +1,178 @@
-use super::*;
+use crate::messages::types::*;
+use serde::Serialize;
+use uuid::Uuid;
 
 /// Utility functions for specific OBS operations
-pub struct ObsRequestBuilder {
-	requests: ObsPollingRequests,
-}
+pub struct ObsRequestBuilder;
 
 impl ObsRequestBuilder {
-	pub fn new() -> Self {
-		Self {
-			requests: ObsPollingRequests::new(),
-		}
+	/// Generate a unique request ID
+	fn generate_id(prefix: &str) -> String {
+		format!("{}-{}", prefix, Uuid::new_v4().simple())
+	}
+
+	/// Create a generic OBS request using the new type system
+	pub fn create_request<T>(request_type: ObsRequestType, params: Option<T>) -> serde_json::Value
+	where
+		T: Serialize,
+	{
+		let request_id = Self::generate_id("req");
+
+		serde_json::to_value(ObsRequest {
+			op_code: 6,
+			d: RequestData {
+				t: request_type,
+				id: request_id,
+				p: params,
+			},
+		})
+		.unwrap()
 	}
 
 	/// Start streaming
-	pub fn start_stream(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::StartStream.to_polling_request())
+	pub fn start_stream() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StartStream, None::<()>)
 	}
 
-	/// Stop streaming
-	pub fn stop_stream(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::StopStream.to_polling_request())
+	/// Stop streaming  
+	pub fn stop_stream() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StopStream, None::<()>)
 	}
 
 	/// Start recording
-	pub fn start_recording(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::StartRecord.to_polling_request())
+	pub fn start_recording() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StartRecord, None::<()>)
 	}
 
 	/// Stop recording
-	pub fn stop_recording(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::StopRecord.to_polling_request())
+	pub fn stop_recording() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StopRecord, None::<()>)
 	}
 
 	/// Switch to a specific scene
-	pub fn switch_scene(&self, scene_name: &str) -> serde_json::Value {
-		self
-			.requests
-			.create_request(&ObsRequestType::SetCurrentProgramScene(scene_name.to_string()).to_polling_request())
+	pub fn switch_scene(scene_name: &str) -> serde_json::Value {
+		Self::create_request(ObsRequestType::SetCurrentProgramScene, Some(SetCurrentProgramSceneParams { n: scene_name.to_string() }))
 	}
 
-	// /// Set source visibility
-	// pub fn set_source_visibility(&mut self, scene_name: &str, source_name: &str, visible: bool) -> serde_json::Value {
-	//	self.requests.create_request_with_data(
-	//		"SetSceneItemEnabled",
-	//		"set_visibility",
-	//		json!({
-	//			"sceneName": scene_name,
-	//			"sceneItemId": source_name,
-	//			"sceneItemEnabled": visible
-	//		}),
-	//	)
-	// }
-
 	/// Mute/unmute audio source
-	pub fn set_input_mute(&self, input_name: &str, muted: bool) -> serde_json::Value {
-		self
-			.requests
-			.create_request(&ObsRequestType::SetInputMute(input_name.to_string(), muted.to_string()).to_polling_request())
+	pub fn set_input_mute(input_name: &str, muted: bool) -> serde_json::Value {
+		Self::create_request(
+			ObsRequestType::SetInputMute,
+			Some(SetInputMuteParams {
+				n: input_name.to_string(),
+				b: muted,
+			}),
+		)
 	}
 
 	/// Set audio volume
-	pub fn set_input_volume(&self, input_name: &str, volume: f64) -> serde_json::Value {
-		self
-			.requests
-			.create_request(&ObsRequestType::SetInputVolume(input_name.to_string(), volume.to_string()).to_polling_request())
+	pub fn set_input_volume(input_name: &str, volume: f64) -> serde_json::Value {
+		Self::create_request(
+			ObsRequestType::SetInputVolume,
+			Some(SetInputVolumeParams {
+				n: input_name.to_string(),
+				v: volume,
+			}),
+		)
 	}
 
 	/// Toggle studio mode
-	pub fn toggle_studio_mode(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::ToggleStudioMode.to_polling_request())
+	pub fn toggle_studio_mode(enabled: bool) -> serde_json::Value {
+		Self::create_request(ObsRequestType::SetStudioModeEnabled, Some(SetStudioModeEnabledParams { b: enabled }))
 	}
 
-	/// Start/stop virtual camera
-	pub fn toggle_virtual_camera(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::ToggleVirtualCam.to_polling_request())
+	/// Start virtual camera
+	pub fn start_virtual_camera() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StartVirtualCam, None::<()>)
 	}
 
-	/// Start/stop replay buffer
-	pub fn toggle_replay_buffer(&self) -> serde_json::Value {
-		self.requests.create_request(&ObsRequestType::ToggleReplayBuffer.to_polling_request())
+	/// Stop virtual camera
+	pub fn stop_virtual_camera() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StopVirtualCam, None::<()>)
+	}
+
+	/// Start replay buffer
+	pub fn start_replay_buffer() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StartReplayBuffer, None::<()>)
+	}
+
+	/// Stop replay buffer
+	pub fn stop_replay_buffer() -> serde_json::Value {
+		Self::create_request(ObsRequestType::StopReplayBuffer, None::<()>)
+	}
+
+	/// Get stream status
+	pub fn get_stream_status() -> serde_json::Value {
+		Self::create_request(ObsRequestType::GetStreamStatus, None::<()>)
+	}
+
+	/// Get recording status  
+	pub fn get_record_status() -> serde_json::Value {
+		Self::create_request(ObsRequestType::GetRecordStatus, None::<()>)
+	}
+
+	/// Get scene list
+	pub fn get_scene_list() -> serde_json::Value {
+		Self::create_request(ObsRequestType::GetSceneList, None::<()>)
+	}
+
+	/// Get current scene
+	pub fn get_current_scene() -> serde_json::Value {
+		Self::create_request(ObsRequestType::GetCurrentProgramScene, None::<()>)
+	}
+
+	/// Get input mute status
+	pub fn get_input_mute(input_name: &str) -> serde_json::Value {
+		Self::create_request(
+			ObsRequestType::GetInputMute,
+			Some(SetInputMuteParams {
+				n: input_name.to_string(),
+				b: false, // This param isn't used for GET requests but required by struct
+			}),
+		)
+	}
+
+	/// Get input volume
+	pub fn get_input_volume(input_name: &str) -> serde_json::Value {
+		Self::create_request(
+			ObsRequestType::GetInputVolume,
+			Some(SetInputVolumeParams {
+				n: input_name.to_string(),
+				v: 0.0, // This param isn't used for GET requests but required by struct
+			}),
+		)
+	}
+
+	/// Set YouTube stream settings
+	pub fn set_youtube_stream(
+		stream_key: &str,
+		title: &str,
+		description: &str,
+		category: &str,
+		privacy: YouTubePrivacy,
+		unlisted: bool,
+		tags: Vec<String>,
+	) -> serde_json::Value {
+		Self::create_request(
+			ObsRequestType::SetStreamServiceSettings,
+			Some(SetStreamServiceSettingsParams {
+				service_type: "rtmp_custom".to_string(), // or "youtube_live" if using YouTube service
+				settings: StreamServiceSettings {
+					stream_key: Some(stream_key.to_string()),
+					server: Some("rtmp://a.rtmp.youtube.com/live2".to_string()),
+					title: Some(title.to_string()),
+					description: Some(description.to_string()),
+					game: Some(category.to_string()),
+					privacy: Some(privacy.as_str().to_string()),
+					unlisted: Some(unlisted),
+					tags: Some(tags),
+				},
+			}),
+		)
+	}
+
+	/// Get current stream service settings
+	pub fn get_stream_service_settings() -> serde_json::Value {
+		Self::create_request(ObsRequestType::GetStreamServiceSettings, None::<()>)
 	}
 }

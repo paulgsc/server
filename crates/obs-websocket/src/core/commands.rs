@@ -1,4 +1,5 @@
 use super::*;
+use crate::messages::YouTubePrivacy;
 use crate::ObsRequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -13,9 +14,22 @@ pub enum ObsCommand {
 	SwitchScene(String),
 	SetInputMute(String, bool),
 	SetInputVolume(String, f64),
-	ToggleStudioMode,
-	ToggleVirtualCamera,
-	ToggleReplayBuffer,
+	ToggleStudioMode(bool),
+	StartVirtualCamera,
+	StopVirtualCamera,
+	StartReplayBuffer,
+	StopReplayBuffer,
+	GetInputMute(String),
+	GetInputVolume(String),
+	SetYouTubeStream {
+		stream_key: String,
+		title: String,
+		description: String,
+		category: String,
+		privacy: YouTubePrivacy,
+		unlisted: bool,
+		tags: Vec<String>,
+	},
 	Custom(JsonValue),
 }
 
@@ -28,15 +42,11 @@ pub enum InternalCommand {
 /// Validates state and executes commands
 pub struct CommandExecutor {
 	state_handle: StateHandle,
-	request_builder: ObsRequestBuilder,
 }
 
 impl CommandExecutor {
 	pub fn new(state_handle: StateHandle) -> Self {
-		Self {
-			state_handle,
-			request_builder: ObsRequestBuilder::new(),
-		}
+		Self { state_handle }
 	}
 
 	/// Execute command with state validation
@@ -46,16 +56,29 @@ impl CommandExecutor {
 
 	pub fn build_request(&self, command: &ObsCommand) -> JsonValue {
 		match command {
-			ObsCommand::StartStream => self.request_builder.start_stream(),
-			ObsCommand::StopStream => self.request_builder.stop_stream(),
-			ObsCommand::StartRecording => self.request_builder.start_recording(),
-			ObsCommand::StopRecording => self.request_builder.stop_recording(),
-			ObsCommand::SwitchScene(name) => self.request_builder.switch_scene(name),
-			ObsCommand::SetInputMute(name, muted) => self.request_builder.set_input_mute(name, *muted),
-			ObsCommand::SetInputVolume(name, volume) => self.request_builder.set_input_volume(name, *volume),
-			ObsCommand::ToggleStudioMode => self.request_builder.toggle_studio_mode(),
-			ObsCommand::ToggleVirtualCamera => self.request_builder.toggle_virtual_camera(),
-			ObsCommand::ToggleReplayBuffer => self.request_builder.toggle_replay_buffer(),
+			ObsCommand::StartStream => ObsRequestBuilder::start_stream(),
+			ObsCommand::StopStream => ObsRequestBuilder::stop_stream(),
+			ObsCommand::StartRecording => ObsRequestBuilder::start_recording(),
+			ObsCommand::StopRecording => ObsRequestBuilder::stop_recording(),
+			ObsCommand::SwitchScene(name) => ObsRequestBuilder::switch_scene(name),
+			ObsCommand::SetInputMute(name, muted) => ObsRequestBuilder::set_input_mute(name, *muted),
+			ObsCommand::SetInputVolume(name, volume) => ObsRequestBuilder::set_input_volume(name, *volume),
+			ObsCommand::ToggleStudioMode(enabled) => ObsRequestBuilder::toggle_studio_mode(*enabled),
+			ObsCommand::StartVirtualCamera => ObsRequestBuilder::start_virtual_camera(),
+			ObsCommand::StopVirtualCamera => ObsRequestBuilder::stop_virtual_camera(),
+			ObsCommand::StartReplayBuffer => ObsRequestBuilder::start_replay_buffer(),
+			ObsCommand::StopReplayBuffer => ObsRequestBuilder::stop_replay_buffer(),
+			ObsCommand::GetInputMute(name) => ObsRequestBuilder::get_input_mute(name),
+			ObsCommand::GetInputVolume(name) => ObsRequestBuilder::get_input_volume(name),
+			ObsCommand::SetYouTubeStream {
+				stream_key,
+				title,
+				description,
+				category,
+				privacy,
+				unlisted,
+				tags,
+			} => ObsRequestBuilder::set_youtube_stream(stream_key, title, description, category, *privacy, *unlisted, tags.clone()),
 			ObsCommand::Custom(json) => json.clone(),
 		}
 	}
