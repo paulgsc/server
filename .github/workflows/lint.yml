@@ -60,7 +60,9 @@ jobs:
     needs: determine_jobs
     if: needs.determine_jobs.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -76,7 +78,7 @@ jobs:
     needs: determine_jobs
     if: needs.determine_jobs.outputs.format == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -90,7 +92,7 @@ jobs:
         run: pnpm prettier
 
       - name: Check eslint
-        run: pnpm lint:js
+        run: pnpm lint
 
       - name: Run typecheck
         run: pnpm typecheck
