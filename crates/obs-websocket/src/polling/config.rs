@@ -1,5 +1,8 @@
 use crate::messages::ObsRequestType;
-use crate::polling::ObsRequestBuilder;
+use crate::polling::{ObsRequestBuilder, PollingError};
+
+type Result<T> = std::result::Result<Option<T>, PollingError>;
+type VResult<T> = std::result::Result<Vec<T>, PollingError>;
 
 /// Polling frequency levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,26 +82,34 @@ impl From<PollingConfig> for Box<[(ObsRequestType, PollingFrequency)]> {
 
 impl PollingConfig {
 	/// Generate JSON requests for a specific frequency tier
-	pub fn generate_requests_for_frequency(&self, frequency: PollingFrequency) -> Vec<serde_json::Value> {
+	pub fn generate_requests_for_frequency(&self, frequency: PollingFrequency) -> std::result::Result<Vec<serde_json::Value>, PollingError> {
 		let requests = match frequency {
 			PollingFrequency::High => &self.high_frequency_requests,
 			PollingFrequency::Medium => &self.medium_frequency_requests,
 			PollingFrequency::Low => &self.low_frequency_requests,
 		};
 
-		requests.iter().filter_map(|req| Self::create_request_from_type(req)).collect()
+		Ok(
+			requests
+				.iter()
+				.map(|req| Self::create_request_from_type(req)) // -> Result<Option<Value>, PollingError>
+				.collect::<std::result::Result<Vec<_>, _>>()? // collect results into Vec<Option<Value>>
+				.into_iter()
+				.flatten() // drop None, keep Some
+				.collect(), // now Vec<Value>
+		)
 	}
 
 	/// Create a request using the appropriate ObsRequestBuilder method
 	/// Only handles GET/query requests suitable for polling
-	fn create_request_from_type(request_type: &ObsRequestType) -> Option<serde_json::Value> {
+	fn create_request_from_type(request_type: &ObsRequestType) -> Result<serde_json::Value> {
 		match request_type {
 			// Status queries - safe for polling
-			ObsRequestType::GetStreamStatus => Some(ObsRequestBuilder::get_stream_status()),
-			ObsRequestType::GetRecordStatus => Some(ObsRequestBuilder::get_record_status()),
-			ObsRequestType::GetCurrentProgramScene => Some(ObsRequestBuilder::get_current_scene()),
-			ObsRequestType::GetSceneList => Some(ObsRequestBuilder::get_scene_list()),
-			ObsRequestType::GetStreamServiceSettings => Some(ObsRequestBuilder::get_stream_service_settings()),
+			ObsRequestType::GetStreamStatus => Ok(Some(ObsRequestBuilder::get_stream_status()?)),
+			ObsRequestType::GetRecordStatus => Ok(Some(ObsRequestBuilder::get_record_status()?)),
+			ObsRequestType::GetCurrentProgramScene => Ok(Some(ObsRequestBuilder::get_current_scene()?)),
+			ObsRequestType::GetSceneList => Ok(Some(ObsRequestBuilder::get_scene_list()?)),
+			ObsRequestType::GetStreamServiceSettings => Ok(Some(ObsRequestBuilder::get_stream_service_settings()?)),
 
 			// Configuration queries - safe for polling
 			ObsRequestType::GetVirtualCamStatus
@@ -112,14 +123,14 @@ impl PollingConfig {
 			| ObsRequestType::GetSceneCollectionList
 			| ObsRequestType::GetCurrentSceneCollection
 			| ObsRequestType::GetSceneTransitionList
-			| ObsRequestType::GetVersion => Some(ObsRequestBuilder::create_request(request_type.clone(), None::<()>)),
+			| ObsRequestType::GetVersion => Ok(Some(ObsRequestBuilder::create_request(request_type.clone(), None::<()>)?)),
 
-			_ => None, // Parameter-dependent queries - would need specific input names
+			_ => Ok(None), // Parameter-dependent queries - would need specific input names
 		}
 	}
 
 	/// Generate all requests grouped by frequency
-	pub fn generate_all_requests(&self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+	pub fn generate_all_requests(&self) -> (VResult<serde_json::Value>, VResult<serde_json::Value>, VResult<serde_json::Value>) {
 		(
 			self.generate_requests_for_frequency(PollingFrequency::High),
 			self.generate_requests_for_frequency(PollingFrequency::Medium),

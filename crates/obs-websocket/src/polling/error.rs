@@ -1,4 +1,4 @@
-use super::*;
+use crate::StateError;
 
 /// Errors that can occur during polling operations
 #[derive(Debug, thiserror::Error)]

@@ -118,6 +118,9 @@ impl ObsPollingManager {
 		);
 
 		let (high_freq, medium_freq, low_freq) = self.config.generate_all_requests();
+		let high_freq = high_freq?;
+		let medium_freq = medium_freq?;
+		let low_freq = low_freq?;
 
 		loop {
 			loop_counter += 1;
@@ -177,7 +180,7 @@ impl ObsPollingManager {
 											let request = self.command_executor.build_request(&obs_cmd);
 
 											// Commands are higher priority - await send to ensure delivery
-											if let Err(e) = self.outbound_tx.send(OutboundMessage::Command(request)).await {
+											if let Err(e) = self.outbound_tx.send(OutboundMessage::Command(request?)).await {
 													error!("Failed to queue command #{}: {}", cmd_counter, e);
 													return Err(PollingError::CriticalLoopTermination {
 															reason: format!("Command queue failure on command #{}: {}", cmd_counter, e)

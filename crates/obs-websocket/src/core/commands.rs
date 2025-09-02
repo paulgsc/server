@@ -1,5 +1,6 @@
-use super::*;
+use crate::core::state::{StateError, StateHandle};
 use crate::messages::YouTubePrivacy;
+use crate::polling::PollingError;
 use crate::ObsRequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -54,7 +55,7 @@ impl CommandExecutor {
 		self.state_handle.execute_command(command).await
 	}
 
-	pub fn build_request(&self, command: &ObsCommand) -> JsonValue {
+	pub fn build_request(&self, command: &ObsCommand) -> Result<JsonValue, PollingError> {
 		match command {
 			ObsCommand::StartStream => ObsRequestBuilder::start_stream(),
 			ObsCommand::StopStream => ObsRequestBuilder::stop_stream(),
@@ -79,7 +80,7 @@ impl CommandExecutor {
 				unlisted,
 				tags,
 			} => ObsRequestBuilder::set_youtube_stream(stream_key, title, description, category, *privacy, *unlisted, tags.clone()),
-			ObsCommand::Custom(json) => json.clone(),
+			ObsCommand::Custom(json) => Ok(json.clone()),
 		}
 	}
 }
