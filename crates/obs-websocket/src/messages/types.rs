@@ -281,16 +281,19 @@ pub struct SetInputVolumeParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct SetCurrrentSceneTransitionParams {
 	pub n: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct SetCurrentProfileParams {
 	pub n: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct SetCurrentSceneCollectionParams {
 	pub n: String,
 }
@@ -301,6 +304,7 @@ pub struct SetStudioModeEnabledParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct SetSourceFilterEnabledParams {
 	pub n: String,
 	pub f: String,
