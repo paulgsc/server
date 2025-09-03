@@ -57,20 +57,15 @@ jobs:
         with:
           submodules: recursive
       - name: Install Nix
-        uses: cachix/install-nix-action@v23
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixos-unstable
-          install_url: https://releases.nixos.org/nix/nix-2.18.1/install
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+        uses: DeterminateSystems/nix-installer-action@v12
+
       - name: Setup Cachix (optional - speeds up builds)
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
+
       - name: Build development shell
         run: |
           nix develop --command echo "Nix development environment ready!"
@@ -89,17 +84,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Nix
-        uses: cachix/install-nix-action@v22
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+        uses: DeterminateSystems/nix-installer-action@v12
+
       - name: Setup Cachix
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
+
       # Add Node.js tools to your flake.nix devShell if you haven't already
       - name: Install Node dependencies via Nix
         run: |
