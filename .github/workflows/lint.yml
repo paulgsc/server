@@ -71,12 +71,16 @@ jobs:
           nix develop --command echo "Nix development environment ready!"
           nix develop --command rustc --version
           nix develop --command cargo --version
+
+      - name: Run compiler check
+        run: nix develop --command cargo check
+
       - name: Run cargo clippy
-        run: nix develop --command just clippy -D warnings -A unknown-lints --no-deps
+        run: nix develop --command nixpkgs#just clippy -D warnings -A unknown-lints --no-deps
+
       - name: Run cargo fmt
         run: nix develop --command cargo fmt --all -- --check
-      - name: Run tests (if you have any)
-        run: nix develop --command cargo test
+
   node_lint:
     runs-on: ubuntu-latest
     needs: determine_jobs
@@ -99,11 +103,15 @@ jobs:
           # If you add nodejs and pnpm to your flake.nix buildInputs
           nix develop --command node --version
           nix develop --command pnpm --version || echo "Add nodejs and pnpm to your flake.nix"
+
       - name: Install dependencies
-        run: nix develop --command pnpm install --frozen-lockfile --prefer-offline
+        run: nix develop --command nixpkgs#pnpm install --frozen-lockfile --prefer-offline
+
       - name: Check prettier
-        run: nix develop --command pnpm prettier
+        run: nix develop --command nixpkgs#pnpm prettier
+
       - name: Check eslint
-        run: nix develop --command pnpm lint
+        run: nix develop --command nixpkgs#pnpm lint
+
       - name: Run typecheck
-        run: nix develop --command pnpm typecheck
+        run: nix develop --command nixpkgs#pnpm typecheck
