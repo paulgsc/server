@@ -77,6 +77,58 @@ pub enum QueryValue {
 	Null,
 }
 
+impl From<&str> for QueryValue {
+	fn from(s: &str) -> Self {
+		QueryValue::String(s.to_string())
+	}
+}
+
+impl From<String> for QueryValue {
+	fn from(s: String) -> Self {
+		QueryValue::String(s)
+	}
+}
+
+impl From<i32> for QueryValue {
+	fn from(v: i32) -> Self {
+		QueryValue::Integer(v as i64)
+	}
+}
+
+impl From<i64> for QueryValue {
+	fn from(v: i64) -> Self {
+		QueryValue::Integer(v)
+	}
+}
+
+impl From<f32> for QueryValue {
+	fn from(v: f32) -> Self {
+		QueryValue::Float(v as f64)
+	}
+}
+
+impl From<f64> for QueryValue {
+	fn from(v: f64) -> Self {
+		QueryValue::Float(v)
+	}
+}
+
+impl From<bool> for QueryValue {
+	fn from(v: bool) -> Self {
+		QueryValue::Boolean(v)
+	}
+}
+
+// Optional: implement From<&Option<T>> so optional fields work
+impl<T: Into<QueryValue> + Clone> From<&Option<T>> for QueryValue {
+	fn from(opt: &Option<T>) -> Self {
+		match opt {
+			Some(v) => v.clone().into(),
+			None => QueryValue::Null,
+		}
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderBy {
 	pub column: String,

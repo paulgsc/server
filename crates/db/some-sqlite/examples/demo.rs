@@ -19,77 +19,38 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use some_sqlite::{
-	client::SqliteRepository,
-	traits::Repository, // Import the Repository trait
-	DatabaseConfig,
-	OrderBy,
-	QueryCondition,
-	QueryParams,
-	SqliteDatabaseManager,
-};
+use some_sqlite::{client::SqliteRepository, traits::Repository, DatabaseConfig, Entity, OrderBy, QueryCondition, QueryParams, SqliteDatabaseManager};
 pub use sqlite_macros_2::*;
 use uuid::Uuid;
 
-// Define your entity
-#[derive(Debug, Clone, Serialize, Deserialize, Entity, Schema, sqlx::FromRow)]
-#[schema(table = "users", primary_key = "id")]
+// ---------------------- Entities ----------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Entity, sqlx::FromRow)]
 struct User {
 	#[primary_key]
 	pub id: Uuid,
 	pub name: String,
 	pub email: String,
 	pub created_at: i64,
+	pub nickname: Option<String>, // Example of optional field
 }
 
-// Implement columns_and_values for User if the derive macro doesn't provide it
-impl User {
-	pub fn columns_and_values(&self) -> (Vec<String>, Vec<some_sqlite::QueryValue>) {
-		use some_sqlite::QueryValue;
+// You can omit implementing columns_and_values manually; derive macro handles it
 
-		let columns = vec!["id".to_string(), "name".to_string(), "email".to_string(), "created_at".to_string()];
-
-		let values = vec![
-			QueryValue::String(self.id.to_string()),
-			QueryValue::String(self.name.clone()),
-			QueryValue::String(self.email.clone()),
-			QueryValue::Integer(self.created_at),
-		];
-
-		(columns, values)
-	}
-}
-
-// Define the creation struct
 #[derive(Debug, Clone, Serialize, Deserialize, NewEntity)]
-#[new_entity(entity = "User", table = "users")]
+#[new_entity(entity = "User", table_name = "users")]
 struct NewUser {
 	pub name: String,
 	pub email: String,
 	pub created_at: i64,
+	pub nickname: Option<String>, // optional fields are automatically handled
 }
 
-// Implement columns_and_values for NewUser if the derive macro doesn't provide it
-impl NewUser {
-	pub fn columns_and_values(&self) -> (Vec<String>, Vec<some_sqlite::QueryValue>) {
-		use some_sqlite::QueryValue;
-
-		let columns = vec!["id".to_string(), "name".to_string(), "email".to_string(), "created_at".to_string()];
-
-		let values = vec![
-			QueryValue::String(Uuid::new_v4().to_string()), // Generate new UUID
-			QueryValue::String(self.name.clone()),
-			QueryValue::String(self.email.clone()),
-			QueryValue::Integer(self.created_at),
-		];
-
-		(columns, values)
-	}
-}
+// ---------------------- Main ----------------------
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	// ✅ 1. Initialize database configuration
+	// 1️⃣ Database config
 	let config = DatabaseConfig {
 		database_url: "sqlite:demo.db".to_string(),
 		max_connections: Some(5),
@@ -99,39 +60,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	};
 	let db = SqliteDatabaseManager::new(config).await?;
 
-	// ✅ 2. Initialize schema manually (since UserSchema is not available)
-	// Create the users table manually
-	let pool = db.pool(); // Assuming SqliteDatabaseManager has a pool() method
+	// 2️⃣ Create table manually (or via Schema::create_table_sql)
+	let pool = db.pool();
 	sqlx::query(
 		r#"
-					        CREATE TABLE IF NOT EXISTS users (
-							            id TEXT PRIMARY KEY,
-										            name TEXT NOT NULL,
-													            email TEXT NOT NULL UNIQUE,
-																            created_at INTEGER NOT NULL
-																			        )
-																					    "#,
+										CREATE TABLE IF NOT EXISTS users (
+													id TEXT PRIMARY KEY,
+																name TEXT NOT NULL,
+																			email TEXT NOT NULL UNIQUE,
+																						created_at INTEGER NOT NULL,
+																									nickname TEXT
+																											)
+																													"#,
 	)
 	.execute(pool)
 	.await?;
 
-	// ✅ 3. Get repository
+	// 3️⃣ Get repository
 	let user_repo: SqliteRepository<User> = db.repository();
 
-	// ✅ 4. Create user
+	// 4️⃣ Create new user
 	let new_user = NewUser {
-		name: "John Doe".to_string(),
-		email: "john@example.com".to_string(),
+		name: "Alice".to_string(),
+		email: "alice@example.com".to_string(),
 		created_at: Utc::now().timestamp(),
+		nickname: Some("Ally".to_string()),
 	};
 	let user = user_repo.create(new_user).await?;
 	println!("Created user: {:?}", user);
 
-	// ✅ 5. Find user by ID
+	// 5️⃣ Find user by ID
 	let found_user = user_repo.find_by_id(&user.id).await?.expect("User not found");
 	println!("Found user: {:?}", found_user);
 
-	// ✅ 6. Query users with filters (use find_by instead of find_by_query)
+	// 6️⃣ Query users
 	let params = QueryParams {
 		conditions: vec![QueryCondition::Like("email".to_string(), "%example.com".to_string())],
 		order_by: vec![OrderBy {
@@ -141,21 +103,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		limit: Some(10),
 		offset: None,
 	};
-
-	let users = user_repo.find_by(params).await?; // Use find_by method
+	let users = user_repo.find_by(params).await?;
 	println!("Found {} users matching query", users.len());
 
-	// ✅ 7. Update user
+	// 7️⃣ Update user
 	let mut updated_user = found_user.clone();
-	updated_user.name = "Jane Doe".to_string();
+	updated_user.name = "Alice Smith".to_string();
 	let saved_user = user_repo.update(&updated_user).await?;
 	println!("Updated user: {:?}", saved_user);
 
-	// ✅ 8. Delete user
+	// 8️⃣ Delete user
 	let deleted_count = user_repo.delete_by_id(&saved_user.id).await?;
 	println!("Deleted {} user(s)", deleted_count);
 
-	// ✅ 9. Close DB gracefully
+	// 9️⃣ Close DB
 	db.close().await;
 
 	Ok(())
