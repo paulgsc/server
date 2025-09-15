@@ -1,5 +1,6 @@
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 
 pub mod cache;
@@ -31,6 +32,7 @@ pub struct AppState {
 	pub gsheet_reader: Arc<ReadSheets>,
 	pub gdrive_reader: Arc<ReadDrive>,
 	pub github_client: Arc<GitHubClient>,
+	pub shared_db: SqlitePool,
 	pub ws: WebSocketFsm,
 	// TODO: might remove the Arc here!
 	pub config: Arc<Config>,

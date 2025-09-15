@@ -135,6 +135,10 @@ pub struct Config {
 	/// GITHUB API SECRET TOKEN
 	#[arg(long, env = "GITHUB_API_TOKEN")]
 	pub github_token: String,
+
+	/// DATABASE URL
+	#[arg(long, env = "DATABASE_URL")]
+	pub database_url: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]

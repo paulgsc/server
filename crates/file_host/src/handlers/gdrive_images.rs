@@ -84,6 +84,7 @@ async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResp
 /// This can be useful if you frequently need just metadata without the full file
 #[axum::debug_handler]
 #[instrument(name = "serve_gdrive_image_optimized", skip(state), fields(image_id = %image_id))]
+#[allow(dead_code)]
 pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(image_id): Path<String>) -> Result<Response<axum::body::Body>, FileHostError> {
 	let metadata_cache_key = format!("gdrive_metadata_{}", image_id);
 	let file_cache_key = format!("gdrive_file_{}", image_id);

@@ -5,3 +5,4 @@ pub mod health;
 pub mod sheets;
 pub mod tab_metadata;
 pub mod utterance;
+pub mod db;

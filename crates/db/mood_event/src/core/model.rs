@@ -33,7 +33,7 @@ pub struct UpdateMoodEvent {
 	pub delta: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoodStats {
 	pub total_events: i64,
 	pub min_mood: Option<i64>,

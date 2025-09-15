@@ -30,6 +30,7 @@ async fn fetch_github_repositories(state: AppState) -> Result<Vec<Repository>, D
 /// GitHub repository data changes less frequently, so we might want longer cache times
 #[axum::debug_handler]
 #[instrument(name = "get_github_repos_with_ttl", skip(state))]
+#[allow(dead_code)]
 pub async fn get_github_repos_with_ttl(State(state): State<AppState>) -> Result<Json<Vec<Repository>>, FileHostError> {
 	let cache_key = "get_github_repos_ttl".to_string();
 	// Cache GitHub repos for 1 hour (3600 seconds) since they don't change frequently

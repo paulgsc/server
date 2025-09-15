@@ -1,6 +1,5 @@
 use super::model::{CreateMoodEvent, MoodEvent, UpdateMoodEvent};
 use super::queries;
-use super::schema;
 use sqlx::{Error, Sqlite, SqlitePool, Transaction};
 use std::collections::HashMap;
 
@@ -11,10 +10,6 @@ pub struct MoodEventRepository {
 impl MoodEventRepository {
 	pub fn new(pool: SqlitePool) -> Self {
 		Self { pool }
-	}
-
-	pub async fn init_schema(&self) -> Result<(), Error> {
-		schema::init_schema(&self.pool).await
 	}
 
 	pub async fn create(&self, event: CreateMoodEvent) -> Result<MoodEvent, Error> {

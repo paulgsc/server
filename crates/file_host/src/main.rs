@@ -4,7 +4,8 @@ mod models;
 mod routes;
 
 use crate::routes::{
-	audio_files::get_audio, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing, utterance::post_utterance,
+	audio_files::get_audio, db::mood_events, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing,
+	utterance::post_utterance,
 };
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, routing::get, Router};
@@ -17,6 +18,7 @@ use file_host::{
 };
 // use futures::{sink::SinkExt, stream::StreamExt};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
+use sqlx::SqlitePool;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -54,11 +56,14 @@ async fn main() -> Result<()> {
 	let github_client = GitHubClient::new(config.github_token.clone())?;
 	let ws_state = init_websocket().await;
 
+	let pool = SqlitePool::connect(&config.database_url).await?;
+
 	let app_state = AppState {
 		dedup_cache: dedup_cache.into(),
 		gsheet_reader: gsheet_reader.into(),
 		gdrive_reader: gdrive_reader.into(),
 		github_client: github_client.into(),
+		shared_db: pool,
 		ws: ws_state.clone(),
 		config: config.clone(),
 	};
@@ -101,6 +106,7 @@ async fn main() -> Result<()> {
 		.merge(get_sheets())
 		.merge(get_gdrive_image())
 		.merge(get_repos())
+		.merge(mood_events())
 		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
