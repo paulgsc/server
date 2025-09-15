@@ -10,7 +10,7 @@ services:
       - RUST_LOG=${RUST_LOG:-debug}
       - RUST_BACKTRACE=1
 
-      # Performance tuning
+      # Performance tuning - CAGED EDITION
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
 
@@ -42,6 +42,29 @@ services:
       redis:
         condition: service_healthy
 
+    # 🔹 LOCAL DEV RESOURCE LIMITS (enforced by docker-compose)
+    mem_limit: 4G
+    cpus: 2.0
+    pids_limit: 200
+
+    # 🔹 SWARM / CI (ignored locally)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+          pids: 200
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
   redis:
     image: redis:latest
     container_name: some-redis
@@ -52,6 +75,21 @@ services:
     networks:
       - monitoring-network
     restart: unless-stopped
+
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
@@ -73,6 +111,17 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 30
 
   prometheus:
     image: prom/prometheus:latest
@@ -96,6 +145,21 @@ services:
     depends_on:
       file-host:
         condition: service_healthy
+
+    mem_limit: 2G
+    cpus: 1.5
+    pids_limit: 100
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9090/']
       interval: 30s
@@ -122,11 +186,65 @@ services:
         condition: service_healthy
       dashboard-builder:
         condition: service_completed_successfully
+
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
     healthcheck:
       test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1']
       interval: 30s
       timeout: 10s
       retries: 3
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    restart: unless-stopped
+    ports:
+      - '3002:3000' # Changed from 3000 to avoid conflict with file-host
+    environment:
+      # Metabase metadata DB (stores users, dashboards, configs)
+      - MB_DB_FILE=/metabase-data/metabase.db
+    volumes:
+      # Persistent storage for Metabase's own metadata (using Docker volume)
+      - /mnt/storage/users/dev/metabase-data:/metabase-data
+      # Parent directory containing all your SQLite DBs (using local path)
+      - /mnt/storage/users/dev/databases:/data:ro
+    networks:
+      - monitoring-network
+
+    # Resource limits to match your pattern
+    mem_limit: 2G
+    cpus: 1.5
+    pids_limit: 100
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/health']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s # Metabase takes longer to start up
 
   dashboard-builder:
     build:
@@ -138,12 +256,17 @@ services:
       - ./grafana/generated:/generated:rw
     command: ./build.sh
     restart: 'no'
-    # Optional healthcheck (uncomment if needed)
-    # healthcheck:
-    #   test: ['CMD', 'test', '-f', '/workspace/generated/.build_complete']
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
+
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50
 
   node_exporter:
     image: prom/node-exporter:latest
@@ -158,6 +281,17 @@ services:
     volumes:
       - '/:/host:ro,rslave'
 
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20
+
 networks:
   monitoring-network:
     driver: bridge
@@ -170,4 +304,6 @@ volumes:
   redis_data:
     driver: local
   redisinsight_data:
+    driver: local
+  metabase_data:
     driver: local
