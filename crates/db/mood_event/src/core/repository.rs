@@ -81,7 +81,7 @@ impl MoodEventRepository {
 	pub async fn update(&self, id: i64, update: UpdateMoodEvent) -> Result<Option<MoodEvent>, Error> {
 		let mut tx = self.pool.begin().await?;
 
-		let current = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(&mut tx).await?;
+		let current = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(tx.as_mut()).await?;
 
 		let index_pos = match current {
 			Some(row) => row.index_pos,
@@ -92,26 +92,28 @@ impl MoodEventRepository {
 
 		// explicit branches with literal queries
 		if let Some(week_val) = update.week {
-			sqlx::query!("UPDATE mood_events SET week = ? WHERE id = ?", week_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET week = ? WHERE id = ?", week_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(label_val) = update.label.as_ref() {
-			sqlx::query!("UPDATE mood_events SET label = ? WHERE id = ?", label_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET label = ? WHERE id = ?", label_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(desc_val) = update.description.as_ref() {
-			sqlx::query!("UPDATE mood_events SET description = ? WHERE id = ?", desc_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET description = ? WHERE id = ?", desc_val, id)
+				.execute(tx.as_mut())
+				.await?;
 		}
 		if let Some(team_val) = update.team.as_ref() {
-			sqlx::query!("UPDATE mood_events SET team = ? WHERE id = ?", team_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET team = ? WHERE id = ?", team_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(cat_val) = update.category.as_ref() {
-			sqlx::query!("UPDATE mood_events SET category = ? WHERE id = ?", cat_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET category = ? WHERE id = ?", cat_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(delta_val) = update.delta {
-			sqlx::query!("UPDATE mood_events SET delta = ? WHERE id = ?", delta_val, id).execute(&mut tx).await?;
+			sqlx::query!("UPDATE mood_events SET delta = ? WHERE id = ?", delta_val, id).execute(tx.as_mut()).await?;
 		}
 
 		sqlx::query!("UPDATE mood_events SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", id)
-			.execute(&mut tx)
+			.execute(tx.as_mut())
 			.await?;
 
 		if delta_changed {
@@ -152,18 +154,18 @@ impl MoodEventRepository {
 	pub async fn delete(&self, id: i64) -> Result<bool, Error> {
 		let mut tx = self.pool.begin().await?;
 
-		let index_row = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(&mut tx).await?;
+		let index_row = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(tx.as_mut()).await?;
 
 		let index_pos = match index_row {
 			Some(r) => r.index_pos,
 			None => return Ok(false),
 		};
 
-		let rows_affected = sqlx::query!("DELETE FROM mood_events WHERE id = ?", id).execute(&mut tx).await?.rows_affected();
+		let rows_affected = sqlx::query!("DELETE FROM mood_events WHERE id = ?", id).execute(tx.as_mut()).await?.rows_affected();
 
 		if rows_affected > 0 {
 			sqlx::query!("UPDATE mood_events SET index_pos = index_pos - 1 WHERE index_pos > ?", index_pos)
-				.execute(&mut tx)
+				.execute(tx.as_mut())
 				.await?;
 
 			queries::recalculate_moods_from_index(&mut tx, index_pos).await?;
@@ -183,7 +185,7 @@ impl MoodEventRepository {
 
 		let mut id_index_pairs = Vec::new();
 		for id in &ids {
-			if let Some(row) = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(&mut tx).await? {
+			if let Some(row) = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(tx.as_mut()).await? {
 				id_index_pairs.push((*id, row.index_pos));
 			}
 		}
@@ -204,13 +206,13 @@ impl MoodEventRepository {
 		let stats = sqlx::query!(
 			r#"
             SELECT 
-                COUNT(*) as "total_events!",
-                MIN(mood) as "min_mood?",
-                MAX(mood) as "max_mood?",
-                AVG(mood) as "avg_mood?",
-                SUM(CASE WHEN delta > 0 THEN 1 ELSE 0 END) as "positive_events?",
-                SUM(CASE WHEN delta < 0 THEN 1 ELSE 0 END) as "negative_events?",
-                SUM(CASE WHEN delta = 0 THEN 1 ELSE 0 END) as "neutral_events?"
+                COUNT(*) as "total_events!: i64",
+                MIN(mood) as "min_mood?: i64",
+                MAX(mood) as "max_mood?: i64",
+                AVG(CAST(mood AS REAL)) as "avg_mood?: f64",
+                SUM(CASE WHEN delta > 0 THEN 1 ELSE 0 END) as "positive_events!: i64",
+                SUM(CASE WHEN delta < 0 THEN 1 ELSE 0 END) as "negative_events!: i64",
+                SUM(CASE WHEN delta = 0 THEN 1 ELSE 0 END) as "neutral_events!: i64"
             FROM mood_events
             "#
 		)
@@ -229,7 +231,7 @@ impl MoodEventRepository {
 	}
 
 	async fn update_with_transaction(&self, tx: &mut Transaction<'_, Sqlite>, id: i64, update: UpdateMoodEvent) -> Result<Option<MoodEvent>, Error> {
-		let current = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(&mut *tx).await?;
+		let current = sqlx::query!("SELECT index_pos FROM mood_events WHERE id = ?", id).fetch_optional(tx.as_mut()).await?;
 
 		let _index_pos = match current {
 			Some(row) => row.index_pos,
@@ -237,33 +239,35 @@ impl MoodEventRepository {
 		};
 
 		if let Some(week_val) = update.week {
-			sqlx::query!("UPDATE mood_events SET week = ? WHERE id = ?", week_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET week = ? WHERE id = ?", week_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(label_val) = update.label.as_ref() {
-			sqlx::query!("UPDATE mood_events SET label = ? WHERE id = ?", label_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET label = ? WHERE id = ?", label_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(desc_val) = update.description.as_ref() {
-			sqlx::query!("UPDATE mood_events SET description = ? WHERE id = ?", desc_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET description = ? WHERE id = ?", desc_val, id)
+				.execute(tx.as_mut())
+				.await?;
 		}
 		if let Some(team_val) = update.team.as_ref() {
-			sqlx::query!("UPDATE mood_events SET team = ? WHERE id = ?", team_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET team = ? WHERE id = ?", team_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(cat_val) = update.category.as_ref() {
-			sqlx::query!("UPDATE mood_events SET category = ? WHERE id = ?", cat_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET category = ? WHERE id = ?", cat_val, id).execute(tx.as_mut()).await?;
 		}
 		if let Some(delta_val) = update.delta {
-			sqlx::query!("UPDATE mood_events SET delta = ? WHERE id = ?", delta_val, id).execute(&mut *tx).await?;
+			sqlx::query!("UPDATE mood_events SET delta = ? WHERE id = ?", delta_val, id).execute(tx.as_mut()).await?;
 		}
 
 		sqlx::query!("UPDATE mood_events SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", id)
-			.execute(&mut *tx)
+			.execute(tx.as_mut())
 			.await?;
 
 		queries::fetch_mood_event_by_id(&self.pool, id).await
 	}
 
 	async fn delete_with_transaction(&self, tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<bool, Error> {
-		let rows_affected = sqlx::query!("DELETE FROM mood_events WHERE id = ?", id).execute(&mut *tx).await?.rows_affected();
+		let rows_affected = sqlx::query!("DELETE FROM mood_events WHERE id = ?", id).execute(tx.as_mut()).await?.rows_affected();
 		Ok(rows_affected > 0)
 	}
 }
