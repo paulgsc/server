@@ -24,11 +24,13 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY .sqlx/ .sqlx/
 
 ENV CARGO_INCREMENTAL=0
 ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
 ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
+ENV SQLX_OFFLINE=true
 
 RUN cargo build --release --package file_host
 RUN strip target/release/file_host

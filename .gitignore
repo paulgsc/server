@@ -75,3 +75,6 @@ grafana/png/
 grafana/csv/
 
 
+
+# Workflow
+errors.json

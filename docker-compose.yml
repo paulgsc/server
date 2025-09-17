@@ -212,7 +212,7 @@ services:
     container_name: metabase
     restart: unless-stopped
     ports:
-      - '3002:3000' # Changed from 3000 to avoid conflict with file-host
+      - '3030:3000' # Changed from 3000 to avoid conflict with file-host
     environment:
       # Metabase metadata DB (stores users, dashboards, configs)
       - MB_DB_FILE=/metabase-data/metabase.db
