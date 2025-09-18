@@ -4,7 +4,7 @@
 resolver = "2"
 
 
-members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/nfl_server", "crates/task_queue", "crates/webhooks", "crates/foo", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint", "crates/gsheet_derive", "crates/obs-websocket", "crates/some-mujik", "crates/stream-stepper", "crates/some-utils", "crates/some-services", "crates/agents/auto_fixer", "crates/db/mood_event",]
+members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/nfl_server", "crates/task_queue", "crates/webhooks", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint", "crates/gsheet_derive", "crates/obs-websocket", "crates/some-mujik", "crates/stream-stepper", "crates/some-utils", "crates/some-services", "crates/agents/auto_fixer", "crates/db/mood_event",]
 
 exclude = []
 
