@@ -16,6 +16,8 @@ services:
 
       # Service connections
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///app/dbs/hopium.db
+      - SQLX_OFFLINE=false
 
       # Authentication and secrets
       - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
@@ -31,6 +33,7 @@ services:
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
+      - /mnt/storage/users/dev/databases/hopium:/app/dbs
       - ./data:/app/data:rw
       - ./client_secret_file.json:/app/secrets/client_secret_file.json:ro
       - ./config:/app/config:ro
