@@ -101,17 +101,15 @@ jobs:
       - name: Install Node dependencies via Nix
         run: |
           # If you add nodejs and pnpm to your flake.nix buildInputs
-          nix develop --command node --version
-          nix develop --command pnpm --version || echo "Add nodejs and pnpm to your flake.nix"
 
       - name: Install dependencies
-        run: nix develop --command nixpkgs#pnpm install --frozen-lockfile --prefer-offline
+        run: nix develop --command nixpkgs#nodePackages.pnpm install --frozen-lockfile --prefer-offline
 
       - name: Check prettier
-        run: nix develop --command nixpkgs#pnpm prettier
+        run: nix develop --command nixpkgs#nodePackages.pnpm prettier
 
       - name: Check eslint
-        run: nix develop --command nixpkgs#pnpm lint
+        run: nix develop --command nixpkgs#nodePackages.pnpm lint
 
       - name: Run typecheck
-        run: nix develop --command nixpkgs#pnpm typecheck
+        run: nix develop --command nixpkgs#nodePackages.pnpm typecheck
