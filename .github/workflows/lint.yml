@@ -55,6 +55,7 @@ jobs:
     needs: determine_jobs
     if: needs.determine_jobs.outputs.rust == 'true'
     env:
+      # Default DATABASE_URL - will be overridden per crate as needed
       DATABASE_URL: sqlite://test.db
     steps:
       - uses: actions/checkout@v5
@@ -73,32 +74,32 @@ jobs:
           nix develop --command echo "Nix development environment ready!"
           nix develop --command rustc --version
           nix develop --command cargo --version
-
+      
       # Install sqlx-cli if not in your nix environment
       - name: Install sqlx-cli
         run: nix develop --command cargo install sqlx-cli --no-default-features --features sqlite
-
-      # Create empty SQLite database
-      - name: Create SQLite database
-        run: touch test.db
-
-      # Run database migrations (if you have them)
-      - name: Run all migrations
+      
+      # Create SQLite databases and run migrations for each crate
+      - name: Setup databases and run migrations
         run: |
-          # Find every directory named "migrations" and run sqlx there
-          for dir in $(find . -type d -name migrations); do
-            echo "Running migrations in $dir"
-            (
-              cd "$(dirname "$dir")"
-              nix develop --command sqlx migrate run
-            )
+          # Find all migration directories and set up databases for each
+          for migration_dir in $(find . -type d -name "migrations"); do
+            crate_dir=$(dirname "$migration_dir")
+            db_file="$crate_dir/test.db"
+            
+            echo "Setting up database for $crate_dir"
+            touch "$db_file"
+            
+            # Set DATABASE_URL for this specific crate and run migrations
+            cd "$crate_dir"
+            DATABASE_URL="sqlite://test.db" nix develop --command sqlx migrate run || true
+            cd - > /dev/null
           done
-        continue-on-error: true  # In case you don't have migrations yet
-
+      
       # Generate .sqlx directory
       - name: Generate sqlx metadata
         run: nix develop --command cargo sqlx prepare --workspace
-
+      
       # Cache the .sqlx directory for subsequent steps
       - name: Cache sqlx metadata
         uses: actions/cache@v4
@@ -107,7 +108,7 @@ jobs:
           key: sqlx-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.sql', 'migrations/**/*.sql') }}
           restore-keys: |
             sqlx-${{ runner.os }}-
-
+      
       - name: Run compiler check
         run: nix develop --command cargo check --workspace
       - name: Run cargo clippy
