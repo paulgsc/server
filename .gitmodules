@@ -1,3 +1,0 @@
-[submodule "crates/foo"]
-	path = crates/foo
-	url = git@github.com:paulgsc/foo.git
