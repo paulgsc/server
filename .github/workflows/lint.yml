@@ -1,4 +1,5 @@
 name: CI Workflow
+
 on:
   pull_request:
     types: [opened, synchronize]
@@ -6,14 +7,18 @@ on:
       - main
   release:
     types: [published]
+
 defaults:
   run:
     working-directory: ./
+
 permissions:
   actions: write
   contents: read
   pull-requests: write
+
 concurrency: ${{ github.workflow }}-${{ github.ref }}
+
 jobs:
   determine_jobs:
     name: Determine jobs to run
@@ -24,6 +29,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Detect Rust-related changes
         id: rust
         uses: technote-space/get-diff-action@v6
@@ -39,6 +45,7 @@ jobs:
             migrations/**
             !**.md
             !**.mdx
+
       - name: Detect Formatting-related changes
         id: format
         uses: technote-space/get-diff-action@v6
@@ -46,6 +53,7 @@ jobs:
           PATTERNS: |
             **/*.{yml,yaml,md,mdx,js,jsx,ts,tsx,json,toml,css}
             !Cargo.toml
+
     outputs:
       rust: ${{ steps.rust.outputs.diff != '' }}
       format: ${{ steps.format.outputs.format != '' }}
@@ -55,52 +63,53 @@ jobs:
     needs: determine_jobs
     if: needs.determine_jobs.outputs.rust == 'true'
     env:
-      # Default DATABASE_URL - will be overridden per crate as needed
-      DATABASE_URL: sqlite://test.db
+      DATABASE_URL: sqlite:///${{ github.workspace }}/test.db
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v12
+
       - name: Setup Cachix (optional - speeds up builds)
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
+
       - name: Build development shell
         run: |
-          nix develop --command echo "Nix development environment ready!"
           nix develop --command rustc --version
           nix develop --command cargo --version
-      
-      # Install sqlx-cli if not in your nix environment
+
       - name: Install sqlx-cli
         run: nix develop --command cargo install sqlx-cli --no-default-features --features sqlite
-      
-      # Create SQLite databases and run migrations for each crate
+
       - name: Setup databases and run migrations
         run: |
-          # Find all migration directories and set up databases for each
+          root_db="${GITHUB_WORKSPACE}/test.db"
+          echo "Creating root database at $root_db"
+          touch "$root_db"
+
+          # Run migrations from first available crate into root DB
+          first_migration_dir=$(find . -type d -name "migrations" | head -1)
+          if [ -n "$first_migration_dir" ]; then
+            echo "Applying migrations from $first_migration_dir to root DB"
+            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$first_migration_dir"
+          fi
+
+          # Also migrate each crate’s local DB (for completeness)
           for migration_dir in $(find . -type d -name "migrations"); do
             crate_dir=$(dirname "$migration_dir")
             db_file="$crate_dir/test.db"
-            
+
             echo "Setting up database for $crate_dir"
             touch "$db_file"
-            
-            # Set DATABASE_URL for this specific crate and run migrations
-            cd "$crate_dir"
-            DATABASE_URL="sqlite://test.db" nix develop --command sqlx migrate run || true
-            cd - > /dev/null
+            (cd "$crate_dir" && DATABASE_URL="sqlite://test.db" nix develop --command sqlx migrate run || true)
           done
-      
-      # Generate .sqlx directory
-      - name: Generate sqlx metadata
-        run: nix develop --command cargo sqlx prepare --workspace
-      
-      # Cache the .sqlx directory for subsequent steps
+
       - name: Cache sqlx metadata
         uses: actions/cache@v4
         with:
@@ -108,11 +117,16 @@ jobs:
           key: sqlx-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.sql', 'migrations/**/*.sql') }}
           restore-keys: |
             sqlx-${{ runner.os }}-
-      
+
+      - name: Generate sqlx metadata
+        run: nix develop --command cargo sqlx prepare --workspace
+
       - name: Run compiler check
         run: nix develop --command cargo check --workspace
+
       - name: Run cargo clippy
         run: nix develop --command nixpkgs#just clippy -D warnings -A unknown-lints --no-deps
+
       - name: Run cargo fmt
         run: nix develop --command cargo fmt --all -- --check
 
@@ -122,23 +136,25 @@ jobs:
     if: needs.determine_jobs.outputs.format == 'true'
     steps:
       - uses: actions/checkout@v5
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v12
+
       - name: Setup Cachix
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
-      # Add Node.js tools to your flake.nix devShell if you haven't already
-      - name: Install Node dependencies via Nix
-        run: |
-          # If you add nodejs and pnpm to your flake.nix buildInputs
+
       - name: Install dependencies
         run: nix develop --command nixpkgs#nodePackages.pnpm install --frozen-lockfile --prefer-offline
+
       - name: Check prettier
-        run: nix develop --command nixpkgs#nodePackages.pnpm prettier
+        run: nix develop --command nixpkgs#nodePackages.pnpm prettier --check .
+
       - name: Check eslint
         run: nix develop --command nixpkgs#nodePackages.pnpm lint
+
       - name: Run typecheck
         run: nix develop --command nixpkgs#nodePackages.pnpm typecheck
