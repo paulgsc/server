@@ -73,24 +73,32 @@ jobs:
           nix develop --command echo "Nix development environment ready!"
           nix develop --command rustc --version
           nix develop --command cargo --version
-      
+
       # Install sqlx-cli if not in your nix environment
       - name: Install sqlx-cli
         run: nix develop --command cargo install sqlx-cli --no-default-features --features sqlite
-      
+
       # Create empty SQLite database
       - name: Create SQLite database
         run: touch test.db
-      
+
       # Run database migrations (if you have them)
-      - name: Run migrations
-        run: nix develop --command sqlx migrate run
+      - name: Run all migrations
+        run: |
+          # Find every directory named "migrations" and run sqlx there
+          for dir in $(find . -type d -name migrations); do
+            echo "Running migrations in $dir"
+            (
+              cd "$(dirname "$dir")"
+              nix develop --command sqlx migrate run
+            )
+          done
         continue-on-error: true  # In case you don't have migrations yet
-      
+
       # Generate .sqlx directory
       - name: Generate sqlx metadata
         run: nix develop --command cargo sqlx prepare --workspace
-      
+
       # Cache the .sqlx directory for subsequent steps
       - name: Cache sqlx metadata
         uses: actions/cache@v4
@@ -99,7 +107,7 @@ jobs:
           key: sqlx-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.sql', 'migrations/**/*.sql') }}
           restore-keys: |
             sqlx-${{ runner.os }}-
-      
+
       - name: Run compiler check
         run: nix develop --command cargo check --workspace
       - name: Run cargo clippy
