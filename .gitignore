@@ -77,4 +77,5 @@ grafana/csv/
 
 
 # Workflow
-errors.json
+*errors.json
+*issues.json
