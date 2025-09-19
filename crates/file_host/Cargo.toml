@@ -14,6 +14,7 @@ gsheet_derive  = { workspace = true }
 enum-name-derive  = { workspace = true }
 obs-websocket  = { workspace = true }
 mood_event  = { workspace = true }
+some-services  = { workspace = true }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
