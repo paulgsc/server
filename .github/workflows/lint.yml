@@ -93,12 +93,12 @@ jobs:
           echo "Creating root database at $root_db"
           touch "$root_db"
 
-          # Run migrations from first available crate into root DB
-          first_migration_dir=$(find . -type d -name "migrations" | head -1)
-          if [ -n "$first_migration_dir" ]; then
-            echo "Applying migrations from $first_migration_dir to root DB"
-            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$first_migration_dir"
-          fi
+          # Apply all migrations into root DB
+          echo "Applying all migrations into root database..."
+          for migration_dir in $(find . -type d -name "migrations" | sort); do
+            echo "Applying migrations from $migration_dir"
+            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$migration_dir" || true
+          done
 
           # Also migrate each crate’s local DB (for completeness)
           for migration_dir in $(find . -type d -name "migrations"); do
