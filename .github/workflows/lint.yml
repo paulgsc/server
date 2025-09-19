@@ -95,20 +95,47 @@ jobs:
           rm -f "$root_db"
           touch "$root_db"
 
-          # Find all migration directories and sort them
-          migration_dirs=($(find . -type d -name "migrations" | sort))
+          # Create a temporary combined migrations directory
+          temp_migrations_dir="${GITHUB_WORKSPACE}/temp_migrations"
+          mkdir -p "$temp_migrations_dir"
           
-          echo "Found migration directories: ${migration_dirs[@]}"
+          echo "Combining all migrations into temporary directory..."
           
-          # Apply all migrations to the root database in order
-          for migration_dir in "${migration_dirs[@]}"; do
-            echo "Applying migrations from $migration_dir to root database"
-            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$migration_dir"
+          # Find all migration files, sort them, and copy with unique names
+          counter=1
+          find . -path "*/migrations/*.sql" -type f | sort | while read -r migration_file; do
+            filename=$(basename "$migration_file")
+            crate_path=$(dirname "$(dirname "$migration_file")")
+            crate_name=$(basename "$crate_path")
+            
+            # If we have a collision, prefix with crate name and counter
+            if [[ -f "$temp_migrations_dir/$filename" ]]; then
+              # Extract the timestamp and description parts
+              timestamp=$(echo "$filename" | cut -d'_' -f1)
+              description=$(echo "$filename" | cut -d'_' -f2- | sed 's/\.sql$//')
+              new_filename="${timestamp}_${counter}_${crate_name}_${description}.sql"
+              echo "Renaming duplicate migration: $filename -> $new_filename (from $crate_path)"
+              cp "$migration_file" "$temp_migrations_dir/$new_filename"
+              ((counter++))
+            else
+              echo "Copying $migration_file -> $temp_migrations_dir/$filename"
+              cp "$migration_file" "$temp_migrations_dir/$filename"
+            fi
           done
+          
+          echo "Contents of combined migrations directory:"
+          ls -la "$temp_migrations_dir" || true
+          
+          # Apply all migrations from the combined directory
+          echo "Applying all migrations to root database..."
+          DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$temp_migrations_dir"
 
           # Verify tables were created
           echo "Verifying database schema..."
           nix develop --command sqlite3 "$root_db" ".tables"
+          
+          # Clean up temp directory
+          rm -rf "$temp_migrations_dir"
 
       - name: Cache sqlx metadata
         uses: actions/cache@v4
