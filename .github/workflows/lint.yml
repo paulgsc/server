@@ -89,26 +89,26 @@ jobs:
 
       - name: Setup databases and run migrations
         run: |
+          # Create the main test database
           root_db="${GITHUB_WORKSPACE}/test.db"
           echo "Creating root database at $root_db"
+          rm -f "$root_db"
           touch "$root_db"
 
-          # Apply all migrations into root DB
-          echo "Applying all migrations into root database..."
-          for migration_dir in $(find . -type d -name "migrations" | sort); do
-            echo "Applying migrations from $migration_dir"
-            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$migration_dir" || true
+          # Find all migration directories and sort them
+          migration_dirs=($(find . -type d -name "migrations" | sort))
+          
+          echo "Found migration directories: ${migration_dirs[@]}"
+          
+          # Apply all migrations to the root database in order
+          for migration_dir in "${migration_dirs[@]}"; do
+            echo "Applying migrations from $migration_dir to root database"
+            DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$migration_dir"
           done
 
-          # Also migrate each crate’s local DB (for completeness)
-          for migration_dir in $(find . -type d -name "migrations"); do
-            crate_dir=$(dirname "$migration_dir")
-            db_file="$crate_dir/test.db"
-
-            echo "Setting up database for $crate_dir"
-            touch "$db_file"
-            (cd "$crate_dir" && DATABASE_URL="sqlite://test.db" nix develop --command sqlx migrate run || true)
-          done
+          # Verify tables were created
+          echo "Verifying database schema..."
+          nix develop --command sqlite3 "$root_db" ".tables"
 
       - name: Cache sqlx metadata
         uses: actions/cache@v4
@@ -125,7 +125,7 @@ jobs:
         run: nix develop --command cargo check --workspace
 
       - name: Run cargo clippy
-        run: nix develop --command nixpkgs#just clippy -D warnings -A unknown-lints --no-deps
+        run: nix develop --command cargo clippy --workspace -- -D warnings -A unknown-lints --no-deps
 
       - name: Run cargo fmt
         run: nix develop --command cargo fmt --all -- --check
@@ -148,13 +148,13 @@ jobs:
           skipPush: true
 
       - name: Install dependencies
-        run: nix develop --command nixpkgs#nodePackages.pnpm install --frozen-lockfile --prefer-offline
+        run: nix develop --command pnpm install --frozen-lockfile --prefer-offline
 
       - name: Check prettier
-        run: nix develop --command nixpkgs#nodePackages.pnpm prettier --check .
+        run: nix develop --command pnpm prettier --check .
 
       - name: Check eslint
-        run: nix develop --command nixpkgs#nodePackages.pnpm lint
+        run: nix develop --command pnpm lint
 
       - name: Run typecheck
-        run: nix develop --command nixpkgs#nodePackages.pnpm typecheck
+        run: nix develop --command pnpm typecheck
