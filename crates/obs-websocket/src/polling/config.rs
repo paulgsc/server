@@ -3,6 +3,7 @@ use crate::polling::{ObsRequestBuilder, PollingError};
 
 type Result<T> = std::result::Result<Option<T>, PollingError>;
 type VResult<T> = std::result::Result<Vec<T>, PollingError>;
+type FResult = std::result::Result<Vec<serde_json::Value>, PollingError>;
 
 /// Polling frequency levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +83,12 @@ impl From<PollingConfig> for Box<[(ObsRequestType, PollingFrequency)]> {
 
 impl PollingConfig {
 	/// Generate JSON requests for a specific frequency tier
-	pub fn generate_requests_for_frequency(&self, frequency: PollingFrequency) -> std::result::Result<Vec<serde_json::Value>, PollingError> {
+	///
+	/// # Errors
+	///
+	/// Returns `PollingError` if request creation fails for any of the request types
+	/// in the specified frequency tier.
+	pub fn generate_requests_for_frequency(&self, frequency: PollingFrequency) -> FResult {
 		let requests = match frequency {
 			PollingFrequency::High => &self.high_frequency_requests,
 			PollingFrequency::Medium => &self.medium_frequency_requests,
@@ -92,7 +98,7 @@ impl PollingConfig {
 		Ok(
 			requests
 				.iter()
-				.map(|req| Self::create_request_from_type(req)) // -> Result<Option<Value>, PollingError>
+				.map(Self::create_request_from_type) // Fixed: removed redundant closure
 				.collect::<std::result::Result<Vec<_>, _>>()? // collect results into Vec<Option<Value>>
 				.into_iter()
 				.flatten() // drop None, keep Some
@@ -100,8 +106,8 @@ impl PollingConfig {
 		)
 	}
 
-	/// Create a request using the appropriate ObsRequestBuilder method
-	/// Only handles GET/query requests suitable for polling
+	/// Create a request using the appropriate `ObsRequestBuilder` method
+	/// Only handles `GET`/query requests suitable for polling
 	fn create_request_from_type(request_type: &ObsRequestType) -> Result<serde_json::Value> {
 		match request_type {
 			// Status queries - safe for polling
@@ -139,6 +145,7 @@ impl PollingConfig {
 	}
 
 	/// Get all request types as a flat list with their frequencies
+	#[must_use]
 	pub fn get_all_request_types(&self) -> Vec<(ObsRequestType, PollingFrequency)> {
 		let mut requests = Vec::new();
 
@@ -157,6 +164,7 @@ impl PollingConfig {
 
 	/// Utility functions for creating default polling configurations
 	/// Create a default configuration for basic OBS monitoring
+	#[must_use]
 	pub fn default_monitoring() -> Self {
 		let requests: Box<[(ObsRequestType, PollingFrequency)]> = Box::new([
 			// High frequency - critical status updates (all safe for polling)
@@ -183,6 +191,7 @@ impl PollingConfig {
 
 	/// Create a lightweight configuration for minimal polling
 	#[allow(dead_code)]
+	#[must_use]
 	pub fn minimal_monitoring() -> Self {
 		let requests: Box<[(ObsRequestType, PollingFrequency)]> = Box::new([
 			(ObsRequestType::GetStreamStatus, PollingFrequency::Medium),
@@ -194,6 +203,7 @@ impl PollingConfig {
 
 	/// Create a comprehensive configuration for full monitoring
 	#[allow(dead_code)]
+	#[must_use]
 	pub fn comprehensive_monitoring() -> Self {
 		let requests: Box<[(ObsRequestType, PollingFrequency)]> = Box::new([
 			// High frequency - critical status updates

@@ -31,23 +31,28 @@ pub struct ObsInitializer {
 }
 
 impl ObsInitializer {
-	pub fn new(config: InitializationConfig) -> Self {
+	pub const fn new(config: InitializationConfig) -> Self {
 		Self { config }
 	}
 
 	/// Send initial state requests to OBS
+	///
+	/// # Errors
+	///
+	/// Returns `ObsMessagesError::WebSocketSend` if sending initialization requests
+	/// or flushing the WebSocket sink fails.
 	#[instrument(skip(self, sink), fields(request_count = self.config.requests.len()))]
 	pub async fn fetch_init_state(&self, sink: &mut WebSocketSink) -> Result<()> {
 		trace!("Starting OBS initialization with {} requests", self.config.requests.len());
 
 		for (request_type, request_id) in &self.config.requests {
 			let request = json!({
-				"op": 6,
-				"d": {
-					"requestType": request_type.as_str(),
-					"requestId": request_id
-				}
-			});
+			"op": 6,
+							"d": {
+													"requestType": request_type.as_str(),
+																		"requestId": request_id
+																							}
+						});
 
 			trace!("Sending initialization request: {} ({})", request_type.as_str(), request_id);
 
@@ -68,11 +73,13 @@ impl ObsInitializer {
 }
 
 /// Thread-safe message processor wrapper
+#[derive(Clone)]
 pub struct MessageProcessor {
 	processor: Arc<Mutex<ObsMessageProcessor>>,
 }
 
 impl MessageProcessor {
+	#[must_use]
 	pub fn new() -> Self {
 		Self {
 			processor: Arc::new(Mutex::new(ObsMessageProcessor::new())),
@@ -80,15 +87,23 @@ impl MessageProcessor {
 	}
 
 	/// Process an incoming OBS message (thread-safe)
+	///
+	/// # Errors
+	///
+	/// Returns `ObsMessagesError` if message processing fails due to invalid JSON,
+	/// unexpected message format, or other processing errors.
 	#[instrument(skip(self, message))]
 	pub async fn process_message(&self, message: String) -> Result<ObsEvent> {
-		let mut processor = self.processor.lock().await;
-		let event = processor.process_message(message).await?;
+		let event = {
+			let mut processor = self.processor.lock().await;
+			processor.process_message(message).await?
+		}; // Drop the lock early
 
 		Ok(event)
 	}
 
 	/// Get processing statistics (thread-safe)
+	#[must_use]
 	pub async fn get_stats(&self) -> HashMap<String, u64> {
 		let processor = self.processor.lock().await;
 		processor.get_message_stats().clone()
@@ -98,13 +113,6 @@ impl MessageProcessor {
 	pub async fn reset_stats(&self) {
 		let mut processor = self.processor.lock().await;
 		processor.reset_stats();
-	}
-
-	/// Clone for sharing across tasks
-	pub fn clone(&self) -> Self {
-		Self {
-			processor: Arc::clone(&self.processor),
-		}
 	}
 }
 
@@ -121,6 +129,7 @@ pub struct MessageHandler {
 }
 
 impl MessageHandler {
+	#[must_use]
 	pub fn new() -> Self {
 		Self {
 			initializer: ObsInitializer::new(InitializationConfig::default()),
@@ -128,6 +137,7 @@ impl MessageHandler {
 		}
 	}
 
+	#[must_use]
 	pub fn with_config(config: InitializationConfig) -> Self {
 		Self {
 			initializer: ObsInitializer::new(config),
@@ -136,6 +146,10 @@ impl MessageHandler {
 	}
 
 	/// Initialize the OBS WebSocket connection
+	///
+	/// # Errors
+	///
+	/// Returns `ObsMessagesError::WebSocketSend` if initialization requests fail to send.
 	#[instrument(skip(self, sink))]
 	pub async fn initialize(&self, sink: &mut WebSocketSink) -> Result<()> {
 		trace!("Starting OBS WebSocket initialization");
@@ -145,11 +159,16 @@ impl MessageHandler {
 	}
 
 	/// Get a cloneable processor for use in async tasks
+	#[must_use]
 	pub fn processor(&self) -> MessageProcessor {
 		self.processor.clone()
 	}
 
 	/// Process an incoming OBS message (convenience method)
+	///
+	/// # Errors
+	///
+	/// Returns `ObsMessagesError` if message processing fails.
 	#[instrument(skip(self, message))]
 	pub async fn process_message(&self, message: String) -> Result<ObsEvent> {
 		let event = self.processor.process_message(message).await?;
@@ -157,13 +176,14 @@ impl MessageHandler {
 	}
 
 	/// Get processing statistics
+	#[must_use]
 	pub async fn get_stats(&self) -> HashMap<String, u64> {
 		self.processor.get_stats().await
 	}
 
 	/// Reset processing statistics
 	pub async fn reset_stats(&self) {
-		self.processor.reset_stats().await
+		self.processor.reset_stats().await;
 	}
 }
 
