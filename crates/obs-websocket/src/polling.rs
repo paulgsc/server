@@ -1,8 +1,6 @@
 use crate::core::{CommandExecutor, InternalCommand};
-use futures_util::sink::SinkExt;
 use futures_util::stream::SplitSink;
 use std::sync::Arc;
-use tokio::time::{interval, Duration};
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, WebSocketStream};
 
 pub type WsSink = SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, TungsteniteMessage>;
