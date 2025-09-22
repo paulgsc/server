@@ -13,6 +13,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
+	perform_health_check,
 	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, EventType, NowPlaying},
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
@@ -44,6 +45,12 @@ async fn handle_tower_error(error: BoxError) -> FileHostError {
 async fn main() -> Result<()> {
 	dotenv::dotenv().ok();
 	let config = Config::parse();
+
+	// Handle health check flag
+	if config.health_check {
+		return perform_health_check(&config).await;
+	}
+
 	let _ = init_tracing(&config);
 
 	let config = Arc::new(config);
@@ -143,7 +150,7 @@ async fn main() -> Result<()> {
 			.layer(ConcurrencyLimitLayer::new(config.clone().max_concurrent_req))
 			.layer(TimeoutLayer::new(Duration::from_millis(config.clone().task_timeout_ms)))
 			.layer(LoadShedLayer::new())
-			.layer(AddExtensionLayer::new(config)),
+			.layer(AddExtensionLayer::new(config.clone())),
 	);
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;

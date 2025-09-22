@@ -139,6 +139,18 @@ pub struct Config {
 	/// DATABASE URL
 	#[arg(long, env = "DATABASE_URL")]
 	pub database_url: String,
+
+	/// Perform health check and exit
+	#[arg(long, help = "Perform health check against running server")]
+	pub health_check: bool,
+
+	/// Port for health check (defaults to 3000)
+	#[arg(long, default_value = "3000", help = "Port to check for health endpoint")]
+	pub health_check_port: u16,
+
+	/// Host for health check (defaults to localhost)
+	#[arg(long, default_value = "127.0.0.1", help = "Host to check for health endpoint")]
+	pub health_check_host: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]

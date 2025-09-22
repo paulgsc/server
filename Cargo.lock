@@ -1495,6 +1495,7 @@ dependencies = [
  "prometheus",
  "redis 0.28.2",
  "regex",
+ "reqwest 0.12.23",
  "sdk",
  "serde",
  "serde_json",
