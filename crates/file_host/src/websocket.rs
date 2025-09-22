@@ -19,6 +19,7 @@ use tokio::{
 	sync::Notify,
 	time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub mod broadcast;
@@ -303,7 +304,7 @@ pub async fn init_websocket() -> WebSocketFsm {
 	state.start();
 
 	// Start FSM processes with instrumentation
-	state.start_timeout_monitor(Duration::from_secs(120));
+	state.start_timeout_monitor(Duration::from_secs(120), CancellationToken::new());
 
 	// Start system event monitoring for debugging with enhanced instrumentation
 	let system_events = state.subscribe_to_system_events();

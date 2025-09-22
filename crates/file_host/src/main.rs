@@ -74,7 +74,6 @@ async fn main() -> Result<()> {
 
 	// Create cancellation token for coordinated shutdown
 	let shutdown_token = CancellationToken::new();
-	let shutdown_token_clone = shutdown_token.clone();
 
 	// Create connection limiter with configuration
 	let connection_limits = ConnectionLimitConfig {
@@ -151,11 +150,15 @@ async fn main() -> Result<()> {
 	tracing::debug!("listening on {}", listener.local_addr()?);
 	let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
 
-	// Spawn signal handler task
+	// Spawn signal handler task with proper shutdown coordination
+	let signal_shutdown_token = shutdown_token.clone();
 	let signal_task = tokio::spawn(async move {
-		let _ = tokio::signal::ctrl_c().await;
-		tracing::info!("Received shutdown signal");
-		shutdown_token_clone.cancel();
+		tokio::select! {
+			_ = tokio::signal::ctrl_c() => {
+				tracing::info!("Received Ctrl+C, initiating shutdown...");
+			}
+		}
+		signal_shutdown_token.cancel();
 	});
 
 	// Main server loop with proper cancellation handling
@@ -176,6 +179,9 @@ async fn main() -> Result<()> {
 
 	// Cancel the shutdown token to notify all tasks
 	shutdown_token.cancel();
+
+	// Give the timeout monitor a moment to shut down gracefully
+	tokio::time::sleep(Duration::from_millis(100)).await;
 
 	// First, shut down WebSocket connections gracefully
 	tracing::info!("Shutting down WebSocket connections...");
