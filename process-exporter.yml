@@ -1,0 +1,64 @@
+process_names:
+  # --- Generic group by command ---
+  - name: "{{.Comm}}"
+    cmdline:
+      - '.+'
+
+  # --- Group Docker containers by container name ---
+  - name: "docker-{{.Matches.container}}"
+    cmdline:
+      - 'docker.*--name[= ](?P<container>[^ ]+)'
+
+  # --- Explicitly track your custom service ---
+  - name: "file-host-server-{{.PID}}"
+    cmdline:
+      - 'file-host-server.*'
+      - 'self-hosting-maishatu.*'
+      - '/usr/local/bin/file.*'   # matches your actual entrypoint in `docker ps`
+
+  # --- Vendor apps (infra / databases / observability) ---
+  - name: "grafana-{{.PID}}"
+    cmdline:
+      - 'grafana.*'
+
+  - name: "prometheus-{{.PID}}"
+    cmdline:
+      - 'prometheus.*'
+
+  - name: "postgres-{{.PID}}"
+    cmdline:
+      - 'postgres.*'
+
+  - name: "redis-{{.PID}}"
+    cmdline:
+      - 'redis.*'
+
+  - name: "metabase-{{.PID}}"
+    cmdline:
+      - '.*metabase.*'
+
+  # --- Language runtimes (catch-all if others sneak in) ---
+  - name: "java-{{.PID}}"
+    cmdline:
+      - 'java.*'
+
+  - name: "node-{{.PID}}"
+    cmdline:
+      - 'node.*'
+
+  - name: "python-{{.PID}}"
+    cmdline:
+      - 'python.*'
+
+  - name: "rust-{{.PID}}"
+    cmdline:
+      - 'rust.*'
+
+  # --- Kernel/system processes that can cause hangs ---
+  - name: "system-{{.Comm}}"
+    cmdline:
+      - 'kswapd.*'
+      - 'ksoftirqd.*'
+      - 'migration.*'
+      - 'systemd.*'
+

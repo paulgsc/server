@@ -6,30 +6,19 @@ services:
     ports:
       - '3000:3000'
     environment:
-      # Logging and debugging
       - RUST_LOG=${RUST_LOG:-debug}
       - RUST_BACKTRACE=1
-
-      # Performance tuning - CAGED EDITION
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
-
-      # Service connections
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
       - SQLX_OFFLINE=false
-
-      # Authentication and secrets
       - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
       - HMAC_KEY=${HMAC_KEY:-placeholder}
       - GITHUB_API_TOKEN=${GITHUB_API_TOKEN:-placeholder}
-
-      # External services
       - EMAIL_SERVICE_URL=${EMAIL_SERVICE_URL:-aulgondu@gmail.com}
       - OBS_WEBSOCKET_PWD=${OBS_WEBSOCKET_PWD:-QVNJXLc0ipLSwohv}
       - OBS_WEBSOCKET_IP=${OBS_WEBSOCKET_IP:-10.0.0.25}
-
-      # Application paths
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
@@ -44,13 +33,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-
-    # 🔹 LOCAL DEV RESOURCE LIMITS (enforced by docker-compose)
     mem_limit: 4G
     cpus: 2.0
     pids_limit: 200
-
-    # 🔹 SWARM / CI (ignored locally)
     deploy:
       resources:
         limits:
@@ -60,7 +45,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 1G
-
     healthcheck:
       test: ['CMD', '/usr/local/bin/file_host', '--health-check']
       interval: 30s
@@ -78,11 +62,9 @@ services:
     networks:
       - monitoring-network
     restart: unless-stopped
-
     mem_limit: 1G
     cpus: 1.0
     pids_limit: 50
-
     deploy:
       resources:
         limits:
@@ -92,7 +74,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
@@ -114,11 +95,9 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-
     mem_limit: 512M
     cpus: 0.5
     pids_limit: 30
-
     deploy:
       resources:
         limits:
@@ -148,11 +127,9 @@ services:
     depends_on:
       file-host:
         condition: service_healthy
-
     mem_limit: 2G
     cpus: 1.5
     pids_limit: 100
-
     deploy:
       resources:
         limits:
@@ -162,7 +139,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9090/']
       interval: 30s
@@ -189,11 +165,9 @@ services:
         condition: service_healthy
       dashboard-builder:
         condition: service_completed_successfully
-
     mem_limit: 1G
     cpus: 1.0
     pids_limit: 50
-
     deploy:
       resources:
         limits:
@@ -203,7 +177,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-
     healthcheck:
       test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1']
       interval: 30s
@@ -215,23 +188,17 @@ services:
     container_name: metabase
     restart: unless-stopped
     ports:
-      - '3030:3000' # Changed from 3000 to avoid conflict with file-host
+      - '3030:3000'
     environment:
-      # Metabase metadata DB (stores users, dashboards, configs)
       - MB_DB_FILE=/metabase-data/metabase.db
     volumes:
-      # Persistent storage for Metabase's own metadata (using Docker volume)
       - /mnt/storage/users/dev/metabase-data:/metabase-data
-      # Parent directory containing all your SQLite DBs (using local path)
       - /mnt/storage/users/dev/databases:/data:ro
     networks:
       - monitoring-network
-
-    # Resource limits to match your pattern
     mem_limit: 2G
     cpus: 1.5
     pids_limit: 100
-
     deploy:
       resources:
         limits:
@@ -241,13 +208,12 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/health']
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s # Metabase takes longer to start up
+      start_period: 60s
 
   dashboard-builder:
     build:
@@ -259,11 +225,9 @@ services:
       - ./grafana/generated:/generated:rw
     command: ./build.sh
     restart: 'no'
-
     mem_limit: 1G
     cpus: 1.0
     pids_limit: 50
-
     deploy:
       resources:
         limits:
@@ -283,17 +247,76 @@ services:
       - '--path.rootfs=/host'
     volumes:
       - '/:/host:ro,rslave'
-
     mem_limit: 128M
     cpus: 0.25
     pids_limit: 20
-
     deploy:
       resources:
         limits:
           cpus: '0.25'
           memory: 128M
           pids: 20
+
+  process-exporter:
+    image: ncabatoff/process-exporter:latest
+    container_name: process_exporter
+    restart: unless-stopped
+    pid: host
+    privileged: true
+    networks:
+      - monitoring-network
+    volumes:
+      - /proc:/host/proc:ro
+      - ./process-exporter.yml:/config/process-exporter.yml:ro
+    ports:
+      - '9256:9256'
+    command:
+      - '--procfs=/host/proc'
+      - '--config.path=/config/process-exporter.yml'
+      - '--web.listen-address=0.0.0.0:9256'
+    mem_limit: 256M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+          pids: 20
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    networks:
+      - monitoring-network
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - '8080:8080'
+    command:
+      - '--housekeeping_interval=15s'
+      - '--max_housekeeping_interval=20s'
+      - '--event_storage_event_limit=default=0'
+      - '--event_storage_age_limit=default=0'
+      - '--store_container_labels=false'
+      - '--whitelisted_container_labels=io.kubernetes.container.name,io.kubernetes.pod.name'
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 30
 
 networks:
   monitoring-network:
