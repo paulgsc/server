@@ -26,13 +26,18 @@ pub const DELIMITER: &str = "/";
 #[allow(dead_code)]
 const DELIMITER_BYTE: u8 = DELIMITER.as_bytes()[0];
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
 pub struct Path {
 	raw: String,
 	is_absolute: bool,
 }
 
 impl Path {
+	/// Parses a string into a Path.
+	///
+	/// # Errors
+	///
+	/// Returns `PathPartError` if the path contains empty segments or invalid path parts.
 	pub fn parse(s: &str) -> Result<Self, PathPartError> {
 		let is_absolute = s.starts_with('/');
 		let stripped = s.trim_matches('/');
@@ -57,6 +62,11 @@ impl Path {
 		})
 	}
 
+	/// Creates a Path from a URL-encoded path string.
+	///
+	/// # Errors
+	///
+	/// Returns `PathPartError` if the path cannot be decoded or contains invalid segments.
 	pub fn from_url_path(path: impl AsRef<str>) -> Result<Self, PathPartError> {
 		let path = path.as_ref();
 		let decoded = percent_decode(path.as_bytes()).decode_utf8().map_err(|e| PathPartError::NonUnicode {
@@ -67,11 +77,13 @@ impl Path {
 		Self::parse(&decoded)
 	}
 
-	pub fn is_absolute(&self) -> bool {
+	/// Returns true if the path is absolute (starts with '/').
+	#[must_use]
+	pub const fn is_absolute(&self) -> bool {
 		self.is_absolute
 	}
 
-	pub fn prefix_match<'a>(&'a self, prefix: &Path) -> Option<impl Iterator<Item = PathPart<'a>>> {
+	pub fn prefix_match<'a>(&'a self, prefix: &Self) -> Option<impl Iterator<Item = PathPart<'a>>> {
 		// Absolute/relative paths should only match with same type
 		if self.is_absolute != prefix.is_absolute {
 			return None;
@@ -84,7 +96,8 @@ impl Path {
 		Some(stripped.split(DELIMITER).map(PathPart::from))
 	}
 
-	pub fn prefix_matches(&self, prefix: &Path) -> bool {
+	#[must_use]
+	pub fn prefix_matches(&self, prefix: &Self) -> bool {
 		self.prefix_match(prefix).is_some()
 	}
 
@@ -92,34 +105,40 @@ impl Path {
 		self.raw.split(DELIMITER).map(PathPart::from)
 	}
 
+	#[must_use]
 	pub fn filename(&self) -> Option<&str> {
 		self.raw.rsplit(DELIMITER).next()
 	}
 
+	#[must_use]
 	pub fn extension(&self) -> Option<&str> {
 		self.filename().and_then(|f| f.rsplit_once('.')).map(|(_, ext)| ext)
 	}
 
+	#[must_use]
 	pub fn child<'a>(&self, segment: impl Into<PathPart<'a>>) -> Self {
 		let encoded_segment = segment.into().raw.to_string();
 		if self.raw.is_empty() {
-			Path {
+			Self {
 				raw: encoded_segment,
 				is_absolute: self.is_absolute,
 			}
 		} else {
-			Path {
+			Self {
 				raw: format!("{}{}{}", self.raw, DELIMITER, encoded_segment),
 				is_absolute: self.is_absolute,
 			}
 		}
 	}
 
-	pub fn as_ref(&self) -> &str {
+	/// Returns the raw path string without prefix.
+	#[must_use]
+	pub fn raw(&self) -> &str {
 		&self.raw
 	}
 
 	/// Get the full path string including leading slash for absolute paths
+	#[must_use]
 	pub fn to_string_with_prefix(&self) -> String {
 		if self.is_absolute && !self.raw.is_empty() {
 			format!("/{}", self.raw)
@@ -131,12 +150,9 @@ impl Path {
 	}
 }
 
-impl Default for Path {
-	fn default() -> Self {
-		Path {
-			raw: String::new(),
-			is_absolute: false,
-		}
+impl AsRef<str> for Path {
+	fn as_ref(&self) -> &str {
+		&self.raw
 	}
 }
 
@@ -146,7 +162,7 @@ where
 {
 	fn from_iter<T: IntoIterator<Item = I>>(iter: T) -> Self {
 		let raw = T::into_iter(iter)
-			.map(|s| s.into())
+			.map(Into::into)
 			.filter(|s| !s.raw.is_empty())
 			.map(|s| s.raw.to_string())
 			.collect::<Vec<_>>()

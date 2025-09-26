@@ -19,8 +19,8 @@ impl FileConfig {
 	}
 }
 
-#[derive(Debug, Deserialize)]
-enum FileType {
-	HTML,
-	JSON,
-}
+// #[derive(Debug, Deserialize)]
+// enum FileType {
+// 	HTML,
+// 	JSON,
+// }
