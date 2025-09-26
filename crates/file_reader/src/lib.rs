@@ -1,13 +1,11 @@
 pub mod config;
 pub mod core;
-
+use config::PathPartError;
+use core::Path;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
-
-use config::PathPartError;
-use core::Path;
 
 #[derive(Debug)]
 pub struct FileReader {
@@ -28,11 +26,11 @@ pub enum FileReaderError {
 impl fmt::Display for FileReaderError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			FileReaderError::InvalidPath(path) => write!(f, "Invalid path: {}", path),
-			FileReaderError::FileNotFound => write!(f, "File not found"),
-			FileReaderError::InvalidFileType => write!(f, "Invalid file type"),
-			FileReaderError::NoFileExtension => write!(f, "File has no extension"),
-			FileReaderError::IOError(e) => write!(f, "IO error: {}", e),
+			Self::InvalidPath(path) => write!(f, "Invalid path: {path}"),
+			Self::FileNotFound => write!(f, "File not found"),
+			Self::InvalidFileType => write!(f, "Invalid file type"),
+			Self::NoFileExtension => write!(f, "File has no extension"),
+			Self::IOError(e) => write!(f, "IO error: {e}"),
 		}
 	}
 }
@@ -40,22 +38,33 @@ impl fmt::Display for FileReaderError {
 impl std::error::Error for FileReaderError {}
 
 impl FileReader {
+	/// Creates a new FileReader instance.
+	///
+	/// # Errors
+	///
+	/// Returns [`FileReaderError::InvalidPath`] if the provided path cannot be parsed.
 	pub fn new(path: &str, expected_type: &str) -> Result<Self, FileReaderError> {
 		let validated_path = Path::parse(path).map_err(FileReaderError::InvalidPath)?;
 		let system_path = PathBuf::from(path);
-
-		Ok(FileReader {
+		Ok(Self {
 			path: validated_path,
 			system_path,
 			expected_type: expected_type.to_string(),
 		})
 	}
 
+	/// Validates that the file exists and has the expected file type.
+	///
+	/// # Errors
+	///
+	/// Returns:
+	/// - [`FileReaderError::FileNotFound`] if the file does not exist
+	/// - [`FileReaderError::InvalidFileType`] if the file extension doesn't match expected type
+	/// - [`FileReaderError::NoFileExtension`] if the file has no extension
 	pub fn validate(&self) -> Result<(), FileReaderError> {
 		if !self.system_path.exists() {
 			return Err(FileReaderError::FileNotFound);
 		}
-
 		match self.path.extension() {
 			Some(ext) if ext == self.expected_type => Ok(()),
 			Some(_) => Err(FileReaderError::InvalidFileType),
@@ -63,14 +72,18 @@ impl FileReader {
 		}
 	}
 
+	/// Reads the file content as a string.
+	///
+	/// # Errors
+	///
+	/// Returns [`FileReaderError`] if:
+	/// - File validation fails (see [`validate()`])
+	/// - File cannot be opened or read due to I/O errors
 	pub fn read_content(&self) -> Result<String, FileReaderError> {
 		self.validate()?;
-
 		let mut file = fs::File::open(&self.system_path).map_err(FileReaderError::IOError)?;
-
 		let mut content = String::new();
 		file.read_to_string(&mut content).map_err(FileReaderError::IOError)?;
-
 		Ok(content)
 	}
 }
