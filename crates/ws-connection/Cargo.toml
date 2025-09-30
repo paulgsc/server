@@ -1,0 +1,15 @@
+[package]
+name = "ws-connection"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+uuid = { version = "1.18.1", features = ["v4", "fast-rng"] }
+
+[lints]
+workspace = true
