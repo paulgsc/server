@@ -8,15 +8,45 @@ mod tests {
 	use ws_connection::core::conn::Connection;
 	use ws_connection::types::*;
 
-	// Helper function to create test connection
-	fn create_test_connection() -> Connection {
+	// Example enum for compile-time event type checking
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	enum UserEvent {
+		Created,
+		Updated,
+		Deleted,
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	#[allow(dead_code)]
+	enum OrderEvent {
+		Placed,
+		Shipped,
+		Delivered,
+		Cancelled,
+	}
+
+	// Helper function to create test connection with String events
+	fn create_test_connection() -> Connection<String> {
+		let client_id = ClientId::new("test-client");
+		let addr = "127.0.0.1:8080".parse().unwrap();
+		Connection::new(client_id, addr)
+	}
+
+	// Helper to create connection with enum events
+	fn create_user_event_connection() -> Connection<UserEvent> {
+		let client_id = ClientId::new("test-client");
+		let addr = "127.0.0.1:8080".parse().unwrap();
+		Connection::new(client_id, addr)
+	}
+
+	fn create_order_event_connection() -> Connection<OrderEvent> {
 		let client_id = ClientId::new("test-client");
 		let addr = "127.0.0.1:8080".parse().unwrap();
 		Connection::new(client_id, addr)
 	}
 
 	// Helper to create connection with custom client_id
-	fn create_connection_with_client(client_id: &str) -> Connection {
+	fn create_connection_with_client(client_id: &str) -> Connection<String> {
 		let addr = "127.0.0.1:8080".parse().unwrap();
 		Connection::new(ClientId::new(client_id), addr)
 	}
@@ -25,12 +55,39 @@ mod tests {
 	fn test_new_connection_creation() {
 		let client_id = ClientId::new("test-client");
 		let addr = "127.0.0.1:8080".parse().unwrap();
-		let conn = Connection::new(client_id.clone(), addr);
+		let conn: Connection<String> = Connection::new(client_id.clone(), addr);
 
 		assert_eq!(conn.client_id, client_id);
 		assert_eq!(conn.source_addr, addr);
 		assert!(conn.is_active());
 		assert_eq!(conn.get_subscription_count(), 0);
+	}
+
+	#[test]
+	fn test_connection_with_enum_event_types() {
+		let mut conn = create_user_event_connection();
+
+		// Type-safe subscriptions - compiler ensures only UserEvent variants
+		let change = conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
+
+		assert_eq!(change.added, 2);
+		assert_eq!(change.total, 2);
+		assert!(conn.is_subscribed_to(&UserEvent::Created));
+		assert!(conn.is_subscribed_to(&UserEvent::Updated));
+		assert!(!conn.is_subscribed_to(&UserEvent::Deleted));
+	}
+
+	#[test]
+	fn test_different_enum_types_are_separate() {
+		// These are different types - compile-time safety
+		let mut user_conn = create_user_event_connection();
+		let mut order_conn = create_order_event_connection();
+
+		user_conn.subscribe(vec![UserEvent::Created]);
+		order_conn.subscribe(vec![OrderEvent::Placed]);
+
+		assert_eq!(user_conn.get_subscription_count(), 1);
+		assert_eq!(order_conn.get_subscription_count(), 1);
 	}
 
 	#[test]
@@ -127,11 +184,34 @@ mod tests {
 	}
 
 	#[test]
+	fn test_subscribe_enum_variants() {
+		let mut conn = create_user_event_connection();
+
+		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated, UserEvent::Deleted]);
+
+		assert_eq!(conn.get_subscription_count(), 3);
+		assert!(conn.is_subscribed_to(&UserEvent::Created));
+		assert!(conn.is_subscribed_to(&UserEvent::Updated));
+		assert!(conn.is_subscribed_to(&UserEvent::Deleted));
+	}
+
+	#[test]
 	fn test_subscribe_duplicate_events_not_counted_twice() {
 		let mut conn = create_test_connection();
 
 		conn.subscribe(vec!["user.created".to_string()]);
 		let change = conn.subscribe(vec!["user.created".to_string()]);
+
+		assert_eq!(change.added, 0);
+		assert_eq!(change.total, 1);
+	}
+
+	#[test]
+	fn test_subscribe_duplicate_enum_variants_not_counted_twice() {
+		let mut conn = create_user_event_connection();
+
+		conn.subscribe(vec![UserEvent::Created]);
+		let change = conn.subscribe(vec![UserEvent::Created]);
 
 		assert_eq!(change.added, 0);
 		assert_eq!(change.total, 1);
@@ -158,6 +238,19 @@ mod tests {
 		assert_eq!(change.removed, 1);
 		assert_eq!(change.total, 0);
 		assert!(!conn.is_subscribed_to(&"user.created".to_string()));
+	}
+
+	#[test]
+	fn test_unsubscribe_enum_variants() {
+		let mut conn = create_user_event_connection();
+		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
+
+		let change = conn.unsubscribe(vec![UserEvent::Created]);
+
+		assert_eq!(change.removed, 1);
+		assert_eq!(change.total, 1);
+		assert!(!conn.is_subscribed_to(&UserEvent::Created));
+		assert!(conn.is_subscribed_to(&UserEvent::Updated));
 	}
 
 	#[test]
@@ -367,6 +460,18 @@ mod tests {
 	}
 
 	#[test]
+	fn test_get_subscriptions_with_enum_types() {
+		let mut conn = create_user_event_connection();
+
+		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
+		let subscriptions = conn.get_subscriptions();
+
+		assert_eq!(subscriptions.len(), 2);
+		assert!(subscriptions.contains(&UserEvent::Created));
+		assert!(subscriptions.contains(&UserEvent::Updated));
+	}
+
+	#[test]
 	fn test_state_transitions_are_one_way() {
 		let mut conn = create_test_connection();
 
@@ -387,7 +492,7 @@ mod tests {
 	fn test_connection_preserves_client_id() {
 		let client_id = ClientId::new("unique-client-123");
 		let addr = "192.168.1.1:9000".parse().unwrap();
-		let conn = Connection::new(client_id.clone(), addr);
+		let conn: Connection<String> = Connection::new(client_id.clone(), addr);
 
 		assert_eq!(conn.client_id, client_id);
 	}
@@ -395,7 +500,7 @@ mod tests {
 	#[test]
 	fn test_connection_preserves_source_addr() {
 		let addr: SocketAddr = "10.0.0.1:3000".parse().unwrap();
-		let conn = Connection::new(ClientId::new("test"), addr);
+		let conn: Connection<String> = Connection::new(ClientId::new("test"), addr);
 
 		assert_eq!(conn.source_addr, addr);
 	}
@@ -414,6 +519,20 @@ mod tests {
 		conn.disconnect("cleanup".to_string());
 		assert_eq!(conn.get_subscription_count(), 2);
 		assert!(conn.is_subscribed_to(&"event2".to_string()));
+	}
+
+	#[test]
+	fn test_enum_subscriptions_survive_state_transitions() {
+		let mut conn = create_user_event_connection();
+
+		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
+		assert_eq!(conn.get_subscription_count(), 2);
+
+		conn.mark_stale("timeout".to_string());
+		assert!(conn.is_subscribed_to(&UserEvent::Created));
+
+		conn.disconnect("cleanup".to_string());
+		assert!(conn.is_subscribed_to(&UserEvent::Updated));
 	}
 
 	#[test]

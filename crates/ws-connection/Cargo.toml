@@ -8,6 +8,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+dashmap = "6.1.0"
 thiserror.workspace = true
 uuid = { version = "1.18.1", features = ["v4", "fast-rng"] }
 

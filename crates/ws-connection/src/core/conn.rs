@@ -1,27 +1,26 @@
-use crate::core::subscription::{SubscriptionChange, SubscriptionManager};
+// src/conn.rs
+use crate::core::subscription::{EventKey, SubscriptionChange, SubscriptionManager};
 use crate::types::{ClientId, ConnectionId, ConnectionState};
 use std::{
 	net::SocketAddr,
 	time::{Duration, Instant},
 };
 
-pub type EventKey = String;
-
 /// Pure connection domain object - no side effects, metrics, or logging
+/// Generic over event key type K for compile-time type safety
 #[derive(Debug)]
-pub struct Connection {
+pub struct Connection<K: EventKey = String> {
 	pub id: ConnectionId,
 	pub client_id: ClientId,
 	pub established_at: Instant,
 	pub state: ConnectionState,
 	pub source_addr: SocketAddr,
-	pub last_activity: Instant,
-
 	// Private fields managed internally
-	subscriptions: SubscriptionManager<EventKey>,
+	subscriptions: SubscriptionManager<K>,
+	last_activity: Instant,
 }
 
-impl Connection {
+impl<K: EventKey> Connection<K> {
 	/// Create a new connection with default subscriptions
 	pub fn new(client_id: ClientId, source_addr: SocketAddr) -> Self {
 		let now = Instant::now();
@@ -47,7 +46,7 @@ impl Connection {
 	/// Subscribe to event types
 	pub fn subscribe<I>(&mut self, event_types: I) -> SubscriptionChange
 	where
-		I: IntoIterator<Item = EventKey>,
+		I: IntoIterator<Item = K>,
 	{
 		self.subscriptions.subscribe(event_types)
 	}
@@ -55,7 +54,7 @@ impl Connection {
 	/// Unsubscribe from event types
 	pub fn unsubscribe<I>(&mut self, event_types: I) -> SubscriptionChange
 	where
-		I: IntoIterator<Item = EventKey>,
+		I: IntoIterator<Item = K>,
 	{
 		self.subscriptions.unsubscribe(event_types)
 	}
@@ -99,7 +98,7 @@ impl Connection {
 	}
 
 	/// Check if subscribed to an event type
-	pub fn is_subscribed_to(&self, event_type: &EventKey) -> bool {
+	pub fn is_subscribed_to(&self, event_type: &K) -> bool {
 		self.subscriptions.is_subscribed_to(event_type)
 	}
 
@@ -114,7 +113,7 @@ impl Connection {
 	}
 
 	/// Get all subscriptions
-	pub fn get_subscriptions(&self) -> std::collections::HashSet<EventKey> {
+	pub fn get_subscriptions(&self) -> std::collections::HashSet<K> {
 		self.subscriptions.get_subscriptions().clone()
 	}
 }

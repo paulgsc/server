@@ -1,42 +1,55 @@
+use crate::core::conn::Connection;
+use crate::core::subscription::EventKey;
+use crate::types::ConnectionState;
 use dashmap::DashMap;
 use std::sync::Arc;
 
+/// Generic, async-friendly connection store
 #[derive(Debug, Clone)]
-pub struct ConnectionStore {
-	connections: Arc<DashMap<String, Connection>>,
+pub struct ConnectionStore<K: EventKey = String> {
+	connections: Arc<DashMap<String, Arc<Connection<K>>>>,
 }
 
-impl ConnectionStore {
+impl<K: EventKey> ConnectionStore<K> {
+	/// Create a new store
 	pub fn new() -> Self {
 		Self {
 			connections: Arc::new(DashMap::new()),
 		}
 	}
 
-	pub fn insert(&self, key: String, connection: Connection) -> Option<Connection> {
-		self.connections.insert(key, connection)
+	/// Insert or replace a connection
+	pub fn insert(&self, key: String, connection: Connection<K>) -> Option<Arc<Connection<K>>> {
+		let arc_conn = Arc::new(connection);
+		self.connections.insert(key, arc_conn)
 	}
 
-	pub fn get(&self, key: &str) -> Option<Connection> {
-		self.connections.get(key).map(|entry| entry.value().clone())
+	/// Get a connection cheaply (cloning the Arc)
+	pub fn get(&self, key: &str) -> Option<Arc<Connection<K>>> {
+		self.connections.get(key).map(|entry| Arc::clone(entry.value()))
 	}
 
-	pub fn remove(&self, key: &str) -> Option<Connection> {
+	/// Remove a connection
+	pub fn remove(&self, key: &str) -> Option<Arc<Connection<K>>> {
 		self.connections.remove(key).map(|(_, conn)| conn)
 	}
 
+	/// Count of connections
 	pub fn len(&self) -> usize {
 		self.connections.len()
 	}
 
+	/// Check if store is empty
 	pub fn is_empty(&self) -> bool {
 		self.connections.is_empty()
 	}
 
+	/// Get all keys
 	pub fn keys(&self) -> Vec<String> {
 		self.connections.iter().map(|entry| entry.key().clone()).collect()
 	}
 
+	/// Gather connection stats
 	pub fn stats(&self) -> ConnectionStoreStats {
 		let mut active = 0;
 		let mut stale = 0;
@@ -64,6 +77,7 @@ impl ConnectionStore {
 	}
 }
 
+/// Simple store statistics
 #[derive(Debug, Clone)]
 pub struct ConnectionStoreStats {
 	pub total_connections: usize,
