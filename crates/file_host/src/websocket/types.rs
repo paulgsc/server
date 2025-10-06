@@ -1,4 +1,4 @@
-use super::{ConnectionId, ProcessResult};
+use super::ProcessResult;
 use crate::{utils::generate_uuid, UtteranceMetadata};
 use obs_websocket::{ObsCommand, ObsEvent};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,8 @@ use std::{
 	fmt,
 	sync::atomic::{AtomicU64, Ordering},
 };
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
+use ws_connection::{ConnectionId, ConnectionState};
 
 // Message correlation ID for tracing
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,19 +75,76 @@ pub struct NowPlaying {
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum Event {
-	ObsStatus { status: ObsEvent },
-	ObsCmd { cmd: ObsCommand },
-	TabMetaData { data: NowPlaying },
-	ClientCount { count: usize },
+	ObsStatus {
+		status: ObsEvent,
+	},
+	ObsCmd {
+		cmd: ObsCommand,
+	},
+	TabMetaData {
+		data: NowPlaying,
+	},
+	ClientCount {
+		count: usize,
+	},
 	Ping,
 	Pong,
-	Error { message: String },
-	Subscribe { event_types: Vec<EventType> },
-	Unsubscribe { event_types: Vec<EventType> },
-	Utterance { text: String, metadata: UtteranceMetadata },
+	Error {
+		message: String,
+	},
+	Subscribe {
+		event_types: Vec<EventType>,
+	},
+	Unsubscribe {
+		event_types: Vec<EventType>,
+	},
+	Utterance {
+		text: String,
+		metadata: UtteranceMetadata,
+	},
+
+	// System/observability events (not sent to clients)
+	#[serde(skip)]
+	ConnectionStateChanged {
+		connection_id: ConnectionId,
+		from: ConnectionState,
+		to: ConnectionState,
+	},
+	#[serde(skip)]
+	MessageProcessed {
+		message_id: MessageId,
+		connection_id: ConnectionId,
+		duration: Duration,
+		result: ProcessResult,
+	},
+	#[serde(skip)]
+	BroadcastFailed {
+		event_type: EventType,
+		error: String,
+		affected_connections: usize,
+	},
+	#[serde(skip)]
+	ConnectionCleanup {
+		connection_id: ConnectionId,
+		reason: String,
+		resources_freed: bool,
+	},
 }
 
 impl Event {
+	/// Check if this event should be sent to clients
+	pub fn is_client_event(&self) -> bool {
+		!matches!(
+			self,
+			Self::ConnectionStateChanged { .. } | Self::MessageProcessed { .. } | Self::BroadcastFailed { .. } | Self::ConnectionCleanup { .. }
+		)
+	}
+
+	/// Check if this is a system/observability event
+	pub fn is_system_event(&self) -> bool {
+		!self.is_client_event()
+	}
+
 	pub fn get_type(&self) -> EventType {
 		match self {
 			Self::Ping => EventType::Ping,
@@ -99,6 +157,8 @@ impl Event {
 			Self::ObsCmd { .. } => EventType::ObsCommand,
 			Self::TabMetaData { .. } => EventType::TabMetaData,
 			Self::Utterance { .. } => EventType::Utterance,
+			// System events don't have EventTypes
+			_ => None,
 		}
 	}
 }
@@ -119,39 +179,6 @@ pub struct UtterancePrompt {
 impl From<UtterancePrompt> for Event {
 	fn from(UtterancePrompt { text, metadata }: UtterancePrompt) -> Self {
 		Event::Utterance { text, metadata }
-	}
-}
-
-#[derive(Debug, Clone)]
-pub enum ConnectionState {
-	Active { last_ping: Instant },
-	Stale { last_ping: Instant, reason: String },
-	Disconnected { reason: String, disconnected_at: Instant },
-}
-
-impl ConnectionState {
-	pub fn as_str(&self) -> &'static str {
-		match self {
-			ConnectionState::Active { .. } => "active",
-			ConnectionState::Stale { .. } => "stale",
-			ConnectionState::Disconnected { .. } => "disconnected",
-		}
-	}
-}
-
-impl fmt::Display for ConnectionState {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::Active { last_ping } => {
-				write!(f, "Active (last_ping: {:?})", last_ping)
-			}
-			Self::Stale { last_ping, reason } => {
-				write!(f, "Stale (last_ping: {:?}, reason: {})", last_ping, reason)
-			}
-			Self::Disconnected { reason, disconnected_at } => {
-				write!(f, "Disconnected (reason: {}, at: {:?})", reason, disconnected_at)
-			}
-		}
 	}
 }
 

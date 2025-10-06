@@ -1,7 +1,6 @@
 use super::*;
 use async_broadcast::{Receiver, RecvError};
 use axum::extract::ws::{Message, WebSocket};
-use dashmap::DashMap;
 use futures::stream::SplitSink;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
@@ -15,21 +14,23 @@ pub enum BroadcastOutcome {
 impl WebSocketFsm {
 	/// Spawns the event distribution task - single responsibility
 	pub fn spawn_event_distribution_task(&self) {
-		let receiver = self.event_rcv.clone();
-		let connections = self.connections.clone();
+		let transport = self.transport.clone();
+		let store = self.store.clone();
 		let metrics = self.metrics.clone();
 
 		tokio::spawn(async move {
-			Self::event_distribution_loop(receiver, connections, metrics).await;
+			Self::event_distribution_loop(transport, store, metrics).await;
 		});
 	}
 
 	/// Event distribution loop - isolated logic
-	async fn event_distribution_loop(mut receiver: broadcast::Receiver<Event>, connections: Arc<DashMap<String, Connection>>, metrics: Arc<ConnectionMetrics>) {
+	async fn event_distribution_loop(transport: Arc<TransportLayer>, store: Arc<ConnectionStore<EventType>>, metrics: Arc<ConnectionMetrics>) {
+		let mut receiver = transport.main_sender().new_receiver();
+
 		loop {
 			match receiver.recv().await {
 				Ok(event) => {
-					Self::handle_event_broadcast(event, connections.clone(), &metrics).await;
+					Self::handle_event_broadcast(event, store.clone(), &metrics).await;
 				}
 				Err(e) => {
 					if Self::handle_receiver_error(e) {
@@ -42,12 +43,11 @@ impl WebSocketFsm {
 	}
 
 	/// Handles broadcasting a single event
-	async fn handle_event_broadcast(event: Event, connections: Arc<DashMap<String, Connection>>, metrics: &Arc<ConnectionMetrics>) {
+	async fn handle_event_broadcast(event: Event, store: Arc<ConnectionStore<EventType>>, metrics: &Arc<ConnectionMetrics>) {
 		let event_type = event.get_type();
 		let event_type_str = format!("{:?}", event_type);
 
-		let broadcast_outcome: Result<BroadcastOutcome, String> =
-			timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(event, &event_type, connections).await) });
+		let broadcast_outcome: Result<BroadcastOutcome, String> = timed_broadcast!(&event_type_str, { Ok(Self::broadcast_event_to_subscribers(event, &event_type, store).await) });
 
 		Self::handle_broadcast_outcome(broadcast_outcome, metrics);
 	}
@@ -87,44 +87,52 @@ impl WebSocketFsm {
 	}
 
 	/// Broadcasts an event to all subscribed and active connections
-	pub(crate) async fn broadcast_event_to_subscribers(event: Event, event_type: &EventType, connections: Arc<DashMap<String, Connection>>) -> BroadcastOutcome {
+	pub(crate) async fn broadcast_event_to_subscribers(event: Event, event_type: &EventType, store: Arc<ConnectionStore<EventType>>) -> BroadcastOutcome {
 		let start_time = Instant::now();
 		let mut delivered = 0;
 		let mut failed = 0;
 
-		// Collect active connections that are subscribed to this event type
-		// TODO: do we really need an O(N) lookup!
-		let subscribed_connections: Vec<_> = connections
-			.iter()
-			.filter_map(|entry| {
-				let conn = entry.value();
-				if conn.is_active() && conn.is_subscribed_to(event_type) {
-					Some((entry.key().clone(), conn.id.clone()))
-				} else {
-					None
-				}
-			})
-			.collect();
+		// Collect handles for subscribed connections
+		let subscribed_handles: Vec<_> = {
+			let keys = store.keys();
+			let mut handles = Vec::new();
 
-		if subscribed_connections.is_empty() {
-			return BroadcastOutcome::NoSubscribers;
-		}
-
-		// Send to each subscribed connection
-		for (conn_key, connection_id) in subscribed_connections {
-			if let Some(conn) = connections.get(&conn_key) {
-				match conn.send_event(event.clone()).await {
-					Ok(_) => delivered += 1,
-					Err(e) => {
-						failed += 1;
-						record_ws_error!("send_failed", "broadcast", e);
-						warn!("Failed to send event {:?} to client {}: {}", event_type, connection_id, e);
+			for key in keys {
+				if let Some(handle) = store.get(&key) {
+					// Check subscription (immutable, no async needed)
+					if handle.is_subscribed_to(event_type) {
+						// Check if active via actor state
+						if let Ok(state) = handle.get_state().await {
+							if state.is_active {
+								handles.push((key, handle));
+							}
+						}
 					}
 				}
 			}
-		}
-		let duration = start_time.elapsed();
+			handles
+		};
 
+		if subscribed_handles.is_empty() {
+			return BroadcastOutcome::NoSubscribers;
+		}
+
+		// Send to each subscribed connection via transport
+		for (conn_key, handle) in subscribed_handles {
+			// Note: We can't use handle.connection.sender anymore since it's removed
+			// Instead, we rely on the per-connection transport channel
+			// This is a design decision - events go through transport layer
+			match self.transport.send_to_connection_transport(&conn_key, event.clone()).await {
+				Ok(_) => delivered += 1,
+				Err(e) => {
+					failed += 1;
+					record_ws_error!("send_failed", "broadcast", e);
+					warn!("Failed to send event {:?} to client {}: {}", event_type, handle.connection.id, e);
+				}
+			}
+		}
+
+		let duration = start_time.elapsed();
 		let process_result = ProcessResult { delivered, failed, duration };
 
 		BroadcastOutcome::Completed { process_result }

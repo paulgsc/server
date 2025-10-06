@@ -1,56 +1,36 @@
-use crate::utils::generate_uuid;
-use crate::websocket::*;
-use async_broadcast::{broadcast, Receiver, Sender};
+use crate::websocket::EventType;
+use crate::*;
+use async_broadcast::Receiver;
 use axum::extract::ws::{Message, WebSocket};
 use axum::http::HeaderMap;
+use futures::sink::SinkExt;
 use futures::stream::SplitSink;
-use std::{collections::HashSet, fmt, net::SocketAddr};
-use tokio::time::Duration;
-use tracing::info;
+use std::net::SocketAddr;
+use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
+use ws_connection::{ClientId, Connection, ConnectionState};
 
-// Connection ID type for type safety
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConnectionId([u8; 32]);
+// Infrastructure extensions for domain Connection
+pub trait ConnectionExt {
+	fn initialize_default_subscriptions(&mut self);
+}
 
-impl ConnectionId {
-	pub fn new() -> Self {
-		Self(generate_uuid())
-	}
-
-	pub fn from_buffer(buffer: [u8; 32]) -> Self {
-		Self(buffer)
-	}
-
-	pub fn as_string(&self) -> String {
-		// Convert to hex string for reliable string representation
-		hex::encode(&self.0)
-	}
-
-	pub fn as_bytes(&self) -> &[u8; 32] {
-		&self.0
+impl ConnectionExt for Connection<EventType> {
+	fn initialize_default_subscriptions(&mut self) {
+		// Add default subscriptions that all connections need
+		self.subscribe(vec![EventType::Ping, EventType::Pong, EventType::Error, EventType::ClientCount]);
 	}
 }
 
-impl fmt::Display for ConnectionId {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.as_string())
-	}
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ClientId(String);
-
-impl ClientId {
-	pub fn from_request(headers: &HeaderMap, addr: &SocketAddr) -> Self {
-		// Priority order for client identification:
-		// 1. X-Client-ID (for authenticated clients)
-		// 2. X-Forwarded-For + User-Agent hash (for proxied clients)
-		// 3. IP + User-Agent hash (for direct clients)
-		// 4. IP only (fallback)
-
+// Connection management operations
+impl WebSocketFsm {
+	/// Generate a ClientId from request headers and socket address
+	pub fn client_id_from_request(&self, headers: &HeaderMap, addr: &SocketAddr) -> ClientId {
+		// Priority order:
+		// 1. X-Client-ID
 		if let Some(client_id) = headers.get("x-client-id").and_then(|v| v.to_str().ok()) {
 			if !client_id.is_empty() && client_id.len() <= 64 {
-				return Self(format!("auth:{}", client_id));
+				return ClientId::new(format!("auth:{}", client_id));
 			}
 		}
 
@@ -66,423 +46,243 @@ impl ClientId {
 		// Check for forwarded IP (behind proxy/load balancer)
 		if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
 			if let Some(client_ip) = forwarded_for.split(',').next().map(|s| s.trim()) {
-				return Self(format!("proxy:{}:{:x}", client_ip, user_agent_hash));
+				return ClientId::new(format!("proxy:{}:{:x}", client_ip, user_agent_hash));
 			}
 		}
 
-		// Real connecting IP
-		Self(format!("direct:{}:{:x}", addr.ip(), user_agent_hash))
+		// Fallback: direct IP + user agent hash
+		ClientId::new(format!("direct:{}:{:x}", addr.ip(), user_agent_hash))
 	}
 
-	pub fn as_str(&self) -> &str {
-		&self.0
-	}
-}
-
-impl fmt::Display for ClientId {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.0)
-	}
-}
-
-#[derive(Debug)]
-pub struct Connection {
-	pub id: ConnectionId,
-	pub client_id: ClientId,
-	pub established_at: Instant,
-	pub state: ConnectionState,
-	pub sender: Sender<Event>,
-	pub subscriptions: HashSet<EventType>,
-	pub message_count: u64,
-	pub last_message_at: Instant,
-	pub source_addr: SocketAddr,
-}
-
-impl Connection {
-	pub fn new(client_id: ClientId, source_addr: SocketAddr) -> (Self, Receiver<Event>) {
-		let (mut sender, receiver) = broadcast::<Event>(1);
-		sender.set_await_active(false);
-		sender.set_overflow(true);
-
-		let mut subscriptions = HashSet::new();
-		subscriptions.insert(EventType::Ping);
-		subscriptions.insert(EventType::Pong);
-		subscriptions.insert(EventType::Error);
-		subscriptions.insert(EventType::ClientCount);
-
-		let connection = Self {
-			id: ConnectionId::new(),
-			client_id: client_id.clone(),
-			established_at: Instant::now(),
-			state: ConnectionState::Active { last_ping: Instant::now() },
-			sender,
-			subscriptions,
-			message_count: 0,
-			last_message_at: Instant::now(),
-			source_addr,
-		};
-
-		record_connection_created!(connection.id, client_id);
-
-		(connection, receiver)
-	}
-
-	pub fn update_ping(&mut self) -> Result<ConnectionState, String> {
-		let now = Instant::now();
-		let old_state = self.state.clone();
-		match &mut self.state {
-			ConnectionState::Active { last_ping } => {
-				*last_ping = now;
-				self.last_message_at = now;
-				record_connection_message!(self.id, "ping");
-				Ok(old_state)
-			}
-			_ => {
-				let error = "Cannot update ping on non-active connection".to_string();
-				record_connection_error!("ping_update_failed", "operation", self.id, error.clone());
-				Err(error)
-			}
-		}
-	}
-
-	pub fn subscribe(&mut self, event_types: Vec<EventType>) -> usize {
-		let initial_count = self.subscriptions.len();
-		for t in event_types.iter() {
-			self.subscriptions.insert(t.clone());
-		}
-		let delta = self.subscriptions.len() - initial_count;
-
-		if delta > 0 {
-			record_subscription_change!(self.id, "subscribe", &event_types, delta);
-		}
-
-		delta
-	}
-
-	pub fn unsubscribe(&mut self, event_types: Vec<EventType>) -> usize {
-		let initial_count = self.subscriptions.len();
-		for t in event_types.iter() {
-			self.subscriptions.remove(t);
-		}
-		let delta = initial_count - self.subscriptions.len();
-
-		if delta > 0 {
-			record_subscription_change!(self.id, "unsubscribe", &event_types, delta);
-		}
-
-		delta
-	}
-
-	pub fn mark_stale(&mut self, reason: String) -> Result<ConnectionState, String> {
-		let old_state = self.state.clone();
-		match &self.state {
-			ConnectionState::Active { last_ping } => {
-				let new_state = ConnectionState::Stale { last_ping: *last_ping, reason };
-				record_connection_state_change!(self.id, self.client_id, old_state, new_state);
-				self.state = new_state;
-				Ok(old_state)
-			}
-			_ => {
-				let error = "Can only mark active connections as stale".to_string();
-				record_connection_error!("mark_stale_failed", "operation", self.id, error.clone());
-				Err(error)
-			}
-		}
-	}
-
-	pub fn disconnect(&mut self, reason: String) -> Result<ConnectionState, String> {
-		let old_state = self.state.clone();
-		let new_state = ConnectionState::Disconnected {
-			reason,
-			disconnected_at: Instant::now(),
-		};
-		record_connection_state_change!(self.id, self.client_id, old_state, new_state);
-		self.state = new_state;
-		Ok(old_state)
-	}
-
-	pub fn is_active(&self) -> bool {
-		matches!(self.state, ConnectionState::Active { .. })
-	}
-
-	// Helper method to check if connection should be marked as stale
-	pub fn should_be_stale(&self, timeout: Duration) -> bool {
-		match &self.state {
-			ConnectionState::Active { last_ping } => Instant::now().duration_since(*last_ping) > timeout,
-			_ => false,
-		}
-	}
-
-	// Check if connection is already in stale state
-	pub fn is_stale(&self) -> bool {
-		matches!(self.state, ConnectionState::Stale { .. })
-	}
-
-	pub fn is_subscribed_to(&self, event_type: &EventType) -> bool {
-		self.subscriptions.contains(event_type)
-	}
-
-	pub async fn send_event(&self, event: Event) -> Result<(), String> {
-		if !self.is_active() {
-			let error = format!("Cannot send to non-active connection (state: {})", self.state);
-			record_connection_error!("send_failed", "operation", self.id, error.clone());
-			return Err(error);
-		}
-
-		match self.sender.broadcast(event).await {
-			Ok(_) => {
-				record_connection_message!(self.id, "event_sent");
-				Ok(())
-			}
-			Err(e) => {
-				let error = format!("Failed to send event to client channel: {}", e);
-				record_connection_error!("send_failed", "operation", self.id, error.clone());
-				Err(error)
-			}
-		}
-	}
-
-	pub fn increment_message_count(&mut self) {
-		self.message_count += 1;
-		self.last_message_at = Instant::now();
-		record_connection_message!(self.id, "message_processed");
-	}
-}
-
-impl WebSocketFsm {
-	/// Adds a connection, removing any stale or duplicate from same key first
+	/// Adds a connection to the store with comprehensive observability
 	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), String> {
-		let client_id = ClientId::from_request(headers, addr);
+		let start = std::time::Instant::now();
+		let client_id = self.client_id_from_request(headers, addr);
 
-		let (connection, receiver) = Connection::new(client_id.clone(), *addr);
-		let client_key = connection.id.as_string();
-		let connection_id = connection.id.clone();
+		let mut domain_conn = Connection::new(client_id.clone(), *addr);
+		domain_conn.initialize_default_subscriptions();
 
-		self.connections.insert(client_key.clone(), connection);
+		let connection_id = domain_conn.id.clone();
+		let client_key = connection_id.as_string();
+
+		// Create transport channel - gets ALL events
+		let receiver = self.transport.create_channel(&client_key);
+
+		let handle = self.store.insert(client_key.clone(), domain_conn);
+		let elapsed = start.elapsed();
+
 		self.metrics.connection_created();
 
-		info!("Connection {} added successfully", connection_id);
+		record_connection_created!(connection_id, client_id);
+		info!(
+			connection_id = %connection_id,
+			client_id = %client_id,
+			addr = %addr,
+			setup_duration_ms = elapsed.as_millis(),
+			"Connection added successfully"
+		);
+
+		let to = handle.get_state().await.map_err(|e| format!("Failed to get connection state: {}", e))?;
+		self
+			.emit_system_event(Event::ConnectionStateChanged {
+				connection_id: connection_id.clone(),
+				from: ConnectionState::new(),
+				to,
+			})
+			.await;
+
+		self.subscriber_notify.notify_waiters();
+
 		Ok((client_key, receiver))
 	}
 
-	// Get connections by client ID
+	/// Get connections by client ID with observability
 	pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> {
-		self
-			.connections
-			.iter()
-			.filter(|entry| entry.value().client_id == *client_id)
-			.map(|entry| entry.key().clone())
-			.collect()
-	}
+		let start = std::time::Instant::now();
 
-	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), String> {
-		if let Some((_, mut connection)) = self.connections.remove(client_key) {
-			let connection_id = connection.id.clone();
-			let client_id = connection.client_id.clone();
-			let was_active = connection.is_active();
-			let duration = connection.established_at.elapsed();
-
-			let _ = connection.disconnect(reason.clone())?;
-			self.metrics.connection_removed(was_active);
-
-			record_connection_removed!(connection_id, client_id, duration, reason);
-
-			info!("Connection {} removed: {}", connection_id, reason);
-			self.broadcast_client_count().await;
-		}
-		Ok(())
-	}
-
-	/// Optimized timeout monitor with proper state transitions
-	pub fn start_timeout_monitor(&self, timeout: Duration, shutdown_token: CancellationToken) {
-		let connections = self.connections.clone();
-		let metrics = self.metrics.clone();
-		let sender = self.sender.clone();
-
-		let mut keys_to_mark_stale = Vec::with_capacity(64);
-		let mut keys_to_remove = Vec::with_capacity(64);
-
-		let interval_duration = Duration::from_secs(10);
-
-		tokio::spawn(async move {
-			let mut interval = tokio::time::interval(interval_duration);
-
-			loop {
-				tokio::select! {
-					_ = shutdown_token.cancelled() => {
-						tracing::info!("Timeout monitor received shutdown signal");
-						break;
-					}
-					_ = interval.tick() => {
-						if let Err(e) = Self::process_timeout_cycle(
-							&connections,
-							&metrics,
-							&sender,
-							timeout,
-							&mut keys_to_mark_stale,
-							&mut keys_to_remove,
-						).await {
-							tracing::error!("Error in timeout monitor cycle: {}", e);
-						}
-						tokio::task::yield_now().await;
-					}
+		let connections: Vec<String> = self
+			.store
+			.keys()
+			.into_iter()
+			.filter(|key| {
+				if let Some(handle) = self.store.get(key) {
+					&handle.connection.client_id == client_id
+				} else {
+					false
 				}
-			}
-			tracing::info!("Timeout monitor shutting down gracefully");
-		});
-	}
+			})
+			.collect();
 
-	async fn process_timeout_cycle(
-		connections: &DashMap<String, Connection>,
-		metrics: &ConnectionMetrics,
-		sender: &async_broadcast::Sender<Event>,
-		timeout: Duration,
-		keys_to_mark_stale: &mut Vec<String>,
-		keys_to_remove: &mut Vec<String>,
-	) -> Result<(), String> {
-		Self::check_health(connections, metrics).await;
+		let elapsed = start.elapsed();
 
-		let newly_stale = Self::mark_stale_connections(connections, metrics, timeout, keys_to_mark_stale).await;
-
-		if newly_stale > 0 {
-			tracing::info!("Marked {} connections as stale", newly_stale);
-		}
-
-		let cleaned_up = Self::cleanup_stale_connections(connections, sender, keys_to_remove).await?;
-
-		if cleaned_up > 0 {
-			tracing::info!("Cleaned up {} stale connections", cleaned_up);
-		}
-
-		Ok(())
-	}
-
-	async fn check_health(connections: &DashMap<String, Connection>, metrics: &ConnectionMetrics) {
-		let result: Result<(), String> = health_check!("timeout_monitor", {
-			let total_connections = connections.len();
-			let snapshot = metrics.get_snapshot();
-			let expected_active = snapshot.total_created - snapshot.total_removed;
-
-			check_invariant!(
-				total_connections as u64 == expected_active,
-				"connection_count",
-				"Mismatch in connection count",
-				expected: expected_active,
-				actual: total_connections as u64
+		if !connections.is_empty() {
+			info!(
+				client_id = %client_id,
+				connection_count = connections.len(),
+				query_duration_ms = elapsed.as_millis(),
+				"Retrieved client connections"
 			);
+		}
 
-			let mut client_counts = std::collections::HashMap::new();
-			for entry in connections.iter() {
-				if entry.value().is_active() {
-					*client_counts.entry(entry.value().client_id.clone()).or_insert(0) += 1;
+		connections
+	}
+
+	/// Remove a connection with comprehensive cleanup and observability
+	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), String> {
+		let start = std::time::Instant::now();
+
+		match self.store.remove(client_key).await {
+			Some(handle) => {
+				let connection_id = handle.connection.id.clone();
+				let client_id = handle.connection.client_id.clone();
+				let duration = handle.connection.get_duration();
+
+				let state = handle.get_state().await.ok();
+				let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false);
+
+				if let Err(e) = handle.shutdown().await {
+					warn!(
+						connection_id = %connection_id,
+						error = %e,
+						"Failed to gracefully shutdown connection actor"
+					);
 				}
-				if client_counts.len() % 100 == 0 {
-					tokio::task::yield_now().await;
-				}
+
+				self.transport.remove_channel(client_key);
+				self.metrics.connection_removed(was_active);
+
+				let elapsed = start.elapsed();
+
+				record_connection_removed!(connection_id, client_id, duration, reason);
+				info!(
+					connection_id = %connection_id,
+					client_id = %client_id,
+					lifetime_ms = duration.as_millis(),
+					was_active = was_active,
+					reason = %reason,
+					cleanup_duration_ms = elapsed.as_millis(),
+					"Connection removed"
+				);
+
+				// Emit system event
+				self
+					.emit_system_event(Event::ConnectionCleanup {
+						connection_id: connection_id.clone(),
+						reason: reason.clone(),
+						resources_freed: true,
+					})
+					.await;
+
+				self.broadcast_client_count().await;
+
+				Ok(())
 			}
-
-			for (client_id, count) in client_counts {
-				if count > 10 {
-					record_system_event!("client_high_connection_count", client_id = client_id, count = count);
-				}
+			None => {
+				warn!(
+					connection_key = client_key,
+					reason = %reason,
+					"Attempted to remove non-existent connection"
+				);
+				Ok(())
 			}
-
-			log_health_snapshot!(metrics, total_connections);
-			Ok(())
-		});
-
-		if result.is_err() {
-			record_ws_error!("health_check_failed", "timeout_monitor");
 		}
 	}
 
-	async fn mark_stale_connections(connections: &DashMap<String, Connection>, metrics: &ConnectionMetrics, timeout: Duration, keys_to_mark_stale: &mut Vec<String>) -> usize {
-		keys_to_mark_stale.clear();
-		for entry in connections.iter() {
-			if entry.value().should_be_stale(timeout) {
-				keys_to_mark_stale.push(entry.key().clone());
+	/// Mark a connection as stale with observability
+	pub async fn mark_connection_stale(&self, client_key: &str, reason: String) -> Result<(), String> {
+		match self.store.get(client_key) {
+			Some(handle) => {
+				let connection_id = handle.connection.id.clone();
+
+				// Get state before marking stale
+				let old_state = handle.get_state().await.unwrap_or_else(|_| ConnectionState::new());
+
+				handle.mark_stale(reason.clone()).await.map_err(|e| format!("Failed to mark connection stale: {}", e))?;
+
+				// Get state after marking stale
+				let new_state = handle.get_state().await.unwrap_or_else(|_| ConnectionState::new());
+
+				self.metrics.connection_marked_stale();
+
+				info!(
+					connection_id = %connection_id,
+					reason = %reason,
+					"Connection marked as stale"
+				);
+
+				let _ = self
+					.emit_system_event(Event::ConnectionStateChanged {
+						connection_id: connection_id.clone(),
+						from: old_state,
+						to: new_state,
+					})
+					.await;
+
+				Ok(())
+			}
+			None => {
+				warn!(connection_key = client_key, "Attempted to mark non-existent connection as stale");
+				Err("Connection not found".to_string())
 			}
 		}
-
-		let mut newly_stale = 0;
-		for (idx, client_key) in keys_to_mark_stale.iter().enumerate() {
-			if let Some(mut entry) = connections.get_mut(client_key) {
-				if entry.value().is_active() {
-					if let Ok(_) = entry.value_mut().mark_stale("Connection timeout".into()) {
-						metrics.connection_marked_stale();
-						newly_stale += 1;
-					}
-				}
-			}
-			if idx % 10 == 0 {
-				tokio::task::yield_now().await;
-			}
-		}
-		newly_stale
-	}
-
-	async fn cleanup_stale_connections(
-		connections: &DashMap<String, Connection>,
-		sender: &async_broadcast::Sender<Event>,
-		keys_to_remove: &mut Vec<String>,
-	) -> Result<usize, String> {
-		keys_to_remove.clear();
-		for entry in connections.iter() {
-			if entry.value().is_stale() {
-				keys_to_remove.push(entry.key().clone());
-			}
-		}
-
-		let mut cleaned_up = 0;
-		for chunk in keys_to_remove.chunks(64) {
-			for key in chunk {
-				if let Some((_, mut conn)) = connections.remove(key) {
-					let _ = conn.disconnect("Stale connection cleanup".into());
-					cleaned_up += 1;
-				}
-			}
-			tokio::task::yield_now().await;
-		}
-
-		if cleaned_up > 0 {
-			let count = connections.len();
-			let _ = sender.broadcast(Event::ClientCount { count }).await;
-			update_resource_usage!("active_connections", count as f64);
-		}
-
-		Ok(cleaned_up)
 	}
 }
+
+// ===== Statistics structure =====
+
+#[derive(Debug, Clone)]
+pub struct ConnectionStats {
+	pub total: usize,
+	pub active: usize,
+	pub stale: usize,
+	pub unique_clients: usize,
+	pub connections_by_client: std::collections::HashMap<ClientId, usize>,
+}
+
+// ===== Helper functions for WebSocket lifecycle =====
 
 pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), ()> {
 	match state.add_connection(headers, addr).await {
 		Ok((key, rx)) => {
 			record_system_event!("websocket_established", connection_id = key);
-			info!("WebSocket connection established: {}", key);
+			info!(connection_id = %key, "WebSocket connection established");
 			Ok((key, rx))
 		}
 		Err(e) => {
 			record_connection_error!("creation_failed", "creation", e);
-			error!("Failed to add connection: {}", e);
+			error!(error = %e, "Failed to add connection");
 			Err(())
 		}
 	}
 }
 
-// Sends initial handshake (ping) to client
 pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>, conn_key: &str) -> Result<(), ()> {
 	let ping_event = Event::Ping;
-	if let Ok(msg) = serde_json::to_string(&ping_event) {
-		if let Err(e) = sender.send(Message::Text(msg)).await {
-			record_connection_error!("handshake_failed", "creation", e);
-			error!("Failed to send initial ping to {}: {}", conn_key, e);
-			return Err(());
+	match serde_json::to_string(&ping_event) {
+		Ok(msg) => {
+			if let Err(e) = sender.send(Message::Text(msg)).await {
+				record_connection_error!("handshake_failed", "creation", e);
+				error!(
+					connection_id = %conn_key,
+					error = %e,
+					"Failed to send initial ping"
+				);
+				return Err(());
+			}
+			Ok(())
+		}
+		Err(e) => {
+			record_connection_error!("handshake_serialization_failed", "creation", e);
+			error!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to serialize initial ping"
+			);
+			Err(())
 		}
 	}
-	Ok(())
 }
 
-// Basic connection cleanup
 pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {
 	let cleanup_result = health_check!("connection_cleanup", {
 		state.remove_connection(conn_key, "Connection failed during setup".to_string()).await
@@ -490,23 +290,39 @@ pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {
 
 	if let Err(e) = cleanup_result {
 		record_connection_error!("cleanup_failed", "cleanup", e);
-		error!("Failed to remove connection {}: {}", conn_key, e);
+		error!(
+			connection_id = %conn_key,
+			error = %e,
+			"Failed to remove connection during cleanup"
+		);
 	}
 }
 
-// Comprehensive connection cleanup with statistics
-pub(crate) async fn cleanup_connection_with_stats(state: &WebSocketFsm, conn_key: &str, message_count: u64, forward_task: tokio::task::JoinHandle<()>) {
+pub(crate) async fn cleanup_connection_with_stats(state: &WebSocketFsm, conn_key: &str, message_count: u64, forward_task: JoinHandle<()>) {
 	record_system_event!("websocket_cleanup_started", connection_id = conn_key, total_messages_processed = message_count);
-	info!("Cleaning up connection {} after {} messages", conn_key, message_count);
+
+	info!(
+		connection_id = %conn_key,
+		messages_processed = message_count,
+		"Starting connection cleanup"
+	);
 
 	let cleanup_result = health_check!("connection_cleanup", { state.remove_connection(conn_key, "Connection closed".to_string()).await });
 
 	if let Err(e) = cleanup_result {
 		record_connection_error!("cleanup_failed", "cleanup", e);
-		error!("Failed to remove connection {}: {}", conn_key, e);
+		error!(
+			connection_id = %conn_key,
+			error = %e,
+			"Failed to remove connection during cleanup"
+		);
 	}
 
 	forward_task.abort();
+
 	record_system_event!("websocket_cleanup_completed", connection_id = conn_key);
-	info!("Connection {} cleanup completed", conn_key);
+	info!(
+		connection_id = %conn_key,
+		"Connection cleanup completed"
+	);
 }
