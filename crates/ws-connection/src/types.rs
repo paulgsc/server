@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc, time::Instant};
+use std::{fmt, sync::Arc};
 use uuid::Uuid;
 
 /// Connection ID type for type safety
@@ -50,25 +50,5 @@ impl ClientId {
 impl fmt::Display for ClientId {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{}", self.0)
-	}
-}
-
-/// State of a connection lifecycle
-#[derive(Debug, Clone)]
-pub enum ConnectionState {
-	Active { last_ping: Instant },
-	Stale { last_ping: Instant, reason: String },
-	Disconnected { reason: String, disconnected_at: Instant },
-}
-
-impl fmt::Display for ConnectionState {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			ConnectionState::Active { .. } => write!(f, "Active"),
-			ConnectionState::Stale { reason, .. } => write!(f, "Stale({})", reason),
-			ConnectionState::Disconnected { reason, .. } => {
-				write!(f, "Disconnected({})", reason)
-			}
-		}
 	}
 }

@@ -1,83 +1,101 @@
+use crate::actor::ConnectionHandle;
 use crate::core::conn::Connection;
 use crate::core::subscription::EventKey;
-use crate::types::ConnectionState;
 use dashmap::DashMap;
 use std::sync::Arc;
 
-/// Generic, async-friendly connection store
 #[derive(Debug, Clone)]
 pub struct ConnectionStore<K: EventKey = String> {
-	connections: Arc<DashMap<String, Arc<Connection<K>>>>,
+	handles: Arc<DashMap<String, ConnectionHandle<K>>>,
 }
 
 impl<K: EventKey> ConnectionStore<K> {
-	/// Create a new store
 	pub fn new() -> Self {
 		Self {
-			connections: Arc::new(DashMap::new()),
+			handles: Arc::new(DashMap::new()),
 		}
 	}
 
-	/// Insert or replace a connection
-	pub fn insert(&self, key: String, connection: Connection<K>) -> Option<Arc<Connection<K>>> {
-		let arc_conn = Arc::new(connection);
-		self.connections.insert(key, arc_conn)
+	/// Insert connection handle and spawn its actor
+	pub fn insert(&self, key: String, connection: Connection<K>) -> ConnectionHandle<K> {
+		let (handle, actor) = ConnectionHandle::new(connection, 100);
+
+		// Spawn the actor
+		tokio::spawn(actor.run());
+
+		self.handles.insert(key, handle.clone());
+		handle
 	}
 
-	/// Get a connection cheaply (cloning the Arc)
-	pub fn get(&self, key: &str) -> Option<Arc<Connection<K>>> {
-		self.connections.get(key).map(|entry| Arc::clone(entry.value()))
+	/// Get connection handle
+	pub fn get(&self, key: &str) -> Option<ConnectionHandle<K>> {
+		self.handles.get(key).map(|entry| entry.value().clone())
 	}
 
-	/// Remove a connection
-	pub fn remove(&self, key: &str) -> Option<Arc<Connection<K>>> {
-		self.connections.remove(key).map(|(_, conn)| conn)
+	/// Remove connection and shutdown its actor
+	pub async fn remove(&self, key: &str) -> Option<ConnectionHandle<K>> {
+		if let Some((_, handle)) = self.handles.remove(key) {
+			let _ = handle.shutdown().await;
+			Some(handle)
+		} else {
+			None
+		}
 	}
 
-	/// Count of connections
 	pub fn len(&self) -> usize {
-		self.connections.len()
+		self.handles.len()
 	}
 
-	/// Check if store is empty
 	pub fn is_empty(&self) -> bool {
-		self.connections.is_empty()
+		self.handles.is_empty()
 	}
 
-	/// Get all keys
 	pub fn keys(&self) -> Vec<String> {
-		self.connections.iter().map(|entry| entry.key().clone()).collect()
+		self.handles.iter().map(|entry| entry.key().clone()).collect()
 	}
 
-	/// Gather connection stats
-	pub fn stats(&self) -> ConnectionStoreStats {
+	/// Get stats by querying all actors
+	pub async fn stats(&self) -> ConnectionStoreStats {
 		let mut active = 0;
 		let mut stale = 0;
 		let mut disconnected = 0;
 		let mut unique_clients = std::collections::HashSet::new();
 
-		for entry in self.connections.iter() {
-			let conn = entry.value();
-			unique_clients.insert(conn.client_id.clone());
+		for entry in self.handles.iter() {
+			let handle = entry.value();
+			unique_clients.insert(handle.connection.client_id.clone());
 
-			match conn.state {
-				ConnectionState::Active { .. } => active += 1,
-				ConnectionState::Stale { .. } => stale += 1,
-				ConnectionState::Disconnected { .. } => disconnected += 1,
+			if let Ok(state) = handle.get_state().await {
+				if state.is_active {
+					active += 1;
+				} else if state.is_stale {
+					stale += 1;
+				} else {
+					disconnected += 1;
+				}
 			}
 		}
 
 		ConnectionStoreStats {
-			total_connections: self.connections.len(),
+			total_connections: self.handles.len(),
 			active_connections: active,
 			stale_connections: stale,
 			disconnected_connections: disconnected,
 			unique_clients: unique_clients.len(),
 		}
 	}
+
+	/// Batch operation: send command to all matching connections
+	pub async fn for_each<F>(&self, mut f: F)
+	where
+		F: FnMut(&ConnectionHandle<K>),
+	{
+		for entry in self.handles.iter() {
+			f(entry.value());
+		}
+	}
 }
 
-/// Simple store statistics
 #[derive(Debug, Clone)]
 pub struct ConnectionStoreStats {
 	pub total_connections: usize,
@@ -85,4 +103,10 @@ pub struct ConnectionStoreStats {
 	pub stale_connections: usize,
 	pub disconnected_connections: usize,
 	pub unique_clients: usize,
+}
+
+impl<K: EventKey> Default for ConnectionStore<K> {
+	fn default() -> Self {
+		Self::new()
+	}
 }

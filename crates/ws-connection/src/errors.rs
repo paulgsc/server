@@ -24,32 +24,4 @@ pub enum ConnectionError {
 	Subscription(String),
 }
 
-#[derive(Error, Debug)]
-pub enum NotifyError {
-	#[error("message was dropped due to channel overflow")]
-	Dropped,
 
-	#[error("no active receivers")]
-	NoReceivers,
-
-	#[error("channel error: {0}")]
-	Channel(String),
-}
-
-#[derive(Debug, Clone)]
-pub enum SendOutcome {
-	Sent,
-	DroppedOldest,
-	NoReceivers,
-	Error(String),
-}
-
-impl From<NotifyError> for SendOutcome {
-	fn from(err: NotifyError) -> Self {
-		match err {
-			NotifyError::Dropped => SendOutcome::DroppedOldest,
-			NotifyError::NoReceivers => SendOutcome::NoReceivers,
-			NotifyError::Channel(msg) => SendOutcome::Error(msg),
-		}
-	}
-}
