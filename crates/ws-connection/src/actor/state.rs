@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+	fmt,
+	time::{Duration, Instant},
+};
 
 /// Actor-owned connection state (not shared)
 #[derive(Debug, Clone)]
@@ -50,10 +53,38 @@ impl ConnectionState {
 		self.is_stale = false;
 		self.disconnect_reason = Some(reason);
 	}
+
+	/// Returns a concise string representation of the state
+	pub fn as_str(&self) -> String {
+		let mut s = if self.is_active { "active".to_string() } else { "inactive".to_string() };
+
+		if self.is_stale {
+			s.push_str(", stale");
+			if let Some(reason) = &self.stale_reason {
+				s.push('(');
+				s.push_str(reason);
+				s.push(')');
+			}
+		}
+
+		if let Some(reason) = &self.disconnect_reason {
+			s.push_str(", disconnected(");
+			s.push_str(reason);
+			s.push(')');
+		}
+
+		s
+	}
 }
 
 impl Default for ConnectionState {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+impl fmt::Display for ConnectionState {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.as_str())
 	}
 }

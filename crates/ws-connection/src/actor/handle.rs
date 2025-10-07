@@ -35,7 +35,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	/// # Errors
 	/// Returns an error if the actor task is no longer available.
 	pub async fn record_activity(&self) -> Result<()> {
-		self.sender.send(ConnectionCommand::RecordActivity).await.map_err(|_| ConnectionError::ActorUnavailable)
+		self
+			.sender
+			.send(ConnectionCommand::RecordActivity)
+			.await
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Subscribe to the provided event types.
@@ -47,7 +51,7 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::Subscribe { event_types })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Unsubscribe from the provided event types.
@@ -59,7 +63,7 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::Unsubscribe { event_types })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Ask the actor to check for staleness based on timeout.
@@ -71,7 +75,7 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::CheckStale { timeout })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Mark the connection as stale.
@@ -83,7 +87,7 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::MarkStale { reason })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Disconnect the connection for the provided reason.
@@ -95,7 +99,7 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::Disconnect { reason })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))
 	}
 
 	/// Get the current connection state.
@@ -108,9 +112,9 @@ impl<K: EventKey> ConnectionHandle<K> {
 			.sender
 			.send(ConnectionCommand::GetState { reply: tx })
 			.await
-			.map_err(|_| ConnectionError::ActorUnavailable)?;
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))?;
 
-		rx.await.map_err(|_| ConnectionError::StateRetrievalFailed)
+		Ok(rx.await?)
 	}
 
 	/// Request actor shutdown.
@@ -118,7 +122,12 @@ impl<K: EventKey> ConnectionHandle<K> {
 	/// # Errors
 	/// Returns an error if the actor task is no longer available.
 	pub async fn shutdown(&self) -> Result<()> {
-		self.sender.send(ConnectionCommand::Shutdown).await.map_err(|_| ConnectionError::ActorUnavailable)
+		self
+			.sender
+			.send(ConnectionCommand::Shutdown)
+			.await
+			.map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)))?;
+		Ok(())
 	}
 
 	/// Check if this handle's connection is subscribed to a given event type.

@@ -1,10 +1,10 @@
 use crate::websocket::EventType;
 use crate::*;
-use async_broadcast::Receiver;
 use axum::extract::ws::{Message, WebSocket};
 use axum::http::HeaderMap;
 use futures::sink::SinkExt;
 use futures::stream::SplitSink;
+use some_transport::{InMemTransportReceiver, Transport};
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
@@ -55,7 +55,7 @@ impl WebSocketFsm {
 	}
 
 	/// Adds a connection to the store with comprehensive observability
-	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), String> {
+	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, InMemTransportReceiver<Event>), String> {
 		let start = std::time::Instant::now();
 		let client_id = self.client_id_from_request(headers, addr);
 
@@ -66,7 +66,7 @@ impl WebSocketFsm {
 		let client_key = connection_id.as_string();
 
 		// Create transport channel - gets ALL events
-		let receiver = self.transport.create_channel(&client_key);
+		let receiver = self.transport.open_channel(&client_key).await;
 
 		let handle = self.store.insert(client_key.clone(), domain_conn);
 		let elapsed = start.elapsed();
@@ -148,7 +148,7 @@ impl WebSocketFsm {
 					);
 				}
 
-				self.transport.remove_channel(client_key);
+				self.transport.close_channel(client_key);
 				self.metrics.connection_removed(was_active);
 
 				let elapsed = start.elapsed();
@@ -241,7 +241,7 @@ pub struct ConnectionStats {
 
 // ===== Helper functions for WebSocket lifecycle =====
 
-pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, Receiver<Event>), ()> {
+pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, InMemTransportReceiver<Event>), ()> {
 	match state.add_connection(headers, addr).await {
 		Ok((key, rx)) => {
 			record_system_event!("websocket_established", connection_id = key);

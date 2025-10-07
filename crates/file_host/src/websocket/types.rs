@@ -43,6 +43,12 @@ pub enum EventType {
 	Utterance,
 }
 
+impl Default for EventType {
+	fn default() -> Self {
+		EventType::Pong
+	}
+}
+
 impl EventType {
 	/// Which event actually drives streaming from OBS
 	pub fn is_stream_origin(&self) -> bool {
@@ -145,18 +151,18 @@ impl Event {
 		!self.is_client_event()
 	}
 
-	pub fn get_type(&self) -> EventType {
+	pub fn get_type(&self) -> Option<EventType> {
 		match self {
-			Self::Ping => EventType::Ping,
-			Self::Pong => EventType::Pong,
-			Self::Error { .. } => EventType::Error,
-			Self::Subscribe { .. } => EventType::Ping, // These are control messages
-			Self::Unsubscribe { .. } => EventType::Ping,
-			Self::ClientCount { .. } => EventType::ClientCount,
-			Self::ObsStatus { .. } => EventType::ObsStatus,
-			Self::ObsCmd { .. } => EventType::ObsCommand,
-			Self::TabMetaData { .. } => EventType::TabMetaData,
-			Self::Utterance { .. } => EventType::Utterance,
+			Self::Ping => Some(EventType::Ping),
+			Self::Pong => Some(EventType::Pong),
+			Self::Error { .. } => Some(EventType::Error),
+			Self::Subscribe { .. } => Some(EventType::Ping), // These are control messages
+			Self::Unsubscribe { .. } => Some(EventType::Ping),
+			Self::ClientCount { .. } => Some(EventType::ClientCount),
+			Self::ObsStatus { .. } => Some(EventType::ObsStatus),
+			Self::ObsCmd { .. } => Some(EventType::ObsCommand),
+			Self::TabMetaData { .. } => Some(EventType::TabMetaData),
+			Self::Utterance { .. } => Some(EventType::Utterance),
 			// System events don't have EventTypes
 			_ => None,
 		}

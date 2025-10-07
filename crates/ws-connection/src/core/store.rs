@@ -54,17 +54,49 @@ impl<K: EventKey> ConnectionStore<K> {
 		self.handles.iter().map(|entry| entry.key().clone()).collect()
 	}
 
+	/// Execute an async closure for each connection handle.
+	/// The closure is executed for all handles, but not concurrently.
+	pub async fn for_each_async<F, Fut>(&self, mut f: F)
+	where
+		F: FnMut(ConnectionHandle<K>) -> Fut,
+		Fut: std::future::Future<Output = ()>,
+	{
+		// Clone handles to avoid holding DashMap locks across await
+		let handles: Vec<_> = self.handles.iter().map(|entry| entry.value().clone()).collect();
+
+		for handle in handles {
+			f(handle).await;
+		}
+	}
+
+	/// Execute an async closure for each connection handle and return true
+	/// if any closure invocation returns true. Stops early on first true.
+	pub async fn for_any_async<F, Fut>(&self, mut f: F) -> bool
+	where
+		F: FnMut(ConnectionHandle<K>) -> Fut,
+		Fut: std::future::Future<Output = bool>,
+	{
+		// Clone handles to avoid holding DashMap locks across await
+		let handles: Vec<_> = self.handles.iter().map(|entry| entry.value().clone()).collect();
+
+		for handle in handles {
+			if f(handle).await {
+				return true;
+			}
+		}
+
+		false
+	}
+
 	/// Get stats by querying all actors
 	pub async fn stats(&self) -> ConnectionStoreStats {
 		let mut active = 0;
 		let mut stale = 0;
 		let mut disconnected = 0;
 		let mut unique_clients = std::collections::HashSet::new();
-
 		for entry in self.handles.iter() {
 			let handle = entry.value();
 			unique_clients.insert(handle.connection.client_id.clone());
-
 			if let Ok(state) = handle.get_state().await {
 				if state.is_active {
 					active += 1;
@@ -75,7 +107,6 @@ impl<K: EventKey> ConnectionStore<K> {
 				}
 			}
 		}
-
 		ConnectionStoreStats {
 			total_connections: self.handles.len(),
 			active_connections: active,
@@ -86,13 +117,12 @@ impl<K: EventKey> ConnectionStore<K> {
 	}
 
 	/// Batch operation: send command to all matching connections
-	pub async fn for_each<F>(&self, mut f: F)
+	pub async fn for_each<F, Fut>(&self, f: F)
 	where
-		F: FnMut(&ConnectionHandle<K>),
+		F: FnMut(ConnectionHandle<K>) -> Fut,
+		Fut: std::future::Future<Output = ()>,
 	{
-		for entry in self.handles.iter() {
-			f(entry.value());
-		}
+		self.for_each_async(f).await;
 	}
 }
 

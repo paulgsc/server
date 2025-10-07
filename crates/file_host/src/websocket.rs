@@ -1,5 +1,4 @@
 use crate::*;
-use async_broadcast::Receiver;
 use axum::{
 	extract::{
 		ws::{Message, WebSocketUpgrade},
@@ -13,7 +12,7 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
 use serde::Serialize;
-use some_transport::inmem::TransportLayer;
+use some_transport::{InMemTransport, InMemTransportReceiver, Transport};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{sync::Notify, task::JoinHandle};
 use tracing::{debug, error, info, warn};
@@ -30,7 +29,7 @@ pub mod shutdown;
 pub mod types;
 
 use broadcast::spawn_event_forwarder;
-pub use broadcast::BroadcastOutcome;
+pub use broadcast::BroadcastResult;
 use connection::core::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
 pub use heartbeat::{HeartbeatManager, HeartbeatPolicy};
 use message::process_incoming_messages;
@@ -45,8 +44,8 @@ pub struct WebSocketFsm {
 	/// Domain layer: Connection actor handles
 	store: Arc<ConnectionStore<EventType>>,
 
-	/// Infrastructure layer: Transport/messaging
-	transport: Arc<TransportLayer<Event>>,
+	/// Infrastructure layer: Unified transport for ALL events
+	transport: Arc<InMemTransport<Event>>,
 
 	/// Heartbeat management
 	heartbeat_manager: Arc<HeartbeatManager<EventType>>,
@@ -71,8 +70,7 @@ impl WebSocketFsm {
 	}
 
 	pub fn with_policy(policy: HeartbeatPolicy) -> Self {
-		let (transport, _main_receiver) = TransportLayer::new(1000);
-		let transport = Arc::new(transport);
+		let transport = Arc::new(InMemTransport::new(1000));
 
 		let store = Arc::new(ConnectionStore::<EventType>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
@@ -105,18 +103,35 @@ impl WebSocketFsm {
 		*self.heartbeat_task.lock().unwrap() = Some(task);
 	}
 
+	pub async fn stop(&self) {
+		self.heartbeat_manager.shutdown().await;
+		if let Some(task) = self.heartbeat_task.lock().unwrap().take() {
+			let _ = task.await;
+		}
+	}
+
+	pub fn router<S>(self) -> Router<S>
+	where
+		S: Clone + Send + Sync + 'static,
+		AppState: FromRef<S>,
+	{
+		Router::new().route("/ws", get(websocket_handler))
+	}
+
 	/// Subscribe to all events (both client and system)
-	pub fn subscribe_to_events(&self) -> Receiver<Event> {
+	pub fn subscribe_to_events(&self) -> InMemTransportReceiver<Event> {
 		self.transport.subscribe()
 	}
 
 	/// Subscribe to only system events (for observability tools)
-	pub fn subscribe_to_system_events(&self) -> Receiver<Event> {
+	/// Note: Returns all events - caller must filter for system events
+	pub fn subscribe_to_system_events(&self) -> InMemTransportReceiver<Event> {
 		self.transport.subscribe()
 	}
 
 	/// Subscribe to only client events (for testing/debugging)
-	pub fn subscribe_to_client_events(&self) -> Receiver<Event> {
+	/// Note: Returns all events - caller must filter for client events
+	pub fn subscribe_to_client_events(&self) -> InMemTransportReceiver<Event> {
 		self.transport.subscribe()
 	}
 
@@ -141,53 +156,61 @@ impl WebSocketFsm {
 		tokio::spawn(async move {
 			record_system_event!("observability_monitor_started");
 
-			while let Ok(event) = events.recv().await {
-				// Only process system events
-				if !event.is_system_event() {
-					continue;
-				}
+			loop {
+				match events.recv().await {
+					Ok(event) => {
+						// Only process system events
+						if !event.is_system_event() {
+							continue;
+						}
 
-				match event {
-					Event::ConnectionStateChanged { connection_id, from, to } => {
-						record_system_event!("connection_state_changed", connection_id = connection_id, from_state = from, to_state = to);
-						info!("Connection {} state: {} -> {}", connection_id, from, to);
+						match event {
+							Event::ConnectionStateChanged { connection_id, from, to } => {
+								record_system_event!("connection_state_changed", connection_id = connection_id, from_state = from, to_state = to);
+								info!("Connection {} state: {} -> {}", connection_id, from, to);
+							}
+							Event::MessageProcessed {
+								message_id,
+								connection_id,
+								duration,
+								result,
+							} => {
+								record_system_event!(
+									"message_processed",
+									message_id = message_id,
+									connection_id = connection_id,
+									duration_ms = duration.as_millis(),
+									delivered = result.delivered,
+									failed = result.failed
+								);
+								debug!(
+									"Message {} from {} processed in {:?}: {} delivered, {} failed",
+									message_id, connection_id, duration, result.delivered, result.failed
+								);
+							}
+							Event::BroadcastFailed {
+								event_type,
+								error,
+								affected_connections,
+							} => {
+								record_system_event!("broadcast_failed", event_type = event_type, error = error, affected_connections = affected_connections);
+								error!("Broadcast failed for {:?} affecting {} connections: {}", event_type, affected_connections, error);
+							}
+							Event::ConnectionCleanup {
+								connection_id,
+								reason,
+								resources_freed,
+							} => {
+								record_system_event!("connection_cleanup", connection_id = connection_id, reason = reason, resources_freed = resources_freed);
+								info!("Connection {} cleaned up (reason: {}, resources freed: {})", connection_id, reason, resources_freed);
+							}
+							_ => {}
+						}
 					}
-					Event::MessageProcessed {
-						message_id,
-						connection_id,
-						duration,
-						result,
-					} => {
-						record_system_event!(
-							"message_processed",
-							message_id = message_id,
-							connection_id = connection_id,
-							duration_ms = duration.as_millis(),
-							delivered = result.delivered,
-							failed = result.failed
-						);
-						debug!(
-							"Message {} from {} processed in {:?}: {} delivered, {} failed",
-							message_id, connection_id, duration, result.delivered, result.failed
-						);
+					Err(e) => {
+						error!("Observability monitor error: {}", e);
+						break;
 					}
-					Event::BroadcastFailed {
-						event_type,
-						error,
-						affected_connections,
-					} => {
-						record_system_event!("broadcast_failed", event_type = event_type, error = error, affected_connections = affected_connections);
-						error!("Broadcast failed for {:?} affecting {} connections: {}", event_type, affected_connections, error);
-					}
-					Event::ConnectionCleanup {
-						connection_id,
-						reason,
-						resources_freed,
-					} => {
-						record_system_event!("connection_cleanup", connection_id = connection_id, reason = reason, resources_freed = resources_freed);
-						info!("Connection {} cleaned up (reason: {}, resources freed: {})", connection_id, reason, resources_freed);
-					}
-					_ => {}
 				}
 			}
 
@@ -195,21 +218,7 @@ impl WebSocketFsm {
 		});
 	}
 
-	pub async fn stop(&self) {
-		self.heartbeat_manager.shutdown().await;
-		if let Some(task) = self.heartbeat_task.lock().unwrap().take() {
-			let _ = task.await;
-		}
-	}
-
-	pub fn router<S>(self) -> Router<S>
-	where
-		S: Clone + Send + Sync + 'static,
-		AppState: FromRef<S>,
-	{
-		Router::new().route("/ws", get(websocket_handler))
-	}
-
+	/// Handle subscription changes for a connection
 	async fn handle_subscription(&self, client_key: &str, event_types: Vec<EventType>, subscribe: bool) {
 		if let Some(handle) = self.store.get(client_key) {
 			let result = if subscribe {
@@ -226,22 +235,13 @@ impl WebSocketFsm {
 		}
 	}
 
-	async fn send_error_to_client(&self, client_key: &str, error: &str) {
-		if let Some(connection) = self.connections.get(client_key) {
-			let error_event = Event::Error { message: error.to_string() };
-			if let Err(e) = connection.send_event(error_event).await {
-				record_ws_error!("error_send_failed", "connection", e);
-				warn!("Failed to send error to client {}: {}", connection.id, e);
-			}
-		}
-	}
-
+	/// Update client ping timestamp via heartbeat manager
 	async fn update_client_ping(&self, client_key: &str) -> Result<(), String> {
 		self.heartbeat_manager.record_ping(client_key).await;
 		Ok(())
 	}
 
-	/// Send event to connection
+	/// Send event to a specific connection
 	pub async fn send_event_to_connection(&self, client_key: &str, event: Event) -> Result<(), String> {
 		if let Some(handle) = self.store.get(client_key) {
 			let state = handle.get_state().await.map_err(|e| e.to_string())?;
@@ -250,12 +250,13 @@ impl WebSocketFsm {
 				return Err(format!("Connection {} is not active", client_key));
 			}
 
-			self.transport.send_to_connection(client_key, event).await
+			self.transport.send(client_key, event).await.map_err(|e| e.to_string())
 		} else {
 			Err(format!("Connection {} not found", client_key))
 		}
 	}
 
+	/// Send error message to a specific client
 	async fn send_error_to_client(&self, client_key: &str, error: &str) {
 		let error_event = Event::Error { message: error.to_string() };
 
@@ -265,19 +266,60 @@ impl WebSocketFsm {
 		}
 	}
 
+	/// Get total number of active connections
 	pub async fn get_client_count(&self) -> usize {
-		self.connections.len()
+		self.store.len()
 	}
 
+	/// Get metrics snapshot
 	pub fn get_metrics(&self) -> ConnectionMetricsSnapshot {
 		self.metrics.get_snapshot()
 	}
 
-	pub fn subscribe_to_system_events(&self) -> Receiver<SystemEvent> {
-		self.system_events.new_receiver()
+	/// Record a message processing event
+	pub async fn record_message_processed(&self, message_id: MessageId, connection_id: ConnectionId, duration: std::time::Duration, result: ProcessResult) {
+		self
+			.emit_system_event(Event::MessageProcessed {
+				message_id,
+				connection_id,
+				duration,
+				result,
+			})
+			.await;
 	}
 
-	// Health check endpoint data
+	/// Record a broadcast failure
+	pub async fn record_broadcast_failure(&self, event_type: EventType, error: String, affected_connections: usize) {
+		self.metrics.broadcast_attempt(false);
+
+		error!(
+			event_type = ?event_type,
+			error = %error,
+			affected_connections = affected_connections,
+			"Broadcast failed"
+		);
+
+		self
+			.emit_system_event(Event::BroadcastFailed {
+				event_type,
+				error,
+				affected_connections,
+			})
+			.await;
+	}
+
+	/// Record a successful broadcast
+	pub async fn record_broadcast_success(&self, event_type: EventType, recipient_count: usize) {
+		self.metrics.broadcast_attempt(true);
+
+		info!(
+			event_type = ?event_type,
+			recipient_count = recipient_count,
+			"Broadcast succeeded"
+		);
+	}
+
+	/// Get health status for monitoring
 	pub async fn get_health_status(&self) -> HealthStatus {
 		let health_result: Result<HealthStatus, ()> = health_check!("health_status", {
 			let metrics = self.get_metrics();
@@ -286,13 +328,13 @@ impl WebSocketFsm {
 			check_invariant!(!self.transport.is_closed(), "transport_state", "Main transport channel is closed");
 
 			check_invariant!(
-				self.transport.receiver_count() > 0 || stats.total_connections == 0,
+				self.transport.total_receivers() > 0 || stats.total_connections == 0,
 				"receiver_count",
 				"No receivers but connections exist",
 				expected: "receivers > 0 or connections == 0",
 				actual: format!(
 					"receivers: {}, connections: {}",
-					self.transport.receiver_count(),
+					self.transport.total_receivers(),
 					stats.total_connections
 				)
 			);
@@ -305,7 +347,7 @@ impl WebSocketFsm {
 					stale: stats.stale_connections,
 					disconnected: stats.disconnected_connections,
 				},
-				sender_receiver_count: self.transport.receiver_count(),
+				sender_receiver_count: self.transport.total_receivers(),
 				sender_is_closed: self.transport.is_closed(),
 				unique_clients: stats.unique_clients,
 			})
@@ -330,10 +372,6 @@ impl WebSocketFsm {
 			}
 		}
 	}
-
-	fn update_subscriber_state(&self) {
-		self.subscriber_notify.notify_waiters();
-	}
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +381,7 @@ pub struct HealthStatus {
 	pub connection_states: ConnectionStateDistribution,
 	pub sender_receiver_count: usize,
 	pub sender_is_closed: bool,
+	pub unique_clients: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -362,7 +401,7 @@ async fn websocket_handler(
 	ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, connection_guard))
 }
 
-// Orchestrates the WebSocket connection lifecycle
+/// Orchestrates the WebSocket connection lifecycle
 async fn handle_socket(
 	socket: axum::extract::ws::WebSocket,
 	state: WebSocketFsm,
@@ -376,12 +415,12 @@ async fn handle_socket(
 	let (conn_key, event_receiver) = match establish_connection(&state, &headers, &addr).await {
 		Ok(connection) => connection,
 		Err(_) => {
-			record_ws_error!("connection refused", "handle_socket");
+			record_ws_error!("connection_refused", "handle_socket");
 			return;
 		}
 	};
 
-	if let Err(_) = send_initial_handshake(&mut sender, &conn_key).await {
+	if send_initial_handshake(&mut sender, &conn_key).await.is_err() {
 		clear_connection(&state, &conn_key).await;
 		return;
 	}
@@ -395,19 +434,21 @@ async fn handle_socket(
 	cleanup_connection_with_stats(&state, &conn_key, message_count, forward_task).await;
 }
 
+/// Initialize WebSocket system with default policy
 pub async fn init_websocket() -> WebSocketFsm {
 	init_websocket_with_policy(HeartbeatPolicy::default()).await
 }
 
+/// Initialize WebSocket system with custom heartbeat policy
 pub async fn init_websocket_with_policy(policy: HeartbeatPolicy) -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
 
 	let state = WebSocketFsm::with_policy(policy);
 	state.start();
 
-	self.spawn_observability_monitor();
-
+	record_system_event!("websocket_init_completed");
 	info!("Actor-based WebSocket system initialized");
+
 	state
 }
 
