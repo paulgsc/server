@@ -1,9 +1,6 @@
 use crate::*;
 use axum::{
-	extract::{
-		ws::{Message, WebSocketUpgrade},
-		ConnectInfo, FromRef, State,
-	},
+	extract::{ws::WebSocketUpgrade, ConnectInfo, FromRef, State},
 	http::HeaderMap,
 	response::IntoResponse,
 	routing::get,
@@ -33,7 +30,7 @@ pub use broadcast::BroadcastResult;
 use connection::core::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
 pub use heartbeat::{HeartbeatManager, HeartbeatPolicy};
 use message::process_incoming_messages;
-pub use message::{EventMessage, MessageState, ProcessResult};
+pub use message::ProcessResult;
 use middleware::ConnectionGuard;
 pub use middleware::{ConnectionLimitConfig, ConnectionLimiter};
 pub use types::*;

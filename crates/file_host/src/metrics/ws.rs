@@ -198,7 +198,6 @@ macro_rules! record_message_result {
 }
 
 /// Macro for timing and recording broadcast operations
-/// Macro for timing and recording broadcast operations
 #[macro_export]
 macro_rules! timed_broadcast {
 	($event_type:expr, $body:block) => {{
@@ -209,22 +208,22 @@ macro_rules! timed_broadcast {
 
 		// Record the broadcast operation result
 		match &result {
-			Ok(broadcast_outcome) => match broadcast_outcome {
-				$crate::websocket::BroadcastOutcome::NoSubscribers => {
+			Ok(broadcast_result) => {
+				if broadcast_result.delivered == 0 && broadcast_result.failed == 0 {
 					WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "no_subscribers"]).inc();
-				}
-				$crate::websocket::BroadcastOutcome::Completed {
-					process_result: ProcessResult { failed, delivered, .. },
-				} => {
+				} else {
 					WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "success"]).inc();
-					WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "delivered"]).inc_by(*delivered as u64);
-					if *failed > 0 {
-						WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "failed"]).inc_by(*failed as u64);
+					if broadcast_result.delivered > 0 {
+						WS_BROADCAST_DELIVERY
+							.with_label_values(&[$event_type, "delivered"])
+							.inc_by(broadcast_result.delivered as u64);
+					}
+					if broadcast_result.failed > 0 {
+						WS_BROADCAST_DELIVERY.with_label_values(&[$event_type, "failed"]).inc_by(broadcast_result.failed as u64);
 					}
 				}
-			},
+			}
 			Err(_error) => {
-				// Handle the error case - record error metrics
 				WS_BROADCAST_OPERATIONS.with_label_values(&[$event_type, "error"]).inc();
 			}
 		}
@@ -340,7 +339,7 @@ macro_rules! record_system_event {
 
 	    tracing::info!(
 		    event_type = %$event_type,
-		    $($key = ?$value),+, // apply formatting here
+		    $($key = ?$value),+,
 		    "System event recorded"
 	    );
 	};
