@@ -236,25 +236,24 @@ pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, m
 }
 
 // Forwards a single event to the WebSocket client
-async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, conn_key: &str, message_count: u64) -> Result<(), ()> {
-	let result = timed_ws_operation!("forward", "serialize", { serde_json::to_string(event) });
+async fn forward_single_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, conn_key: &str, message_count: u64) -> Result<(), String> {
+	// Serialize event
+	let json = timed_ws_operation!("forward", "serialize", { serde_json::to_string(event) }).map_err(|e| {
+		let msg = format!("Failed to serialize event for client {}: {}", conn_key, e);
+		record_ws_error!("serialization_failed", "forward", &msg);
+		error!("{}", msg);
+		msg
+	})?;
 
-	let msg = match result {
-		Ok(json) => Message::Text(json),
-		Err(e) => {
-			record_ws_error!("serialization_failed", "forward", e);
-			error!("Failed to serialize event for client {}: {}", conn_key, e);
-			return Err(());
-		}
-	};
+	let msg = Message::Text(json);
 
-	let send_result = timed_ws_operation!("forward", "send", { sender.send(msg).await });
-
-	if let Err(e) = send_result {
-		record_ws_error!("forward_send_failed", "forward", e);
-		error!("Failed to forward event to client {} (msg #{}): {}", conn_key, message_count, e);
-		return Err(());
-	}
+	// Send message
+	timed_ws_operation!("forward", "send", { sender.send(msg).await }).map_err(|e| {
+		let msg = format!("Failed to forward event to client {} (msg #{}): {}", conn_key, message_count, e);
+		record_ws_error!("forward_send_failed", "forward", &msg);
+		error!("{}", msg);
+		msg
+	})?;
 
 	Ok(())
 }

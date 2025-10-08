@@ -187,45 +187,6 @@ impl WebSocketFsm {
 			}
 		}
 	}
-
-	/// Mark a connection as stale with observability
-	pub async fn mark_connection_stale(&self, client_key: &str, reason: String) -> Result<(), String> {
-		match self.store.get(client_key) {
-			Some(handle) => {
-				let connection_id = handle.connection.id.clone();
-
-				// Get state before marking stale
-				let old_state = handle.get_state().await.unwrap_or_else(|_| ConnectionState::new());
-
-				handle.mark_stale(reason.clone()).await.map_err(|e| format!("Failed to mark connection stale: {}", e))?;
-
-				// Get state after marking stale
-				let new_state = handle.get_state().await.unwrap_or_else(|_| ConnectionState::new());
-
-				self.metrics.connection_marked_stale();
-
-				info!(
-					connection_id = %connection_id,
-					reason = %reason,
-					"Connection marked as stale"
-				);
-
-				let _ = self
-					.emit_system_event(Event::ConnectionStateChanged {
-						connection_id: connection_id.clone(),
-						from: old_state,
-						to: new_state,
-					})
-					.await;
-
-				Ok(())
-			}
-			None => {
-				warn!(connection_key = client_key, "Attempted to mark non-existent connection as stale");
-				Err("Connection not found".to_string())
-			}
-		}
-	}
 }
 
 // ===== Statistics structure =====

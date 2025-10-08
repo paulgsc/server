@@ -1,7 +1,6 @@
 use super::HeartbeatPolicy;
-use crate::metrics::ConnectionMetrics;
-use crate::transport::TransportLayer;
-use crate::websocket::Event;
+use crate::websocket::*;
+use rand::Rng;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -10,16 +9,18 @@ use ws_connection::{ConnectionStore, EventKey};
 
 const BATCH_SIZE: usize = 32; // scalable default
 
+type T = Arc<InMemTransport<Event>>;
+
 pub struct HeartbeatManager<K: EventKey + Send + Sync + 'static> {
 	store: Arc<ConnectionStore<K>>,
-	transport: Arc<TransportLayer>,
+	transport: T,
 	metrics: Arc<ConnectionMetrics>,
 	policy: HeartbeatPolicy,
 	shutdown_tx: watch::Sender<bool>,
 }
 
 impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
-	pub fn new(store: Arc<ConnectionStore<K>>, transport: Arc<TransportLayer>, metrics: Arc<ConnectionMetrics>, policy: HeartbeatPolicy) -> Self {
+	pub fn new(store: Arc<ConnectionStore<K>>, transport: T, metrics: Arc<ConnectionMetrics>, policy: HeartbeatPolicy) -> Self {
 		let (shutdown_tx, _) = watch::channel(false);
 		Self {
 			store,
@@ -51,7 +52,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 								}
 						}
 						_ = interval.tick() => {
-								if let Err(e) = Self::run_cycle(&*store, &*transport, &*metrics, &policy).await {
+								if let Err(e) = Self::run_cycle(&*store, &transport, &*metrics, &policy).await {
 										error!("Heartbeat cycle failed: {}", e);
 								}
 								tokio::task::yield_now().await;
@@ -79,7 +80,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 	}
 
 	/// Main heartbeat cycle
-	async fn run_cycle(store: &ConnectionStore<K>, transport: &TransportLayer, metrics: &ConnectionMetrics, policy: &HeartbeatPolicy) -> Result<(), String> {
+	async fn run_cycle(store: &ConnectionStore<K>, transport: &T, metrics: &ConnectionMetrics, policy: &HeartbeatPolicy) -> Result<(), String> {
 		// Health check
 		Self::health_check(store, metrics).await;
 
@@ -131,15 +132,15 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 					if let Ok(state) = handle.get_state().await {
 						if state.is_stale && !state.disconnect_reason.is_some() {
 							metrics.connection_marked_stale();
+							record_system_event!("connection_state_changed", connection_id = key, from_state = state, to_state = "stale");
 							newly_stale += 1;
-							record_connection_state_change!(key, "active", "stale");
 						}
 					}
 				}
 			}
 
 			// Deterministic batch yield with random jitter
-			if idx % BATCH_SIZE == 0 && rng.gen_bool(0.5) {
+			if idx % BATCH_SIZE == 0 && rand::rng().random_bool(0.5) {
 				tokio::task::yield_now().await;
 			}
 		}
@@ -147,7 +148,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 		newly_stale
 	}
 
-	async fn remove_stale_connections(store: &ConnectionStore<K>, transport: &TransportLayer, policy: &HeartbeatPolicy) -> Result<usize, String> {
+	async fn remove_stale_connections(store: &ConnectionStore<K>, transport: &T, policy: &HeartbeatPolicy) -> Result<usize, String> {
 		let keys = store.keys();
 		let mut to_remove = Vec::new();
 
@@ -176,7 +177,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 					let _ = handle.disconnect("Stale connection cleanup".to_string()).await;
 
 					// Clean up transport
-					transport.remove_channel(key).await;
+					transport.close_channel(key).await;
 
 					removed += 1;
 					record_connection_removed!(key, handle.connection.client_id, handle.connection.get_duration(), "stale_cleanup");
