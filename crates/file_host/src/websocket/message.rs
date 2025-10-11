@@ -5,6 +5,7 @@ use futures::stream::{SplitStream, StreamExt};
 use obs_websocket::ObsCommand;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+use ws_connection::ConnectionId;
 
 /// Result of processing a message
 #[derive(Debug, Clone)]
@@ -68,8 +69,6 @@ impl WebSocketFsm {
 			}
 		};
 
-		let event_type = event.get_type();
-
 		// Handle the event based on its type
 		let result = match event {
 			// Control messages - handled immediately, not broadcast
@@ -90,7 +89,8 @@ impl WebSocketFsm {
 
 			// OBS commands - handled asynchronously
 			Event::ObsCmd { cmd } => {
-				self.handle_obs_command_async(cmd, connection_id.clone()).await;
+				let conn_id = connection_id.clone();
+				self.handle_obs_command_async(cmd, conn_id).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 
@@ -119,7 +119,6 @@ impl WebSocketFsm {
 	/// Handle OBS command asynchronously with retry logic
 	async fn handle_obs_command_async(&self, cmd: ObsCommand, connection_id: ConnectionId) {
 		let obs_manager = self.obs_manager.clone();
-		let connection_id_str = connection_id.to_string();
 
 		tokio::spawn(async move {
 			let cmd_display = format!("{:?}", cmd);
@@ -139,12 +138,12 @@ impl WebSocketFsm {
 				Ok(_) => {
 					record_system_event!(
 						"obs_command_success",
-						connection_id = connection_id_str,
+						connection_id = connection_id,
 						command = cmd_display,
 						duration_ms = duration.as_millis()
 					);
 					info!(
-						connection_id = %connection_id_str,
+						connection_id = %connection_id,
 						command = %cmd_display,
 						duration_ms = duration.as_millis(),
 						"OBS command executed successfully"
@@ -154,13 +153,13 @@ impl WebSocketFsm {
 					record_ws_error!("obs_command_failed", "command_execution", &e);
 					record_system_event!(
 						"obs_command_failed",
-						connection_id = connection_id_str,
+						connection_id = connection_id,
 						command = cmd_display,
 						error = e.to_string(),
 						duration_ms = duration.as_millis()
 					);
 					error!(
-						connection_id = %connection_id_str,
+						connection_id = %connection_id,
 						command = %cmd_display,
 						error = %e,
 						duration_ms = duration.as_millis(),

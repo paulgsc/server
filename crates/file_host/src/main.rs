@@ -14,9 +14,10 @@ use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	perform_health_check,
-	websocket::{init_websocket, middleware::connection_limit_middleware, ConnectionLimitConfig, ConnectionLimiter, Event, EventType, NowPlaying},
+	websocket::{init_websocket, Event, EventType, NowPlaying},
 	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
 };
+use ws_conn_manager::ConnectionGuard;
 // use futures::{sink::SinkExt, stream::StreamExt};
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use some_services::rate_limiter::TokenBucketRateLimiter;
@@ -67,6 +68,7 @@ async fn main() -> Result<()> {
 	let pool = SqlitePool::connect(&config.database_url).await?;
 
 	let app_state = AppState {
+		connection_guard: ConnectionGuard::new(),
 		dedup_cache: dedup_cache.into(),
 		gsheet_reader: gsheet_reader.into(),
 		gdrive_reader: gdrive_reader.into(),
@@ -81,33 +83,6 @@ async fn main() -> Result<()> {
 
 	// Create cancellation token for coordinated shutdown
 	let shutdown_token = CancellationToken::new();
-
-	// Create connection limiter with configuration
-	let connection_limits = ConnectionLimitConfig {
-		max_per_client: 2,
-		max_global: 10,
-		acquire_timeout: Duration::from_secs(10),
-		enable_queuing: true,
-		queue_size_per_client: 3,
-		max_queue_time: Duration::from_secs(30),
-	};
-
-	let connection_limiter = ConnectionLimiter::new(connection_limits);
-
-	// Start cleanup task for inactive client states with cancellation support
-	let mut cleanup_handle = {
-		let limiter = connection_limiter.clone();
-		let token = shutdown_token.clone();
-		tokio::spawn(async move {
-			let _ = limiter
-				.start_cleanup_task_with_cancellation(
-					Duration::from_secs(300),  // cleanup every 5 minutes
-					Duration::from_secs(3600), // remove clients inactive for 1 hour
-					token,
-				)
-				.await;
-		})
-	};
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
@@ -142,7 +117,6 @@ async fn main() -> Result<()> {
 
 	let app = app.layer(
 		ServiceBuilder::new()
-			.layer(from_fn_with_state(connection_limiter.clone(), connection_limit_middleware))
 			.layer(axum::middleware::from_fn(metrics::http::metrics_middleware))
 			.layer(TraceLayer::new_for_http())
 			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
@@ -193,17 +167,6 @@ async fn main() -> Result<()> {
 	// First, shut down WebSocket connections gracefully
 	tracing::info!("Shutting down WebSocket connections...");
 	ws_bridge.shutdown().await;
-
-	// Give background tasks a moment to clean up
-	tokio::select! {
-		_ = &mut cleanup_handle => {
-			tracing::debug!("Cleanup task finished");
-		}
-		_ = tokio::time::sleep(Duration::from_secs(10)) => {
-			tracing::warn!("Cleanup task didn't finish within timeout, proceeding with shutdown");
-			cleanup_handle.abort();
-		}
-	}
 
 	// Clean up signal handler
 	signal_task.abort();

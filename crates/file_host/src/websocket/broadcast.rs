@@ -7,7 +7,6 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 type R = InMemTransportReceiver<Event>;
-type S = Arc<ConnectionStore<EventType>>;
 type T = Arc<InMemTransport<Event>>;
 
 /// Pure broadcast result without side effects
@@ -23,14 +22,6 @@ impl BroadcastResult {
 		Self {
 			delivered: count,
 			failed: 0,
-			duration,
-		}
-	}
-
-	fn failure(duration: Duration) -> Self {
-		Self {
-			delivered: 0,
-			failed: 1,
 			duration,
 		}
 	}

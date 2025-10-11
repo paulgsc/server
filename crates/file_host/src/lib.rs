@@ -1,7 +1,9 @@
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
+use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
 
 pub mod cache;
 pub mod config;
@@ -23,13 +25,13 @@ pub use handlers::utterance::UtteranceMetadata;
 pub use health::perform_health_check;
 pub use metrics::http::*;
 pub use metrics::ws::*;
-use sdk::{GitHubClient, ReadDrive, ReadSheets};
 
 pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
 pub use handlers::audio_files::error::AudioServiceError;
 
 #[derive(Clone)]
 pub struct AppState {
+	pub connection_guard: ConnectionGuard,
 	pub dedup_cache: Arc<DedupCache>,
 	pub gsheet_reader: Arc<ReadSheets>,
 	pub gdrive_reader: Arc<ReadDrive>,

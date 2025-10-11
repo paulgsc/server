@@ -6,7 +6,7 @@ use futures::sink::SinkExt;
 use futures::stream::SplitSink;
 use some_transport::{InMemTransportReceiver, Transport};
 use std::net::SocketAddr;
-use tokio::task::JoinHandle;
+use tokio::{task::JoinHandle, time::Instant};
 use tracing::{error, info, warn};
 use ws_connection::{ClientId, Connection, ConnectionState};
 
@@ -56,7 +56,7 @@ impl WebSocketFsm {
 
 	/// Adds a connection to the store with comprehensive observability
 	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, InMemTransportReceiver<Event>), String> {
-		let start = std::time::Instant::now();
+		let start = Instant::now();
 		let client_id = self.client_id_from_request(headers, addr);
 
 		let mut domain_conn = Connection::new(client_id.clone(), *addr);
@@ -65,7 +65,6 @@ impl WebSocketFsm {
 		let connection_id = domain_conn.id.clone();
 		let client_key = connection_id.as_string();
 
-		// Create transport channel - gets ALL events
 		let receiver = self.transport.open_channel(&client_key).await;
 
 		let handle = self.store.insert(client_key.clone(), domain_conn);
@@ -98,7 +97,7 @@ impl WebSocketFsm {
 
 	/// Get connections by client ID with observability
 	pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> {
-		let start = std::time::Instant::now();
+		let start = Instant::now();
 
 		let connections: Vec<String> = self
 			.store
@@ -129,7 +128,7 @@ impl WebSocketFsm {
 
 	/// Remove a connection with comprehensive cleanup and observability
 	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), String> {
-		let start = std::time::Instant::now();
+		let start = Instant::now();
 
 		match self.store.remove(client_key).await {
 			Some(handle) => {
@@ -148,7 +147,7 @@ impl WebSocketFsm {
 					);
 				}
 
-				self.transport.close_channel(client_key);
+				self.transport.close_channel(client_key).await.map_err(|e| e.to_string())?;
 				self.metrics.connection_removed(was_active);
 
 				let elapsed = start.elapsed();
@@ -187,17 +186,6 @@ impl WebSocketFsm {
 			}
 		}
 	}
-}
-
-// ===== Statistics structure =====
-
-#[derive(Debug, Clone)]
-pub struct ConnectionStats {
-	pub total: usize,
-	pub active: usize,
-	pub stale: usize,
-	pub unique_clients: usize,
-	pub connections_by_client: std::collections::HashMap<ClientId, usize>,
 }
 
 // ===== Helper functions for WebSocket lifecycle =====

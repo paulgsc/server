@@ -16,6 +16,7 @@ obs-websocket  = { workspace = true }
 mood_event  = { workspace = true }
 some-services  = { workspace = true }
 ws-connection  = { workspace = true }
+ws-conn-manager  = { workspace = true }
 some-transport  = { workspace = true , features = ["inmem"] }
 
 axum = { workspace = true , features = ["ws"]}

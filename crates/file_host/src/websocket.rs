@@ -1,25 +1,31 @@
 use crate::*;
 use axum::{
-	extract::{ws::WebSocketUpgrade, ConnectInfo, FromRef, State},
-	http::HeaderMap,
+	extract::{
+		ws::{WebSocket, WebSocketUpgrade},
+		ConnectInfo, FromRef, State,
+	},
+	http::{HeaderMap, StatusCode},
 	response::IntoResponse,
 	routing::get,
-	Extension, Router,
+	Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
 use serde::Serialize;
 use some_transport::{InMemTransport, InMemTransportReceiver, Transport};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::{
+	sync::Notify,
+	task::JoinHandle,
+	time::{timeout, Duration},
+};
 use tracing::{debug, error, info, warn};
-use ws_connection::ConnectionStore;
+use ws_connection::{ConnectionId, ConnectionStore};
 
 pub mod broadcast;
 pub mod connection;
 pub mod heartbeat;
 pub mod message;
-pub mod middleware;
 pub mod notify;
 pub mod obs;
 pub mod shutdown;
@@ -31,8 +37,6 @@ use connection::core::{cleanup_connection_with_stats, clear_connection, establis
 pub use heartbeat::{HeartbeatManager, HeartbeatPolicy};
 use message::process_incoming_messages;
 pub use message::ProcessResult;
-use middleware::ConnectionGuard;
-pub use middleware::{ConnectionLimitConfig, ConnectionLimiter};
 pub use types::*;
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -135,13 +139,6 @@ impl WebSocketFsm {
 	/// Emit a system event into the unified event stream
 	async fn emit_system_event(&self, event: Event) {
 		if event.is_system_event() {
-			let _ = self.transport.broadcast(event).await;
-		}
-	}
-
-	/// Emit a client event into the unified event stream
-	async fn emit_client_event(&self, event: Event) {
-		if event.is_client_event() {
 			let _ = self.transport.broadcast(event).await;
 		}
 	}
@@ -274,7 +271,7 @@ impl WebSocketFsm {
 	}
 
 	/// Record a message processing event
-	pub async fn record_message_processed(&self, message_id: MessageId, connection_id: ConnectionId, duration: std::time::Duration, result: ProcessResult) {
+	pub async fn record_message_processed(&self, message_id: MessageId, connection_id: ConnectionId, duration: Duration, result: ProcessResult) {
 		self
 			.emit_system_event(Event::MessageProcessed {
 				message_id,
@@ -388,24 +385,36 @@ pub struct ConnectionStateDistribution {
 	pub disconnected: usize,
 }
 
-async fn websocket_handler(
-	ws: WebSocketUpgrade,
-	State(state): State<AppState>,
-	ConnectInfo(addr): ConnectInfo<SocketAddr>,
-	headers: HeaderMap,
-	Extension(connection_guard): Extension<ConnectionGuard>,
-) -> impl IntoResponse {
-	ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, connection_guard))
+async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
+	let client_id = addr.ip().to_string();
+	info!("Incoming WS request from {client_id}");
+
+	if !state.connection_guard.try_acquire_permit_hint() {
+		warn!("Global limit exceeded — rejecting early");
+		return (StatusCode::SERVICE_UNAVAILABLE, "Too many connections").into_response();
+	}
+
+	// Wrap acquire in a timeout (e.g., 5 seconds)
+	match timeout(Duration::from_secs(5), state.connection_guard.acquire(client_id.clone())).await {
+		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, permit)),
+		Ok(Err(err)) => {
+			use AcquireErrorKind::*;
+			let reason = match err.kind {
+				QueueFull => "Too many pending connections for this client",
+				GlobalLimit => "Server is at capacity",
+			};
+			error!("Rejecting WS for {client_id}: {reason}");
+			(StatusCode::SERVICE_UNAVAILABLE, reason).into_response()
+		}
+		Err(_timeout_elapsed) => {
+			error!("Timeout waiting for permit for {client_id}");
+			(StatusCode::REQUEST_TIMEOUT, "Connection acquisition timed out").into_response()
+		}
+	}
 }
 
 /// Orchestrates the WebSocket connection lifecycle
-async fn handle_socket(
-	socket: axum::extract::ws::WebSocket,
-	state: WebSocketFsm,
-	headers: HeaderMap,
-	addr: SocketAddr,
-	_connection_guard: ConnectionGuard, // Keep this alive for the duration of the connection
-) {
+async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMap, addr: SocketAddr, _permit: ConnectionPermit) {
 	let (mut sender, receiver) = socket.split();
 
 	// Establish connection through FSM

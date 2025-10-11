@@ -177,7 +177,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 					let _ = handle.disconnect("Stale connection cleanup".to_string()).await;
 
 					// Clean up transport
-					transport.close_channel(key).await;
+					transport.close_channel(key).await.map_err(|e| e.to_string())?;
 
 					removed += 1;
 					record_connection_removed!(key, handle.connection.client_id, handle.connection.get_duration(), "stale_cleanup");

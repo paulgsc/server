@@ -16,6 +16,7 @@ pub async fn utterance(State(state): State<AppState>, Json(payload): Json<Uttera
 	StatusCode::OK
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ElementInfo {
@@ -34,6 +35,7 @@ pub struct ElementInfo {
 	pub form_id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UtteranceMetadata {
