@@ -47,6 +47,7 @@ impl WebSocketFsm {
 
 		let obs_manager_stream = obs_manager.clone();
 		let transport = self.transport.clone();
+		let store = self.store.clone();
 		let metrics = self.metrics.clone();
 		let ev_ty = event_type.clone();
 
@@ -55,6 +56,7 @@ impl WebSocketFsm {
 				.stream_events(|obs_event| {
 					let transport = transport.clone();
 					let metrics = metrics.clone();
+					let store = store.clone();
 					let ev_ty = ev_ty.clone();
 
 					Box::pin(async move {
@@ -63,8 +65,7 @@ impl WebSocketFsm {
 							let event = Event::ObsStatus { status: obs_event };
 							let event_type_str = format!("{:?}", event.get_type());
 
-							// Use pure broadcast function
-							let result = Self::broadcast_pure(&event, transport).await;
+							let result = Self::broadcast_pure(&event, &store, transport.clone()).await;
 
 							// Record telemetry
 							match result {

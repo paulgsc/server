@@ -235,7 +235,7 @@ async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: 
 				connection_id = %conn_key,
 				message_number = message_count,
 				size_bytes = text.len(),
-				"Received text message"
+				text
 			);
 
 			// Process the message

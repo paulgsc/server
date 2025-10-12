@@ -1,7 +1,5 @@
-use std::{
-	fmt,
-	time::{Duration, Instant},
-};
+use std::fmt;
+use tokio::time::{Duration, Instant};
 
 /// Actor-owned connection state (not shared)
 #[derive(Debug, Clone)]

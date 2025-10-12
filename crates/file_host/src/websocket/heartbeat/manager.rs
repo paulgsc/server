@@ -1,7 +1,7 @@
 use super::HeartbeatPolicy;
 use crate::websocket::*;
 use std::sync::Arc;
-use tokio::task::JoinHandle;
+use tokio::{task::JoinHandle, time::Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use ws_connection::{ConnectionStore, EventKey};
@@ -78,11 +78,7 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 	/// Main heartbeat cycle
 	async fn run_cycle(store: &ConnectionStore<K>, transport: &T, metrics: &ConnectionMetrics, policy: &HeartbeatPolicy, token: &CancellationToken) -> Result<(), String> {
 		Self::health_check(store, metrics).await;
-		let newly_stale = Self::mark_stale_connections(store, metrics, policy, token).await;
-		if newly_stale > 0 {
-			info!("Marked {} connections as stale", newly_stale);
-		}
-		let removed = Self::remove_stale_connections(store, transport, policy, token).await?;
+		let removed = Self::check_and_remove_stale(store, transport, metrics, policy, token).await?;
 		if removed > 0 {
 			info!("Removed {} stale connections", removed);
 			let count = store.len();
@@ -107,9 +103,15 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 		}
 	}
 
-	async fn mark_stale_connections(store: &ConnectionStore<K>, metrics: &ConnectionMetrics, policy: &HeartbeatPolicy, token: &CancellationToken) -> usize {
+	async fn check_and_remove_stale(
+		store: &ConnectionStore<K>,
+		transport: &T,
+		metrics: &ConnectionMetrics,
+		policy: &HeartbeatPolicy,
+		token: &CancellationToken,
+	) -> Result<usize, String> {
 		let keys = store.keys();
-		let mut newly_stale = 0;
+		let mut to_remove = Vec::new();
 
 		for (idx, key) in keys.iter().enumerate() {
 			if token.is_cancelled() {
@@ -117,43 +119,20 @@ impl<K: EventKey + Send + Sync + 'static> HeartbeatManager<K> {
 			}
 
 			if let Some(handle) = store.get(key) {
-				let _ = handle.check_stale(policy.stale_after).await;
 				if let Ok(state) = handle.get_state().await {
-					if state.is_stale && state.disconnect_reason.is_none() {
+					let inactive_duration = Instant::now().duration_since(state.last_activity);
+
+					// Remove if inactive for longer than stale_after period
+					if inactive_duration > policy.stale_after && state.disconnect_reason.is_none() {
+						to_remove.push(key.clone());
 						metrics.connection_marked_stale();
-						record_system_event!("connection_state_changed", connection_id = key, from_state = state, to_state = "stale");
-						newly_stale += 1;
+						debug!("Connection {} is stale (inactive for {:?}), will remove", key, inactive_duration);
 					}
 				}
 			}
 
 			if idx % BATCH_SIZE == 0 {
 				tokio::task::yield_now().await;
-			}
-		}
-
-		newly_stale
-	}
-
-	async fn remove_stale_connections(store: &ConnectionStore<K>, transport: &T, policy: &HeartbeatPolicy, token: &CancellationToken) -> Result<usize, String> {
-		let keys = store.keys();
-		let mut to_remove = Vec::new();
-
-		for key in keys {
-			if token.is_cancelled() {
-				break;
-			}
-
-			if let Some(handle) = store.get(&key) {
-				if let Ok(state) = handle.get_state().await {
-					if state.is_stale {
-						let stale_duration = std::time::Instant::now().duration_since(state.last_activity);
-						let total_timeout = policy.stale_after + policy.remove_after_stale;
-						if stale_duration > total_timeout {
-							to_remove.push(key);
-						}
-					}
-				}
 			}
 		}
 

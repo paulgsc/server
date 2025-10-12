@@ -13,7 +13,7 @@ pub struct HeartbeatPolicy {
 impl Default for HeartbeatPolicy {
 	fn default() -> Self {
 		Self {
-			stale_after: Duration::from_secs(30),
+			stale_after: Duration::from_secs(120),
 			remove_after_stale: Duration::from_secs(60),
 			scan_interval: Duration::from_secs(10),
 		}
