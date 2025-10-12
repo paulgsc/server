@@ -12,6 +12,7 @@ where
 	E: Clone + Send + Sync + 'static,
 {
 	main_sender: Sender<E>,
+	_keep_alive: async_broadcast::Receiver<E>, // Keep channel open
 	connection_channels: Arc<DashMap<String, Sender<E>>>,
 }
 
@@ -22,12 +23,13 @@ where
 	/// Creates a new in-memory transport layer.
 	#[must_use]
 	pub fn new(buffer_size: usize) -> Self {
-		let (mut main_sender, _main_receiver) = broadcast::<E>(buffer_size);
+		let (mut main_sender, keep_alive) = broadcast::<E>(buffer_size);
 		main_sender.set_await_active(false);
 		main_sender.set_overflow(true);
 
 		Self {
 			main_sender,
+			_keep_alive: keep_alive,
 			connection_channels: Arc::new(DashMap::new()),
 		}
 	}

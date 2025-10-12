@@ -3,6 +3,7 @@ use crate::core::conn::Connection;
 use crate::core::subscription::EventKey;
 use dashmap::DashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ConnectionStore<K: EventKey = String> {
@@ -17,11 +18,24 @@ impl<K: EventKey> ConnectionStore<K> {
 	}
 
 	/// Insert connection handle and spawn its actor
-	pub fn insert(&self, key: String, connection: Connection<K>) -> ConnectionHandle<K> {
-		let (handle, actor) = ConnectionHandle::new(connection, 100);
+	pub fn insert(self: &Arc<Self>, key: String, connection: Connection, parent_token: &CancellationToken) -> ConnectionHandle<K> {
+		let (handle, actor, token) = ConnectionHandle::new(connection, 100, parent_token);
+		let store = self.clone();
 
-		// Spawn the actor
-		tokio::spawn(actor.run());
+		tokio::spawn({
+			let key = key.clone();
+			async move {
+				tokio::select! {
+					_ = actor.run() => {
+						tracing::info!("actor {key} finished normally");
+					}
+					_ = token.cancelled() => {
+						tracing::info!("actor {key} received cancellation");
+						store.remove(&key).await; // graceful cleanup if implemented
+					}
+				}
+			}
+		});
 
 		self.handles.insert(key, handle.clone());
 		handle
@@ -88,25 +102,45 @@ impl<K: EventKey> ConnectionStore<K> {
 		false
 	}
 
-	/// Get stats by querying all actors
+	/// Get stats by querying all actors (with concurrent queries for speed)
 	pub async fn stats(&self) -> ConnectionStoreStats {
+		use tokio::task::JoinSet;
+
+		let mut join_set = JoinSet::new();
+		let mut client_ids = Vec::with_capacity(self.handles.len());
+
+		// Spawn concurrent state queries
+		for entry in self.handles.iter() {
+			let handle = entry.value().clone();
+			client_ids.push(handle.connection.client_id.clone()); // Already cached!
+			join_set.spawn(async move { handle.get_state().await });
+		}
+
+		// Collect results
 		let mut active = 0;
 		let mut stale = 0;
 		let mut disconnected = 0;
-		let mut unique_clients = std::collections::HashSet::new();
-		for entry in self.handles.iter() {
-			let handle = entry.value();
-			unique_clients.insert(handle.connection.client_id.clone());
-			if let Ok(state) = handle.get_state().await {
-				if state.is_active {
-					active += 1;
-				} else if state.is_stale {
-					stale += 1;
-				} else {
+
+		while let Some(result) = join_set.join_next().await {
+			match result {
+				Ok(Ok(state)) => {
+					if state.is_active {
+						active += 1;
+					} else if state.is_stale {
+						stale += 1;
+					} else {
+						disconnected += 1;
+					}
+				}
+				_ => {
+					// Actor unavailable or task panicked
 					disconnected += 1;
 				}
 			}
 		}
+
+		let unique_clients: std::collections::HashSet<_> = client_ids.into_iter().collect();
+
 		ConnectionStoreStats {
 			total_connections: self.handles.len(),
 			active_connections: active,

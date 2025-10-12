@@ -228,7 +228,6 @@ macro_rules! timed_broadcast {
 			}
 		}
 
-		tracing::debug!(event_type = $event_type, duration_ms = duration * 1000.0, "Broadcast operation completed");
 		result
 	}};
 }

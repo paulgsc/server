@@ -19,6 +19,7 @@ use tokio::{
 	task::JoinHandle,
 	time::{timeout, Duration},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use ws_connection::{ConnectionId, ConnectionStore};
 
@@ -66,17 +67,18 @@ pub struct WebSocketFsm {
 
 impl WebSocketFsm {
 	/// Creates a new WebSocketFsm instance - only responsible for initialization
-	pub fn new() -> Self {
-		Self::with_policy(HeartbeatPolicy::default())
+	pub fn new(cancel_token: &CancellationToken) -> Self {
+		Self::with_policy(HeartbeatPolicy::default(), cancel_token)
 	}
 
-	pub fn with_policy(policy: HeartbeatPolicy) -> Self {
+	pub fn with_policy(policy: HeartbeatPolicy, cancel_token: &CancellationToken) -> Self {
 		let transport = Arc::new(InMemTransport::new(1000));
 
 		let store = Arc::new(ConnectionStore::<EventType>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
 
-		let heartbeat_manager = Arc::new(HeartbeatManager::new(store.clone(), transport.clone(), metrics.clone(), policy));
+		let clc = cancel_token.child_token();
+		let heartbeat_manager = Arc::new(HeartbeatManager::new(store.clone(), transport.clone(), metrics.clone(), policy, &clc));
 
 		let subscriber_notify = Arc::new(Notify::new());
 
@@ -97,9 +99,12 @@ impl WebSocketFsm {
 		}
 	}
 
-	pub fn start(&self) {
-		self.spawn_event_distribution_task();
-		self.spawn_observability_monitor();
+	pub fn start(&self, cancel_token: CancellationToken) {
+		let event_clc = cancel_token.child_token().clone();
+		let obs_clc = cancel_token.child_token().clone();
+
+		self.spawn_event_distribution_task(event_clc);
+		self.spawn_observability_monitor(obs_clc);
 		let task = self.heartbeat_manager.clone().spawn();
 		*self.heartbeat_task.lock().unwrap() = Some(task);
 	}
@@ -144,71 +149,83 @@ impl WebSocketFsm {
 	}
 
 	/// Spawn the observability monitor that filters and logs system events
-	fn spawn_observability_monitor(&self) {
+	fn spawn_observability_monitor(&self, cancel_token: CancellationToken) {
 		let mut events = self.subscribe_to_system_events();
 
 		tokio::spawn(async move {
 			record_system_event!("observability_monitor_started");
 
 			loop {
-				match events.recv().await {
-					Ok(event) => {
-						// Only process system events
-						if !event.is_system_event() {
-							continue;
-						}
-
-						match event {
-							Event::ConnectionStateChanged { connection_id, from, to } => {
-								record_system_event!("connection_state_changed", connection_id = connection_id, from_state = from, to_state = to);
-								info!("Connection {} state: {} -> {}", connection_id, from, to);
-							}
-							Event::MessageProcessed {
-								message_id,
-								connection_id,
-								duration,
-								result,
-							} => {
-								record_system_event!(
-									"message_processed",
-									message_id = message_id,
-									connection_id = connection_id,
-									duration_ms = duration.as_millis(),
-									delivered = result.delivered,
-									failed = result.failed
-								);
-								debug!(
-									"Message {} from {} processed in {:?}: {} delivered, {} failed",
-									message_id, connection_id, duration, result.delivered, result.failed
-								);
-							}
-							Event::BroadcastFailed {
-								event_type,
-								error,
-								affected_connections,
-							} => {
-								record_system_event!("broadcast_failed", event_type = event_type, error = error, affected_connections = affected_connections);
-								error!("Broadcast failed for {:?} affecting {} connections: {}", event_type, affected_connections, error);
-							}
-							Event::ConnectionCleanup {
-								connection_id,
-								reason,
-								resources_freed,
-							} => {
-								record_system_event!("connection_cleanup", connection_id = connection_id, reason = reason, resources_freed = resources_freed);
-								info!("Connection {} cleaned up (reason: {}, resources freed: {})", connection_id, reason, resources_freed);
-							}
-							_ => {}
-						}
-					}
-					Err(e) => {
-						error!("Observability monitor error: {}", e);
+				tokio::select! {
+					// Listen for shutdown signal
+					_ = cancel_token.cancelled() => {
+						info!("Observability monitor shutting down");
 						break;
+					}
+
+					// Process events
+					result = events.recv() => {
+						match result {
+							Ok(event) => {
+								// Only process system events
+								if !event.is_system_event() {
+									continue;
+								}
+
+								match event {
+									Event::ConnectionStateChanged { connection_id, from, to } => {
+										record_system_event!("connection_state_changed", connection_id = connection_id, from_state = from, to_state = to);
+										info!("Connection {} state: {} -> {}", connection_id, from, to);
+									}
+									Event::MessageProcessed {
+										message_id,
+										connection_id,
+										duration,
+										result,
+									} => {
+										record_system_event!(
+											"message_processed",
+											message_id = message_id,
+											connection_id = connection_id,
+											duration_ms = duration.as_millis(),
+											delivered = result.delivered,
+											failed = result.failed
+										);
+										debug!(
+											"Message {} from {} processed in {:?}: {} delivered, {} failed",
+											message_id, connection_id, duration, result.delivered, result.failed
+										);
+									}
+									Event::BroadcastFailed {
+										event_type,
+										error,
+										affected_connections,
+									} => {
+										record_system_event!("broadcast_failed", event_type = event_type, error = error, affected_connections = affected_connections);
+										error!("Broadcast failed for {:?} affecting {} connections: {}", event_type, affected_connections, error);
+									}
+									Event::ConnectionCleanup {
+										connection_id,
+										reason,
+										resources_freed,
+									} => {
+										record_system_event!("connection_cleanup", connection_id = connection_id, reason = reason, resources_freed = resources_freed);
+										info!("Connection {} cleaned up (reason: {}, resources freed: {})", connection_id, reason, resources_freed);
+									}
+									_ => {}
+								}
+							}
+							Err(e) => {
+								error!("Observability monitor error: {}", e);
+								break;
+							}
+						}
 					}
 				}
 			}
 
 			record_system_event!("observability_monitor_ended");
+			info!("Observability monitor task exited");
 		});
 	}
 
@@ -224,7 +241,7 @@ impl WebSocketFsm {
 			if let Err(e) = result {
 				warn!("Failed to update subscriptions for {}: {}", client_key, e);
 			} else {
-				self.update_subscriber_state();
+				self.notify_subscription_change();
 			}
 		}
 	}
@@ -387,6 +404,7 @@ pub struct ConnectionStateDistribution {
 
 async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
 	let client_id = addr.ip().to_string();
+	let cancel_token = state.cancel_token.clone();
 	info!("Incoming WS request from {client_id}");
 
 	if !state.connection_guard.try_acquire_permit_hint() {
@@ -396,7 +414,7 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 
 	// Wrap acquire in a timeout (e.g., 5 seconds)
 	match timeout(Duration::from_secs(5), state.connection_guard.acquire(client_id.clone())).await {
-		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, permit)),
+		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, permit, cancel_token)),
 		Ok(Err(err)) => {
 			use AcquireErrorKind::*;
 			let reason = match err.kind {
@@ -414,11 +432,11 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 }
 
 /// Orchestrates the WebSocket connection lifecycle
-async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMap, addr: SocketAddr, _permit: ConnectionPermit) {
+async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMap, addr: SocketAddr, permit: ConnectionPermit, cancel_token: CancellationToken) {
 	let (mut sender, receiver) = socket.split();
 
 	// Establish connection through FSM
-	let (conn_key, event_receiver) = match establish_connection(&state, &headers, &addr).await {
+	let (conn_key, event_receiver) = match establish_connection(&state, &headers, &addr, &cancel_token).await {
 		Ok(connection) => connection,
 		Err(_) => {
 			record_ws_error!("connection_refused", "handle_socket");
@@ -426,31 +444,36 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMa
 		}
 	};
 
-	if send_initial_handshake(&mut sender, &conn_key).await.is_err() {
+	if send_initial_handshake(&mut sender).await.is_err() {
 		clear_connection(&state, &conn_key).await;
 		return;
 	}
 
 	state.broadcast_client_count().await;
 
-	let forward_task = spawn_event_forwarder(sender, event_receiver, state.clone(), conn_key.clone());
+	// Pass cancel token to both tasks
+	let forward_cancel = cancel_token.child_token().clone();
+	let process_cancel = cancel_token.child_token().clone();
 
-	let message_count = process_incoming_messages(receiver, &state, &conn_key).await;
+	let forward_task = spawn_event_forwarder(sender, event_receiver, state.clone(), conn_key.clone(), forward_cancel);
+
+	let message_count = process_incoming_messages(receiver, &state, &conn_key, process_cancel).await;
 
 	cleanup_connection_with_stats(&state, &conn_key, message_count, forward_task).await;
+	permit.release();
 }
 
 /// Initialize WebSocket system with default policy
-pub async fn init_websocket() -> WebSocketFsm {
-	init_websocket_with_policy(HeartbeatPolicy::default()).await
+pub async fn init_websocket(cancel_token: CancellationToken) -> WebSocketFsm {
+	init_websocket_with_policy(HeartbeatPolicy::default(), cancel_token).await
 }
 
 /// Initialize WebSocket system with custom heartbeat policy
-pub async fn init_websocket_with_policy(policy: HeartbeatPolicy) -> WebSocketFsm {
+pub async fn init_websocket_with_policy(policy: HeartbeatPolicy, cancel_token: CancellationToken) -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
 
-	let state = WebSocketFsm::with_policy(policy);
-	state.start();
+	let state = WebSocketFsm::with_policy(policy, &cancel_token);
+	state.start(cancel_token.clone());
 
 	record_system_event!("websocket_init_completed");
 	info!("Actor-based WebSocket system initialized");

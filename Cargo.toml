@@ -32,7 +32,6 @@ file_reader = { path = "crates/file_reader" }
 nfl_play_parser = { path = "crates/nfl_play_parser" }
 sdk = { path = "crates/sdk" }
 sqlite_macros = { path = "crates/sqlite_macros" }
-sqlite_macros_2 = { path = "crates/db/sqlite_macros" }
 enum-name-derive = { path = "crates/enum-name-derive" }
 gsheet_derive = { path = "crates/gsheet_derive" }
 obs-websocket = { path = "crates/obs-websocket" }
@@ -48,7 +47,6 @@ axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
 clap = { version = "4.5.8", features = ["derive", "env"] }
 chrono = "0.4.23"
 dotenv = "0.15.0"
-env_logger = "0.9.0"
 futures = "0.3.26"
 lazy_static = "1.4.0"
 mime = "0.3.17"

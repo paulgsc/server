@@ -4,6 +4,7 @@ use axum::extract::ws::{Message, WebSocket};
 use futures::stream::{SplitStream, StreamExt};
 use obs_websocket::ObsCommand;
 use tokio::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use ws_connection::ConnectionId;
 
@@ -172,28 +173,51 @@ impl WebSocketFsm {
 }
 
 /// Process all incoming messages from the WebSocket
-pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, conn_key: &str) -> u64 {
+pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, conn_key: &str, cancel_token: CancellationToken) -> u64 {
 	let mut message_count = 0u64;
 
-	while let Some(result) = receiver.next().await {
-		message_count += 1;
-
-		match result {
-			Ok(msg) => {
-				// Handle the message; break on close
-				if handle_websocket_message(msg, state, conn_key, message_count).await.is_err() {
-					break;
-				}
-			}
-			Err(e) => {
-				record_ws_error!("websocket_error", "connection", e);
-				error!(
+	loop {
+		tokio::select! {
+			// Listen for cancellation signal
+			_ = cancel_token.cancelled() => {
+				tracing::info!(
 					connection_id = %conn_key,
-					message_number = message_count,
-					error = %e,
-					"WebSocket error"
+					messages_processed = message_count,
+					"WebSocket message processing cancelled - shutting down"
 				);
 				break;
+			}
+
+			// Process incoming messages
+			result = receiver.next() => {
+				match result {
+					Some(Ok(msg)) => {
+						message_count += 1;
+						// Handle the message; break on close
+						if handle_websocket_message(msg, state, conn_key, message_count).await.is_err() {
+							break;
+						}
+					}
+					Some(Err(e)) => {
+						message_count += 1;
+						record_ws_error!("websocket_error", "connection", e);
+						error!(
+							connection_id = %conn_key,
+							message_number = message_count,
+							error = %e,
+							"WebSocket error"
+						);
+						break;
+					}
+					None => {
+						// Stream ended naturally
+						tracing::debug!(
+							connection_id = %conn_key,
+							"WebSocket stream ended"
+						);
+						break;
+					}
+				}
 			}
 		}
 	}

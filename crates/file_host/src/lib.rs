@@ -3,6 +3,7 @@ use axum::extract::FromRef;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
 
 pub mod cache;
@@ -40,6 +41,7 @@ pub struct AppState {
 	pub ws: WebSocketFsm,
 	// TODO: might remove the Arc here!
 	pub config: Arc<Config>,
+	pub cancel_token: CancellationToken,
 }
 
 // Implement for the non-Arc field `DedupCache`

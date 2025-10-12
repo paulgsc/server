@@ -63,7 +63,11 @@ async fn main() -> Result<()> {
 	let gsheet_reader = ReadSheets::new(use_email.clone(), secret_file.clone())?;
 	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
 	let github_client = GitHubClient::new(config.github_token.clone())?;
-	let ws_state = init_websocket().await;
+
+	// Create cancellation token for coordinated shutdown
+	let shutdown_token = CancellationToken::new();
+	let cancel_token = shutdown_token.clone();
+	let ws_state = init_websocket(cancel_token).await;
 
 	let pool = SqlitePool::connect(&config.database_url).await?;
 
@@ -76,13 +80,11 @@ async fn main() -> Result<()> {
 		shared_db: pool,
 		ws: ws_state.clone(),
 		config: config.clone(),
+		cancel_token: shutdown_token.clone(),
 	};
 
 	let ws_bridge = Arc::new(ws_state.clone()); // Arc<WebSocketFsm>
 	ws_bridge.clone().bridge_obs_events(EventType::ObsStatus);
-
-	// Create cancellation token for coordinated shutdown
-	let shutdown_token = CancellationToken::new();
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
@@ -113,7 +115,11 @@ async fn main() -> Result<()> {
 
 	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
-	let app = Router::new().merge(protected_routes).merge(public_routes).merge(ws_state.router()).with_state(app_state);
+	let app = Router::new()
+		.merge(protected_routes)
+		.merge(public_routes)
+		.merge(ws_state.router())
+		.with_state(app_state.clone());
 
 	let app = app.layer(
 		ServiceBuilder::new()
@@ -129,47 +135,42 @@ async fn main() -> Result<()> {
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);
-	let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
 
 	// Spawn signal handler task with proper shutdown coordination
 	let signal_shutdown_token = shutdown_token.clone();
-	let signal_task = tokio::spawn(async move {
-		tokio::select! {
-			_ = tokio::signal::ctrl_c() => {
-				tracing::info!("Received Ctrl+C, initiating shutdown...");
-			}
-		}
+	tokio::spawn(async move {
+		tokio::signal::ctrl_c().await.ok();
+		tracing::info!("Received Ctrl+C, initiating shutdown...");
 		signal_shutdown_token.cancel();
 	});
 
-	// Main server loop with proper cancellation handling
-	tokio::select! {
-		result = server => {
-			if let Err(e) = result {
-				tracing::error!("Server error: {}", e);
-			}
-			tracing::info!("Server stopped");
-		}
-		_ = shutdown_token.cancelled() => {
-			tracing::info!("Shutdown initiated by signal");
+	// Run server with graceful shutdown
+	let server_token = shutdown_token.clone();
+	let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async move {
+		server_token.cancelled().await;
+	});
+
+	server.await?;
+	tracing::info!("Server stopped");
+
+	// Shutdown with timeout to prevent hanging forever
+	tracing::info!("Starting cleanup...");
+
+	let cleanup = async {
+		ws_bridge.shutdown().await;
+		tracing::info!("WebSocket shutdown complete");
+
+		app_state.shared_db.close().await;
+		tracing::info!("Database closed");
+	};
+
+	// Add a timeout to prevent infinite hang
+	match tokio::time::timeout(Duration::from_secs(5), cleanup).await {
+		Ok(_) => tracing::info!("Graceful shutdown completed"),
+		Err(_) => {
+			tracing::error!("Shutdown timeout - forcing exit");
 		}
 	}
-
-	// Graceful shutdown sequence
-	tracing::info!("Starting graceful shutdown...");
-
-	// Cancel the shutdown token to notify all tasks
-	shutdown_token.cancel();
-
-	// Give the timeout monitor a moment to shut down gracefully
-	tokio::time::sleep(Duration::from_millis(100)).await;
-
-	// First, shut down WebSocket connections gracefully
-	tracing::info!("Shutting down WebSocket connections...");
-	ws_bridge.shutdown().await;
-
-	// Clean up signal handler
-	signal_task.abort();
 
 	tracing::info!("Shutdown complete");
 	Ok(())

@@ -1,3 +1,4 @@
+use super::errors::ConnectionError;
 use crate::websocket::EventType;
 use crate::*;
 use axum::extract::ws::{Message, WebSocket};
@@ -7,20 +8,9 @@ use futures::stream::SplitSink;
 use some_transport::{InMemTransportReceiver, Transport};
 use std::net::SocketAddr;
 use tokio::{task::JoinHandle, time::Instant};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use ws_connection::{ClientId, Connection, ConnectionState};
-
-// Infrastructure extensions for domain Connection
-pub trait ConnectionExt {
-	fn initialize_default_subscriptions(&mut self);
-}
-
-impl ConnectionExt for Connection<EventType> {
-	fn initialize_default_subscriptions(&mut self) {
-		// Add default subscriptions that all connections need
-		self.subscribe(vec![EventType::Ping, EventType::Pong, EventType::Error, EventType::ClientCount]);
-	}
-}
 
 // Connection management operations
 impl WebSocketFsm {
@@ -55,19 +45,29 @@ impl WebSocketFsm {
 	}
 
 	/// Adds a connection to the store with comprehensive observability
-	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, InMemTransportReceiver<Event>), String> {
+	pub async fn add_connection(
+		&self,
+		headers: &HeaderMap,
+		addr: &SocketAddr,
+		cancel_token: &CancellationToken,
+	) -> Result<(String, InMemTransportReceiver<Event>), ConnectionError> {
 		let start = Instant::now();
 		let client_id = self.client_id_from_request(headers, addr);
 
-		let mut domain_conn = Connection::new(client_id.clone(), *addr);
-		domain_conn.initialize_default_subscriptions();
+		let domain_conn = Connection::new(client_id.clone(), *addr);
 
 		let connection_id = domain_conn.id.clone();
 		let client_key = connection_id.as_string();
 
 		let receiver = self.transport.open_channel(&client_key).await;
 
-		let handle = self.store.insert(client_key.clone(), domain_conn);
+		let handle = self.store.insert(client_key.clone(), domain_conn, cancel_token);
+
+		// Add default subscriptions that all connections need
+		handle
+			.subscribe(vec![EventType::Ping, EventType::Pong, EventType::Error, EventType::ClientCount])
+			.await
+			.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
 		let elapsed = start.elapsed();
 
 		self.metrics.connection_created();
@@ -81,7 +81,8 @@ impl WebSocketFsm {
 			"Connection added successfully"
 		);
 
-		let to = handle.get_state().await.map_err(|e| format!("Failed to get connection state: {}", e))?;
+		let to = handle.get_state().await.map_err(|e| ConnectionError::StateRetrievalFailed(e.to_string()))?;
+
 		self
 			.emit_system_event(Event::ConnectionStateChanged {
 				connection_id: connection_id.clone(),
@@ -127,7 +128,7 @@ impl WebSocketFsm {
 	}
 
 	/// Remove a connection with comprehensive cleanup and observability
-	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), String> {
+	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), ConnectionError> {
 		let start = Instant::now();
 
 		match self.store.remove(client_key).await {
@@ -147,7 +148,12 @@ impl WebSocketFsm {
 					);
 				}
 
-				self.transport.close_channel(client_key).await.map_err(|e| e.to_string())?;
+				self
+					.transport
+					.close_channel(client_key)
+					.await
+					.map_err(|e| ConnectionError::TransportCloseFailed(e.to_string()))?;
+
 				self.metrics.connection_removed(was_active);
 
 				let elapsed = start.elapsed();
@@ -190,46 +196,25 @@ impl WebSocketFsm {
 
 // ===== Helper functions for WebSocket lifecycle =====
 
-pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr) -> Result<(String, InMemTransportReceiver<Event>), ()> {
-	match state.add_connection(headers, addr).await {
-		Ok((key, rx)) => {
-			record_system_event!("websocket_established", connection_id = key);
-			info!(connection_id = %key, "WebSocket connection established");
-			Ok((key, rx))
-		}
-		Err(e) => {
-			record_connection_error!("creation_failed", "creation", e);
-			error!(error = %e, "Failed to add connection");
-			Err(())
-		}
-	}
+pub(crate) async fn establish_connection(
+	state: &WebSocketFsm,
+	headers: &HeaderMap,
+	addr: &SocketAddr,
+	cancel_token: &CancellationToken,
+) -> Result<(String, InMemTransportReceiver<Event>), ConnectionError> {
+	let (key, rx) = state.add_connection(headers, addr, cancel_token).await?;
+	record_system_event!("websocket_established", connection_id = key);
+	info!(connection_id = %key, "WebSocket connection established");
+	Ok((key, rx))
 }
 
-pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>, conn_key: &str) -> Result<(), ()> {
+pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>) -> Result<(), ConnectionError> {
 	let ping_event = Event::Ping;
-	match serde_json::to_string(&ping_event) {
-		Ok(msg) => {
-			if let Err(e) = sender.send(Message::Text(msg)).await {
-				record_connection_error!("handshake_failed", "creation", e);
-				error!(
-					connection_id = %conn_key,
-					error = %e,
-					"Failed to send initial ping"
-				);
-				return Err(());
-			}
-			Ok(())
-		}
-		Err(e) => {
-			record_connection_error!("handshake_serialization_failed", "creation", e);
-			error!(
-				connection_id = %conn_key,
-				error = %e,
-				"Failed to serialize initial ping"
-			);
-			Err(())
-		}
-	}
+	let msg = serde_json::to_string(&ping_event)?;
+
+	sender.send(Message::Text(msg)).await.map_err(|e| ConnectionError::HandshakeFailed(e.to_string()))?;
+
+	Ok(())
 }
 
 pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {

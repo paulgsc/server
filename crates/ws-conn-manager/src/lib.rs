@@ -162,31 +162,32 @@ pub struct ConnectionPermit {
 	guard: Arc<ConnectionGuardInner>,
 }
 
-impl Drop for ConnectionPermit {
-	fn drop(&mut self) {
-		let guard = self.guard.clone();
-		let client_id = self.client_id.clone();
+impl ConnectionPermit {
+	/// Explicit async cleanup (instead of spawning in Drop)
+	pub fn release(self) {
+		// Call internal cleanup before dropping self
+		self.cleanup();
+	}
 
-		tokio::spawn(async move {
-			if let Some(mut client_state) = guard.clients.get_mut(&client_id) {
-				// decrement active count
-				let active = client_state.active.fetch_sub(1, Ordering::SeqCst);
-				info!("ConnectionPermit dropped for client {} (active={})", client_id, active - 1);
+	fn cleanup(&self) {
+		if let Some(mut client_state) = self.guard.clients.get_mut(&self.client_id) {
+			// decrement active count
+			let active = client_state.active.fetch_sub(1, Ordering::SeqCst);
+			tracing::info!("ConnectionPermit released for client {} (active={})", self.client_id, active - 1);
 
-				// wake next queued connection if any
-				if let Some(waiter) = client_state.queue.pop_front() {
-					let _ = waiter.send(());
-					debug!("Client {} dequeued into active slot", client_id);
-				}
-
-				// cleanup if empty
-				if client_state.active.load(Ordering::SeqCst) == 0 && client_state.queue.is_empty() {
-					drop(client_state); // Release the lock before removing
-					guard.clients.remove(&client_id);
-					debug!("Client state cleaned up for {}", client_id);
-				}
+			// wake next queued connection if any
+			if let Some(waiter) = client_state.queue.pop_front() {
+				let _ = waiter.send(());
+				debug!("Client {} dequeued into active slot", self.client_id);
 			}
-		});
+
+			// cleanup if empty
+			if client_state.active.load(Ordering::SeqCst) == 0 && client_state.queue.is_empty() {
+				drop(client_state); // Release before remove
+				self.guard.clients.remove(&self.client_id);
+				debug!("Client state cleaned up for {}", self.client_id);
+			}
+		}
 	}
 }
 

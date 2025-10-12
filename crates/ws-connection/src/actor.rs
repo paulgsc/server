@@ -1,43 +1,40 @@
+use tokio::sync::mpsc;
+use tracing;
+
+use crate::core::subscription::{EventKey, SubscriptionManager};
+
 pub mod command;
 pub mod error;
 pub mod handle;
 pub mod state;
 
+use crate::types::ConnectionId;
 pub use command::ConnectionCommand;
 pub use error::{ConnectionError, Result};
 pub use handle::ConnectionHandle;
 pub use state::ConnectionState;
 
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing;
-
-use crate::core::conn::Connection;
-use crate::core::subscription::EventKey;
-
-/// Connection actor that owns its mutable state
+/// Connection actor that owns mutable state (subscriptions + connection state)
 pub struct ConnectionActor<K: EventKey> {
-	connection: Arc<Connection<K>>,
-	state: ConnectionState,
+	id: ConnectionId,
+	subscriptions: SubscriptionManager<K>, // Mutable, actor-managed
+	state: ConnectionState,                // Mutable, actor-managed
 	commands: mpsc::Receiver<ConnectionCommand<K>>,
 }
 
 impl<K: EventKey> ConnectionActor<K> {
-	/// Create a new connection actor with the given connection and command receiver.
+	/// Create a new connection actor
 	#[must_use]
-	pub fn new(connection: Arc<Connection<K>>, commands: mpsc::Receiver<ConnectionCommand<K>>) -> Self {
+	pub fn new(id: ConnectionId, commands: mpsc::Receiver<ConnectionCommand<K>>) -> Self {
 		Self {
-			connection,
+			id,
+			subscriptions: SubscriptionManager::new(),
 			state: ConnectionState::new(),
 			commands,
 		}
 	}
 
-	/// Run the actor event loop.
-	///
-	/// # Panics
-	/// Panics if the actor unexpectedly holds multiple `Arc` references to the same connection,
-	/// since the actor requires unique ownership to mutate the underlying `Connection`.
+	/// Run the actor event loop
 	pub async fn run(mut self) {
 		while let Some(cmd) = self.commands.recv().await {
 			match cmd {
@@ -46,31 +43,33 @@ impl<K: EventKey> ConnectionActor<K> {
 				}
 
 				ConnectionCommand::Subscribe { event_types } => {
-					if let Some(conn) = Arc::get_mut(&mut self.connection) {
-						let change = conn.subscriptions.subscribe(event_types);
-						if change.added > 0 {
-							tracing::debug!("Connection {} subscribed to {} events", conn.id, change.added);
-						}
-					} else {
-						tracing::error!("Multiple Arc references to connection detected during subscribe");
+					let change = self.subscriptions.subscribe(event_types);
+					if change.added > 0 {
+						tracing::debug!("Connection {} subscribed to {} events", self.id, change.added);
 					}
 				}
 
 				ConnectionCommand::Unsubscribe { event_types } => {
-					if let Some(conn) = Arc::get_mut(&mut self.connection) {
-						let change = conn.subscriptions.unsubscribe(event_types);
-						if change.removed > 0 {
-							tracing::debug!("Connection {} unsubscribed from {} events", conn.id, change.removed);
-						}
-					} else {
-						tracing::error!("Multiple Arc references to connection detected during unsubscribe");
+					let change = self.subscriptions.unsubscribe(event_types);
+					if change.removed > 0 {
+						tracing::debug!("Connection {} unsubscribed from {} events", self.id, change.removed);
 					}
+				}
+
+				ConnectionCommand::IsSubscribedTo { event_type, reply } => {
+					let result = self.subscriptions.is_subscribed_to(&event_type);
+					let _ = reply.send(result);
+				}
+
+				ConnectionCommand::GetSubscriptions { reply } => {
+					let subs = self.subscriptions.get_subscriptions().clone();
+					let _ = reply.send(subs);
 				}
 
 				ConnectionCommand::CheckStale { timeout } => {
 					if self.state.should_be_stale(timeout) {
 						self.state.mark_stale("timeout".to_string());
-						tracing::info!("Connection {} marked as stale", self.connection.id);
+						tracing::info!("Connection {} marked as stale", self.id);
 					}
 				}
 
@@ -80,8 +79,8 @@ impl<K: EventKey> ConnectionActor<K> {
 
 				ConnectionCommand::Disconnect { reason } => {
 					self.state.disconnect(reason);
-					tracing::info!("Connection {} disconnected", self.connection.id);
-					break; // Exit actor loop
+					tracing::info!("Connection {} disconnected", self.id);
+					break;
 				}
 
 				ConnectionCommand::GetState { reply } => {
@@ -89,7 +88,7 @@ impl<K: EventKey> ConnectionActor<K> {
 				}
 
 				ConnectionCommand::Shutdown => {
-					tracing::debug!("Connection {} actor shutting down", self.connection.id);
+					tracing::debug!("Connection {} actor shutting down", self.id);
 					break;
 				}
 			}

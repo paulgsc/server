@@ -4,6 +4,7 @@ use futures::stream::SplitSink;
 use some_transport::{InMemTransportReceiver, Transport, TransportError};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 type R = InMemTransportReceiver<Event>;
@@ -37,7 +38,7 @@ impl BroadcastResult {
 
 impl WebSocketFsm {
 	/// Spawns the event distribution task
-	pub fn spawn_event_distribution_task(&self) {
+	pub fn spawn_event_distribution_task(&self, cancel_token: CancellationToken) {
 		let transport = self.transport.clone();
 		let metrics = self.metrics.clone();
 
@@ -45,41 +46,56 @@ impl WebSocketFsm {
 			let mut receiver = transport.subscribe();
 
 			loop {
-				match receiver.recv().await {
-					Ok(event) => {
-						if event.is_client_event() {
-							let event_type_str = format!("{:?}", event.get_type().unwrap_or_default());
+				tokio::select! {
+					// Listen for shutdown signal
+					_ = cancel_token.cancelled() => {
+						info!("Event distribution task shutting down");
+						break;
+					}
 
-							// Pure broadcast + telemetry in one place
-							let result = timed_broadcast!(&event_type_str, { Self::broadcast_pure(&event, transport.clone()).await });
+					// Process events
+					result = receiver.recv() => {
+						match result {
+							Ok(event) => {
+								if event.is_client_event() {
+									let event_type_str = format!("{:?}", event.get_type().unwrap_or_default());
 
-							// Record metrics
-							match result {
-								Ok(br) if br.delivered > 0 || br.failed > 0 => {
-									metrics.broadcast_attempt(br.failed == 0);
+									// Pure broadcast + telemetry in one place
+									let result = timed_broadcast!(&event_type_str, {
+										Self::broadcast_pure(&event, transport.clone()).await
+									});
+
+									// Record metrics
+									match result {
+										Ok(br) if br.delivered > 0 || br.failed > 0 => {
+											metrics.broadcast_attempt(br.failed == 0);
+										}
+										Err(e) => {
+											record_ws_error!("broadcast_failed", "main_channel", &e);
+											metrics.broadcast_attempt(false);
+											warn!("Broadcast failed: {}", e);
+										}
+										_ => {}
+									}
 								}
-								Err(e) => {
-									record_ws_error!("broadcast_failed", "main_channel", &e);
-									metrics.broadcast_attempt(false);
-									warn!("Broadcast failed: {}", e);
-								}
-								_ => {}
+							}
+							Err(TransportError::Closed) => {
+								record_ws_error!("channel_closed", "main_receiver");
+								break;
+							}
+							Err(TransportError::Overflowed(count)) => {
+								record_ws_error!("channel_overflow", "main_receiver");
+								warn!("Main receiver lagged behind by {} messages", count);
+							}
+							Err(e) => {
+								error!("Transport error in distribution loop: {}", e);
 							}
 						}
 					}
-					Err(TransportError::Closed) => {
-						record_ws_error!("channel_closed", "main_receiver");
-						break;
-					}
-					Err(TransportError::Overflowed(count)) => {
-						record_ws_error!("channel_overflow", "main_receiver");
-						warn!("Main receiver lagged behind by {} messages", count);
-					}
-					Err(e) => {
-						error!("Transport error in distribution loop: {}", e);
-					}
 				}
 			}
+
+			info!("Event distribution task exited");
 		});
 	}
 
@@ -147,76 +163,93 @@ impl WebSocketFsm {
 }
 
 // Spawns task to forward events from broadcast channel to WebSocket
-pub(crate) fn spawn_event_forwarder(mut sender: SplitSink<WebSocket, Message>, mut event_receiver: R, state: WebSocketFsm, conn_key: String) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_event_forwarder(
+	mut sender: SplitSink<WebSocket, Message>,
+	mut event_receiver: R,
+	state: WebSocketFsm,
+	conn_key: String,
+	cancel_token: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		let mut message_count = 0u64;
 
 		loop {
-			match event_receiver.recv().await {
-				Ok(event) => {
-					// CRITICAL: Filter out system events - only forward client events
-					if !event.is_client_event() {
-						continue;
-					}
-
-					message_count += 1;
-
-					if let Err(e) = forward_single_event(&mut sender, &event, &conn_key, message_count).await {
-						record_ws_error!("forward_single_event_error", "forward", e);
-						error!(
-							connection_id = %conn_key,
-							error = %e,
-							"Error forwarding single event"
-						);
-						break; // Fatal: stop forwarding
-					}
-
-					if message_count % 100 == 0 {
-						record_system_event!("forward_milestone", connection_id = conn_key, messages_forwarded = message_count);
-						debug!(
-							connection_id = %conn_key,
-							messages_forwarded = message_count,
-							"Forwarding milestone reached"
-						);
-					}
-				}
-
-				Err(TransportError::Overflowed(n)) => {
-					// Client is lagging behind — warn, skip, but continue
-					warn!(
-						skipped = n,
+			tokio::select! {
+				// Listen for cancellation signal
+				_ = cancel_token.cancelled() => {
+					info!(
 						connection_id = %conn_key,
-						"Event receiver lagged, skipped {} messages",
-						n
-					);
-					record_ws_error!("receiver_overflow", "forward", n);
-					continue;
-				}
-
-				Err(TransportError::Closed) => {
-					// Fatal: channel closed → stop loop
-					error!(
-						connection_id = %conn_key,
-						"Event channel closed, ending forwarder"
-					);
-					record_ws_error!("channel_closed", "forward");
-					break;
-				}
-
-				Err(e) => {
-					error!(
-						connection_id = %conn_key,
-						error = %e,
-						"Transport error in forwarder"
+						messages_forwarded = message_count,
+						"Event forwarder cancelled - shutting down"
 					);
 					break;
+				}
+
+				// Process incoming events
+				result = event_receiver.recv() => {
+					match result {
+						Ok(event) => {
+							// CRITICAL: Filter out system events - only forward client events
+							if !event.is_client_event() {
+								continue;
+							}
+
+							message_count += 1;
+
+							if let Err(e) = forward_single_event(&mut sender, &event, &conn_key, message_count).await {
+								record_ws_error!("forward_single_event_error", "forward", e);
+								error!(
+									connection_id = %conn_key,
+									error = %e,
+									"Error forwarding single event"
+								);
+								break; // Fatal: stop forwarding
+							}
+
+							if message_count % 100 == 0 {
+								record_system_event!("forward_milestone", connection_id = conn_key, messages_forwarded = message_count);
+								debug!(
+									connection_id = %conn_key,
+									messages_forwarded = message_count,
+									"Forwarding milestone reached"
+								);
+							}
+						}
+						Err(TransportError::Overflowed(n)) => {
+							// Client is lagging behind — warn, skip, but continue
+							warn!(
+								skipped = n,
+								connection_id = %conn_key,
+								"Event receiver lagged, skipped {} messages",
+								n
+							);
+							record_ws_error!("receiver_overflow", "forward", n);
+							continue;
+						}
+						Err(TransportError::Closed) => {
+							// Fatal: channel closed → stop loop
+							error!(
+								connection_id = %conn_key,
+								"Event channel closed, ending forwarder"
+							);
+							record_ws_error!("channel_closed", "forward");
+							break;
+						}
+						Err(e) => {
+							error!(
+								connection_id = %conn_key,
+								error = %e,
+								"Transport error in forwarder"
+							);
+							break;
+						}
+					}
 				}
 			}
 		}
 
 		// Invariant: receiver gone → connection gone
 		let _ = state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
-
 		record_system_event!("forward_ended", connection_id = conn_key, total_messages = message_count);
 		debug!(
 			connection_id = %conn_key,

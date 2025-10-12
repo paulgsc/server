@@ -7733,6 +7733,7 @@ dependencies = [
  "dashmap",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid 1.18.1",
 ]
