@@ -77,7 +77,7 @@
   "panels": [
     {
       "datasource": "Prometheus",
-      "description": "Detects classic I/O-bound hangs: High load average + Low CPU usage",
+      "description": "High load average + Low CPU usage = I/O bound hang",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -124,7 +124,7 @@
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
-        "textMode": "name",
+        "textMode": "value_and_name",
         "textSize": {
           "title": 16,
           "value": 14
@@ -133,7 +133,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "(\n  (node_load1 / on() (count(count(node_cpu_seconds_total) by (cpu)))) > 3\n)\nand\n(\n  (100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) < 30\n)\n",
+          "expr": "(\n  (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode=\"idle\"})) > 3\n)\nand\n(\n  (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) < 30\n)\n",
           "instant": true,
           "refId": "A"
         }
@@ -143,7 +143,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "file-host receiving high request rate without 429 responses",
+      "description": "file-host receiving >20 req/sec without any 429 responses",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -195,7 +195,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "(\n  sum(rate(http_requests_total[1m])) > 20\n)\nand\n(\n  sum(rate(http_requests_total{status=\"429\"}[1m])) == 0\n)\n",
+          "expr": "(\n  sum(rate(http_requests_total{job=~\".*file-host.*\"}[1m])) > 20\n)\nunless\n(\n  sum(rate(http_requests_total{job=~\".*file-host.*\", status=\"429\"}[1m])) > 0\n)\n",
           "instant": true,
           "refId": "A"
         }
@@ -205,7 +205,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Processes stuck waiting for I/O (uninterruptible sleep)",
+      "description": "Processes stuck in uninterruptible sleep (I/O wait)",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -255,7 +255,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Processes consuming most CPU - file-host highlighted in blue",
+      "description": "Processes consuming most CPU — file-host in blue",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -280,7 +280,7 @@
               }
             ]
           },
-          "unit": "percent"
+          "unit": "percentunit"
         },
         "overrides": [
           {
@@ -332,7 +332,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(15, sum by (groupname) (rate(namedprocess_namegroup_cpu_seconds_total[1m])) * 100)",
+          "expr": "topk(15,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_cpu_seconds_total{groupname!=\"\"}[1m])\n  ) * 100\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -360,7 +360,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Processes using most RAM - metabase highlighted in orange",
+      "description": "Processes using most RAM — metabase in orange",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -419,7 +419,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(15, sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype=\"resident\"}))",
+          "expr": "topk(15,\n  sum by (groupname) (\n    namedprocess_namegroup_memory_bytes{memtype=\"resident\", groupname!=\"\"}\n  )\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -448,7 +448,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Processes doing the most disk reads/writes",
+      "description": "Processes doing most disk I/O",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -492,7 +492,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(10, sum by (groupname) (rate(namedprocess_namegroup_read_bytes_total[1m]) + rate(namedprocess_namegroup_write_bytes_total[1m])))",
+          "expr": "topk(10,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_read_bytes_total{groupname!=\"\"}[1m]) +\n    rate(namedprocess_namegroup_write_bytes_total{groupname!=\"\"}[1m])\n  )\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -520,7 +520,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "When load is high but CPU low = I/O bound processes causing hangs",
+      "description": "High load + low CPU = I/O bound bottleneck",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -592,13 +592,13 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "node_load1 / on() (count(count(node_cpu_seconds_total) by (cpu)))",
+          "expr": "node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode=\"idle\"})",
           "legendFormat": "Load per Core",
           "refId": "A"
         },
         {
           "datasource": "Prometheus",
-          "expr": "100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100",
+          "expr": "100 - (avg without(cpu, mode) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
           "legendFormat": "CPU Usage %",
           "refId": "B"
         }
@@ -623,7 +623,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": ".*D.*|.*Blocked.*"
+              "options": ".*D.*"
             },
             "properties": [
               {
@@ -638,7 +638,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": ".*Z.*|.*Zombie.*"
+              "options": ".*Z.*"
             },
             "properties": [
               {
@@ -653,7 +653,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": ".*R.*|.*Running.*"
+              "options": ".*R.*"
             },
             "properties": [
               {
@@ -687,7 +687,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "sum by (state) (namedprocess_namegroup_states)",
+          "expr": "sum by (state) (namedprocess_namegroup_states{state!=\"\"})",
           "legendFormat": "State: {{state}}",
           "refId": "A"
         }
@@ -697,7 +697,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "CPU cores used by each container - file-host limit: 2.0",
+      "description": "CPU cores used — file-host limit: 2.0",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -775,8 +775,8 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(8, sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[1m])))",
-          "legendFormat": "{{name}}",
+          "expr": "topk(8,\n  sum by (name) (\n    rate(container_cpu_usage_seconds_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m])\n  )\n)\n",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
           "refId": "A"
         }
       ],
@@ -785,7 +785,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Memory usage vs container limits - file-host limit: 4GB",
+      "description": "Memory usage vs limit — file-host limit: 4GB",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -835,8 +835,8 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "(\n  container_memory_usage_bytes{name!=\"\"}\n  /\n  on(name) container_spec_memory_limit_bytes{name!=\"\"}\n) * 100\n",
-          "legendFormat": "{{name}}",
+          "expr": "(\n  container_memory_usage_bytes{name!=\"\", container_label_com_docker_compose_service!=\"\"}\n  /\n  container_spec_memory_limit_bytes{name!=\"\", container_label_com_docker_compose_service!=\"\"}\n) * 100\n",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
           "refId": "A"
         }
       ],
@@ -845,7 +845,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Current vs pids_limit - file-host: 200, metabase: 100",
+      "description": "Current vs pids_limit — file-host: 200, metabase: 100",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -893,7 +893,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "container_processes{name!=\"\"}",
+          "expr": "container_processes{\n  name!=\"\",\n  container_label_com_docker_compose_service!=\"\"\n}\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -914,7 +914,7 @@
             },
             "renameByName": {
               "Value": "Process Count",
-              "name": "Container Name"
+              "container_label_com_docker_compose_service": "Container Name"
             }
           }
         }
@@ -923,7 +923,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Involuntary context switches indicate scheduler contention",
+      "description": "High involuntary switches = CPU scheduling pressure",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -971,7 +971,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(6, sum by (groupname) (rate(namedprocess_namegroup_context_switches_total{ctxswitchtype=\"nonvoluntary\"}[1m])))",
+          "expr": "topk(6,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_context_switches_total{ctxswitchtype=\"nonvoluntary\", groupname!=\"\"}[1m])\n  )\n)\n",
           "legendFormat": "{{groupname}} (involuntary)",
           "refId": "A"
         },
@@ -987,7 +987,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Page faults requiring disk I/O - indicates memory pressure",
+      "description": ">0 indicates memory pressure + swapping",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1032,7 +1032,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(8, sum by (groupname) (rate(namedprocess_namegroup_major_page_faults_total[1m])))",
+          "expr": "topk(8,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_major_page_faults_total{groupname!=\"\"}[1m])\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1042,7 +1042,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Thread explosion detection - file-host uses Tokio threads",
+      "description": "Thread explosion — file-host uses Tokio (async)",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1107,7 +1107,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(10, sum by (groupname) (namedprocess_namegroup_num_threads))",
+          "expr": "topk(10,\n  sum by (groupname) (\n    namedprocess_namegroup_num_threads{groupname!=\"\"}\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1117,7 +1117,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "FD exhaustion risk - ratio of used/available file descriptors",
+      "description": "FD exhaustion risk — ratio of used/available",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1163,7 +1163,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(10, max by (groupname) (namedprocess_namegroup_worst_fd_ratio))",
+          "expr": "topk(10,\n  max by (groupname) (\n    namedprocess_namegroup_worst_fd_ratio{groupname!=\"\"}\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1173,7 +1173,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Container filesystem read + write rates",
+      "description": "Container filesystem I/O rate",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1201,8 +1201,8 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "topk(6, sum by (name) (\n  rate(container_fs_reads_bytes_total{name!=\"\"}[1m]) + \n  rate(container_fs_writes_bytes_total{name!=\"\"}[1m])\n))\n",
-          "legendFormat": "{{name}}",
+          "expr": "topk(6,\n  sum by (name) (\n    rate(container_fs_reads_bytes_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m]) +\n    rate(container_fs_writes_bytes_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m])\n  )\n)\n",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
           "refId": "A"
         }
       ],
@@ -1211,7 +1211,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "I/O operations waiting for disk - queue >10 indicates bottleneck",
+      "description": "Queue >10 = disk bottleneck",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1288,7 +1288,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Swap usage >5% or page faults >1/sec indicates memory pressure",
+      "description": "Swap >5% or page faults >1/sec = memory pressure",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -1345,7 +1345,7 @@
       "targets": [
         {
           "datasource": "Prometheus",
-          "expr": "(node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100",
+          "expr": "(\n  (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)\n  /\n  node_memory_SwapTotal_bytes\n) * 100\n",
           "legendFormat": "Swap Usage %",
           "refId": "A"
         },

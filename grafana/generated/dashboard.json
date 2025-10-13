@@ -30,37 +30,405 @@
       "fieldConfig": {
         "defaults": {
           "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PB0E20699"
+          },
+          "expr": "probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "✅ Overall Uptime Status",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 99
+              },
+              {
+                "color": "yellow",
+                "value": 99.900000000000006
+              },
+              {
+                "color": "green",
+                "value": 99.950000000000003
+              }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PB0E20699"
+          },
+          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"})[30d:]) * 100",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "🎯 30-Day Uptime SLA",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "probe_success{job=\"websocket_blackbox_tcp\"}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "🔌 TCP Connectivity (Port 3000)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "probe_success{job=\"websocket_blackbox_http\"}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "💬 HTTP /ws Probe (101/429/503)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
+            "fillOpacity": 15,
             "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": true,
             "stacking": {
-              "group": "A",
               "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
             }
           },
-          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 99.900000000000006
+              }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PB0E20699"
+          },
+          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"})[1h:]) * 100",
+          "legendFormat": "Combined Uptime %",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "📈 7-Day Uptime Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 3,
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*Failures.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job=\"websocket_blackbox_tcp\"}[5m])) by (le))",
+          "legendFormat": "TCP P90 Duration",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job=\"websocket_blackbox_http\"}[5m])) by (le))",
+          "legendFormat": "HTTP P90 Duration",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(probe_success{job=\"websocket_blackbox_tcp\"} == 0)[5m:])",
+          "legendFormat": "TCP Failures",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(probe_success{job=\"websocket_blackbox_http\"} == 0)[5m:])",
+          "legendFormat": "HTTP Failures",
+          "refId": "D"
+        }
+      ],
+      "title": "🔍 Probe Diagnostics (Duration & Failures)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PB0E20699"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none"
+            }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -75,20 +443,17 @@
             ]
           },
           "unit": "reqps"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 12
       },
-      "id": 2,
+      "id": 7,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -103,14 +468,13 @@
             "type": "prometheus",
             "uid": "PB0E20699"
           },
-          "editorMode": "builder",
           "expr": "rate(http_requests_total[1m])",
           "legendFormat": "{{method}} {{route}} → {{status}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "HTTP Request Rate (RPS)",
+      "title": "📨 HTTP Request Rate (RPS)",
       "type": "timeseries"
     },
     {
@@ -124,34 +488,16 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
+            "fillOpacity": 15,
             "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": true,
             "stacking": {
-              "group": "A",
               "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
             }
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -166,20 +512,17 @@
             ]
           },
           "unit": "s"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 12
       },
-      "id": 3,
+      "id": 8,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -190,40 +533,22 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))",
           "legendFormat": "p50 - {{method}} {{route}}",
-          "range": true,
           "refId": "A"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))",
           "legendFormat": "p90 - {{method}} {{route}}",
-          "range": true,
           "refId": "B"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))",
           "legendFormat": "p99 - {{method}} {{route}}",
-          "range": true,
           "refId": "C"
         }
       ],
-      "title": "HTTP Latency (P50/P90/P99)",
+      "title": "⏱️ HTTP Latency (P50/P90/P99)",
       "type": "timeseries"
     },
     {
@@ -237,34 +562,16 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
+            "fillOpacity": 15,
             "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": true,
             "stacking": {
-              "group": "A",
               "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
             }
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -279,20 +586,17 @@
             ]
           },
           "unit": "s"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 20
       },
-      "id": 4,
+      "id": 9,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -303,18 +607,12 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "histogram_quantile(0.95, sum(rate(operation_duration_seconds_bucket[5m])) by (le, handler, operation))",
           "legendFormat": "{{handler}} - {{operation}}",
-          "range": true,
           "refId": "A"
         }
       ],
-      "title": "Operation Duration (P95 by Handler)",
+      "title": "⚙️ Operation Duration (P95)",
       "type": "timeseries"
     },
     {
@@ -328,34 +626,16 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
+            "fillOpacity": 15,
             "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": true,
             "stacking": {
-              "group": "A",
               "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
             }
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -370,20 +650,17 @@
             ]
           },
           "unit": "none"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 20
       },
-      "id": 5,
+      "id": 10,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -394,27 +671,17 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(cache_operations_total{result=\"hit\"}) by (handler)",
           "legendFormat": "{{handler}} - Hit",
           "refId": "A"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(cache_operations_total{result=\"miss\"}) by (handler)",
           "legendFormat": "{{handler}} - Miss",
           "refId": "B"
         }
       ],
-      "title": "Cache Hits vs Misses by Handler",
+      "title": "📦 Cache Hits vs Misses",
       "type": "timeseries"
     },
     {
@@ -428,7 +695,6 @@
             "fixedColor": "semi-dark-orange",
             "mode": "fixed"
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -443,44 +709,36 @@
             ]
           },
           "unit": "none"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 16
+        "y": 28
       },
-      "id": 6,
+      "id": 11,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "auto",
+        "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "last"
           ],
-          "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.2.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(http_requests_total)",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Total Requests",
+      "title": "🔢 Total Requests",
       "type": "stat"
     },
     {
@@ -494,7 +752,6 @@
             "fixedColor": "dark-purple",
             "mode": "fixed"
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -509,44 +766,36 @@
             ]
           },
           "unit": "ops"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 16
+        "y": 28
       },
-      "id": 7,
+      "id": 12,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "auto",
+        "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "last"
           ],
-          "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.2.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(cache_operations_total)",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Total Cache Ops",
+      "title": "🧮 Total Cache Ops",
       "type": "stat"
     },
     {
@@ -559,63 +808,54 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
           "thresholds": {
-            "mode": "percentage",
+            "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "red",
+                "value": 0
               },
               {
                 "color": "orange",
                 "value": 70
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 90
               }
             ]
           },
           "unit": "percent"
-        },
-        "overrides": []
+        }
       },
       "gridPos": {
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 16
+        "y": 28
       },
-      "id": 8,
+      "id": 13,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "auto",
+        "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "last"
           ],
-          "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.2.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(cache_operations_total{result=\"hit\"}) / sum(cache_operations_total) * 100",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Cache Hit Rate",
+      "title": "🎯 Cache Hit Rate",
       "type": "stat"
     },
     {
@@ -629,76 +869,58 @@
             "fixedColor": "semi-dark-blue",
             "mode": "fixed"
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
+          "unit": "short"
+        }
       },
       "gridPos": {
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 16
+        "y": 28
       },
-      "id": 9,
+      "id": 14,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "auto",
+        "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "last"
           ],
-          "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.2.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PB0E20699"
-          },
-          "editorMode": "builder",
           "expr": "sum(http_requests_total{status=\"429\"})",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Rate Limited Requests (429)",
+      "title": "🚦 Rate Limited (429)",
       "type": "stat"
     }
   ],
-  "refresh": "5s",
+  "refresh": "10s",
   "schemaVersion": 38,
   "tags": [
     "rust",
     "axum",
-    "prometheus"
+    "prometheus",
+    "sla"
   ],
   "templating": {
     "list": []
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Some Metrics",
+  "title": "🚀 Service Uptime & Performance Dashboard",
   "uid": "file-host-dashboard",
-  "version": 1,
-  "weekStart": ""
+  "version": 1
 }

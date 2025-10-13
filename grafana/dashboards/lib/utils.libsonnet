@@ -1,116 +1,54 @@
 {
-  // Grid position helper
-  gridPos(x, y, w, h): {
-    h: h,
-    w: w,
-    x: x,
-    y: y,
-  },
+  gridPos(x, y, w, h): { x: x, y: y, w: w, h: h },
 
-  // Common field config for time series panels
   timeSeriesFieldConfig(unit, redThreshold): {
     defaults: {
-      color: {
-        mode: 'palette-classic',
-      },
+      color: { mode: 'palette-classic' },
       custom: {
-        axisLabel: '',
-        axisPlacement: 'auto',
-        barAlignment: 0,
         drawStyle: 'line',
-        fillOpacity: 20,
-        gradientMode: 'none',
-        hideFrom: {
-          legend: false,
-          tooltip: false,
-          viz: false,
-        },
-        lineInterpolation: 'linear',
+        fillOpacity: 15,
         lineWidth: 2,
-        pointSize: 5,
-        scaleDistribution: {
-          type: 'linear',
-        },
-        showPoints: 'auto',
-        spanNulls: false,
-        stacking: {
-          group: 'A',
-          mode: 'none',
-        },
-        thresholdsStyle: {
-          mode: 'off',
-        },
+        pointSize: 4,
+        showPoints: 'never',
+        spanNulls: true,
+        stacking: { mode: 'none' },
       },
-      mappings: [],
       thresholds: {
         mode: 'absolute',
         steps: [
-          {
-            color: 'green',
-            value: null,
-          },
-          {
-            color: 'red',
-            value: redThreshold,
-          },
+          { color: 'green', value: null },
+          { color: 'red', value: redThreshold },
         ],
       },
       unit: unit,
     },
-    overrides: [],
   },
 
-  // Common options for time series panels
   timeSeriesOptions: {
-    legend: {
-      calcs: [],
-      displayMode: 'list',
-      placement: 'bottom',
-      showLegend: true,
-    },
-    tooltip: {
-      mode: 'multi',
-      sort: 'desc',
-    },
+    legend: { showLegend: true, placement: 'bottom' },
+    tooltip: { mode: 'multi', sort: 'desc' },
   },
 
-  // Common field config for stat panels
   statFieldConfig(unit, color, redThreshold): {
     defaults: {
-      color: {
-        fixedColor: color,
-        mode: 'fixed',
-      },
-      mappings: [],
+      color: { fixedColor: color, mode: 'fixed' },
       thresholds: {
         mode: 'absolute',
         steps: [
-          {
-            color: 'green',
-            value: null,
-          },
-          {
-            color: 'red',
-            value: redThreshold,
-          },
+          { color: 'green', value: null },
+          { color: 'red', value: redThreshold },
         ],
       },
       unit: unit,
     },
-    overrides: [],
   },
 
-  // Common options for stat panels
   statOptions: {
     colorMode: 'value',
     graphMode: 'area',
-    justifyMode: 'auto',
+    justifyMode: 'center',
     orientation: 'auto',
-    reduceOptions: {
-      calcs: ['last'],
-      fields: '',
-      values: false,
-    },
+    reduceOptions: { calcs: ['last'], values: false },
     textMode: 'auto',
   },
 }

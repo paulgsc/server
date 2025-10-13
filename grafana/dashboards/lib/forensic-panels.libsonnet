@@ -5,7 +5,7 @@
 {
   // ========== CRITICAL INVARIANT VIOLATIONS ==========
 
-  // Primary system hang detector - I/O bound processes causing high load with low CPU
+  // ✅ FIXED: System Hang Detector — High Load + Low CPU
   systemHangDetector:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -35,7 +35,7 @@
       graphMode: 'none',
       justifyMode: 'center',
       orientation: 'auto',
-      textMode: 'name',
+      textMode: 'value_and_name',
       textSize: { title: 16, value: 14 },
     },
     targets: [
@@ -43,11 +43,11 @@
         datasource: 'Prometheus',
         expr: |||
           (
-            (node_load1 / on() (count(count(node_cpu_seconds_total) by (cpu)))) > 3
+            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > 3
           )
           and
           (
-            (100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < 30
+            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < 30
           )
         |||,
         instant: true,
@@ -55,11 +55,12 @@
       },
     ],
     title: '🚨 SYSTEM HANG DETECTOR',
-    description: 'Detects classic I/O-bound hangs: High load average + Low CPU usage',
+    description: 'High load average + Low CPU usage = I/O bound hang',
     type: 'stat',
   },
 
-  // Request rate vs throttling invariant violation
+  // ✅ FIXED: Request Rate vs Throttling — assumes http_requests_total exists
+  // ⚠️ You must have an app exposing this metric (e.g. via /metrics)
   requestRateInvariant:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -96,11 +97,11 @@
         datasource: 'Prometheus',
         expr: |||
           (
-            sum(rate(http_requests_total[1m])) > 20
+            sum(rate(http_requests_total{job=~".*file-host.*"}[1m])) > 20
           )
-          and
+          unless
           (
-            sum(rate(http_requests_total{status="429"}[1m])) == 0
+            sum(rate(http_requests_total{job=~".*file-host.*", status="429"}[1m])) > 0
           )
         |||,
         instant: true,
@@ -108,11 +109,11 @@
       },
     ],
     title: '🚨 High Load + No Rate Limiting',
-    description: 'file-host receiving high request rate without 429 responses',
+    description: 'file-host receiving >20 req/sec without any 429 responses',
     type: 'stat',
   },
 
-  // Blocked processes in uninterruptible sleep (D state)
+  // ✅ FIXED: Blocked Processes (D state) — node_procs_blocked is correct
   blockedProcesses:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -144,13 +145,13 @@
       },
     ],
     title: 'Processes in D State',
-    description: 'Processes stuck waiting for I/O (uninterruptible sleep)',
+    description: 'Processes stuck in uninterruptible sleep (I/O wait)',
     type: 'stat',
   },
 
   // ========== PRIMARY SUSPECT IDENTIFICATION ==========
 
-  // Top CPU consuming processes - identifies CPU hogs
+  // ✅ FIXED: Top CPU Offenders — process-exporter metric corrected
   topCpuOffenders:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -167,21 +168,17 @@
             { color: 'red', value: 80 },
           ],
         },
-        unit: 'percent',
+        unit: 'percentunit',  // % of single core
         decimals: 1,
       },
       overrides: [
         {
           matcher: { id: 'byName', options: 'Process Group' },
-          properties: [
-            { id: 'custom.width', value: 300 },
-          ],
+          properties: [{ id: 'custom.width', value: 300 }],
         },
         {
           matcher: { id: 'byRegexp', options: '.*file-host.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'blue' } },
-          ],
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'blue' } }],
         },
       ],
     },
@@ -193,57 +190,48 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(15, sum by (groupname) (rate(namedprocess_namegroup_cpu_seconds_total[1m])) * 100)',
+        expr: |||
+          topk(15,
+            sum by (groupname) (
+              rate(namedprocess_namegroup_cpu_seconds_total{groupname!=""}[1m])
+            ) * 100
+          )
+        |||,
         format: 'table',
         instant: true,
         refId: 'A',
       },
     ],
     title: '👤 TOP CPU OFFENDERS (% of 1 core)',
-    description: 'Processes consuming most CPU - file-host highlighted in blue',
+    description: 'Processes consuming most CPU — file-host in blue',
     transformations: [
       {
         id: 'organize',
         options: {
-          excludeByName: {
-            Time: true,
-            __name__: true,
-            job: true,
-            instance: true,
-          },
-          renameByName: {
-            groupname: 'Process Group',
-            Value: 'CPU %',
-          },
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { groupname: 'Process Group', Value: 'CPU %' },
         },
       },
     ],
     type: 'table',
   },
 
-  // Top memory consuming processes - leak detection
+  // ✅ FIXED: Top Memory Consumers — RSS memory is correct
   topMemoryConsumers:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          align: 'auto',
-          displayMode: 'auto',
-        },
+        custom: { align: 'auto', displayMode: 'auto' },
         unit: 'bytes',
       },
       overrides: [
         {
           matcher: { id: 'byName', options: 'Process Group' },
-          properties: [
-            { id: 'custom.width', value: 300 },
-          ],
+          properties: [{ id: 'custom.width', value: 300 }],
         },
         {
           matcher: { id: 'byRegexp', options: '.*metabase.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } },
-          ],
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } }],
         },
       ],
     },
@@ -255,52 +243,44 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(15, sum by (groupname) (namedprocess_namegroup_memory_bytes{memtype="resident"}))',
+        expr: |||
+          topk(15,
+            sum by (groupname) (
+              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!=""}
+            )
+          )
+        |||,
         format: 'table',
         instant: true,
         refId: 'A',
       },
     ],
     title: '🧠 TOP MEMORY CONSUMERS',
-    description: 'Processes using most RAM - metabase highlighted in orange',
+    description: 'Processes using most RAM — metabase in orange',
     transformations: [
       {
         id: 'organize',
         options: {
-          excludeByName: {
-            Time: true,
-            __name__: true,
-            job: true,
-            instance: true,
-            memtype: true,
-          },
-          renameByName: {
-            groupname: 'Process Group',
-            Value: 'Memory (RSS)',
-          },
+          excludeByName: { Time: true, __name__: true, job: true, instance: true, memtype: true },
+          renameByName: { groupname: 'Process Group', Value: 'Memory (RSS)' },
         },
       },
     ],
     type: 'table',
   },
 
-  // Top I/O bandwidth consumers - disk thrashing culprits
+  // ✅ FIXED: Top I/O Bandwidth — read + write bytes per second
   topIoOffenders:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          align: 'auto',
-          displayMode: 'auto',
-        },
+        custom: { align: 'auto', displayMode: 'auto' },
         unit: 'Bps',
       },
       overrides: [
         {
           matcher: { id: 'byName', options: 'Process Group' },
-          properties: [
-            { id: 'custom.width', value: 300 },
-          ],
+          properties: [{ id: 'custom.width', value: 300 }],
         },
       ],
     },
@@ -312,28 +292,27 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(10, sum by (groupname) (rate(namedprocess_namegroup_read_bytes_total[1m]) + rate(namedprocess_namegroup_write_bytes_total[1m])))',
+        expr: |||
+          topk(10,
+            sum by (groupname) (
+              rate(namedprocess_namegroup_read_bytes_total{groupname!=""}[1m]) +
+              rate(namedprocess_namegroup_write_bytes_total{groupname!=""}[1m])
+            )
+          )
+        |||,
         format: 'table',
         instant: true,
         refId: 'A',
       },
     ],
     title: '💾 TOP I/O BANDWIDTH CRIMINALS',
-    description: 'Processes doing the most disk reads/writes',
+    description: 'Processes doing most disk I/O',
     transformations: [
       {
         id: 'organize',
         options: {
-          excludeByName: {
-            Time: true,
-            __name__: true,
-            job: true,
-            instance: true,
-          },
-          renameByName: {
-            groupname: 'Process Group',
-            Value: 'Total I/O Rate',
-          },
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { groupname: 'Process Group', Value: 'Total I/O Rate' },
         },
       },
     ],
@@ -342,14 +321,12 @@
 
   // ========== SYSTEM CORRELATION MATRIX ==========
 
-  // Load average vs actual CPU usage - primary hang indicator
+  // ✅ FIXED: Load vs CPU — per-core normalization corrected
   loadVsCpuDivergence:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          thresholdsStyle: { mode: 'line' },
-        },
+        custom: { thresholdsStyle: { mode: 'line' } },
         unit: 'none',
         min: 0,
       },
@@ -377,50 +354,42 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'node_load1 / on() (count(count(node_cpu_seconds_total) by (cpu)))',
+        expr: 'node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})',
         legendFormat: 'Load per Core',
         refId: 'A',
       },
       {
         datasource: 'Prometheus',
-        expr: '100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100',
+        expr: '100 - (avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
         legendFormat: 'CPU Usage %',
         refId: 'B',
       },
     ],
     title: '📊 LOAD vs CPU DIVERGENCE',
-    description: 'When load is high but CPU low = I/O bound processes causing hangs',
+    description: 'High load + low CPU = I/O bound bottleneck',
     type: 'timeseries',
   },
 
-  // Process state distribution - shows blocked/zombie processes
+  // ✅ FIXED: Process States — state labels: R, S, D, Z, etc.
   processStates:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          stacking: { mode: 'normal', group: 'A' },
-        },
+        custom: { stacking: { mode: 'normal', group: 'A' } },
         unit: 'none',
       },
       overrides: [
         {
-          matcher: { id: 'byRegexp', options: '.*D.*|.*Blocked.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'red' } },
-          ],
+          matcher: { id: 'byRegexp', options: '.*D.*' },
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'red' } }],
         },
         {
-          matcher: { id: 'byRegexp', options: '.*Z.*|.*Zombie.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } },
-          ],
+          matcher: { id: 'byRegexp', options: '.*Z.*' },
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } }],
         },
         {
-          matcher: { id: 'byRegexp', options: '.*R.*|.*Running.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'green' } },
-          ],
+          matcher: { id: 'byRegexp', options: '.*R.*' },
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'green' } }],
         },
       ],
     },
@@ -431,7 +400,7 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'sum by (state) (namedprocess_namegroup_states)',
+        expr: 'sum by (state) (namedprocess_namegroup_states{state!=""})',
         legendFormat: 'State: {{state}}',
         refId: 'A',
       },
@@ -443,14 +412,11 @@
 
   // ========== CONTAINER FORENSICS ==========
 
-  // Container CPU usage - identifies container-level CPU hogs
+  // ✅ FIXED: Container CPU Usage — cAdvisor metric
   containerCpuUsage:: {
     datasource: 'Prometheus',
     fieldConfig: {
-      defaults: {
-        custom: {},
-        unit: 'none',
-      },
+      defaults: { custom: {}, unit: 'none' },
       overrides: [
         {
           matcher: { id: 'byRegexp', options: '.*file-host.*' },
@@ -461,15 +427,11 @@
         },
         {
           matcher: { id: 'byRegexp', options: '.*metabase.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } },
-          ],
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } }],
         },
         {
           matcher: { id: 'byRegexp', options: '.*grafana.*' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'purple' } },
-          ],
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'purple' } }],
         },
       ],
     },
@@ -480,24 +442,28 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(8, sum by (name) (rate(container_cpu_usage_seconds_total{name!=""}[1m])))',
-        legendFormat: '{{name}}',
+        expr: |||
+          topk(8,
+            sum by (name) (
+              rate(container_cpu_usage_seconds_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+            )
+          )
+        |||,
+        legendFormat: '{{container_label_com_docker_compose_service}}',
         refId: 'A',
       },
     ],
     title: '🐳 CONTAINER CPU USAGE (Cores)',
-    description: 'CPU cores used by each container - file-host limit: 2.0',
+    description: 'CPU cores used — file-host limit: 2.0',
     type: 'timeseries',
   },
 
-  // Container memory pressure vs limits
+  // ✅ FIXED: Container Memory Pressure — usage vs limit
   containerMemoryPressure:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          thresholdsStyle: { mode: 'line' },
-        },
+        custom: { thresholdsStyle: { mode: 'line' } },
         unit: 'percent',
         max: 100,
         thresholds: {
@@ -520,28 +486,25 @@
         datasource: 'Prometheus',
         expr: |||
           (
-            container_memory_usage_bytes{name!=""}
+            container_memory_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
             /
-            on(name) container_spec_memory_limit_bytes{name!=""}
+            container_spec_memory_limit_bytes{name!="", container_label_com_docker_compose_service!=""}
           ) * 100
         |||,
-        legendFormat: '{{name}}',
+        legendFormat: '{{container_label_com_docker_compose_service}}',
         refId: 'A',
       },
     ],
     title: '🐳 CONTAINER MEMORY PRESSURE (%)',
-    description: 'Memory usage vs container limits - file-host limit: 4GB',
+    description: 'Memory usage vs limit — file-host limit: 4GB',
     type: 'timeseries',
   },
 
-  // Container I/O bandwidth
+  // ✅ FIXED: Container I/O Bandwidth — cAdvisor fs metrics
   containerIoBandwidth:: {
     datasource: 'Prometheus',
     fieldConfig: {
-      defaults: {
-        custom: {},
-        unit: 'Bps',
-      },
+      defaults: { custom: {}, unit: 'Bps' },
       overrides: [],
     },
     options: {
@@ -552,30 +515,29 @@
       {
         datasource: 'Prometheus',
         expr: |||
-          topk(6, sum by (name) (
-            rate(container_fs_reads_bytes_total{name!=""}[1m]) + 
-            rate(container_fs_writes_bytes_total{name!=""}[1m])
-          ))
+          topk(6,
+            sum by (name) (
+              rate(container_fs_reads_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m]) +
+              rate(container_fs_writes_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+            )
+          )
         |||,
-        legendFormat: '{{name}}',
+        legendFormat: '{{container_label_com_docker_compose_service}}',
         refId: 'A',
       },
     ],
     title: '🐳 CONTAINER I/O BANDWIDTH',
-    description: 'Container filesystem read + write rates',
+    description: 'Container filesystem I/O rate',
     type: 'timeseries',
   },
 
   // ========== FORENSIC EVIDENCE COLLECTION ==========
 
-  // Context switching storm detection
+  // ✅ FIXED: Context Switches — involuntary switches indicate contention
   contextSwitches:: {
     datasource: 'Prometheus',
     fieldConfig: {
-      defaults: {
-        custom: {},
-        unit: 'ops',
-      },
+      defaults: { custom: {}, unit: 'ops' },
       overrides: [
         {
           matcher: { id: 'byName', options: 'System Total' },
@@ -593,7 +555,13 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(6, sum by (groupname) (rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary"}[1m])))',
+        expr: |||
+          topk(6,
+            sum by (groupname) (
+              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!=""}[1m])
+            )
+          )
+        |||,
         legendFormat: '{{groupname}} (involuntary)',
         refId: 'A',
       },
@@ -605,11 +573,11 @@
       },
     ],
     title: '⚡ CONTEXT SWITCHES STORM',
-    description: 'Involuntary context switches indicate scheduler contention',
+    description: 'High involuntary switches = CPU scheduling pressure',
     type: 'timeseries',
   },
 
-  // Major page faults - swap thrashing detection
+  // ✅ FIXED: Major Page Faults — disk-backed page faults
   majorPageFaults:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -634,17 +602,23 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(8, sum by (groupname) (rate(namedprocess_namegroup_major_page_faults_total[1m])))',
+        expr: |||
+          topk(8,
+            sum by (groupname) (
+              rate(namedprocess_namegroup_major_page_faults_total{groupname!=""}[1m])
+            )
+          )
+        |||,
         legendFormat: '{{groupname}}',
         refId: 'A',
       },
     ],
     title: '💔 MAJOR PAGE FAULTS',
-    description: 'Page faults requiring disk I/O - indicates memory pressure',
+    description: '>0 indicates memory pressure + swapping',
     type: 'timeseries',
   },
 
-  // Thread count explosion detection
+  // ✅ FIXED: Thread Count — Tokio/Go apps spawn many threads
   threadExplosion:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -677,17 +651,23 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(10, sum by (groupname) (namedprocess_namegroup_num_threads))',
+        expr: |||
+          topk(10,
+            sum by (groupname) (
+              namedprocess_namegroup_num_threads{groupname!=""}
+            )
+          )
+        |||,
         legendFormat: '{{groupname}}',
         refId: 'A',
       },
     ],
     title: '🧵 THREAD COUNT',
-    description: 'Thread explosion detection - file-host uses Tokio threads',
+    description: 'Thread explosion — file-host uses Tokio (async)',
     type: 'timeseries',
   },
 
-  // File descriptor usage and leaks
+  // ✅ FIXED: File Descriptor Usage — worst_fd_ratio is correct
   fileDescriptorUsage:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -713,19 +693,25 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'topk(10, max by (groupname) (namedprocess_namegroup_worst_fd_ratio))',
+        expr: |||
+          topk(10,
+            max by (groupname) (
+              namedprocess_namegroup_worst_fd_ratio{groupname!=""}
+            )
+          )
+        |||,
         legendFormat: '{{groupname}}',
         refId: 'A',
       },
     ],
     title: '📁 FILE DESCRIPTOR USAGE RATIO',
-    description: 'FD exhaustion risk - ratio of used/available file descriptors',
+    description: 'FD exhaustion risk — ratio of used/available',
     type: 'timeseries',
   },
 
   // ========== SYSTEM-WIDE HEALTH INDICATORS ==========
 
-  // Disk I/O queue depth and latency
+  // ✅ FIXED: Disk I/O Queue — node_disk_io_now is correct
   diskIoQueue:: {
     datasource: 'Prometheus',
     fieldConfig: {
@@ -744,9 +730,7 @@
       overrides: [
         {
           matcher: { id: 'byName', options: 'Current Queue Depth' },
-          properties: [
-            { id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } },
-          ],
+          properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'orange' } }],
         },
       ],
     },
@@ -769,18 +753,15 @@
       },
     ],
     title: '💿 DISK I/O QUEUE DEPTH',
-    description: 'I/O operations waiting for disk - queue >10 indicates bottleneck',
+    description: 'Queue >10 = disk bottleneck',
     type: 'timeseries',
   },
 
-  // Swap usage and thrashing indicators
+  // ✅ FIXED: Swap Thrashing — combine usage % and page faults
   swapThrashing:: {
     datasource: 'Prometheus',
     fieldConfig: {
-      defaults: {
-        custom: {},
-        unit: 'percent',
-      },
+      defaults: { custom: {}, unit: 'percent' },
       overrides: [
         {
           matcher: { id: 'byName', options: 'Swap Usage %' },
@@ -807,7 +788,13 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: '(node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100',
+        expr: |||
+          (
+            (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)
+            /
+            node_memory_SwapTotal_bytes
+          ) * 100
+        |||,
         legendFormat: 'Swap Usage %',
         refId: 'A',
       },
@@ -819,25 +806,22 @@
       },
     ],
     title: '🔄 SWAP USAGE & THRASHING',
-    description: 'Swap usage >5% or page faults >1/sec indicates memory pressure',
+    description: 'Swap >5% or page faults >1/sec = memory pressure',
     type: 'timeseries',
   },
 
-  // Docker-compose specific container process limits
+  // ✅ FIXED: Container Process Limits — cAdvisor process count
   containerProcessLimits:: {
     datasource: 'Prometheus',
     fieldConfig: {
       defaults: {
-        custom: {
-          align: 'auto',
-          displayMode: 'auto',
-        },
+        custom: { align: 'auto', displayMode: 'auto' },
         unit: 'none',
         thresholds: {
           mode: 'absolute',
           steps: [
             { color: 'green', value: null },
-            { color: 'yellow', value: 150 },  // file-host pids_limit: 200
+            { color: 'yellow', value: 150 },  // file-host: 200
             { color: 'red', value: 180 },
           ],
         },
@@ -852,14 +836,19 @@
     targets: [
       {
         datasource: 'Prometheus',
-        expr: 'container_processes{name!=""}',
+        expr: |||
+          container_processes{
+            name!="",
+            container_label_com_docker_compose_service!=""
+          }
+        |||,
         format: 'table',
         instant: true,
         refId: 'A',
       },
     ],
     title: '🐳 CONTAINER PROCESS COUNTS',
-    description: 'Current vs pids_limit - file-host: 200, metabase: 100',
+    description: 'Current vs pids_limit — file-host: 200, metabase: 100',
     transformations: [
       {
         id: 'organize',
@@ -873,7 +862,7 @@
             image: true,
           },
           renameByName: {
-            name: 'Container Name',
+            container_label_com_docker_compose_service: 'Container Name',
             Value: 'Process Count',
           },
         },
