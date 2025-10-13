@@ -1,7 +1,7 @@
-use thiserror::Error;
+#![cfg(feature = "inmem")]
 
 /// Transport-agnostic error type
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, thiserror::Error, Clone)]
 pub enum TransportError {
 	/// The channel or connection is closed
 	#[error("Transport channel closed")]

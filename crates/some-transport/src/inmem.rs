@@ -1,3 +1,5 @@
+#![cfg(feature = "inmem")]
+
 use crate::error::{Result, TransportError};
 use crate::receiver::{InMemReceiver, TransportReceiver};
 use crate::traits::Transport;

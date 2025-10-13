@@ -1,3 +1,5 @@
+#![cfg(feature = "nats")]
+
 #[derive(Debug, thiserror::Error)]
 pub enum NatsError {
 	#[error("NATS connection error: {0}")]

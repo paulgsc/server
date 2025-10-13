@@ -1,3 +1,12 @@
+#![cfg(feature = "nats")]
+
+use super::error::NatsError;
+use async_nats::{Client, ConnectOptions, Subscriber};
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
+
 pub type Result<T> = std::result::Result<T, NatsError>;
 
 /// Event key trait for NATS subjects

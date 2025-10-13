@@ -1,3 +1,5 @@
+#![cfg(feature = "inmem")]
+
 use crate::error::Result;
 
 /// Core transport interface that all implementations must satisfy.
