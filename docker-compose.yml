@@ -284,6 +284,36 @@ services:
           memory: 256M
           pids: 20
 
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox_exporter
+    restart: unless-stopped
+    networks:
+      - monitoring-network
+    volumes:
+      - ./infra/blackbox.yml:/config/blackbox.yml:ro
+    ports:
+      - '9115:9115'
+    command:
+      - '--config.file=/config/blackbox.yml'
+    mem_limit: 256M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+          pids: 20
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:9115/ || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor

@@ -3,7 +3,7 @@
   // Prometheus datasource
   prometheusDataSource: {
     type: 'prometheus',
-    uid: 'PB0E20699',
+    uid: '$datasource',  // Grafana template var
   },
 
   // Blackbox job names (make them configurable!)

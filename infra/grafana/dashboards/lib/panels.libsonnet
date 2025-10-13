@@ -24,7 +24,7 @@ local utils = import 'utils.libsonnet';
     targets: [
       {
         datasource: config.prometheusDataSource,
-        expr: 'probe_success{job="websocket_blackbox_tcp"} * probe_success{job="websocket_blackbox_http"}',
+        expr: 'probe_success{job="websocket_blackbox_tcp"} * on(service) probe_success{job="websocket_blackbox_http"}',
         instant: true,
         refId: 'A',
       },
@@ -57,7 +57,7 @@ local utils = import 'utils.libsonnet';
     targets: [
       {
         datasource: config.prometheusDataSource,
-        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * probe_success{job="websocket_blackbox_http"})[30d:]) * 100',
+        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * on(service)  probe_success{job="websocket_blackbox_http"})[30d:]) * 100',
         instant: true,
         refId: 'A',
       },
@@ -74,7 +74,7 @@ local utils = import 'utils.libsonnet';
     targets: [
       {
         datasource: config.prometheusDataSource,
-        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * probe_success{job="websocket_blackbox_http"})[1h:]) * 100',
+        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * on(service) probe_success{job="websocket_blackbox_http"})[1h:]) * 100',
         legendFormat: 'Combined Uptime %',
         range: true,
         refId: 'A',
@@ -166,12 +166,12 @@ local utils = import 'utils.libsonnet';
     },
     targets: [
       {
-        expr: 'histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job="websocket_blackbox_tcp"}[5m])) by (le))',
+        expr: 'probe_duration_seconds{job="websocket_blackbox_tcp"}',
         legendFormat: 'TCP P90 Duration',
         refId: 'A',
       },
       {
-        expr: 'histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job="websocket_blackbox_http"}[5m])) by (le))',
+        expr: 'probe_duration_seconds{job="websocket_blackbox_http"}',
         legendFormat: 'HTTP P90 Duration',
         refId: 'B',
       },

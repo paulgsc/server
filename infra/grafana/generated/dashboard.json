@@ -25,7 +25,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -74,9 +74,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PB0E20699"
+            "uid": "$datasource"
           },
-          "expr": "probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"}",
+          "expr": "probe_success{job=\"websocket_blackbox_tcp\"} * on(service) probe_success{job=\"websocket_blackbox_http\"}",
           "instant": true,
           "refId": "A"
         }
@@ -87,7 +87,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -144,9 +144,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PB0E20699"
+            "uid": "$datasource"
           },
-          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"})[30d:]) * 100",
+          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * on(service)  probe_success{job=\"websocket_blackbox_http\"})[30d:]) * 100",
           "instant": true,
           "refId": "A"
         }
@@ -157,7 +157,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -213,7 +213,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -269,7 +269,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -324,9 +324,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PB0E20699"
+            "uid": "$datasource"
           },
-          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * probe_success{job=\"websocket_blackbox_http\"})[1h:]) * 100",
+          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * on(service) probe_success{job=\"websocket_blackbox_http\"})[1h:]) * 100",
           "legendFormat": "Combined Uptime %",
           "range": true,
           "refId": "A"
@@ -338,7 +338,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -385,12 +385,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job=\"websocket_blackbox_tcp\"}[5m])) by (le))",
+          "expr": "probe_duration_seconds{job=\"websocket_blackbox_tcp\"}",
           "legendFormat": "TCP P90 Duration",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.90, sum(rate(probe_duration_seconds_bucket{job=\"websocket_blackbox_http\"}[5m])) by (le))",
+          "expr": "probe_duration_seconds{job=\"websocket_blackbox_http\"}",
           "legendFormat": "HTTP P90 Duration",
           "refId": "B"
         },
@@ -411,7 +411,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -466,7 +466,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PB0E20699"
+            "uid": "$datasource"
           },
           "expr": "rate(http_requests_total[1m])",
           "legendFormat": "{{method}} {{route}} → {{status}}",
@@ -480,7 +480,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -554,7 +554,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -618,7 +618,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -687,7 +687,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -744,7 +744,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -801,7 +801,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
@@ -861,7 +861,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PB0E20699"
+        "uid": "$datasource"
       },
       "fieldConfig": {
         "defaults": {
