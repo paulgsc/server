@@ -209,39 +209,39 @@ async fn demo_studio_features(obs_manager: &ObsWebSocketManager) -> Result<(), B
 	tracing::info!("  🛠️ Demonstrating studio features...");
 
 	// Toggle Studio Mode
-	match obs_manager.execute_command(ObsCommand::ToggleStudioMode).await {
+	match obs_manager.execute_command(ObsCommand::ToggleStudioMode(true)).await {
 		Ok(()) => {
 			tracing::info!("  ✅ Toggled Studio Mode");
 			sleep(Duration::from_millis(100)).await;
 
 			// Toggle it back
-			let _ = obs_manager.execute_command(ObsCommand::ToggleStudioMode).await;
+			let _ = obs_manager.execute_command(ObsCommand::ToggleStudioMode(false)).await;
 			tracing::info!("  ✅ Toggled Studio Mode back");
 		}
 		Err(e) => tracing::debug!("  ℹ️ Studio Mode: {}", e),
 	}
 
 	// Toggle Virtual Camera
-	match obs_manager.execute_command(ObsCommand::ToggleVirtualCamera).await {
+	match obs_manager.execute_command(ObsCommand::StartVirtualCamera).await {
 		Ok(()) => {
 			tracing::info!("  📷 Toggled Virtual Camera");
 			sleep(Duration::from_millis(100)).await;
 
 			// Toggle it back
-			let _ = obs_manager.execute_command(ObsCommand::ToggleVirtualCamera).await;
+			let _ = obs_manager.execute_command(ObsCommand::StartVirtualCamera).await;
 			tracing::info!("  📷 Toggled Virtual Camera back");
 		}
 		Err(e) => tracing::debug!("  ℹ️ Virtual Camera: {}", e),
 	}
 
 	// Toggle Replay Buffer
-	match obs_manager.execute_command(ObsCommand::ToggleReplayBuffer).await {
+	match obs_manager.execute_command(ObsCommand::StartReplayBuffer).await {
 		Ok(()) => {
 			tracing::info!("  ⏪ Toggled Replay Buffer");
 			sleep(Duration::from_millis(100)).await;
 
 			// Toggle it back
-			let _ = obs_manager.execute_command(ObsCommand::ToggleReplayBuffer).await;
+			let _ = obs_manager.execute_command(ObsCommand::StartReplayBuffer).await;
 			tracing::info!("  ⏪ Toggled Replay Buffer back");
 		}
 		Err(e) => tracing::debug!("  ℹ️ Replay Buffer: {}", e),

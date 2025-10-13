@@ -14,7 +14,7 @@ mod polling;
 use auth::authenticate;
 pub use config::ObsConfig;
 pub use core::*;
-pub use messages::{MessageHandler, MessageProcessor, ObsEvent};
+pub use messages::{MessageHandler, MessageProcessor, ObsEvent, YouTubePrivacy};
 use polling::{ObsPollingManager, ObsRequestBuilder};
 pub use polling::{PollingConfig, PollingFrequency};
 

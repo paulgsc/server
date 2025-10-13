@@ -258,7 +258,7 @@ where
 	pub t: ObsRequestType,
 	#[serde(rename = "requestId")]
 	pub id: String,
-	#[serde(flatten)]
+	#[serde(rename = "requestData")]
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub p: Option<T>,
 }

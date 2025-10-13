@@ -23,6 +23,7 @@ impl ResponseMessageParser {
 		// Check request status first
 		if let Some(status) = d.get("requestStatus").and_then(Value::as_object) {
 			let success = status.get("result").and_then(Value::as_bool).unwrap_or(false);
+			tracing::info!("succes: {}, status: {:?}", success, status);
 			if !success {
 				let code = status.get("code").and_then(Value::as_u64).unwrap_or(0);
 				let comment = status.get("comment").and_then(Value::as_str).unwrap_or("Unknown error");
