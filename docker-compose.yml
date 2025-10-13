@@ -111,7 +111,7 @@ services:
     ports:
       - '9090:9090'
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
       - monitoring-network
@@ -152,8 +152,8 @@ services:
       - '3001:3000'
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/generated:/var/lib/grafana/dashboards:ro
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/generated:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring-network
     restart: unless-stopped
@@ -218,11 +218,11 @@ services:
   dashboard-builder:
     build:
       context: .
-      dockerfile: Dockerfile.grafana.builder
+      dockerfile: ./infra/docker/Dockerfile.grafana.builder
     container_name: dashboard-builder
     volumes:
-      - ./grafana/dashboards:/workspace
-      - ./grafana/generated:/generated:rw
+      - ./infra/grafana/dashboards:/workspace
+      - ./infra/grafana/generated:/generated:rw
     command: ./build.sh
     restart: 'no'
     mem_limit: 1G
@@ -267,7 +267,7 @@ services:
       - monitoring-network
     volumes:
       - /proc:/host/proc:ro
-      - ./process-exporter.yml:/config/process-exporter.yml:ro
+      - ./infra/prometheus/process-exporter.yml:/config/process-exporter.yml:ro
     ports:
       - '9256:9256'
     command:
