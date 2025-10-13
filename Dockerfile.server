@@ -1,0 +1,85 @@
+# Keep your existing Debian-based builder
+FROM rustlang/rust:nightly-slim AS chef
+WORKDIR /app
+
+RUN cargo install cargo-chef --locked
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    build-essential \
+    libasound2-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json --bin file_host
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY .sqlx/ .sqlx/
+
+ENV CARGO_INCREMENTAL=0
+ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
+ENV RUST_BACKTRACE=1
+ENV RUST_LOG=info
+ENV SQLX_OFFLINE=true
+
+RUN cargo build --release --package file_host
+RUN strip target/release/file_host
+
+# Use Debian runtime instead of Alpine (glibc compatible)
+FROM debian:12-slim as runtime
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libasound2 \
+    libsqlite3-0 \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && groupadd -g 10001 nonroot \
+    && useradd -u 10000 -g nonroot -d /app -s /bin/bash nonroot
+
+WORKDIR /app
+
+# Create directories
+RUN mkdir -p /app/data /app/secrets /app/config && \
+    chown -R nonroot:nonroot /app
+
+# Copy the binary (same glibc environment)
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/file_host /usr/local/bin/file_host
+
+# Make executable and test
+RUN chmod +x /usr/local/bin/file_host && \
+    /usr/local/bin/file_host --version
+
+USER nonroot:nonroot
+
+# Environment variables
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
+ENV CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
+ENV DATA_DIR=/app/data
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/file_host", "--health-check"] || exit 1
+
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/file_host"]
+
+# Build arguments
+ARG BUILD_VERSION=unknown
+ARG BUILD_DATE
+ARG VCS_REF
+
+LABEL maintainer="your-email@example.com" \
+      version="${BUILD_VERSION}"

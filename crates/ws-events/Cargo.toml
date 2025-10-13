@@ -1,0 +1,27 @@
+[package]
+name = "ws-events"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
+tokio-util = "0.7.16"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
+
+[features]
+default = []
+stream-orch = []
+
+[lints]
+workspace = true

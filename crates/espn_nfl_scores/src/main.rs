@@ -5,12 +5,16 @@ use crate::config::Config;
 use crate::error::ParserError;
 use clap::Parser;
 use csv::Writer;
+use sdk::{ReadDrive, SheetError, SheetOperation, WriteToDrive, WriteToGoogleSheet};
+use serde::Serialize;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
+use std::rc::Rc;
+use tokio;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct TeamScore {
 	game_id: u32,
 	name: String,
@@ -18,6 +22,27 @@ struct TeamScore {
 	quarters: Vec<u32>,
 	total: u32,
 	date: String,
+}
+
+struct OutputMetadata {
+	spreadsheet_id: Box<str>,
+	tab_name: Box<str>,
+	output_file: Box<str>,
+}
+
+impl OutputMetadata {
+	fn new(config: &Config, new_tab_name: Option<String>) -> Self {
+		let tab_name = match new_tab_name {
+			Some(v) => v.into_boxed_str(),
+			None => config.clone().sheet_name.into_boxed_str(),
+		};
+
+		Self {
+			spreadsheet_id: config.clone().spreadsheet_id.into_boxed_str(),
+			output_file: config.clone().output_file.into_boxed_str(),
+			tab_name,
+		}
+	}
 }
 
 fn read_html_from_file(path: &Path) -> Result<String, io::Error> {
@@ -147,21 +172,105 @@ fn write_to_csv(scores: Vec<TeamScore>, output_path: &Path) -> Result<(), Parser
 	Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Helper function to prepare team scores as sheet records
+fn prepare_sheet_records(scores: Vec<TeamScore>) -> Vec<Vec<String>> {
+	let mut records = Vec::new();
+	let headers = vec!["GameID", "Team", "H/A", "Date", "Q1", "Q2", "Q3", "Q4", "OT", "Total"]
+		.into_iter()
+		.map(String::from)
+		.collect::<Vec<String>>();
+	records.push(headers);
+
+	for team in scores {
+		let mut record = vec![team.game_id.to_string(), team.name, team.home_away, team.date];
+
+		for quarter in team.quarters.iter() {
+			record.push(quarter.to_string());
+		}
+		record.push(team.total.to_string());
+
+		if team.quarters.len() < 5 {
+			record.insert(8, "0".to_string());
+		}
+		records.push(record);
+	}
+
+	records
+}
+
+async fn process_scores(output_meta: OutputMetadata, scores: Vec<TeamScore>, service: Rc<WriteToGoogleSheet>) -> Result<(), Box<dyn std::error::Error>> {
+	match output_meta.output_file.as_ref() {
+		"data.csv" => {
+			write_to_csv(scores, Path::new(output_meta.output_file.as_ref()))?;
+			println!("CSV file generated successfully!");
+		}
+		"gsheet" => {
+			let records = prepare_sheet_records(scores);
+			service
+				.write_data_to_sheet(&output_meta.tab_name, &output_meta.spreadsheet_id, records, SheetOperation::CreateTab)
+				.await?;
+			println!("gsheet file generated successfully!");
+		}
+		_ => eprintln!("Invalid output file type!"),
+	}
+	Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	dotenv::dotenv().ok();
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
+	let user_email = "some-service@consulting-llc-6302f.iam.gserviceaccount.com".to_string();
+	let client_secret_path = ".setup/client_secret_file.json".to_string();
+	let write_sheet_client = Rc::new(WriteToGoogleSheet::new(user_email.clone(), client_secret_path.clone())?);
 
 	// Load configuration from env.toml
 	let config = Config::parse();
 
-	// Read HTML content from the specified input file
-	let html = read_html_from_file(Path::new(&config.input_file))?;
+	match config.mode.as_str() {
+		"local" => {
+			let html = read_html_from_file(Path::new(&config.input_file))?;
+			let scores = parse_scores(&html)?;
+			let output_meta = OutputMetadata::new(&config, None);
+			process_scores(output_meta, scores, write_sheet_client.clone()).await?;
+		}
+		"cloud" => {
+			let read_drive_client = ReadDrive::new(user_email.clone(), client_secret_path.clone())?;
+			let write_to_drive_client = WriteToDrive::new(user_email.clone(), client_secret_path.clone())?;
+			loop {
+				println!("\nWould you like to process another file? (y/n)");
+				let mut response = String::new();
+				io::stdout().flush().unwrap();
+				io::stdin().read_line(&mut response).unwrap();
 
-	// Parse the HTML content to extract scores
-	let scores = parse_scores(&html)?;
+				if response.trim().to_lowercase() != "y" {
+					println!("Exiting program.");
+					break;
+				}
 
-	// Write the parsed scores to a CSV file
-	write_to_csv(scores, Path::new(&config.output_file))?;
+				// Prompt for new file_id
+				println!("Enter new file_id:");
+				let mut new_file_id = String::new();
+				io::stdout().flush().unwrap();
+				io::stdin().read_line(&mut new_file_id).unwrap();
+				let new_file_id = new_file_id.trim();
 
-	println!("CSV file generated successfully!");
+				let res = read_drive_client.download_file(new_file_id).await?;
+				let html = String::from_utf8(res.to_vec()).unwrap();
+				let scores = parse_scores(&html)?;
+
+				let file = read_drive_client.get_file_metadata(new_file_id).await?;
+				let output_meta = OutputMetadata::new(&config, Some(file.name));
+
+				process_scores(output_meta, scores, write_sheet_client.clone()).await?;
+				write_to_drive_client.delete_file_with_service_account(&new_file_id).await?;
+				println!("Removed stale html soup from gdrive!");
+			}
+		}
+		_ => eprintln!("Invalid mode entered"),
+	}
+
 	Ok(())
 }

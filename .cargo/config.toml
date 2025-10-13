@@ -16,3 +16,7 @@ rustflags = [
     "-A", "clippy::module_name_repetitions",
     "-D", "warnings"
 ]
+
+[build]
+rustflags = ["-D warnings"]
+

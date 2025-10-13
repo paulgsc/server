@@ -1,0 +1,22 @@
+[package]
+name = "mood_event"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

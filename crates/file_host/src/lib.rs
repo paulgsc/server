@@ -1,33 +1,66 @@
-use crate::error::FileHostError;
-use redis::Client;
+use crate::error::{FileHostError, GSheetDeriveError};
+use axum::extract::FromRef;
+use sdk::{GitHubClient, ReadDrive, ReadSheets};
+use sqlx::SqlitePool;
 use std::sync::Arc;
-use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
 
+pub mod cache;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod health;
+// pub mod streaming_service;
+pub mod websocket;
+// pub mod image_processing;
 pub mod metrics;
+pub mod models;
+pub mod rate_limiter;
 pub mod routes;
+pub mod utils;
 
+pub use crate::websocket::{Event, NowPlaying, UtterancePrompt, WebSocketFsm};
 pub use config::*;
-pub use routes::*;
+pub use handlers::utterance::UtteranceMetadata;
+pub use health::perform_health_check;
+pub use metrics::http::*;
+pub use metrics::ws::*;
+
+pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
+pub use handlers::audio_files::error::AudioServiceError;
 
 #[derive(Clone)]
-pub struct CacheStore {
-	pub client: Client,
-	pub cache_ttl: Duration,
+pub struct AppState {
+	pub connection_guard: ConnectionGuard,
+	pub dedup_cache: Arc<DedupCache>,
+	pub gsheet_reader: Arc<ReadSheets>,
+	pub gdrive_reader: Arc<ReadDrive>,
+	pub github_client: Arc<GitHubClient>,
+	pub shared_db: SqlitePool,
+	pub ws: WebSocketFsm,
+	// TODO: might remove the Arc here!
+	pub config: Arc<Config>,
+	pub cancel_token: CancellationToken,
 }
 
-impl CacheStore {
-	pub fn new(config: Arc<Config>) -> Result<Self, FileHostError> {
-		let redis_url = config.redis_url.as_deref().unwrap_or_else(|| {
-			log::warn!("Using default Redis URL: redis://127.0.0.1:6379");
-			"redis://127.0.0.1:6379"
-		});
+// Implement for the non-Arc field `DedupCache`
+impl FromRef<AppState> for Arc<DedupCache> {
+	fn from_ref(state: &AppState) -> Self {
+		state.dedup_cache.clone()
+	}
+}
 
-		let client = Client::open(redis_url)?;
-		let cache_ttl = Duration::from_secs(config.cache_ttl);
+// Implement for the Arc-wrapped field `ReadSheets`
+impl FromRef<AppState> for Arc<ReadSheets> {
+	fn from_ref(state: &AppState) -> Self {
+		state.gsheet_reader.clone()
+	}
+}
 
-		Ok(Self { client, cache_ttl })
+// Implement for your `Config`
+impl FromRef<AppState> for Arc<Config> {
+	fn from_ref(state: &AppState) -> Self {
+		state.config.clone()
 	}
 }

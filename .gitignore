@@ -40,6 +40,7 @@ yarn-error.log*
 
 # local env files
 .env
+.env.swp
 .env.local
 .env.development.local
 .env.test.local
@@ -58,3 +59,23 @@ tsconfig.tsbuildinfo
 
 # google api services
 client_secret_file.json
+
+# Docker volumes and data
+prometheus_data/
+grafana_data/
+redis_data/
+redisinsight_data/
+
+
+# Grafana runtime data
+grafana/grafana.db
+grafana/sessions/
+grafana/plugins/
+grafana/png/
+grafana/csv/
+
+
+
+# Workflow
+*errors.json
+*issues.json

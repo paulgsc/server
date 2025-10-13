@@ -1,0 +1,47 @@
+local panels = import 'lib/rate-limiting/rate-limit.libsonnet';
+
+{
+  __inputs: [],
+  __requires: [],
+  annotations: {
+    list: [
+      {
+        builtIn: 1,
+        datasource: '-- Grafana --',
+        enable: true,
+        hide: true,
+        iconColor: 'rgba(0, 211, 255, 1)',
+        name: 'Annotations & Alerts',
+        type: 'dashboard',
+      },
+    ],
+  },
+  editable: true,
+  fiscalYearStartMonth: 0,
+  gnetId: null,
+  graphTooltip: 1,
+  id: null,
+  iteration: 1670000000000,
+  links: [],
+  liveNow: false,
+  panels: [
+    panels.totalRequests,
+    panels.statusCodes,
+    panels.throttled,
+    panels.byRoute,
+    panels.topClients,
+    panels.invariant,
+  ],
+  refresh: '5s',
+  schemaVersion: 38,
+  style: 'dark',
+  tags: ['axum', 'rust', 'rate-limit', 'proof-by-contradiction'],
+  templating: { list: [] },
+  time: { from: 'now-15m', to: 'now' },
+  timepicker: {},
+  timezone: '',
+  title: 'Rate Limiter - Proof of Failure (By Contradiction)',
+  uid: 'rate_limiter_proof',
+  version: 1,
+  weekStart: '',
+}

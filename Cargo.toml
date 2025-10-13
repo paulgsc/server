@@ -4,7 +4,7 @@
 resolver = "2"
 
 
-members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/chrome_tabs_server", "crates/servers/nfl_server", "crates/splay_diagram", "crates/task_queue", "crates/tuvitu", "crates/webhooks", "crates/foo", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint",]
+members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "crates/servers/nfl_server", "crates/task_queue", "crates/webhooks", "crates/sqlite_macros", "crates/animations", "crates/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint", "crates/gsheet_derive", "crates/obs-websocket", "crates/some-mujik", "crates/stream-stepper", "crates/some-utils", "crates/some-services", "crates/agents/auto_fixer", "crates/db/mood_event", "crates/ws-connection", "crates/some-transport", "crates/some-utility", "crates/ws-conn-manager", "crates/ws-events",]
 
 exclude = []
 
@@ -33,6 +33,13 @@ nfl_play_parser = { path = "crates/nfl_play_parser" }
 sdk = { path = "crates/sdk" }
 sqlite_macros = { path = "crates/sqlite_macros" }
 enum-name-derive = { path = "crates/enum-name-derive" }
+gsheet_derive = { path = "crates/gsheet_derive" }
+obs-websocket = { path = "crates/obs-websocket" }
+some-services = { path = "crates/some-services" }
+mood_event = { path = "crates/db/mood_event" }
+ws-connection = { path = "crates/ws-connection" }
+some-transport = { path = "crates/some-transport" }
+ws-conn-manager = { path = "crates/ws-conn-manager" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
@@ -40,9 +47,7 @@ axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
 clap = { version = "4.5.8", features = ["derive", "env"] }
 chrono = "0.4.23"
 dotenv = "0.15.0"
-env_logger = "0.9.0"
 futures = "0.3.26"
-itertools = "0.10.5"
 lazy_static = "1.4.0"
 mime = "0.3.17"
 notify = "6.1.1"
@@ -60,6 +65,4 @@ tokio = "1.41.0"
 tower = { version = "0.4", features = ["util", "timeout"] }
 tower-http = { version = "0.5.0", features = ["add-extension", "trace", "cors"] }
 tracing = "0.1.37"
-tracing-appender = "0.2.2"
-tracing-subscriber = "0.3.16"
 regex = "1.7.0"

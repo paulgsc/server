@@ -1,0 +1,26 @@
+[package]
+name = "ws-conn-manager"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+dashmap = "6.1.0"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "rt-multi-thread"] }
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+[[bench]]
+name = "connection_guard"
+harness = false
+
+[lints]
+workspace = true

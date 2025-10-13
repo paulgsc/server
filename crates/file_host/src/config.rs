@@ -16,6 +16,10 @@ pub struct Config {
 	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30")]
 	pub connection_timeout: u64,
 
+	/// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded.
+	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256")]
+	pub max_in_flight: u64,
+
 	/// Server host
 	#[arg(long, env = "HOST", default_value = "127.0.0.1")]
 	pub host: String,
@@ -41,7 +45,7 @@ pub struct Config {
 	pub api_version: String,
 
 	/// Rate limit (requests per minute)
-	#[arg(long, env = "RATE_LIMIT", default_value = "100")]
+	#[arg(long, env = "RATE_LIMIT", default_value = "60")]
 	pub rate_limit: u32,
 
 	/// Enable CORS
@@ -55,6 +59,10 @@ pub struct Config {
 	/// Log file path
 	#[arg(long, env = "LOG_FILE")]
 	pub log_file: Option<String>,
+
+	/// Secret file path
+	#[arg(long, env = "CLIENT_SECRET_FILE")]
+	pub client_secret_file: String,
 
 	/// Enable user registration
 	#[arg(long, env = "ENABLE_USER_REGISTRATION")]
@@ -81,7 +89,7 @@ pub struct Config {
 	pub redis_url: Option<String>,
 
 	/// Cache TTL in seconds
-	#[arg(long, env = "CACHE_TTL", default_value = "300")]
+	#[arg(long, env = "CACHE_TTL", default_value = "600")]
 	pub cache_ttl: u64,
 
 	/// Enable Prometheus metrics
@@ -95,6 +103,54 @@ pub struct Config {
 	/// Enable development mode
 	#[arg(long, env = "DEV_MODE")]
 	pub dev_mode: bool,
+
+	/// Streaming Chunk Size
+	#[arg(long, env = "BUFFER_SIZE", default_value = "65536")]
+	pub chunk_size: usize,
+
+	/// Individual request payload lmit in MB
+	#[arg(long, env = "MAX_REQUEST_SIZE_MB", default_value = "10")]
+	pub max_request_size: usize,
+
+	/// Active request limit
+	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", default_value = "100")]
+	pub max_concurrent_req: usize,
+
+	/// Hard timeout for any operation
+	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000")]
+	pub task_timeout_ms: u64,
+
+	/// Streaming Max Chunk Size
+	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
+	pub max_chunks: usize,
+
+	/// OBS Websocket Server IP Address
+	#[arg(long, env = "OBS_WEBSOCKET_IP")]
+	pub obs_host: String,
+
+	/// OBS Websocket Server Password
+	#[arg(long, env = "OBS_WEBSOCKET_PWD")]
+	pub obs_password: String,
+
+	/// GITHUB API SECRET TOKEN
+	#[arg(long, env = "GITHUB_API_TOKEN")]
+	pub github_token: String,
+
+	/// DATABASE URL
+	#[arg(long, env = "DATABASE_URL")]
+	pub database_url: String,
+
+	/// Perform health check and exit
+	#[arg(long, help = "Perform health check against running server")]
+	pub health_check: bool,
+
+	/// Port for health check (defaults to 3000)
+	#[arg(long, default_value = "3000", help = "Port to check for health endpoint")]
+	pub health_check_port: u16,
+
+	/// Host for health check (defaults to localhost)
+	#[arg(long, default_value = "127.0.0.1", help = "Host to check for health endpoint")]
+	pub health_check_host: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]

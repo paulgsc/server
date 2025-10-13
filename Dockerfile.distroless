@@ -1,0 +1,96 @@
+# ==============================================================================
+# STAGE 1: Chef (Caching setup with cargo-chef)
+# ==============================================================================
+FROM rustlang/rust:nightly-slim AS chef
+WORKDIR /app
+
+# Install cargo-chef for build plan caching
+RUN cargo install cargo-chef --locked
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    build-essential \
+    libasound2-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ==============================================================================
+# STAGE 2: Planner (Create build plan)
+# ==============================================================================
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json --bin file_host
+
+# ==============================================================================
+# STAGE 3: Builder (Compile dependencies and binary)
+# ==============================================================================
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Optimize release build
+ENV CARGO_INCREMENTAL=0
+ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
+ENV RUST_BACKTRACE=1
+ENV RUST_LOG=info
+
+# Build and strip binary
+RUN cargo build --release --package file_host
+RUN strip target/release/file_host
+
+# ==============================================================================
+# STAGE 4: Runtime (Minimal distroless image with required libraries)
+# ==============================================================================
+FROM gcr.io/distroless/cc:nonroot AS runtime
+
+WORKDIR /app
+
+# Create app directories
+RUN mkdir -p /app/data /app/secrets /app/config
+
+# Copy the binary (owned by nonroot)
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/file_host /usr/local/bin/file_host
+
+# 🔁 Copy required OpenSSL shared libraries (missing in distroless/cc)
+COPY --from=builder /lib/x86_64-linux-gnu/libssl.so.3 /lib/x86_64-linux-gnu/
+COPY --from=builder /lib/x86_64-linux-gnu/libcrypto.so.3 /lib/x86_64-linux-gnu/
+
+# Optional: Copy other runtime libraries if needed (uncomment if ldd shows them)
+# COPY --from=builder /usr/lib/x86_64-linux-gnu/libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/
+# COPY --from=builder /usr/lib/x86_64-linux-gnu/libasound.so.2 /usr/lib/x86_64-linux-gnu/
+
+# Environment variables
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
+ENV CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
+ENV DATA_DIR=/app/data
+
+# Healthcheck (exec form – no shell)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/file_host", "--health-check"] || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Entry point
+ENTRYPOINT ["/usr/local/bin/file_host"]
+
+# Build arguments
+ARG BUILD_VERSION=unknown
+ARG BUILD_DATE
+ARG VCS_REF
+
+# Labels
+LABEL maintainer="your-email@example.com" \
+      version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/your-org/your-repo" \
+      org.opencontainers.image.licenses="MIT"
