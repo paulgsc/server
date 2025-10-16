@@ -404,17 +404,17 @@ pub struct ConnectionStateDistribution {
 
 async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
 	let client_id = addr.ip().to_string();
-	let cancel_token = state.cancel_token.clone();
+	let cancel_token = state.core.cancel_token.clone();
 	info!("Incoming WS request from {client_id}");
 
-	if !state.connection_guard.try_acquire_permit_hint() {
+	if !state.core.connection_guard.try_acquire_permit_hint() {
 		warn!("Global limit exceeded — rejecting early");
 		return (StatusCode::SERVICE_UNAVAILABLE, "Too many connections").into_response();
 	}
 
 	// Wrap acquire in a timeout (e.g., 5 seconds)
-	match timeout(Duration::from_secs(5), state.connection_guard.acquire(client_id.clone())).await {
-		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state.ws, headers, addr, permit, cancel_token)),
+	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(client_id.clone())).await {
+		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state.realtime.ws, headers, addr, permit, cancel_token)),
 		Ok(Err(err)) => {
 			use AcquireErrorKind::*;
 			let reason = match err.kind {

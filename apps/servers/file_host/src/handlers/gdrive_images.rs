@@ -36,6 +36,7 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 
 	// Use binary cache for potentially better compression and performance
 	let ((data, content_type), _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch_binary(&cache_key, || async {
 			let drive_response = fetch_gdrive_file(state.clone(), &image_id).await?;
@@ -63,9 +64,11 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 #[instrument(name = "fetch_gdrive_file", skip(state), fields(image_id))]
 async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, DedupError> {
 	// Fetch metadata and file content
-	let file = timed_operation!("fetch_gdrive_file", "get_file_metadata", false, { state.gdrive_reader.get_file_metadata(image_id).await })?;
+	let file = timed_operation!("fetch_gdrive_file", "get_file_metadata", false, {
+		state.external.gdrive_reader.get_file_metadata(image_id).await
+	})?;
 
-	let bytes = timed_operation!("fetch_gdrive_file", "download_file", false, { state.gdrive_reader.download_file(image_id).await })?;
+	let bytes = timed_operation!("fetch_gdrive_file", "download_file", false, { state.external.gdrive_reader.download_file(image_id).await })?;
 
 	let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
 
@@ -91,10 +94,11 @@ pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(im
 
 	// First, get or fetch metadata (smaller, faster)
 	let (metadata, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&metadata_cache_key, || async {
 			let file = timed_operation!("serve_gdrive_image_optimized", "get_file_metadata", false, {
-				state.gdrive_reader.get_file_metadata(&image_id).await
+				state.external.gdrive_reader.get_file_metadata(&image_id).await
 			})?;
 
 			let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
@@ -116,10 +120,11 @@ pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(im
 
 	// Then get or fetch the actual file data using binary cache
 	let ((data, _), _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch_binary(&file_cache_key, || async {
 			let bytes = timed_operation!("serve_gdrive_image_optimized", "download_file", false, {
-				state.gdrive_reader.download_file(&image_id).await
+				state.external.gdrive_reader.download_file(&image_id).await
 			})?;
 
 			Ok((bytes.to_vec(), Some(metadata.mime_type.clone())))

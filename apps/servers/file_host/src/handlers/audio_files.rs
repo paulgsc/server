@@ -21,7 +21,7 @@ pub async fn get_audio(State(state): State<AppState>, Path(id): Path<String>, Qu
 		force_refresh: Some(force_refresh),
 	};
 
-	let audio_service = AudioService::new(state.gdrive_reader, state.dedup_cache, AudioConfig::default());
+	let audio_service = AudioService::new(state.external.gdrive_reader, state.realtime.dedup_cache, AudioConfig::default());
 
 	match audio_service.get_audio(req).await {
 		Ok((audio, _)) => Ok(Json(audio)),
@@ -30,7 +30,7 @@ pub async fn get_audio(State(state): State<AppState>, Path(id): Path<String>, Qu
 }
 
 pub async fn search_audio(State(state): State<AppState>, Query(params): Query<SearchAudioRequest>) -> Result<Json<AudioSearchResponse>, StatusCode> {
-	let audio_service = AudioService::new(state.gdrive_reader, state.dedup_cache, AudioConfig::default());
+	let audio_service = AudioService::new(state.external.gdrive_reader, state.realtime.dedup_cache, AudioConfig::default());
 
 	match audio_service.search_audio(params).await {
 		Ok(response) => Ok(Json(response)),
@@ -39,7 +39,7 @@ pub async fn search_audio(State(state): State<AppState>, Query(params): Query<Se
 }
 
 pub async fn search_audio_post(State(state): State<AppState>, Json(req): Json<SearchAudioRequest>) -> Result<Json<AudioSearchResponse>, StatusCode> {
-	let audio_service = AudioService::new(state.gdrive_reader, state.dedup_cache, AudioConfig::default());
+	let audio_service = AudioService::new(state.external.gdrive_reader, state.realtime.dedup_cache, AudioConfig::default());
 
 	match audio_service.search_audio(req).await {
 		Ok(response) => Ok(Json(response)),

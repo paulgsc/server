@@ -14,12 +14,10 @@ use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
 	perform_health_check,
-	websocket::{init_websocket, Event, EventType, NowPlaying},
-	AppState, AudioServiceError, CacheConfig, CacheStore, Config, DedupCache, DedupError, UtterancePrompt,
+	websocket::{Event, EventType, NowPlaying},
+	AppState, AudioServiceError, Config, DedupCache, DedupError, UtterancePrompt,
 };
-use ws_conn_manager::ConnectionGuard;
-// use futures::{sink::SinkExt, stream::StreamExt};
-use sdk::{GitHubClient, ReadDrive, ReadSheets};
+use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;
 use sqlx::SqlitePool;
 use std::{net::SocketAddr, sync::Arc};
@@ -55,35 +53,12 @@ async fn main() -> Result<()> {
 	let _ = init_tracing(&config);
 
 	let config = Arc::new(config);
-	let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
-	let dedup_cache = DedupCache::new(cache_store.into(), config.max_in_flight.clone());
-
-	let secret_file = config.client_secret_file.clone();
-	let use_email = config.email_service_url.clone().unwrap_or("".to_string());
-	let gsheet_reader = ReadSheets::new(use_email.clone(), secret_file.clone())?;
-	let gdrive_reader = ReadDrive::new(use_email.clone(), secret_file.clone())?;
-	let github_client = GitHubClient::new(config.github_token.clone())?;
-
-	// Create cancellation token for coordinated shutdown
-	let shutdown_token = CancellationToken::new();
-	let cancel_token = shutdown_token.clone();
-	let ws_state = init_websocket(cancel_token).await;
-
 	let pool = SqlitePool::connect(&config.database_url).await?;
+	let shutdown_token = CancellationToken::new();
 
-	let app_state = AppState {
-		connection_guard: ConnectionGuard::new(),
-		dedup_cache: dedup_cache.into(),
-		gsheet_reader: gsheet_reader.into(),
-		gdrive_reader: gdrive_reader.into(),
-		github_client: github_client.into(),
-		shared_db: pool,
-		ws: ws_state.clone(),
-		config: config.clone(),
-		cancel_token: shutdown_token.clone(),
-	};
+	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
-	let ws_bridge = Arc::new(ws_state.clone()); // Arc<WebSocketFsm>
+	let ws_bridge = Arc::new(app_state.realtime.ws.clone());
 	ws_bridge.clone().bridge_obs_events(EventType::ObsStatus);
 
 	let mut protected_routes = Router::new()
@@ -97,28 +72,15 @@ async fn main() -> Result<()> {
 		.merge(post_utterance());
 
 	let max_requests = config.clone().max_request_size.try_into()?;
+	// TODO: Is this even working! boyo needs to know!
 	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
-
-	// Add connection stats endpoint (if needed)
-	// let stats_route = Router::new()
-	//	.route(
-	//		"/connection-stats",
-	//		axum::routing::get({
-	//			let limiter = connection_limiter.clone();
-	//			move || async move {
-	//				let stats = limiter.get_stats().await;
-	//				axum::Json(stats)
-	//			}
-	//		}),
-	//	)
-	//	.with_state(connection_limiter);
 
 	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
 
 	let app = Router::new()
 		.merge(protected_routes)
 		.merge(public_routes)
-		.merge(ws_state.router())
+		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
 
 	let app = app.layer(
@@ -160,7 +122,7 @@ async fn main() -> Result<()> {
 		ws_bridge.shutdown().await;
 		tracing::info!("WebSocket shutdown complete");
 
-		app_state.shared_db.close().await;
+		app_state.core.shared_db.close().await;
 		tracing::info!("Database closed");
 	};
 

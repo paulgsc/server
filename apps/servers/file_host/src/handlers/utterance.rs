@@ -11,7 +11,7 @@ use tracing::instrument;
 pub async fn utterance(State(state): State<AppState>, Json(payload): Json<UtterancePrompt>) -> StatusCode {
 	let event = Event::from(payload);
 
-	let _ = state.ws.broadcast_event(&event).await;
+	let _ = state.realtime.ws.broadcast_event(&event).await;
 
 	StatusCode::OK
 }

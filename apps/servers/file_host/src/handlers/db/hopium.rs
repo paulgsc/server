@@ -50,7 +50,7 @@ impl From<MoodEventError> for DedupError {
 #[axum::debug_handler]
 #[instrument(name = "create_mood_event", skip(state))]
 pub async fn create_mood_event(State(state): State<AppState>, Json(event): Json<CreateMoodEvent>) -> Result<Json<MoodEvent>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let result = timed_operation!("create_mood_event", "database_insert", false, { mood_repository.create(event).await })?;
 
 	Ok(Json(result))
@@ -59,9 +59,10 @@ pub async fn create_mood_event(State(state): State<AppState>, Json(event): Json<
 #[axum::debug_handler]
 #[instrument(name = "get_all_mood_events", skip(state))]
 pub async fn get_all_mood_events(State(state): State<AppState>) -> Result<Json<Vec<MoodEvent>>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let cache_key = "get_all_mood_events".to_string();
 	let (events, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_all_mood_events", "database_fetch", false, {
@@ -76,9 +77,10 @@ pub async fn get_all_mood_events(State(state): State<AppState>) -> Result<Json<V
 #[axum::debug_handler]
 #[instrument(name = "get_mood_event_by_id", skip(state))]
 pub async fn get_mood_event_by_id(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Json<MoodEvent>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let cache_key = format!("mood_event_{}", id);
 	let (event_opt, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_mood_event_by_id", "database_fetch", false, {
@@ -96,7 +98,7 @@ pub async fn get_mood_event_by_id(State(state): State<AppState>, Path(id): Path<
 #[axum::debug_handler]
 #[instrument(name = "update_mood_event", skip(state))]
 pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64>, Json(update): Json<UpdateMoodEvent>) -> Result<Json<MoodEvent>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let result_opt = timed_operation!("update_mood_event", "database_update", false, { mood_repository.update(id, update).await })?;
 
 	let result = match result_opt {
@@ -106,8 +108,8 @@ pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64
 
 	// Invalidate cache
 	let cache_key = format!("mood_event_{}", id);
-	state.dedup_cache.delete(&cache_key).await?;
-	state.dedup_cache.delete("get_all_mood_events").await?;
+	state.realtime.dedup_cache.delete(&cache_key).await?;
+	state.realtime.dedup_cache.delete("get_all_mood_events").await?;
 
 	Ok(Json(result))
 }
@@ -115,14 +117,14 @@ pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64
 #[axum::debug_handler]
 #[instrument(name = "delete_mood_event", skip(state))]
 pub async fn delete_mood_event(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let deleted = timed_operation!("delete_mood_event", "database_delete", false, { mood_repository.delete(id).await })?;
 
 	if deleted {
 		// Invalidate cache
 		let cache_key = format!("mood_event_{}", id);
-		state.dedup_cache.delete(&cache_key).await?;
-		state.dedup_cache.delete("get_all_mood_events").await?;
+		state.realtime.dedup_cache.delete(&cache_key).await?;
+		state.realtime.dedup_cache.delete("get_all_mood_events").await?;
 		Ok(StatusCode::NO_CONTENT)
 	} else {
 		Err(MoodEventError::NotFound.into())
@@ -137,13 +139,13 @@ pub async fn batch_create_mood_events(State(state): State<AppState>, Json(reques
 		return Err(MoodEventError::ValidationError("Events list cannot be empty".to_string()).into());
 	}
 
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let result = timed_operation!("batch_create_mood_events", "database_batch_insert", false, {
 		mood_repository.batch_create(request.events).await
 	})?;
 
 	// Invalidate relevant caches
-	state.dedup_cache.delete("get_all_mood_events").await?;
+	state.realtime.dedup_cache.delete("get_all_mood_events").await?;
 
 	Ok(Json(result))
 }
@@ -155,7 +157,7 @@ pub async fn batch_update_mood_events(State(state): State<AppState>, Json(reques
 		return Err(MoodEventError::ValidationError("Updates map cannot be empty".to_string()).into());
 	}
 
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let result = timed_operation!("batch_update_mood_events", "database_batch_update", false, {
 		mood_repository.batch_update(request.updates.clone()).await
 	})?;
@@ -163,9 +165,9 @@ pub async fn batch_update_mood_events(State(state): State<AppState>, Json(reques
 	// Invalidate relevant caches
 	for id in request.updates.keys() {
 		let cache_key = format!("mood_event_{}", id);
-		state.dedup_cache.delete(&cache_key).await?;
+		state.realtime.dedup_cache.delete(&cache_key).await?;
 	}
-	state.dedup_cache.delete("get_all_mood_events").await?;
+	state.realtime.dedup_cache.delete("get_all_mood_events").await?;
 
 	Ok(Json(result))
 }
@@ -177,7 +179,7 @@ pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(reques
 		return Err(MoodEventError::ValidationError("IDs list cannot be empty".to_string()).into());
 	}
 
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let deleted_count = timed_operation!("batch_delete_mood_events", "database_batch_delete", false, {
 		mood_repository.batch_delete(request.ids.clone()).await
 	})?;
@@ -185,9 +187,9 @@ pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(reques
 	// Invalidate relevant caches
 	for id in &request.ids {
 		let cache_key = format!("mood_event_{}", id);
-		state.dedup_cache.delete(&cache_key).await?;
+		state.realtime.dedup_cache.delete(&cache_key).await?;
 	}
-	state.dedup_cache.delete("get_all_mood_events").await?;
+	state.realtime.dedup_cache.delete("get_all_mood_events").await?;
 
 	Ok(Json(BatchDeleteResponse { deleted_count }))
 }
@@ -196,9 +198,10 @@ pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(reques
 #[axum::debug_handler]
 #[instrument(name = "get_mood_events_by_week", skip(state))]
 pub async fn get_mood_events_by_week(State(state): State<AppState>, Path(week): Path<i64>) -> Result<Json<Vec<MoodEvent>>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let cache_key = format!("mood_events_week_{}", week);
 	let (events, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_mood_events_by_week", "database_fetch", false, {
@@ -213,9 +216,10 @@ pub async fn get_mood_events_by_week(State(state): State<AppState>, Path(week): 
 #[axum::debug_handler]
 #[instrument(name = "get_mood_events_by_team", skip(state))]
 pub async fn get_mood_events_by_team(State(state): State<AppState>, Path(team): Path<String>) -> Result<Json<Vec<MoodEvent>>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let cache_key = format!("mood_events_team_{}", team);
 	let (events, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_mood_events_by_team", "database_fetch", false, {
@@ -230,10 +234,11 @@ pub async fn get_mood_events_by_team(State(state): State<AppState>, Path(team): 
 #[axum::debug_handler]
 #[instrument(name = "get_mood_stats", skip(state))]
 pub async fn get_mood_stats(State(state): State<AppState>) -> Result<Json<MoodStats>, DedupError> {
-	let mood_repository = Arc::new(MoodEventRepository::new(state.shared_db));
+	let mood_repository = Arc::new(MoodEventRepository::new(state.core.shared_db));
 	let cache_key = "mood_stats".to_string();
 
 	let (stats, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_mood_stats", "database_fetch", false, {

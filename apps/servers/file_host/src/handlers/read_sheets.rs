@@ -17,6 +17,7 @@ pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<Stri
 	let cache_key = format!("get_attributions_{}_{}", id, range);
 
 	let (raw_data, was_cached) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_attributions", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
@@ -35,6 +36,7 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 	let cache_key = format!("get_video_chapters_{}_{}", id, range);
 
 	let (raw_data, was_cached) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			timed_operation!("get_video_chapters", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
@@ -53,6 +55,7 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 	let cache_key = format!("get_gantt_{}_{}", id, range);
 
 	let (gantt_chapters, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			// Fetch raw data
@@ -81,10 +84,11 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 	let cache_key = format!("get_nfl_tennis_{}", id);
 
 	let (sheet_collection, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, {
-				state.gsheet_reader.retrieve_all_sheets_data(&id).await
+				state.external.gsheet_reader.retrieve_all_sheets_data(&id).await
 			})?;
 
 			let mut collection = Vec::new();
@@ -117,6 +121,7 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 	let cache_key = format!("get_nfl_roster_{}", id);
 
 	let (roster, _) = state
+		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			// Fetch raw data
@@ -141,10 +146,12 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 #[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id))]
 async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, DedupError> {
 	let data = match range {
-		Some(query) => timed_operation!("fetch_sheet_data", "read_data_with_query", false, { state.gsheet_reader.read_data(sheet_id, query).await })?,
+		Some(query) => timed_operation!("fetch_sheet_data", "read_data_with_query", false, {
+			state.external.gsheet_reader.read_data(sheet_id, query).await
+		})?,
 		None => {
 			let res = timed_operation!("fetch_sheet_data", "retrieve_all_sheets", false, {
-				state.gsheet_reader.retrieve_all_sheets_data(sheet_id).await
+				state.external.gsheet_reader.retrieve_all_sheets_data(sheet_id).await
 			})?;
 
 			let (_, data) = res.into_iter().next().ok_or(DedupError::UnexpectedSinglePair)?;

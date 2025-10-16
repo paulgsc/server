@@ -13,10 +13,10 @@ pub async fn now_playing(State(state): State<AppState>, Json(payload): Json<NowP
 	// Cache the event
 	// So that cliets that miss broadcast can fetch from cache.
 	let key = "now_playing";
-	let redis = state.dedup_cache.get_cache_store();
-	let _ = redis.set(key, &event, Some(state.config.cache_ttl)).await?;
+	let redis = state.realtime.dedup_cache.get_cache_store();
+	let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await?;
 
-	let _ = state.ws.broadcast_event(&event).await;
+	let _ = state.realtime.ws.broadcast_event(&event).await;
 
 	Ok(StatusCode::OK)
 }

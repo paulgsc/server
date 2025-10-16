@@ -1,3 +1,4 @@
+// lib.rs
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
@@ -11,56 +12,121 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod health;
-// pub mod streaming_service;
-pub mod websocket;
-// pub mod image_processing;
 pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
 pub mod routes;
 pub mod utils;
+pub mod websocket;
 
-pub use crate::websocket::{Event, NowPlaying, UtterancePrompt, WebSocketFsm};
+pub use crate::websocket::{init_websocket, Event, NowPlaying, UtterancePrompt, WebSocketFsm};
+pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
 pub use config::*;
+pub use handlers::audio_files::error::AudioServiceError;
 pub use handlers::utterance::UtteranceMetadata;
 pub use health::perform_health_check;
 pub use metrics::http::*;
 pub use metrics::ws::*;
 
-pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
-pub use handlers::audio_files::error::AudioServiceError;
-
+/// Core: defines the universe - stable, global, rarely changes
 #[derive(Clone)]
-pub struct AppState {
+pub struct CoreContext {
+	pub config: Arc<Config>,
+	pub cancel_token: CancellationToken,
+	pub shared_db: SqlitePool,
 	pub connection_guard: ConnectionGuard,
-	pub dedup_cache: Arc<DedupCache>,
+}
+
+/// External APIs: third-party integrations with independent lifecycles
+#[derive(Clone)]
+pub struct ExternalApis {
 	pub gsheet_reader: Arc<ReadSheets>,
 	pub gdrive_reader: Arc<ReadDrive>,
 	pub github_client: Arc<GitHubClient>,
-	pub shared_db: SqlitePool,
-	pub ws: WebSocketFsm,
-	// TODO: might remove the Arc here!
-	pub config: Arc<Config>,
-	pub cancel_token: CancellationToken,
 }
 
-// Implement for the non-Arc field `DedupCache`
+/// Realtime: websocket and ephemeral caching subsystem
+#[derive(Clone)]
+pub struct RealtimeContext {
+	pub ws: WebSocketFsm,
+	pub dedup_cache: Arc<DedupCache>,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+	pub core: CoreContext,
+	pub external: ExternalApis,
+	pub realtime: RealtimeContext,
+}
+
+impl AppState {
+	/// Build the entire universe in one explicit place
+	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
+		let core = CoreContext {
+			config: config.clone(),
+			cancel_token: cancel_token.clone(),
+			shared_db: pool,
+			connection_guard: ConnectionGuard::new(),
+		};
+
+		let secret_file = config.client_secret_file.clone();
+		let use_email = config.email_service_url.clone().unwrap_or_default();
+
+		let external = ExternalApis {
+			gsheet_reader: Arc::new(ReadSheets::new(use_email.clone(), secret_file.clone())?),
+			gdrive_reader: Arc::new(ReadDrive::new(use_email.clone(), secret_file.clone())?),
+			github_client: Arc::new(GitHubClient::new(config.github_token.clone())?),
+		};
+
+		let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
+		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
+
+		let ws = init_websocket(cancel_token.clone()).await;
+
+		let realtime = RealtimeContext { ws, dedup_cache };
+
+		Ok(Self { core, external, realtime })
+	}
+}
+
 impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
-		state.dedup_cache.clone()
+		state.realtime.dedup_cache.clone()
 	}
 }
 
-// Implement for the Arc-wrapped field `ReadSheets`
 impl FromRef<AppState> for Arc<ReadSheets> {
 	fn from_ref(state: &AppState) -> Self {
-		state.gsheet_reader.clone()
+		state.external.gsheet_reader.clone()
 	}
 }
 
-// Implement for your `Config`
 impl FromRef<AppState> for Arc<Config> {
 	fn from_ref(state: &AppState) -> Self {
-		state.config.clone()
+		state.core.config.clone()
+	}
+}
+
+impl FromRef<AppState> for SqlitePool {
+	fn from_ref(state: &AppState) -> Self {
+		state.core.shared_db.clone()
+	}
+}
+
+impl FromRef<AppState> for WebSocketFsm {
+	fn from_ref(state: &AppState) -> Self {
+		state.realtime.ws.clone()
+	}
+}
+
+impl FromRef<AppState> for CancellationToken {
+	fn from_ref(state: &AppState) -> Self {
+		state.core.cancel_token.clone()
+	}
+}
+
+impl FromRef<AppState> for ConnectionGuard {
+	fn from_ref(state: &AppState) -> Self {
+		state.core.connection_guard.clone()
 	}
 }
