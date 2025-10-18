@@ -8,20 +8,22 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-broadcast = "0.7.2"
+async-broadcast = { version =  "0.7.2", optional = true }
 async-trait.workspace = true
-dashmap = "6.1.0"
+dashmap = { version =  "6.1.0", optional = true }
 thiserror.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 serde_json = { workspace = true, optional = true }
 async-nats = { version = "0.44.2", optional = true }
+tokio  = { workspace = true, optional = true, features = ["sync"] }
+bincode = { version =  "2.0.1", optional = true }
 
 [lints]
 workspace = true
 
 [features]
 default = []              # features enabled by default
-inmem = []            # simple feature, nothing else enabled
-nats = ["dep:async-nats", "dep:serde_json"]
+inmem = ["async-broadcast", "dashmap"]
+nats = ["async-nats", "serde", "dashmap", "bincode", "tokio/sync"]
 
