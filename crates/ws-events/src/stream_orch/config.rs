@@ -65,7 +65,7 @@ impl OrchestratorConfig {
 
 	pub fn validate(&self) -> Result<(), String> {
 		if self.scenes.is_empty() {
-			return Err("No scenes configured".to_string());
+			return Ok(());
 		}
 
 		for (idx, scene) in self.scenes.iter().enumerate() {

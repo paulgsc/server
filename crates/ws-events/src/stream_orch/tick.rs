@@ -7,7 +7,7 @@ use super::state::OrchestratorState;
 use super::types::TimeMs;
 use tokio::sync::watch;
 use tokio::time::{interval, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Internal mutable state owned by the tick engine
 struct TickEngineState {
@@ -117,7 +117,7 @@ impl TickEngine {
 	fn handle_tick(engine_state: &mut TickEngineState, state_tx: &watch::Sender<OrchestratorState>) {
 		let mut state = state_tx.borrow().clone();
 
-		if !state.is_running || state.is_paused {
+		if !state.is_running || state.is_paused || state.scenes.is_empty() {
 			return;
 		}
 
@@ -149,6 +149,11 @@ impl TickEngine {
 
 		match command {
 			TickCommand::Start => {
+				if state.scenes.is_empty() {
+					error!("The are no scenes configured, current list of scenes is empty!");
+					return Err(OrchestratorError::NotConfigured);
+				}
+
 				if state.is_running {
 					return Err(OrchestratorError::AlreadyRunning);
 				}

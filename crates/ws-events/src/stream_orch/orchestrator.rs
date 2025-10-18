@@ -11,20 +11,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// Commands that can be sent to the orchestrator
-#[derive(Debug, Clone)]
-pub enum OrchestratorCommand {
-	Configure { config: OrchestratorConfig },
-	Start,
-	Stop,
-	Reset,
-	Pause,
-	Resume,
-	ForceScene { scene_name: String },
-	SkipCurrentScene,
-	UpdateStreamStatus { is_streaming: bool, stream_time: TimeMs, timecode: String },
-}
-
 /// Main orchestrator that manages the tick engine
 /// Pure actor pattern - all methods are immutable (&self)
 pub struct StreamOrchestrator {
