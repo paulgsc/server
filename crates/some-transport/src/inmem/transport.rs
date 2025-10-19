@@ -132,7 +132,7 @@ where
 			.map_err(|e| TransportError::BroadcastFailed(e.to_string()))
 	}
 
-	fn subscribe(&self) -> TransportReceiver<E, InMemReceiver<E>> {
+	async fn subscribe(&self) -> TransportReceiver<E, InMemReceiver<E>> {
 		let receiver = self.main_sender.new_receiver();
 		TransportReceiver::new(InMemReceiver::new(receiver))
 	}
@@ -181,9 +181,9 @@ where
 	/// }
 	/// ```
 	#[must_use]
-	pub fn with_receiver(buffer_size: usize) -> (Self, TransportReceiver<E, InMemReceiver<E>>) {
+	pub async fn with_receiver(buffer_size: usize) -> (Self, TransportReceiver<E, InMemReceiver<E>>) {
 		let transport = Self::new(buffer_size);
-		let receiver = transport.subscribe();
+		let receiver = transport.subscribe().await;
 		(transport, receiver)
 	}
 }

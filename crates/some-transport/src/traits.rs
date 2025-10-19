@@ -25,7 +25,7 @@ where
 	async fn broadcast(&self, event: E) -> Result<usize>;
 
 	/// Subscribes to the global transport event stream.
-	fn subscribe(&self) -> Self::Receiver;
+	async fn subscribe(&self) -> Self::Receiver;
 
 	/// Returns the total number of active receivers.
 	fn total_receivers(&self) -> usize;

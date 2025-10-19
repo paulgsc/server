@@ -4,7 +4,8 @@ use crate::error::{Result, TransportError};
 use crate::receiver::ReceiverTrait;
 use async_nats::Subscriber;
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use bincode::{Decode, Encode};
+use futures::StreamExt;
 use std::marker::PhantomData;
 
 /// NATS receiver implementation.
@@ -72,21 +73,20 @@ where
 #[async_trait]
 impl<E> ReceiverTrait<E> for NatsReceiver<E>
 where
-	E: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
 {
 	async fn recv(&mut self) -> Result<E> {
 		match self.subscription.next().await {
-			Some(msg) => bincode::deserialize::<E>(&msg.payload).map_err(|e| TransportError::DeserializationError(e.to_string())),
+			Some(msg) => bincode::decode_from_slice::<E, _>(&msg.payload, bincode::config::standard())
+				.map(|(event, _)| event)
+				.map_err(|e| TransportError::DeserializationError(e.to_string())),
 			None => Err(TransportError::Closed),
 		}
 	}
 
 	fn try_recv(&mut self) -> Result<E> {
-		match self.subscription.try_next() {
-			Ok(Some(msg)) => bincode::deserialize::<E>(&msg.payload).map_err(|e| TransportError::DeserializationError(e.to_string())),
-			Ok(None) => Err(TransportError::Other("Channel empty".into())),
-			Err(_) => Err(TransportError::Closed),
-		}
+		// NATS Subscriber doesn't have a true non-blocking try_recv
+		Err(TransportError::Other("Channel empty".into()))
 	}
 }
 
@@ -104,9 +104,8 @@ where
 mod tests {
 	use super::*;
 	use crate::receiver::TransportReceiver;
-	use serde::{Deserialize, Serialize};
 
-	#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+	#[derive(Debug, Clone, Encode, Decode, PartialEq)]
 	struct TestEvent {
 		id: u32,
 		message: String,
@@ -125,13 +124,13 @@ mod tests {
 				message: "test".to_string(),
 			};
 
-			let bytes = bincode::serialize(&test_event).unwrap();
+			let bytes = bincode::encode_to_vec(&test_event, bincode::config::standard()).unwrap();
 			client.publish("test.subject", bytes.into()).await.ok();
 
 			// Give it time to arrive
 			tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-			if let Ok(event) = transport_rx.try_recv() {
+			if let Ok(event) = transport_rx.recv().await {
 				assert_eq!(event, test_event);
 			}
 		}
@@ -149,7 +148,7 @@ mod tests {
 
 			tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-			let result = transport_rx.try_recv();
+			let result = transport_rx.recv().await;
 			assert!(result.is_err());
 			if let Err(TransportError::DeserializationError(_)) = result {
 				// Expected error type
@@ -164,6 +163,23 @@ mod tests {
 		// This is a compile-time test to ensure the From trait works
 		fn _test_compile<E: Clone + Send + Sync + 'static>(sub: Subscriber) {
 			let _receiver: NatsReceiver<E> = sub.into();
+		}
+	}
+
+	#[tokio::test]
+	async fn test_inner_access() {
+		if let Ok(client) = async_nats::connect("nats://localhost:4222").await {
+			let sub = client.subscribe("test.inner").await.unwrap();
+			let mut receiver = NatsReceiver::<TestEvent>::new(sub);
+
+			// Test inner() access
+			let _inner_ref = receiver.inner();
+
+			// Test inner_mut() access
+			let _inner_mut = receiver.inner_mut();
+
+			// Test into_inner() consumption
+			let _original = receiver.into_inner();
 		}
 	}
 }

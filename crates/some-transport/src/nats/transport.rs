@@ -1,11 +1,12 @@
 #![cfg(feature = "nats")]
 
 use super::pool::NatsConnectionPool;
-use super::receiver::{NatsReceiver, TransportReceiver};
+use super::receiver::NatsReceiver;
 use crate::error::{Result, TransportError};
+use crate::receiver::TransportReceiver;
 use crate::traits::Transport;
 use async_nats::Client;
-use serde::{de::DeserializeOwned, Serialize};
+use bincode::{Decode, Encode};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct NatsTransport<E>
 where
-	E: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
 {
 	client: Arc<Client>,
 	active_channels: Arc<AtomicUsize>,
@@ -49,7 +50,7 @@ where
 
 impl<E> NatsTransport<E>
 where
-	E: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
 {
 	/// Creates a new NATS transport from a connected client.
 	pub fn new(client: Client) -> Self {
@@ -117,7 +118,7 @@ where
 #[async_trait::async_trait]
 impl<E> Transport<E> for NatsTransport<E>
 where
-	E: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
 {
 	type Receiver = TransportReceiver<E, NatsReceiver<E>>;
 
@@ -139,7 +140,7 @@ where
 
 	async fn send(&self, connection_key: &str, event: E) -> Result<()> {
 		let subject = Self::channel_subject(connection_key);
-		let bytes = bincode::serialize(&event).map_err(|e| TransportError::SerializationError(e.to_string()))?;
+		let bytes = bincode::encode_to_vec(&event, bincode::config::standard()).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
 		self.client.publish(subject, bytes.into()).await.map_err(|e| TransportError::SendFailed(e.to_string()))?;
 
@@ -147,7 +148,7 @@ where
 	}
 
 	async fn broadcast(&self, event: E) -> Result<usize> {
-		let bytes = bincode::serialize(&event).map_err(|e| TransportError::SerializationError(e.to_string()))?;
+		let bytes = bincode::encode_to_vec(&event, bincode::config::standard()).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
 		self
 			.client
@@ -186,7 +187,7 @@ where
 // Convenience constructors
 impl<E> NatsTransport<E>
 where
-	E: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
 {
 	/// Creates transport and returns it with an initial broadcast receiver.
 	pub async fn with_receiver(client: Client) -> (Self, TransportReceiver<E, NatsReceiver<E>>) {
