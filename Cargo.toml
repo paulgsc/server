@@ -40,7 +40,6 @@ mood_event = { path = "crates/db/mood_event" }
 ws-connection = { path = "crates/ws-connection" }
 some-transport = { path = "crates/some-transport" }
 ws-conn-manager = { path = "crates/ws-conn-manager" }
-ws-events = { path = "crates/ws-events" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"

@@ -183,6 +183,51 @@ services:
       timeout: 10s
       retries: 3
 
+  nats:
+    image: nats:latest
+    container_name: nats-server
+    restart: unless-stopped
+    ports:
+      - '4222:4222' # client pub/sub
+      - '8222:8222' # HTTP monitoring API
+    networks:
+      - monitoring-network
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:8222/']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  nats-surveyor:
+    image: synadia/surveyor:latest
+    container_name: nats-surveyor
+    depends_on:
+      nats:
+        condition: service_healthy
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    ports:
+      - '8282:8222'
+    environment:
+      - JS_API_ADVERTISE=http://nats:8222
+      - NATS_URL=nats://nats:4222
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+
   metabase:
     image: metabase/metabase:latest
     container_name: metabase
