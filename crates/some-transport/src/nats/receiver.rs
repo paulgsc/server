@@ -18,8 +18,11 @@ use std::marker::PhantomData;
 ///
 /// # Example
 /// ```rust,no_run
-/// use transport::nats::NatsReceiver;
-/// use transport::receiver::TransportReceiver;
+/// use some_transport::NatsReceiver;
+/// use some_transport::TransportReceiver;
+/// # use bincode::{Encode, Decode};
+/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+/// # pub struct MyEvent {};
 ///
 /// async fn example(client: async_nats::Client) {
 ///     let sub = client.subscribe("my.subject").await.unwrap();

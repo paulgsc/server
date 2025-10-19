@@ -20,6 +20,9 @@ tokio  = { workspace = true, optional = true, features = ["sync"] }
 bincode = { version =  "2.0.1", optional = true }
 futures = { version = "0.3", optional = true }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
 [lints]
 workspace = true
 

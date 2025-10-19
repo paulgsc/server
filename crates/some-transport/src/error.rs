@@ -11,7 +11,7 @@ pub type Result<T> = std::result::Result<T, TransportError>;
 /// # Example
 ///
 /// ```rust,no_run
-/// use transport::error::{Result, TransportError};
+/// use some_transport::error::{Result, TransportError};
 ///
 /// async fn send_message() -> Result<()> {
 ///     // ... transport operations

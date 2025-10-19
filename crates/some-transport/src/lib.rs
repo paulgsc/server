@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use transport::{Transport, TransportReceiver};
+//! use some_transport::{Transport, TransportReceiver};
 //!
 //! #[cfg(feature = "inmem")]
 //! async fn example_inmem() {
@@ -34,7 +34,7 @@
 //!
 //! #[cfg(feature = "nats")]
 //! async fn example_nats() {
-//!     use transport::NatsTransport;
+//!     use some_transport::NatsTransport;
 //!     
 //!     let transport = NatsTransport::<String>::connect_pooled("nats://localhost:4222")
 //!         .await
@@ -56,6 +56,7 @@ pub mod receiver;
 pub mod traits;
 
 // Re-export core types
+pub use error::TransportError;
 pub use receiver::{ReceiverTrait, TransportReceiver};
 pub use traits::Transport;
 

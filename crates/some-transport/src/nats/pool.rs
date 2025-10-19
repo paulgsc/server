@@ -13,7 +13,8 @@ use tokio::sync::OnceCell;
 ///
 /// # Example
 /// ```rust,no_run
-/// use nats_transport::NatsConnectionPool;
+/// use some_transport::NatsConnectionPool;
+/// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() {

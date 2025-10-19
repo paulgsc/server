@@ -10,7 +10,10 @@ use std::marker::PhantomData;
 ///
 /// # Example
 /// ```rust,no_run
-/// use transport::receiver::{TransportReceiver, ReceiverTrait};
+/// use some_transport::{TransportReceiver, ReceiverTrait};
+/// # use bincode::{Encode, Decode};
+/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+/// # pub struct MyEvent {};
 ///
 /// async fn handle_messages<R>(mut rx: TransportReceiver<MyEvent, R>)
 /// where
@@ -86,8 +89,12 @@ where
 /// # Example Implementation
 /// ```rust,no_run
 /// use async_trait::async_trait;
-/// use transport::receiver::ReceiverTrait;
-/// use transport::error::Result;
+/// use some_transport::receiver::ReceiverTrait;
+/// use some_transport::error::Result;
+/// # use bincode::{Encode, Decode};
+///
+/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+/// # pub struct MyEvent {};
 ///
 /// struct MyReceiver {
 ///     // ... implementation details
