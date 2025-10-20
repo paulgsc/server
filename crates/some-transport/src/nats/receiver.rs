@@ -4,8 +4,8 @@ use crate::error::{Result, TransportError};
 use crate::receiver::ReceiverTrait;
 use async_nats::Subscriber;
 use async_trait::async_trait;
-use bincode::{Decode, Encode};
 use futures::StreamExt;
+use prost::Message;
 use std::marker::PhantomData;
 
 /// NATS receiver implementation.
@@ -14,15 +14,18 @@ use std::marker::PhantomData;
 /// the generic `ReceiverTrait` interface, allowing it to work seamlessly
 /// with the transport-agnostic `TransportReceiver` wrapper.
 ///
-/// Messages are automatically serialized/deserialized using bincode.
+/// Messages are automatically serialized/deserialized using Protocol Buffers.
 ///
 /// # Example
 /// ```rust,no_run
 /// use some_transport::NatsReceiver;
 /// use some_transport::TransportReceiver;
-/// # use bincode::{Encode, Decode};
-/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
-/// # pub struct MyEvent {};
+/// # use prost::Message;
+/// # #[derive(Clone, Debug, PartialEq, Message)]
+/// # pub struct MyEvent {
+/// #     #[prost(string, tag = "1")]
+/// #     pub data: String,
+/// # }
 ///
 /// async fn example(client: async_nats::Client) {
 ///     let sub = client.subscribe("my.subject").await.unwrap();
@@ -76,13 +79,11 @@ where
 #[async_trait]
 impl<E> ReceiverTrait<E> for NatsReceiver<E>
 where
-	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
+	E: Clone + Send + Sync + Message + Default + 'static,
 {
 	async fn recv(&mut self) -> Result<E> {
 		match self.subscription.next().await {
-			Some(msg) => bincode::decode_from_slice::<E, _>(&msg.payload, bincode::config::standard())
-				.map(|(event, _)| event)
-				.map_err(|e| TransportError::DeserializationError(e.to_string())),
+			Some(msg) => E::decode(&msg.payload[..]).map_err(|e| TransportError::DeserializationError(e.to_string())),
 			None => Err(TransportError::Closed),
 		}
 	}
@@ -108,9 +109,11 @@ mod tests {
 	use super::*;
 	use crate::receiver::TransportReceiver;
 
-	#[derive(Debug, Clone, Encode, Decode, PartialEq)]
+	#[derive(Debug, Clone, Message, PartialEq)]
 	struct TestEvent {
+		#[prost(uint32, tag = "1")]
 		id: u32,
+		#[prost(string, tag = "2")]
 		message: String,
 	}
 
@@ -127,7 +130,8 @@ mod tests {
 				message: "test".to_string(),
 			};
 
-			let bytes = bincode::encode_to_vec(&test_event, bincode::config::standard()).unwrap();
+			let mut bytes = Vec::new();
+			test_event.encode(&mut bytes).unwrap();
 			client.publish("test.subject", bytes.into()).await.ok();
 
 			// Give it time to arrive

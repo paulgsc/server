@@ -6,7 +6,7 @@ use crate::error::{Result, TransportError};
 use crate::receiver::TransportReceiver;
 use crate::traits::Transport;
 use async_nats::Client;
-use bincode::{Decode, Encode};
+use prost::Message;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -26,9 +26,12 @@ use std::sync::Arc;
 /// # Example
 /// ```rust,no_run
 /// # use some_transport::NatsTransport;
-/// # use bincode::{Encode, Decode};
-/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
-/// # pub struct MyEvent {};
+/// # use prost::Message;
+/// # #[derive(Clone, Debug, PartialEq, Message)]
+/// # pub struct MyEvent {
+/// #     #[prost(string, tag = "1")]
+/// #     pub data: String,
+/// # }
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// // Recommended: Use pooled connections
@@ -44,7 +47,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct NatsTransport<E>
 where
-	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
+	E: Clone + Send + Sync + Message + Default + 'static,
 {
 	client: Arc<Client>,
 	active_channels: Arc<AtomicUsize>,
@@ -53,7 +56,7 @@ where
 
 impl<E> NatsTransport<E>
 where
-	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
+	E: Clone + Send + Sync + Message + Default + 'static,
 {
 	/// Creates a new NATS transport from a connected client.
 	pub fn new(client: Client) -> Self {
@@ -82,9 +85,12 @@ where
 	/// # Example
 	/// ```rust,no_run
 	/// # use some_transport::NatsTransport;
-	/// # use bincode::{Encode, Decode};
-	/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
-	/// # pub struct MyEvent {};
+	/// # use prost::Message;
+	/// # #[derive(Clone, Debug, PartialEq, Message)]
+	/// # pub struct MyEvent {
+	/// #     #[prost(string, tag = "1")]
+	/// #     pub data: String,
+	/// # }
 	/// # #[tokio::main]
 	/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	/// let transport1 = NatsTransport::<MyEvent>::connect_pooled("nats://localhost:4222").await?;
@@ -124,7 +130,7 @@ where
 #[async_trait::async_trait]
 impl<E> Transport<E> for NatsTransport<E>
 where
-	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
+	E: Clone + Send + Sync + Message + Default + 'static,
 {
 	type Receiver = TransportReceiver<E, NatsReceiver<E>>;
 
@@ -146,7 +152,8 @@ where
 
 	async fn send(&self, connection_key: &str, event: E) -> Result<()> {
 		let subject = Self::channel_subject(connection_key);
-		let bytes = bincode::encode_to_vec(&event, bincode::config::standard()).map_err(|e| TransportError::SerializationError(e.to_string()))?;
+		let mut bytes = Vec::new();
+		event.encode(&mut bytes).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
 		self.client.publish(subject, bytes.into()).await.map_err(|e| TransportError::SendFailed(e.to_string()))?;
 
@@ -154,7 +161,8 @@ where
 	}
 
 	async fn broadcast(&self, event: E) -> Result<usize> {
-		let bytes = bincode::encode_to_vec(&event, bincode::config::standard()).map_err(|e| TransportError::SerializationError(e.to_string()))?;
+		let mut bytes = Vec::new();
+		event.encode(&mut bytes).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
 		self
 			.client
@@ -193,7 +201,7 @@ where
 // Convenience constructors
 impl<E> NatsTransport<E>
 where
-	E: Clone + Send + Sync + Encode + Decode<()> + 'static,
+	E: Clone + Send + Sync + Message + Default + 'static,
 {
 	/// Creates transport and returns it with an initial broadcast receiver.
 	pub async fn with_receiver(client: Client) -> (Self, TransportReceiver<E, NatsReceiver<E>>) {
@@ -223,14 +231,16 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bincode::{Decode, Encode};
+	use prost::Message;
 	use std::time::Duration;
 	use tokio::time::timeout;
 
 	// Test event type
-	#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+	#[derive(Clone, Debug, PartialEq, Message)]
 	struct TestEvent {
+		#[prost(uint64, tag = "1")]
 		id: u64,
+		#[prost(string, tag = "2")]
 		message: String,
 	}
 
