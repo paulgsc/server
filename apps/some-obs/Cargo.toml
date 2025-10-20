@@ -1,0 +1,24 @@
+[package]
+name = "some-obs"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+obs-websocket = { workspace = true }
+some-transport = { workspace = true , features = ["nats"] }
+tokio = { workspace = true  }
+tokio-util = "0.7.16"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
+thiserror = { workspace = true }
+chrono.workspace = true
+prost = "0.14.1"
+
+[lints]
+workspace = true
