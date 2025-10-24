@@ -1,7 +1,7 @@
-// lib.rs
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
+use some_transport::NatsTransport;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -16,6 +16,7 @@ pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
 pub mod routes;
+pub mod transport;
 pub mod utils;
 pub mod websocket;
 
@@ -50,6 +51,7 @@ pub struct ExternalApis {
 pub struct RealtimeContext {
 	pub ws: WebSocketFsm,
 	pub dedup_cache: Arc<DedupCache>,
+	pub transport: Arc<NatsTransport<Event>>,
 }
 
 #[derive(Clone)]
@@ -81,14 +83,19 @@ impl AppState {
 		let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
 		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
 
+		// Initialize NATS transports
+		let nats_url = config.nats_url.as_deref().unwrap_or("nats://localhost:4222");
+		let transports = Arc::new(NatsTransport::connect_pooled(nats_url).await?);
+
 		let ws = init_websocket(cancel_token.clone()).await;
 
-		let realtime = RealtimeContext { ws, dedup_cache };
+		let realtime = RealtimeContext { ws, dedup_cache, transport };
 
 		Ok(Self { core, external, realtime })
 	}
 }
 
+// TODO: Ask eh eye! do we need this?!
 impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
 		state.realtime.dedup_cache.clone()
@@ -128,5 +135,11 @@ impl FromRef<AppState> for CancellationToken {
 impl FromRef<AppState> for ConnectionGuard {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.connection_guard.clone()
+	}
+}
+
+impl FromRef<AppState> for Arc<NatsTransport<Event>> {
+	fn from_ref(state: &AppState) -> Self {
+		state.realtime.transport.clone()
 	}
 }

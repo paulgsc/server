@@ -5,7 +5,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::http::HeaderMap;
 use futures::sink::SinkExt;
 use futures::stream::SplitSink;
-use some_transport::{InMemTransportReceiver, Transport};
+use some_transport::Transport;
 use std::net::SocketAddr;
 use tokio::{task::JoinHandle, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -45,12 +45,7 @@ impl WebSocketFsm {
 	}
 
 	/// Adds a connection to the store with comprehensive observability
-	pub async fn add_connection(
-		&self,
-		headers: &HeaderMap,
-		addr: &SocketAddr,
-		cancel_token: &CancellationToken,
-	) -> Result<(String, InMemTransportReceiver<Event>), ConnectionError> {
+	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<(String, ConnectionReceivers), ConnectionError> {
 		let start = Instant::now();
 		let client_id = self.client_id_from_request(headers, addr);
 
@@ -59,15 +54,19 @@ impl WebSocketFsm {
 		let connection_id = domain_conn.id.clone();
 		let client_key = connection_id.as_string();
 
-		let receiver = self.transport.open_channel(&client_key).await;
+		// Default subscriptions that all connections get
+		let default_subs = vec![EventType::Ping, EventType::Pong, EventType::Error, EventType::ClientCount];
+
+		// Subscribe to NATS subjects for default event types
+		let receivers = self
+			.subscribe_connection(&client_key, default_subs.clone())
+			.await
+			.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
 
 		let handle = self.store.insert(client_key.clone(), domain_conn, cancel_token);
 
-		// Add default subscriptions that all connections need
-		handle
-			.subscribe(vec![EventType::Ping, EventType::Pong, EventType::Error, EventType::ClientCount])
-			.await
-			.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
+		// Update the actor's subscription state to match
+		handle.subscribe(default_subs).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
 		let elapsed = start.elapsed();
 
 		self.metrics.connection_created();
@@ -83,15 +82,17 @@ impl WebSocketFsm {
 
 		let to = handle.get_state().await.map_err(|e| ConnectionError::StateRetrievalFailed(e.to_string()))?;
 
-		self
-			.emit_system_event(Event::ConnectionStateChanged {
-				connection_id: connection_id.clone(),
-				from: ConnectionState::new(),
-				to,
-			})
-			.await;
+		// Emit system event
+		let system_event = Event::system(SystemEvent {
+			event_type: "connection_established".to_owned(),
+			payload: serde_json::to_vec(&serde_json::json!({
+				"connection_id": connection_id.to_owned(),
+				"client_id": client_id.to_owned(),
+			}))
+			.unwrap_or_default(),
+		});
 
-		self.subscriber_notify.notify_waiters();
+		let _ = self.broadcast_event(system_event).await;
 
 		Ok((client_key, receiver))
 	}
@@ -169,16 +170,20 @@ impl WebSocketFsm {
 					"Connection removed"
 				);
 
-				// Emit system event
-				self
-					.emit_system_event(Event::ConnectionCleanup {
-						connection_id: connection_id.clone(),
-						reason: reason.clone(),
-						resources_freed: true,
-					})
-					.await;
-
 				self.broadcast_client_count().await;
+
+				// Emit system event
+				let system_event = Event::system(SystemEvent {
+					event_type: "connection_cleanup".to_owned(),
+					payload: serde_json::to_vec(&serde_json::json!({
+						"connection_id": connection_id.to_owned(),
+						"reason": reason,
+						"lifetime_ms": duration.as_millis(),
+					}))
+					.unwrap_or_default(),
+				});
+
+				let _ = self.broadcast_event(system_event).await;
 
 				Ok(())
 			}
@@ -192,6 +197,34 @@ impl WebSocketFsm {
 			}
 		}
 	}
+
+	/// Handle subscription changes for a connection
+	pub async fn handle_subscription_update(
+		&self,
+		connection_id: &str,
+		add_types: Vec<EventType>,
+		remove_types: Vec<EventType>,
+		receivers: &ConnectionReceivers,
+	) -> Result<(), ConnectionError> {
+		// Update NATS subscriptions
+		self
+			.update_subscriptions(connection_id, add_types.clone(), remove_types.clone(), receivers)
+			.await
+			.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
+
+		// Update actor subscription state
+		if let Some(handle) = self.store.get(connection_id) {
+			if !add_types.is_empty() {
+				handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e.to_owned()))?;
+			}
+
+			if !remove_types.is_empty() {
+				handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e.to_owned()))?;
+			}
+		}
+
+		Ok(())
+	}
 }
 
 // ===== Helper functions for WebSocket lifecycle =====
@@ -201,11 +234,11 @@ pub(crate) async fn establish_connection(
 	headers: &HeaderMap,
 	addr: &SocketAddr,
 	cancel_token: &CancellationToken,
-) -> Result<(String, InMemTransportReceiver<Event>), ConnectionError> {
-	let (key, rx) = state.add_connection(headers, addr, cancel_token).await?;
+) -> Result<(String, ConnectionReceivers), ConnectionError> {
+	let (key, receivers) = state.add_connection(headers, addr, cancel_token).await?;
 	record_system_event!("websocket_established", connection_id = key);
 	info!(connection_id = %key, "WebSocket connection established");
-	Ok((key, rx))
+	Ok((key, receivers))
 }
 
 pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>) -> Result<(), ConnectionError> {

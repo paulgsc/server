@@ -10,12 +10,10 @@ use axum::{
 	Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
 use serde::Serialize;
-use some_transport::{InMemTransport, InMemTransportReceiver, Transport};
+use some_transport::{NatsTransport, Transport};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
-	sync::Notify,
 	task::JoinHandle,
 	time::{timeout, Duration},
 };
@@ -27,7 +25,6 @@ pub mod broadcast;
 pub mod connection;
 pub mod heartbeat;
 pub mod message;
-pub mod notify;
 pub mod obs;
 pub mod shutdown;
 pub mod types;
@@ -37,7 +34,6 @@ pub use broadcast::BroadcastResult;
 use connection::core::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
 pub use heartbeat::{HeartbeatManager, HeartbeatPolicy};
 use message::process_incoming_messages;
-pub use message::ProcessResult;
 pub use types::*;
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -47,7 +43,7 @@ pub struct WebSocketFsm {
 	store: Arc<ConnectionStore<EventType>>,
 
 	/// Infrastructure layer: Unified transport for ALL events
-	transport: Arc<InMemTransport<Event>>,
+	transport: Arc<NatsTransport<Event>>,
 
 	/// Heartbeat management
 	heartbeat_manager: Arc<HeartbeatManager<EventType>>,
@@ -55,35 +51,22 @@ pub struct WebSocketFsm {
 	/// Metrics
 	metrics: Arc<ConnectionMetrics>,
 
-	/// Subscriber notification
-	subscriber_notify: Arc<Notify>,
-
-	/// OBS integration
-	pub obs_manager: Arc<ObsWebSocketManager>,
-
 	/// Task handles
 	heartbeat_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl WebSocketFsm {
 	/// Creates a new WebSocketFsm instance - only responsible for initialization
-	pub fn new(cancel_token: &CancellationToken) -> Self {
-		Self::with_policy(HeartbeatPolicy::default(), cancel_token)
+	pub fn new(transport: Arc<NatsTransport<Event>>, cancel_token: &CancellationToken) -> Self {
+		Self::with_policy(transport, HeartbeatPolicy::default(), cancel_token)
 	}
 
-	pub fn with_policy(policy: HeartbeatPolicy, cancel_token: &CancellationToken) -> Self {
-		let transport = Arc::new(InMemTransport::new(1000));
-
+	pub fn with_policy(transport: Arc<NatsTransport<Event>>, policy: HeartbeatPolicy, cancel_token: &CancellationToken) -> Self {
 		let store = Arc::new(ConnectionStore::<EventType>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
 
 		let clc = cancel_token.child_token();
 		let heartbeat_manager = Arc::new(HeartbeatManager::new(store.clone(), transport.clone(), metrics.clone(), policy, &clc));
-
-		let subscriber_notify = Arc::new(Notify::new());
-
-		let obs_config = ObsConfig::default();
-		let obs_manager = Arc::new(ObsWebSocketManager::new(obs_config, RetryConfig::default()));
 
 		record_system_event!("fsm_initialized");
 		update_resource_usage!("active_connections", 0.0);
@@ -93,17 +76,13 @@ impl WebSocketFsm {
 			transport,
 			heartbeat_manager,
 			metrics,
-			subscriber_notify,
-			obs_manager,
 			heartbeat_task: Arc::new(std::sync::Mutex::new(None)),
 		}
 	}
 
 	pub fn start(&self, cancel_token: CancellationToken) {
-		let event_clc = cancel_token.child_token().clone();
 		let obs_clc = cancel_token.child_token().clone();
 
-		self.spawn_event_distribution_task(event_clc);
 		self.spawn_observability_monitor(obs_clc);
 		let task = self.heartbeat_manager.clone().spawn();
 		*self.heartbeat_task.lock().unwrap() = Some(task);
@@ -122,30 +101,6 @@ impl WebSocketFsm {
 		AppState: FromRef<S>,
 	{
 		Router::new().route("/ws", get(websocket_handler))
-	}
-
-	/// Subscribe to all events (both client and system)
-	pub fn subscribe_to_events(&self) -> InMemTransportReceiver<Event> {
-		self.transport.subscribe()
-	}
-
-	/// Subscribe to only system events (for observability tools)
-	/// Note: Returns all events - caller must filter for system events
-	pub fn subscribe_to_system_events(&self) -> InMemTransportReceiver<Event> {
-		self.transport.subscribe()
-	}
-
-	/// Subscribe to only client events (for testing/debugging)
-	/// Note: Returns all events - caller must filter for client events
-	pub fn subscribe_to_client_events(&self) -> InMemTransportReceiver<Event> {
-		self.transport.subscribe()
-	}
-
-	/// Emit a system event into the unified event stream
-	async fn emit_system_event(&self, event: Event) {
-		if event.is_system_event() {
-			let _ = self.transport.broadcast(event).await;
-		}
 	}
 
 	/// Spawn the observability monitor that filters and logs system events
@@ -285,18 +240,6 @@ impl WebSocketFsm {
 	/// Get metrics snapshot
 	pub fn get_metrics(&self) -> ConnectionMetricsSnapshot {
 		self.metrics.get_snapshot()
-	}
-
-	/// Record a message processing event
-	pub async fn record_message_processed(&self, message_id: MessageId, connection_id: ConnectionId, duration: Duration, result: ProcessResult) {
-		self
-			.emit_system_event(Event::MessageProcessed {
-				message_id,
-				connection_id,
-				duration,
-				result,
-			})
-			.await;
 	}
 
 	/// Record a broadcast failure
@@ -455,28 +398,32 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMa
 	let forward_cancel = cancel_token.child_token().clone();
 	let process_cancel = cancel_token.child_token().clone();
 
-	let forward_task = spawn_event_forwarder(sender, event_receiver, state.clone(), conn_key.clone(), forward_cancel);
+	// Clone receivers Arc so both forwarder and message processor share it
+	let forward_receivers = event_receivers.clone();
+	let process_receivers = event_receivers.clone();
 
-	let message_count = process_incoming_messages(receiver, &state, &conn_key, process_cancel).await;
+	let forward_task = spawn_event_forwarder(sender, forward_receivers, state.clone(), conn_key.clone(), forward_cancel);
+
+	let message_count = process_incoming_messages(receiver, &state, &conn_key, &process_receivers, process_cancel).await;
 
 	cleanup_connection_with_stats(&state, &conn_key, message_count, forward_task).await;
 	permit.release();
 }
 
 /// Initialize WebSocket system with default policy
-pub async fn init_websocket(cancel_token: CancellationToken) -> WebSocketFsm {
-	init_websocket_with_policy(HeartbeatPolicy::default(), cancel_token).await
+pub async fn init_websocket(transport: Arc<NatsTransport<Event>>, cancel_token: CancellationToken) -> WebSocketFsm {
+	init_websocket_with_policy(transport, HeartbeatPolicy::default(), cancel_token).await
 }
 
 /// Initialize WebSocket system with custom heartbeat policy
-pub async fn init_websocket_with_policy(policy: HeartbeatPolicy, cancel_token: CancellationToken) -> WebSocketFsm {
+pub async fn init_websocket_with_policy(transport: Arc<NatsTransport<Event>>, policy: HeartbeatPolicy, cancel_token: CancellationToken) -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
 
-	let state = WebSocketFsm::with_policy(policy, &cancel_token);
+	let state = WebSocketFsm::with_policy(transport, policy, &cancel_token);
 	state.start(cancel_token.clone());
 
 	record_system_event!("websocket_init_completed");
-	info!("Actor-based WebSocket system initialized");
+	info!("NATS-based WebSocket system initialized");
 
 	state
 }

@@ -1,44 +1,19 @@
-use super::*;
-use crate::utils::retry::retry_async;
-use axum::extract::ws::{Message, WebSocket};
-use futures::stream::{SplitStream, StreamExt};
-use obs_websocket::ObsCommand;
+use crate::metrics::*;
+use crate::transport::ConnectionReceivers;
+use crate::WebSocketFsm;
 use tokio::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use ws_connection::ConnectionId;
 
-/// Result of processing a message
-#[derive(Debug, Clone)]
-pub struct ProcessResult {
-	pub delivered: usize,
-	pub failed: usize,
-	pub duration: Duration,
-}
+pub(crate) mod handlers;
+pub(crate) mod types;
 
-impl Default for ProcessResult {
-	fn default() -> Self {
-		Self {
-			delivered: 0,
-			failed: 0,
-			duration: Duration::ZERO,
-		}
-	}
-}
-
-impl ProcessResult {
-	pub fn success(delivered: usize, duration: Duration) -> Self {
-		Self { delivered, failed: 0, duration }
-	}
-
-	pub fn failure(failed: usize, duration: Duration) -> Self {
-		Self { delivered: 0, failed, duration }
-	}
-}
+pub(crate) use handlers::process_incoming_messages;
+use types::{ClientMessage, ProcessResult};
 
 impl WebSocketFsm {
 	/// Process a text message from a client
-	pub async fn process_message(&self, conn_key: &str, raw_message: String) {
+	pub async fn process_message(&self, conn_key: &str, raw_message: String, receivers: &ConnectionReceivers) {
 		let start = Instant::now();
 
 		// Get connection info
@@ -54,8 +29,8 @@ impl WebSocketFsm {
 		let message_id = MessageId::new();
 
 		// Parse the message
-		let event = match serde_json::from_str::<Event>(&raw_message) {
-			Ok(event) => event,
+		let client_message = match serde_json::from_str::<ClientMessage>(&raw_message) {
+			Ok(msg) => msg,
 			Err(e) => {
 				let duration = start.elapsed();
 				record_ws_error!("parse_error", "message", e);
@@ -70,33 +45,35 @@ impl WebSocketFsm {
 			}
 		};
 
-		// Handle the event based on its type
-		let result = match event {
-			// Control messages - handled immediately, not broadcast
-			Event::Pong => {
+		// Handle the message based on its type
+		let result = match client_message {
+			// Heartbeat response
+			ClientMessage::Pong => {
 				self.handle_pong(conn_key).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 
-			Event::Subscribe { event_types } => {
-				self.handle_subscription(conn_key, event_types, true).await;
+			// Subscription management
+			ClientMessage::Subscribe { event_types } => {
+				self.handle_subscribe(conn_key, event_types, receivers).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 
-			Event::Unsubscribe { event_types } => {
-				self.handle_subscription(conn_key, event_types, false).await;
+			ClientMessage::Unsubscribe { event_types } => {
+				self.handle_unsubscribe(conn_key, event_types, receivers).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 
-			// OBS commands - handled asynchronously
-			Event::ObsCmd { cmd } => {
-				let conn_id = connection_id.clone();
-				self.handle_obs_command_async(cmd, conn_id).await;
-				ProcessResult::success(1, start.elapsed())
+			// Unknown/unsupported message type
+			ClientMessage::Unknown { type_name } => {
+				warn!(
+					connection_id = %connection_id,
+					message_type = %type_name,
+					"Received unsupported message type"
+				);
+				self.send_error_to_client(conn_key, &format!("Unsupported message type: {}", type_name)).await;
+				ProcessResult::failure(1, start.elapsed())
 			}
-
-			// All other events - broadcast to subscribers
-			_ => self.broadcast_event(&event).await,
 		};
 
 		let duration = start.elapsed();
@@ -117,192 +94,125 @@ impl WebSocketFsm {
 		}
 	}
 
-	/// Handle OBS command asynchronously with retry logic
-	async fn handle_obs_command_async(&self, cmd: ObsCommand, connection_id: ConnectionId) {
-		let obs_manager = self.obs_manager.clone();
+	/// Handle subscribe request - add new event type subscriptions
+	async fn handle_subscribe(&self, conn_key: &str, event_types: Vec<EventType>, receivers: &ConnectionReceivers) {
+		let start = Instant::now();
 
-		tokio::spawn(async move {
-			let cmd_display = format!("{:?}", cmd);
-			let start = Instant::now();
+		// Update NATS subscriptions and actor state
+		if let Err(e) = self.handle_subscription_update(conn_key, event_types.clone(), vec![], receivers).await {
+			record_ws_error!("subscription_failed", "subscribe", e);
+			error!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to subscribe to event types"
+			);
+			self.send_error_to_client(conn_key, &format!("Subscription failed: {}", e)).await;
+			return;
+		}
 
-			let result = retry_async(
-				|| obs_manager.execute_command(cmd.clone()),
-				3,                          // max attempts
-				Duration::from_millis(100), // base backoff
-				2,                          // exponential factor
-			)
-			.await;
+		let duration = start.elapsed();
 
-			let duration = start.elapsed();
+		info!(
+			connection_id = %conn_key,
+			event_types = ?event_types,
+			duration_ms = duration.as_millis(),
+			"Successfully subscribed to event types"
+		);
 
-			match result {
-				Ok(_) => {
-					record_system_event!(
-						"obs_command_success",
-						connection_id = connection_id,
-						command = cmd_display,
-						duration_ms = duration.as_millis()
-					);
-					info!(
-						connection_id = %connection_id,
-						command = %cmd_display,
-						duration_ms = duration.as_millis(),
-						"OBS command executed successfully"
-					);
-				}
-				Err(e) => {
-					record_ws_error!("obs_command_failed", "command_execution", &e);
-					record_system_event!(
-						"obs_command_failed",
-						connection_id = connection_id,
-						command = cmd_display,
-						error = e.to_string(),
-						duration_ms = duration.as_millis()
-					);
-					error!(
-						connection_id = %connection_id,
-						command = %cmd_display,
-						error = %e,
-						duration_ms = duration.as_millis(),
-						"OBS command failed after retries"
-					);
-				}
-			}
+		// Send confirmation to client
+		if let Err(e) = self.send_subscription_ack(conn_key, event_types).await {
+			warn!("Failed to send subscription acknowledgment: {}", e);
+		}
+	}
+
+	/// Handle unsubscribe request - remove event type subscriptions
+	async fn handle_unsubscribe(&self, conn_key: &str, event_types: Vec<EventType>, receivers: &ConnectionReceivers) {
+		let start = Instant::now();
+
+		// Update NATS subscriptions and actor state
+		if let Err(e) = self.handle_subscription_update(conn_key, vec![], event_types.clone(), receivers).await {
+			record_ws_error!("unsubscription_failed", "unsubscribe", e);
+			error!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to unsubscribe from event types"
+			);
+			self.send_error_to_client(conn_key, &format!("Unsubscription failed: {}", e)).await;
+			return;
+		}
+
+		let duration = start.elapsed();
+
+		info!(
+			connection_id = %conn_key,
+			event_types = ?event_types,
+			duration_ms = duration.as_millis(),
+			"Successfully unsubscribed from event types"
+		);
+
+		// Send confirmation to client
+		if let Err(e) = self.send_unsubscription_ack(conn_key, event_types).await {
+			warn!("Failed to send unsubscription acknowledgment: {}", e);
+		}
+	}
+
+	/// Send subscription acknowledgment to client
+	async fn send_subscription_ack(&self, conn_key: &str, event_types: Vec<EventType>) -> Result<(), String> {
+		let ack = Event::System(SystemEvent {
+			event_type: "subscription_ack".to_string(),
+			payload: serde_json::to_vec(&serde_json::json!({
+				"subscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
+			}))
+			.unwrap_or_default(),
 		});
+
+		self.send_event_to_connection(conn_key, ack).await
 	}
-}
 
-/// Process all incoming messages from the WebSocket
-pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, conn_key: &str, cancel_token: CancellationToken) -> u64 {
-	let mut message_count = 0u64;
+	/// Send unsubscription acknowledgment to client
+	async fn send_unsubscription_ack(&self, conn_key: &str, event_types: Vec<EventType>) -> Result<(), String> {
+		let ack = Event::System(SystemEvent {
+			event_type: "unsubscription_ack".to_string(),
+			payload: serde_json::to_vec(&serde_json::json!({
+				"unsubscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
+			}))
+			.unwrap_or_default(),
+		});
 
-	loop {
-		tokio::select! {
-			// Listen for cancellation signal
-			_ = cancel_token.cancelled() => {
-				tracing::info!(
-					connection_id = %conn_key,
-					messages_processed = message_count,
-					"WebSocket message processing cancelled - shutting down"
-				);
-				break;
-			}
+		self.send_event_to_connection(conn_key, ack).await
+	}
 
-			// Process incoming messages
-			result = receiver.next() => {
-				match result {
-					Some(Ok(msg)) => {
-						message_count += 1;
-						// Handle the message; break on close
-						if handle_websocket_message(msg, state, conn_key, message_count).await.is_err() {
-							break;
-						}
-					}
-					Some(Err(e)) => {
-						message_count += 1;
-						record_ws_error!("websocket_error", "connection", e);
-						error!(
-							connection_id = %conn_key,
-							message_number = message_count,
-							error = %e,
-							"WebSocket error"
-						);
-						break;
-					}
-					None => {
-						// Stream ended naturally
-						tracing::debug!(
-							connection_id = %conn_key,
-							"WebSocket stream ended"
-						);
-						break;
-					}
-				}
-			}
+	/// Update client ping timestamp via heartbeat manager
+	async fn update_client_ping(&self, client_key: &str) -> Result<(), String> {
+		self.heartbeat_manager.record_ping(client_key).await;
+		Ok(())
+	}
+
+	/// Send error message to a specific client
+	async fn send_error_to_client(&self, client_key: &str, error: &str) {
+		let error_event = Event::Error { message: error.to_string() };
+
+		if let Err(e) = self.send_event_to_connection(client_key, error_event).await {
+			record_ws_error!("error_send_failed", "connection", e);
+			warn!("Failed to send error to client {}: {}", client_key, e);
 		}
 	}
 
-	message_count
-}
+	/// Record a message processing event
+	async fn record_message_processed(&self, message_id: MessageId, connection_id: ConnectionId, duration: Duration, result: ProcessResult) {
+		let system_event = Event::System(SystemEvent {
+			event_type: "message_processed".to_string(),
+			payload: serde_json::to_vec(&serde_json::json!({
+				"message_id": message_id.to_string(),
+				"connection_id": connection_id.as_string(),
+				"duration_ms": duration.as_millis(),
+				"delivered": result.delivered,
+				"failed": result.failed,
+			}))
+			.unwrap_or_default(),
+		});
 
-/// Handle a single WebSocket message based on its type
-async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: &str, message_count: u64) -> Result<(), ()> {
-	match msg {
-		Message::Text(text) => {
-			record_system_event!("message_received", connection_id = conn_key, message_number = message_count, size_bytes = text.len());
-
-			debug!(
-				connection_id = %conn_key,
-				message_number = message_count,
-				size_bytes = text.len(),
-				text
-			);
-
-			// Process the message
-			state.process_message(conn_key, text).await;
-			Ok(())
-		}
-
-		Message::Ping(_) => {
-			record_system_event!("ping_received", connection_id = conn_key);
-			debug!(connection_id = %conn_key, "Received WebSocket ping");
-
-			if let Err(e) = state.update_client_ping(conn_key).await {
-				record_ws_error!("ping_handling_failed", "websocket", e);
-				warn!(
-					connection_id = %conn_key,
-					error = %e,
-					"Failed to update ping"
-				);
-			}
-			Ok(())
-		}
-
-		Message::Pong(_) => {
-			record_system_event!("pong_received", connection_id = conn_key);
-			debug!(connection_id = %conn_key, "Received WebSocket pong");
-
-			if let Err(e) = state.update_client_ping(conn_key).await {
-				record_ws_error!("pong_handling_failed", "websocket", e);
-				warn!(
-					connection_id = %conn_key,
-					error = %e,
-					"Failed to update pong"
-				);
-			}
-			Ok(())
-		}
-
-		Message::Close(reason) => {
-			let reason_str = reason
-				.as_ref()
-				.map(|f| format!("{}: {}", f.code, f.reason))
-				.unwrap_or_else(|| "No reason provided".to_string());
-
-			record_system_event!("close_received", connection_id = conn_key, reason = reason_str);
-
-			info!(
-				connection_id = %conn_key,
-				reason = %reason_str,
-				"Client closed connection"
-			);
-
-			// Remove the connection
-			let _ = state.remove_connection(conn_key, "WebSocket closed".to_string()).await;
-
-			Err(()) // Signal to break the message processing loop
-		}
-
-		Message::Binary(data) => {
-			debug!(
-				connection_id = %conn_key,
-				size_bytes = data.len(),
-				"Ignored binary message"
-			);
-			Ok(())
-		}
+		// Broadcast to system event subscribers (monitoring/observability)
+		let _ = self.broadcast_event(system_event).await;
 	}
 }
-
-// Re-export for compatibility
-pub use ProcessResult as EventMessageResult;
