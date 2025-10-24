@@ -3719,6 +3719,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchestrator"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "dashmap",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "some-transport",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ws-connection",
+ "ws-events",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5852,6 +5871,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ws-events",
 ]
 
 [[package]]
@@ -8020,6 +8040,9 @@ dependencies = [
 name = "ws-events"
 version = "0.0.0"
 dependencies = [
+ "chrono",
+ "obs-websocket",
+ "prost",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -8028,6 +8051,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.18.1",
 ]
 
 [[package]]
