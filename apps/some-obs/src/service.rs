@@ -1,9 +1,10 @@
-use crate::{Config, ObsCommandMessage, ObsEventMessage, Result};
+use crate::{Config, Result};
 use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
 use some_transport::NatsTransport;
 use std::sync::Arc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+use ws_events::UnifiedEvent;
 
 pub mod command;
 pub mod events;
@@ -13,8 +14,7 @@ pub mod heartbeat;
 pub struct ObsNatsService {
 	config: Config,
 	obs_manager: Arc<ObsWebSocketManager>,
-	command_transport: NatsTransport<ObsCommandMessage>,
-	event_transport: NatsTransport<ObsEventMessage>,
+	transport: NatsTransport<UnifiedEvent>,
 	cancel_token: CancellationToken,
 }
 
@@ -29,16 +29,14 @@ impl ObsNatsService {
 		// Create NATS transports using pooled connections
 		tracing::info!("📡 Connecting to NATS at {}", config.nats_url);
 
-		let command_transport = NatsTransport::connect_pooled(&config.nats_url).await?;
-		let event_transport = NatsTransport::connect_pooled(&config.nats_url).await?;
+		let transport = NatsTransport::connect_pooled(&config.nats_url).await?;
 
 		tracing::info!("✅ NATS transports initialized");
 
 		Ok(Self {
 			config,
 			obs_manager,
-			command_transport,
-			event_transport,
+			transport,
 			cancel_token: CancellationToken::new(),
 		})
 	}

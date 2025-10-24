@@ -1,7 +1,8 @@
-use crate::{ObsEventMessage, ObsNatsService, Result};
+use crate::{ObsNatsService, Result};
 use obs_websocket::PollingConfig;
 use some_transport::Transport;
 use std::sync::Arc;
+use ws_events::{events::ObsStatusMessage, unified_event, UnifiedEvent};
 
 impl ObsNatsService {
 	/// Spawn task to bridge OBS events to NATS
@@ -57,7 +58,7 @@ impl ObsNatsService {
 		tracing::info!("✅ Connected to OBS, starting event stream");
 
 		// Clone for the closure
-		let event_transport = self.event_transport.clone();
+		let event_transport = self.transport.clone();
 		let event_subject = self.config.event_subject.clone();
 		let cancel_token = self.cancel_token.clone();
 
@@ -74,9 +75,12 @@ impl ObsNatsService {
 					}
 
 					// Create the protobuf message, handling serialization errors
-					match ObsEventMessage::new(obs_event) {
+					match ObsStatusMessage::new(obs_event) {
 						Ok(message) => {
-							if let Err(e) = transport.send(&subject, message).await {
+							let unified_event = UnifiedEvent {
+								event: Some(unified_event::Event::ObsStatus(message)),
+							};
+							if let Err(e) = transport.send_to_subject(&subject, unified_event).await {
 								tracing::error!("❌ Failed to publish event: {}", e);
 							}
 						}

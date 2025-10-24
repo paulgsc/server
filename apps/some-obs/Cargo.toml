@@ -10,6 +10,7 @@ edition.workspace = true
 [dependencies]
 obs-websocket = { workspace = true }
 some-transport = { workspace = true , features = ["nats"] }
+ws-events = { workspace = true , features = ["events"] }
 tokio = { workspace = true  }
 tokio-util = "0.7.16"
 serde = { workspace = true, features = ["derive"] }
@@ -22,3 +23,5 @@ prost = "0.14.1"
 
 [lints]
 workspace = true
+
+

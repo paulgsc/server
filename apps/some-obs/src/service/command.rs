@@ -1,14 +1,18 @@
-use crate::{Error, ObsCommandMessage, ObsEventMessage, ObsNatsService};
+use crate::{Error, ObsNatsService};
 use obs_websocket::{ObsEvent, UnknownEventData};
 use some_transport::{Transport, TransportError};
 use std::sync::Arc;
+use ws_events::{
+	events::{Event, ObsCommandMessage},
+	unified_event, UnifiedEvent,
+};
 
 impl ObsNatsService {
 	/// Spawn task to handle incoming commands from NATS
 	pub fn spawn_command_handler(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			tracing::info!("🎮 Starting command handler");
-			let mut command_rx = self.command_transport.open_channel(&self.config.command_subject).await;
+			let mut command_rx = self.transport.open_channel(&self.config.command_subject).await;
 
 			loop {
 				tokio::select! {
@@ -18,17 +22,23 @@ impl ObsNatsService {
 					}
 					result = command_rx.recv() => {
 						match result {
-							Ok(cmd_msg) => {
-								if let Err(e) = self.handle_command(cmd_msg).await {
-									tracing::error!("❌ Failed to handle command: {}", e);
+							Ok(unified) => match unified.event {
+								Some(unified_event::Event::ObsCommand(cmd_msg)) => {
+									if let Err(e) = self.handle_command(cmd_msg).await {
+										tracing::error!("❌ Failed to handle command: {}", e);
+									}
 								}
-							}
-							Err(e) => {
-								tracing::error!("❌ Error receiving command: {}", e);
-								match e {
-									TransportError::Closed => break,
-									_ => continue
+								other => {
+									tracing::error!(
+										"🚨 FATAL: Unexpected event type on OBS command subject: {:?}",
+										other
+									);
+									panic!("Invalid event delivered to OBS command subject — protocol violation");
 								}
+							},
+							Err(e) => match e {
+								TransportError::Closed => break,
+								_ => continue,
 							}
 						}
 					}
@@ -42,21 +52,23 @@ impl ObsNatsService {
 	/// Handle a command received from NATS
 	async fn handle_command(&self, cmd_msg: ObsCommandMessage) -> Result<(), Error> {
 		// Deserialize the command from the protobuf message
-		let obs_command = cmd_msg.to_command()?;
+		let obs_command = cmd_msg.to_obs_command()?;
 
 		match self.obs_manager.execute_command(obs_command).await {
 			Ok(()) => {
 				// Send acknowledgment if reply_to is specified
 				if let Some(reply_subject) = cmd_msg.reply_to {
-					let ack = ObsEventMessage::new(ObsEvent::UnknownEvent(UnknownEventData {
-						event_type: "command_ack".to_string(),
-						data: serde_json::json!({
-							"request_id": cmd_msg.request_id,
-							"status": "success"
+					let ack = UnifiedEvent::try_from(Event::ObsStatus {
+						status: ObsEvent::UnknownEvent(UnknownEventData {
+							event_type: "command_ack".to_string(),
+							data: serde_json::json!({
+								"request_id": cmd_msg.request_id,
+								"status": "success"
+							}),
 						}),
-					}))?;
+					})?;
 
-					if let Err(e) = self.event_transport.send(&reply_subject, ack).await {
+					if let Err(e) = self.transport.send_to_subject(&reply_subject, ack).await {
 						tracing::warn!("⚠️ Failed to send acknowledgment: {}", e);
 					}
 				}
@@ -67,20 +79,21 @@ impl ObsNatsService {
 
 				// Send error response if reply_to is specified
 				if let Some(reply_subject) = cmd_msg.reply_to {
-					let error_msg = ObsEventMessage::new(ObsEvent::UnknownEvent(UnknownEventData {
-						event_type: "command_error".to_string(),
-						data: serde_json::json!({
-							"request_id": cmd_msg.request_id,
-							"status": "error",
-							"error": e.to_string()
+					let error_msg = UnifiedEvent::try_from(Event::ObsStatus {
+						status: ObsEvent::UnknownEvent(UnknownEventData {
+							event_type: "command_error".to_string(),
+							data: serde_json::json!({
+								"request_id": cmd_msg.request_id,
+								"status": "error",
+								"error": e.to_string()
+							}),
 						}),
-					}))?;
+					})?;
 
-					if let Err(send_err) = self.event_transport.send(&reply_subject, error_msg).await {
+					if let Err(send_err) = self.transport.send_to_subject(&reply_subject, error_msg).await {
 						tracing::warn!("⚠️ Failed to send error response: {}", send_err);
 					}
 				}
-
 				Err(e.into())
 			}
 		}

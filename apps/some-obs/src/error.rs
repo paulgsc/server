@@ -34,3 +34,9 @@ pub enum Error {
 	#[error("JSON parsing error: {0}")]
 	JsonParse(#[from] serde_json::Error),
 }
+
+impl From<String> for Error {
+	fn from(s: String) -> Self {
+		Error::Other(s)
+	}
+}
