@@ -10,7 +10,7 @@ mod system;
 mod utterance;
 
 use now_playing::TabMetaDataMessage;
-use obs::{ObsCommandMessage, ObsStatusMessage};
+pub use obs::{ObsCommandMessage, ObsStatusMessage};
 use system::{BroadcastFailedMessage, ClientCountMessage, ConnectionCleanupMessage, ConnectionStateChangedMessage, ErrorMessage, MessageProcessedMessage};
 use utterance::UtteranceMessage;
 
@@ -18,7 +18,7 @@ use utterance::UtteranceMessage;
 /// Contains only events that should be transported via NATS
 #[derive(Clone, Message)]
 pub struct UnifiedEvent {
-	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6")]
+	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
 	pub event: Option<unified_event::Event>,
 }
 
