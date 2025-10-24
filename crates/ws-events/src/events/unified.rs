@@ -1,0 +1,268 @@
+#![cfg(feature = "events")]
+
+use super::common::{Event, EventType, MessageId};
+use crate::events::ProcessResult;
+use prost::Message;
+
+mod now_playing;
+mod obs;
+mod system;
+mod utterance;
+
+use now_playing::TabMetaDataMessage;
+use obs::{ObsCommandMessage, ObsStatusMessage};
+use system::{BroadcastFailedMessage, ClientCountMessage, ConnectionCleanupMessage, ConnectionStateChangedMessage, ErrorMessage, MessageProcessedMessage};
+use utterance::UtteranceMessage;
+
+/// Unified event type for NATS transport (Prost-compatible)
+/// Contains only events that should be transported via NATS
+#[derive(Clone, Message)]
+pub struct UnifiedEvent {
+	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6")]
+	pub event: Option<unified_event::Event>,
+}
+
+pub mod unified_event {
+	use super::*;
+
+	#[derive(Clone, PartialEq, prost::Oneof)]
+	pub enum Event {
+		#[prost(message, tag = "1")]
+		ObsStatus(ObsStatusMessage),
+		#[prost(message, tag = "2")]
+		ObsCommand(ObsCommandMessage),
+		#[prost(message, tag = "3")]
+		TabMetaData(TabMetaDataMessage),
+		#[prost(message, tag = "4")]
+		ClientCount(ClientCountMessage),
+		#[prost(message, tag = "5")]
+		Error(ErrorMessage),
+		#[prost(message, tag = "6")]
+		Utterance(UtteranceMessage),
+		// System/Telemetry events
+		#[prost(message, tag = "7")]
+		ConnectionStateChanged(ConnectionStateChangedMessage),
+		#[prost(message, tag = "8")]
+		MessageProcessed(MessageProcessedMessage),
+		#[prost(message, tag = "9")]
+		BroadcastFailed(BroadcastFailedMessage),
+		#[prost(message, tag = "10")]
+		ConnectionCleanup(ConnectionCleanupMessage),
+	}
+}
+
+/// TryFrom<Event> for UnifiedEvent (fallible): transportable events -> Ok(UnifiedEvent), otherwise Err(String)
+impl From<Event> for Option<UnifiedEvent> {
+	fn from(event: Event) -> Self {
+		match event {
+			Event::ObsStatus { status } => ObsStatusMessage::new(status).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::ObsStatus(msg)),
+			}),
+			Event::ObsCmd { cmd } => ObsCommandMessage::new(uuid::Uuid::new_v4().to_string(), cmd).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::ObsCommand(msg)),
+			}),
+			Event::TabMetaData { data } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::TabMetaData(TabMetaDataMessage::from_now_playing(data))),
+			}),
+			Event::ClientCount { count } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::ClientCount(ClientCountMessage { count: count as u64 })),
+			}),
+			Event::Error { message } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::Error(ErrorMessage { message })),
+			}),
+			Event::Utterance { text, metadata } => UtteranceMessage::new(text, metadata).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::Utterance(msg)),
+			}),
+			Event::ConnectionStateChanged { connection_id, from, to } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::ConnectionStateChanged(ConnectionStateChangedMessage::new(connection_id, from, to))),
+			}),
+			Event::MessageProcessed {
+				message_id,
+				connection_id,
+				result,
+			} => Some(UnifiedEvent {
+				event: Some(unified_event::Event::MessageProcessed(MessageProcessedMessage::new(
+					message_id.to_string(),
+					connection_id,
+					result,
+				))),
+			}),
+			Event::BroadcastFailed {
+				event_type,
+				error,
+				affected_connections,
+			} => Some(UnifiedEvent {
+				event: Some(unified_event::Event::BroadcastFailed(BroadcastFailedMessage::new(event_type, error, affected_connections))),
+			}),
+			Event::ConnectionCleanup {
+				connection_id,
+				reason,
+				resources_freed,
+			} => Some(UnifiedEvent {
+				event: Some(unified_event::Event::ConnectionCleanup(ConnectionCleanupMessage::new(
+					connection_id,
+					reason,
+					resources_freed,
+				))),
+			}),
+
+			// Non-transportable events -> error
+			Event::Ping | Event::Pong | Event::Subscribe { .. } | Event::Unsubscribe { .. } => None,
+		}
+	}
+}
+
+/// TryFrom implementation for conversation with error handling
+impl TryFrom<Event> for UnifiedEvent {
+	type Error = String;
+
+	fn try_from(event: Event) -> Result<Self, Self::Error> {
+		let event_type = event.get_type().map(|et| et.to_string()).unwrap_or("SystemEvent".to_string());
+
+		Option::<UnifiedEvent>::from(event).ok_or_else(|| format!("Event type '{}' cannot be converted to UnifiedEvent (should not be sent to nats)", event_type))
+	}
+}
+
+/// Convert UnifiedEvent to Result<Event, String>
+impl From<UnifiedEvent> for Result<Event, String> {
+	fn from(unified: UnifiedEvent) -> Self {
+		match unified.event {
+			Some(unified_event::Event::ObsStatus(msg)) => msg.to_obs_event().map_err(|e| e.to_string()).map(|status| Event::ObsStatus { status }),
+			Some(unified_event::Event::ObsCommand(msg)) => msg.to_obs_command().map_err(|e| e.to_string()).map(|cmd| Event::ObsCmd { cmd }),
+			Some(unified_event::Event::TabMetaData(msg)) => Ok(Event::TabMetaData { data: msg.to_now_playing() }),
+			Some(unified_event::Event::ClientCount(msg)) => Ok(Event::ClientCount { count: msg.count as usize }),
+			Some(unified_event::Event::Error(msg)) => Ok(Event::Error { message: msg.message }),
+			Some(unified_event::Event::Utterance(msg)) => msg
+				.get_metadata()
+				.map_err(|e| e.to_string())
+				.map(|metadata| Event::Utterance { text: msg.text.clone(), metadata }),
+			Some(unified_event::Event::ConnectionStateChanged(ConnectionStateChangedMessage {
+				connection_id,
+				from_state,
+				to_state,
+				..
+			})) => Ok(Event::ConnectionStateChanged {
+				connection_id,
+				from: from_state,
+				to: to_state,
+			}),
+			Some(unified_event::Event::MessageProcessed(MessageProcessedMessage {
+				message_id,
+				connection_id,
+				duration_micros,
+				failed,
+				delivered,
+				..
+			})) => Ok(Event::MessageProcessed {
+				message_id: MessageId::from_str(&message_id).unwrap_or_default(),
+				connection_id,
+				result: ProcessResult {
+					delivered,
+					failed,
+					duration: duration_micros,
+				},
+			}),
+			Some(unified_event::Event::BroadcastFailed(BroadcastFailedMessage {
+				event_type,
+				error,
+				affected_connections,
+				..
+			})) => Ok(Event::BroadcastFailed {
+				event_type: event_type.parse().unwrap_or_default(),
+				error,
+				affected_connections,
+			}),
+			Some(unified_event::Event::ConnectionCleanup(ConnectionCleanupMessage {
+				connection_id,
+				reason,
+				resources_freed,
+				..
+			})) => Ok(Event::ConnectionCleanup {
+				connection_id,
+				reason,
+				resources_freed,
+			}),
+
+			None => Err("UnifiedEvent has no event variant".to_string()),
+		}
+	}
+}
+
+impl UnifiedEvent {
+	/// Get the EventType for this unified event
+	pub fn event_type(&self) -> Option<EventType> {
+		match &self.event {
+			Some(unified_event::Event::ObsStatus(_)) => Some(EventType::ObsStatus),
+			Some(unified_event::Event::ObsCommand(_)) => Some(EventType::ObsCommand),
+			Some(unified_event::Event::TabMetaData(_)) => Some(EventType::TabMetaData),
+			Some(unified_event::Event::ClientCount(_)) => Some(EventType::ClientCount),
+			Some(unified_event::Event::Error(_)) => Some(EventType::Error),
+			Some(unified_event::Event::Utterance(_)) => Some(EventType::Utterance),
+			Some(unified_event::Event::ConnectionStateChanged(_)) => Some(EventType::ConnectionStateChanged),
+			Some(unified_event::Event::MessageProcessed(_)) => Some(EventType::MessageProcessed),
+			Some(unified_event::Event::BroadcastFailed(_)) => Some(EventType::BroadcastFailed),
+			Some(unified_event::Event::ConnectionCleanup(_)) => Some(EventType::ConnectionCleanup),
+			None => None,
+		}
+	}
+
+	/// Get the NATS subject for this event
+	pub fn subject(&self) -> Option<String> {
+		self.event_type().map(|et| et.subject().to_string())
+	}
+
+	/// Get the connection-specific subject for this event
+	pub fn connection_subject(&self, connection_id: &str) -> Option<String> {
+		self.event_type().map(|et| et.connection_subject(connection_id))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_event_to_unified_conversion() {
+		// Transportable event
+		let event = Event::ClientCount { count: 42 };
+		let unified = UnifiedEvent::try_from(event);
+		assert!(unified.is_ok());
+
+		// Non-transportable event
+		let event = Event::Ping;
+		let unified = UnifiedEvent::try_from(event);
+		assert!(unified.is_err());
+	}
+
+	#[test]
+	fn test_unified_to_event_conversion() {
+		let unified = UnifiedEvent {
+			event: Some(unified_event::Event::ClientCount(ClientCountMessage { count: 42 })),
+		};
+
+		let event: Result<Event, _> = unified.try_into();
+		assert!(event.is_ok());
+
+		match event.unwrap() {
+			Event::ClientCount { count } => assert_eq!(count, 42),
+			_ => panic!("Wrong event type"),
+		}
+	}
+
+	#[test]
+	fn test_event_type_subjects() {
+		assert_eq!(EventType::ObsStatus.subject(), "obs.status");
+		assert_eq!(EventType::ObsCommand.subject(), "obs.command");
+		assert_eq!(EventType::TabMetaData.subject(), "tab.metadata");
+
+		assert_eq!(EventType::ObsStatus.connection_subject("conn123"), "obs.status.conn123");
+	}
+
+	#[test]
+	fn test_transportable_check() {
+		assert!(EventType::ObsStatus.is_transportable());
+		assert!(EventType::ClientCount.is_transportable());
+		assert!(!EventType::Ping.is_transportable());
+		assert!(!EventType::Pong.is_transportable());
+	}
+}
