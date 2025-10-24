@@ -1,0 +1,38 @@
+[package]
+name = "orchestrator"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+some-transport = { workspace = true, features = ["nats"] }
+ws-connection = { workspace = true }
+ws-events = { workspace = true, features = ["stream-orch"] }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+tokio-util = "0.7"
+
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+prost = "0.14.1"
+
+# Concurrency
+dashmap = "6"
+futures = "0.3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async trait support
+async-trait = { workspace = true }
+
+
+[lints]
+workspace = true
