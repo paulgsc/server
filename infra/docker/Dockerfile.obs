@@ -1,0 +1,95 @@
+# ==============================================================================
+# STAGE 1: Chef (Caching setup with cargo-chef)
+# ==============================================================================
+FROM rust:1.90-bookworm AS chef
+WORKDIR /app
+
+# Install cargo-chef for build plan caching
+RUN cargo install cargo-chef --locked
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# ==============================================================================
+# STAGE 2: Planner (Create build plan)
+# ==============================================================================
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+RUN cargo chef prepare --recipe-path recipe.json --bin some-obs
+
+# ==============================================================================
+# STAGE 3: Builder (Compile dependencies and binary)
+# ==============================================================================
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source code
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+
+# Optimize release build
+ENV CARGO_INCREMENTAL=0
+ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C embed-bitcode=yes"
+
+# Build and strip binary
+RUN cargo build --release --bin some-obs
+RUN strip target/release/some-obs
+
+# ==============================================================================
+# STAGE 4: Runtime (Minimal distroless image)
+# ==============================================================================
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+
+WORKDIR /app
+
+# Copy the binary
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/some-obs /usr/local/bin/some-obs
+
+# Copy required shared libraries
+# COPY --from=builder /lib/x86_64-linux-gnu/libssl.so.3 /lib/x86_64-linux-gnu/
+# COPY --from=builder /lib/x86_64-linux-gnu/libcrypto.so.3 /lib/x86_64-linux-gnu/
+# COPY --from=builder /lib/x86_64-linux-gnu/libz.so.1 /lib/x86_64-linux-gnu/
+# COPY --from=builder /usr/lib/x86_64-linux-gnu/libzstd.so.1 /usr/lib/x86_64-linux-gnu/
+
+# Additional OpenSSL dependencies that might be needed
+# COPY --from=builder /lib/x86_64-linux-gnu/liblzma.so.5* /lib/x86_64-linux-gnu/ 
+
+# Environment variables
+ENV RUST_BACKTRACE=1
+ENV OBS_HOST=obs
+ENV OBS_PORT=4455
+ENV NATS_URL=nats://nats:4222
+ENV NATS_COMMAND_SUBJECT=obs.commands
+ENV NATS_EVENT_SUBJECT=obs.events
+ENV HEALTH_CHECK_INTERVAL_SECS=30
+ENV SHUTDOWN_TIMEOUT_SECS=10
+ENV RUST_LOG=some_obs=info,obs_websocket=info
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/some-obs", "--health-check"]
+
+# Entry point
+ENTRYPOINT ["/usr/local/bin/some-obs"]
+
+# Build arguments
+ARG BUILD_VERSION=unknown
+ARG BUILD_DATE
+ARG VCS_REF
+
+# Labels
+LABEL maintainer="pgdev" \
+      version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/paulgsc/server" \
+      org.opencontainers.image.licenses="MIT"
