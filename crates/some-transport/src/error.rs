@@ -55,6 +55,10 @@ pub enum TransportError {
 	#[error("NATS error: {0}")]
 	NatsError(String),
 
+	/// Invalid method call for this transport (e.g., subject not supported)
+	#[error("Invalid operation for this transport: {0}")]
+	InvalidOperation(String),
+
 	/// Generic transport error
 	#[error("Transport error: {0}")]
 	Other(String),

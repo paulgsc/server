@@ -160,24 +160,33 @@ where
 		Ok(())
 	}
 
-	async fn broadcast(&self, event: E) -> Result<usize> {
+	async fn broadcast(&self, _event: E) -> Result<usize> {
+		Err(TransportError::InvalidOperation(format!(
+			"broadcast is not supported on this transport (async_broadcast channel only!"
+		)))
+	}
+
+	async fn send_to_subject(&self, subject: &str, event: E) -> Result<()> {
 		let mut bytes = Vec::new();
 		event.encode(&mut bytes).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
 		self
 			.client
-			.publish(Self::BROADCAST_SUBJECT.to_string(), bytes.into())
+			.publish(subject.to_owned(), bytes.into())
 			.await
 			.map_err(|e| TransportError::BroadcastFailed(e.to_string()))?;
 
-		// NATS doesn't provide receiver count directly
-		// Return 0 to indicate unknown, or could track subscribers separately
-		Ok(0)
+		Ok(())
+	}
+
+	async fn subscribe_to_subject(&self, subject: &str) -> Self::Receiver {
+		let subscription = self.client.subscribe(subject.to_owned()).await.expect("Failed to subscribe to broadcast");
+
+		TransportReceiver::new(NatsReceiver::new(subscription))
 	}
 
 	async fn subscribe(&self) -> Self::Receiver {
 		let subscription = self.client.subscribe(Self::BROADCAST_SUBJECT.to_string()).await.expect("Failed to subscribe to broadcast");
-
 		TransportReceiver::new(NatsReceiver::new(subscription))
 	}
 

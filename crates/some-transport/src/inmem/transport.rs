@@ -132,7 +132,18 @@ where
 			.map_err(|e| TransportError::BroadcastFailed(e.to_string()))
 	}
 
+	async fn send_to_subject(&self, _subject: &str, _event: E) -> Result<()> {
+		Err(TransportError::InvalidOperation(format!(
+			"broadcast is not supported on this transport (async_broadcast channel only!"
+		)))
+	}
+
 	async fn subscribe(&self) -> TransportReceiver<E, InMemReceiver<E>> {
+		let receiver = self.main_sender.new_receiver();
+		TransportReceiver::new(InMemReceiver::new(receiver))
+	}
+
+	async fn subscribe_to_subject(&self, _subject: &str) -> TransportReceiver<E, InMemReceiver<E>> {
 		let receiver = self.main_sender.new_receiver();
 		TransportReceiver::new(InMemReceiver::new(receiver))
 	}
