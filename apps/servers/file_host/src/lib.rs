@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
+use ws_events::UnifiedEvent;
 
 pub mod cache;
 pub mod config;
@@ -20,7 +21,7 @@ pub mod transport;
 pub mod utils;
 pub mod websocket;
 
-pub use crate::websocket::{init_websocket, Event, NowPlaying, UtterancePrompt, WebSocketFsm};
+pub use crate::websocket::{init_websocket, WebSocketFsm};
 pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
 pub use config::*;
 pub use handlers::audio_files::error::AudioServiceError;
@@ -51,7 +52,7 @@ pub struct ExternalApis {
 pub struct RealtimeContext {
 	pub ws: WebSocketFsm,
 	pub dedup_cache: Arc<DedupCache>,
-	pub transport: Arc<NatsTransport<Event>>,
+	pub transport: NatsTransport<UnifiedEvent>,
 }
 
 #[derive(Clone)]
@@ -85,9 +86,9 @@ impl AppState {
 
 		// Initialize NATS transports
 		let nats_url = config.nats_url.as_deref().unwrap_or("nats://localhost:4222");
-		let transports = Arc::new(NatsTransport::connect_pooled(nats_url).await?);
+		let transport = NatsTransport::connect_pooled(nats_url).await?;
 
-		let ws = init_websocket(cancel_token.clone()).await;
+		let ws = init_websocket(transport, cancel_token.clone()).await;
 
 		let realtime = RealtimeContext { ws, dedup_cache, transport };
 
@@ -135,11 +136,5 @@ impl FromRef<AppState> for CancellationToken {
 impl FromRef<AppState> for ConnectionGuard {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.connection_guard.clone()
-	}
-}
-
-impl FromRef<AppState> for Arc<NatsTransport<Event>> {
-	fn from_ref(state: &AppState) -> Self {
-		state.realtime.transport.clone()
 	}
 }

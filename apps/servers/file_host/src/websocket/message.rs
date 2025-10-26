@@ -13,7 +13,7 @@ use types::{ClientMessage, ProcessResult};
 
 impl WebSocketFsm {
 	/// Process a text message from a client
-	pub async fn process_message(&self, conn_key: &str, raw_message: String, receivers: &ConnectionReceivers) {
+	pub async fn process_message(&self, conn_key: &str, raw_message: String) {
 		let start = Instant::now();
 
 		// Get connection info
@@ -55,12 +55,12 @@ impl WebSocketFsm {
 
 			// Subscription management
 			ClientMessage::Subscribe { event_types } => {
-				self.handle_subscribe(conn_key, event_types, receivers).await;
+				self.handle_subscribe(conn_key, event_types, self.rx).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 
 			ClientMessage::Unsubscribe { event_types } => {
-				self.handle_unsubscribe(conn_key, event_types, receivers).await;
+				self.handle_unsubscribe(conn_key, event_types, self.rx).await;
 				ProcessResult::success(1, start.elapsed())
 			}
 

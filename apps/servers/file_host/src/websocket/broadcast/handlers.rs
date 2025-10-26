@@ -1,34 +1,31 @@
-use crate::transport::ConnectionReceivers;
+use super::errors::BroadcastError;
 use crate::WebSocketFsm;
 use axum::extract::ws::{Message, WebSocket};
 use futures::{sink::SinkExt, stream::SplitSink};
-use some_transport::TransportError;
+use some_transport::{NatsTransport, NatsTransportReceiver, Transport, TransportError};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use ws_events::{
+	events::{Event, EventType},
+	UnifiedEvent,
+};
 
-/// Spawns task to forward events from NATS subscriptions to WebSocket
+/// Spawns task to forward events from shared static NATS subscriptions to WebSocket
 ///
-/// This task multiplexes all subscribed event types and forwards them
-/// to the WebSocket connection.
+/// This task multiplexes from the app-wide static receiver set and filters events
+/// based on the connection's active subscriptions stored in their handle.
 pub(crate) fn spawn_event_forwarder(
 	mut sender: SplitSink<WebSocket, Message>,
-	receivers: ConnectionReceivers,
 	state: WebSocketFsm,
 	conn_key: String,
 	cancel_token: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		let mut message_count = 0u64;
+		let mut filtered_count = 0u64;
 
-		// Get all subscribed event types
-		let event_types = receivers.event_types();
-
-		info!(
-			connection_id = %conn_key,
-			subscriptions = ?event_types,
-			"Event forwarder started"
-		);
-
+		let transport = state.transport;
 		loop {
 			tokio::select! {
 				// Listen for cancellation signal
@@ -36,63 +33,96 @@ pub(crate) fn spawn_event_forwarder(
 					info!(
 						connection_id = %conn_key,
 						messages_forwarded = message_count,
+						messages_filtered = filtered_count,
 						"Event forwarder cancelled - shutting down"
 					);
 					break;
 				}
 
-				// Multiplex all receivers - poll each event type
-				result = receive_from_any(&receivers) => {
+				// Multiplex from shared receivers - ALL event types are polled
+				result = receive_from_any(transport) => {
 					match result {
 						Ok((event_type, event)) => {
-							message_count += 1;
-
-							if let Err(e) = forward_event(&mut sender, &event, &conn_key).await {
-								error!(
-									connection_id = %conn_key,
-									event_type = ?event_type,
-									error = %e,
-									"Error forwarding event"
-								);
-								break; // Fatal: stop forwarding
-							}
-
-							if message_count % 100 == 0 {
-								record_system_event!(
-									"forward_milestone",
-									connection_id = conn_key,
-									messages_forwarded = message_count
-								);
+							// Check if THIS connection is subscribed to this event type
+							let is_subscribed = if let Some(handle) = state.store.get(&conn_key) {
+								match handle.is_subscribed_to(event_type).await {
+									Ok(subscribed) => subscribed,
+									Err(e) => {
+										warn!(
+											connection_id = %conn_key,
+											error = %e,
+											"Failed to check subscription state"
+										);
+										break;
+									}
+								}
+							} else {
+								// Connection no longer exists in store
 								debug!(
 									connection_id = %conn_key,
-									messages_forwarded = message_count,
-									"Forwarding milestone reached"
+									"Connection not found in store, stopping forwarder"
 								);
+								break;
+							};
+
+							if is_subscribed {
+								// Forward event to this connection
+								message_count += 1;
+
+								if let Err(e) = forward_event(&mut sender, &event, &conn_key).await {
+									error!(
+										connection_id = %conn_key,
+										event_type = ?event_type,
+										error = %e,
+										"Error forwarding event"
+									);
+									break; // Fatal: stop forwarding
+								}
+
+								if message_count % 100 == 0 {
+									debug!(
+										connection_id = %conn_key,
+										messages_forwarded = message_count,
+										messages_filtered = filtered_count,
+										"Forwarding milestone reached"
+									);
+								}
+							} else {
+								// Event received but this connection not subscribed - filter it out
+								filtered_count += 1;
+
+								if filtered_count % 1000 == 0 {
+									debug!(
+										connection_id = %conn_key,
+										event_type = ?event_type,
+										total_filtered = filtered_count,
+										"Filtering events not in subscription set"
+									);
+								}
 							}
 						}
-						Err(ForwardError::Lagged(event_type, n)) => {
+						Err(BroadcastError::Lagged(event_type, n)) => {
 							warn!(
 								connection_id = %conn_key,
 								event_type = ?event_type,
 								skipped = n,
 								"Receiver lagged, skipped messages"
 							);
-							record_ws_error!("receiver_overflow", "forward", n);
 							continue;
 						}
-						Err(ForwardError::Closed(event_type)) => {
+						Err(BroadcastError::Closed(event_type)) => {
 							warn!(
 								connection_id = %conn_key,
 								event_type = ?event_type,
-								"Event channel closed"
+								"Event channel closed in shared receivers"
 							);
 							// One channel closed, but continue with others
 							continue;
 						}
-						Err(ForwardError::NoReceivers) => {
-							debug!(
+						Err(BroadcastError::NoReceivers) => {
+							error!(
 								connection_id = %conn_key,
-								"No active receivers, ending forwarder"
+								"Shared receiver set is empty - critical error"
 							);
 							break;
 						}
@@ -104,105 +134,106 @@ pub(crate) fn spawn_event_forwarder(
 		// Cleanup: remove connection from store
 		let _ = state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
 
-		record_system_event!("forward_ended", connection_id = conn_key, total_messages = message_count);
-		debug!(
+		info!(
 			connection_id = %conn_key,
-			total_messages = message_count,
+			total_messages_forwarded = message_count,
+			total_messages_filtered = filtered_count,
 			"Event forwarding ended"
 		);
 	})
 }
 
-/// Receive from any of the connection's receivers using tokio::select!
-async fn receive_from_any(receivers: &ConnectionReceivers) -> Result<(EventType, Event), ForwardError> {
-	use tokio::select;
+/// Receive from any receiver in the shared static set using tokio::select!
+///
+/// This multiplexes ALL available event types. Every connection polls the same
+/// shared receivers, but filtering happens per-connection based on their subscription state.
+async fn receive_from_any(transport: NatsTransport<UnifiedEvent>) -> Result<(EventType, Event), BroadcastError> {
+	// Per-connection NATS receivers for each subject
+	let mut ping_rx = transport.subscribe_to_subject(&EventType::Ping.subject()).await;
+	let mut pong_rx = transport.subscribe_to_subject(&EventType::Pong.subject()).await;
+	let mut error_rx = transport.subscribe_to_subject(&EventType::Error.subject()).await;
+	let mut client_count_rx = transport.subscribe_to_subject(&EventType::ClientCount.subject()).await;
+	let mut obs_command_rx = transport.subscribe_to_subject(&EventType::ObsCommand.subject()).await;
+	let mut obs_status_rx = transport.subscribe_to_subject(&EventType::ObsStatus.subject()).await;
+	let mut tab_meta_rx = transport.subscribe_to_subject(&EventType::TabMetaData.subject()).await;
+	let mut utterance_rx = transport.subscribe_to_subject(&EventType::Utterance.subject()).await;
+	let mut conn_state_rx = transport.subscribe_to_subject(&EventType::ConnectionStateChanged.subject()).await;
+	let mut msg_processed_rx = transport.subscribe_to_subject(&EventType::MessageProcessed.subject()).await;
+	let mut broadcast_failed_rx = transport.subscribe_to_subject(&EventType::BroadcastFailed.subject()).await;
+	let mut conn_cleanup_rx = transport.subscribe_to_subject(&EventType::ConnectionCleanup.subject()).await;
 
-	// Get clones of all receivers
-	let mut system_rx = receivers.get(&EventType::System);
-	let mut audio_rx = receivers.get(&EventType::Audio);
-	let mut chat_rx = receivers.get(&EventType::Chat);
-	let mut obs_rx = receivers.get(&EventType::Obs);
-	let mut client_count_rx = receivers.get(&EventType::ClientCount);
-	let mut error_rx = receivers.get(&EventType::Error);
-
-	// If no receivers, return error
-	if system_rx.is_none() && audio_rx.is_none() && chat_rx.is_none() && obs_rx.is_none() && client_count_rx.is_none() && error_rx.is_none() {
-		return Err(ForwardError::NoReceivers);
-	}
-
-	// Use select! to wait for first available message
+	// Multiplex all receivers - whichever fires first wins
 	select! {
-		result = async {
-			if let Some(ref mut rx) = system_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
-			handle_receive_result(result, EventType::System)
+		result = recv_or_pending(&mut ping_rx) => {
+			handle_receive_result(result, EventType::Ping)
 		}
 
-		result = async {
-			if let Some(ref mut rx) = audio_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
-			handle_receive_result(result, EventType::Audio)
+		result = recv_or_pending(&mut pong_rx) => {
+			handle_receive_result(result, EventType::Pong)
 		}
 
-		result = async {
-			if let Some(ref mut rx) = chat_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
-			handle_receive_result(result, EventType::Chat)
+		result = recv_or_pending(&mut error_rx) => {
+			handle_receive_result(result, EventType::Error)
 		}
 
-		result = async {
-			if let Some(ref mut rx) = obs_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
-			handle_receive_result(result, EventType::Obs)
-		}
-
-		result = async {
-			if let Some(ref mut rx) = client_count_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
+		result = recv_or_pending(&mut client_count_rx) => {
 			handle_receive_result(result, EventType::ClientCount)
 		}
 
-		result = async {
-			if let Some(ref mut rx) = error_rx {
-				rx.recv().await
-			} else {
-				std::future::pending().await
-			}
-		} => {
-			handle_receive_result(result, EventType::Error)
+		result = recv_or_pending(&mut obs_command_rx) => {
+			handle_receive_result(result, EventType::ObsCommand)
+		}
+
+		result = recv_or_pending(&mut obs_status_rx) => {
+			handle_receive_result(result, EventType::ObsStatus)
+		}
+
+		result = recv_or_pending(&mut tab_meta_rx) => {
+			handle_receive_result(result, EventType::TabMetaData)
+		}
+
+		result = recv_or_pending(&mut utterance_rx) => {
+			handle_receive_result(result, EventType::Utterance)
+		}
+
+		result = recv_or_pending(&mut conn_state_rx) => {
+			handle_receive_result(result, EventType::ConnectionStateChanged)
+		}
+
+		result = recv_or_pending(&mut msg_processed_rx) => {
+			handle_receive_result(result, EventType::MessageProcessed)
+		}
+
+		result = recv_or_pending(&mut broadcast_failed_rx) => {
+			handle_receive_result(result, EventType::BroadcastFailed)
+		}
+
+		result = recv_or_pending(&mut conn_cleanup_rx) => {
+			handle_receive_result(result, EventType::ConnectionCleanup)
 		}
 	}
 }
 
+/// Helper to recv from a receiver or return pending future if None
+async fn recv_or_pending(rx: &mut NatsTransportReceiver<UnifiedEvent>) -> Result<UnifiedEvent, TransportError> {
+	rx.recv().await
+}
+
 /// Handle the result of receiving from a transport receiver
-fn handle_receive_result(result: Result<Event, TransportError>, event_type: EventType) -> Result<(EventType, Event), ForwardError> {
+fn handle_receive_result(result: Result<UnifiedEvent, TransportError>, event_type: EventType) -> Result<(EventType, Event), BroadcastError> {
 	match result {
-		Ok(event) => Ok((event_type, event)),
-		Err(TransportError::Overflowed(n)) => Err(ForwardError::Lagged(event_type, n)),
-		Err(TransportError::Closed) => Err(ForwardError::Closed(event_type)),
+		Ok(unified) => {
+			let event: Event = Result::<Event, String>::from(unified).map_err(|e| {
+				error!("💥 UnifiedEvent conversion failed for {:?}: {}", event_type.clone(), e);
+				BroadcastError::Closed(event_type.clone())
+			})?;
+			Ok((event_type, event))
+		}
+		Err(TransportError::Overflowed(n)) => Err(BroadcastError::Lagged(event_type, n)),
+		Err(TransportError::Closed) => Err(BroadcastError::Closed(event_type)),
 		Err(e) => {
 			error!("Transport error on {:?}: {}", event_type, e);
-			Err(ForwardError::Closed(event_type))
+			Err(BroadcastError::Closed(event_type))
 		}
 	}
 }
@@ -212,7 +243,6 @@ async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event
 	// Serialize event
 	let json = serde_json::to_string(event).map_err(|e| {
 		let msg = format!("Failed to serialize event for {}: {}", conn_key, e);
-		record_ws_error!("serialization_failed", "forward", &msg);
 		msg
 	})?;
 
@@ -221,7 +251,6 @@ async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event
 	// Send message
 	sender.send(msg).await.map_err(|e| {
 		let msg = format!("Failed to forward event to {}: {}", conn_key, e);
-		record_ws_error!("forward_send_failed", "forward", &msg);
 		msg
 	})?;
 

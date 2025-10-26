@@ -88,6 +88,10 @@ pub struct Config {
 	#[arg(long, env = "REDIS_URL")]
 	pub redis_url: Option<String>,
 
+	/// NATS URL for broker messaging
+	#[arg(long, env = "NATS_URL")]
+	pub nats_url: Option<String>,
+
 	/// Cache TTL in seconds
 	#[arg(long, env = "CACHE_TTL", default_value = "600")]
 	pub cache_ttl: u64,

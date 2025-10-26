@@ -17,7 +17,8 @@ mood_event  = { workspace = true }
 some-services  = { workspace = true }
 ws-connection  = { workspace = true }
 ws-conn-manager  = { workspace = true }
-some-transport  = { workspace = true , features = ["inmem"] }
+some-transport  = { workspace = true , features = ["nats"] }
+ws-events  = { workspace = true , features = ["events"] }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }

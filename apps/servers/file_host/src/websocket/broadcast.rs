@@ -1,10 +1,14 @@
 use crate::WebSocketFsm;
-use some_transport::TransportError;
-use tracing::{debug, error, info, warn};
+use some_transport::Transport;
+use tokio::time::Instant;
+use tracing::error;
+use ws_events::{events::Event, UnifiedEvent};
 
+mod errors;
 mod handlers;
 mod types;
 
+use errors::BroadcastError;
 use types::BroadcastResult;
 
 impl WebSocketFsm {
@@ -32,10 +36,13 @@ impl WebSocketFsm {
 	}
 
 	/// Broadcast an event to all subscribers of its type
-	pub async fn broadcast_event(&self, event: Event) -> Result<usize, TransportError> {
-		let event_type = event.event_type().ok_or("Event has no type");
+	pub async fn broadcast_event(&self, event: Event) -> Result<(), BroadcastError> {
+		let unified_event = UnifiedEvent::try_from(event.clone())?;
+		let event_type = event.get_type().ok_or(BroadcastError::NoEventType)?;
 		let subject = event_type.subject();
 
-		self.transport.send_to_subject(subject, event).await?;
+		self.transport.send_to_subject(subject, unified_event).await?;
+
+		Ok(())
 	}
 }

@@ -1,3 +1,5 @@
+use tokio::time::Duration;
+
 /// Broadcast result tracking
 #[derive(Debug)]
 pub struct BroadcastResult {
@@ -14,11 +16,4 @@ impl BroadcastResult {
 			duration,
 		}
 	}
-}
-
-/// Error types for receiving from multiplexed channels
-enum ForwardError {
-	Lagged(EventType, u64),
-	Closed(EventType),
-	NoReceivers,
 }

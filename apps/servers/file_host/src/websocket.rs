@@ -25,7 +25,6 @@ pub mod broadcast;
 pub mod connection;
 pub mod heartbeat;
 pub mod message;
-pub mod obs;
 pub mod shutdown;
 pub mod types;
 
@@ -43,7 +42,7 @@ pub struct WebSocketFsm {
 	store: Arc<ConnectionStore<EventType>>,
 
 	/// Infrastructure layer: Unified transport for ALL events
-	transport: Arc<NatsTransport<Event>>,
+	transport: NatsTransport<UnifiedEvent>,
 
 	/// Heartbeat management
 	heartbeat_manager: Arc<HeartbeatManager<EventType>>,
@@ -57,11 +56,11 @@ pub struct WebSocketFsm {
 
 impl WebSocketFsm {
 	/// Creates a new WebSocketFsm instance - only responsible for initialization
-	pub fn new(transport: Arc<NatsTransport<Event>>, cancel_token: &CancellationToken) -> Self {
+	pub fn new(transport: NatsTransport<UnifiedEvent>, cancel_token: &CancellationToken) -> Self {
 		Self::with_policy(transport, HeartbeatPolicy::default(), cancel_token)
 	}
 
-	pub fn with_policy(transport: Arc<NatsTransport<Event>>, policy: HeartbeatPolicy, cancel_token: &CancellationToken) -> Self {
+	pub fn with_policy(transport: NatsTransport<UnifiedEvent>, policy: HeartbeatPolicy, cancel_token: &CancellationToken) -> Self {
 		let store = Arc::new(ConnectionStore::<EventType>::new());
 		let metrics = Arc::new(ConnectionMetrics::default());
 
@@ -379,7 +378,7 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMa
 	let (mut sender, receiver) = socket.split();
 
 	// Establish connection through FSM
-	let (conn_key, event_receiver) = match establish_connection(&state, &headers, &addr, &cancel_token).await {
+	let conn_key = match establish_connection(&state, &headers, &addr, &cancel_token).await {
 		Ok(connection) => connection,
 		Err(_) => {
 			record_ws_error!("connection_refused", "handle_socket");
@@ -398,25 +397,21 @@ async fn handle_socket(socket: WebSocket, state: WebSocketFsm, headers: HeaderMa
 	let forward_cancel = cancel_token.child_token().clone();
 	let process_cancel = cancel_token.child_token().clone();
 
-	// Clone receivers Arc so both forwarder and message processor share it
-	let forward_receivers = event_receivers.clone();
-	let process_receivers = event_receivers.clone();
+	let forward_task = spawn_event_forwarder(sender, state.clone(), conn_key.clone(), forward_cancel);
 
-	let forward_task = spawn_event_forwarder(sender, forward_receivers, state.clone(), conn_key.clone(), forward_cancel);
-
-	let message_count = process_incoming_messages(receiver, &state, &conn_key, &process_receivers, process_cancel).await;
+	let message_count = process_incoming_messages(receiver, &state, &conn_key, process_cancel).await;
 
 	cleanup_connection_with_stats(&state, &conn_key, message_count, forward_task).await;
 	permit.release();
 }
 
 /// Initialize WebSocket system with default policy
-pub async fn init_websocket(transport: Arc<NatsTransport<Event>>, cancel_token: CancellationToken) -> WebSocketFsm {
+pub async fn init_websocket(transport: NatsTransport<Event>, cancel_token: CancellationToken) -> WebSocketFsm {
 	init_websocket_with_policy(transport, HeartbeatPolicy::default(), cancel_token).await
 }
 
 /// Initialize WebSocket system with custom heartbeat policy
-pub async fn init_websocket_with_policy(transport: Arc<NatsTransport<Event>>, policy: HeartbeatPolicy, cancel_token: CancellationToken) -> WebSocketFsm {
+pub async fn init_websocket_with_policy(transport: NatsTransport<Event>, policy: HeartbeatPolicy, cancel_token: CancellationToken) -> WebSocketFsm {
 	record_system_event!("websocket_init_started");
 
 	let state = WebSocketFsm::with_policy(transport, policy, &cancel_token);

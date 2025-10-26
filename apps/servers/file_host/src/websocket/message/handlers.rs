@@ -6,13 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Process all incoming messages from the WebSocket
-pub(crate) async fn process_incoming_messages(
-	mut receiver: SplitStream<WebSocket>,
-	state: &WebSocketFsm,
-	conn_key: &str,
-	receivers: &ConnectionReceivers,
-	cancel_token: CancellationToken,
-) -> u64 {
+pub(crate) async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: &WebSocketFsm, conn_key: &str, cancel_token: CancellationToken) -> u64 {
 	let mut message_count = 0u64;
 
 	loop {
@@ -33,7 +27,7 @@ pub(crate) async fn process_incoming_messages(
 					Some(Ok(msg)) => {
 						message_count += 1;
 						// Handle the message; break on close
-						if handle_websocket_message(msg, state, conn_key, receivers, message_count).await.is_err() {
+						if handle_websocket_message(msg, state, conn_key, message_count).await.is_err() {
 							break;
 						}
 					}
@@ -65,7 +59,7 @@ pub(crate) async fn process_incoming_messages(
 }
 
 /// Handle a single WebSocket message based on its type
-async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: &str, receivers: &ConnectionReceivers, message_count: u64) -> Result<(), ()> {
+async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: &str, message_count: u64) -> Result<(), ()> {
 	match msg {
 		Message::Text(text) => {
 			record_system_event!("message_received", connection_id = conn_key, message_number = message_count, size_bytes = text.len());
@@ -78,7 +72,7 @@ async fn handle_websocket_message(msg: Message, state: &WebSocketFsm, conn_key: 
 			);
 
 			// Process the message
-			state.process_message(conn_key, text, receivers).await;
+			state.process_message(conn_key, text).await;
 			Ok(())
 		}
 
