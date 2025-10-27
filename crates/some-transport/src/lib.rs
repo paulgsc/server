@@ -60,6 +60,8 @@ pub use error::TransportError;
 pub use receiver::{ReceiverTrait, TransportReceiver};
 pub use traits::Transport;
 
+#[cfg(feature = "mpsc_utils")]
+pub mod mpsc_utils;
 // Feature-gated transport implementations
 #[cfg(feature = "inmem")]
 pub mod inmem;
