@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 mod event_type;
 mod message;
 mod now_playing;
+mod orchestrator;
+mod system_events;
 mod utterance;
 
 pub use event_type::EventType;
 pub use message::{MessageId, ProcessResult};
 pub use now_playing::NowPlaying;
 use obs_websocket::{ObsCommand, ObsEvent};
+pub use orchestrator::{OrchestratorState, TickCommand};
+pub use system_events::SystemEvent;
 pub use utterance::{UtteranceMetadata, UtterancePrompt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,31 +48,13 @@ pub enum Event {
 		text: String,
 		metadata: UtteranceMetadata,
 	},
-
-	// System/observability events (not sent to clients)
 	#[serde(skip)]
-	ConnectionStateChanged {
-		connection_id: String,
-		from: String,
-		to: String,
+	System(SystemEvent),
+	TickCommand {
+		command: TickCommand,
 	},
-	#[serde(skip)]
-	MessageProcessed {
-		message_id: MessageId,
-		connection_id: String,
-		result: ProcessResult,
-	},
-	#[serde(skip)]
-	BroadcastFailed {
-		event_type: EventType,
-		error: String,
-		affected_connections: u64,
-	},
-	#[serde(skip)]
-	ConnectionCleanup {
-		connection_id: String,
-		reason: String,
-		resources_freed: bool,
+	OrchestratorState {
+		state: OrchestratorState,
 	},
 }
 
@@ -85,6 +71,8 @@ impl Event {
 			Self::ObsCmd { .. } => Some(EventType::ObsCommand),
 			Self::TabMetaData { .. } => Some(EventType::TabMetaData),
 			Self::Utterance { .. } => Some(EventType::Utterance),
+			Self::TickCommand { .. } => Some(EventType::TickCommand),
+			Self::OrchestratorState { .. } => Some(EventType::OrchestratorState),
 			// System events don't have EventTypes
 			_ => None,
 		}
@@ -100,5 +88,17 @@ impl From<NowPlaying> for Event {
 impl From<UtterancePrompt> for Event {
 	fn from(UtterancePrompt { text, metadata }: UtterancePrompt) -> Self {
 		Event::Utterance { text, metadata }
+	}
+}
+
+impl From<TickCommand> for Event {
+	fn from(command: TickCommand) -> Self {
+		Event::TickCommand { command }
+	}
+}
+
+impl From<OrchestratorState> for Event {
+	fn from(state: OrchestratorState) -> Self {
+		Event::OrchestratorState { state }
 	}
 }

@@ -39,20 +39,6 @@ impl TickEngineState {
 	}
 }
 
-/// Commands that can be sent to the tick engine
-#[derive(Debug, Clone)]
-pub enum TickCommand {
-	Start,
-	Stop,
-	Pause,
-	Resume,
-	Reset,
-	ForceScene(String),
-	SkipCurrentScene,
-	UpdateStreamStatus { is_streaming: bool, stream_time: TimeMs, timecode: String },
-	Reconfigure(OrchestratorConfig),
-}
-
 /// Tick engine that drives the orchestrator state updates
 /// Uses pure actor pattern - all state mutations happen via commands
 pub struct TickEngine {

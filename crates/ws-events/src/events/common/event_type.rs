@@ -14,10 +14,9 @@ pub enum EventType {
 	Error,
 	TabMetaData,
 	Utterance,
-	ConnectionStateChanged,
-	MessageProcessed,
-	BroadcastFailed,
-	ConnectionCleanup,
+	TickCommand,
+	OrchestratorState,
+	SystemEvent,
 }
 
 impl Default for EventType {
@@ -42,10 +41,9 @@ impl EventType {
 			EventType::ClientCount => "system.client_count",
 			EventType::Error => "system.error",
 			EventType::Utterance => "utterance",
-			EventType::ConnectionStateChanged => "telemetry.connection.state",
-			EventType::MessageProcessed => "telemetry.message.processed",
-			EventType::BroadcastFailed => "telemetry.broadcast.failed",
-			EventType::ConnectionCleanup => "telemetry.connection.cleanup",
+			EventType::TickCommand => "orchestrator.tick_command",
+			EventType::OrchestratorState => "orchestrator.state",
+			EventType::SystemEvent => "system",
 			// These don't have subjects as they're not transported
 			EventType::Ping | EventType::Pong => "system.ping",
 		}
@@ -73,10 +71,6 @@ impl std::str::FromStr for EventType {
 			"system.client_count" => Ok(EventType::ClientCount),
 			"system.error" => Ok(EventType::Error),
 			"utterance" => Ok(EventType::Utterance),
-			"telemetry.connection.state" => Ok(EventType::ConnectionStateChanged),
-			"telemetry.message.processed" => Ok(EventType::MessageProcessed),
-			"telemetry.broadcast.failed" => Ok(EventType::BroadcastFailed),
-			"telemetry.connection.cleanup" => Ok(EventType::ConnectionCleanup),
 			"system.ping" => Ok(EventType::Ping),
 			"obsStatus" => Ok(EventType::ObsStatus),
 			"obsCommand" => Ok(EventType::ObsCommand),
@@ -85,10 +79,9 @@ impl std::str::FromStr for EventType {
 			"pong" => Ok(EventType::Pong),
 			"error" => Ok(EventType::Error),
 			"tabMetaData" => Ok(EventType::TabMetaData),
-			"connectionStateChanged" => Ok(EventType::ConnectionStateChanged),
-			"messageProcessed" => Ok(EventType::MessageProcessed),
-			"broadcastFailed" => Ok(EventType::BroadcastFailed),
-			"connectionCleanup" => Ok(EventType::ConnectionCleanup),
+			"orchestrator.tick_command" => Ok(EventType::TickCommand),
+			"orchestrator.state" => Ok(EventType::OrchestratorState),
+			"systemEvent" => Ok(EventType::SystemEvent),
 			_ => Err(format!("Unknown event type: {}", s)),
 		}
 	}

@@ -1,9 +1,9 @@
-#![cfg(feature = "stream-orch")]
+#![cfg(feature = "events")]
 
 use serde::{Deserialize, Serialize};
 
 /// Time in milliseconds
-pub type TimeMs = u64;
+pub type TimeMs = i64;
 
 /// Scene identifier
 pub type SceneId = String;
@@ -55,6 +55,12 @@ impl Default for Progress {
 	}
 }
 
+impl From<f64> for Progress {
+	fn from(value: f64) -> Self {
+		Self(value.clamp(0.0, 1.0))
+	}
+}
+
 /// Timecode in HH:MM:SS.mmm format
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Timecode(String);
@@ -67,15 +73,15 @@ impl Timecode {
 			return Err(format!("Invalid timecode format: {}", timecode));
 		}
 
-		let hours = parts[0].parse::<u64>().map_err(|_| format!("Invalid hours: {}", parts[0]))?;
-		let minutes = parts[1].parse::<u64>().map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
+		let hours = parts[0].parse::<i64>().map_err(|_| format!("Invalid hours: {}", parts[0]))?;
+		let minutes = parts[1].parse::<i64>().map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
 
 		let seconds_parts: Vec<&str> = parts[2].split('.').collect();
-		let seconds = seconds_parts[0].parse::<u64>().map_err(|_| format!("Invalid seconds: {}", seconds_parts[0]))?;
+		let seconds = seconds_parts[0].parse::<i64>().map_err(|_| format!("Invalid seconds: {}", seconds_parts[0]))?;
 
 		let milliseconds = if seconds_parts.len() > 1 {
 			let ms_str = format!("{:0<3}", seconds_parts[1]);
-			ms_str[..3].parse::<u64>().map_err(|_| format!("Invalid milliseconds: {}", seconds_parts[1]))?
+			ms_str[..3].parse::<i64>().map_err(|_| format!("Invalid milliseconds: {}", seconds_parts[1]))?
 		} else {
 			0
 		};

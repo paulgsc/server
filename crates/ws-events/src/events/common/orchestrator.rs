@@ -1,37 +1,29 @@
-#![cfg(feature = "stream-orch")]
+#![cfg(feature = "events")]
 
-use super::schedule::{SceneSchedule, ScheduledElement};
-use super::types::{Progress, SceneConfig, SceneId, TimeMs, Timecode};
 use serde::{Deserialize, Serialize};
 
-/// Stream status information
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StreamStatus {
-	pub is_streaming: bool,
-	pub stream_time: TimeMs,
-	pub timecode: String,
-}
+mod config;
+mod schedule;
+mod state;
+mod types;
 
-impl StreamStatus {
-	pub fn new() -> Self {
-		Self {
-			is_streaming: false,
-			stream_time: 0,
-			timecode: "00:00:00.000".to_string(),
-		}
-	}
+use config::OrchestratorConfig;
+use schedule::{SceneSchedule, ScheduledElement};
+use state::StreamStatus;
+use types::{Progress, SceneConfig, SceneId, TimeMs, Timecode};
 
-	pub fn update(&mut self, is_streaming: bool, stream_time: TimeMs, timecode: String) {
-		self.is_streaming = is_streaming;
-		self.stream_time = stream_time;
-		self.timecode = timecode;
-	}
-}
-
-impl Default for StreamStatus {
-	fn default() -> Self {
-		Self::new()
-	}
+/// Commands that can be sent to the tick engine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TickCommand {
+	Start,
+	Stop,
+	Pause,
+	Resume,
+	Reset,
+	ForceScene(String),
+	SkipCurrentScene,
+	UpdateStreamStatus { is_streaming: bool, stream_time: TimeMs, timecode: String },
+	Reconfigure(OrchestratorConfig),
 }
 
 /// The current state of the orchestrator

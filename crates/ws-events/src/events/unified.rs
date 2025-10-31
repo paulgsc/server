@@ -1,24 +1,25 @@
 #![cfg(feature = "events")]
 
-use super::common::{Event, EventType, MessageId};
-use crate::events::ProcessResult;
+use super::common::{Event, EventType, SystemEvent};
 use prost::Message;
 
 mod now_playing;
 mod obs;
+mod orchestrator;
 mod system;
 mod utterance;
 
 use now_playing::TabMetaDataMessage;
 pub use obs::{ObsCommandMessage, ObsStatusMessage};
-use system::{BroadcastFailedMessage, ClientCountMessage, ConnectionCleanupMessage, ConnectionStateChangedMessage, ErrorMessage, MessageProcessedMessage};
+use orchestrator::{OrchestratorStateMessage, TickCommandMessage};
+use system::{ClientCountMessage, ErrorMessage, SystemEventMessage};
 use utterance::UtteranceMessage;
 
 /// Unified event type for NATS transport (Prost-compatible)
 /// Contains only events that should be transported via NATS
 #[derive(Clone, Message)]
 pub struct UnifiedEvent {
-	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6, 7")]
 	pub event: Option<unified_event::Event>,
 }
 
@@ -39,15 +40,12 @@ pub mod unified_event {
 		Error(ErrorMessage),
 		#[prost(message, tag = "6")]
 		Utterance(UtteranceMessage),
-		// System/Telemetry events
 		#[prost(message, tag = "7")]
-		ConnectionStateChanged(ConnectionStateChangedMessage),
+		SystemEvent(SystemEventMessage),
 		#[prost(message, tag = "8")]
-		MessageProcessed(MessageProcessedMessage),
+		TickCommand(TickCommandMessage),
 		#[prost(message, tag = "9")]
-		BroadcastFailed(BroadcastFailedMessage),
-		#[prost(message, tag = "10")]
-		ConnectionCleanup(ConnectionCleanupMessage),
+		OrchestratorState(OrchestratorStateMessage),
 	}
 }
 
@@ -73,37 +71,28 @@ impl From<Event> for Option<UnifiedEvent> {
 			Event::Utterance { text, metadata } => UtteranceMessage::new(text, metadata).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::Utterance(msg)),
 			}),
-			Event::ConnectionStateChanged { connection_id, from, to } => Some(UnifiedEvent {
-				event: Some(unified_event::Event::ConnectionStateChanged(ConnectionStateChangedMessage::new(connection_id, from, to))),
+			Event::System(sys_event) => serde_json::to_vec(&sys_event).ok().map(|payload| {
+				let event_type = match &sys_event {
+					SystemEvent::ConnectionStateChanged { .. } => "ConnectionStateChanged",
+					SystemEvent::MessageProcessed { .. } => "MessageProcessed",
+					SystemEvent::BroadcastFailed { .. } => "BroadcastFailed",
+					SystemEvent::ConnectionCleanup { .. } => "ConnectionCleanup",
+					SystemEvent::Other { name, .. } => name.as_str(),
+				};
+
+				UnifiedEvent {
+					event: Some(unified_event::Event::SystemEvent(SystemEventMessage {
+						event_type: event_type.to_string(),
+						payload,
+						timestamp: chrono::Utc::now().timestamp(),
+					})),
+				}
 			}),
-			Event::MessageProcessed {
-				message_id,
-				connection_id,
-				result,
-			} => Some(UnifiedEvent {
-				event: Some(unified_event::Event::MessageProcessed(MessageProcessedMessage::new(
-					message_id.to_string(),
-					connection_id,
-					result,
-				))),
+			Event::TickCommand { command } => TickCommandMessage::from_tick_command(command).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::TickCommand(msg)),
 			}),
-			Event::BroadcastFailed {
-				event_type,
-				error,
-				affected_connections,
-			} => Some(UnifiedEvent {
-				event: Some(unified_event::Event::BroadcastFailed(BroadcastFailedMessage::new(event_type, error, affected_connections))),
-			}),
-			Event::ConnectionCleanup {
-				connection_id,
-				reason,
-				resources_freed,
-			} => Some(UnifiedEvent {
-				event: Some(unified_event::Event::ConnectionCleanup(ConnectionCleanupMessage::new(
-					connection_id,
-					reason,
-					resources_freed,
-				))),
+			Event::OrchestratorState { state } => OrchestratorStateMessage::from_orchestrator_state(&state).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::OrchestratorState(msg)),
 			}),
 
 			// Non-transportable events -> error
@@ -136,52 +125,11 @@ impl From<UnifiedEvent> for Result<Event, String> {
 				.get_metadata()
 				.map_err(|e| e.to_string())
 				.map(|metadata| Event::Utterance { text: msg.text.clone(), metadata }),
-			Some(unified_event::Event::ConnectionStateChanged(ConnectionStateChangedMessage {
-				connection_id,
-				from_state,
-				to_state,
-				..
-			})) => Ok(Event::ConnectionStateChanged {
-				connection_id,
-				from: from_state,
-				to: to_state,
-			}),
-			Some(unified_event::Event::MessageProcessed(MessageProcessedMessage {
-				message_id,
-				connection_id,
-				duration_micros,
-				failed,
-				delivered,
-				..
-			})) => Ok(Event::MessageProcessed {
-				message_id: MessageId::from_str(&message_id).unwrap_or_default(),
-				connection_id,
-				result: ProcessResult {
-					delivered,
-					failed,
-					duration: duration_micros,
-				},
-			}),
-			Some(unified_event::Event::BroadcastFailed(BroadcastFailedMessage {
-				event_type,
-				error,
-				affected_connections,
-				..
-			})) => Ok(Event::BroadcastFailed {
-				event_type: event_type.parse().unwrap_or_default(),
-				error,
-				affected_connections,
-			}),
-			Some(unified_event::Event::ConnectionCleanup(ConnectionCleanupMessage {
-				connection_id,
-				reason,
-				resources_freed,
-				..
-			})) => Ok(Event::ConnectionCleanup {
-				connection_id,
-				reason,
-				resources_freed,
-			}),
+			Some(unified_event::Event::SystemEvent(msg)) => serde_json::from_slice::<SystemEvent>(&msg.payload)
+				.map(Event::System)
+				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
+			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|command| Event::TickCommand { command }),
+			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|state| Event::OrchestratorState { state }),
 
 			None => Err("UnifiedEvent has no event variant".to_string()),
 		}
@@ -198,10 +146,9 @@ impl UnifiedEvent {
 			Some(unified_event::Event::ClientCount(_)) => Some(EventType::ClientCount),
 			Some(unified_event::Event::Error(_)) => Some(EventType::Error),
 			Some(unified_event::Event::Utterance(_)) => Some(EventType::Utterance),
-			Some(unified_event::Event::ConnectionStateChanged(_)) => Some(EventType::ConnectionStateChanged),
-			Some(unified_event::Event::MessageProcessed(_)) => Some(EventType::MessageProcessed),
-			Some(unified_event::Event::BroadcastFailed(_)) => Some(EventType::BroadcastFailed),
-			Some(unified_event::Event::ConnectionCleanup(_)) => Some(EventType::ConnectionCleanup),
+			Some(unified_event::Event::SystemEvent(_)) => Some(EventType::SystemEvent),
+			Some(unified_event::Event::TickCommand(_)) => Some(EventType::TickCommand),
+			Some(unified_event::Event::OrchestratorState(_)) => Some(EventType::OrchestratorState),
 			None => None,
 		}
 	}

@@ -1,4 +1,4 @@
-#![cfg(feature = "stream-orch")]
+#![cfg(feature = "events")]
 
 use super::types::{SceneConfig, TimeMs};
 use serde::{Deserialize, Serialize};
