@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Debug, Deserialize)]

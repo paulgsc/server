@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use serde::{Deserialize, Serialize};
 
 mod config;
@@ -7,10 +5,10 @@ mod schedule;
 mod state;
 mod types;
 
-use config::OrchestratorConfig;
-use schedule::{SceneSchedule, ScheduledElement};
-use state::StreamStatus;
-use types::{Progress, SceneConfig, SceneId, TimeMs, Timecode};
+pub use config::OrchestratorConfig;
+pub use schedule::{SceneSchedule, ScheduledElement};
+pub use state::StreamStatus;
+pub use types::{Progress, SceneConfig, SceneId, TimeMs, Timecode};
 
 /// Commands that can be sent to the tick engine
 #[derive(Debug, Clone, Serialize, Deserialize)]

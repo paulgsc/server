@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use super::{EventType, MessageId, ProcessResult};
 use serde::{Deserialize, Serialize};
 

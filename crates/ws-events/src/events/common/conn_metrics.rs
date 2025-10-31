@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 // Connection metrics for monitoring
 #[derive(Debug, Default)]
 pub struct ConnectionMetrics {

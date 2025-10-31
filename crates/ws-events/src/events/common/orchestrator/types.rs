@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use serde::{Deserialize, Serialize};
 
 /// Time in milliseconds

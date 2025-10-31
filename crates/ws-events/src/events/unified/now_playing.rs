@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use crate::events::NowPlaying;
 use prost::Message;
 

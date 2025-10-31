@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use super::types::TimeMs;
 use serde::{Deserialize, Serialize};
 

@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use super::types::{SceneConfig, TimeMs};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

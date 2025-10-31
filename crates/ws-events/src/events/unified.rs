@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use super::common::{Event, EventType, SystemEvent};
 use prost::Message;
 

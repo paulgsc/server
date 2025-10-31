@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use obs_websocket::{ObsCommand, ObsEvent};
 use prost::Message;
 use serde_json::Value;

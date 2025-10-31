@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use crate::events::UtteranceMetadata;
 use prost::Message;
 

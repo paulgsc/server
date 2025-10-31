@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use super::types::{SceneConfig, SceneId, TimeMs};
 use serde::{Deserialize, Serialize};
 

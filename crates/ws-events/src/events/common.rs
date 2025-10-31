@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use serde::{Deserialize, Serialize};
 
 mod event_type;
@@ -13,7 +11,7 @@ pub use event_type::EventType;
 pub use message::{MessageId, ProcessResult};
 pub use now_playing::NowPlaying;
 use obs_websocket::{ObsCommand, ObsEvent};
-pub use orchestrator::{OrchestratorState, TickCommand};
+pub use orchestrator::{OrchestratorConfig, OrchestratorState, SceneConfig, SceneSchedule, TickCommand, TimeMs};
 pub use system_events::SystemEvent;
 pub use utterance::{UtteranceMetadata, UtterancePrompt};
 

@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use crate::events::{OrchestratorState, TickCommand};
 use prost::Message;
 

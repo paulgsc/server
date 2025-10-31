@@ -1,6 +1,7 @@
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
-use ws_events::stream_orch::{OrchestratorConfig, SceneConfig, StreamOrchestrator};
+use ws_events::events::{OrchestratorConfig, SceneConfig};
+use ws_events::stream_orch::StreamOrchestrator;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

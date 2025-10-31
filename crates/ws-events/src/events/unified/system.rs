@@ -1,5 +1,3 @@
-#![cfg(feature = "events")]
-
 use prost::Message;
 
 #[derive(Clone, PartialEq, Message)]
