@@ -1,5 +1,5 @@
 use super::*;
-use crate::{authenticate, MessageHandler, MessageProcessor, ObsConfig, ObsEvent, ObsPollingManager, PollingConfig};
+use crate::{authenticate, MessageHandler, MessageProcessor, ObsCommand, ObsConfig, ObsEvent, ObsPollingManager, PollingConfig};
 use futures_util::{
 	future,
 	sink::SinkExt,

@@ -8,7 +8,7 @@ use thiserror::Error;
 
 // Always available - types only
 pub mod types;
-pub use types::{ObsEvent, UnknownEventData, YouTubePrivacy};
+pub use types::{ObsCommand, ObsEvent, UnknownEventData, YouTubePrivacy};
 
 // Feature-gated modules
 #[cfg(feature = "websocket")]

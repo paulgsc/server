@@ -1,6 +1,35 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum ObsCommand {
+	StartStream,
+	StopStream,
+	StartRecording,
+	StopRecording,
+	SwitchScene(String),
+	SetInputMute(String, bool),
+	SetInputVolume(String, f64),
+	ToggleStudioMode(bool),
+	StartVirtualCamera,
+	StopVirtualCamera,
+	StartReplayBuffer,
+	StopReplayBuffer,
+	GetInputMute(String),
+	GetInputVolume(String),
+	SetYouTubeStream {
+		stream_key: String,
+		title: String,
+		description: String,
+		category: String,
+		privacy: YouTubePrivacy,
+		unlisted: bool,
+		tags: Vec<String>,
+	},
+	Custom(Value),
+}
+
 /// Represents different types of requests that can be sent to OBS
 #[derive(Debug, Clone, Serialize)]
 pub enum ObsRequestType {
