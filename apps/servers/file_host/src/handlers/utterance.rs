@@ -1,17 +1,19 @@
-use crate::{AppState, Event, UtterancePrompt};
+use crate::AppState;
 use axum::{
 	extract::{Json, State},
 	http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
+use ws_events::events::{Event, UtterancePrompt};
 
 #[axum::debug_handler]
 #[instrument(name = "utterance", skip(state))]
 pub async fn utterance(State(state): State<AppState>, Json(payload): Json<UtterancePrompt>) -> StatusCode {
 	let event = Event::from(payload);
+	let transport = state.realtime.transport.clone();
 
-	let _ = state.realtime.ws.broadcast_event(&event).await;
+	let _ = state.realtime.ws.broadcast_event(transport, event).await;
 
 	StatusCode::OK
 }

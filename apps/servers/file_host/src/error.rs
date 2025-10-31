@@ -85,6 +85,9 @@ pub enum FileHostError {
 
 	#[error("Audio File Fetch Error: {0}")]
 	AudioFetchError(#[from] crate::AudioServiceError),
+
+	#[error("Broadcast Error: {0}")]
+	BroadcastError(#[from] crate::websocket::broadcast::BroadcastError),
 }
 
 impl FileHostError {
@@ -123,6 +126,7 @@ impl FileHostError {
 			Self::IoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
 			Self::DedupCacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::BroadcastError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::CacheStoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::GSheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}

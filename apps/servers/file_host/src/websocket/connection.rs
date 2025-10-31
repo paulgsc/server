@@ -1,6 +1,5 @@
 use crate::WebSocketFsm;
 use axum::http::HeaderMap;
-use some_transport::Transport;
 use std::net::SocketAddr;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +12,7 @@ pub(crate) mod handlers;
 pub mod instrument;
 
 use errors::ConnectionError;
+pub(crate) use handlers::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
 
 // Connection management operations
 impl WebSocketFsm {
@@ -73,8 +73,6 @@ impl WebSocketFsm {
 			"Connection added successfully"
 		);
 
-		let to = handle.get_state().await.map_err(|e| ConnectionError::StateRetrievalFailed(e.to_string()))?;
-
 		Ok(client_key)
 	}
 
@@ -130,14 +128,6 @@ impl WebSocketFsm {
 					);
 				}
 
-				self
-					.transport
-					.close_channel(client_key)
-					.await
-					.map_err(|e| ConnectionError::TransportCloseFailed(e.to_string()))?;
-
-				self.metrics.connection_removed(was_active);
-
 				let elapsed = start.elapsed();
 
 				info!(
@@ -168,11 +158,11 @@ impl WebSocketFsm {
 		// Update actor subscription state
 		if let Some(handle) = self.store.get(connection_id) {
 			if !add_types.is_empty() {
-				handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e.to_owned()))?;
+				handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
 			}
 
 			if !remove_types.is_empty() {
-				handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e.to_owned()))?;
+				handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
 			}
 		}
 

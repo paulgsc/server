@@ -17,15 +17,15 @@ mood_event  = { workspace = true }
 some-services  = { workspace = true }
 ws-connection  = { workspace = true }
 ws-conn-manager  = { workspace = true }
-some-transport  = { workspace = true , features = ["nats"] }
+some-transport  = { workspace = true , features = ["nats", "mpsc_utils"] }
 ws-events  = { workspace = true , features = ["events"] }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
-async-broadcast = "0.7.2"
 bytes = { version = "1.10.1" }
 clap = { workspace = true }
 dotenv = { workspace = true }
+garde = { version =  "0.22.0", features = ["full"] }
 log = "0.4.14"
 lazy_static = { workspace = true }
 futures = { workspace = true }
@@ -47,7 +47,6 @@ dashmap = "6.1.0"
 hex = "0.4.3"
 flate2 = "1.1.2"
 moka = { version =  "0.12.10", features = ["future", "sync"] }
-garde = { version =  "0.22.0", features = ["full"] }
 sha2 = "0.10.9"
 uuid = "1.18.0"
 chrono.workspace = true

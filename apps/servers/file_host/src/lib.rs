@@ -17,11 +17,10 @@ pub mod metrics;
 pub mod models;
 pub mod rate_limiter;
 pub mod routes;
-pub mod transport;
 pub mod utils;
 pub mod websocket;
 
-pub use crate::websocket::{init_websocket, WebSocketFsm};
+pub use crate::websocket::WebSocketFsm;
 pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
 pub use config::*;
 pub use handlers::audio_files::error::AudioServiceError;
@@ -88,7 +87,7 @@ impl AppState {
 		let nats_url = config.nats_url.as_deref().unwrap_or("nats://localhost:4222");
 		let transport = NatsTransport::connect_pooled(nats_url).await?;
 
-		let ws = init_websocket(transport, cancel_token.clone()).await;
+		let ws = WebSocketFsm::new();
 
 		let realtime = RealtimeContext { ws, dedup_cache, transport };
 

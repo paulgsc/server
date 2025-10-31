@@ -124,6 +124,11 @@ async fn main() -> Result<()> {
 
 		app_state.core.shared_db.close().await;
 		tracing::info!("Database closed");
+		transport
+			.close_channel(client_key)
+			.await
+			.map_err(|e| ConnectionError::TransportCloseFailed(e.to_string()))?;
+		tracing::info!("Nats channel closed");
 	};
 
 	// Add a timeout to prevent infinite hang
