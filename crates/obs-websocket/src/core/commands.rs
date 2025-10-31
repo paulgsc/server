@@ -1,6 +1,6 @@
 use crate::core::state::{StateError, StateHandle};
-use crate::messages::YouTubePrivacy;
 use crate::polling::PollingError;
+use crate::types::YouTubePrivacy;
 use crate::ObsRequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
