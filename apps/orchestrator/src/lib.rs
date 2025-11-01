@@ -1,3 +1,5 @@
 mod manager;
 mod service;
-mod types;
+
+use manager::ManagedOrchestrator;
+pub use service::OrchestratorService;

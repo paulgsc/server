@@ -1,61 +1,52 @@
-use crate::types::{subjects, ClientId, StateUpdate, StreamId};
-use prost::Message;
-use some_transport::Transport;
+use some_transport::{NatsTransport, Transport};
 use std::sync::Arc;
-use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
-use ws_connection::{Connection, ConnectionStore};
-use ws_events::stream_orch::{OrchestratorConfig, StreamOrchestrator};
-
-/// Subscription event key - we only track one type of subscription per stream
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct StreamSubscription;
-
-impl ws_connection::core::subscription::EventKey for StreamSubscription {}
+use tracing::{debug, error, info};
+use ws_events::{
+	events::{Event, EventType, OrchestratorConfig, UnifiedEvent},
+	stream_orch::StreamOrchestrator,
+};
 
 /// Manages a single stream orchestrator and its subscribers using ConnectionStore
-pub struct ManagedOrchestrator<T>
-where
-	T: Transport<StateUpdate> + Send + Sync + 'static,
-{
-	stream_id: StreamId,
+pub struct ManagedOrchestrator {
+	stream_id: String,
 	orchestrator: Arc<StreamOrchestrator>,
-	subscribers: Arc<ConnectionStore<StreamSubscription>>,
 	state_publisher_task: Option<tokio::task::JoinHandle<()>>,
+	completion_monitor_task: Option<tokio::task::JoinHandle<()>>,
 	cancel_token: CancellationToken,
-	_phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> ManagedOrchestrator<T>
-where
-	T: Transport<StateUpdate> + Send + Sync + Clone + 'static,
-{
+impl ManagedOrchestrator {
 	/// Create a new managed orchestrator
-	pub fn new(stream_id: StreamId, config: OrchestratorConfig, transport: T, parent_token: &CancellationToken) -> Result<Self, Box<dyn std::error::Error>> {
+	pub fn new(
+		stream_id: String,
+		config: OrchestratorConfig,
+		transport: NatsTransport<UnifiedEvent>,
+		parent_token: &CancellationToken,
+	) -> Result<Self, Box<dyn std::error::Error>> {
 		let orchestrator = Arc::new(StreamOrchestrator::new(config)?);
-		let subscribers = Arc::new(ConnectionStore::new());
 		let cancel_token = parent_token.child_token();
 
 		// Spawn state publisher task
-		let state_publisher_task = Self::spawn_state_publisher(stream_id.clone(), Arc::clone(&orchestrator), transport, Arc::clone(&subscribers), cancel_token.clone());
+		let state_publisher_task = Self::spawn_state_publisher(stream_id.clone(), Arc::clone(&orchestrator), transport, cancel_token.clone());
+
+		// Spawn completion monitor task
+		let completion_monitor_task = Self::spawn_completion_monitor(stream_id.clone(), Arc::clone(&orchestrator), cancel_token.clone());
 
 		Ok(Self {
 			stream_id,
 			orchestrator,
-			subscribers,
 			state_publisher_task: Some(state_publisher_task),
+			completion_monitor_task: Some(completion_monitor_task),
 			cancel_token,
-			_phantom: std::marker::PhantomData,
 		})
 	}
 
 	/// Spawn the state publisher task using the transport abstraction
 	fn spawn_state_publisher(
-		stream_id: StreamId,
+		stream_id: String,
 		orchestrator: Arc<StreamOrchestrator>,
-		transport: T,
-		subscribers: Arc<ConnectionStore<StreamSubscription>>,
+		transport: NatsTransport<UnifiedEvent>,
 		cancel_token: CancellationToken,
 	) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
@@ -70,20 +61,28 @@ where
 						result = state_rx.changed() => {
 								match result {
 										Ok(_) => {
-												// Don't publish if no subscribers
-												let sub_count = subscribers.len();
-												if sub_count == 0 {
-														continue;
-												}
-
 												let state = state_rx.borrow().clone();
-												let update = StateUpdate::from_orchestrator_state(
-														stream_id.clone(),
-														&state,
-												);
 
-												// Broadcast state update via transport
-												if let Err(e) = transport.broadcast(update).await {
+												// Create Event with stream_id
+												let event = Event::OrchestratorState {
+														stream_id: stream_id.clone(),
+														state,
+												};
+
+												// Convert to UnifiedEvent
+												let unified_event = match UnifiedEvent::try_from(event) {
+														Ok(v) => v,
+														Err(e) => {
+																error!("Failed to convert event to unified event: {}", e);
+																continue;
+														}
+												};
+
+												// Get subject for this event type
+												let subject = EventType::OrchestratorState.subject();
+
+												// Send to NATS
+												if let Err(e) = transport.send_to_subject(subject, unified_event).await {
 														error!(
 																"Failed to broadcast state update for stream {}: {}",
 																stream_id, e
@@ -91,7 +90,7 @@ where
 												}
 										}
 										Err(_) => {
-												warn!("State channel closed for stream {}", stream_id);
+												error!("State channel closed for stream {}", stream_id);
 												break;
 										}
 								}
@@ -106,139 +105,67 @@ where
 		&self.orchestrator
 	}
 
-	/// Add a subscriber to this stream
-	/// Creates a connection actor that tracks the subscription
-	pub async fn add_subscriber(&self, client_id: ClientId, source_addr: std::net::SocketAddr) {
-		let connection = Connection::new(client_id.clone(), source_addr);
-		let connection_key = format!("{}:{}", self.stream_id, client_id);
+	/// Spawn a task that monitors for orchestration completion
+	fn spawn_completion_monitor(stream_id: String, orchestrator: Arc<StreamOrchestrator>, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+		tokio::spawn(async move {
+			let mut state_rx = orchestrator.subscribe();
 
-		let handle = self.subscribers.insert(connection_key.clone(), connection, &self.cancel_token);
-
-		// Subscribe to stream events (just tracking subscription existence)
-		if let Err(e) = handle.subscribe(vec![StreamSubscription]).await {
-			error!("Failed to subscribe client {}: {}", client_id, e);
-		}
-
-		let count = self.subscribers.len();
-		info!("Added subscriber {} to stream {}. Total subscribers: {}", client_id, self.stream_id, count);
-	}
-
-	/// Remove a subscriber and return remaining count
-	pub async fn remove_subscriber(&self, client_id: &ClientId) -> usize {
-		let connection_key = format!("{}:{}", self.stream_id, client_id);
-
-		if let Some(_handle) = self.subscribers.remove(&connection_key).await {
-			info!("Removed subscriber {} from stream {}", client_id, self.stream_id);
-		}
-
-		let count = self.subscribers.len();
-		info!("Remaining subscribers for stream {}: {}", self.stream_id, count);
-
-		count
-	}
-
-	/// Update heartbeat timestamp for a subscriber
-	pub async fn update_heartbeat(&self, client_id: &ClientId) {
-		let connection_key = format!("{}:{}", self.stream_id, client_id);
-
-		if let Some(handle) = self.subscribers.get(&connection_key) {
-			if let Err(e) = handle.record_activity().await {
-				warn!("Failed to record activity for client {}: {}", client_id, e);
-			}
-		}
-	}
-
-	/// Get current subscriber count
-	pub async fn subscriber_count(&self) -> usize {
-		self.subscribers.len()
-	}
-
-	/// Clean up stale subscribers (haven't sent heartbeat within timeout)
-	/// Uses the actor's built-in staleness checking
-	pub async fn cleanup_stale_subscribers(&self, timeout: Duration) -> usize {
-		let mut stale_keys = Vec::new();
-
-		// Check each connection for staleness
-		self
-			.subscribers
-			.for_each_async(|handle| {
-				let timeout = timeout;
-				let stream_id = self.stream_id.clone();
-				async move {
-					// Check staleness via actor
-					if let Err(e) = handle.check_stale(timeout).await {
-						warn!("Failed to check staleness for connection: {}", e);
-						return;
-					}
-
-					// Get state to see if it's stale
-					match handle.get_state().await {
-						Ok(state) if state.is_stale => {
-							let key = format!("{}:{}", stream_id, handle.connection.client_id);
-							// We can't capture stale_keys here due to borrow checker,
-							// so we'll mark for disconnect instead
-							if let Err(e) = handle.disconnect("Stale connection".to_string()).await {
-								warn!("Failed to disconnect stale connection: {}", e);
-							}
+			loop {
+				tokio::select! {
+						_ = cancel_token.cancelled() => {
+								debug!("Completion monitor for stream {} cancelled", stream_id);
+								break;
 						}
-						Err(e) => {
-							warn!("Failed to get connection state: {}", e);
+						result = state_rx.changed() => {
+								match result {
+										Ok(_) => {
+												let is_complete = {
+														let state = state_rx.borrow();
+														state.is_complete()
+												};
+
+												// Check if orchestration is complete
+												if is_complete {
+														info!("✅ Orchestration complete for stream {}", stream_id);
+
+														// Auto-shutdown the orchestrator
+														orchestrator.shutdown().await;
+
+														info!("🛑 Orchestrator auto-shutdown complete for stream {}", stream_id);
+														break;
+												}
+										}
+										Err(_) => {
+												error!("State channel closed for stream {} completion monitor", stream_id);
+												break;
+										}
+								}
 						}
-						_ => {}
-					}
 				}
-			})
-			.await;
-
-		let remaining = self.subscribers.len();
-
-		if !stale_keys.is_empty() {
-			warn!("Cleaned up stale subscribers from stream {}", self.stream_id);
-		}
-
-		remaining
-	}
-
-	/// Get subscriber statistics using ConnectionStore's built-in stats
-	pub async fn get_stats(&self) -> SubscriberStats {
-		let store_stats = self.subscribers.stats().await;
-
-		SubscriberStats {
-			total: store_stats.total_connections,
-			active: store_stats.active_connections,
-			stale: store_stats.stale_connections,
-			unique_clients: store_stats.unique_clients,
-		}
+			}
+		})
 	}
 
 	/// Gracefully shutdown the managed orchestrator
 	pub async fn shutdown(mut self) {
 		info!("Shutting down orchestrator for stream {}", self.stream_id);
 
-		// Cancel state publisher
+		// Cancel all tasks
 		self.cancel_token.cancel();
 
-		// Abort and await state publisher task
+		// Wait for state publisher to finish
 		if let Some(task) = self.state_publisher_task.take() {
-			task.abort();
 			let _ = task.await;
 		}
 
-		// Disconnect all subscribers gracefully
-		let keys = self.subscribers.keys();
-		for key in keys {
-			let _ = self.subscribers.remove(&key).await;
+		// Wait for completion monitor to finish
+		if let Some(task) = self.completion_monitor_task.take() {
+			let _ = task.await;
 		}
+
+		// Shutdown the orchestrator itself (if not already shutdown by completion monitor)
+		self.orchestrator.shutdown().await;
 
 		info!("Orchestrator for stream {} shutdown complete", self.stream_id);
 	}
-}
-
-/// Statistics about subscribers for this stream
-#[derive(Debug, Clone)]
-pub struct SubscriberStats {
-	pub total: usize,
-	pub active: usize,
-	pub stale: usize,
-	pub unique_clients: usize,
 }
