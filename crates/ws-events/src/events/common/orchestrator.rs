@@ -13,7 +13,7 @@ pub use types::{Progress, SceneConfig, SceneId, TimeMs, Timecode};
 /// Commands that can be sent to the tick engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TickCommand {
-	Start,
+	Start(Option<OrchestratorConfig>),
 	Stop,
 	Pause,
 	Resume,

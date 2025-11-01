@@ -86,10 +86,10 @@ impl From<Event> for Option<UnifiedEvent> {
 					})),
 				}
 			}),
-			Event::TickCommand { command } => TickCommandMessage::from_tick_command(command).ok().map(|msg| UnifiedEvent {
+			Event::TickCommand { stream_id, command } => TickCommandMessage::from_tick_command(stream_id, command).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::TickCommand(msg)),
 			}),
-			Event::OrchestratorState { state } => OrchestratorStateMessage::from_orchestrator_state(&state).ok().map(|msg| UnifiedEvent {
+			Event::OrchestratorState { stream_id, state } => OrchestratorStateMessage::from_orchestrator_state(stream_id, &state).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::OrchestratorState(msg)),
 			}),
 
@@ -126,8 +126,8 @@ impl From<UnifiedEvent> for Result<Event, String> {
 			Some(unified_event::Event::SystemEvent(msg)) => serde_json::from_slice::<SystemEvent>(&msg.payload)
 				.map(Event::System)
 				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
-			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|command| Event::TickCommand { command }),
-			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|state| Event::OrchestratorState { state }),
+			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::TickCommand { stream_id, command }),
+			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|(stream_id, state)| Event::OrchestratorState { stream_id, state }),
 
 			None => Err("UnifiedEvent has no event variant".to_string()),
 		}

@@ -55,7 +55,7 @@ impl StreamOrchestrator {
 
 	/// Start the orchestrator (immutable &self)
 	pub fn start(&self) -> Result<()> {
-		self.send_command(TickCommand::Start)
+		self.send_command(TickCommand::Start(None))
 	}
 
 	/// Stop the orchestrator (immutable &self)
@@ -109,7 +109,7 @@ impl StreamOrchestrator {
 
 	/// Shutdown the orchestrator
 	/// This consumes self but uses interior mutability for the handle
-	pub async fn shutdown(self) {
+	pub async fn shutdown(&self) {
 		info!("Shutting down orchestrator");
 		self.cancel_token.cancel();
 

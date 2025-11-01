@@ -49,9 +49,11 @@ pub enum Event {
 	#[serde(skip)]
 	System(SystemEvent),
 	TickCommand {
+		stream_id: String,
 		command: TickCommand,
 	},
 	OrchestratorState {
+		stream_id: String,
 		state: OrchestratorState,
 	},
 }
@@ -86,17 +88,5 @@ impl From<NowPlaying> for Event {
 impl From<UtterancePrompt> for Event {
 	fn from(UtterancePrompt { text, metadata }: UtterancePrompt) -> Self {
 		Event::Utterance { text, metadata }
-	}
-}
-
-impl From<TickCommand> for Event {
-	fn from(command: TickCommand) -> Self {
-		Event::TickCommand { command }
-	}
-}
-
-impl From<OrchestratorState> for Event {
-	fn from(state: OrchestratorState) -> Self {
-		Event::OrchestratorState { state }
 	}
 }

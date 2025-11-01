@@ -131,7 +131,7 @@ impl TickEngine {
 		let mut state = state_tx.borrow().clone();
 
 		match command {
-			TickCommand::Start => {
+			TickCommand::Start(_) => {
 				if state.scenes.is_empty() {
 					error!("The are no scenes configured, current list of scenes is empty!");
 					return Err(OrchestratorError::NotConfigured);
