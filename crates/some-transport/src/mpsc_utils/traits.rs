@@ -2,7 +2,7 @@
 
 use super::{RecvResult, SendResult};
 use tokio::sync::mpsc::{self, error::SendError};
-use tracing::{debug, warn};
+use tracing::{debug, warn, error};
 
 /// Extension trait for unbounded sender with graceful error handling and logging.
 ///
@@ -107,7 +107,7 @@ where
 				SendResult::Sent
 			}
 			Err(SendError(msg)) => {
-				warn!(context = context, "Failed to send message: receiver dropped");
+				error!(context = context, "Failed to send message: receiver dropped");
 				SendResult::ReceiverDropped(msg)
 			}
 		}
@@ -278,11 +278,11 @@ where
 				SendResult::Sent
 			}
 			Err(mpsc::error::TrySendError::Full(msg)) => {
-				warn!(context = context, capacity = self.capacity(), "Channel full, message dropped");
+				error!(context = context, capacity = self.capacity(), "Channel full, message dropped");
 				SendResult::ChannelFull(msg)
 			}
 			Err(mpsc::error::TrySendError::Closed(msg)) => {
-				warn!(context = context, "Failed to send: receiver dropped");
+				error!(context = context, "Failed to send: receiver dropped");
 				SendResult::ReceiverDropped(msg)
 			}
 		}
@@ -295,11 +295,11 @@ where
 				SendResult::Sent
 			}
 			Ok(Err(SendError(msg))) => {
-				warn!(context = context, "Failed to send: receiver dropped");
+				error!(context = context, "Failed to send: receiver dropped");
 				SendResult::ReceiverDropped(msg)
 			}
 			Err(_) => {
-				warn!(
+				error!(
 					context = context,
 					timeout_ms = timeout_duration.as_millis(),
 					"Send timeout: channel likely full or receiver slow"
@@ -327,7 +327,7 @@ where
 				SendResult::Sent
 			}
 			Err(SendError(msg)) => {
-				warn!(context = context, "Failed to send: receiver dropped");
+				error!(context = context, "Failed to send: receiver dropped");
 				SendResult::ReceiverDropped(msg)
 			}
 		}

@@ -24,6 +24,8 @@ use std::marker::PhantomData;
 ///     }
 /// }
 /// ```
+
+#[derive(Clone)]
 pub struct TransportReceiver<E, R>
 where
 	E: Clone + Send + Sync + 'static,

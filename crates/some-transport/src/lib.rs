@@ -62,6 +62,10 @@ pub use traits::Transport;
 
 #[cfg(feature = "mpsc_utils")]
 pub mod mpsc_utils;
+
+#[cfg(feature = "mpsc_utils")]
+pub use mpsc_utils::{SendResult, SenderExt, UnboundedReceiverExt, RecvResult, UnboundedSenderExt};
+
 // Feature-gated transport implementations
 #[cfg(feature = "inmem")]
 pub mod inmem;

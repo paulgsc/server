@@ -36,6 +36,7 @@ use std::marker::PhantomData;
 ///     // let msg = transport_rx.recv().await?;
 /// }
 /// ```
+
 pub struct NatsReceiver<E>
 where
 	E: Clone + Send + Sync + 'static,
