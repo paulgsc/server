@@ -1,4 +1,3 @@
----
 services:
   file-host:
     image: pgathondu/self-hosting-maishatu:latest
@@ -51,7 +50,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
-
   redis:
     image: redis:latest
     container_name: some-redis
@@ -79,7 +77,28 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    ports:
+      - '9121:9121'
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis://some-redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20
   redisinsight:
     image: redislabs/redisinsight:latest
     container_name: redisinsight
@@ -104,7 +123,59 @@ services:
           cpus: '0.5'
           memory: 512M
           pids: 30
-
+  nats:
+    image: nats:latest
+    container_name: nats-server
+    restart: unless-stopped
+    ports:
+      - '4222:4222' # client pub/sub
+      - '8222:8222' # HTTP monitoring API
+    networks:
+      - monitoring-network
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 30
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:latest
+    container_name: nats-exporter
+    restart: unless-stopped
+    ports:
+      - '7777:7777'
+    networks:
+      - monitoring-network
+    command:
+      - "-varz"
+      - "-connz"
+      - "-routez"
+      - "-subz"
+      - "-port=7777"
+      - "http://nats-server:8222"
+    depends_on:
+      nats:
+        condition: service_started
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:7777/metrics']
+      interval: 30s
+      timeout: 10s
+      retries: 3
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -127,6 +198,10 @@ services:
     depends_on:
       file-host:
         condition: service_healthy
+      nats-exporter:
+        condition: service_healthy
+      redis-exporter:
+        condition: service_started
     mem_limit: 2G
     cpus: 1.5
     pids_limit: 100
@@ -144,7 +219,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana
@@ -182,52 +256,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-  nats:
-    image: nats:latest
-    container_name: nats-server
-    restart: unless-stopped
-    ports:
-      - '4222:4222' # client pub/sub
-      - '8222:8222' # HTTP monitoring API
-    networks:
-      - monitoring-network
-    mem_limit: 512M
-    cpus: 0.5
-    pids_limit: 30
-    deploy:
-      resources:
-        limits:
-          cpus: '1.5'
-          memory: 2G
-          pids: 100
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    healthcheck:
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:8222/']
-      interval: 15s
-      timeout: 5s
-      retries: 3
-
-  nats-surveyor:
-    image: synadia/surveyor:latest
-    container_name: nats-surveyor
-    depends_on:
-      nats:
-        condition: service_healthy
-    networks:
-      - monitoring-network
-    restart: unless-stopped
-    ports:
-      - '8282:8222'
-    environment:
-      - JS_API_ADVERTISE=http://nats:8222
-      - NATS_URL=nats://nats:4222
-    mem_limit: 512M
-    cpus: 0.5
-    pids_limit: 30
-
   metabase:
     image: metabase/metabase:latest
     container_name: metabase
@@ -259,7 +287,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-
   dashboard-builder:
     build:
       context: .
@@ -279,7 +306,6 @@ services:
           cpus: '1.0'
           memory: 1G
           pids: 50
-
   node_exporter:
     image: prom/node-exporter:latest
     container_name: node_exporter
@@ -301,7 +327,6 @@ services:
           cpus: '0.25'
           memory: 128M
           pids: 20
-
   process-exporter:
     image: ncabatoff/process-exporter:latest
     container_name: process_exporter
@@ -328,7 +353,6 @@ services:
           cpus: '0.25'
           memory: 256M
           pids: 20
-
   blackbox-exporter:
     image: prom/blackbox-exporter:latest
     container_name: blackbox_exporter
@@ -358,7 +382,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
@@ -392,11 +415,9 @@ services:
           cpus: '0.5'
           memory: 512M
           pids: 30
-
 networks:
   monitoring-network:
     driver: bridge
-
 volumes:
   prometheus_data:
     driver: local
