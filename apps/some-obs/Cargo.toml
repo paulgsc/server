@@ -8,10 +8,10 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-obs-websocket = { workspace = true }
+obs-websocket = { workspace = true, features = ["websocket"] }
 some-transport = { workspace = true , features = ["nats"] }
-ws-events = { workspace = true , features = ["events"] }
-tokio = { workspace = true  }
+ws-events = { workspace = true }
+tokio = { workspace = true, features = ["signal", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.16"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
