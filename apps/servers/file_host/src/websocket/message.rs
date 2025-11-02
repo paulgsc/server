@@ -2,7 +2,7 @@ use crate::WebSocketFsm;
 use some_transport::{NatsTransport, UnboundedSenderExt};
 use tokio::{sync::mpsc::UnboundedSender, time::Instant};
 use tracing::{error, info};
-use ws_events::events::{Event, EventType, UnifiedEvent};
+use ws_events::events::{Event, EventType, SystemEvent, UnifiedEvent};
 
 pub(crate) mod handlers;
 
@@ -96,12 +96,13 @@ impl WebSocketFsm {
 
 	/// Send subscription acknowledgment to client
 	async fn send_subscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
-		let ack = Event::System(SystemEvent {
-			event_type: "subscription_ack".to_string(),
-			payload: serde_json::to_vec(&serde_json::json!({
+		let ack = Event::System(SystemEvent::ConnectionStateChanged {
+			connection_id: conn_key.to_owned(),
+			from: "subscribed".to_owned(),
+			to: "subscribed".to_owned(),
+			metadata: serde_json::json!({
 				"subscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
-			}))
-			.unwrap_or_default(),
+			}),
 		});
 
 		let context = "subscription_ack";
@@ -110,12 +111,13 @@ impl WebSocketFsm {
 
 	/// Send unsubscription acknowledgment to client
 	async fn send_unsubscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
-		let ack = Event::System(SystemEvent {
-			event_type: "unsubscription_ack".to_string(),
-			payload: serde_json::to_vec(&serde_json::json!({
+		let ack = Event::System(SystemEvent::ConnectionStateChanged {
+			connection_id: conn_key.to_owned(),
+			from: "subscribed".to_owned(),
+			to: "subscribed".to_owned(),
+			metadata: serde_json::json!({
 				"unsubscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
-			}))
-			.unwrap_or_default(),
+			}),
 		});
 
 		let context = "subscription_ack";

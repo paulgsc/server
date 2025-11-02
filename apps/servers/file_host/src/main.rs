@@ -13,9 +13,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	perform_health_check,
-	websocket::{Event, EventType, NowPlaying},
-	AppState, AudioServiceError, Config, DedupCache, DedupError, UtterancePrompt,
+	perform_health_check, AppState, AudioServiceError, Config, DedupCache, DedupError,
 };
 use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;
@@ -57,9 +55,6 @@ async fn main() -> Result<()> {
 	let shutdown_token = CancellationToken::new();
 
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
-
-	let ws_bridge = Arc::new(app_state.realtime.ws.clone());
-	ws_bridge.clone().bridge_obs_events(EventType::ObsStatus);
 
 	let mut protected_routes = Router::new()
 		.merge(get_sheets())
@@ -119,15 +114,9 @@ async fn main() -> Result<()> {
 	tracing::info!("Starting cleanup...");
 
 	let cleanup = async {
-		ws_bridge.shutdown().await;
-		tracing::info!("WebSocket shutdown complete");
-
 		app_state.core.shared_db.close().await;
 		tracing::info!("Database closed");
-		transport
-			.close_channel(client_key)
-			.await
-			.map_err(|e| ConnectionError::TransportCloseFailed(e.to_string()))?;
+		app_state.realtime.transport.client().flush().await.ok();
 		tracing::info!("Nats channel closed");
 	};
 

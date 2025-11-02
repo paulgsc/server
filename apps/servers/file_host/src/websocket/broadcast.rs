@@ -4,7 +4,6 @@ use ws_events::{events::Event, UnifiedEvent};
 
 mod errors;
 mod handlers;
-mod types;
 
 pub(crate) use errors::BroadcastError;
 pub(crate) use handlers::spawn_event_forwarder;
