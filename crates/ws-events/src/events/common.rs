@@ -56,6 +56,16 @@ pub enum Event {
 		stream_id: String,
 		state: OrchestratorState,
 	},
+	AudioChunk {
+		sample_rate: u32,
+		channels: u32,
+		samples: Vec<f32>,
+	},
+	Subtitle {
+		text: String,
+		timestamp: u64,
+		confidence: Option<f32>,
+	},
 }
 
 impl Event {
@@ -73,6 +83,8 @@ impl Event {
 			Self::Utterance { .. } => Some(EventType::Utterance),
 			Self::TickCommand { .. } => Some(EventType::TickCommand),
 			Self::OrchestratorState { .. } => Some(EventType::OrchestratorState),
+			Self::AudioChunk { .. } => Some(EventType::AudioChunk),
+			Self::Subtitle { .. } => Some(EventType::Subtitle),
 			// System events don't have EventTypes
 			_ => None,
 		}

@@ -1,12 +1,14 @@
 use super::common::{Event, EventType, SystemEvent};
 use prost::Message;
 
+mod audio;
 mod now_playing;
 mod obs;
 mod orchestrator;
 mod system;
 mod utterance;
 
+use audio::{AudioChunkMessage, SubtitleMessage};
 use now_playing::TabMetaDataMessage;
 pub use obs::{ObsCommandMessage, ObsStatusMessage};
 use orchestrator::{OrchestratorStateMessage, TickCommandMessage};
@@ -17,7 +19,7 @@ use utterance::UtteranceMessage;
 /// Contains only events that should be transported via NATS
 #[derive(Clone, Message)]
 pub struct UnifiedEvent {
-	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6, 7")]
+	#[prost(oneof = "unified_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
 	pub event: Option<unified_event::Event>,
 }
 
@@ -44,6 +46,10 @@ pub mod unified_event {
 		TickCommand(TickCommandMessage),
 		#[prost(message, tag = "9")]
 		OrchestratorState(OrchestratorStateMessage),
+		#[prost(message, tag = "10")]
+		AudioChunk(AudioChunkMessage),
+		#[prost(message, tag = "11")]
+		Subtitle(SubtitleMessage),
 	}
 }
 
@@ -92,6 +98,16 @@ impl From<Event> for Option<UnifiedEvent> {
 			Event::OrchestratorState { stream_id, state } => OrchestratorStateMessage::from_orchestrator_state(stream_id, &state).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::OrchestratorState(msg)),
 			}),
+			Event::AudioChunk { sample_rate, channels, samples } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::AudioChunk(AudioChunkMessage::new(sample_rate, channels, samples))),
+			}),
+			Event::Subtitle { text, timestamp, confidence } => Some(UnifiedEvent {
+				event: Some(unified_event::Event::Subtitle(if let Some(conf) = confidence {
+					SubtitleMessage::with_confidence(text, timestamp, conf)
+				} else {
+					SubtitleMessage::new(text, timestamp)
+				})),
+			}),
 
 			// Non-transportable events -> error
 			Event::Ping | Event::Pong | Event::Subscribe { .. } | Event::Unsubscribe { .. } => None,
@@ -128,6 +144,16 @@ impl From<UnifiedEvent> for Result<Event, String> {
 				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
 			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::TickCommand { stream_id, command }),
 			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|(stream_id, state)| Event::OrchestratorState { stream_id, state }),
+			Some(unified_event::Event::AudioChunk(msg)) => Ok(Event::AudioChunk {
+				sample_rate: msg.sample_rate,
+				channels: msg.channels,
+				samples: msg.samples,
+			}),
+			Some(unified_event::Event::Subtitle(msg)) => Ok(Event::Subtitle {
+				text: msg.text,
+				timestamp: msg.timestamp,
+				confidence: msg.confidence,
+			}),
 
 			None => Err("UnifiedEvent has no event variant".to_string()),
 		}
@@ -147,6 +173,8 @@ impl UnifiedEvent {
 			Some(unified_event::Event::SystemEvent(_)) => Some(EventType::SystemEvent),
 			Some(unified_event::Event::TickCommand(_)) => Some(EventType::TickCommand),
 			Some(unified_event::Event::OrchestratorState(_)) => Some(EventType::OrchestratorState),
+			Some(unified_event::Event::AudioChunk(_)) => Some(EventType::AudioChunk),
+			Some(unified_event::Event::Subtitle(_)) => Some(EventType::Subtitle),
 			None => None,
 		}
 	}

@@ -15,6 +15,8 @@ pub enum EventType {
 	TickCommand,
 	OrchestratorState,
 	SystemEvent,
+	AudioChunk,
+	Subtitle,
 }
 
 impl Default for EventType {
@@ -42,6 +44,8 @@ impl EventType {
 			EventType::TickCommand => "orchestrator.tick_command",
 			EventType::OrchestratorState => "orchestrator.state",
 			EventType::SystemEvent => "system",
+			EventType::AudioChunk => "audio.chunk",
+			EventType::Subtitle => "audio.subtitle",
 			// These don't have subjects as they're not transported
 			EventType::Ping | EventType::Pong => "system.ping",
 		}
