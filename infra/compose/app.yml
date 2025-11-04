@@ -1,0 +1,102 @@
+services:
+  file-host:
+    image: pgathondu/self-hosting-maishatu:latest
+    container_name: file-host-server
+    ports:
+      - '3000:3000'
+    environment:
+      - RUST_LOG=${RUST_LOG:-debug}
+      - RUST_BACKTRACE=1
+      - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
+      - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///app/dbs/hopium.db
+      - SQLX_OFFLINE=false
+      - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
+      - HMAC_KEY=${HMAC_KEY:-placeholder}
+      - GITHUB_API_TOKEN=${GITHUB_API_TOKEN:-placeholder}
+      - EMAIL_SERVICE_URL=${EMAIL_SERVICE_URL:-aulgondu@gmail.com}
+      - OBS_WEBSOCKET_PWD=${OBS_WEBSOCKET_PWD:-QVNJXLc0ipLSwohv}
+      - OBS_WEBSOCKET_IP=${OBS_WEBSOCKET_IP:-10.0.0.25}
+      - DATA_DIR=/app/data
+      - CONFIG_DIR=/app/config
+    volumes:
+      - /mnt/storage/users/dev/databases/hopium:/app/dbs
+      - ${REPO_ROOT}/data:/app/data:rw
+      - ${REPO_ROOT}/client_secret_file.json:/app/secrets/client_secret_file.json:ro
+      - ${REPO_ROOT}/config:/app/config:ro
+      - ${REPO_ROOT}/logs:/app/logs:rw
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    mem_limit: 4G
+    cpus: 2.0
+    pids_limit: 200
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+          pids: 200
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/file_host', '--health-check']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+  redis:
+    image: redis:latest
+    container_name: some-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+  nats:
+    image: nats:latest
+    container_name: nats-server
+    restart: unless-stopped
+    ports:
+      - '4222:4222' # client pub/sub
+      - '8222:8222' # HTTP monitoring API
+    networks:
+      - monitoring-network
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 30
+        reservations:
+          cpus: '0.5'
+          memory: 512M
