@@ -1,0 +1,43 @@
+services:
+  audio-sender:
+    image: local-audio-sender
+    container_name: audio-sender
+    # expose /dev/snd devices for ALSA
+    devices:
+      - /dev/snd:/dev/snd
+    # add audio group and required capabilities
+    group_add:
+      - audio
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RAWIO
+    # unconfine AppArmor so ioctl calls on /dev/snd work
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - AUDIO_DEVICE_NAME=${AUDIO_DEVICE_NAME:-hw:0,0}
+      - ALSA_CARD=default
+      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 4G
+          pids: 200
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/audio-sender", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s

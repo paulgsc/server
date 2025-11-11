@@ -120,6 +120,39 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: open-telemetry
+    ports:
+      - '4317:4317'
+      - '4318:4318'
+      - '8888:8888'
+      - '8889:8889'
+      - '13133:13133'
+    volumes:
+      - ${REPO_ROOT}/infra/rometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    command:
+      - '--config=/etc/otel-collector-config.yaml'
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    mem_limit: 2G
+    cpus: 1.5
+    pids_limit: 100
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana

@@ -1,0 +1,52 @@
+# ==============================================================================
+# STAGE 1: Builder (Rust + ALSA dev headers)
+# ==============================================================================
+FROM rust:1.90-bookworm AS builder
+WORKDIR /app
+
+# Install build deps
+RUN apt-get update && apt-get install -y \
+    pkg-config libasound2-dev libssl-dev ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy source
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+
+# Build and strip binary
+RUN cargo build --release --bin audio-sender
+RUN strip target/release/audio-sender
+
+# ==============================================================================
+# STAGE 2: Runtime (Debian with ALSA runtime)
+# ==============================================================================
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# Install runtime libs for ALSA + SSL + NATS
+RUN apt-get update && apt-get install -y \
+    libasound2 libasound2-plugins alsa-utils ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create user (optional)
+RUN groupadd -r audiouser && useradd -r -g audiouser audiouser
+
+# Copy binary
+COPY --from=builder /app/target/release/audio-sender /usr/local/bin/audio-sender
+
+# Environment
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1 \
+    NATS_URL=nats://nats:4222 \
+    AUDIO_DEVICE_NAME="hw:0,0"
+
+# Ensure audio group access
+RUN usermod -a -G audio audiouser
+
+USER audiouser
+ENTRYPOINT ["/usr/local/bin/audio-sender"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/audio-sender", "--health-check"]

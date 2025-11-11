@@ -2,5 +2,6 @@ x-environment: &root-env
   REPO_ROOT: ${REPO_ROOT:-.} # default to current directory if not set externally
 include:
   - path: ./infra/compose/base.yml
-  - path: ./infra/compose/app.yml
+  - path: ./infra/compose/file_host.yml
+  - path: ./infra/compose/audio_sender.yml
   - path: ./infra/compose/monitoring.yml

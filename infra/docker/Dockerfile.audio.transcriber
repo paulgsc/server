@@ -1,0 +1,56 @@
+# Multi-stage build for minimal image size
+FROM rust:1.75-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Copy source code
+COPY src ./src
+
+# Build with optimizations for CPU efficiency
+RUN cargo build --release \
+    && strip target/release/transcriber
+
+# Runtime stage - minimal image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN useradd -m -u 1000 transcriber
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/transcriber /usr/local/bin/transcriber
+
+# Create directory for models (will be mounted)
+RUN mkdir -p /models && chown transcriber:transcriber /models
+
+# Switch to non-root user
+USER transcriber
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep transcriber || exit 1
+
+# Set resource limits via environment
+ENV WHISPER_THREADS=2 \
+    BUFFER_DURATION=3 \
+    RUST_LOG=info
+
+# Run the binary
+ENTRYPOINT ["/usr/local/bin/transcriber"]
+
