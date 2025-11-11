@@ -40,7 +40,11 @@
             pkg-config
             openssl
             openssl.dev
-            # cmake
+            # whisper-rs build essentials
+            clang
+            llvmPackages.libclang
+            llvmPackages.bintools
+            cmake
             # gcc
             # libiconv
             # Dev Tools
@@ -67,6 +71,7 @@
             export RUST_BACKTRACE=1
             export RUST_LOG=debug
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.alsa-lib]}:$LD_LIBRARY_PATH"
+            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
             # export DATABASE_URL=""
             echo "Rust env has loaded!"
           '';
