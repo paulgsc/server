@@ -6,11 +6,11 @@ mod transcription;
 
 use anyhow::Result;
 use clap::Parser;
-use some_transport::{NatsTransport, Transport};
+use some_transport::{NatsReceiver, NatsTransport, TransportReceiver};
 use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info, warn};
-use ws_events::events::{EventType, UnifiedEvent};
+use ws_events::events::{AudioChunkMessage, EventType, UnifiedEvent};
 
 use config::Config;
 use state::TranscriberState;
@@ -104,7 +104,10 @@ async fn wait_for_shutdown_signal() {
 
 impl Transcriber {
 	async fn run(self) -> Result<()> {
-		let mut receiver = self.transport.subscribe_to_subject(EventType::AudioChunk.subject()).await;
+		let nats_client = self.transport.client();
+		let subscriber = nats_client.subscribe(EventType::AudioChunk.subject()).await?;
+		let nats_recv = NatsReceiver::<AudioChunkMessage>::new(subscriber);
+		let mut receiver = TransportReceiver::new(nats_recv);
 
 		info!("🎧 Subscribed to 'audio.chunk', waiting for audio...");
 
@@ -124,15 +127,15 @@ impl Transcriber {
 		);
 
 		loop {
-			// Process with timeout for heartbeat checks
 			match tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv()).await {
-				Ok(Ok(event)) => {
-					if let Err(e) = self.process_event(event, &mut processor, &params, &transcription_sem).await {
-						error!(error = %e, "Failed to process event");
+				Ok(Ok(audio_chunk)) => {
+					// audio_chunk is already AudioChunkMessage!
+					if let Err(e) = self.process_audio_chunk(audio_chunk, &mut processor, &params, &transcription_sem).await {
+						error!(error = %e, "Failed to process audio chunk");
 					}
 				}
 				Ok(Err(e)) => {
-					error!(error = %e, "Failed to receive event");
+					error!(error = %e, "Failed to receive audio chunk");
 					self.metrics.chunks_dropped.add(1, &[]);
 				}
 				Err(_) => {
@@ -143,38 +146,38 @@ impl Transcriber {
 		}
 	}
 
-	async fn process_event(
+	async fn process_audio_chunk(
 		&self,
-		unified_event: ws_events::events::UnifiedEvent,
+		audio_chunk: AudioChunkMessage,
 		processor: &mut audio::AudioProcessor,
 		params: &whisper_rs::FullParams<'static, 'static>,
 		transcription_sem: &Arc<tokio::sync::Semaphore>,
 	) -> Result<()> {
-		use ws_events::events::Event;
+		// Decode samples from bytes
+		let samples = audio_chunk.decode_samples().map_err(|e| anyhow::anyhow!("Failed to decode samples: {}", e))?;
 
-		let event: Event = Result::<Event, String>::from(unified_event).map_err(|e| anyhow::anyhow!("Conversion error: {}", e))?;
+		let sample_rate = audio_chunk.sample_rate.unwrap_or(48000);
+		let channels = audio_chunk.channels.unwrap_or(2);
 
-		if let Event::AudioChunk { sample_rate, channels, samples } = event {
-			processor.process_chunk(sample_rate, channels, samples).await?;
+		processor.process_chunk(sample_rate, channels, samples).await?;
 
-			// Check if ready to transcribe
-			if let Some(audio_buffer) = processor.take_buffer_if_ready() {
-				if let Ok(permit) = transcription_sem.clone().try_acquire_owned() {
-					self.state.set_transcribing(true);
+		// Check if ready to transcribe
+		if let Some(audio_buffer) = processor.take_buffer_if_ready() {
+			if let Ok(permit) = transcription_sem.clone().try_acquire_owned() {
+				self.state.set_transcribing(true);
 
-					info!(audio_samples = audio_buffer.len(), "🎤 Starting transcription");
+				info!(audio_samples = audio_buffer.len(), "🎤 Starting transcription");
 
-					transcription::transcribe_and_publish(
-						self.whisper_ctx.clone(),
-						params.clone(),
-						self.transport.clone(),
-						audio_buffer,
-						self.state.clone(),
-						self.metrics.clone(),
-						permit,
-					)
-					.await;
-				}
+				transcription::transcribe_and_publish(
+					self.whisper_ctx.clone(),
+					params.clone(),
+					self.transport.clone(),
+					audio_buffer,
+					self.state.clone(),
+					self.metrics.clone(),
+					permit,
+				)
+				.await;
 			}
 		}
 

@@ -5,4 +5,4 @@ pub use common::{Event, EventType, MessageId, NowPlaying, OrchestratorState, Pro
 pub use common::{OrchestratorConfig, SceneConfig, SceneSchedule, SystemEvent, TimeMs};
 pub use unified::unified_event;
 pub use unified::UnifiedEvent;
-pub use unified::{ObsCommandMessage, ObsStatusMessage};
+pub use unified::{AudioChunkMessage, ObsCommandMessage, ObsStatusMessage, SubtitleMessage};

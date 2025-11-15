@@ -8,7 +8,7 @@ mod orchestrator;
 mod system;
 mod utterance;
 
-use audio::{AudioChunkMessage, SubtitleMessage};
+pub use audio::{AudioChunkMessage, SubtitleMessage};
 use now_playing::TabMetaDataMessage;
 pub use obs::{ObsCommandMessage, ObsStatusMessage};
 use orchestrator::{OrchestratorStateMessage, TickCommandMessage};
@@ -144,11 +144,16 @@ impl From<UnifiedEvent> for Result<Event, String> {
 				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
 			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::TickCommand { stream_id, command }),
 			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|(stream_id, state)| Event::OrchestratorState { stream_id, state }),
-			Some(unified_event::Event::AudioChunk(msg)) => Ok(Event::AudioChunk {
-				sample_rate: msg.sample_rate,
-				channels: msg.channels,
-				samples: msg.samples,
-			}),
+			Some(unified_event::Event::AudioChunk(msg)) => {
+				// Decode bytes back to f32 samples
+				let samples = msg.decode_samples().map_err(|e| format!("Failed to decode audio samples: {}", e))?;
+
+				Ok(Event::AudioChunk {
+					sample_rate: msg.sample_rate.unwrap_or(48000), // Default to 48kHz if not present
+					channels: msg.channels.unwrap_or(2),           // Default to stereo if not present
+					samples,
+				})
+			}
 			Some(unified_event::Event::Subtitle(msg)) => Ok(Event::Subtitle {
 				text: msg.text,
 				timestamp: msg.timestamp,
