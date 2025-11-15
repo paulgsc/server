@@ -4,6 +4,7 @@ use some_transport::{NatsTransport, Transport};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 use ws_events::events::{Event, UnifiedEvent};
@@ -39,7 +40,9 @@ pub fn create_params(threads: i32) -> FullParams<'static, 'static> {
 }
 
 /// Transcribe audio and publish results
-pub async fn transcribe_and_publish(
+/// Spawns work in background - does not return a handle
+/// On shutdown, blocking Whisper threads will be abandoned and cleaned up by OS
+pub fn transcribe_and_publish(
 	ctx: Arc<WhisperContext>,
 	params: FullParams<'static, 'static>,
 	transport: NatsTransport<UnifiedEvent>,
@@ -47,21 +50,58 @@ pub async fn transcribe_and_publish(
 	state: Arc<TranscriberState>,
 	metrics: TranscriberMetrics,
 	_permit: tokio::sync::OwnedSemaphorePermit,
+	cancellation_token: CancellationToken,
 ) {
-	tokio::task::spawn_blocking(move || {
-		let result = transcribe_audio(&ctx, params, &audio, &state, &metrics);
+	tokio::task::spawn(async move {
+		// Spawn the blocking transcription work
+		// Note: This cannot be cancelled mid-execution due to FFI limitations
+		// On shutdown, this thread will be abandoned and cleaned up by the OS
+		let transcription_task = tokio::task::spawn_blocking({
+			let ctx = ctx.clone();
+			let state = state.clone();
+			let metrics = metrics.clone();
 
-		match result {
-			Ok(segments) => {
-				publish_segments(segments, transport, &state, &metrics);
+			move || {
+				let result = transcribe_audio(&ctx, params, &audio, &state, &metrics);
+
+				match result {
+					Ok(segments) => Some(segments),
+					Err(e) => {
+						error!(error = %e, "Transcription pipeline failed");
+						state.set_transcribing(false);
+						None
+					}
+				}
 			}
-			Err(e) => {
-				error!(error = %e, "Transcription pipeline failed");
+		});
+
+		// Wait for transcription to complete OR cancellation
+		let segments = tokio::select! {
+			_ = cancellation_token.cancelled() => {
+				info!("🛑 Transcription cancelled - abandoning blocking work (OS will clean up)");
+				state.set_transcribing(false);
+				return;
 			}
+			result = transcription_task => {
+				state.set_transcribing(false);
+
+				match result {
+					Ok(Some(segments)) => segments,
+					Ok(None) => return,
+					Err(e) => {
+						error!(error = %e, "Transcription task panicked");
+						return;
+					}
+				}
+			}
+		};
+
+		// Publish segments if we got results and weren't cancelled
+		if !cancellation_token.is_cancelled() {
+			publish_segments(segments, transport, &state, &metrics, cancellation_token).await;
+		} else {
+			info!("🛑 Skipping publish due to cancellation");
 		}
-
-		// Release transcription lock
-		state.set_transcribing(false);
 	});
 }
 
@@ -87,6 +127,9 @@ fn transcribe_audio(ctx: &WhisperContext, params: FullParams<'static, 'static>, 
 	info!("✅ [STEP 1/3] Whisper state created");
 
 	// Run transcription
+	// NOTE: This is a blocking FFI call that cannot be interrupted
+	// If shutdown happens during this call, the thread will be abandoned
+	// and cleaned up by the OS when the process exits
 	info!("🧠 [STEP 2/3] Running Whisper model...");
 	whisper_state.full(params, audio).map_err(|e| {
 		state.transcriptions_failed.fetch_add(1, Ordering::Relaxed);
@@ -133,10 +176,22 @@ fn transcribe_audio(ctx: &WhisperContext, params: FullParams<'static, 'static>, 
 	Ok(segments)
 }
 
-fn publish_segments(segments: Vec<String>, transport: NatsTransport<UnifiedEvent>, state: &Arc<TranscriberState>, metrics: &TranscriberMetrics) {
+async fn publish_segments(
+	segments: Vec<String>,
+	transport: NatsTransport<UnifiedEvent>,
+	state: &Arc<TranscriberState>,
+	metrics: &TranscriberMetrics,
+	cancellation_token: CancellationToken,
+) {
 	info!(segment_count = segments.len(), "📡 Publishing {} segment(s)...", segments.len());
 
 	for (i, text) in segments.iter().enumerate() {
+		// Check if cancelled before each publish
+		if cancellation_token.is_cancelled() {
+			info!("🛑 Publishing cancelled at segment {}/{}", i + 1, segments.len());
+			break;
+		}
+
 		let emoji = match text.len() {
 			0..=19 => "💬",
 			20..=49 => "📝",
@@ -167,16 +222,25 @@ fn publish_segments(segments: Vec<String>, transport: NatsTransport<UnifiedEvent
 			let transport_clone = transport.clone();
 			let metrics_clone = metrics.clone();
 			let state_clone = Arc::clone(state);
+			let cancellation_token_clone = cancellation_token.clone();
 
+			// Spawn publish task - these will exit gracefully on cancellation
 			tokio::spawn(async move {
-				match transport_clone.send_to_subject(&subject, unified).await {
-					Ok(_) => {
-						state_clone.subtitles_published.fetch_add(1, Ordering::Relaxed);
-						metrics_clone.subtitles_published.add(1, &[]);
-						debug!("✅ Segment published to NATS");
+				tokio::select! {
+					_ = cancellation_token_clone.cancelled() => {
+						debug!("🛑 Segment publish cancelled");
 					}
-					Err(e) => {
-						error!(error = %e, "❌ Failed to publish subtitle");
+					result = transport_clone.send_to_subject(&subject, unified) => {
+						match result {
+							Ok(_) => {
+								state_clone.subtitles_published.fetch_add(1, Ordering::Relaxed);
+								metrics_clone.subtitles_published.add(1, &[]);
+								debug!("✅ Segment published to NATS");
+							}
+							Err(e) => {
+								error!(error = %e, "❌ Failed to publish subtitle");
+							}
+						}
 					}
 				}
 			});

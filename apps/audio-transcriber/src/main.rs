@@ -9,6 +9,7 @@ use clap::Parser;
 use some_transport::{NatsReceiver, NatsTransport, TransportReceiver};
 use std::sync::Arc;
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use ws_events::events::{AudioChunkMessage, EventType, UnifiedEvent};
 
@@ -17,6 +18,7 @@ use state::TranscriberState;
 
 const NATS_MAX_RETRIES: u32 = 5;
 const NATS_INITIAL_BACKOFF_MS: u64 = 500;
+const SHUTDOWN_GRACE_PERIOD_MS: u64 = 200;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,6 +48,9 @@ async fn main() -> Result<()> {
 	// Load Whisper model
 	let whisper_ctx = transcription::load_model(&config.whisper_model_path, config.whisper_threads)?;
 
+	// Create cancellation token for cooperative shutdown
+	let cancellation_token = CancellationToken::new();
+
 	// Start transcription loop
 	let transcriber = Transcriber {
 		config,
@@ -53,10 +58,11 @@ async fn main() -> Result<()> {
 		metrics,
 		transport,
 		whisper_ctx: Arc::new(whisper_ctx),
+		cancellation_token: cancellation_token.clone(),
 	};
 
 	// Run with graceful shutdown
-	run_with_shutdown(transcriber).await
+	run_with_shutdown(transcriber, cancellation_token).await
 }
 
 struct Transcriber {
@@ -65,17 +71,30 @@ struct Transcriber {
 	metrics: observability::TranscriberMetrics,
 	transport: NatsTransport<UnifiedEvent>,
 	whisper_ctx: Arc<whisper_rs::WhisperContext>,
+	cancellation_token: CancellationToken,
 }
 
-async fn run_with_shutdown(transcriber: Transcriber) -> Result<()> {
+async fn run_with_shutdown(transcriber: Transcriber, cancellation_token: CancellationToken) -> Result<()> {
 	tokio::select! {
 			result = transcriber.run() => {
 					error!("Transcription loop exited unexpectedly: {:?}", result);
 					result
 			}
 			_ = wait_for_shutdown_signal() => {
-					info!("🛑 Shutdown signal received, cleaning up...");
-					Ok(())
+					info!("🛑 Shutdown signal received (SIGTERM/SIGINT)");
+
+					// Signal all async tasks to stop
+					cancellation_token.cancel();
+
+					// Give async tasks a moment to notice cancellation and exit gracefully
+					tokio::time::sleep(std::time::Duration::from_millis(SHUTDOWN_GRACE_PERIOD_MS)).await;
+
+					// DO NOT wait for blocking Whisper threads - they cannot be cancelled
+					// The OS will clean them up when the process exits
+					info!("✅ Exiting process (OS will clean up any remaining Whisper threads)");
+
+					// Exit immediately - this is safe and correct for container environments
+					std::process::exit(0);
 			}
 	}
 }
@@ -127,23 +146,33 @@ impl Transcriber {
 		);
 
 		loop {
-			match tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv()).await {
-				Ok(Ok(audio_chunk)) => {
-					// audio_chunk is already AudioChunkMessage!
-					if let Err(e) = self.process_audio_chunk(audio_chunk, &mut processor, &params, &transcription_sem).await {
-						error!(error = %e, "Failed to process audio chunk");
+			tokio::select! {
+				_ = self.cancellation_token.cancelled() => {
+					info!("🛑 Transcription loop cancelled");
+					break;
+				}
+				result = tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv()) => {
+					match result {
+						Ok(Ok(audio_chunk)) => {
+							// audio_chunk is already AudioChunkMessage!
+							if let Err(e) = self.process_audio_chunk(audio_chunk, &mut processor, &params, &transcription_sem).await {
+								error!(error = %e, "Failed to process audio chunk");
+							}
+						}
+						Ok(Err(e)) => {
+							error!(error = %e, "Failed to receive audio chunk");
+							self.metrics.chunks_dropped.add(1, &[]);
+						}
+						Err(_) => {
+							// Timeout - heartbeat check
+							processor.heartbeat_check();
+						}
 					}
-				}
-				Ok(Err(e)) => {
-					error!(error = %e, "Failed to receive audio chunk");
-					self.metrics.chunks_dropped.add(1, &[]);
-				}
-				Err(_) => {
-					// Timeout - heartbeat check
-					processor.heartbeat_check();
 				}
 			}
 		}
+
+		Ok(())
 	}
 
 	async fn process_audio_chunk(
@@ -168,6 +197,8 @@ impl Transcriber {
 
 				info!(audio_samples = audio_buffer.len(), "🎤 Starting transcription");
 
+				// Spawn and forget - don't track the handle
+				// On shutdown, these tasks will be abandoned and cleaned up by the OS
 				transcription::transcribe_and_publish(
 					self.whisper_ctx.clone(),
 					params.clone(),
@@ -176,8 +207,8 @@ impl Transcriber {
 					self.state.clone(),
 					self.metrics.clone(),
 					permit,
-				)
-				.await;
+					self.cancellation_token.child_token(),
+				);
 			}
 		}
 

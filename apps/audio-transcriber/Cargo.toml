@@ -23,6 +23,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing-opentelemetry = { workspace = true }
 dotenvy = "0.15.7"
 clap.workspace = true
+tokio-util.workspace = true
 
 [lints]
 workspace = true

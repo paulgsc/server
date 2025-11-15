@@ -1,4 +1,3 @@
-// observability.rs
 use anyhow::Result;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{
