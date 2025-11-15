@@ -166,6 +166,24 @@ pub fn init_observability(service_name: &str) -> Result<(SdkMeterProvider, Trans
 	Ok((meter_provider, metrics))
 }
 
+/// Create local-only metrics when OTLP export fails
+/// This allows the service to continue operating without remote observability
+pub fn create_local_metrics() -> TranscriberMetrics {
+	use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+	// Initialize basic tracing without OpenTelemetry
+	let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,transcriber=debug,some_transport=debug"));
+
+	tracing_subscriber::registry()
+		.with(env_filter)
+		.with(tracing_subscriber::fmt::layer().with_target(true))
+		.init();
+
+	// Create a local meter (metrics will be tracked but not exported)
+	let meter = global::meter("transcriber-local");
+	TranscriberMetrics::new(&meter)
+}
+
 /// Heartbeat logger - call this periodically to track service health
 pub struct Heartbeat {
 	last_heartbeat: std::time::Instant,
