@@ -23,6 +23,14 @@ use std::sync::Arc;
 /// Use `NatsConnectionPool` or the `connect_pooled()` method for managing
 /// singleton connections across your app.
 ///
+/// # Connection Resilience
+///
+/// The async_nats client automatically handles reconnection when network
+/// failures occur. The same `Arc<Client>` will reconnect when the network
+/// recovers, so there's no need to clear the connection pool for transient
+/// failures. Operations perform lightweight connection state checks to
+/// fail-fast when the connection is known to be down.
+///
 /// # Example
 /// ```rust,no_run
 /// # use some_transport::NatsTransport;
@@ -118,6 +126,18 @@ where
 		&self.client
 	}
 
+	/// Checks if the connection is currently active.
+	///
+	/// Returns an error immediately if the connection is down, avoiding
+	/// wasted work. The async_nats client will automatically reconnect
+	/// when the network recovers.
+	fn check_connection(&self) -> Result<()> {
+		if self.client.connection_state() != async_nats::connection::State::Connected {
+			return Err(TransportError::NatsError("Connection not established".to_string()));
+		}
+		Ok(())
+	}
+
 	/// Generates a subject name for a connection-specific channel.
 	fn channel_subject(connection_key: &str) -> String {
 		format!("channel.{}", connection_key)
@@ -151,6 +171,9 @@ where
 	}
 
 	async fn send(&self, connection_key: &str, event: E) -> Result<()> {
+		// Early escape if connection is down
+		self.check_connection()?;
+
 		let subject = Self::channel_subject(connection_key);
 		let mut bytes = Vec::new();
 		event.encode(&mut bytes).map_err(|e| TransportError::SerializationError(e.to_string()))?;
@@ -167,6 +190,9 @@ where
 	}
 
 	async fn send_to_subject(&self, subject: &str, event: E) -> Result<()> {
+		// Early escape if connection is down
+		self.check_connection()?;
+
 		let mut bytes = Vec::new();
 		event.encode(&mut bytes).map_err(|e| TransportError::SerializationError(e.to_string()))?;
 
@@ -197,9 +223,8 @@ where
 	}
 
 	fn is_closed(&self) -> bool {
-		// NATS client handles reconnections internally
-		// Consider the transport always open unless explicitly closed
-		false
+		// Check actual connection state
+		self.client.connection_state() != async_nats::connection::State::Connected
 	}
 
 	fn active_channels(&self) -> usize {
