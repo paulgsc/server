@@ -39,8 +39,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true , features = ["limit", "load-shed"] }
 tower-http = { workspace = true, features = ["fs", "limit"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
 polars = { version =  "0.46.0", features = ["lazy"] }
 tokio-stream = "0.1.17"
 dashmap = "6.1.0"
@@ -50,9 +48,17 @@ moka = { version =  "0.12.10", features = ["future", "sync"] }
 sha2 = "0.10.9"
 uuid = "1.18.0"
 chrono.workspace = true
-tokio-util = "0.7.16"
+tokio-util = { workspace = true }
 reqwest = { version =  "0.12.23", features = ["json"] }
 rand = "0.9.2"
+
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry", "tracing-log" ] }
+tracing-opentelemetry = { workspace = true }
+
 
 [lints]
 workspace = true

@@ -26,8 +26,7 @@ pub use config::*;
 pub use handlers::audio_files::error::AudioServiceError;
 pub use handlers::utterance::UtteranceMetadata;
 pub use health::perform_health_check;
-pub use metrics::http::*;
-pub use metrics::ws::*;
+pub use metrics::{ObservabilityError, OtelGuard};
 
 /// Core: defines the universe - stable, global, rarely changes
 #[derive(Clone)]
@@ -36,6 +35,7 @@ pub struct CoreContext {
 	pub cancel_token: CancellationToken,
 	pub shared_db: SqlitePool,
 	pub connection_guard: ConnectionGuard,
+	pub otel_guard: Arc<OtelGuard>,
 }
 
 /// External APIs: third-party integrations with independent lifecycles
@@ -64,11 +64,13 @@ pub struct AppState {
 impl AppState {
 	/// Build the entire universe in one explicit place
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
+		let otel_guard = Arc::new(metrics::init()?);
 		let core = CoreContext {
 			config: config.clone(),
 			cancel_token: cancel_token.clone(),
 			shared_db: pool,
 			connection_guard: ConnectionGuard::new(),
+			otel_guard,
 		};
 
 		let secret_file = config.client_secret_file.clone();
@@ -135,5 +137,11 @@ impl FromRef<AppState> for CancellationToken {
 impl FromRef<AppState> for ConnectionGuard {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.connection_guard.clone()
+	}
+}
+
+impl FromRef<AppState> for Arc<OtelGuard> {
+	fn from_ref(state: &AppState) -> Self {
+		state.core.otel_guard.clone()
 	}
 }

@@ -48,8 +48,6 @@ async fn main() -> Result<()> {
 		return perform_health_check(&config).await;
 	}
 
-	let _ = init_tracing(&config);
-
 	let config = Arc::new(config);
 	let pool = SqlitePool::connect(&config.database_url).await?;
 	let shutdown_token = CancellationToken::new();
@@ -70,11 +68,8 @@ async fn main() -> Result<()> {
 	// TODO: Is this even working! boyo needs to know!
 	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
 
-	let public_routes = Router::new().route("/metrics", get(metrics::http::metrics_handler));
-
 	let app = Router::new()
 		.merge(protected_routes)
-		.merge(public_routes)
 		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
 
@@ -118,6 +113,10 @@ async fn main() -> Result<()> {
 		tracing::info!("Database closed");
 		app_state.realtime.transport.client().flush().await.ok();
 		tracing::info!("Nats channel closed");
+		if let Err(e) = app_state.core.otel_guard.shutdown().await {
+			tracing::error!("Failed to shutdown metrics: {}", e);
+		}
+		tracing::info!("OpenTelemetry shutdown");
 	};
 
 	// Add a timeout to prevent infinite hang
