@@ -3,7 +3,7 @@ use axum::extract::FromRef;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
 use some_transport::NatsTransport;
 use sqlx::SqlitePool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
 use ws_events::UnifiedEvent;
@@ -35,7 +35,8 @@ pub struct CoreContext {
 	pub cancel_token: CancellationToken,
 	pub shared_db: SqlitePool,
 	pub connection_guard: ConnectionGuard,
-	pub otel_guard: Arc<OtelGuard>,
+	// Wrap in Mutex<Option<>> so we can take ownership during shutdown
+	pub otel_guard: Arc<Mutex<Option<OtelGuard>>>,
 }
 
 /// External APIs: third-party integrations with independent lifecycles
@@ -64,7 +65,7 @@ pub struct AppState {
 impl AppState {
 	/// Build the entire universe in one explicit place
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
-		let otel_guard = Arc::new(metrics::init()?);
+		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new()?)));
 		let core = CoreContext {
 			config: config.clone(),
 			cancel_token: cancel_token.clone(),
@@ -140,7 +141,7 @@ impl FromRef<AppState> for ConnectionGuard {
 	}
 }
 
-impl FromRef<AppState> for Arc<OtelGuard> {
+impl FromRef<AppState> for Arc<Mutex<Option<OtelGuard>>> {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.otel_guard.clone()
 	}

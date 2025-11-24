@@ -8,7 +8,7 @@ use crate::routes::{
 	utterance::post_utterance,
 };
 use anyhow::Result;
-use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, routing::get, Router};
+use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
 use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
@@ -23,7 +23,6 @@ use tokio::{net::TcpListener, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
-use tracing_subscriber::{filter::EnvFilter, fmt::format::JsonFields, util::SubscriberInitExt, Layer};
 
 async fn handle_tower_error(error: BoxError) -> FileHostError {
 	if error.is::<tower::timeout::error::Elapsed>() {
@@ -75,7 +74,6 @@ async fn main() -> Result<()> {
 
 	let app = app.layer(
 		ServiceBuilder::new()
-			.layer(axum::middleware::from_fn(metrics::http::metrics_middleware))
 			.layer(TraceLayer::new_for_http())
 			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
 			.layer(RequestBodyLimitLayer::new(config.clone().max_request_size * 1024 * 1024))
@@ -113,10 +111,14 @@ async fn main() -> Result<()> {
 		tracing::info!("Database closed");
 		app_state.realtime.transport.client().flush().await.ok();
 		tracing::info!("Nats channel closed");
-		if let Err(e) = app_state.core.otel_guard.shutdown().await {
-			tracing::error!("Failed to shutdown metrics: {}", e);
+
+		// Take ownership of OtelGuard for shutdown
+		if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {
+			if let Err(e) = guard.shutdown().await {
+				tracing::error!("Failed to shutdown OpenTelemetry: {}", e);
+			}
+			tracing::info!("OpenTelemetry shutdown");
 		}
-		tracing::info!("OpenTelemetry shutdown");
 	};
 
 	// Add a timeout to prevent infinite hang
@@ -129,30 +131,4 @@ async fn main() -> Result<()> {
 
 	tracing::info!("Shutdown complete");
 	Ok(())
-}
-
-#[must_use]
-pub fn init_tracing(config: &Config) -> Option<()> {
-	use std::str::FromStr;
-	use tracing_subscriber::layer::SubscriberExt;
-
-	let filter = EnvFilter::from_str(config.rust_log.as_deref()?).unwrap();
-
-	tracing_subscriber::registry()
-		.with(if config.log_json {
-			Box::new(
-				tracing_subscriber::fmt::layer()
-					.fmt_fields(JsonFields::default())
-					.event_format(tracing_subscriber::fmt::format().json().flatten_event(true).with_span_list(false))
-					.with_filter(filter),
-			) as Box<dyn Layer<_> + Send + Sync>
-		} else {
-			Box::new(
-				tracing_subscriber::fmt::layer()
-					.event_format(tracing_subscriber::fmt::format().pretty())
-					.with_filter(filter),
-			)
-		})
-		.init();
-	None
 }

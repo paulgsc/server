@@ -1,17 +1,10 @@
-//! OpenTelemetry initialization and configuration
-//!
-//! This module sets up distributed tracing and metrics for the file_host service.
-//! All business logic modules automatically participate once this is initialized.
-
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-	metrics::{self, reader::DefaultAggregationSelector, reader::DefaultTemporalitySelector},
-	runtime,
-	trace::{self, RandomIdGenerator, Sampler},
+	metrics::{PeriodicReader, SdkMeterProvider},
+	trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
 	Resource,
 };
-use opentelemetry_semantic_conventions as semconv;
 use std::time::Duration;
 use thiserror::Error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -19,13 +12,105 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 #[derive(Error, Debug)]
 pub enum ObservabilityError {
 	#[error("Failed to initialize OTLP tracer: {0}")]
-	TracerInit(#[from] opentelemetry::trace::TraceError),
+	TracerInit(#[from] opentelemetry_sdk::trace::TraceError),
+
+	#[error("Failed to initialize OTLP exporter: {0}")]
+	ExporterInit(#[from] opentelemetry_otlp::ExporterBuildError),
 
 	#[error("Failed to initialize OTLP metrics: {0}")]
-	MetricsInit(#[from] opentelemetry::metrics::MetricsError),
+	MetricsInit(String),
+
+	#[error("OpenTelemetry error: {0}")]
+	OpenTelemetry(String),
 }
 
-/// Cached configuration read once at startup
+pub struct OtelGuard {
+	tracer_provider: SdkTracerProvider,
+	meter_provider: SdkMeterProvider,
+}
+
+impl OtelGuard {
+	/// Create and initialize OpenTelemetry with tracing subscriber
+	pub fn new() -> Result<Self, ObservabilityError> {
+		let config = OtelConfig::from_env();
+
+		let resource = Resource::builder()
+			.with_service_name(config.service_name.clone())
+			.with_attributes(vec![
+				KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+				KeyValue::new("service.environment", config.environment.clone()),
+			])
+			.build();
+
+		// === Tracing ===
+		let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
+			.with_tonic()
+			.with_endpoint(&config.otlp_endpoint)
+			.with_timeout(Duration::from_secs(3))
+			.build()?;
+
+		let tracer_provider = SdkTracerProvider::builder()
+			.with_resource(resource.clone())
+			.with_sampler(config.sampler.clone())
+			.with_id_generator(RandomIdGenerator::default())
+			.with_batch_exporter(trace_exporter)
+			.build();
+
+		let tracer = tracer_provider.tracer(config.service_name.clone());
+
+		global::set_tracer_provider(tracer_provider.clone());
+
+		// === Metrics ===
+		let metrics_exporter = opentelemetry_otlp::MetricExporter::builder()
+			.with_tonic()
+			.with_endpoint(&config.otlp_endpoint)
+			.with_timeout(Duration::from_secs(config.metrics_export_timeout_secs))
+			.build()?;
+
+		let reader = PeriodicReader::builder(metrics_exporter)
+			.with_interval(Duration::from_secs(config.metrics_export_interval_secs))
+			.build();
+
+		let meter_provider = SdkMeterProvider::builder().with_resource(resource).with_reader(reader).build();
+
+		global::set_meter_provider(meter_provider.clone());
+
+		// === Tracing subscriber ===
+		let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+		let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+		tracing_subscriber::registry()
+			.with(env_filter)
+			.with(telemetry_layer)
+			.with(tracing_subscriber::fmt::layer().with_target(true))
+			.init();
+
+		tracing::info!(
+			service_name = %config.service_name,
+			otlp_endpoint = %config.otlp_endpoint,
+			sampler = ?config.sampler,
+			metrics_export_interval_secs = %config.metrics_export_interval_secs,
+			"OpenTelemetry initialized"
+		);
+
+		Ok(Self { tracer_provider, meter_provider })
+	}
+
+	/// Shutdown OpenTelemetry providers
+	/// Note: This consumes self because shutdown needs to take ownership
+	pub async fn shutdown(self) -> Result<(), ObservabilityError> {
+		self.tracer_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?;
+		self.meter_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?;
+		Ok(())
+	}
+}
+
+impl Drop for OtelGuard {
+	fn drop(&mut self) {
+		tracing::info!("OtelGuard dropped (use shutdown() for proper async cleanup)");
+	}
+}
+
 struct OtelConfig {
 	service_name: String,
 	otlp_endpoint: String,
@@ -51,108 +136,10 @@ impl OtelConfig {
 		match std::env::var("OTEL_TRACES_SAMPLER").as_deref() {
 			Ok("always_on") => Sampler::AlwaysOn,
 			Ok("always_off") => Sampler::AlwaysOff,
-			Ok("traceidratio") | _ => {
-				let ratio = std::env::var("OTEL_TRACES_SAMPLER_ARG").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+			_ => {
+				let ratio = std::env::var("OTEL_TRACES_SAMPLER_ARG").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(1.0);
 				Sampler::TraceIdRatioBased(ratio)
 			}
 		}
-	}
-}
-
-/// Initialize OpenTelemetry tracing and metrics
-///
-/// This should be called once at service startup, before any business logic runs.
-///
-/// # Environment Variables
-/// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint (default: http://localhost:4317)
-/// - `OTEL_SERVICE_NAME`: Service name (default: file_host)
-/// - `OTEL_TRACES_SAMPLER`: Sampler type: always_on, always_off, traceidratio (default: traceidratio)
-/// - `OTEL_TRACES_SAMPLER_ARG`: Sampling ratio 0.0-1.0 (default: 1.0 = 100%)
-/// - `OTEL_METRIC_EXPORT_INTERVAL`: Metrics export interval in seconds (default: 60)
-/// - `OTEL_METRIC_EXPORT_TIMEOUT`: Metrics export timeout in seconds (default: 30)
-/// - `RUST_LOG`: Log level filter (default: info)
-pub fn init() -> Result<OtelGuard, ObservabilityError> {
-	let config = OtelConfig::from_env();
-
-	// 1. Create resource with service information
-	let resource = Resource::new(vec![
-		KeyValue::new(semconv::resource::SERVICE_NAME, config.service_name.clone()),
-		KeyValue::new(semconv::resource::SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-		KeyValue::new("service.environment", config.environment.clone()),
-	]);
-
-	// 2. Setup tracing pipeline (exports to Tempo/Jaeger via OTLP)
-	let tracer = opentelemetry_otlp::new_pipeline()
-		.tracing()
-		.with_exporter(
-			opentelemetry_otlp::new_exporter()
-				.tonic()
-				.with_endpoint(&config.otlp_endpoint)
-				.with_timeout(Duration::from_secs(3)),
-		)
-		.with_trace_config(
-			trace::config()
-				.with_sampler(config.sampler)
-				.with_id_generator(RandomIdGenerator::default())
-				.with_resource(resource.clone()),
-		)
-		.install_batch(runtime::Tokio)?;
-
-	// 3. Setup metrics pipeline (exports to Prometheus via OTLP)
-	let metrics_reader = opentelemetry_otlp::new_pipeline()
-		.metrics(runtime::Tokio)
-		.with_exporter(
-			opentelemetry_otlp::new_exporter()
-				.tonic()
-				.with_endpoint(&config.otlp_endpoint)
-				.with_timeout(Duration::from_secs(config.metrics_export_timeout_secs)),
-		)
-		.with_resource(resource)
-		.with_period(Duration::from_secs(config.metrics_export_interval_secs))
-		.build()?;
-
-	global::set_meter_provider(metrics_reader.clone());
-
-	// 4. Setup tracing subscriber with multiple layers
-	let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer.tracer(&config.service_name));
-
-	let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-	tracing_subscriber::registry()
-		.with(env_filter)
-		.with(telemetry_layer)
-		.with(tracing_subscriber::fmt::layer().with_target(true))
-		.init();
-
-	tracing::info!(
-			service_name = %config.service_name,
-			otlp_endpoint = %config.otlp_endpoint,
-			sampler = ?config.sampler,
-			metrics_export_interval_secs = %config.metrics_export_interval_secs,
-			"OpenTelemetry initialized"
-	);
-
-	Ok(OtelGuard { meter_provider: metrics_reader })
-}
-
-/// Guard that handles graceful shutdown of OTel resources
-pub struct OtelGuard {
-	meter_provider: opentelemetry_sdk::metrics::SdkMeterProvider,
-}
-
-impl OtelGuard {
-	/// Shutdown metrics provider gracefully
-	pub async fn shutdown(&self) -> Result<(), ObservabilityError> {
-		self.meter_provider.shutdown()?;
-		Ok(())
-	}
-}
-
-impl Drop for OtelGuard {
-	fn drop(&mut self) {
-		tracing::info!("Shutting down OpenTelemetry");
-		global::shutdown_tracer_provider();
-		// Note: meter provider shutdown should be called explicitly via shutdown()
-		// before drop for proper async cleanup
 	}
 }

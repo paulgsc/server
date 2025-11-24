@@ -1,6 +1,5 @@
-use crate::timed_operation;
+use crate::metrics::otel::{record_cache_hit, OperationTimer};
 use crate::{
-	metrics::http::OPERATION_DURATION,
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
 	AppState, DedupError, FileHostError,
@@ -11,85 +10,109 @@ use std::{borrow::Cow, collections::HashMap};
 use tracing::instrument;
 
 #[axum::debug_handler]
-#[instrument(name = "get_attributions", skip(state), fields(sheet_id = %id))]
+#[instrument(name = "get_attributions", skip(state), fields(sheet_id = %id, otel.kind = "server"))]
 pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<Attribution>>, FileHostError> {
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_attributions_{}_{}", id, range);
+
+	let _timer = OperationTimer::new("get_attributions", "total");
 
 	let (raw_data, was_cached) = state
 		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
-			timed_operation!("get_attributions", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
+			let _fetch_timer = OperationTimer::new("get_attributions", "fetch_data");
+			fetch_sheet_data(state.clone(), &id, Some(&range)).await
 		})
 		.await?;
 
-	let attributions = timed_operation!("get_attributions", "transform_data", !was_cached, { Attribution::from_gsheet(&raw_data, true) })?;
+	record_cache_hit("get_attributions", was_cached);
+
+	let attributions = {
+		let _transform_timer = OperationTimer::new("get_attributions", "transform_data");
+		Attribution::from_gsheet(&raw_data, true)?
+	};
 
 	Ok(Json(attributions))
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_video_chapters", skip(state), fields(sheet_id = %id))]
+#[instrument(name = "get_video_chapters", skip(state), fields(sheet_id = %id, otel.kind = "server"))]
 pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<VideoChapters>>, FileHostError> {
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_video_chapters_{}_{}", id, range);
+
+	let _timer = OperationTimer::new("get_video_chapters", "total");
 
 	let (raw_data, was_cached) = state
 		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
-			timed_operation!("get_video_chapters", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })
+			let _fetch_timer = OperationTimer::new("get_video_chapters", "fetch_data");
+			fetch_sheet_data(state.clone(), &id, Some(&range)).await
 		})
 		.await?;
 
-	let video_chapters = timed_operation!("get_video_chapters", "transform_data", !was_cached, { VideoChapters::from_gsheet(&raw_data, true) })?;
+	record_cache_hit("get_video_chapters", was_cached);
+
+	let video_chapters = {
+		let _transform_timer = OperationTimer::new("get_video_chapters", "transform_data");
+		VideoChapters::from_gsheet(&raw_data, true)?
+	};
 
 	Ok(Json(video_chapters))
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_gantt", skip(state), fields(sheet_id = %id))]
+#[instrument(name = "get_gantt", skip(state), fields(sheet_id = %id, otel.kind = "server"))]
 pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<RangeQuery>) -> Result<Json<Vec<GanttChapter>>, FileHostError> {
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_gantt_{}_{}", id, range);
 
-	let (gantt_chapters, _) = state
+	let _timer = OperationTimer::new("get_gantt", "total");
+
+	let (gantt_chapters, was_cached) = state
 		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
-			// Fetch raw data
-			let raw_data = timed_operation!("get_gantt", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, Some(&range)).await })?;
+			let _fetch_timer = OperationTimer::new("get_gantt", "fetch_data");
+			let raw_data = fetch_sheet_data(state.clone(), &id, Some(&range)).await?;
 
-			// Transform the data
-			let boxed: Box<[Box<[Cow<str>]>]> = timed_operation!("get_gantt", "box_transform", false, {
+			let boxed: Box<[Box<[Cow<str>]>]> = {
+				let _box_timer = OperationTimer::new("get_gantt", "box_transform");
 				raw_data
 					.into_iter()
 					.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
 					.collect::<Box<[_]>>()
-			});
+			};
 
-			let chapters = timed_operation!("get_gantt", "gantt_transform", false, { naive_gantt_transform(boxed) });
+			let chapters = {
+				let _gantt_timer = OperationTimer::new("get_gantt", "gantt_transform");
+				naive_gantt_transform(boxed)
+			};
 
 			Ok(chapters)
 		})
 		.await?;
 
+	record_cache_hit("get_gantt", was_cached);
+
 	Ok(Json(gantt_chapters))
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id))]
+#[instrument(name = "get_nfl_tennis", skip(state), fields(sheet_id = %id, otel.kind = "server"))]
 pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
 	let cache_key = format!("get_nfl_tennis_{}", id);
 
-	let (sheet_collection, _) = state
+	let _timer = OperationTimer::new("get_nfl_tennis", "total");
+
+	let (sheet_collection, was_cached) = state
 		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
-			let sheet_data = timed_operation!("get_nfl_tennis", "retrieve_all_sheets_data", false, {
-				state.external.gsheet_reader.retrieve_all_sheets_data(&id).await
-			})?;
+			let _fetch_timer = OperationTimer::new("get_nfl_tennis", "retrieve_all_sheets_data");
+			let sheet_data = state.external.gsheet_reader.retrieve_all_sheets_data(&id).await?;
 
 			let mut collection = Vec::new();
 
@@ -106,6 +129,8 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 		})
 		.await?;
 
+	record_cache_hit("get_nfl_tennis", was_cached);
+
 	Ok(Json(DataResponse {
 		data: sheet_collection,
 		metadata: Metadata {
@@ -116,44 +141,48 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id))]
+#[instrument(name = "get_nfl_roster", skip(state), fields(sheet_id = %id, otel.kind = "server"))]
 pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster_{}", id);
 
-	let (roster, _) = state
+	let _timer = OperationTimer::new("get_nfl_roster", "total");
+
+	let (roster, was_cached) = state
 		.realtime
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
-			// Fetch raw data
-			let raw_data = timed_operation!("get_nfl_roster", "fetch_data", false, { fetch_sheet_data(state.clone(), &id, None).await })?;
+			let _fetch_timer = OperationTimer::new("get_nfl_roster", "fetch_data");
+			let raw_data = fetch_sheet_data(state.clone(), &id, None).await?;
 
-			// Transform the data
 			let boxed: Box<[Box<[Cow<str>]>]> = raw_data
 				.into_iter()
 				.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
 				.collect::<Box<[_]>>();
 
-			let roster = timed_operation!("get_nfl_roster", "transform_data", false, { naive_roster_transform(boxed) });
+			let roster = {
+				let _transform_timer = OperationTimer::new("get_nfl_roster", "transform_data");
+				naive_roster_transform(boxed)
+			};
 
 			Ok(roster)
 		})
 		.await?;
 
+	record_cache_hit("get_nfl_roster", was_cached);
+
 	Ok(Json(roster))
 }
 
-// Helper function that replaces the old refetch function
-#[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id))]
+#[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id, otel.kind = "internal"))]
 async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, DedupError> {
 	let data = match range {
-		Some(query) => timed_operation!("fetch_sheet_data", "read_data_with_query", false, {
-			state.external.gsheet_reader.read_data(sheet_id, query).await
-		})?,
+		Some(query) => {
+			let _timer = OperationTimer::new("fetch_sheet_data", "read_data_with_query");
+			state.external.gsheet_reader.read_data(sheet_id, query).await?
+		}
 		None => {
-			let res = timed_operation!("fetch_sheet_data", "retrieve_all_sheets", false, {
-				state.external.gsheet_reader.retrieve_all_sheets_data(sheet_id).await
-			})?;
-
+			let _timer = OperationTimer::new("fetch_sheet_data", "retrieve_all_sheets");
+			let res = state.external.gsheet_reader.retrieve_all_sheets_data(sheet_id).await?;
 			let (_, data) = res.into_iter().next().ok_or(DedupError::UnexpectedSinglePair)?;
 			data
 		}

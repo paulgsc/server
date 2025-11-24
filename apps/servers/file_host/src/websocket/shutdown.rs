@@ -4,13 +4,11 @@ use crate::WebSocketFsm;
 impl WebSocketFsm {
 	/// Gracefully disconnect all active connections during shutdown
 	pub async fn shutdown(&self) {
-		record_system_event!("websocket_shutdown_started");
 		info!("Starting WebSocket shutdown - disconnecting all connections");
 
 		let connection_count = self.store.len();
 
 		if connection_count == 0 {
-			record_system_event!("websocket_shutdown_completed", connections_disconnected = 0);
 			info!("No connections to disconnect");
 			return;
 		}
