@@ -22,7 +22,7 @@ services:
       - NICE_LEVEL=10 # Lower priority (higher nice = lower priority)
     volumes:
       # Mount external SSD for models
-      - ${WHISPER_MODELS_PATH:-/mnt/external-ssd/whisper-models}:/models:ro
+      - ${WHISPER_MODELS_PATH:-/mnt/storage/users/dev/models/whisper-models}:/models:ro
     networks:
       - observability
     depends_on:

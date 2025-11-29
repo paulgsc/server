@@ -33,6 +33,10 @@ scrape_configs:
     static_configs:
       - targets: ['process-exporter:9256']
   # Container-level metrics
+  - job_name: 'otel-collector'
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['localhost:4318']
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
