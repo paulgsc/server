@@ -3,5 +3,5 @@ x-environment: &root-env
 include:
   - path: ./infra/compose/base.yml
   - path: ./infra/compose/file_host.yml
-  - path: ./infra/compose/audio_sender.yml
+  - path: ./infra/compose/orchestrator.yml
   - path: ./infra/compose/monitoring.yml

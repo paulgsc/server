@@ -1,7 +1,7 @@
 # Docker configuration
-IMAGE_NAME := self-hosting-maishatu
-DOCKER_REPO := pgathondu/self-hosting-maishatu
-DOCKERFILE_PATH := Dockerfile.server
+IMAGE_NAME ?=
+DOCKER_REPO ?= paulgsc/$(IMAGE_NAME)
+DOCKERFILE_PATH ?=
 TAG := latest
 
 # Get git commit hash for tagging
@@ -20,6 +20,15 @@ login: ## Login to Docker Hub
 	@docker login
 
 build: ## Build the Docker image
+ifndef IMAGE_NAME
+	$(error IMAGE_NAME is not set. Usage: make build IMAGE_NAME=... DOCKER_REPO=... DOCKERFILE_PATH=...)
+endif
+ifndef DOCKER_REPO
+	$(error DOCKER_REPO is not set. Usage: make build IMAGE_NAME=... DOCKER_REPO=... DOCKERFILE_PATH=...)
+endif
+ifndef DOCKERFILE_PATH
+	$(error DOCKERFILE_PATH is not set. Usage: make build IMAGE_NAME=... DOCKER_REPO=... DOCKERFILE_PATH=...)
+endif
 	@echo "Building Docker image: $(DOCKER_REPO):$(TAG)"
 	@docker build -f $(DOCKERFILE_PATH) -t $(DOCKER_REPO):$(TAG) .
 	@docker tag $(DOCKER_REPO):$(TAG) $(DOCKER_REPO):dev-$(GIT_COMMIT)

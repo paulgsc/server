@@ -44,7 +44,7 @@ once_cell = { version = "1.19", optional = true }
 sha2 = { version = "0.10.9", optional = true }
 base64 = { version = "0.22.1", optional = true }
 uuid = { version = "1.18.0", features = ["v4"], optional = true }
-tokio-util = { version = "0.7.16", optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [lints]
 workspace = true

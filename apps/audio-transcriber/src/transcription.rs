@@ -52,6 +52,13 @@ pub fn transcribe_and_publish(
 	_permit: tokio::sync::OwnedSemaphorePermit,
 	cancellation_token: CancellationToken,
 ) {
+	// Try to set is_transcribing to true atomically
+	if state.is_transcribing.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+		warn!("⚠️ Transcription already in progress — dropping this chunk");
+		metrics.chunks_dropped.add(1, &[]);
+		return;
+	}
+
 	tokio::task::spawn(async move {
 		// Spawn the blocking transcription work
 		// Note: This cannot be cancelled mid-execution due to FFI limitations

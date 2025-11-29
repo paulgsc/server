@@ -15,15 +15,15 @@ pub enum SendResult<T> {
 
 impl<T> SendResult<T> {
 	pub fn is_ok(&self) -> bool {
-		matches!(self, SendResult::Sent)
+		matches!(self, Self::Sent)
 	}
 
 	pub fn is_receiver_dropped(&self) -> bool {
-		matches!(self, SendResult::ReceiverDropped(_))
+		matches!(self, Self::ReceiverDropped(_))
 	}
 
 	pub fn is_channel_full(&self) -> bool {
-		matches!(self, SendResult::ChannelFull(_))
+		matches!(self, Self::ChannelFull(_))
 	}
 }
 
@@ -40,16 +40,16 @@ pub enum RecvResult<T> {
 
 impl<T> RecvResult<T> {
 	pub fn is_message(&self) -> bool {
-		matches!(self, RecvResult::Message(_))
+		matches!(self, Self::Message(_))
 	}
 
 	pub fn is_closed(&self) -> bool {
-		matches!(self, RecvResult::SenderDropped)
+		matches!(self, Self::SenderDropped)
 	}
 
 	pub fn into_option(self) -> Option<T> {
 		match self {
-			RecvResult::Message(msg) => Some(msg),
+			Self::Message(msg) => Some(msg),
 			_ => None,
 		}
 	}

@@ -4,7 +4,7 @@
 resolver = "2"
 
 
-members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "apps/servers/nfl_server", "crates/task_queue", "crates/webhooks", "crates/sqlite_macros", "crates/animations", "apps/servers/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint", "crates/gsheet_derive", "crates/obs-websocket", "crates/some-mujik", "crates/stream-stepper", "crates/some-utils", "crates/some-services", "crates/agents/auto_fixer", "crates/db/mood_event", "crates/ws-connection", "crates/some-transport", "crates/some-utility", "crates/ws-conn-manager", "crates/ws-events", "apps/some-obs", "apps/orchestrator", "apps/telemetry-collector",]
+members = ["crates/espn_nfl_scores", "crates/file_reader","crates/nest", "crates/nfl_play_parser", "crates/nfl_scenarios", "crates/noobgit", "crates/sdk", "apps/servers/nfl_server", "crates/task_queue", "crates/webhooks", "crates/sqlite_macros", "crates/animations", "apps/servers/file_host", "crates/enum-name-derive", "crates/audio_capture", "crates/tw_lint", "crates/gsheet_derive", "crates/obs-websocket", "crates/some-mujik", "crates/stream-stepper", "crates/some-utils", "crates/some-services", "crates/agents/auto_fixer", "crates/db/mood_event", "crates/ws-connection", "crates/some-transport", "crates/some-utility", "crates/ws-conn-manager", "crates/ws-events", "apps/some-obs", "apps/orchestrator", "crates/ts-bindgen", "apps/audio-sender", "apps/audio-transcriber",]
 
 exclude = []
 
@@ -61,7 +61,14 @@ sqlx = "0.7"
 tempfile = "3.3.0"
 thiserror = "1.0.48"
 tokio = "1.41.0"
+tokio-util = "0.7.17"
 tower = { version = "0.4", features = ["util", "timeout"] }
 tower-http = { version = "0.5.0", features = ["add-extension", "trace", "cors"] }
 tracing = "0.1.37"
 regex = "1.7.0"
+
+opentelemetry = "0.29.1"
+opentelemetry_sdk = { version = "0.29.0"  }
+opentelemetry-otlp = { version = "0.29.0" }
+tracing-subscriber = { version = "0.3.20" }
+tracing-opentelemetry = "0.30.0"

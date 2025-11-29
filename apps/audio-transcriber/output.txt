@@ -1,0 +1,75 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running `/home/paulg/dev/server/target/debug/examples/simple_wav /mnt/storage/users/dev/models/whisper-models/ggml-base.en-q5_1.bin test_output.wav`
+=== Whisper WAV Transcription Test ===
+
+📂 Loading WAV file: test_output.wav
+   Sample rate: 16000 Hz
+   Channels: 1
+   Bits per sample: 16
+   Format: Int
+✅ Loaded 48000 samples (3.00s at 16kHz)
+
+🔄 Loading Whisper model: /mnt/storage/users/dev/models/whisper-models/ggml-base.en-q5_1.bin
+whisper_init_from_file_with_params_no_state: loading model from '/mnt/storage/users/dev/models/whisper-models/ggml-base.en-q5_1.bin'
+whisper_init_with_params_no_state: use gpu    = 0
+whisper_init_with_params_no_state: flash attn = 0
+whisper_init_with_params_no_state: gpu_device = 0
+whisper_init_with_params_no_state: dtw        = 0
+whisper_init_with_params_no_state: devices    = 1
+whisper_init_with_params_no_state: backends   = 1
+whisper_model_load: loading model
+whisper_model_load: n_vocab       = 51864
+whisper_model_load: n_audio_ctx   = 1500
+whisper_model_load: n_audio_state = 512
+whisper_model_load: n_audio_head  = 8
+whisper_model_load: n_audio_layer = 6
+whisper_model_load: n_text_ctx    = 448
+whisper_model_load: n_text_state  = 512
+whisper_model_load: n_text_head   = 8
+whisper_model_load: n_text_layer  = 6
+whisper_model_load: n_mels        = 80
+whisper_model_load: ftype         = 9
+whisper_model_load: qntvr         = 1
+whisper_model_load: type          = 2 (base)
+whisper_model_load: adding 1607 extra tokens
+whisper_model_load: n_langs       = 99
+whisper_model_load:          CPU total size =    59.12 MB
+whisper_model_load: model size    =   59.12 MB
+✅ Model loaded in 0.09s
+
+🎤 Transcribing...
+whisper_backend_init_gpu: no GPU found
+whisper_init_state: kv self size  =    6.29 MB
+whisper_init_state: kv cross size =   18.87 MB
+whisper_init_state: kv pad  size  =    3.15 MB
+whisper_init_state: compute buffer (conv)   =   16.28 MB
+whisper_init_state: compute buffer (encode) =   85.88 MB
+whisper_init_state: compute buffer (cross)  =    4.66 MB
+whisper_init_state: compute buffer (decode) =   96.37 MB
+
+whisper_full_with_state: strategy = 0, decoding with 1 decoders, temperature = 0.00
+
+
+whisper_full_with_state: prompt[0] = [_SOT_]
+
+
+whisper_full_with_state: id =   0, decoder = 0, token =  50363, p =  0.911, ts =    [_BEG_],  0.911, result_len =    0 '[_BEG_]'
+whisper_full_with_state: id =   1, decoder = 0, token =    357, p =  0.414, ts =        [?],  0.000, result_len =    0 ' ('
+whisper_full_with_state: id =   2, decoder = 0, token =   1929, p =  0.061, ts =        [?],  0.011, result_len =    0 'wh'
+whisper_full_with_state: id =   3, decoder = 0, token =    396, p =  0.556, ts =        [?],  0.008, result_len =    0 'ist'
+whisper_full_with_state: id =   4, decoder = 0, token =   1359, p =  0.612, ts =        [?],  0.007, result_len =    0 'ling'
+whisper_full_with_state: id =   5, decoder = 0, token =      8, p =  0.816, ts =        [?],  0.007, result_len =    0 ')'
+whisper_full_with_state: id =   6, decoder = 0, token =  50476, p =  0.164, ts =  [_TT_113],  0.164, result_len =    7 '[_TT_113]'
+whisper_full_with_state: id =   7, decoder = 0, token =  50256, p =  0.973, ts =  [_TT_113],  0.819, result_len =    7 '<|endoftext|>'
+whisper_full_with_state: decoder 0 completed
+whisper_full_with_state: decoder  0: score = -0.97969, result_len =   7, avg_logprobs = -0.97969, entropy =  1.94591
+whisper_full_with_state: best decoder = 0
+single timestamp ending - skip entire chunk
+seek = 299, seek_delta = 299
+✅ Transcription completed in 42.51s
+   Real-time factor: 14.17x
+
+=== TRANSCRIPTION ===
+(whistling)
+
+=== END ===

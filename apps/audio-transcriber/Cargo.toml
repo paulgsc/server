@@ -27,3 +27,7 @@ tokio-util.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hound = "3.5.1"
+num_cpus = "1.17.0"

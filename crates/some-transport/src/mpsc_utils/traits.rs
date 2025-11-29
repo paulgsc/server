@@ -2,7 +2,7 @@
 
 use super::{RecvResult, SendResult};
 use tokio::sync::mpsc::{self, error::SendError};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 /// Extension trait for unbounded sender with graceful error handling and logging.
 ///
@@ -305,7 +305,7 @@ where
 					"Send timeout: channel likely full or receiver slow"
 				);
 				// Timeout means we still have the message, treat as full
-				SendResult::ChannelFull(self.try_send(msg).err().unwrap().into_inner())
+				SendResult::ChannelFull(msg)
 			}
 		}
 	}

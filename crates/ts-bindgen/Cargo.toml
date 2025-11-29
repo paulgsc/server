@@ -1,0 +1,15 @@
+[package]
+name = "ts-bindgen"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+ts-rs = "11.1.0"
+ws-events.workspace = true
+
+[lints]
+workspace = true
