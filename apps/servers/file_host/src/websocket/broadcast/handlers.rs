@@ -29,11 +29,13 @@ pub(crate) fn spawn_event_forwarder(
 		let (obs_tx, mut obs_rx) = mpsc::channel::<Event>(10);
 		let (tab_tx, mut tab_rx) = mpsc::channel::<Event>(100);
 		let (utt_tx, mut utt_rx) = mpsc::channel::<Event>(100);
+		let (orch_tx, mut orch_rx) = mpsc::channel::<Event>(100);
 
 		// Spawn receiver tasks
 		spawn_nats_task(EventType::ObsStatus, transport.clone(), obs_tx, conn_key.clone(), cancel_token.clone(), true);
 		spawn_nats_task(EventType::TabMetaData, transport.clone(), tab_tx, conn_key.clone(), cancel_token.clone(), false);
 		spawn_nats_task(EventType::Utterance, transport.clone(), utt_tx, conn_key.clone(), cancel_token.clone(), false);
+		spawn_nats_task(EventType::OrchestratorState, transport.clone(), orch_tx, conn_key.clone(), cancel_token.clone(), false);
 
 		let mut total_forwarded = 0u64;
 
@@ -73,6 +75,12 @@ pub(crate) fn spawn_event_forwarder(
 				}
 
 				Some(evt) = obs_rx.recv() => {
+					if forward_event(&mut ws_sender, &evt, &conn_key).await.is_ok() {
+						total_forwarded += 1;
+					}
+				}
+
+				Some(evt) = orch_rx.recv() => {
 					if forward_event(&mut ws_sender, &evt, &conn_key).await.is_ok() {
 						total_forwarded += 1;
 					}
