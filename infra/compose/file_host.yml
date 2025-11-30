@@ -83,7 +83,7 @@ services:
     image: nats:latest
     container_name: nats-server
     restart: unless-stopped
-    command: ["-DV"]
+    # command: ["-DV"]
     ports:
       - '4222:4222' # client pub/sub
       - '8222:8222' # HTTP monitoring API
