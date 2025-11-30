@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Stream status information
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamStatus {
 	pub is_streaming: bool,
 	pub stream_time: TimeMs,

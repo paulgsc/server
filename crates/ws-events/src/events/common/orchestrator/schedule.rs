@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A scheduled element representing when a scene should be active
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduledElement {
 	pub id: SceneId,
 	pub scene_name: String,

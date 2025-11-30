@@ -102,10 +102,7 @@ where
 {
 	fn send_graceful(&self, msg: T, context: &str) -> SendResult<T> {
 		match self.send(msg) {
-			Ok(_) => {
-				debug!(context = context, "Message sent successfully");
-				SendResult::Sent
-			}
+			Ok(_) => SendResult::Sent,
 			Err(SendError(msg)) => {
 				error!(context = context, "Failed to send message: receiver dropped");
 				SendResult::ReceiverDropped(msg)
@@ -273,10 +270,7 @@ where
 {
 	fn try_send_graceful(&self, msg: T, context: &str) -> SendResult<T> {
 		match self.try_send(msg) {
-			Ok(_) => {
-				debug!(context = context, "Message sent successfully");
-				SendResult::Sent
-			}
+			Ok(_) => SendResult::Sent,
 			Err(mpsc::error::TrySendError::Full(msg)) => {
 				error!(context = context, capacity = self.capacity(), "Channel full, message dropped");
 				SendResult::ChannelFull(msg)
@@ -290,10 +284,7 @@ where
 
 	async fn send_graceful_timeout(&self, msg: T, timeout_duration: std::time::Duration, context: &str) -> SendResult<T> {
 		match tokio::time::timeout(timeout_duration, self.send(msg.clone())).await {
-			Ok(Ok(_)) => {
-				debug!(context = context, "Message sent successfully");
-				SendResult::Sent
-			}
+			Ok(Ok(_)) => SendResult::Sent,
 			Ok(Err(SendError(msg))) => {
 				error!(context = context, "Failed to send: receiver dropped");
 				SendResult::ReceiverDropped(msg)
@@ -471,10 +462,7 @@ where
 {
 	async fn recv_graceful(&mut self, context: &str) -> RecvResult<T> {
 		match self.recv().await {
-			Some(msg) => {
-				debug!(context = context, "Message received");
-				RecvResult::Message(msg)
-			}
+			Some(msg) => RecvResult::Message(msg),
 			None => {
 				debug!(context = context, "Channel closed: sender dropped");
 				RecvResult::SenderDropped
@@ -484,16 +472,13 @@ where
 
 	async fn recv_timeout(&mut self, timeout_duration: std::time::Duration, context: &str) -> RecvResult<T> {
 		match tokio::time::timeout(timeout_duration, self.recv()).await {
-			Ok(Some(msg)) => {
-				debug!(context = context, "Message received");
-				RecvResult::Message(msg)
-			}
+			Ok(Some(msg)) => RecvResult::Message(msg),
 			Ok(None) => {
 				debug!(context = context, "Channel closed: sender dropped");
 				RecvResult::SenderDropped
 			}
 			Err(_) => {
-				debug!(context = context, timeout_ms = timeout_duration.as_millis(), "Receive timeout");
+				error!(context = context, timeout_ms = timeout_duration.as_millis(), "Receive timeout");
 				RecvResult::Timeout
 			}
 		}
@@ -650,10 +635,7 @@ where
 {
 	async fn recv_graceful(&mut self, context: &str) -> RecvResult<T> {
 		match self.recv().await {
-			Some(msg) => {
-				debug!(context = context, "Message received");
-				RecvResult::Message(msg)
-			}
+			Some(msg) => RecvResult::Message(msg),
 			None => {
 				debug!(context = context, "Channel closed: sender dropped");
 				RecvResult::SenderDropped
@@ -663,16 +645,10 @@ where
 
 	async fn recv_timeout(&mut self, timeout_duration: std::time::Duration, context: &str) -> RecvResult<T> {
 		match tokio::time::timeout(timeout_duration, self.recv()).await {
-			Ok(Some(msg)) => {
-				debug!(context = context, "Message received");
-				RecvResult::Message(msg)
-			}
-			Ok(None) => {
-				debug!(context = context, "Channel closed: sender dropped");
-				RecvResult::SenderDropped
-			}
+			Ok(Some(msg)) => RecvResult::Message(msg),
+			Ok(None) => RecvResult::SenderDropped,
 			Err(_) => {
-				debug!(context = context, timeout_ms = timeout_duration.as_millis(), "Receive timeout");
+				error!(context = context, timeout_ms = timeout_duration.as_millis(), "Receive timeout");
 				RecvResult::Timeout
 			}
 		}

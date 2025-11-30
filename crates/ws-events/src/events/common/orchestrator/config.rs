@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrchestratorConfig {
 	/// List of scenes to orchestrate
 	pub scenes: Vec<SceneConfig>,

@@ -58,7 +58,7 @@ pub(crate) async fn process_incoming_messages(
 					Some(Ok(msg)) => {
 						message_count += 1;
 						// Handle the message; break on close
-						if handle_websocket_message(msg, state, transport.clone(), ws_tx.clone(), conn_key, message_count).await.is_err() {
+						if handle_websocket_message(msg, state, transport.clone(), ws_tx.clone(), conn_key ).await.is_err() {
 							break;
 						}
 					}
@@ -95,31 +95,17 @@ async fn handle_websocket_message(
 	transport: NatsTransport<UnifiedEvent>,
 	ws_tx: UnboundedSender<Event>,
 	conn_key: &str,
-	message_count: u64,
 ) -> Result<(), ()> {
 	match msg {
 		Message::Text(text) => {
-			debug!(
-				connection_id = %conn_key,
-				message_number = message_count,
-				size_bytes = text.len(),
-				"Received text message"
-			);
-
 			// Process the message
 			state.process_message(transport, ws_tx, conn_key, text).await;
 			Ok(())
 		}
 
-		Message::Ping(_) => {
-			debug!(connection_id = %conn_key, "Received WebSocket ping");
-			Ok(())
-		}
+		Message::Ping(_) => Ok(()),
 
-		Message::Pong(_) => {
-			debug!(connection_id = %conn_key, "Received WebSocket pong");
-			Ok(())
-		}
+		Message::Pong(_) => Ok(()),
 
 		Message::Close(reason) => {
 			let reason_str = reason
@@ -138,13 +124,6 @@ async fn handle_websocket_message(
 			Err(())
 		}
 
-		Message::Binary(data) => {
-			debug!(
-				connection_id = %conn_key,
-				size_bytes = data.len(),
-				"Received and ignored binary message"
-			);
-			Ok(())
-		}
+		Message::Binary(_) => Ok(()),
 	}
 }

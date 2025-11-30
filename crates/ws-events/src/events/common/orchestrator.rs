@@ -26,6 +26,7 @@ pub enum TickCommand {
 
 /// The current state of the orchestrator
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrchestratorState {
 	/// Whether the orchestrator is running
 	pub is_running: bool,

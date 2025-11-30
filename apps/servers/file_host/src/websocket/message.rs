@@ -1,7 +1,7 @@
 use crate::WebSocketFsm;
 use some_transport::{NatsTransport, UnboundedSenderExt};
 use tokio::{sync::mpsc::UnboundedSender, time::Instant};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use ws_events::events::{Event, EventType, SystemEvent, UnifiedEvent};
 
 pub(crate) mod handlers;
@@ -15,6 +15,13 @@ impl WebSocketFsm {
 		let client_message = match serde_json::from_str::<Event>(&raw_message) {
 			Ok(msg) => msg,
 			Err(e) => {
+				warn!(
+					connection_id = %conn_key,
+					error = %e,
+					raw_message = %raw_message,
+					"Failed to deserialize websocket JSON message"
+				);
+
 				self.send_error_to_client(ws_tx, &format!("Invalid JSON: {}", e));
 				return;
 			}

@@ -49,10 +49,12 @@ pub enum Event {
 	#[serde(skip)]
 	System(SystemEvent),
 	TickCommand {
+		#[serde(rename = "streamId")]
 		stream_id: String,
 		command: TickCommand,
 	},
 	OrchestratorState {
+		#[serde(rename = "streamId")]
 		stream_id: String,
 		state: OrchestratorState,
 	},

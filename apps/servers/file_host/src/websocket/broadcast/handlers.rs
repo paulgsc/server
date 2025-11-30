@@ -156,10 +156,10 @@ fn spawn_nats_task(
 /// Forward a single event to the WebSocket client
 async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, conn_key: &str) -> Result<(), ()> {
 	let json = serde_json::to_string(event).map_err(|e| {
-		error!(connection_id=%conn_key, "Failed to serialize event: {}", e);
+		warn!(connection_id=%conn_key, "Failed to serialize event: {}", e);
 	})?;
 
 	sender.send(Message::Text(json)).await.map_err(|e| {
-		error!(connection_id=%conn_key, "Failed to forward WS message: {}", e);
+		warn!(connection_id=%conn_key, "Failed to forward WS message: {}", e);
 	})
 }
