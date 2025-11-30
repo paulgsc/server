@@ -50,53 +50,62 @@ impl ManagedOrchestrator {
 		cancel_token: CancellationToken,
 	) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
+			info!("🚀 State publisher task started for stream {}", stream_id);
+
 			let mut state_rx = orchestrator.subscribe();
+			info!("📡 State publisher subscribed to orchestrator for stream {}", stream_id);
 
 			loop {
 				tokio::select! {
-						_ = cancel_token.cancelled() => {
-								debug!("State publisher for stream {} cancelled", stream_id);
-								break;
-						}
-						result = state_rx.changed() => {
-								match result {
-										Ok(_) => {
-												let state = state_rx.borrow().clone();
+					_ = cancel_token.cancelled() => {
+						info!("🛑 State publisher for stream {} cancelled", stream_id);
+						break;
+					}
+					result = state_rx.changed() => {
+						match result {
+							Ok(_) => {
 
-												// Create Event with stream_id
-												let event = Event::OrchestratorState {
-														stream_id: stream_id.clone(),
-														state,
-												};
+								let state = state_rx.borrow().clone();
+								// Create Event with stream_id
+								let event = Event::OrchestratorState {
+									stream_id: stream_id.clone(),
+									state,
+								};
 
-												// Convert to UnifiedEvent
-												let unified_event = match UnifiedEvent::try_from(event) {
-														Ok(v) => v,
-														Err(e) => {
-																error!("Failed to convert event to unified event: {}", e);
-																continue;
-														}
-												};
+								// Convert to UnifiedEvent
+								let unified_event = match UnifiedEvent::try_from(event) {
+									Ok(v) => v,
+									Err(e) => {
+										error!("❌ Failed to convert event to unified event for stream {}: {}", stream_id, e);
+										continue;
+									}
+								};
 
-												// Get subject for this event type
-												let subject = EventType::OrchestratorState.subject();
+								// Get subject for this event type
+								let subject = EventType::OrchestratorState.subject();
 
-												// Send to NATS
-												if let Err(e) = transport.send_to_subject(subject, unified_event).await {
-														error!(
-																"Failed to broadcast state update for stream {}: {}",
-																stream_id, e
-														);
-												}
-										}
-										Err(_) => {
-												error!("State channel closed for stream {}", stream_id);
-												break;
-										}
+								// Send to NATS
+								match transport.send_to_subject(subject, unified_event).await {
+									Ok(_) => {
+									}
+									Err(e) => {
+										error!(
+											"❌ Failed to broadcast state update for stream {} to subject '{}': {}",
+											stream_id, subject, e
+										);
+									}
 								}
+							}
+							Err(e) => {
+								error!("❌ State channel closed for stream {}: {}", stream_id, e);
+								break;
+							}
 						}
+					}
 				}
 			}
+
+			info!("👋 State publisher task exiting for stream {}", stream_id);
 		})
 	}
 
@@ -112,35 +121,35 @@ impl ManagedOrchestrator {
 
 			loop {
 				tokio::select! {
-						_ = cancel_token.cancelled() => {
-								debug!("Completion monitor for stream {} cancelled", stream_id);
-								break;
-						}
-						result = state_rx.changed() => {
-								match result {
-										Ok(_) => {
-												let is_complete = {
-														let state = state_rx.borrow();
-														state.is_complete()
-												};
+					_ = cancel_token.cancelled() => {
+						debug!("Completion monitor for stream {} cancelled", stream_id);
+						break;
+					}
+					result = state_rx.changed() => {
+						match result {
+							Ok(_) => {
+								let is_complete = {
+									let state = state_rx.borrow();
+									state.is_complete()
+								};
 
-												// Check if orchestration is complete
-												if is_complete {
-														info!("✅ Orchestration complete for stream {}", stream_id);
+								// Check if orchestration is complete
+								if is_complete {
+									info!("✅ Orchestration complete for stream {}", stream_id);
 
-														// Auto-shutdown the orchestrator
-														orchestrator.shutdown().await;
+									// Auto-shutdown the orchestrator
+									orchestrator.shutdown().await;
 
-														info!("🛑 Orchestrator auto-shutdown complete for stream {}", stream_id);
-														break;
-												}
-										}
-										Err(_) => {
-												error!("State channel closed for stream {} completion monitor", stream_id);
-												break;
-										}
+									info!("🛑 Orchestrator auto-shutdown complete for stream {}", stream_id);
+									break;
 								}
+							}
+							Err(_) => {
+								error!("State channel closed for stream {} completion monitor", stream_id);
+								break;
+							}
 						}
+					}
 				}
 			}
 		})

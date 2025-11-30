@@ -41,6 +41,10 @@ impl WebSocketFsm {
 			Event::ObsCmd { .. } => {
 				let _ = self.broadcast_event(transport, client_message).await;
 			}
+
+			Event::TickCommand { .. } => {
+				let _ = self.broadcast_event(transport, client_message).await;
+			}
 			_ => {}
 		};
 	}

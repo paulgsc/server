@@ -8,7 +8,6 @@ pub type SceneId = String;
 
 /// Scene configuration with name and duration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct SceneConfig {
 	pub scene_name: String,
 	pub duration: TimeMs,

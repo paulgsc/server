@@ -39,6 +39,7 @@ impl TickEngineState {
 /// Tick engine that drives the orchestrator state updates
 /// Uses pure actor pattern - all state mutations happen via commands
 pub struct TickEngine {
+	state_tx: watch::Sender<OrchestratorState>,
 	state_rx: watch::Receiver<OrchestratorState>,
 }
 
@@ -48,9 +49,9 @@ impl TickEngine {
 
 		let schedule = SceneSchedule::from_scenes(&config.scenes);
 		let state = OrchestratorState::from_schedule(&schedule, config.scenes.clone());
-		let (_state_tx, state_rx) = watch::channel(state);
+		let (state_tx, state_rx) = watch::channel(state);
 
-		Ok(Self { state_rx })
+		Ok(Self { state_tx, state_rx })
 	}
 
 	/// Get a receiver for state updates
@@ -66,11 +67,9 @@ impl TickEngine {
 	/// Run the tick engine actor loop
 	pub async fn run(self, config: OrchestratorConfig, mut command_rx: tokio::sync::mpsc::UnboundedReceiver<TickCommand>, cancel_token: tokio_util::sync::CancellationToken) {
 		let schedule = SceneSchedule::from_scenes(&config.scenes);
-		let initial_state = OrchestratorState::from_schedule(&schedule, config.scenes.clone());
-		let (state_tx, _state_rx) = watch::channel(initial_state);
-
 		let mut engine_state = TickEngineState::new(config, schedule);
 		let mut ticker = interval(engine_state.config.tick_interval());
+		let state_tx = self.state_tx.clone();
 
 		info!("Starting tick engine with interval: {:?}", engine_state.config.tick_interval());
 
