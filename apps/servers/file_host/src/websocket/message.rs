@@ -1,7 +1,7 @@
 use crate::WebSocketFsm;
 use some_transport::{NatsTransport, UnboundedSenderExt};
-use tokio::{sync::mpsc::UnboundedSender, time::Instant};
-use tracing::{error, info, warn};
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{error, warn};
 use ws_events::events::{Event, EventType, SystemEvent, UnifiedEvent};
 
 pub(crate) mod handlers;
@@ -51,8 +51,6 @@ impl WebSocketFsm {
 
 	/// Handle subscribe request - add new event type subscriptions
 	async fn handle_subscribe(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
-		let start = Instant::now();
-
 		// Update actor state
 		if let Err(e) = self.handle_subscription_update(conn_key, event_types.clone(), vec![]).await {
 			error!(
@@ -64,23 +62,12 @@ impl WebSocketFsm {
 			return;
 		}
 
-		let duration = start.elapsed();
-
-		info!(
-			connection_id = %conn_key,
-			event_types = ?event_types,
-			duration_ms = duration.as_millis(),
-			"Successfully subscribed to event types"
-		);
-
 		// Send confirmation to client
 		self.send_subscription_ack(ws_tx, conn_key, event_types).await
 	}
 
 	/// Handle unsubscribe request - remove event type subscriptions
 	async fn handle_unsubscribe(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
-		let start = Instant::now();
-
 		// Update NATS subscriptions and actor state
 		if let Err(e) = self.handle_subscription_update(conn_key, vec![], event_types.clone()).await {
 			error!(
@@ -91,15 +78,6 @@ impl WebSocketFsm {
 			self.send_error_to_client(ws_tx, &format!("Unsubscription failed: {}", e));
 			return;
 		}
-
-		let duration = start.elapsed();
-
-		info!(
-			connection_id = %conn_key,
-			event_types = ?event_types,
-			duration_ms = duration.as_millis(),
-			"Successfully unsubscribed from event types"
-		);
 
 		// Send confirmation to client
 		self.send_unsubscription_ack(ws_tx, conn_key, event_types).await

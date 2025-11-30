@@ -5,7 +5,7 @@ services:
     ports:
       - '3000:3000'
     environment:
-      - RUST_LOG=${RUST_LOG:-debug}
+      - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}

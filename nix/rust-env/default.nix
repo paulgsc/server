@@ -1,9 +1,7 @@
-{ pkgs }:
-
-let
+{pkgs}: let
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-    extensions = [ "rust-src" "rust-analyzer" "clippy" ];
-    targets = [ "x86_64-unknown-linux-gnu" ];
+    extensions = ["rust-src" "rust-analyzer" "clippy"];
+    targets = ["x86_64-unknown-linux-gnu"];
   };
 
   buildInputs = with pkgs; [
@@ -31,8 +29,8 @@ let
 
   shellHook = ''
     export RUST_BACKTRACE=1
-    export RUST_LOG=debug
-    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.alsa-lib ]}:$LD_LIBRARY_PATH"
+    export RUST_LOG=info,async_nats=warn,orchestrator=info,file_host=debug
+    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.alsa-lib]}:$LD_LIBRARY_PATH"
     export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
     echo "🦀 Rust environment loaded!"
   '';

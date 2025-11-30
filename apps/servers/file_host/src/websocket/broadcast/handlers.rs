@@ -2,6 +2,7 @@ use crate::WebSocketFsm;
 use axum::extract::ws::{Message, WebSocket};
 use futures::{sink::SinkExt, stream::SplitSink};
 use some_transport::{NatsTransport, RecvResult, SendResult, SenderExt, Transport, UnboundedReceiverExt};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::{
 	sync::mpsc::{self, UnboundedReceiver},
 	time::{interval, Duration},
@@ -12,6 +13,8 @@ use ws_events::{
 	events::{Event, EventType},
 	UnifiedEvent,
 };
+
+static WS_FORWARD_ERR_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Spawn the NATS -> WS pipeline for a connection
 pub(crate) fn spawn_event_forwarder(
@@ -139,8 +142,13 @@ fn spawn_nats_task(
 							sender.send_with_backpressure_warn(event.clone(), &format!("NATS {}", event_type.subject())).await
 						};
 
-						if let SendResult::ReceiverDropped(msg) = send_result {
-							debug!(connection_id=%conn_key, ?event_type, "Receiver dropped, message lost: {:?}", msg);
+						if let SendResult::ReceiverDropped(_) = send_result {
+							debug!(
+								connection_id=%conn_key,
+								?event_type,
+								"Receiver dropped, message lost"
+							);
+
 						}
 					}
 					Err(e) => {
@@ -156,10 +164,30 @@ fn spawn_nats_task(
 /// Forward a single event to the WebSocket client
 async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event, conn_key: &str) -> Result<(), ()> {
 	let json = serde_json::to_string(event).map_err(|e| {
-		warn!(connection_id=%conn_key, "Failed to serialize event: {}", e);
+		let count = WS_FORWARD_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
+
+		if count % 100 == 0 {
+			warn!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to serialize event (sampled)"
+			);
+		}
+
+		()
 	})?;
 
 	sender.send(Message::Text(json)).await.map_err(|e| {
-		warn!(connection_id=%conn_key, "Failed to forward WS message: {}", e);
+		let count = WS_FORWARD_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
+
+		if count % 1000 == 0 {
+			warn!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to forward WS message (sampled)"
+			);
+		}
+
+		()
 	})
 }
