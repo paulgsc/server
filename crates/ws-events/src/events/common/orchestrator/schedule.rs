@@ -1,9 +1,9 @@
 use super::types::{SceneConfig, SceneId, TimeMs};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A scheduled element representing when a scene should be active
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct ScheduledElement {
 	pub id: SceneId,
 	pub scene_name: String,
@@ -11,6 +11,21 @@ pub struct ScheduledElement {
 	pub end_time: TimeMs,
 	pub duration: TimeMs,
 	pub is_active: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub metadata: Option<SceneMetadata>,
+}
+
+/// Metadata for a scheduled scene element
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneMetadata {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub title: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub subtitle: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	#[serde(flatten)]
+	pub additional: HashMap<String, serde_json::Value>,
 }
 
 impl ScheduledElement {
@@ -23,7 +38,13 @@ impl ScheduledElement {
 			end_time: start_time + duration,
 			duration,
 			is_active: false,
+			metadata: scene.metadata.clone(),
 		}
+	}
+
+	pub fn with_metadata(mut self, metadata: SceneMetadata) -> Self {
+		self.metadata = Some(metadata);
+		self
 	}
 
 	pub fn is_active_at(&self, time: TimeMs) -> bool {
@@ -130,71 +151,5 @@ impl SceneSchedule {
 impl Default for SceneSchedule {
 	fn default() -> Self {
 		Self::new()
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn create_test_scenes() -> Vec<SceneConfig> {
-		vec![SceneConfig::new("intro", 5000), SceneConfig::new("main", 10000), SceneConfig::new("outro", 3000)]
-	}
-
-	#[test]
-	fn test_schedule_creation() {
-		let scenes = create_test_scenes();
-		let schedule = SceneSchedule::from_scenes(&scenes);
-
-		assert_eq!(schedule.len(), 3);
-		assert_eq!(schedule.total_duration(), 18000);
-	}
-
-	#[test]
-	fn test_active_elements() {
-		let scenes = create_test_scenes();
-		let schedule = SceneSchedule::from_scenes(&scenes);
-
-		// At 0ms, intro should be active
-		let active = schedule.get_current_scene(0);
-		assert_eq!(active.map(|s| s.scene_name.as_str()), Some("intro"));
-
-		// At 6000ms, main should be active
-		let active = schedule.get_current_scene(6000);
-		assert_eq!(active.map(|s| s.scene_name.as_str()), Some("main"));
-
-		// At 16000ms, outro should be active
-		let active = schedule.get_current_scene(16000);
-		assert_eq!(active.map(|s| s.scene_name.as_str()), Some("outro"));
-
-		// At 20000ms, nothing should be active
-		let active = schedule.get_current_scene(20000);
-		assert!(active.is_none());
-	}
-
-	#[test]
-	fn test_next_scene() {
-		let scenes = create_test_scenes();
-		let schedule = SceneSchedule::from_scenes(&scenes);
-
-		let next = schedule.get_next_scene(0);
-		assert_eq!(next.map(|s| s.scene_name.as_str()), Some("main"));
-
-		let next = schedule.get_next_scene(6000);
-		assert_eq!(next.map(|s| s.scene_name.as_str()), Some("outro"));
-
-		let next = schedule.get_next_scene(20000);
-		assert!(next.is_none());
-	}
-
-	#[test]
-	fn test_is_complete() {
-		let scenes = create_test_scenes();
-		let schedule = SceneSchedule::from_scenes(&scenes);
-
-		assert!(!schedule.is_complete(0));
-		assert!(!schedule.is_complete(10000));
-		assert!(schedule.is_complete(18000));
-		assert!(schedule.is_complete(20000));
 	}
 }

@@ -80,8 +80,6 @@ impl OrchestratorService {
 
 	/// Process a specific orchestrator command
 	async fn handle_tick_command(&self, stream_id: StreamId, cmd: TickCommand) -> Result<(), Box<dyn std::error::Error>> {
-		info!("Handling tick command for stream {}: {:?}", stream_id, cmd);
-
 		match cmd {
 			TickCommand::Start(config_opt) => {
 				info!("Start command received for stream {}", stream_id);

@@ -63,7 +63,7 @@ impl WebSocketFsm {
 		}
 
 		// Send confirmation to client
-		self.send_subscription_ack(ws_tx, conn_key, event_types).await
+		// self.send_subscription_ack(ws_tx, conn_key, event_types).await
 	}
 
 	/// Handle unsubscribe request - remove event type subscriptions
@@ -83,20 +83,20 @@ impl WebSocketFsm {
 		self.send_unsubscription_ack(ws_tx, conn_key, event_types).await
 	}
 
-	/// Send subscription acknowledgment to client
-	async fn send_subscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
-		let ack = Event::System(SystemEvent::ConnectionStateChanged {
-			connection_id: conn_key.to_owned(),
-			from: "subscribed".to_owned(),
-			to: "subscribed".to_owned(),
-			metadata: serde_json::json!({
-				"subscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
-			}),
-		});
+	// /// Send subscription acknowledgment to client
+	// async fn send_subscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {
+	// 	let ack = Event::System(SystemEvent::ConnectionStateChanged {
+	// 		connection_id: conn_key.to_owned(),
+	// 		from: "subscribed".to_owned(),
+	// 		to: "subscribed".to_owned(),
+	// 		metadata: serde_json::json!({
+	// 			"subscribed": event_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(),
+	// 		}),
+	// 	});
 
-		let context = "subscription_ack";
-		ws_tx.send_graceful(ack, context);
-	}
+	// 	let context = "subscription_ack";
+	// 	ws_tx.send_graceful(ack, context);
+	// }
 
 	/// Send unsubscription acknowledgment to client
 	async fn send_unsubscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) {

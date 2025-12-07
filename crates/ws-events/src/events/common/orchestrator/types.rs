@@ -1,3 +1,4 @@
+use super::schedule::SceneMetadata;
 use serde::{Deserialize, Serialize};
 
 /// Time in milliseconds
@@ -11,6 +12,8 @@ pub type SceneId = String;
 pub struct SceneConfig {
 	pub scene_name: String,
 	pub duration: TimeMs,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub metadata: Option<SceneMetadata>,
 }
 
 impl SceneConfig {
@@ -18,7 +21,13 @@ impl SceneConfig {
 		Self {
 			scene_name: scene_name.into(),
 			duration,
+			metadata: None,
 		}
+	}
+
+	pub fn with_metadata(mut self, metadata: SceneMetadata) -> Self {
+		self.metadata = Some(metadata);
+		self
 	}
 
 	pub fn id(&self) -> SceneId {

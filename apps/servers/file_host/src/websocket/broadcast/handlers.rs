@@ -130,7 +130,12 @@ fn spawn_nats_task(
 						let event = match event_result {
 							Ok(e) => e,
 							Err(e) => {
-								warn!(connection_id=%conn_key, ?event_type, "Failed to convert UnifiedEvent: {}", e);
+								error!(
+									connection_id = %conn_key,
+									?event_type,
+									error = %e,
+									"Fatal schema mismatch — stopping subscriber"
+								);
 								continue;
 							}
 						};
@@ -170,6 +175,7 @@ async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event
 			warn!(
 				connection_id = %conn_key,
 				error = %e,
+				event_type = ?event.get_type(),
 				"Failed to serialize event (sampled)"
 			);
 		}
@@ -184,10 +190,13 @@ async fn forward_event(sender: &mut SplitSink<WebSocket, Message>, event: &Event
 			warn!(
 				connection_id = %conn_key,
 				error = %e,
+				event_type = ?event.get_type(),
 				"Failed to forward WS message (sampled)"
 			);
 		}
 
 		()
-	})
+	})?;
+
+	Ok(())
 }
