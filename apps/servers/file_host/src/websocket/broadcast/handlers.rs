@@ -27,7 +27,7 @@ pub(crate) fn spawn_event_forwarder(
 ) -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		// send ping every 30s
-		let mut ping_interval = interval(Duration::from_secs(30));
+		let mut ping_interval = interval(Duration::from_secs(50));
 		// Per-event bounded channels
 		let (obs_tx, mut obs_rx) = mpsc::channel::<Event>(10);
 		let (tab_tx, mut tab_rx) = mpsc::channel::<Event>(100);

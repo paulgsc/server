@@ -21,14 +21,13 @@ pub(crate) async fn process_incoming_messages(
 ) -> u64 {
 	let mut message_count = 0u64;
 
-	// Heartbeat tracking
-	let last_activity = Instant::now();
 	let mut stale_check_interval = interval(Duration::from_secs(30));
 	let stale_timeout = Duration::from_secs(120);
 
+	let store = state.store.clone();
+
 	loop {
 		tokio::select! {
-			// Listen for cancellation signal
 			_ = cancel_token.cancelled() => {
 				info!(
 					connection_id = %conn_key,
@@ -38,30 +37,84 @@ pub(crate) async fn process_incoming_messages(
 				break;
 			}
 
-			// Periodic stale connection check
 			_ = stale_check_interval.tick() => {
-				let inactive_duration = Instant::now().duration_since(last_activity);
-				if inactive_duration > stale_timeout {
-					warn!(
+				let Some(handle) = store.get(conn_key) else {
+					debug!(
 						connection_id = %conn_key,
-						inactive_seconds = inactive_duration.as_secs(),
-						"Connection is stale - closing"
+						"Connection actor missing during stale check - closing"
 					);
-					let _ = state.remove_connection(conn_key, "Stale connection - no activity".to_string()).await;
 					break;
+				};
+
+				match handle.get_state().await {
+					Ok(state_snapshot) => {
+						let inactive = Instant::now()
+							.duration_since(state_snapshot.last_activity);
+
+						if inactive > stale_timeout {
+							warn!(
+								connection_id = %conn_key,
+								inactive_seconds = inactive.as_secs(),
+								"Connection is stale - closing"
+							);
+
+							let _ = state
+								.remove_connection(
+									conn_key,
+									"Stale connection - no inbound activity".to_string(),
+								)
+								.await;
+							break;
+						}
+					}
+					Err(e) => {
+						warn!(
+							connection_id = %conn_key,
+							error = ?e,
+							"Failed to fetch connection state - closing"
+						);
+						break;
+					}
 				}
 			}
 
-			// Process incoming messages
 			result = receiver.next() => {
 				match result {
 					Some(Ok(msg)) => {
 						message_count += 1;
-						// Handle the message; break on close
-						if handle_websocket_message(msg, state, transport.clone(), ws_tx.clone(), conn_key ).await.is_err() {
+
+						let Some(handle) = store.get(conn_key) else {
+							debug!(
+								connection_id = %conn_key,
+								"Connection actor missing on inbound frame"
+							);
+							break;
+						};
+
+						if let Err(e) = handle.record_activity().await {
+							warn!(
+								connection_id = %conn_key,
+								error = ?e,
+								"Failed to record inbound activity - closing"
+							);
+							break;
+						}
+
+						// Maintain message handling semantics
+						if handle_websocket_message(
+							msg,
+							state,
+							transport.clone(),
+							ws_tx.clone(),
+							conn_key
+						)
+							.await
+								.is_err()
+						{
 							break;
 						}
 					}
+
 					Some(Err(e)) => {
 						message_count += 1;
 						error!(
@@ -72,8 +125,8 @@ pub(crate) async fn process_incoming_messages(
 						);
 						break;
 					}
+
 					None => {
-						// Stream ended naturally
 						debug!(
 							connection_id = %conn_key,
 							"WebSocket stream ended"
