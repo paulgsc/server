@@ -43,7 +43,7 @@ pub mod unified_event {
 		#[prost(message, tag = "7")]
 		SystemEvent(SystemEventMessage),
 		#[prost(message, tag = "8")]
-		TickCommand(TickCommandMessage),
+		OrchestratorCommandData(TickCommandMessage),
 		#[prost(message, tag = "9")]
 		OrchestratorState(OrchestratorStateMessage),
 		#[prost(message, tag = "10")]
@@ -92,8 +92,8 @@ impl From<Event> for Option<UnifiedEvent> {
 					})),
 				}
 			}),
-			Event::TickCommand { stream_id, command } => TickCommandMessage::from_tick_command(stream_id, command).ok().map(|msg| UnifiedEvent {
-				event: Some(unified_event::Event::TickCommand(msg)),
+			Event::OrchestratorCommandData { stream_id, command } => TickCommandMessage::from_tick_command(stream_id, command).ok().map(|msg| UnifiedEvent {
+				event: Some(unified_event::Event::OrchestratorCommandData(msg)),
 			}),
 			Event::OrchestratorState { stream_id, state } => OrchestratorStateMessage::from_orchestrator_state(stream_id, &state).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::OrchestratorState(msg)),
@@ -142,7 +142,7 @@ impl From<UnifiedEvent> for Result<Event, String> {
 			Some(unified_event::Event::SystemEvent(msg)) => serde_json::from_slice::<SystemEvent>(&msg.payload)
 				.map(Event::System)
 				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
-			Some(unified_event::Event::TickCommand(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::TickCommand { stream_id, command }),
+			Some(unified_event::Event::OrchestratorCommandData(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::OrchestratorCommandData { stream_id, command }),
 			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|(stream_id, state)| Event::OrchestratorState { stream_id, state }),
 			Some(unified_event::Event::AudioChunk(msg)) => {
 				// Decode bytes back to f32 samples
@@ -176,7 +176,7 @@ impl UnifiedEvent {
 			Some(unified_event::Event::Error(_)) => Some(EventType::Error),
 			Some(unified_event::Event::Utterance(_)) => Some(EventType::Utterance),
 			Some(unified_event::Event::SystemEvent(_)) => Some(EventType::SystemEvent),
-			Some(unified_event::Event::TickCommand(_)) => Some(EventType::TickCommand),
+			Some(unified_event::Event::OrchestratorCommandData(_)) => Some(EventType::OrchestratorCommandData),
 			Some(unified_event::Event::OrchestratorState(_)) => Some(EventType::OrchestratorState),
 			Some(unified_event::Event::AudioChunk(_)) => Some(EventType::AudioChunk),
 			Some(unified_event::Event::Subtitle(_)) => Some(EventType::Subtitle),

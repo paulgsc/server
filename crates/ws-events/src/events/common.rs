@@ -11,7 +11,10 @@ pub use event_type::EventType;
 pub use message::{MessageId, ProcessResult};
 pub use now_playing::NowPlaying;
 use obs_websocket::{ObsCommand, ObsEvent};
-pub use orchestrator::{OrchestratorConfig, OrchestratorState, SceneConfig, SceneSchedule, TickCommand, TimeMs};
+pub use orchestrator::{
+	ActiveLifetime, LifetimeEvent, LifetimeId, LifetimeKind, OrchestratorCommandData, OrchestratorConfigData, OrchestratorEvent, OrchestratorState, Progress, SceneConfigData,
+	SceneId, ScenePayload, StreamStatus, TimeMs, TimedEvent,
+};
 pub use system_events::SystemEvent;
 pub use utterance::{UtteranceMetadata, UtterancePrompt};
 
@@ -48,9 +51,9 @@ pub enum Event {
 	},
 	#[serde(skip)]
 	System(SystemEvent),
-	TickCommand {
+	OrchestratorCommandData {
 		stream_id: String,
-		command: TickCommand,
+		command: OrchestratorCommandData,
 	},
 	OrchestratorState {
 		stream_id: String,
@@ -81,7 +84,7 @@ impl Event {
 			Self::ObsCmd { .. } => Some(EventType::ObsCommand),
 			Self::TabMetaData { .. } => Some(EventType::TabMetaData),
 			Self::Utterance { .. } => Some(EventType::Utterance),
-			Self::TickCommand { .. } => Some(EventType::TickCommand),
+			Self::OrchestratorCommandData { .. } => Some(EventType::OrchestratorCommandData),
 			Self::OrchestratorState { .. } => Some(EventType::OrchestratorState),
 			Self::AudioChunk { .. } => Some(EventType::AudioChunk),
 			Self::Subtitle { .. } => Some(EventType::Subtitle),

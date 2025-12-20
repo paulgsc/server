@@ -1,5 +1,5 @@
 [package]
-name = "ws-events"
+name = "cursorium"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -8,16 +8,16 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-# Core dependencies (always included)
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+smallvec = "1.15.1"
+
+ws-events = { workspace = true }
 
 serde_json = { workspace = true }
-
-prost = { version = "0.14.1" }
-chrono = { version = "0.4" }
-uuid = { version = "1.0", features = ["v4"] }
-obs-websocket = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
+tokio-util = { workspace = true }
+tracing = { version = "0.1" }
 
 [lints]
 workspace = true

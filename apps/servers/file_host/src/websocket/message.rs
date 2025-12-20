@@ -42,7 +42,7 @@ impl WebSocketFsm {
 				let _ = self.broadcast_event(transport, client_message).await;
 			}
 
-			Event::TickCommand { .. } => {
+			Event::OrchestratorCommandData { .. } => {
 				let _ = self.broadcast_event(transport, client_message).await;
 			}
 			_ => {}

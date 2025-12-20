@@ -10,7 +10,7 @@ edition.workspace = true
 [dependencies]
 some-transport = { workspace = true, features = ["nats"] }
 ws-connection = { workspace = true }
-ws-events = { workspace = true, features = ["stream-orch"] }
+ws-events = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
