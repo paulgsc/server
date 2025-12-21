@@ -1,17 +1,13 @@
+use anyhow::Result;
 use orchestrator::OrchestratorService;
 use some_transport::NatsTransport;
 use tracing::Level;
 use ws_events::events::UnifiedEvent;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
 	// Initialize tracing
-	tracing_subscriber::fmt()
-		.with_max_level(Level::INFO)
-		.with_target(true)
-		.with_thread_ids(true)
-		.with_line_number(true)
-		.init();
+	tracing_subscriber::fmt().with_max_level(Level::INFO).with_target(true).with_line_number(true).init();
 
 	tracing::info!("🎬 Starting NATS Orchestrator Service");
 
@@ -19,18 +15,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
 	tracing::info!("📡 Connecting to NATS at {}", nats_url);
 
-	// Create NATS transports using the pooled connection
-	// This ensures all transports share the same underlying NATS connection
+	// Create NATS transport using the pooled connection
 	let transport: NatsTransport<UnifiedEvent> = NatsTransport::connect_pooled(&nats_url).await?;
-
 	tracing::info!("✅ Connected to NATS");
-	tracing::info!("   - Commands: broadcasting on NATS");
-	tracing::info!("   - Subscriptions: broadcasting on NATS");
-	tracing::info!("   - State updates: will publish per-stream");
+	tracing::info!("   - Commands: listening on {}", ws_events::events::EventType::OrchestratorCommandData.subject());
+	tracing::info!("   - State: publishing on {}", ws_events::events::EventType::OrchestratorState.subject());
 
 	let service = OrchestratorService::new(transport);
-
-	tracing::info!("🎯 Service initialized with actor-based subscriber management");
+	tracing::info!("🎯 Service initialized");
 
 	// Setup signal handling for graceful shutdown
 	let service_shutdown = service.clone();
@@ -47,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	});
 
 	tracing::info!("🚀 Orchestrator service running");
-	tracing::info!("   Waiting for commands...");
+	tracing::info!("   Waiting for OrchestratorCommandData events on NATS...");
 
 	// Run the service
 	if let Err(e) = service.run().await {

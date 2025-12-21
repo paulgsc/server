@@ -1217,6 +1217,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "ws-events",
 ]
 
@@ -3933,7 +3934,9 @@ dependencies = [
 name = "orchestrator"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "cursorium",
  "dashmap",
  "futures",
  "prost 0.14.1",

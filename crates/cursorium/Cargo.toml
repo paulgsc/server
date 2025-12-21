@@ -19,5 +19,10 @@ tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tracing = { version = "0.1" }
 
+[dev-dependencies]
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [lints]
 workspace = true
