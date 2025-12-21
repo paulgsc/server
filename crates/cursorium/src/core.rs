@@ -8,7 +8,7 @@ mod timeline;
 
 use ws_events::events::{ActiveLifetime, OrchestratorConfigData, Progress, SceneConfigData, ScenePayload, TimedEvent};
 use ws_events::events::{LifetimeEvent, LifetimeId, LifetimeKind, SceneId, StreamStatus};
-use ws_events::events::{OrchestratorCommandData, OrchestratorEvent, OrchestratorState};
+use ws_events::events::{OrchestratorCommandData, OrchestratorEvent, OrchestratorState, UILayoutIntentData};
 
 pub use config::{OrchestratorConfig, SceneConfig};
 pub use engine::OrchestratorEngine;

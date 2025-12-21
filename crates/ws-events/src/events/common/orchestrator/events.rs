@@ -1,4 +1,4 @@
-use super::{LifetimeId, SceneId, TimeMs};
+use super::{LifetimeId, SceneId, TimeMs, UILayoutIntentData};
 use serde::{Deserialize, Serialize};
 
 /// A temporal event anchored to a specific time
@@ -38,7 +38,9 @@ pub enum LifetimeKind {
 pub struct ScenePayload {
 	pub scene_id: SceneId,
 	pub scene_name: String,
-	pub metadata: Option<serde_json::Value>,
+	pub duration: TimeMs,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub ui: Option<UILayoutIntentData>,
 }
 
 /// Point event payload

@@ -2,7 +2,9 @@
 // Model-locking tests that enforce the FSM transition table
 
 use cursorium::core::*;
+use std::collections::HashMap;
 use std::time::Duration;
+use ws_events::events::{ComponentPlacementData, FocusIntentData, UILayoutIntentData};
 use ws_events::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorState, SceneConfigData};
 
 // ============================================================================
@@ -22,8 +24,8 @@ impl TestEngine {
 		Self { orchestrator }
 	}
 
-	pub async fn configure(&self, config: OrchestratorCommandData) -> Result<()> {
-		self.orchestrator.configure(config).await
+	pub async fn configure(&self, config: OrchestratorConfigData) -> Result<()> {
+		self.orchestrator.configure(OrchestratorCommandData::Configure(config)).await
 	}
 	pub async fn start(&self) -> Result<()> {
 		self.orchestrator.start().await
@@ -57,114 +59,154 @@ impl TestEngine {
 }
 
 // Helper to generate a multi-scene config
-fn test_config(looping: bool) -> OrchestratorCommandData {
-	OrchestratorCommandData::Configure(OrchestratorConfigData {
+fn test_config(looping: bool) -> OrchestratorConfigData {
+	let mut ui_scene_a = HashMap::new();
+	ui_scene_a.insert(
+		"header".to_string(),
+		ComponentPlacementData {
+			registry_key: "HeaderComponent".to_string(),
+			props: Some(serde_json::json!({"title": "Welcome to Scene A"})),
+		},
+	);
+
+	let mut ui_scene_b = HashMap::new();
+	ui_scene_b.insert(
+		"header".to_string(),
+		ComponentPlacementData {
+			registry_key: "HeaderComponent".to_string(),
+			props: Some(serde_json::json!({"title": "Welcome to Scene B"})),
+		},
+	);
+
+	OrchestratorConfigData {
 		scenes: vec![
 			SceneConfigData {
 				scene_name: "A".into(),
 				duration: 1000,
 				start_time: None,
-				metadata: None,
+				ui: Some(UILayoutIntentData {
+					content: ui_scene_a,
+					focus: Some(FocusIntentData {
+						region: "main".to_string(),
+						intensity: 0.8,
+					}),
+				}),
 			},
 			SceneConfigData {
 				scene_name: "B".into(),
-				duration: 1000,
+				duration: 1500,
 				start_time: None,
-				metadata: None,
+				ui: Some(UILayoutIntentData {
+					content: ui_scene_b,
+					focus: Some(FocusIntentData {
+						region: "main".to_string(),
+						intensity: 0.5,
+					}),
+				}),
 			},
 		],
 		tick_interval_ms: 10,
 		loop_scenes: looping,
-	})
+	}
 }
 
+// ============================================================================
+// FSM Transition Tests
+// ============================================================================
+
 #[tokio::test]
-async fn test_fsm_integrity_and_idempotency() {
+async fn test_fsm_transition_guards_and_idempotency() {
 	let engine = TestEngine::new();
 
-	// 1. Unconfigured Invariants
-	assert!(engine.start().await.is_err(), "Cannot start without config");
+	// Unconfigured -> Start should fail
+	assert!(engine.start().await.is_err(), "FSM violation: Start from Unconfigured");
 
 	engine.configure(test_config(false)).await.unwrap();
 
-	// 2. Transition Guarding
+	// Idle -> Start -> Start should fail
 	engine.start().await.unwrap();
-	assert!(engine.start().await.is_err(), "Cannot start while running");
+	assert!(engine.start().await.is_err(), "FSM violation: Start from Running");
 
-	// 3. Idempotency of Pause/Resume
+	// Running -> Pause (idempotent)
 	engine.pause().await.unwrap();
-	assert!(engine.pause().await.is_ok(), "Pause must be idempotent");
+	assert!(engine.pause().await.is_ok(), "FSM violation: Pause not idempotent");
 
+	// Paused -> Resume (idempotent)
 	engine.resume().await.unwrap();
-	assert!(engine.resume().await.is_ok(), "Resume must be idempotent");
+	assert!(engine.resume().await.is_ok(), "FSM violation: Resume not idempotent");
 
-	// 4. Reset vs Stop
+	// Running -> Stop -> Idle
 	engine.stop().await.unwrap();
-	assert!(!engine.state().is_running && engine.state().current_time == 0);
+	let state = engine.state();
+	assert!(!state.is_running, "State violation: is_running after Stop");
+	assert_eq!(state.current_time, 0, "State violation: time not reset after Stop");
+
+	// Idle -> Pause should fail
+	assert!(engine.pause().await.is_err(), "FSM violation: Pause from Idle");
+
+	// Idle -> Resume should fail
+	assert!(engine.resume().await.is_err(), "FSM violation: Resume from Idle");
 }
 
 #[tokio::test]
-async fn test_temporal_reconstruction_on_forced_seek() {
+async fn test_reconfiguration_kills_active_session() {
+	let engine = TestEngine::new();
+	engine.configure(test_config(false)).await.unwrap();
+	engine.start().await.unwrap();
+
+	// Advance into scene A
+	tokio::time::sleep(Duration::from_millis(300)).await;
+
+	let pre_state = engine.state();
+	assert!(pre_state.is_running, "Precondition: should be running");
+	assert!(pre_state.current_time > 0, "Precondition: time should advance");
+
+	// Hot-reconfigure while running - should kill session
+	engine.configure(test_config(false)).await.unwrap();
+
+	let post_state = engine.state();
+	assert!(!post_state.is_running, "Invariant: reconfig must stop engine");
+	assert_eq!(post_state.current_time, 0, "Invariant: reconfig must reset time");
+	assert!(post_state.active_lifetimes.is_empty(), "Invariant: reconfig must clear state");
+}
+
+#[tokio::test]
+async fn test_temporal_reconstruction_via_force_scene() {
 	let engine = TestEngine::new();
 	engine.configure(test_config(false)).await.unwrap();
 
-	// SCENARIO: Seek to Scene B while Idle
-	// This tests if the engine can "catch up" state without actually playing
+	// Force scene while Idle - tests reconstruction without playback
 	engine.force_scene("B").unwrap();
-
-	// Use a small sleep to let the unbuffered command process
 	tokio::time::sleep(Duration::from_millis(50)).await;
 
 	let state = engine.state();
-	assert_eq!(state.current_active_scene.as_deref(), Some("B"));
-	assert!(state.current_time >= 1000, "Time should have jumped to start of Scene B");
-	assert!(!state.is_running, "Seek should not trigger auto-start");
+	assert_eq!(state.current_active_scene.as_deref(), Some("B"), "Invariant: force_scene must activate target scene");
+	assert!(state.current_time >= 1000, "Invariant: force_scene must reconstruct time to scene start");
+	assert!(!state.is_running, "Invariant: force_scene must not auto-start playback");
 }
 
 #[tokio::test]
-async fn test_reconfiguration_mid_stream() {
+async fn test_loop_wrapping_and_cursor_reset() {
 	let engine = TestEngine::new();
-	engine.configure(test_config(false)).await.unwrap();
-	engine.start().await.unwrap();
 
-	// Advance into the middle of the first scene
-	tokio::time::sleep(Duration::from_millis(200)).await;
-
-	// SCENARIO: Hot-reconfigure while running
-	// Invariant: New config must kill the old session and reset to Idle
-	engine.configure(test_config(false)).await.unwrap();
-
-	let state = engine.state();
-	assert_eq!(state.current_time, 0);
-	assert!(!state.is_running, "Engine must stop running after reconfig");
-	assert!(state.active_lifetimes.is_empty(), "State must be purged");
-}
-
-#[tokio::test]
-async fn test_looping_boundary_conditions() {
-	let engine = TestEngine::new();
-	// Set very fast interval for testing
+	// Fast tick for rapid loop testing
 	let mut config = test_config(true);
-	if let OrchestratorCommandData::Configure(ref mut d) = config {
-		d.tick_interval_ms = 1;
-	}
+	config.tick_interval_ms = 1;
 
 	engine.configure(config).await.unwrap();
 	engine.start().await.unwrap();
 
-	// SCENARIO: Cross the finish line
-	// Invariant: If loop_scenes=true, time should wrap and Cursor must reset
-	tokio::time::sleep(Duration::from_millis(2500)).await;
+	// Run past total duration (A:1000ms + B:1500ms = 2500ms)
+	tokio::time::sleep(Duration::from_millis(2700)).await;
 
 	let state = engine.state();
-	assert!(state.current_time < 2000, "Time should have wrapped around");
-	assert!(state.is_running, "Should still be running while looping");
-	// Check if we are back in Scene A or B (depending on exact timing)
-	assert!(state.current_active_scene.is_some());
+	assert!(state.current_time < 2500, "Invariant: loop_scenes must wrap time");
+	assert!(state.is_running, "Invariant: loop_scenes must keep running");
+	assert!(state.current_active_scene.is_some(), "Invariant: loop_scenes must maintain active scene");
 }
 
 #[tokio::test]
-async fn test_skip_behavior_at_terminal_scene() {
+async fn test_skip_at_terminal_scene_boundary() {
 	let engine = TestEngine::new();
 	engine.configure(test_config(false)).await.unwrap();
 	engine.start().await.unwrap();
@@ -173,11 +215,60 @@ async fn test_skip_behavior_at_terminal_scene() {
 	engine.force_scene("B").unwrap();
 	tokio::time::sleep(Duration::from_millis(50)).await;
 
-	// SCENARIO: Skip when there is no "Next"
-	// Invariant: Should handle gracefully (usually a no-op or warning)
-	let result = engine.skip_current_scene();
-	assert!(result.is_ok(), "Skip should not crash if no next scene exists");
+	let pre_scene = engine.state().current_active_scene.clone();
 
-	let state = engine.state();
-	assert_eq!(state.current_active_scene.as_deref(), Some("B"), "Should remain on last scene");
+	// Skip when no next scene exists
+	let result = engine.skip_current_scene();
+	assert!(result.is_ok(), "Invariant: skip at boundary must not panic");
+
+	let post_scene = engine.state().current_active_scene;
+	assert_eq!(pre_scene, post_scene, "Invariant: skip at terminal must be no-op");
+}
+
+#[tokio::test]
+async fn test_pause_resume_preserves_temporal_position() {
+	let engine = TestEngine::new();
+	engine.configure(test_config(false)).await.unwrap();
+	engine.start().await.unwrap();
+
+	// Advance partway through scene A
+	tokio::time::sleep(Duration::from_millis(500)).await;
+
+	let time_before_pause = engine.state().current_time;
+
+	engine.pause().await.unwrap();
+	tokio::time::sleep(Duration::from_millis(300)).await; // Wait while paused
+
+	let time_during_pause = engine.state().current_time;
+	assert!((time_during_pause - time_before_pause).abs() < 100, "Invariant: time must not advance during pause");
+
+	engine.resume().await.unwrap();
+	tokio::time::sleep(Duration::from_millis(200)).await;
+
+	let time_after_resume = engine.state().current_time;
+	assert!(time_after_resume > time_during_pause, "Invariant: time must advance after resume");
+}
+
+#[tokio::test]
+async fn test_reset_clears_state_but_preserves_config() {
+	let engine = TestEngine::new();
+	engine.configure(test_config(false)).await.unwrap();
+	engine.start().await.unwrap();
+
+	// Advance and accumulate state
+	tokio::time::sleep(Duration::from_millis(400)).await;
+
+	let pre_reset = engine.state();
+	assert!(pre_reset.current_time > 0, "Precondition: time advanced");
+	assert!(pre_reset.is_running, "Precondition: running");
+
+	engine.reset().await.unwrap();
+
+	let post_reset = engine.state();
+	assert_eq!(post_reset.current_time, 0, "Invariant: reset clears time");
+	assert!(!post_reset.is_running, "Invariant: reset stops playback");
+	assert!(post_reset.active_lifetimes.is_empty(), "Invariant: reset clears lifetimes");
+
+	// Config should be preserved - can start again
+	assert!(engine.start().await.is_ok(), "Invariant: reset preserves config");
 }

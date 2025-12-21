@@ -38,26 +38,26 @@ async fn demo_parallel_scenes() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Main Camera".to_string(),
 				duration: 5000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({"layer": "video", "priority": 1})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Lower Third".to_string(),
 				duration: 5000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({"layer": "overlay", "priority": 2})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Audio Track".to_string(),
 				duration: 5000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({"layer": "audio", "priority": 3})),
+				ui: None,
 			},
 			// Second wave at t=3000
 			SceneConfigData {
 				scene_name: "Transition Effect".to_string(),
 				duration: 2000,
 				start_time: Some(3000),
-				metadata: Some(serde_json::json!({"layer": "fx"})),
+				ui: None,
 			},
 		],
 		tick_interval_ms: 50,
@@ -123,25 +123,25 @@ async fn demo_overlapping_scenes() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Background".to_string(),
 				duration: 6000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({"type": "background"})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Speaker 1".to_string(),
 				duration: 3000,
 				start_time: Some(500), // Starts 500ms in
-				metadata: Some(serde_json::json!({"speaker": "alice"})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Speaker 2".to_string(),
 				duration: 3000,
 				start_time: Some(2000), // Starts 2s in
-				metadata: Some(serde_json::json!({"speaker": "bob"})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Credits".to_string(),
 				duration: 2000,
 				start_time: Some(4000), // Starts 4s in
-				metadata: Some(serde_json::json!({"type": "credits"})),
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,
@@ -193,10 +193,10 @@ async fn demo_overlapping_scenes() -> Result<(), Box<dyn std::error::Error>> {
 	Ok(())
 }
 
-/// Demo 3: Lifetime tracking and metadata
+/// Demo 3: Lifetime tracking and inspection
 async fn demo_lifetime_tracking() -> Result<(), Box<dyn std::error::Error>> {
 	println!("\n🔍 Demo 3: Active Lifetime Inspection");
-	println!("Deep dive into active_lifetimes structure and metadata\n");
+	println!("Deep dive into active_lifetimes structure\n");
 
 	let config_data = OrchestratorConfigData {
 		scenes: vec![
@@ -204,31 +204,19 @@ async fn demo_lifetime_tracking() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Video Primary".to_string(),
 				duration: 4000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({
-						"layer": "video",
-						"source": "camera_1",
-						"resolution": "1080p"
-				})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Audio Track".to_string(),
 				duration: 4000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({
-						"layer": "audio",
-						"source": "mic_input",
-						"bitrate": "192kbps"
-				})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Overlay Banner".to_string(),
 				duration: 2000,
 				start_time: Some(1000),
-				metadata: Some(serde_json::json!({
-						"layer": "overlay",
-						"position": "bottom",
-						"animation": "slide-in"
-				})),
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,
@@ -241,7 +229,7 @@ async fn demo_lifetime_tracking() -> Result<(), Box<dyn std::error::Error>> {
 	orchestrator.configure(OrchestratorCommandData::Configure(config_data)).await?;
 	orchestrator.start().await?;
 
-	println!("📊 Tracking active lifetimes with metadata:\n");
+	println!("📊 Tracking active lifetimes:\n");
 
 	tokio::spawn(async move {
 		let mut sample_count = 0;
@@ -314,13 +302,13 @@ async fn demo_dynamic_pipeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Intro".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Segment A".to_string(),
 				duration: 2000,
 				start_time: Some(2000),
-				metadata: None,
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,
@@ -342,19 +330,19 @@ async fn demo_dynamic_pipeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Updated Intro".to_string(),
 				duration: 1500,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({"version": 2})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Segment B".to_string(),
 				duration: 1500,
 				start_time: Some(0), // Parallel with intro
-				metadata: Some(serde_json::json!({"layer": "background"})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Outro".to_string(),
 				duration: 1000,
 				start_time: Some(1500),
-				metadata: None,
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,
@@ -382,21 +370,21 @@ async fn demo_sparse_timeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Event 1".to_string(),
 				duration: 1000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			// Gap from t=1000 to t=3000 (N=0 active lifetimes)
 			SceneConfigData {
 				scene_name: "Event 2".to_string(),
 				duration: 1000,
 				start_time: Some(3000),
-				metadata: None,
+				ui: None,
 			},
 			// Gap from t=4000 to t=6000
 			SceneConfigData {
 				scene_name: "Event 3".to_string(),
 				duration: 1000,
 				start_time: Some(6000),
-				metadata: None,
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,
@@ -492,45 +480,33 @@ async fn demo_client_workflow() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Video Layer".to_string(),
 				duration: 10000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({
-						"source": "camera_1",
-						"resolution": "1080p"
-				})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Audio Layer".to_string(),
 				duration: 10000,
 				start_time: Some(0),
-				metadata: Some(serde_json::json!({
-						"source": "microphone",
-						"volume": 0.8
-				})),
+				ui: None,
 			},
 			// Mid-stream overlays
 			SceneConfigData {
 				scene_name: "Lower Third".to_string(),
 				duration: 3000,
 				start_time: Some(2000),
-				metadata: Some(serde_json::json!({
-						"text": "John Doe - Speaker",
-						"style": "modern"
-				})),
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Logo Overlay".to_string(),
 				duration: 8000,
 				start_time: Some(1000),
-				metadata: Some(serde_json::json!({
-						"position": "top-right",
-						"opacity": 0.7
-				})),
+				ui: None,
 			},
 			// Closing
 			SceneConfigData {
 				scene_name: "Fade Out".to_string(),
 				duration: 1000,
 				start_time: Some(9000),
-				metadata: Some(serde_json::json!({"effect": "fade"})),
+				ui: None,
 			},
 		],
 		tick_interval_ms: 50,
@@ -587,57 +563,57 @@ async fn demo_event_density() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Layer1".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Layer2".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Layer3".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Layer4".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "Layer5".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				metadata: None,
+				ui: None,
 			},
 			// Sparse region (t=2000-4000: 1 lifetime)
 			SceneConfigData {
 				scene_name: "Solo".to_string(),
 				duration: 2000,
 				start_time: Some(2000),
-				metadata: None,
+				ui: None,
 			},
 			// Medium density (t=4000-6000: 3 lifetimes)
 			SceneConfigData {
 				scene_name: "MedA".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "MedB".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				metadata: None,
+				ui: None,
 			},
 			SceneConfigData {
 				scene_name: "MedC".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				metadata: None,
+				ui: None,
 			},
 		],
 		tick_interval_ms: 100,

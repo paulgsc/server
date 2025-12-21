@@ -1,14 +1,35 @@
 use super::TimeMs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-/// Configuration data for a scene (entity/transport type)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentPlacementData {
+	pub registry_key: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub props: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FocusIntentData {
+	pub region: String,
+	pub intensity: f64, // 0.0 ..= 1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UILayoutIntentData {
+	pub content: HashMap<String, ComponentPlacementData>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub focus: Option<FocusIntentData>,
+}
+
+/// Scene configuration entity
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneConfigData {
 	pub scene_name: String,
 	pub duration: TimeMs,
 	pub start_time: Option<TimeMs>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub metadata: Option<serde_json::Value>,
+	pub ui: Option<UILayoutIntentData>,
 }
 
 /// Orchestrator configuration data (entity/transport type)

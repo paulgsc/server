@@ -1,16 +1,16 @@
 use super::{LifetimeEvent, LifetimeId, LifetimeKind, OrchestratorEvent, SceneId, ScenePayload, TimeMs, TimedEvent, Timeline};
-use super::{OrchestratorConfigData, SceneConfigData};
+use super::{OrchestratorConfigData, SceneConfigData, UILayoutIntentData};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Scene configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneConfig {
 	pub scene_name: String,
 	pub duration: TimeMs,
 	pub start_time: Option<TimeMs>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub metadata: Option<serde_json::Value>,
+	pub ui: Option<UILayoutIntentData>,
 }
 
 impl SceneConfig {
@@ -19,7 +19,7 @@ impl SceneConfig {
 			scene_name: scene_name.into(),
 			duration,
 			start_time: None,
-			metadata: None,
+			ui: None,
 		}
 	}
 
@@ -28,8 +28,8 @@ impl SceneConfig {
 		self
 	}
 
-	pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
-		self.metadata = Some(metadata);
+	pub fn with_ui(mut self, ui: UILayoutIntentData) -> Self {
+		self.ui = Some(ui);
 		self
 	}
 
@@ -45,7 +45,7 @@ impl From<SceneConfigData> for SceneConfig {
 			scene_name: data.scene_name,
 			duration: data.duration,
 			start_time: data.start_time,
-			metadata: data.metadata,
+			ui: data.ui,
 		}
 	}
 }
@@ -57,7 +57,7 @@ impl From<SceneConfig> for SceneConfigData {
 			scene_name: config.scene_name,
 			duration: config.duration,
 			start_time: config.start_time,
-			metadata: config.metadata,
+			ui: config.ui,
 		}
 	}
 }
@@ -126,7 +126,8 @@ impl OrchestratorConfig {
 					kind: LifetimeKind::Scene(ScenePayload {
 						scene_id: scene.id(),
 						scene_name: scene.scene_name.clone(),
-						metadata: scene.metadata.clone(),
+						ui: scene.ui.clone(),
+						duration: scene.duration.clone(),
 					}),
 				}),
 			});
