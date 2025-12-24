@@ -4,7 +4,7 @@
 use cursorium::core::*;
 use std::collections::HashMap;
 use std::time::Duration;
-use ws_events::events::{ComponentPlacementData, FocusIntentData, UILayoutIntentData};
+use ws_events::events::{ComponentPlacementData, FocusIntentData, PanelIntentData, UILayoutIntentData};
 use ws_events::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorState, SceneConfigData};
 
 // ============================================================================
@@ -60,21 +60,39 @@ impl TestEngine {
 
 // Helper to generate a multi-scene config
 fn test_config(looping: bool) -> OrchestratorConfigData {
-	let mut ui_scene_a = HashMap::new();
-	ui_scene_a.insert(
-		"header".to_string(),
-		ComponentPlacementData {
-			registry_key: "HeaderComponent".to_string(),
-			props: Some(serde_json::json!({"title": "Welcome to Scene A"})),
+	let mut panels_scene_a = HashMap::new();
+	panels_scene_a.insert(
+		"main_panel".to_string(),
+		PanelIntentData {
+			registry_key: "MainPanel".to_string(),
+			props: None,
+			focus: Some(FocusIntentData {
+				region: "main".to_string(),
+				intensity: 0.8,
+			}),
+			children: Some(ComponentPlacementData {
+				registry_key: "HeaderComponent".to_string(),
+				props: Some(serde_json::json!({"title": "Welcome to Scene A"})),
+				duration: 1000,
+			}),
 		},
 	);
 
-	let mut ui_scene_b = HashMap::new();
-	ui_scene_b.insert(
-		"header".to_string(),
-		ComponentPlacementData {
-			registry_key: "HeaderComponent".to_string(),
-			props: Some(serde_json::json!({"title": "Welcome to Scene B"})),
+	let mut panels_scene_b = HashMap::new();
+	panels_scene_b.insert(
+		"main_panel".to_string(),
+		PanelIntentData {
+			registry_key: "MainPanel".to_string(),
+			props: None,
+			focus: Some(FocusIntentData {
+				region: "main".to_string(),
+				intensity: 0.5,
+			}),
+			children: Some(ComponentPlacementData {
+				registry_key: "HeaderComponent".to_string(),
+				props: Some(serde_json::json!({"title": "Welcome to Scene B"})),
+				duration: 1500,
+			}),
 		},
 	);
 
@@ -84,25 +102,13 @@ fn test_config(looping: bool) -> OrchestratorConfigData {
 				scene_name: "A".into(),
 				duration: 1000,
 				start_time: None,
-				ui: Some(UILayoutIntentData {
-					content: ui_scene_a,
-					focus: Some(FocusIntentData {
-						region: "main".to_string(),
-						intensity: 0.8,
-					}),
-				}),
+				ui: Some(UILayoutIntentData { panels: panels_scene_a }),
 			},
 			SceneConfigData {
 				scene_name: "B".into(),
 				duration: 1500,
 				start_time: None,
-				ui: Some(UILayoutIntentData {
-					content: ui_scene_b,
-					focus: Some(FocusIntentData {
-						region: "main".to_string(),
-						intensity: 0.5,
-					}),
-				}),
+				ui: Some(UILayoutIntentData { panels: panels_scene_b }),
 			},
 		],
 		tick_interval_ms: 10,

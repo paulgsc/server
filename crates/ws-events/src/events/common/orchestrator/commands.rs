@@ -7,6 +7,7 @@ pub struct ComponentPlacementData {
 	pub registry_key: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub props: Option<serde_json::Value>,
+	pub duration: TimeMs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,10 +17,19 @@ pub struct FocusIntentData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UILayoutIntentData {
-	pub content: HashMap<String, ComponentPlacementData>,
+pub struct PanelIntentData {
+	pub registry_key: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub props: Option<serde_json::Value>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub focus: Option<FocusIntentData>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub children: Option<ComponentPlacementData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UILayoutIntentData {
+	pub panels: HashMap<String, PanelIntentData>,
 }
 
 /// Scene configuration entity

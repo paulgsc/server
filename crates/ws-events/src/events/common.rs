@@ -13,7 +13,7 @@ pub use now_playing::NowPlaying;
 use obs_websocket::{ObsCommand, ObsEvent};
 pub use orchestrator::{
 	ActiveLifetime, ComponentPlacementData, FocusIntentData, LifetimeEvent, LifetimeId, LifetimeKind, OrchestratorCommandData, OrchestratorConfigData, OrchestratorEvent,
-	OrchestratorState, Progress, SceneConfigData, SceneId, ScenePayload, StreamStatus, TimeMs, TimedEvent, UILayoutIntentData,
+	OrchestratorState, PanelIntentData, Progress, SceneConfigData, SceneId, ScenePayload, StreamStatus, TimeMs, TimedEvent, UILayoutIntentData,
 };
 pub use system_events::SystemEvent;
 pub use utterance::{UtteranceMetadata, UtterancePrompt};

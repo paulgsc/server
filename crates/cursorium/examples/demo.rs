@@ -1,8 +1,9 @@
 use cursorium::core::StreamOrchestrator;
+use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 use tracing::Level;
 use tracing_subscriber;
-use ws_events::events::{OrchestratorCommandData, OrchestratorConfigData, SceneConfigData};
+use ws_events::events::{ComponentPlacementData, FocusIntentData, OrchestratorCommandData, OrchestratorConfigData, PanelIntentData, SceneConfigData, UILayoutIntentData};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +26,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	Ok(())
 }
 
+/// Helper to create a basic UI layout for demos
+fn create_demo_ui(title: &str, duration: i64) -> UILayoutIntentData {
+	let mut panels = HashMap::new();
+	panels.insert(
+		"main".to_string(),
+		PanelIntentData {
+			registry_key: "MainPanel".to_string(),
+			props: None,
+			focus: Some(FocusIntentData {
+				region: "center".to_string(),
+				intensity: 0.8,
+			}),
+			children: Some(ComponentPlacementData {
+				registry_key: "SceneTitle".to_string(),
+				props: Some(serde_json::json!({"title": title})),
+				duration,
+			}),
+		},
+	);
+	UILayoutIntentData { panels }
+}
+
 /// Demo 1: Parallel scenes - multiple events starting at same time
 async fn demo_parallel_scenes() -> Result<(), Box<dyn std::error::Error>> {
 	println!("🎭 Demo 1: Parallel Scene Execution");
@@ -38,13 +61,13 @@ async fn demo_parallel_scenes() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Main Camera".to_string(),
 				duration: 5000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Main Camera", 5000)),
 			},
 			SceneConfigData {
 				scene_name: "Lower Third".to_string(),
 				duration: 5000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Lower Third", 5000)),
 			},
 			SceneConfigData {
 				scene_name: "Audio Track".to_string(),
@@ -57,7 +80,7 @@ async fn demo_parallel_scenes() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Transition Effect".to_string(),
 				duration: 2000,
 				start_time: Some(3000),
-				ui: None,
+				ui: Some(create_demo_ui("Transition Effect", 2000)),
 			},
 		],
 		tick_interval_ms: 50,
@@ -123,25 +146,25 @@ async fn demo_overlapping_scenes() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Background".to_string(),
 				duration: 6000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Background", 6000)),
 			},
 			SceneConfigData {
 				scene_name: "Speaker 1".to_string(),
 				duration: 3000,
 				start_time: Some(500), // Starts 500ms in
-				ui: None,
+				ui: Some(create_demo_ui("Speaker 1", 3000)),
 			},
 			SceneConfigData {
 				scene_name: "Speaker 2".to_string(),
 				duration: 3000,
 				start_time: Some(2000), // Starts 2s in
-				ui: None,
+				ui: Some(create_demo_ui("Speaker 2", 3000)),
 			},
 			SceneConfigData {
 				scene_name: "Credits".to_string(),
 				duration: 2000,
 				start_time: Some(4000), // Starts 4s in
-				ui: None,
+				ui: Some(create_demo_ui("Credits", 2000)),
 			},
 		],
 		tick_interval_ms: 100,
@@ -204,7 +227,7 @@ async fn demo_lifetime_tracking() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Video Primary".to_string(),
 				duration: 4000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Video Primary", 4000)),
 			},
 			SceneConfigData {
 				scene_name: "Audio Track".to_string(),
@@ -216,7 +239,7 @@ async fn demo_lifetime_tracking() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Overlay Banner".to_string(),
 				duration: 2000,
 				start_time: Some(1000),
-				ui: None,
+				ui: Some(create_demo_ui("Overlay Banner", 2000)),
 			},
 		],
 		tick_interval_ms: 100,
@@ -302,13 +325,13 @@ async fn demo_dynamic_pipeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Intro".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Intro", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "Segment A".to_string(),
 				duration: 2000,
 				start_time: Some(2000),
-				ui: None,
+				ui: Some(create_demo_ui("Segment A", 2000)),
 			},
 		],
 		tick_interval_ms: 100,
@@ -330,19 +353,19 @@ async fn demo_dynamic_pipeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Updated Intro".to_string(),
 				duration: 1500,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Updated Intro", 1500)),
 			},
 			SceneConfigData {
 				scene_name: "Segment B".to_string(),
 				duration: 1500,
 				start_time: Some(0), // Parallel with intro
-				ui: None,
+				ui: Some(create_demo_ui("Segment B", 1500)),
 			},
 			SceneConfigData {
 				scene_name: "Outro".to_string(),
 				duration: 1000,
 				start_time: Some(1500),
-				ui: None,
+				ui: Some(create_demo_ui("Outro", 1000)),
 			},
 		],
 		tick_interval_ms: 100,
@@ -370,21 +393,21 @@ async fn demo_sparse_timeline() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Event 1".to_string(),
 				duration: 1000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Event 1", 1000)),
 			},
 			// Gap from t=1000 to t=3000 (N=0 active lifetimes)
 			SceneConfigData {
 				scene_name: "Event 2".to_string(),
 				duration: 1000,
 				start_time: Some(3000),
-				ui: None,
+				ui: Some(create_demo_ui("Event 2", 1000)),
 			},
 			// Gap from t=4000 to t=6000
 			SceneConfigData {
 				scene_name: "Event 3".to_string(),
 				duration: 1000,
 				start_time: Some(6000),
-				ui: None,
+				ui: Some(create_demo_ui("Event 3", 1000)),
 			},
 		],
 		tick_interval_ms: 100,
@@ -480,7 +503,7 @@ async fn demo_client_workflow() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Video Layer".to_string(),
 				duration: 10000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Video Layer", 10000)),
 			},
 			SceneConfigData {
 				scene_name: "Audio Layer".to_string(),
@@ -493,20 +516,20 @@ async fn demo_client_workflow() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Lower Third".to_string(),
 				duration: 3000,
 				start_time: Some(2000),
-				ui: None,
+				ui: Some(create_demo_ui("Lower Third", 3000)),
 			},
 			SceneConfigData {
 				scene_name: "Logo Overlay".to_string(),
 				duration: 8000,
 				start_time: Some(1000),
-				ui: None,
+				ui: Some(create_demo_ui("Logo Overlay", 8000)),
 			},
 			// Closing
 			SceneConfigData {
 				scene_name: "Fade Out".to_string(),
 				duration: 1000,
 				start_time: Some(9000),
-				ui: None,
+				ui: Some(create_demo_ui("Fade Out", 1000)),
 			},
 		],
 		tick_interval_ms: 50,
@@ -563,57 +586,57 @@ async fn demo_event_density() -> Result<(), Box<dyn std::error::Error>> {
 				scene_name: "Layer1".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Layer1", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "Layer2".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Layer2", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "Layer3".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Layer3", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "Layer4".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Layer4", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "Layer5".to_string(),
 				duration: 2000,
 				start_time: Some(0),
-				ui: None,
+				ui: Some(create_demo_ui("Layer5", 2000)),
 			},
 			// Sparse region (t=2000-4000: 1 lifetime)
 			SceneConfigData {
 				scene_name: "Solo".to_string(),
 				duration: 2000,
 				start_time: Some(2000),
-				ui: None,
+				ui: Some(create_demo_ui("Solo", 2000)),
 			},
 			// Medium density (t=4000-6000: 3 lifetimes)
 			SceneConfigData {
 				scene_name: "MedA".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				ui: None,
+				ui: Some(create_demo_ui("MedA", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "MedB".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				ui: None,
+				ui: Some(create_demo_ui("MedB", 2000)),
 			},
 			SceneConfigData {
 				scene_name: "MedC".to_string(),
 				duration: 2000,
 				start_time: Some(4000),
-				ui: None,
+				ui: Some(create_demo_ui("MedC", 2000)),
 			},
 		],
 		tick_interval_ms: 100,
