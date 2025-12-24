@@ -9,8 +9,7 @@ pub struct SceneConfig {
 	pub scene_name: String,
 	pub duration: TimeMs,
 	pub start_time: Option<TimeMs>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub ui: Option<UILayoutIntentData>,
+	pub ui: Vec<UILayoutIntentData>,
 }
 
 impl SceneConfig {
@@ -19,7 +18,7 @@ impl SceneConfig {
 			scene_name: scene_name.into(),
 			duration,
 			start_time: None,
-			ui: None,
+			ui: Vec::new(),
 		}
 	}
 
@@ -28,8 +27,8 @@ impl SceneConfig {
 		self
 	}
 
-	pub fn with_ui(mut self, ui: UILayoutIntentData) -> Self {
-		self.ui = Some(ui);
+	pub fn with_ui(mut self, ui: Vec<UILayoutIntentData>) -> Self {
+		self.ui = ui;
 		self
 	}
 

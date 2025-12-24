@@ -24,7 +24,7 @@ pub struct PanelIntentData {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub focus: Option<FocusIntentData>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub children: Option<ComponentPlacementData>,
+	pub children: Option<Vec<ComponentPlacementData>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,8 +38,7 @@ pub struct SceneConfigData {
 	pub scene_name: String,
 	pub duration: TimeMs,
 	pub start_time: Option<TimeMs>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub ui: Option<UILayoutIntentData>,
+	pub ui: Vec<UILayoutIntentData>,
 }
 
 /// Orchestrator configuration data (entity/transport type)

@@ -65,7 +65,7 @@ impl ManagedOrchestrator {
 				// Not exposed in facade - log warning
 				warn!(
 					"UpdateStreamStatus called but not implemented in facade. \
-                     Consider adding to StreamOrchestrator if needed."
+		     Consider adding to StreamOrchestrator if needed."
 				);
 			}
 		}
@@ -118,23 +118,23 @@ impl OrchestratorService {
 
 		loop {
 			tokio::select! {
-					_ = self.cancel_token.cancelled() => {
-							info!("Orchestrator service shutting down");
-							break;
-					}
-					result = command_rx.recv() => {
-							match result {
-									Ok(unified_event) => {
-											if let Err(e) = self.handle_event(unified_event).await {
-													error!("Error handling event: {:?}", e);
-											}
-									}
-									Err(e) => {
-											error!("Command receiver error: {:?}", e);
-											break;
-									}
+				_ = self.cancel_token.cancelled() => {
+					info!("Orchestrator service shutting down");
+					break;
+				}
+				result = command_rx.recv() => {
+					match result {
+						Ok(unified_event) => {
+							if let Err(e) = self.handle_event(unified_event).await {
+								error!("Error handling event: {:?}", e);
 							}
+						}
+						Err(e) => {
+							error!("Command receiver error: {:?}", e);
+							break;
+						}
 					}
+				}
 			}
 		}
 
@@ -200,33 +200,33 @@ impl OrchestratorService {
 		tokio::spawn(async move {
 			loop {
 				tokio::select! {
-						_ = cancel_token.cancelled() => {
-								info!("State publisher cancelled for stream: {}", stream_id_clone);
-								break;
+					_ = cancel_token.cancelled() => {
+						info!("State publisher cancelled for stream: {}", stream_id_clone);
+						break;
+					}
+					result = state_rx.changed() => {
+						if result.is_err() {
+							info!("State receiver closed for stream: {}", stream_id_clone);
+							break;
 						}
-						result = state_rx.changed() => {
-								if result.is_err() {
-										info!("State receiver closed for stream: {}", stream_id_clone);
-										break;
-								}
 
-								let state = state_rx.borrow().clone();
+						let state = state_rx.borrow().clone();
 
-								let event = Event::OrchestratorState {
-										stream_id: stream_id_clone.clone(),
-										state,
-								};
+						let event = Event::OrchestratorState {
+							stream_id: stream_id_clone.clone(),
+							state,
+						};
 
-								// Convert to UnifiedEvent and publish
-								if let Ok(unified_event) = event.try_into() {
-										let subject = EventType::OrchestratorState.subject();
-										if let Err(e) = transport.send(subject, unified_event).await {
-												error!("Failed to publish state for stream {}: {:?}", stream_id_clone, e);
-										}
-								} else {
-										warn!("Failed to convert OrchestratorState to UnifiedEvent");
-								}
+						// Convert to UnifiedEvent and publish
+						if let Ok(unified_event) = event.try_into() {
+							let subject = EventType::OrchestratorState.subject();
+							if let Err(e) = transport.send_to_subject(subject, unified_event).await {
+								error!("Failed to publish state for stream {}: {:?}", stream_id_clone, e);
+							}
+						} else {
+							warn!("Failed to convert OrchestratorState to UnifiedEvent");
 						}
+					}
 				}
 			}
 

@@ -90,7 +90,17 @@ pub(crate) fn spawn_event_forwarder(
 				}
 				// Send periodic pings to detect dead connections
 				_ = ping_interval.tick() => {
-					if let Err(e) = ws_sender.send(Message::Ping(vec![])).await {
+					let ping_event = Event::Ping;
+					let msg = match serde_json::to_string(&ping_event) {
+						Ok(s) => s,
+						Err(e) => {
+							// Log the error if you want
+							tracing::warn!("Failed to serialize Event::Ping: {e}, falling back to default JSON");
+							// Fallback JSON
+							serde_json::json!({ "type": "ping" }).to_string()
+						}
+					};
+					if let Err(e) = ws_sender.send(Message::Text(msg)).await {
 						warn!("Failed to send ping to {conn_key}: {e} - client disconnected");
 						break;
 					}

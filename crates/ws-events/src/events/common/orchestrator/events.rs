@@ -39,8 +39,7 @@ pub struct ScenePayload {
 	pub scene_id: SceneId,
 	pub scene_name: String,
 	pub duration: TimeMs,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub ui: Option<UILayoutIntentData>,
+	pub ui: Vec<UILayoutIntentData>,
 }
 
 /// Point event payload

@@ -38,11 +38,11 @@ fn create_demo_ui(title: &str, duration: i64) -> UILayoutIntentData {
 				region: "center".to_string(),
 				intensity: 0.8,
 			}),
-			children: Some(ComponentPlacementData {
+			children: Some(vec![ComponentPlacementData {
 				registry_key: "SceneTitle".to_string(),
 				props: Some(serde_json::json!({"title": title})),
 				duration,
-			}),
+			}]),
 		},
 	);
 	UILayoutIntentData { panels }

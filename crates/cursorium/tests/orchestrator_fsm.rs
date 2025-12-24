@@ -70,11 +70,11 @@ fn test_config(looping: bool) -> OrchestratorConfigData {
 				region: "main".to_string(),
 				intensity: 0.8,
 			}),
-			children: Some(ComponentPlacementData {
+			children: Some(vec![ComponentPlacementData {
 				registry_key: "HeaderComponent".to_string(),
 				props: Some(serde_json::json!({"title": "Welcome to Scene A"})),
 				duration: 1000,
-			}),
+			}]),
 		},
 	);
 
@@ -88,11 +88,11 @@ fn test_config(looping: bool) -> OrchestratorConfigData {
 				region: "main".to_string(),
 				intensity: 0.5,
 			}),
-			children: Some(ComponentPlacementData {
+			children: Some(vec![ComponentPlacementData {
 				registry_key: "HeaderComponent".to_string(),
 				props: Some(serde_json::json!({"title": "Welcome to Scene B"})),
 				duration: 1500,
-			}),
+			}]),
 		},
 	);
 
