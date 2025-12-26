@@ -4,19 +4,31 @@ use futures::stream::{SplitStream, StreamExt};
 use some_transport::NatsTransport;
 use tokio::{
 	sync::mpsc::UnboundedSender,
+	task::JoinHandle,
 	time::{interval, Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use ws_events::events::{Event, UnifiedEvent};
 
-/// Process all incoming messages from the WebSocket
-pub(crate) async fn process_incoming_messages(
-	mut receiver: SplitStream<WebSocket>,
-	state: &WebSocketFsm,
+pub(crate) fn spawn_process_incoming_messages(
+	receiver: SplitStream<WebSocket>,
+	state: WebSocketFsm,
 	transport: NatsTransport<UnifiedEvent>,
 	ws_tx: UnboundedSender<Event>,
-	conn_key: &str,
+	conn_key: String,
+	cancel_token: CancellationToken,
+) -> JoinHandle<u64> {
+	tokio::spawn(async move { process_incoming_messages(receiver, state, transport, ws_tx, conn_key, cancel_token).await })
+}
+
+/// Process all incoming messages from the WebSocket
+async fn process_incoming_messages(
+	mut receiver: SplitStream<WebSocket>,
+	state: WebSocketFsm,
+	transport: NatsTransport<UnifiedEvent>,
+	ws_tx: UnboundedSender<Event>,
+	conn_key: String,
 	cancel_token: CancellationToken,
 ) -> u64 {
 	let mut message_count = 0u64;
@@ -38,7 +50,7 @@ pub(crate) async fn process_incoming_messages(
 			}
 
 			_ = stale_check_interval.tick() => {
-				let Some(handle) = store.get(conn_key) else {
+				let Some(handle) = store.get(&conn_key) else {
 					debug!(
 						connection_id = %conn_key,
 						"Connection actor missing during stale check - closing"
@@ -60,7 +72,7 @@ pub(crate) async fn process_incoming_messages(
 
 							let _ = state
 								.remove_connection(
-									conn_key,
+									&conn_key,
 									"Stale connection - no inbound activity".to_string(),
 								)
 								.await;
@@ -83,7 +95,7 @@ pub(crate) async fn process_incoming_messages(
 					Some(Ok(msg)) => {
 						message_count += 1;
 
-						let Some(handle) = store.get(conn_key) else {
+						let Some(handle) = store.get(&conn_key) else {
 							debug!(
 								connection_id = %conn_key,
 								"Connection actor missing on inbound frame"
@@ -103,10 +115,10 @@ pub(crate) async fn process_incoming_messages(
 						// Maintain message handling semantics
 						if handle_websocket_message(
 							msg,
-							state,
+							&state,
 							transport.clone(),
 							ws_tx.clone(),
-							conn_key
+							&conn_key
 						)
 							.await
 								.is_err()

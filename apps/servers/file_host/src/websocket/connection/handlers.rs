@@ -5,7 +5,6 @@ use axum::http::HeaderMap;
 use futures::sink::SinkExt;
 use futures::stream::SplitSink;
 use std::net::SocketAddr;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use ws_events::events::Event;
@@ -35,29 +34,4 @@ pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {
 			"Failed to remove connection during cleanup"
 		);
 	}
-}
-
-pub(crate) async fn cleanup_connection_with_stats(state: &WebSocketFsm, conn_key: &str, message_count: u64, forward_task: JoinHandle<()>) {
-	info!(
-		connection_id = %conn_key,
-		messages_processed = message_count,
-		"Starting connection cleanup"
-	);
-
-	let result = state.remove_connection(conn_key, "Connection closed".to_string()).await;
-
-	if let Err(e) = result {
-		error!(
-			connection_id = %conn_key,
-			error = %e,
-			"Failed to remove connection during cleanup"
-		);
-	}
-
-	forward_task.abort();
-
-	info!(
-		connection_id = %conn_key,
-		"Connection cleanup completed"
-	);
 }

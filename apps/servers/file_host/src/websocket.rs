@@ -11,6 +11,7 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use std::{net::SocketAddr, sync::Arc};
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -24,8 +25,8 @@ pub mod message;
 pub mod shutdown;
 
 use broadcast::spawn_event_forwarder;
-use connection::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
-use message::process_incoming_messages;
+use connection::{clear_connection, establish_connection, send_initial_handshake};
+use message::spawn_process_incoming_messages;
 
 // Enhanced WebSocket FSM with comprehensive observability
 #[derive(Clone)]
@@ -47,6 +48,35 @@ impl WebSocketFsm {
 		AppState: FromRef<S>,
 	{
 		Router::new().route("/ws", get(websocket_handler))
+	}
+}
+
+struct ConnectionCleanup {
+	forward_task: Option<JoinHandle<()>>,
+	message_task: Option<JoinHandle<u64>>,
+
+	forward_cancel: CancellationToken,
+	process_cancel: CancellationToken,
+
+	permit: Option<ConnectionPermit>,
+}
+
+impl Drop for ConnectionCleanup {
+	fn drop(&mut self) {
+		self.forward_cancel.cancel();
+		self.process_cancel.cancel();
+
+		if let Some(task) = self.forward_task.take() {
+			task.abort();
+		}
+
+		if let Some(task) = self.message_task.take() {
+			task.abort();
+		}
+
+		if let Some(permit) = self.permit.take() {
+			permit.release();
+		}
 	}
 }
 
@@ -106,12 +136,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, headers: HeaderMap, a
 	let forward_cancel = cancel_token.child_token().clone();
 	let process_cancel = cancel_token.child_token().clone();
 
-	let forward_task = spawn_event_forwarder(sender, ws_rx, ws_fsm.clone(), transport.clone(), conn_key.clone(), forward_cancel);
+	let forward_task = spawn_event_forwarder(sender, ws_rx, ws_fsm.clone(), transport.clone(), conn_key.clone(), forward_cancel.clone());
 
-	let message_count = process_incoming_messages(receiver, &ws_fsm, transport.clone(), ws_tx.clone(), &conn_key, process_cancel).await;
+	let message_task = spawn_process_incoming_messages(receiver, ws_fsm.clone(), transport.clone(), ws_tx.clone(), conn_key.clone(), process_cancel.clone());
 
-	cleanup_connection_with_stats(&ws_fsm, &conn_key, message_count, forward_task).await;
-	permit.release();
+	let mut cleanup = ConnectionCleanup {
+		permit: Some(permit),
+		forward_task: Some(forward_task),
+		message_task: Some(message_task),
+		forward_cancel,
+		process_cancel,
+	};
+
+	tokio::select! {
+		_ = cleanup.forward_task.as_mut().unwrap() => {},
+		_ = cleanup.message_task.as_mut().unwrap() => {},
+		_ = cancel_token.cancelled() => {},
+	}
 }
 
 // Re-export for compatibility

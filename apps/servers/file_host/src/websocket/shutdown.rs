@@ -33,5 +33,9 @@ impl WebSocketFsm {
 		}
 
 		info!("WebSocket shutdown completed - disconnected {} connections", disconnected_count);
+
+		// Give tasks a moment to observe cancellation and clean up
+		// This allows the Drop impl in ConnectionCleanup to run
+		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 	}
 }

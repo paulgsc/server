@@ -12,7 +12,7 @@ pub(crate) mod handlers;
 pub mod instrument;
 
 use errors::ConnectionError;
-pub(crate) use handlers::{cleanup_connection_with_stats, clear_connection, establish_connection, send_initial_handshake};
+pub(crate) use handlers::{clear_connection, establish_connection, send_initial_handshake};
 
 // Connection management operations
 impl WebSocketFsm {

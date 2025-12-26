@@ -6,7 +6,7 @@ use ws_events::events::{Event, EventType, SystemEvent, UnifiedEvent};
 
 pub(crate) mod handlers;
 
-pub(crate) use handlers::process_incoming_messages;
+pub(crate) use handlers::spawn_process_incoming_messages;
 
 impl WebSocketFsm {
 	/// Process a text message from a client

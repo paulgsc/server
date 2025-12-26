@@ -107,10 +107,17 @@ async fn main() -> Result<()> {
 	tracing::info!("Starting cleanup...");
 
 	let cleanup = async {
+		shutdown_token.cancel();
+
+		// Give tasks time to observe cancellation and run Drop cleanup
+		tokio::time::sleep(Duration::from_millis(200)).await;
+
 		app_state.core.shared_db.close().await;
 		tracing::info!("Database closed");
 		app_state.realtime.transport.client().flush().await.ok();
 		tracing::info!("Nats channel closed");
+		app_state.realtime.ws.shutdown().await;
+		tracing::info!("All WebSocket connections cleanup up");
 
 		// Take ownership of OtelGuard for shutdown
 		if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {
