@@ -30,6 +30,7 @@
         ++ (whisperManager.packages or []);
 
       combinedShellHook = ''
+        export CARGO_BUILD_JOBS=3
         ${rustEnv.shellHook or ""}
         ${whisperManager.shellHook or ""}
         echo "🦀 Rust + Whisper environment loaded!"
