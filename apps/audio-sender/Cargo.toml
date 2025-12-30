@@ -1,0 +1,20 @@
+[package]
+name = "audio-sender"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+anyhow = { workspace = true }
+cpal = "0.16.0"
+ws-events.workspace = true
+some-transport = { workspace = true, features = ["nats"] }
+prost = "0.14.1"
+atty = "0.2.14"
+
+[lints]
+workspace = true

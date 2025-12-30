@@ -1,5 +1,3 @@
-#![cfg(feature = "inmem")]
-
 use crate::error::Result;
 use async_trait::async_trait;
 use std::marker::PhantomData;
@@ -9,6 +7,25 @@ use std::marker::PhantomData;
 /// This struct provides a unified interface around various message receivers
 /// (in-memory, NATS, Redis streams, etc.), as long as they implement
 /// [`ReceiverTrait`].
+///
+/// # Example
+/// ```rust,no_run
+/// use some_transport::{TransportReceiver, ReceiverTrait};
+/// # use bincode::{Encode, Decode};
+/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+/// # pub struct MyEvent {};
+///
+/// async fn handle_messages<R>(mut rx: TransportReceiver<MyEvent, R>)
+/// where
+///     R: ReceiverTrait<MyEvent> + Send + 'static,
+/// {
+///     while let Ok(event) = rx.recv().await {
+///         println!("Received: {:?}", event);
+///     }
+/// }
+/// ```
+
+#[derive(Clone)]
 pub struct TransportReceiver<E, R>
 where
 	E: Clone + Send + Sync + 'static,
@@ -24,6 +41,7 @@ where
 	R: ReceiverTrait<E> + Send + 'static,
 {
 	/// Creates a new `TransportReceiver` from a type implementing [`ReceiverTrait`].
+	#[inline]
 	pub fn new(receiver: R) -> Self {
 		Self {
 			inner: receiver,
@@ -32,13 +50,33 @@ where
 	}
 
 	/// Receives a message asynchronously, waiting until one is available.
+	#[inline]
 	pub async fn recv(&mut self) -> Result<E> {
 		self.inner.recv().await
 	}
 
 	/// Attempts to receive a message without blocking.
+	#[inline]
 	pub fn try_recv(&mut self) -> Result<E> {
 		self.inner.try_recv()
+	}
+
+	/// Consumes the wrapper and returns the inner receiver.
+	#[inline]
+	pub fn into_inner(self) -> R {
+		self.inner
+	}
+
+	/// Returns a reference to the inner receiver.
+	#[inline]
+	pub fn inner(&self) -> &R {
+		&self.inner
+	}
+
+	/// Returns a mutable reference to the inner receiver.
+	#[inline]
+	pub fn inner_mut(&mut self) -> &mut R {
+		&mut self.inner
 	}
 }
 
@@ -49,51 +87,48 @@ where
 ///
 /// Implementors should define how messages are received asynchronously
 /// (`recv`) and non-blockingly (`try_recv`).
+///
+/// # Example Implementation
+/// ```rust,no_run
+/// use async_trait::async_trait;
+/// use some_transport::receiver::ReceiverTrait;
+/// use some_transport::error::Result;
+/// # use bincode::{Encode, Decode};
+///
+/// # #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+/// # pub struct MyEvent {};
+///
+/// struct MyReceiver {
+///     // ... implementation details
+/// }
+///
+/// #[async_trait]
+/// impl ReceiverTrait<MyEvent> for MyReceiver {
+///     async fn recv(&mut self) -> Result<MyEvent> {
+///         // Wait for next message
+///         todo!()
+///     }
+///
+///     fn try_recv(&mut self) -> Result<MyEvent> {
+///         // Try to receive without blocking
+///         todo!()
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait ReceiverTrait<E>: Send
 where
 	E: Clone + Send + Sync + 'static,
 {
 	/// Waits for and receives the next message.
+	///
+	/// This is an async method that will await until a message is available
+	/// or the channel is closed.
 	async fn recv(&mut self) -> Result<E>;
 
 	/// Attempts to receive a message immediately.
+	///
+	/// Returns immediately with either a message or an error indicating
+	/// the channel is empty, closed, or overflowed.
 	fn try_recv(&mut self) -> Result<E>;
 }
-
-#[cfg(feature = "inmem")]
-mod inmem_impl {
-	use super::*;
-	use crate::error::TransportError;
-	use async_broadcast::{Receiver, RecvError, TryRecvError};
-
-	/// In-memory receiver implementation using `async_broadcast`.
-	#[derive(Clone)]
-	pub struct InMemReceiver<E>(pub Receiver<E>);
-
-	#[async_trait]
-	impl<E> ReceiverTrait<E> for InMemReceiver<E>
-	where
-		E: Clone + Send + Sync + 'static,
-	{
-		async fn recv(&mut self) -> Result<E> {
-			match self.0.recv().await {
-				Ok(event) => Ok(event),
-				Err(RecvError::Closed) => Err(TransportError::Closed),
-				Err(RecvError::Overflowed(n)) => Err(TransportError::Overflowed(n)),
-			}
-		}
-
-		fn try_recv(&mut self) -> Result<E> {
-			match self.0.try_recv() {
-				Ok(event) => Ok(event),
-				Err(TryRecvError::Closed) => Err(TransportError::Closed),
-				Err(TryRecvError::Overflowed(n)) => Err(TransportError::Overflowed(n)),
-				Err(TryRecvError::Empty) => Err(TransportError::Other("Channel empty".into())),
-			}
-		}
-	}
-}
-
-#[cfg(feature = "inmem")]
-pub use inmem_impl::InMemReceiver;

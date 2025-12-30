@@ -1,0 +1,64 @@
+[package]
+name = "file_host"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+# path crates
+sdk  = { workspace = true }
+gsheet_derive  = { workspace = true }
+enum-name-derive  = { workspace = true }
+obs-websocket  = { workspace = true }
+mood_event  = { workspace = true }
+some-services  = { workspace = true }
+ws-connection  = { workspace = true }
+ws-conn-manager  = { workspace = true }
+some-transport  = { workspace = true , features = ["nats", "mpsc_utils"] }
+ws-events  = { workspace = true }
+
+axum = { workspace = true , features = ["ws"]}
+anyhow = { workspace = true }
+bytes = { version = "1.10.1" }
+clap = { workspace = true }
+dotenv = { workspace = true }
+garde = { version =  "0.22.0", features = ["full"] }
+log = "0.4.14"
+lazy_static = { workspace = true }
+futures = { workspace = true }
+prometheus = { workspace = true }
+redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+regex = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true , features = ["limit", "load-shed"] }
+tower-http = { workspace = true, features = ["fs", "limit"] }
+polars = { version =  "0.46.0", features = ["lazy"] }
+tokio-stream = "0.1.17"
+dashmap = "6.1.0"
+hex = "0.4.3"
+flate2 = "1.1.2"
+moka = { version =  "0.12.10", features = ["future", "sync"] }
+sha2 = "0.10.9"
+uuid = "1.18.0"
+chrono.workspace = true
+tokio-util = { workspace = true }
+reqwest = { version =  "0.12.23", features = ["json"] }
+rand = "0.9.2"
+
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry", "tracing-log" ] }
+tracing-opentelemetry = { workspace = true }
+
+
+[lints]
+workspace = true

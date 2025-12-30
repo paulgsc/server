@@ -55,10 +55,12 @@ tsconfig.tsbuildinfo
 # DATABASE
 *.db
 *.db-*
+.sqlx
 
 
 # google api services
 client_secret_file.json
+*secret*
 
 # Docker volumes and data
 prometheus_data/

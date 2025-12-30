@@ -1,5 +1,5 @@
-use crate::messages::types::*;
 use crate::messages::{JsonExtractor, ObsMessagesError};
+use crate::types::*;
 use serde_json::Value;
 use tracing::{trace, warn};
 

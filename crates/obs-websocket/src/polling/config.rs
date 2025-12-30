@@ -1,5 +1,5 @@
-use crate::messages::ObsRequestType;
 use crate::polling::{ObsRequestBuilder, PollingError};
+use crate::types::ObsRequestType;
 
 type Result<T> = std::result::Result<Option<T>, PollingError>;
 type VResult<T> = std::result::Result<Vec<T>, PollingError>;

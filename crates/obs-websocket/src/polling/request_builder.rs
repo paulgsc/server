@@ -1,5 +1,5 @@
-use crate::messages::types::*;
 use crate::polling::PollingError;
+use crate::types::*;
 use serde::Serialize;
 use uuid::Uuid;
 

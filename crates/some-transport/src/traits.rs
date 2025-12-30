@@ -1,5 +1,3 @@
-#![cfg(feature = "inmem")]
-
 use crate::error::Result;
 
 /// Core transport interface that all implementations must satisfy.
@@ -26,8 +24,14 @@ where
 	/// Returns the number of receivers that successfully received it.
 	async fn broadcast(&self, event: E) -> Result<usize>;
 
+	/// Sends an event to Nats based on passed subject.
+	async fn send_to_subject(&self, subject: &str, event: E) -> Result<()>;
+
+	/// Sends an event to Nats based on passed subject.
+	async fn subscribe_to_subject(&self, subject: &str) -> Self::Receiver;
+
 	/// Subscribes to the global transport event stream.
-	fn subscribe(&self) -> Self::Receiver;
+	async fn subscribe(&self) -> Self::Receiver;
 
 	/// Returns the total number of active receivers.
 	fn total_receivers(&self) -> usize;

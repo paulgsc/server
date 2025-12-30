@@ -1,0 +1,27 @@
+services:
+  orchestrator:
+    image: pgathondu/orchestrator:latest
+    container_name: orchestrator-service
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      RUST_BACKTRACE: "1"
+      TOKIO_WORKER_THREADS: ${TOKIO_WORKER_THREADS:-4}
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_started
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 100
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+          pids: 100
+        reservations:
+          cpus: "0.25"
+          memory: 256M

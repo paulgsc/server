@@ -1,5 +1,5 @@
-use crate::core::{InternalCommand, ObsCommand};
-use crate::{ObsConfig, ObsEvent};
+use crate::core::InternalCommand;
+use crate::{ObsCommand, ObsConfig, ObsEvent};
 use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};

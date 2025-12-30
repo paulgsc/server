@@ -1,0 +1,76 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+rule_files:
+# - 'first_rules.yml'
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+  # Axum server metrics
+  - job_name: 'file_host'
+    static_configs:
+      - targets: ['file-host-server:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+  # Redis metrics via exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    scrape_interval: 10s
+  # NATS metrics via exporter
+  - job_name: 'nats'
+    static_configs:
+      - targets: ['nats-exporter:7777']
+    scrape_interval: 10s
+  # Node / system metrics
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node_exporter:9100']
+  # Process-level metrics
+  - job_name: 'process_exporter'
+    static_configs:
+      - targets: ['process-exporter:9256']
+  # Container-level metrics
+  - job_name: 'otel-collector'
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['localhost:4318']
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+  # Blackbox Exporter - TCP probe
+  - job_name: 'websocket_blackbox_tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - file-host-server:3000
+        labels:
+          service: 'file-host'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: instance
+        source_labels: [__param_target]
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+  # Blackbox Exporter - HTTP / WS probe
+  - job_name: 'websocket_blackbox_http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://file-host-server:3000/ws
+        labels:
+          service: 'file-host'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: instance
+        source_labels: [__param_target]
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

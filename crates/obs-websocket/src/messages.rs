@@ -3,7 +3,6 @@ mod error;
 mod extractor;
 mod parsers;
 mod processor;
-pub mod types;
 
 use futures_util::{sink::SinkExt, stream::SplitSink};
 use serde_json::json;
@@ -15,12 +14,12 @@ use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, Ma
 use tracing::{error, instrument, trace};
 
 // Assume these are imported from your types module
+use crate::types::*;
 use config::InitializationConfig;
 use error::ObsMessagesError;
 use extractor::JsonExtractor;
 use parsers::{EventMessageParser, HelloMessageParser, ResponseMessageParser};
 use processor::ObsMessageProcessor;
-pub use types::*;
 
 type Result<T> = std::result::Result<T, ObsMessagesError>;
 type WebSocketSink = SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>;

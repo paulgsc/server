@@ -23,5 +23,3 @@ pub enum ConnectionError {
 	#[error("subscription error: {0}")]
 	Subscription(String),
 }
-
-

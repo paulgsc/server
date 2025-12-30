@@ -8,20 +8,28 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-broadcast = "0.7.2"
+async-broadcast = { version =  "0.7.2", optional = true }
 async-trait.workspace = true
-dashmap = "6.1.0"
+dashmap = { version =  "6.1.0", optional = true }
 thiserror.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 serde_json = { workspace = true, optional = true }
 async-nats = { version = "0.44.2", optional = true }
+tokio  = { workspace = true, optional = true, features = ["sync", "time"] }
+futures = { version = "0.3", optional = true }
+prost = { version = "0.14.1", optional = true }
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
 
 [lints]
 workspace = true
 
 [features]
 default = []              # features enabled by default
-inmem = []            # simple feature, nothing else enabled
-nats = ["dep:async-nats", "dep:serde_json"]
+inmem = ["async-broadcast", "dashmap"]
+nats = ["async-nats", "serde", "dashmap", "tokio/sync", "tokio/time", "futures", "prost"]
+mpsc_utils = ["tokio/sync", "tracing"]
 
