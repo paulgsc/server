@@ -26,6 +26,11 @@ use super::{ActiveLifetime, LifetimeEvent, OrchestratorEvent, OrchestratorState,
 ///    - `calculate_current_time()` derives time from system clock
 ///    - State reconstruction uses event timestamps as source of truth
 ///
+/// 4. **Mode represents lifecycle state**
+///    - `mode` is the orchestrator's FSM state (Unconfigured, Idle, Running, etc.)
+///    - Mode transitions are explicit and controlled by command handlers
+///    - Terminal modes (Finished, Stopped, Error) require cleanup
+///
 /// ## Event Ordering Considerations
 ///
 /// **Current Limitation**: Events at the same timestamp (`at`) have no guaranteed order.
@@ -62,6 +67,7 @@ use super::{ActiveLifetime, LifetimeEvent, OrchestratorEvent, OrchestratorState,
 /// - Track `active_lifetimes` as a **set**, indexed by `id`
 /// - Detect scene changes via **set difference**, not scalar comparison
 /// - Use `current_active_scene` only as a UI hint, not structural truth
+/// - Check `mode` to determine if orchestrator is active, terminal, etc.
 ///
 /// Example (TypeScript):
 /// ```typescript,ignore
@@ -72,6 +78,10 @@ use super::{ActiveLifetime, LifetimeEvent, OrchestratorEvent, OrchestratorState,
 /// const prevScenes = new Set(extractSceneIds(prev.lifetimes))
 /// const nextScenes = new Set(extractSceneIds(next.lifetimes))
 /// const sceneChanged = !setEquals(prevScenes, nextScenes)
+///
+/// // Check mode instead of boolean flags
+/// const isActive = next.mode === "Running"
+/// const needsCleanup = ["Finished", "Stopped", "Error"].includes(next.mode)
 /// ```
 pub(crate) struct EngineState {
 	// Observable state

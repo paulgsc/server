@@ -1,6 +1,7 @@
 mod common;
 mod unified;
 
+pub use common::OrchestratorMode;
 pub use common::{ActiveLifetime, LifetimeEvent, LifetimeId, LifetimeKind, OrchestratorEvent, Progress, StreamStatus, TimedEvent};
 pub use common::{ComponentPlacementData, FocusIntentData, OrchestratorCommandData, PanelIntentData};
 pub use common::{Event, EventType, MessageId, NowPlaying, OrchestratorState, ProcessResult, UtteranceMetadata, UtterancePrompt};

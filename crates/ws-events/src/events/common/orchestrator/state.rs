@@ -26,22 +26,54 @@ pub struct StreamStatus {
 	pub timecode: String,
 }
 
+/// The orchestrator's lifecycle mode (FSM state)
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrchestratorMode {
+	/// No configuration loaded
+	Unconfigured,
+	/// Configured but not running
+	Idle,
+	/// Actively playing timeline
+	Running,
+	/// Paused during playback
+	Paused,
+	/// Completed naturally (terminal)
+	Finished,
+	/// Stopped by user command (terminal)
+	Stopped,
+	/// Unrecoverable error occurred (terminal)
+	Error,
+}
+
+impl OrchestratorMode {
+	/// Returns true if this mode is terminal (requires cleanup)
+	pub fn is_terminal(&self) -> bool {
+		matches!(self, OrchestratorMode::Finished | OrchestratorMode::Stopped | OrchestratorMode::Error)
+	}
+
+	/// Returns true if this mode allows playback operations
+	pub fn is_active(&self) -> bool {
+		matches!(self, OrchestratorMode::Idle | OrchestratorMode::Running | OrchestratorMode::Paused)
+	}
+}
+
 /// The orchestrator's observable state (immutable snapshot)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorState {
-	pub is_running: bool,
-	pub is_paused: bool,
+	/// Current lifecycle mode
+	pub mode: OrchestratorMode,
+	/// Current playback time
 	pub current_time: TimeMs,
+	/// Total timeline duration
 	pub total_duration: TimeMs,
+	/// Playback progress (0.0 to 1.0)
 	pub progress: Progress,
+	/// Time remaining in timeline
 	pub time_remaining: TimeMs,
-
 	/// Currently active lifetimes (scenes, overlays, etc.)
 	pub active_lifetimes: Vec<ActiveLifetime>,
-
 	/// Current active scene (first active scene lifetime if any)
 	pub current_active_scene: Option<String>,
-
 	/// Stream status
 	pub stream_status: StreamStatus,
 }
@@ -49,8 +81,7 @@ pub struct OrchestratorState {
 impl OrchestratorState {
 	pub fn new(total_duration: TimeMs) -> Self {
 		Self {
-			is_running: false,
-			is_paused: false,
+			mode: OrchestratorMode::Unconfigured,
 			current_time: 0,
 			total_duration,
 			progress: Progress::default(),
@@ -61,8 +92,24 @@ impl OrchestratorState {
 		}
 	}
 
+	/// Returns true if the orchestrator is in a terminal state
+	pub fn is_terminal(&self) -> bool {
+		self.mode.is_terminal()
+	}
+
+	/// Returns true if playback has completed (time reached end)
 	pub fn is_complete(&self) -> bool {
 		self.current_time >= self.total_duration
+	}
+
+	/// Returns true if currently playing
+	pub fn is_running(&self) -> bool {
+		self.mode == OrchestratorMode::Running
+	}
+
+	/// Returns true if paused
+	pub fn is_paused(&self) -> bool {
+		self.mode == OrchestratorMode::Paused
 	}
 
 	pub fn current_timecode(&self) -> Timecode {
@@ -73,8 +120,7 @@ impl OrchestratorState {
 impl Default for OrchestratorState {
 	fn default() -> Self {
 		Self {
-			is_running: false,
-			is_paused: false,
+			mode: OrchestratorMode::Unconfigured,
 			current_time: 0,
 			total_duration: 0,
 			progress: Progress::default(),

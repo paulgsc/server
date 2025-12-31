@@ -6,7 +6,7 @@ mod orchestrator;
 mod state;
 mod timeline;
 
-use ws_events::events::{ActiveLifetime, OrchestratorConfigData, Progress, SceneConfigData, ScenePayload, TimedEvent};
+use ws_events::events::{ActiveLifetime, OrchestratorConfigData, OrchestratorMode, Progress, SceneConfigData, ScenePayload, TimedEvent};
 use ws_events::events::{LifetimeEvent, LifetimeId, LifetimeKind, SceneId, StreamStatus};
 use ws_events::events::{OrchestratorCommandData, OrchestratorEvent, OrchestratorState, UILayoutIntentData};
 
