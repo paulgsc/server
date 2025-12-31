@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 use super::error::{OrchestratorError, Result};
 use super::EngineState;
 use super::{Cursor, LifetimeEvent, LifetimeKind, StreamStatus};
-use super::{OrchestratorCommand, OrchestratorCommandData, OrchestratorConfig, OrchestratorEvent, OrchestratorState, Timeline};
+use super::{OrchestratorCommand, OrchestratorCommandData, OrchestratorConfig, OrchestratorEvent, OrchestratorMode, OrchestratorState, Timeline};
 
 // ============================================================================
 // Session - Owns all timeline-related state
@@ -44,19 +44,10 @@ impl Session {
 // Pure FSM - Returns only the next mode
 // ============================================================================
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum EngineMode {
-	Unconfigured,
-	Idle,
-	Running,
-	Paused,
-}
-
 /// Pure FSM: validates transitions only
-/// Pure FSM: validates transitions only
-fn transition(mode: EngineMode, cmd: &OrchestratorCommand) -> Result<EngineMode> {
-	use EngineMode::*;
+fn transition(mode: OrchestratorMode, cmd: &OrchestratorCommand) -> Result<OrchestratorMode> {
 	use OrchestratorCommand::*;
+	use OrchestratorMode::*;
 
 	Ok(match (mode, cmd) {
 		// Configure always creates session and moves to Idle
@@ -66,24 +57,28 @@ fn transition(mode: EngineMode, cmd: &OrchestratorCommand) -> Result<EngineMode>
 		(Idle, Start { .. }) => Running,
 		(Unconfigured, Start { .. }) => return Err(OrchestratorError::NotConfigured),
 		(Running | Paused, Start { .. }) => return Err(OrchestratorError::AlreadyRunning),
+		(Finished | Stopped | Error, Start { .. }) => return Err(OrchestratorError::TerminalState),
 
 		// Pause only from Running
 		(Running, Pause { .. }) => Paused,
 		(Paused, Pause { .. }) => Paused, // Idempotent
 		(Unconfigured | Idle, Pause { .. }) => return Err(OrchestratorError::NotRunning),
+		(Finished | Stopped | Error, Pause { .. }) => return Err(OrchestratorError::TerminalState),
 
 		// Resume only from Paused
 		(Paused, Resume { .. }) => Running,
 		(Running, Resume { .. }) => Running, // Idempotent
 		(Unconfigured | Idle, Resume { .. }) => return Err(OrchestratorError::NotRunning),
+		(Finished | Stopped | Error, Resume { .. }) => return Err(OrchestratorError::TerminalState),
 
-		// Stop from Running or Paused
-		(Running | Paused, Stop { .. }) => Idle,
-		(Unconfigured | Idle, Stop { .. }) => mode, // Idempotent
+		// Stop from Running or Paused → Terminal Stopped state
+		(Running | Paused, Stop { .. }) => Stopped,
+		(Unconfigured | Idle, Stop { .. }) => mode,        // Idempotent
+		(Finished | Stopped | Error, Stop { .. }) => mode, // Already terminal
 
-		// Reset preserves config, resets time
-		(Idle | Running | Paused, Reset { .. }) => Idle,
-		(Unconfigured, Reset { .. }) => Unconfigured,
+		// Reset from active states → Idle (can recover from terminal states)
+		(Idle | Running | Paused | Finished | Stopped | Error, Reset { .. }) => Idle,
+		(Unconfigured, Reset { .. }) => Unconfigured, // Can't reset without config
 
 		// Non-FSM commands don't affect mode
 		(_, ForceScene(_) | SkipCurrentScene | UpdateStreamStatus { .. }) => mode,
@@ -115,15 +110,17 @@ impl OrchestratorEngine {
 	}
 
 	pub async fn run(self, initial_config: Option<OrchestratorConfig>, mut command_rx: mpsc::UnboundedReceiver<OrchestratorCommand>, cancel: CancellationToken) {
-		let mut mode = EngineMode::Unconfigured;
+		let mut mode = OrchestratorMode::Unconfigured;
 		let mut session: Option<Session> = None;
 
 		// Initialize with config if provided
 		if let Some(cfg) = initial_config {
 			if let Ok(s) = Session::from_config(cfg) {
-				self.state_tx.send_replace(s.engine_state.state.clone());
+				let mut state = s.engine_state.state.clone();
+				state.mode = OrchestratorMode::Idle;
+				self.state_tx.send_replace(state);
 				session = Some(s);
-				mode = EngineMode::Idle;
+				mode = OrchestratorMode::Idle;
 			}
 		}
 
@@ -133,14 +130,14 @@ impl OrchestratorEngine {
 			tokio::select! {
 				// Tick only when Running
 				_ = async {
-					if let (EngineMode::Running, Some(s)) = (mode, &mut session) {
+					if let (OrchestratorMode::Running, Some(s)) = (mode, &mut session) {
 						s.ticker.tick().await;
 					} else {
 						std::future::pending::<()>().await;
 					}
 				} => {
 					if let Some(s) = &mut session {
-						Self::handle_tick(s, &self.state_tx);
+						mode = Self::handle_tick(s, mode, &self.state_tx);
 					}
 				}
 
@@ -151,9 +148,11 @@ impl OrchestratorEngine {
 								match Session::from_config(config_data.clone().into()) {
 									Ok(s) => {
 										session = Some(s);
-										mode = EngineMode::Idle;
+										mode = OrchestratorMode::Idle;
 										if let Some(s) = &session {
-											self.state_tx.send_replace(s.engine_state.state.clone());
+											let mut state = s.engine_state.state.clone();
+											state.mode = mode;
+											self.state_tx.send_replace(state);
 										}
 										info!("Session configured");
 										Ok(())
@@ -209,7 +208,7 @@ impl OrchestratorEngine {
 		}
 	}
 
-	fn handle_tick(session: &mut Session, state_tx: &watch::Sender<OrchestratorState>) {
+	fn handle_tick(session: &mut Session, mode: OrchestratorMode, state_tx: &watch::Sender<OrchestratorState>) -> OrchestratorMode {
 		let current_time = session.engine_state.calculate_current_time();
 
 		// Apply timeline events
@@ -217,8 +216,8 @@ impl OrchestratorEngine {
 
 		session.engine_state.sync_view_state(current_time);
 
-		// Handle completion
-		if session.engine_state.state.is_complete() {
+		// Check for natural completion
+		let new_mode = if session.engine_state.state.is_complete() {
 			if session.loop_scenes {
 				debug!("Looping orchestrator");
 				session.engine_state.start_instant = Some(std::time::Instant::now());
@@ -226,25 +225,30 @@ impl OrchestratorEngine {
 				session.cursor.reset();
 				session.engine_state.active_lifetimes.clear();
 				session.engine_state.sync_view_state(0);
+				OrchestratorMode::Running
 			} else {
-				debug!("Orchestrator complete");
-				session.engine_state.state.is_running = false;
-				session.engine_state.start_instant = None;
+				info!("Orchestrator completed naturally");
+				OrchestratorMode::Finished
 			}
-		}
+		} else {
+			mode
+		};
 
-		state_tx.send_replace(session.engine_state.state.clone());
+		// Update state with current mode
+		let mut state = session.engine_state.state.clone();
+		state.mode = new_mode;
+		state_tx.send_replace(state);
+
+		new_mode
 	}
 
 	/// Apply side effects based on mode transitions
-	fn apply_mode_change(from: EngineMode, to: EngineMode, session: &mut Option<Session>, state_tx: &watch::Sender<OrchestratorState>) {
+	fn apply_mode_change(from: OrchestratorMode, to: OrchestratorMode, session: &mut Option<Session>, state_tx: &watch::Sender<OrchestratorState>) {
 		let Some(s) = session else { return };
 
 		match (from, to) {
 			// Starting playback
-			(EngineMode::Idle, EngineMode::Running) => {
-				s.engine_state.state.is_running = true;
-				s.engine_state.state.is_paused = false;
+			(OrchestratorMode::Idle, OrchestratorMode::Running) => {
 				s.engine_state.start_instant = Some(std::time::Instant::now());
 				s.engine_state.paused_at = None;
 				s.engine_state.accumulated_pause_duration = 0;
@@ -252,15 +256,13 @@ impl OrchestratorEngine {
 			}
 
 			// Pausing
-			(EngineMode::Running, EngineMode::Paused) => {
-				s.engine_state.state.is_paused = true;
+			(OrchestratorMode::Running, OrchestratorMode::Paused) => {
 				s.engine_state.paused_at = Some(s.engine_state.state.current_time);
 				info!("Playback paused");
 			}
 
 			// Resuming
-			(EngineMode::Paused, EngineMode::Running) => {
-				s.engine_state.state.is_paused = false;
+			(OrchestratorMode::Paused, OrchestratorMode::Running) => {
 				if let Some(paused_time) = s.engine_state.paused_at {
 					s.engine_state.accumulated_pause_duration += s.engine_state.state.current_time.saturating_sub(paused_time);
 				}
@@ -268,10 +270,15 @@ impl OrchestratorEngine {
 				info!("Playback resumed");
 			}
 
-			// Stopping or resetting to Idle
-			(_, EngineMode::Idle) if from != EngineMode::Idle => {
-				s.engine_state.state.is_running = false;
-				s.engine_state.state.is_paused = false;
+			// Stopping (terminal transition)
+			(OrchestratorMode::Running | OrchestratorMode::Paused, OrchestratorMode::Stopped) => {
+				s.engine_state.start_instant = None;
+				s.engine_state.paused_at = None;
+				info!("Orchestrator stopped by user");
+			}
+
+			// Resetting to Idle
+			(_, OrchestratorMode::Idle) if from != OrchestratorMode::Idle => {
 				s.engine_state.start_instant = None;
 				s.engine_state.paused_at = None;
 				s.engine_state.accumulated_pause_duration = 0;
@@ -284,7 +291,10 @@ impl OrchestratorEngine {
 			_ => {} // No state change needed
 		}
 
-		state_tx.send_replace(s.engine_state.state.clone());
+		// Update state with new mode
+		let mut state = s.engine_state.state.clone();
+		state.mode = to;
+		state_tx.send_replace(state);
 	}
 
 	/// Handle non-FSM operational commands
@@ -306,7 +316,8 @@ impl OrchestratorEngine {
 				if let Some(event) = target_event {
 					let target_time = event.at;
 					s.engine_state.reconstruct_from_start(&mut s.cursor, &s.timeline, target_time);
-					state_tx.send_replace(s.engine_state.state.clone());
+					let state = s.engine_state.state.clone();
+					state_tx.send_replace(state);
 					info!("Forced scene: {}", scene_name);
 				} else {
 					warn!("Scene not found: {}", scene_name);
@@ -321,7 +332,8 @@ impl OrchestratorEngine {
 				if let Some(next) = next_scene {
 					let target_time = next.at;
 					s.engine_state.reconstruct_from_start(&mut s.cursor, &s.timeline, target_time);
-					state_tx.send_replace(s.engine_state.state.clone());
+					let state = s.engine_state.state.clone();
+					state_tx.send_replace(state);
 					info!("Skipped to next scene");
 				} else {
 					warn!("No next scene to skip to");

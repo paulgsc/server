@@ -7,5 +7,5 @@ pub use events::{LifetimeEvent, LifetimeKind, OrchestratorEvent, ScenePayload, T
 
 pub use commands::{ComponentPlacementData, FocusIntentData, PanelIntentData};
 pub use commands::{OrchestratorCommandData, OrchestratorConfigData, SceneConfigData, UILayoutIntentData};
-pub use state::{ActiveLifetime, OrchestratorState, StreamStatus};
+pub use state::{ActiveLifetime, OrchestratorMode, OrchestratorState, StreamStatus};
 pub use types::{LifetimeId, Progress, SceneId, TimeMs, Timecode};

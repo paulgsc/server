@@ -1,4 +1,4 @@
-use crate::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorState};
+use crate::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorMode, OrchestratorState};
 use prost::Message;
 
 /// Prost-compatible OrchestratorCommandData message
@@ -139,24 +139,63 @@ impl TickCommandMessage {
 pub struct OrchestratorStateMessage {
 	#[prost(string, tag = "1")]
 	pub stream_id: String,
-	#[prost(bool, tag = "2")]
-	pub is_running: bool,
-	#[prost(bool, tag = "3")]
-	pub is_paused: bool,
-	#[prost(string, optional, tag = "4")]
-	pub current_active_scene: Option<String>,
+	#[prost(enumeration = "OrchestratorModeProto", tag = "2")]
+	pub mode: i32,
+	#[prost(int64, tag = "3")]
+	pub current_time: i64,
+	#[prost(int64, tag = "4")]
+	pub total_duration: i64,
 	#[prost(double, tag = "5")]
 	pub progress: f64,
 	#[prost(int64, tag = "6")]
-	pub current_time: i64,
-	#[prost(int64, tag = "7")]
 	pub time_remaining: i64,
-	#[prost(int64, tag = "8")]
-	pub total_duration: i64,
+	#[prost(bytes, tag = "7")]
+	pub active_lifetimes_json: Vec<u8>,
+	#[prost(string, optional, tag = "8")]
+	pub current_active_scene: Option<String>,
 	#[prost(bytes, tag = "9")]
 	pub stream_status_json: Vec<u8>,
-	#[prost(bytes, tag = "10")]
-	pub active_lifetimes_json: Vec<u8>,
+}
+
+/// Protobuf enum for OrchestratorMode
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum OrchestratorModeProto {
+	Unconfigured = 0,
+	Idle = 1,
+	Running = 2,
+	Paused = 3,
+	Finished = 4,
+	Stopped = 5,
+	Error = 6,
+}
+
+impl From<OrchestratorMode> for OrchestratorModeProto {
+	fn from(mode: OrchestratorMode) -> Self {
+		match mode {
+			OrchestratorMode::Unconfigured => OrchestratorModeProto::Unconfigured,
+			OrchestratorMode::Idle => OrchestratorModeProto::Idle,
+			OrchestratorMode::Running => OrchestratorModeProto::Running,
+			OrchestratorMode::Paused => OrchestratorModeProto::Paused,
+			OrchestratorMode::Finished => OrchestratorModeProto::Finished,
+			OrchestratorMode::Stopped => OrchestratorModeProto::Stopped,
+			OrchestratorMode::Error => OrchestratorModeProto::Error,
+		}
+	}
+}
+
+impl From<OrchestratorModeProto> for OrchestratorMode {
+	fn from(mode: OrchestratorModeProto) -> Self {
+		match mode {
+			OrchestratorModeProto::Unconfigured => OrchestratorMode::Unconfigured,
+			OrchestratorModeProto::Idle => OrchestratorMode::Idle,
+			OrchestratorModeProto::Running => OrchestratorMode::Running,
+			OrchestratorModeProto::Paused => OrchestratorMode::Paused,
+			OrchestratorModeProto::Finished => OrchestratorMode::Finished,
+			OrchestratorModeProto::Stopped => OrchestratorMode::Stopped,
+			OrchestratorModeProto::Error => OrchestratorMode::Error,
+		}
+	}
 }
 
 impl OrchestratorStateMessage {
@@ -167,15 +206,14 @@ impl OrchestratorStateMessage {
 
 		Ok(Self {
 			stream_id,
-			is_running: state.is_running,
-			is_paused: state.is_paused,
-			current_active_scene: state.current_active_scene.clone(),
-			progress: state.progress.value(),
+			mode: OrchestratorModeProto::from(state.mode) as i32,
 			current_time: state.current_time,
-			time_remaining: state.time_remaining,
 			total_duration: state.total_duration,
-			stream_status_json,
+			progress: state.progress.value(),
+			time_remaining: state.time_remaining,
 			active_lifetimes_json,
+			current_active_scene: state.current_active_scene.clone(),
+			stream_status_json,
 		})
 	}
 
@@ -184,16 +222,17 @@ impl OrchestratorStateMessage {
 
 		let active_lifetimes = serde_json::from_slice(&self.active_lifetimes_json).map_err(|e| format!("Failed to deserialize active_lifetimes: {}", e))?;
 
+		let mode = OrchestratorModeProto::try_from(self.mode).map_err(|_| format!("Invalid mode value: {}", self.mode))?;
+
 		let state = OrchestratorState {
-			is_running: self.is_running,
-			is_paused: self.is_paused,
-			current_active_scene: self.current_active_scene.clone(),
-			progress: self.progress.into(),
+			mode: mode.into(),
 			current_time: self.current_time,
-			time_remaining: self.time_remaining,
 			total_duration: self.total_duration,
-			stream_status,
+			progress: self.progress.into(),
+			time_remaining: self.time_remaining,
 			active_lifetimes,
+			current_active_scene: self.current_active_scene.clone(),
+			stream_status,
 		};
 
 		Ok((self.stream_id.clone(), state))

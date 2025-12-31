@@ -1,11 +1,10 @@
-// tests/fsm_model_tests.rs
 // Model-locking tests that enforce the FSM transition table
 
 use cursorium::core::*;
 use std::collections::HashMap;
 use std::time::Duration;
 use ws_events::events::{ComponentPlacementData, FocusIntentData, PanelIntentData, UILayoutIntentData};
-use ws_events::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorState, SceneConfigData};
+use ws_events::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorMode, OrchestratorState, SceneConfigData};
 
 // ============================================================================
 // Test harness - deterministic engine wrapper
@@ -102,13 +101,13 @@ fn test_config(looping: bool) -> OrchestratorConfigData {
 				scene_name: "A".into(),
 				duration: 1000,
 				start_time: None,
-				ui: Some(UILayoutIntentData { panels: panels_scene_a }),
+				ui: vec![UILayoutIntentData { panels: panels_scene_a }],
 			},
 			SceneConfigData {
 				scene_name: "B".into(),
 				duration: 1500,
 				start_time: None,
-				ui: Some(UILayoutIntentData { panels: panels_scene_b }),
+				ui: vec![UILayoutIntentData { panels: panels_scene_b }],
 			},
 		],
 		tick_interval_ms: 10,
@@ -124,34 +123,111 @@ fn test_config(looping: bool) -> OrchestratorConfigData {
 async fn test_fsm_transition_guards_and_idempotency() {
 	let engine = TestEngine::new();
 
+	// Verify initial state is Unconfigured
+	assert_eq!(engine.state().mode, OrchestratorMode::Unconfigured);
+
 	// Unconfigured -> Start should fail
 	assert!(engine.start().await.is_err(), "FSM violation: Start from Unconfigured");
 
 	engine.configure(test_config(false)).await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle, "Configure should transition to Idle");
 
-	// Idle -> Start -> Start should fail
+	// Idle -> Start -> Running
 	engine.start().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Running, "Start should transition to Running");
+
+	// Running -> Start should fail
 	assert!(engine.start().await.is_err(), "FSM violation: Start from Running");
 
-	// Running -> Pause (idempotent)
+	// Running -> Pause -> Paused (idempotent)
 	engine.pause().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Paused, "Pause should transition to Paused");
 	assert!(engine.pause().await.is_ok(), "FSM violation: Pause not idempotent");
 
-	// Paused -> Resume (idempotent)
+	// Paused -> Resume -> Running (idempotent)
 	engine.resume().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Running, "Resume should transition to Running");
 	assert!(engine.resume().await.is_ok(), "FSM violation: Resume not idempotent");
 
-	// Running -> Stop -> Idle
+	// Running -> Stop -> Stopped (terminal)
 	engine.stop().await.unwrap();
 	let state = engine.state();
-	assert!(!state.is_running, "State violation: is_running after Stop");
+	assert_eq!(state.mode, OrchestratorMode::Stopped, "Stop should transition to Stopped (terminal)");
+	assert!(state.mode.is_terminal(), "Stopped should be a terminal state");
 	assert_eq!(state.current_time, 0, "State violation: time not reset after Stop");
 
-	// Idle -> Pause should fail
-	assert!(engine.pause().await.is_err(), "FSM violation: Pause from Idle");
+	// Terminal -> Pause should fail
+	assert!(engine.pause().await.is_err(), "FSM violation: Pause from terminal state");
 
-	// Idle -> Resume should fail
-	assert!(engine.resume().await.is_err(), "FSM violation: Resume from Idle");
+	// Terminal -> Resume should fail
+	assert!(engine.resume().await.is_err(), "FSM violation: Resume from terminal state");
+
+	// Terminal -> Start should fail
+	assert!(engine.start().await.is_err(), "FSM violation: Start from terminal state");
+
+	// Terminal -> Reset -> Idle (recovery path)
+	engine.reset().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle, "Reset should transition terminal state to Idle");
+
+	// Now we can start again
+	assert!(engine.start().await.is_ok(), "Should be able to start after reset from terminal");
+}
+
+#[tokio::test]
+async fn test_terminal_state_enforcement() {
+	let engine = TestEngine::new();
+	engine.configure(test_config(false)).await.unwrap();
+	engine.start().await.unwrap();
+
+	// Stop to reach terminal state
+	engine.stop().await.unwrap();
+
+	let state = engine.state();
+	assert!(state.is_terminal(), "Stopped should be terminal");
+	assert_eq!(state.mode, OrchestratorMode::Stopped);
+
+	// All commands except Reset and Configure should fail
+	assert!(engine.start().await.is_err(), "Terminal state should reject Start");
+	assert!(engine.pause().await.is_err(), "Terminal state should reject Pause");
+	assert!(engine.resume().await.is_err(), "Terminal state should reject Resume");
+	assert!(engine.stop().await.is_ok(), "Terminal state should accept Stop (idempotent)");
+
+	// Recovery paths should work
+	assert!(engine.reset().await.is_ok(), "Terminal state should accept Reset");
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle);
+
+	// Reconfigure from terminal should also work
+	engine.stop().await.unwrap();
+	assert!(engine.configure(test_config(false)).await.is_ok(), "Terminal state should accept Configure");
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle);
+}
+
+#[tokio::test]
+async fn test_natural_completion_reaches_finished_terminal_state() {
+	let engine = TestEngine::new();
+
+	// Short non-looping config
+	let mut config = test_config(false);
+	config.tick_interval_ms = 1;
+
+	engine.configure(config).await.unwrap();
+	engine.start().await.unwrap();
+
+	// Wait for natural completion (A:1000ms + B:1500ms = 2500ms + margin)
+	tokio::time::sleep(Duration::from_millis(2700)).await;
+
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Finished, "Natural completion should transition to Finished (terminal)");
+	assert!(state.is_terminal(), "Finished should be a terminal state");
+	assert!(state.is_complete(), "Timeline should be complete");
+
+	// Finished is terminal - should reject commands
+	assert!(engine.start().await.is_err(), "Finished state should reject Start");
+	assert!(engine.pause().await.is_err(), "Finished state should reject Pause");
+
+	// Can recover via Reset
+	engine.reset().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle);
 }
 
 #[tokio::test]
@@ -164,14 +240,14 @@ async fn test_reconfiguration_kills_active_session() {
 	tokio::time::sleep(Duration::from_millis(300)).await;
 
 	let pre_state = engine.state();
-	assert!(pre_state.is_running, "Precondition: should be running");
+	assert_eq!(pre_state.mode, OrchestratorMode::Running, "Precondition: should be running");
 	assert!(pre_state.current_time > 0, "Precondition: time should advance");
 
-	// Hot-reconfigure while running - should kill session
+	// Hot-reconfigure while running - should kill session and go to Idle
 	engine.configure(test_config(false)).await.unwrap();
 
 	let post_state = engine.state();
-	assert!(!post_state.is_running, "Invariant: reconfig must stop engine");
+	assert_eq!(post_state.mode, OrchestratorMode::Idle, "Invariant: reconfig must transition to Idle");
 	assert_eq!(post_state.current_time, 0, "Invariant: reconfig must reset time");
 	assert!(post_state.active_lifetimes.is_empty(), "Invariant: reconfig must clear state");
 }
@@ -181,6 +257,9 @@ async fn test_temporal_reconstruction_via_force_scene() {
 	let engine = TestEngine::new();
 	engine.configure(test_config(false)).await.unwrap();
 
+	// Verify we're in Idle
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle);
+
 	// Force scene while Idle - tests reconstruction without playback
 	engine.force_scene("B").unwrap();
 	tokio::time::sleep(Duration::from_millis(50)).await;
@@ -188,11 +267,11 @@ async fn test_temporal_reconstruction_via_force_scene() {
 	let state = engine.state();
 	assert_eq!(state.current_active_scene.as_deref(), Some("B"), "Invariant: force_scene must activate target scene");
 	assert!(state.current_time >= 1000, "Invariant: force_scene must reconstruct time to scene start");
-	assert!(!state.is_running, "Invariant: force_scene must not auto-start playback");
+	assert_eq!(state.mode, OrchestratorMode::Idle, "Invariant: force_scene must not auto-start playback");
 }
 
 #[tokio::test]
-async fn test_loop_wrapping_and_cursor_reset() {
+async fn test_loop_wrapping_prevents_finished_state() {
 	let engine = TestEngine::new();
 
 	// Fast tick for rapid loop testing
@@ -207,8 +286,9 @@ async fn test_loop_wrapping_and_cursor_reset() {
 
 	let state = engine.state();
 	assert!(state.current_time < 2500, "Invariant: loop_scenes must wrap time");
-	assert!(state.is_running, "Invariant: loop_scenes must keep running");
+	assert_eq!(state.mode, OrchestratorMode::Running, "Invariant: loop_scenes must keep Running (not Finished)");
 	assert!(state.current_active_scene.is_some(), "Invariant: loop_scenes must maintain active scene");
+	assert!(!state.is_terminal(), "Invariant: loop_scenes must never reach terminal state");
 }
 
 #[tokio::test]
@@ -222,6 +302,7 @@ async fn test_skip_at_terminal_scene_boundary() {
 	tokio::time::sleep(Duration::from_millis(50)).await;
 
 	let pre_scene = engine.state().current_active_scene.clone();
+	assert_eq!(engine.state().mode, OrchestratorMode::Running);
 
 	// Skip when no next scene exists
 	let result = engine.skip_current_scene();
@@ -229,6 +310,7 @@ async fn test_skip_at_terminal_scene_boundary() {
 
 	let post_scene = engine.state().current_active_scene;
 	assert_eq!(pre_scene, post_scene, "Invariant: skip at terminal must be no-op");
+	assert_eq!(engine.state().mode, OrchestratorMode::Running, "Skip should not change mode");
 }
 
 #[tokio::test]
@@ -241,14 +323,20 @@ async fn test_pause_resume_preserves_temporal_position() {
 	tokio::time::sleep(Duration::from_millis(500)).await;
 
 	let time_before_pause = engine.state().current_time;
+	assert_eq!(engine.state().mode, OrchestratorMode::Running);
 
 	engine.pause().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Paused);
+
 	tokio::time::sleep(Duration::from_millis(300)).await; // Wait while paused
 
 	let time_during_pause = engine.state().current_time;
 	assert!((time_during_pause - time_before_pause).abs() < 100, "Invariant: time must not advance during pause");
+	assert_eq!(engine.state().mode, OrchestratorMode::Paused);
 
 	engine.resume().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Running);
+
 	tokio::time::sleep(Duration::from_millis(200)).await;
 
 	let time_after_resume = engine.state().current_time;
@@ -266,15 +354,81 @@ async fn test_reset_clears_state_but_preserves_config() {
 
 	let pre_reset = engine.state();
 	assert!(pre_reset.current_time > 0, "Precondition: time advanced");
-	assert!(pre_reset.is_running, "Precondition: running");
+	assert_eq!(pre_reset.mode, OrchestratorMode::Running, "Precondition: running");
 
 	engine.reset().await.unwrap();
 
 	let post_reset = engine.state();
 	assert_eq!(post_reset.current_time, 0, "Invariant: reset clears time");
-	assert!(!post_reset.is_running, "Invariant: reset stops playback");
+	assert_eq!(post_reset.mode, OrchestratorMode::Idle, "Invariant: reset transitions to Idle");
 	assert!(post_reset.active_lifetimes.is_empty(), "Invariant: reset clears lifetimes");
 
 	// Config should be preserved - can start again
 	assert!(engine.start().await.is_ok(), "Invariant: reset preserves config");
+	assert_eq!(engine.state().mode, OrchestratorMode::Running);
+}
+
+#[tokio::test]
+async fn test_mode_observable_state_consistency() {
+	let engine = TestEngine::new();
+
+	// Unconfigured state
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Unconfigured);
+	assert!(!state.is_running());
+	assert!(!state.is_paused());
+	assert!(!state.is_terminal());
+
+	// Configure -> Idle
+	engine.configure(test_config(false)).await.unwrap();
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Idle);
+	assert!(state.mode.is_active());
+	assert!(!state.is_running());
+	assert!(!state.is_terminal());
+
+	// Start -> Running
+	engine.start().await.unwrap();
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Running);
+	assert!(state.is_running());
+	assert!(!state.is_paused());
+	assert!(state.mode.is_active());
+
+	// Pause -> Paused
+	engine.pause().await.unwrap();
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Paused);
+	assert!(!state.is_running());
+	assert!(state.is_paused());
+	assert!(state.mode.is_active());
+
+	// Stop -> Stopped (terminal)
+	engine.stop().await.unwrap();
+	let state = engine.state();
+	assert_eq!(state.mode, OrchestratorMode::Stopped);
+	assert!(state.is_terminal());
+	assert!(!state.mode.is_active());
+}
+
+#[tokio::test]
+async fn test_stop_is_not_idempotent_to_idle() {
+	let engine = TestEngine::new();
+	engine.configure(test_config(false)).await.unwrap();
+
+	// Stop from Idle should be idempotent (stay Idle)
+	engine.stop().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Idle);
+
+	engine.start().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Running);
+
+	// Stop from Running should go to Stopped (terminal), not Idle
+	engine.stop().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Stopped);
+	assert!(engine.state().is_terminal());
+
+	// Stop from Stopped should be idempotent (stay Stopped)
+	engine.stop().await.unwrap();
+	assert_eq!(engine.state().mode, OrchestratorMode::Stopped);
 }

@@ -13,6 +13,10 @@ pub enum OrchestratorError {
 	#[error("Orchestrator already running")]
 	AlreadyRunning,
 
+	/// Attempted to execute command on terminal state
+	#[error("Orchestrator is in terminal state (Finished/Stopped/Error). Call reset() or configure() to recover.")]
+	TerminalState,
+
 	#[error("Scene not found: {0}")]
 	SceneNotFound(String),
 
