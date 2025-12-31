@@ -126,11 +126,11 @@ impl OrchestratorService {
 					match result {
 						Ok(unified_event) => {
 							if let Err(e) = self.handle_event(unified_event).await {
-								error!("Error handling event: {:?}", e);
+								error!("Error handling event: {}", e);
 							}
 						}
 						Err(e) => {
-							error!("Command receiver error: {:?}", e);
+							error!("Command receiver error: {}", e);
 							break;
 						}
 					}
@@ -167,7 +167,7 @@ impl OrchestratorService {
 
 		// Send command (FSM will enforce state transitions)
 		if let Err(e) = managed.send_command(cmd).await {
-			error!("Failed to execute command for stream {}: {:?}", stream_id, e);
+			error!("Failed to execute command for stream {}: {}", stream_id, e);
 			return Err(e);
 		}
 
@@ -221,7 +221,7 @@ impl OrchestratorService {
 						if let Ok(unified_event) = event.try_into() {
 							let subject = EventType::OrchestratorState.subject();
 							if let Err(e) = transport.send_to_subject(subject, unified_event).await {
-								error!("Failed to publish state for stream {}: {:?}", stream_id_clone, e);
+								error!("Failed to publish state for stream {}: {}", stream_id_clone, e);
 							}
 						} else {
 							warn!("Failed to convert OrchestratorState to UnifiedEvent");
