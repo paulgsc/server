@@ -10,7 +10,6 @@ pub struct Config {
 	/// NATS subject for incoming commands (clients send commands here)
 	pub command_subject: String,
 	/// NATS subject for outgoing events (service publishes OBS events here)
-	pub event_subject: String,
 	/// Health check interval
 	pub health_check_interval: Duration,
 	/// Graceful shutdown timeout
@@ -23,7 +22,6 @@ impl Config {
 		Ok(Self {
 			nats_url: std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string()),
 			command_subject: std::env::var("NATS_COMMAND_SUBJECT").unwrap_or_else(|_| "obs.commands".to_string()),
-			event_subject: std::env::var("NATS_EVENT_SUBJECT").unwrap_or_else(|_| "obs.events".to_string()),
 			health_check_interval: Duration::from_secs(std::env::var("HEALTH_CHECK_INTERVAL_SECS").ok().and_then(|i| i.parse().ok()).unwrap_or(30)),
 			shutdown_timeout: Duration::from_secs(std::env::var("SHUTDOWN_TIMEOUT_SECS").ok().and_then(|t| t.parse().ok()).unwrap_or(10)),
 		})
@@ -35,7 +33,6 @@ impl Default for Config {
 		Self {
 			nats_url: "nats://localhost:4222".to_string(),
 			command_subject: "obs.commands".to_string(),
-			event_subject: "obs.events".to_string(),
 			health_check_interval: Duration::from_secs(30),
 			shutdown_timeout: Duration::from_secs(10),
 		}

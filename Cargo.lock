@@ -1673,7 +1673,6 @@ dependencies = [
  "log 0.4.28",
  "moka",
  "mood_event",
- "obs-websocket",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
