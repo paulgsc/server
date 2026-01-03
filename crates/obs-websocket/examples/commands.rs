@@ -83,12 +83,12 @@ async fn demonstrate_commands(obs_manager: &ObsWebSocketManager, cancel_token: &
 
 		let result = match i {
 			// 0 => demo_stream_controls(obs_manager).await,
-			1 => demo_recording_controls(obs_manager).await,
+			// 1 => demo_recording_controls(obs_manager).await,
 			2 => demo_scene_management(obs_manager).await,
-			3 => demo_audio_controls(obs_manager).await,
-			4 => demo_studio_features(obs_manager).await,
-			5 => demo_custom_commands(obs_manager).await,
-			6 => demo_system_info(obs_manager).await,
+			// 3 => demo_audio_controls(obs_manager).await,
+			// 4 => demo_studio_features(obs_manager).await,
+			// 5 => demo_custom_commands(obs_manager).await,
+			// 6 => demo_system_info(obs_manager).await,
 			_ => Ok(()),
 		};
 
@@ -153,7 +153,7 @@ async fn demo_recording_controls(obs_manager: &ObsWebSocketManager) -> Result<()
 async fn demo_scene_management(obs_manager: &ObsWebSocketManager) -> Result<(), Box<dyn std::error::Error>> {
 	tracing::info!("  🎭 Demonstrating scene management...");
 
-	let test_scenes = ["Scene", "Scene 2", "Gaming Scene", "Webcam Scene"];
+	let test_scenes = ["break"];
 
 	for scene_name in test_scenes.iter() {
 		match obs_manager.execute_command(ObsCommand::SwitchScene(scene_name.to_string())).await {

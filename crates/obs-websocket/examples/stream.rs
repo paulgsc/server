@@ -1,26 +1,29 @@
-use obs_websocket::*;
+use obs_websocket::{ObsConfig, ObsWebSocketManager, PollingConfig, RetryConfig};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
-	// Simple event loop
-	bridge_obs_events().await?;
+
+	// bridge_obs_events returns a JoinHandle. We await the handle itself.
+	let handle = bridge_obs_events();
+	handle.await?;
+
 	Ok(())
 }
 
 pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {
 	tokio::spawn(async move {
 		tracing::info!("Starting OBS event bridge with internal manager");
+
+		// Ensure these types are actually exported by your crate
 		let obs_config = ObsConfig::default();
 		let obs_manager = ObsWebSocketManager::new(obs_config, RetryConfig::default());
 
-		// Create a cancellation token to coordinate shutdown
 		let cancel_token = CancellationToken::new();
 		let cancel_token_clone = cancel_token.clone();
 
-		// Spawn a task to handle shutdown signal
 		let shutdown_task = tokio::spawn(async move {
 			let _ = tokio::signal::ctrl_c().await;
 			tracing::info!("Shutdown signal received");
@@ -29,13 +32,11 @@ pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {
 
 		loop {
 			tokio::select! {
-				// Check for cancellation
 				_ = cancel_token.cancelled() => {
 					tracing::info!("Shutting down OBS bridge");
 					let _ = obs_manager.disconnect().await;
-					break;
+					break; // Exit loop
 				}
-				// Main connection loop
 				result = async {
 					let requests = PollingConfig::default();
 					match obs_manager.connect(requests).await {
@@ -56,24 +57,20 @@ pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {
 					if let Err(e) = result {
 						tracing::error!("OBS connection error: {}", e);
 					}
-					// Clean disconnect before retry
 					let _ = obs_manager.disconnect().await;
 
-					// Cancellable retry delay
 					tokio::select! {
 						_ = cancel_token.cancelled() => {
-							tracing::info!("Shutdown during retry delay");
 							break;
 						}
 						_ = tokio::time::sleep(Duration::from_secs(5)) => {
-							// Continue to next retry
+							// Continue to next iteration of loop
 						}
 					}
 				}
 			}
 		}
 
-		// Clean up shutdown task
 		shutdown_task.abort();
 		tracing::info!("OBS event bridge ended");
 	})
