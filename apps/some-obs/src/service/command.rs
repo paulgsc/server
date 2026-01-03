@@ -3,7 +3,7 @@ use obs_websocket::{ObsEvent, UnknownEventData};
 use some_transport::{Transport, TransportError};
 use std::sync::Arc;
 use ws_events::{
-	events::{Event, ObsCommandMessage},
+	events::{Event, EventType, ObsCommandMessage},
 	unified_event, UnifiedEvent,
 };
 
@@ -12,7 +12,8 @@ impl ObsNatsService {
 	pub fn spawn_command_handler(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			tracing::info!("🎮 Starting command handler");
-			let mut command_rx = self.transport.open_channel(&self.config.command_subject).await;
+			let command_subject = EventType::ObsCommand.subject();
+			let mut command_rx = self.transport.subscribe_to_subject(command_subject).await;
 
 			loop {
 				tokio::select! {
@@ -22,18 +23,20 @@ impl ObsNatsService {
 					}
 					result = command_rx.recv() => {
 						match result {
-							Ok(unified) => match unified.event {
-								Some(unified_event::Event::ObsCommand(cmd_msg)) => {
-									if let Err(e) = self.handle_command(cmd_msg).await {
-										tracing::error!("❌ Failed to handle command: {}", e);
+							Ok(unified) => {
+								match unified.event {
+									Some(unified_event::Event::ObsCommand(cmd_msg)) => {
+										if let Err(e) = self.handle_command(cmd_msg).await {
+											tracing::error!("❌ Failed to handle command: {}", e);
+										}
 									}
-								}
-								other => {
-									tracing::error!(
-										"🚨 FATAL: Unexpected event type on OBS command subject: {:?}",
-										other
-									);
-									panic!("Invalid event delivered to OBS command subject — protocol violation");
+									other => {
+										tracing::error!(
+											"🚨 FATAL: Unexpected event type on OBS command subject: {:?}",
+											other
+										);
+										panic!("Invalid event delivered to OBS command subject — protocol violation");
+									}
 								}
 							},
 							Err(e) => match e {

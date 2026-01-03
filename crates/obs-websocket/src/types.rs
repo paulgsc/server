@@ -294,7 +294,8 @@ where
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SetCurrentProgramSceneParams {
-	pub n: String,
+	#[serde(rename = "sceneName")]
+	pub scene_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
