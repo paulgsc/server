@@ -55,7 +55,12 @@ impl ObsRequestBuilder {
 
 	/// Switch to a specific scene
 	pub fn switch_scene(scene_name: &str) -> Result<serde_json::Value> {
-		Self::create_request(ObsRequestType::SetCurrentProgramScene, Some(SetCurrentProgramSceneParams { n: scene_name.to_string() }))
+		Self::create_request(
+			ObsRequestType::SetCurrentProgramScene,
+			Some(SetCurrentProgramSceneParams {
+				scene_name: scene_name.to_string(),
+			}),
+		)
 	}
 
 	/// Mute/unmute audio source

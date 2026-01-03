@@ -46,5 +46,15 @@ base64 = { version = "0.22.1", optional = true }
 uuid = { version = "1.18.0", features = ["v4"], optional = true }
 tokio-util = { workspace = true, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[[example]]
+name = "stream"
+required-features = ["websocket"]
+[[example]]
+name = "commands"
+required-features = ["websocket"]
+
 [lints]
 workspace = true

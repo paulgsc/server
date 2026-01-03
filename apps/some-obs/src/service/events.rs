@@ -2,7 +2,10 @@ use crate::{ObsNatsService, Result};
 use obs_websocket::PollingConfig;
 use some_transport::Transport;
 use std::sync::Arc;
-use ws_events::{events::ObsStatusMessage, unified_event, UnifiedEvent};
+use ws_events::{
+	events::{EventType, ObsStatusMessage},
+	unified_event, UnifiedEvent,
+};
 
 impl ObsNatsService {
 	/// Spawn task to bridge OBS events to NATS
@@ -59,14 +62,13 @@ impl ObsNatsService {
 
 		// Clone for the closure
 		let event_transport = self.transport.clone();
-		let event_subject = self.config.event_subject.clone();
 		let cancel_token = self.cancel_token.clone();
 
 		self
 			.obs_manager
 			.stream_events(move |obs_event| {
 				let transport = event_transport.clone();
-				let subject = event_subject.clone();
+				let subject = EventType::ObsStatus.subject();
 				let cancel = cancel_token.clone();
 
 				Box::pin(async move {

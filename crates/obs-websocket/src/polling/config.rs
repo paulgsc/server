@@ -172,12 +172,12 @@ impl PollingConfig {
 			(ObsRequestType::GetRecordStatus, PollingFrequency::High),
 			(ObsRequestType::GetCurrentProgramScene, PollingFrequency::High),
 			// Medium frequency - important but not critical
+			(ObsRequestType::GetSceneList, PollingFrequency::Medium),
 			(ObsRequestType::GetStudioModeEnabled, PollingFrequency::Medium),
 			(ObsRequestType::GetStats, PollingFrequency::Medium),
 			// Low frequency - configuration and setup info
 			(ObsRequestType::GetStudioModeEnabled, PollingFrequency::Low),
 			(ObsRequestType::GetCurrentSceneTransition, PollingFrequency::Low),
-			(ObsRequestType::GetSceneList, PollingFrequency::Low),
 			(ObsRequestType::GetInputList, PollingFrequency::Low),
 			(ObsRequestType::GetProfileList, PollingFrequency::Low),
 			(ObsRequestType::GetCurrentProfile, PollingFrequency::Low),
@@ -193,11 +193,7 @@ impl PollingConfig {
 	#[allow(dead_code)]
 	#[must_use]
 	pub fn minimal_monitoring() -> Self {
-		let requests: Box<[(ObsRequestType, PollingFrequency)]> = Box::new([
-			(ObsRequestType::GetStreamStatus, PollingFrequency::Medium),
-			(ObsRequestType::GetRecordStatus, PollingFrequency::Medium),
-			(ObsRequestType::GetCurrentProgramScene, PollingFrequency::Low),
-		]);
+		let requests: Box<[(ObsRequestType, PollingFrequency)]> = Box::new([(ObsRequestType::GetSceneList, PollingFrequency::High)]);
 		Self::from(requests)
 	}
 
