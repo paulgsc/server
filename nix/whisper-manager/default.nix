@@ -1,8 +1,9 @@
 {pkgs}: let
   # ===== CONFIGURATION (edit this) =====
   activeModels = [
-    "ggml-base.en-q5_1.bin"
+    # "ggml-base.en-q5_1.bin"
     # "ggml-small.en-q5_1.bin"  # Uncomment to activate
+    "ggml-tiny.en-q5_1.bin"
   ];
 
   modelsDir = let

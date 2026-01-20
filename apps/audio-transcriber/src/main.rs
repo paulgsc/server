@@ -3,18 +3,21 @@ mod config;
 mod observability;
 mod state;
 mod transcription;
+mod worker;
 
 use anyhow::Result;
 use clap::Parser;
 use some_transport::{NatsReceiver, NatsTransport, TransportReceiver};
 use std::sync::Arc;
 use tokio::signal;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use ws_events::events::{AudioChunkMessage, EventType, UnifiedEvent};
 
 use config::Config;
 use state::TranscriberState;
+use worker::{TranscriptionJob, TranscriptionQueue, TRANSCRIPTION_QUEUE_CAPACITY};
 
 const NATS_MAX_RETRIES: u32 = 5;
 const NATS_INITIAL_BACKOFF_MS: u64 = 500;
@@ -48,8 +51,27 @@ async fn main() -> Result<()> {
 	// Load Whisper model
 	let whisper_ctx = transcription::load_model(&config.whisper_model_path, config.whisper_threads)?;
 
+	// Create transcription queue
+	let mut queue = TranscriptionQueue::new(TRANSCRIPTION_QUEUE_CAPACITY);
+	let queue_tx = queue.sender();
+	let queue_rx = queue.take_receiver().expect("Queue receiver should be available");
+
+	info!(queue_capacity = TRANSCRIPTION_QUEUE_CAPACITY, "📦 Transcription queue created");
+
 	// Create cancellation token for cooperative shutdown
 	let cancellation_token = CancellationToken::new();
+
+	// Start Whisper worker thread
+	let params = transcription::create_params(config.whisper_threads);
+	worker::start_whisper_worker(
+		queue_rx,
+		Arc::new(whisper_ctx),
+		params,
+		transport.clone(),
+		state.clone(),
+		metrics.clone(),
+		cancellation_token.clone(),
+	);
 
 	// Start transcription loop
 	let transcriber = Transcriber {
@@ -57,7 +79,7 @@ async fn main() -> Result<()> {
 		state,
 		metrics,
 		transport,
-		whisper_ctx: Arc::new(whisper_ctx),
+		queue_tx,
 		cancellation_token: cancellation_token.clone(),
 	};
 
@@ -70,11 +92,14 @@ struct Transcriber {
 	state: Arc<TranscriberState>,
 	metrics: observability::TranscriberMetrics,
 	transport: NatsTransport<UnifiedEvent>,
-	whisper_ctx: Arc<whisper_rs::WhisperContext>,
+	queue_tx: mpsc::Sender<TranscriptionJob>,
 	cancellation_token: CancellationToken,
 }
 
 async fn run_with_shutdown(transcriber: Transcriber, cancellation_token: CancellationToken) -> Result<()> {
+	// Clone state for shutdown logging
+	let state_for_shutdown = transcriber.state.clone();
+
 	tokio::select! {
 			result = transcriber.run() => {
 					error!("Transcription loop exited unexpectedly: {:?}", result);
@@ -88,6 +113,18 @@ async fn run_with_shutdown(transcriber: Transcriber, cancellation_token: Cancell
 
 					// Give async tasks a moment to notice cancellation and exit gracefully
 					tokio::time::sleep(std::time::Duration::from_millis(SHUTDOWN_GRACE_PERIOD_MS)).await;
+
+					// Log queue state at shutdown
+					let jobs_enqueued = state_for_shutdown.jobs_enqueued.load(std::sync::atomic::Ordering::Relaxed);
+					let jobs_dropped = state_for_shutdown.jobs_dropped.load(std::sync::atomic::Ordering::Relaxed);
+					let queue_depth = state_for_shutdown.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
+
+					info!(
+							jobs_enqueued,
+							jobs_dropped,
+							queue_depth,
+							"📊 Shutdown statistics"
+					);
 
 					// DO NOT wait for blocking Whisper threads - they cannot be cancelled
 					// The OS will clean them up when the process exits
@@ -131,57 +168,50 @@ impl Transcriber {
 		info!("🎧 Subscribed to 'audio.chunk', waiting for audio...");
 
 		let buffer_size = self.config.target_sample_rate as usize * self.config.buffer_duration_secs;
-		let transcription_sem = Arc::new(tokio::sync::Semaphore::new(1));
-
 		let mut processor = audio::AudioProcessor::new(buffer_size, self.config.target_sample_rate, self.state.clone(), self.metrics.clone());
-
-		let params = transcription::create_params(self.config.whisper_threads);
 
 		info!(
 			target_sample_rate = self.config.target_sample_rate,
 			buffer_duration_secs = self.config.buffer_duration_secs,
 			buffer_size,
 			whisper_threads = self.config.whisper_threads,
+			queue_capacity = TRANSCRIPTION_QUEUE_CAPACITY,
 			"📊 Configuration loaded"
 		);
 
 		loop {
 			tokio::select! {
-				_ = self.cancellation_token.cancelled() => {
-					info!("🛑 Transcription loop cancelled");
-					break;
-				}
-				result = tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv()) => {
-					match result {
-						Ok(Ok(audio_chunk)) => {
-							// audio_chunk is already AudioChunkMessage!
-							if let Err(e) = self.process_audio_chunk(audio_chunk, &mut processor, &params, &transcription_sem).await {
-								error!(error = %e, "Failed to process audio chunk");
-							}
-						}
-						Ok(Err(e)) => {
-							error!(error = %e, "Failed to receive audio chunk");
-							self.metrics.chunks_dropped.add(1, &[]);
-						}
-						Err(_) => {
-							// Timeout - heartbeat check
-							processor.heartbeat_check();
-						}
+					_ = self.cancellation_token.cancelled() => {
+							info!("🛑 Transcription loop cancelled");
+							break;
 					}
-				}
+					result = tokio::time::timeout(
+							std::time::Duration::from_millis(100),
+							receiver.recv()
+					) => {
+							match result {
+									Ok(Ok(audio_chunk)) => {
+											if let Err(e) = self.process_audio_chunk(audio_chunk, &mut processor).await {
+													error!(error = %e, "Failed to process audio chunk");
+											}
+									}
+									Ok(Err(e)) => {
+											error!(error = %e, "Failed to receive audio chunk");
+											self.metrics.chunks_dropped.add(1, &[]);
+									}
+									Err(_) => {
+											// Timeout - heartbeat check
+											processor.heartbeat_check();
+									}
+							}
+					}
 			}
 		}
 
 		Ok(())
 	}
 
-	async fn process_audio_chunk(
-		&self,
-		audio_chunk: AudioChunkMessage,
-		processor: &mut audio::AudioProcessor,
-		params: &whisper_rs::FullParams<'static, 'static>,
-		transcription_sem: &Arc<tokio::sync::Semaphore>,
-	) -> Result<()> {
+	async fn process_audio_chunk(&self, audio_chunk: AudioChunkMessage, processor: &mut audio::AudioProcessor) -> Result<()> {
 		// Decode samples from bytes
 		let samples = audio_chunk.decode_samples().map_err(|e| anyhow::anyhow!("Failed to decode samples: {}", e))?;
 
@@ -192,23 +222,44 @@ impl Transcriber {
 
 		// Check if ready to transcribe
 		if let Some(audio_buffer) = processor.take_buffer_if_ready() {
-			if let Ok(permit) = transcription_sem.clone().try_acquire_owned() {
-				self.state.set_transcribing(true);
+			// Create transcription job
+			let job = TranscriptionJob::new(
+				0, // sequence number assigned by queue
+				audio_buffer,
+				self.config.target_sample_rate,
+				None, // stream_id - could be extracted from audio_chunk if available
+			);
 
-				info!(audio_samples = audio_buffer.len(), "🎤 Starting transcription");
+			let audio_samples = job.audio.len();
+			let audio_duration = job.audio_duration_secs();
 
-				// Spawn and forget - don't track the handle
-				// On shutdown, these tasks will be abandoned and cleaned up by the OS
-				transcription::transcribe_and_publish(
-					self.whisper_ctx.clone(),
-					params.clone(),
-					self.transport.clone(),
-					audio_buffer,
-					self.state.clone(),
-					self.metrics.clone(),
-					permit,
-					self.cancellation_token.child_token(),
-				);
+			// Try to enqueue (non-blocking)
+			match self.queue_tx.try_send(job) {
+				Ok(_) => {
+					self.state.increment_jobs_enqueued();
+					self.metrics.transcription_jobs_enqueued.add(1, &[]);
+
+					// Update queue depth (approximate)
+					let current_depth = self.state.jobs_enqueued.load(std::sync::atomic::Ordering::Relaxed)
+						- self.state.transcriptions_completed.load(std::sync::atomic::Ordering::Relaxed)
+						- self.state.jobs_dropped.load(std::sync::atomic::Ordering::Relaxed);
+					self.state.update_queue_depth(current_depth.min(TRANSCRIPTION_QUEUE_CAPACITY as u64) as usize);
+
+					info!(audio_samples, queue_depth = current_depth, "✅ Job enqueued for transcription");
+				}
+				Err(mpsc::error::TrySendError::Full(_)) => {
+					self.state.increment_jobs_dropped();
+					self.metrics.transcription_jobs_dropped.add(1, &[]);
+
+					warn!(
+						audio_duration_secs = format!("{:.2}", audio_duration),
+						queue_capacity = TRANSCRIPTION_QUEUE_CAPACITY,
+						"⚠️ Transcription queue full - dropping audio buffer (backpressure active)"
+					);
+				}
+				Err(mpsc::error::TrySendError::Closed(_)) => {
+					warn!("⚠️ Transcription queue closed - system shutting down");
+				}
 			}
 		}
 
