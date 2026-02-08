@@ -32,7 +32,7 @@ ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
 ENV SQLX_OFFLINE=true
 
-RUN cargo build --release --package file_host
+RUN cargo build --release --bin file_host
 RUN strip target/release/file_host
 
 # Use Debian runtime instead of Alpine (glibc compatible)
