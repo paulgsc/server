@@ -1,10 +1,11 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::observability::{Heartbeat, TranscriberMetrics};
 use crate::state::TranscriberState;
+use crate::vad::VadProcessor;
 
 pub struct AudioProcessor {
 	buffer: Vec<f32>,
@@ -15,10 +16,33 @@ pub struct AudioProcessor {
 	state: Arc<TranscriberState>,
 	metrics: TranscriberMetrics,
 	heartbeat: Heartbeat,
+	vad: Option<VadProcessor>,
+	vad_enabled: bool,
 }
 
 impl AudioProcessor {
-	pub fn new(buffer_capacity: usize, target_sample_rate: u32, state: Arc<TranscriberState>, metrics: TranscriberMetrics) -> Self {
+	pub fn new(buffer_capacity: usize, target_sample_rate: u32, state: Arc<TranscriberState>, metrics: TranscriberMetrics, vad_enabled: bool) -> Self {
+		// Initialize VAD if enabled
+		let vad = if vad_enabled {
+			match VadProcessor::new(
+				target_sample_rate,
+				webrtc_vad::VadMode::Quality, // Use highest quality mode
+				0.3,                          // 30% speech threshold - adjustable
+			) {
+				Ok(vad) => {
+					info!("✅ VAD enabled for pre-transcription filtering");
+					Some(vad)
+				}
+				Err(e) => {
+					warn!(error = %e, "⚠️ Failed to initialize VAD, continuing without filtering");
+					None
+				}
+			}
+		} else {
+			info!("ℹ️ VAD disabled - all audio will be transcribed");
+			None
+		};
+
 		Self {
 			buffer: Vec::with_capacity(buffer_capacity * 2),
 			buffer_capacity,
@@ -28,6 +52,8 @@ impl AudioProcessor {
 			state,
 			metrics,
 			heartbeat: Heartbeat::new(30),
+			vad,
+			vad_enabled,
 		}
 	}
 
@@ -76,6 +102,18 @@ impl AudioProcessor {
 				is_transcribing = self.state.is_transcribing(),
 				"📦 Processing stats"
 			);
+
+			// Log VAD stats if enabled
+			if let Some(vad) = &self.vad {
+				let stats = vad.stats();
+				info!(
+					vad_total_chunks = stats.total_chunks,
+					vad_speech_chunks = stats.speech_chunks,
+					vad_silence_chunks = stats.silence_chunks,
+					vad_speech_ratio = format!("{:.1}%", stats.chunk_speech_ratio() * 100.0),
+					"🎤 VAD statistics"
+				);
+			}
 		}
 
 		Ok(())
@@ -110,6 +148,31 @@ impl AudioProcessor {
 			let audio = self.buffer.clone();
 			self.buffer.clear();
 			self.state.update_buffer_size(0);
+
+			// Apply VAD filtering if enabled
+			if self.vad_enabled {
+				if let Some(vad) = &mut self.vad {
+					let vad_start = Instant::now();
+					let has_speech = vad.contains_speech(&audio);
+					let vad_latency = vad_start.elapsed().as_secs_f64() * 1000.0;
+
+					self.metrics.vad_processing_latency.record(vad_latency, &[]);
+
+					if !has_speech {
+						info!(
+							audio_duration_secs = format!("{:.2}", audio.len() as f64 / self.target_sample_rate as f64),
+							vad_latency_ms = format!("{:.2}", vad_latency),
+							"🔇 VAD: Silence detected - skipping transcription"
+						);
+						self.metrics.vad_silence_filtered.add(1, &[]);
+						return None; // Filter out silent audio
+					} else {
+						debug!(vad_latency_ms = format!("{:.2}", vad_latency), "🎤 VAD: Speech detected - queuing for transcription");
+						self.metrics.vad_speech_detected.add(1, &[]);
+					}
+				}
+			}
+
 			Some(audio)
 		} else {
 			None
@@ -127,6 +190,18 @@ impl AudioProcessor {
 			if self.state.is_transcribing() {
 				info!("⚙️  Transcription in progress (CPU busy)");
 			}
+		}
+	}
+
+	/// Get VAD statistics
+	pub fn vad_stats(&self) -> Option<crate::vad::VadStats> {
+		self.vad.as_ref().map(|v| v.stats().clone())
+	}
+
+	/// Update VAD speech threshold (0.0 - 1.0)
+	pub fn set_vad_threshold(&mut self, threshold: f32) {
+		if let Some(vad) = &mut self.vad {
+			vad.set_speech_threshold(threshold);
 		}
 	}
 }
