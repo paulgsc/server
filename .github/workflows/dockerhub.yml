@@ -8,28 +8,120 @@ on:
     types: [published]
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 jobs:
-  publish-docker:
-    name: Publish Production Docker Image
+  detect-changes:
+    name: Detect Changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      IMAGE_NAME: self-hosting-maishatu
-      DOCKER_REPO: pgathondu/self-hosting-maishatu
-      DOCKERFILE_PATH: Dockerfile.server
+    outputs:
+      server: ${{ steps.server.outputs.changed }}
+      obs: ${{ steps.obs.outputs.changed }}
+      orchestrator: ${{ steps.orchestrator.outputs.changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
+        with:
+          fetch-depth: 0 # Full history needed for git diff
+      - name: Get changed files
+        id: changed-files
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+          elif [ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]; then
+            # First push to branch - compare with main or list all files
+            CHANGED_FILES=$(git diff --name-only origin/main...${{ github.sha }} 2>/dev/null || git ls-files)
+          else
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          fi
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Compile Rust change detector
+        run: |
+          rustc .github/scripts/detect_crate_changes.rs -o detect_crate_changes
+          chmod +x detect_crate_changes
+      - name: Detect server changes
+        id: server
+        run: |
+          OUTPUT=$(./detect_crate_changes \
+            "apps/servers" \
+            "apps/servers/Cargo.toml" \
+            "infra/docker/Dockerfile.server" \
+            "${{ steps.changed-files.outputs.files }}")
+          echo "$OUTPUT"
+          CHANGED=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+      - name: Detect obs changes
+        id: obs
+        run: |
+          OUTPUT=$(./detect_crate_changes \
+            "apps/some-obs" \
+            "apps/some-obs/Cargo.toml" \
+            "infra/docker/Dockerfile.obs" \
+            "${{ steps.changed-files.outputs.files }}")
+          echo "$OUTPUT"
+          CHANGED=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+      - name: Detect orchestrator changes
+        id: orchestrator
+        run: |
+          OUTPUT=$(./detect_crate_changes \
+            "apps/orchestrator" \
+            "apps/orchestrator/Cargo.toml" \
+            "infra/docker/Dockerfile.orchestrator" \
+            "${{ steps.changed-files.outputs.files }}")
+          echo "$OUTPUT"
+          CHANGED=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+      - name: Summary
+        run: |
+          echo "### 🔍 Change Detection Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Rebuild Required |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| server | ${{ steps.server.outputs.changed == 'true' && '✅ Yes' || '⏭️ No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| obs | ${{ steps.obs.outputs.changed == 'true' && '✅ Yes' || '⏭️ No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| orchestrator | ${{ steps.orchestrator.outputs.changed == 'true' && '✅ Yes' || '⏭️ No' }} |" >> $GITHUB_STEP_SUMMARY
+  publish-docker:
+    name: Build & Push ${{ matrix.image.name }}
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        image:
+          - name: server
+            dockerfile: ./infra/docker/Dockerfile.server
+            repo_suffix: server
+            app_path: apps/servers
+          - name: obs
+            dockerfile: ./infra/docker/Dockerfile.obs
+            repo_suffix: obs
+            app_path: apps/some-obs
+          - name: orchestrator
+            dockerfile: ./infra/docker/Dockerfile.orchestrator
+            repo_suffix: orchestrator
+            app_path: apps/orchestrator
+      fail-fast: false
+    # Only run if changes detected OR manual/release trigger
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'release' ||
+      (matrix.image.name == 'server' && needs.detect-changes.outputs.server == 'true') ||
+      (matrix.image.name == 'obs' && needs.detect-changes.outputs.obs == 'true') ||
+      (matrix.image.name == 'orchestrator' && needs.detect-changes.outputs.orchestrator == 'true')
+    env:
+      IMAGE_NAME: self-hosting-maishatu-${{ matrix.image.repo_suffix }}
+      DOCKER_REPO: pgathondu/self-hosting-maishatu-${{ matrix.image.repo_suffix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v12
-
       - name: Setup Cachix
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to Docker Hub
@@ -37,22 +129,22 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build application with Nix
         run: |
-          echo "Building Rust application using Nix flake..."
-          nix develop --command cargo build --release
-          # Copy binary to a known location for Docker
-          mkdir -p ./target/docker/
-          cp ./target/release/your-binary-name ./target/docker/ || echo "Update binary name"
+          echo "🔨 Building ${{ matrix.image.name }} with Nix..."
+          nix develop --command cargo build --release -p ${{ matrix.image.name }}
 
+          # Prepare binary for Docker
+          mkdir -p ./target/docker/
+          cp ./target/release/${{ matrix.image.name }} ./target/docker/
+
+          echo "✅ Binary ready: ./target/docker/${{ matrix.image.name }}"
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -67,24 +159,27 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ${{ env.DOCKERFILE_PATH }}
+          file: ${{ matrix.image.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
           platforms: linux/amd64,linux/arm64
           build-args: |
             BUILT_WITH_NIX=true
-
-      - name: Clean up old images (Docker Hub)
-        if: github.ref == 'refs/heads/main'
+            APP_NAME=${{ matrix.image.name }}
+      - name: Build Summary
         run: |
-          # Keep last 10 images, delete older ones
-          # Note: This requires a more complex script or third-party action
-          echo "Manual cleanup of old Docker Hub images recommended"
+          echo "### ✅ ${{ matrix.image.name }} Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.DOCKER_REPO }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

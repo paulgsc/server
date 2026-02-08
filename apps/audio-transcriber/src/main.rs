@@ -3,6 +3,7 @@ mod config;
 mod observability;
 mod state;
 mod transcription;
+mod vad;
 mod worker;
 
 use anyhow::Result;
@@ -38,6 +39,8 @@ async fn main() -> Result<()> {
 	info!(
 			service = %config.service_name,
 			whisper_model = %config.whisper_model_path,
+			vad_enabled = config.vad_enabled,
+			vad_threshold = config.vad_speech_threshold,
 			"🎯 Starting transcriber service"
 	);
 
@@ -168,21 +171,44 @@ impl Transcriber {
 		info!("🎧 Subscribed to 'audio.chunk', waiting for audio...");
 
 		let buffer_size = self.config.target_sample_rate as usize * self.config.buffer_duration_secs;
-		let mut processor = audio::AudioProcessor::new(buffer_size, self.config.target_sample_rate, self.state.clone(), self.metrics.clone());
+		let mut processor = audio::AudioProcessor::new(
+			buffer_size,
+			self.config.target_sample_rate,
+			self.state.clone(),
+			self.metrics.clone(),
+			self.config.vad_enabled,
+		);
 
 		info!(
-			target_sample_rate = self.config.target_sample_rate,
-			buffer_duration_secs = self.config.buffer_duration_secs,
-			buffer_size,
-			whisper_threads = self.config.whisper_threads,
-			queue_capacity = TRANSCRIPTION_QUEUE_CAPACITY,
-			"📊 Configuration loaded"
+				target_sample_rate = self.config.target_sample_rate,
+				buffer_duration_secs = self.config.buffer_duration_secs,
+				buffer_size,
+				whisper_threads = self.config.whisper_threads,
+				queue_capacity = TRANSCRIPTION_QUEUE_CAPACITY,
+				vad_enabled = self.config.vad_enabled,
+				vad_threshold = self.config.vad_speech_threshold,
+				vad_mode = ?self.config.get_vad_mode(),
+				"📊 Configuration loaded"
 		);
 
 		loop {
 			tokio::select! {
 					_ = self.cancellation_token.cancelled() => {
 							info!("🛑 Transcription loop cancelled");
+
+							// Log final VAD stats
+							if self.config.vad_enabled {
+									if let Some(stats) = processor.vad_stats() {
+											info!(
+													vad_total_chunks = stats.total_chunks,
+													vad_speech_chunks = stats.speech_chunks,
+													vad_silence_chunks = stats.silence_chunks,
+													vad_speech_ratio = format!("{:.1}%", stats.chunk_speech_ratio() * 100.0),
+													"🎤 Final VAD statistics"
+											);
+									}
+							}
+
 							break;
 					}
 					result = tokio::time::timeout(
@@ -220,7 +246,7 @@ impl Transcriber {
 
 		processor.process_chunk(sample_rate, channels, samples).await?;
 
-		// Check if ready to transcribe
+		// Check if ready to transcribe (VAD filtering happens inside take_buffer_if_ready)
 		if let Some(audio_buffer) = processor.take_buffer_if_ready() {
 			// Create transcription job
 			let job = TranscriptionJob::new(
