@@ -39,7 +39,7 @@ jobs:
       - name: Detect server changes
         id: server
         run: |
-          OUTPUT=$(./detect_crate_changes "apps/servers" "apps/servers/Cargo.toml" "infra/docker/Dockerfile.server" "${{ steps.changed-files.outputs.files }}")
+          OUTPUT=$(./detect_crate_changes "apps/servers/file_host" "apps/servers/file_host/Cargo.toml" "infra/docker/Dockerfile.server" "${{ steps.changed-files.outputs.files }}")
           echo "changed=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)" >> $GITHUB_OUTPUT
       - name: Detect obs changes
         id: obs
@@ -55,7 +55,7 @@ jobs:
         id: set-matrix
         run: |
           # Define all possible images
-          SERVER='{"name":"server","dockerfile":"./infra/docker/Dockerfile.server","repo_suffix":"server","app_path":"apps/servers"}'
+          SERVER='{"name":"server","dockerfile":"./infra/docker/Dockerfile.server","repo_suffix":"server","app_path":"apps/servers/file_host"}'
           OBS='{"name":"obs","dockerfile":"./infra/docker/Dockerfile.obs","repo_suffix":"obs","app_path":"apps/some-obs"}'
           ORCHESTRATOR='{"name":"orchestrator","dockerfile":"./infra/docker/Dockerfile.orchestrator","repo_suffix":"orchestrator","app_path":"apps/orchestrator"}'
 
