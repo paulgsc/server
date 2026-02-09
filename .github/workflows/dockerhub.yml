@@ -12,7 +12,6 @@ jobs:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
-      # This output will contain the JSON array for the next job
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout
@@ -29,6 +28,7 @@ jobs:
           else
             CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
           fi
+
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -39,27 +39,37 @@ jobs:
       - name: Detect server changes
         id: server
         run: |
-          OUTPUT=$(./detect_crate_changes "apps/servers/file_host" "apps/servers/file_host/Cargo.toml" "infra/docker/Dockerfile.server" "${{ steps.changed-files.outputs.files }}")
+          OUTPUT=$(./detect_crate_changes \
+            "apps/servers/file_host" \
+            "apps/servers/file_host/Cargo.toml" \
+            "infra/docker/Dockerfile.server" \
+            "${{ steps.changed-files.outputs.files }}")
           echo "changed=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)" >> $GITHUB_OUTPUT
       - name: Detect obs changes
         id: obs
         run: |
-          OUTPUT=$(./detect_crate_changes "apps/some-obs" "apps/some-obs/Cargo.toml" "infra/docker/Dockerfile.obs" "${{ steps.changed-files.outputs.files }}")
+          OUTPUT=$(./detect_crate_changes \
+            "apps/some-obs" \
+            "apps/some-obs/Cargo.toml" \
+            "infra/docker/Dockerfile.obs" \
+            "${{ steps.changed-files.outputs.files }}")
           echo "changed=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)" >> $GITHUB_OUTPUT
       - name: Detect orchestrator changes
         id: orchestrator
         run: |
-          OUTPUT=$(./detect_crate_changes "apps/orchestrator" "apps/orchestrator/Cargo.toml" "infra/docker/Dockerfile.orchestrator" "${{ steps.changed-files.outputs.files }}")
+          OUTPUT=$(./detect_crate_changes \
+            "apps/orchestrator" \
+            "apps/orchestrator/Cargo.toml" \
+            "infra/docker/Dockerfile.orchestrator" \
+            "${{ steps.changed-files.outputs.files }}")
           echo "changed=$(echo "$OUTPUT" | grep "^changed=" | cut -d= -f2)" >> $GITHUB_OUTPUT
       - name: Set Matrix
         id: set-matrix
         run: |
-          # Define all possible images
-          SERVER='{"name":"server","dockerfile":"./infra/docker/Dockerfile.server","repo_suffix":"server","app_path":"apps/servers/file_host"}'
-          OBS='{"name":"obs","dockerfile":"./infra/docker/Dockerfile.obs","repo_suffix":"obs","app_path":"apps/some-obs"}'
-          ORCHESTRATOR='{"name":"orchestrator","dockerfile":"./infra/docker/Dockerfile.orchestrator","repo_suffix":"orchestrator","app_path":"apps/orchestrator"}'
+          SERVER='{"name":"file_host","dockerfile":"./infra/docker/Dockerfile.server","repo_suffix":"server"}'
+          OBS='{"name":"some-obs","dockerfile":"./infra/docker/Dockerfile.obs","repo_suffix":"obs"}'
+          ORCHESTRATOR='{"name":"orchestrator","dockerfile":"./infra/docker/Dockerfile.orchestrator","repo_suffix":"orchestrator"}'
 
-          # Logic: If manual/release, build all. Otherwise, only build if changed.
           FORCE="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}"
 
           JSON="["
@@ -67,7 +77,6 @@ jobs:
           if [ "$FORCE" == "true" ] || [ "${{ steps.obs.outputs.changed }}" == "true" ]; then JSON+="$OBS,"; fi
           if [ "$FORCE" == "true" ] || [ "${{ steps.orchestrator.outputs.changed }}" == "true" ]; then JSON+="$ORCHESTRATOR,"; fi
 
-          # Remove trailing comma and close bracket
           JSON=$(echo "$JSON" | sed 's/,$//')
           JSON+="]"
 
@@ -75,7 +84,6 @@ jobs:
   publish-docker:
     name: Build & Push ${{ matrix.image.name }}
     needs: detect-changes
-    # Only run if the matrix we generated isn't empty
     if: needs.detect-changes.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -89,14 +97,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v12
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v12
-        with:
-          name: nix-community
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: true
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to Docker Hub
@@ -110,12 +110,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build application with Nix
-        run: |
-          echo "🔨 Building ${{ matrix.image.name }} with Nix..."
-          nix develop .#ci --command cargo build --release -p ${{ matrix.image.name }}
-          mkdir -p ./target/docker/
-          cp ./target/release/${{ matrix.image.name }} ./target/docker/
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -140,9 +134,6 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
           platforms: linux/amd64,linux/arm64
-          build-args: |
-            BUILT_WITH_NIX=true
-            APP_NAME=${{ matrix.image.name }}
       - name: Build Summary
         run: |
           echo "### ✅ ${{ matrix.image.name }} Published" >> $GITHUB_STEP_SUMMARY
