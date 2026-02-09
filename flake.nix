@@ -1,5 +1,5 @@
 {
-  description = "Modular Rust + Whisper Manager Environment (cron-free self-cleaning)";
+  description = "Modular Rust + Whisper Manager Environment (CI-optimized)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
@@ -20,11 +20,19 @@
       overlays = [rust-overlay.overlays.default];
       pkgs = import nixpkgs {inherit system overlays;};
 
-      # Import your submodules (each returns an attrset)
-      rustEnv = import ./nix/rust-env {inherit pkgs;};
-      whisperManager = import ./nix/whisper-manager {inherit pkgs;};
+      # Detect CI environment
+      isCI = builtins.getEnv "CI" == "true";
 
-      # Combine their inputs
+      # Import submodules with CI flag
+      rustEnv = import ./nix/rust-env {
+        inherit pkgs isCI;
+      };
+
+      whisperManager = import ./nix/whisper-manager {
+        inherit pkgs isCI;
+      };
+
+      # Combine inputs (whisper auto-excludes in CI)
       combinedBuildInputs =
         (rustEnv.buildInputs or [])
         ++ (whisperManager.packages or []);
@@ -33,10 +41,14 @@
         export CARGO_BUILD_JOBS=3
         ${rustEnv.shellHook or ""}
         ${whisperManager.shellHook or ""}
-        echo "🦀 Rust + Whisper environment loaded!"
+        ${
+          if !isCI
+          then ''echo "🦀 Rust + Whisper environment loaded!"''
+          else ""
+        }
       '';
     in {
-      # Default shell = combined environment
+      # Default shell = full local development environment
       devShells.default = pkgs.mkShell {
         buildInputs = combinedBuildInputs;
         shellHook = combinedShellHook;
@@ -45,6 +57,14 @@
       # Individual shells for modular use
       devShells.rust = rustEnv.shell;
       devShells.whisper = whisperManager.shell;
+
+      # Minimal CI shell - no dev tools, no whisper, no hooks
+      devShells.ci = pkgs.mkShell {
+        buildInputs = rustEnv.buildInputs;
+        shellHook = ''
+          export CARGO_BUILD_JOBS=3
+        '';
+      };
 
       # For consistent formatting
       formatter = pkgs.alejandra;

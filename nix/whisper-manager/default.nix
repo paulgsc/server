@@ -1,4 +1,15 @@
-{pkgs}: let
+{
+  pkgs,
+  isCI ? false,
+}:
+# Whisper manager is completely disabled in CI environments
+if isCI
+then {
+  packages = [];
+  shellHook = "";
+  shell = pkgs.mkShell {};
+}
+else let
   # ===== CONFIGURATION (edit this) =====
   activeModels = [
     # "ggml-base.en-q5_1.bin"

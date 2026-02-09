@@ -1,24 +1,19 @@
 name: CI Workflow
-
 on:
   pull_request:
     types: [opened, synchronize]
     branches:
-      - main
+      - foo # this is paused for now 
   release:
     types: [published]
-
 defaults:
   run:
     working-directory: ./
-
 permissions:
   actions: write
   contents: read
   pull-requests: write
-
 concurrency: ${{ github.workflow }}-${{ github.ref }}
-
 jobs:
   determine_jobs:
     name: Determine jobs to run
@@ -29,7 +24,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Detect Rust-related changes
         id: rust
         uses: technote-space/get-diff-action@v6
@@ -45,7 +39,6 @@ jobs:
             migrations/**
             !**.md
             !**.mdx
-
       - name: Detect Formatting-related changes
         id: format
         uses: technote-space/get-diff-action@v6
@@ -53,11 +46,9 @@ jobs:
           PATTERNS: |
             **/*.{yml,yaml,md,mdx,js,jsx,ts,tsx,json,toml,css}
             !Cargo.toml
-
     outputs:
       rust: ${{ steps.rust.outputs.diff != '' }}
       format: ${{ steps.format.outputs.format != '' }}
-
   rust_ci:
     runs-on: ubuntu-latest
     needs: determine_jobs
@@ -68,75 +59,22 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v12
-
       - name: Setup Cachix (optional - speeds up builds)
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
-
       - name: Build development shell
         run: |
-          nix develop --command rustc --version
-          nix develop --command cargo --version
-
+          nix develop .#ci --command rustc --version
+          nix develop .#ci --command cargo --version
       - name: Install sqlx-cli
-        run: nix develop --command cargo install sqlx-cli --no-default-features --features sqlite
-
+        run: nix develop .#ci --command cargo install sqlx-cli --no-default-features --features sqlite
       - name: Setup databases and run migrations
-        run: |
-          # Create the main test database
-          root_db="${GITHUB_WORKSPACE}/test.db"
-          echo "Creating root database at $root_db"
-          rm -f "$root_db"
-          touch "$root_db"
-
-          # Create a temporary combined migrations directory
-          temp_migrations_dir="${GITHUB_WORKSPACE}/temp_migrations"
-          mkdir -p "$temp_migrations_dir"
-          
-          echo "Combining all migrations into temporary directory..."
-          
-          # Find all migration files, sort them, and copy with unique names
-          counter=1
-          find . -path "*/migrations/*.sql" -type f | sort | while read -r migration_file; do
-            filename=$(basename "$migration_file")
-            crate_path=$(dirname "$(dirname "$migration_file")")
-            crate_name=$(basename "$crate_path")
-            
-            # If we have a collision, prefix with crate name and counter
-            if [[ -f "$temp_migrations_dir/$filename" ]]; then
-              # Extract the timestamp and description parts
-              timestamp=$(echo "$filename" | cut -d'_' -f1)
-              description=$(echo "$filename" | cut -d'_' -f2- | sed 's/\.sql$//')
-              new_filename="${timestamp}_${counter}_${crate_name}_${description}.sql"
-              echo "Renaming duplicate migration: $filename -> $new_filename (from $crate_path)"
-              cp "$migration_file" "$temp_migrations_dir/$new_filename"
-              ((counter++))
-            else
-              echo "Copying $migration_file -> $temp_migrations_dir/$filename"
-              cp "$migration_file" "$temp_migrations_dir/$filename"
-            fi
-          done
-          
-          echo "Contents of combined migrations directory:"
-          ls -la "$temp_migrations_dir" || true
-          
-          # Apply all migrations from the combined directory
-          echo "Applying all migrations to root database..."
-          DATABASE_URL="sqlite:///$root_db" nix develop --command sqlx migrate run --source "$temp_migrations_dir"
-
-          # Verify tables were created
-          echo "Verifying database schema..."
-          nix develop --command sqlite3 "$root_db" ".tables"
-          
-          # Clean up temp directory
-          rm -rf "$temp_migrations_dir"
-
+        run: "# Create the main test database\nroot_db=\"${GITHUB_WORKSPACE}/test.db\"\necho \"Creating root database at $root_db\"\nrm -f \"$root_db\"\ntouch \"$root_db\"\n\n# Create a temporary combined migrations directory\ntemp_migrations_dir=\"${GITHUB_WORKSPACE}/temp_migrations\"\nmkdir -p \"$temp_migrations_dir\"\n\necho \"Combining all migrations into temporary directory...\"\n\n# Find all migration files, sort them, and copy with unique names\ncounter=1\nfind . -path \"*/migrations/*.sql\" -type f | sort | while read -r migration_file; do\n  filename=$(basename \"$migration_file\")\n  crate_path=$(dirname \"$(dirname \"$migration_file\")\")\n  crate_name=$(basename \"$crate_path\")\n  \n  # If we have a collision, prefix with crate name and counter\n  if [[ -f \"$temp_migrations_dir/$filename\" ]]; then\n    # Extract the timestamp and description parts\n    timestamp=$(echo \"$filename\" | cut -d'_' -f1)\n    description=$(echo \"$filename\" | cut -d'_' -f2- | sed 's/\\.sql$//')\n    new_filename=\"${timestamp}_${counter}_${crate_name}_${description}.sql\"\n    echo \"Renaming duplicate migration: $filename -> $new_filename (from $crate_path)\"\n    cp \"$migration_file\" \"$temp_migrations_dir/$new_filename\"\n    ((counter++))\n  else\n    echo \"Copying $migration_file -> $temp_migrations_dir/$filename\"\n    cp \"$migration_file\" \"$temp_migrations_dir/$filename\"\n  fi\ndone\n\necho \"Contents of combined migrations directory:\"\nls -la \"$temp_migrations_dir\" || true\n\n# Apply all migrations from the combined directory\necho \"Applying all migrations to root database...\"\nDATABASE_URL=\"sqlite:///$root_db\" nix develop .#rust --command sqlx migrate run --source \"$temp_migrations_dir\"\n\n# Verify tables were created\necho \"Verifying database schema...\"\nnix develop --command sqlite3 \"$root_db\" \".tables\"\n\n# Clean up temp directory\nrm -rf \"$temp_migrations_dir\"\n"
       - name: Cache sqlx metadata
         uses: actions/cache@v4
         with:
@@ -144,44 +82,33 @@ jobs:
           key: sqlx-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.sql', 'migrations/**/*.sql') }}
           restore-keys: |
             sqlx-${{ runner.os }}-
-
       - name: Generate sqlx metadata
         run: nix develop --command cargo sqlx prepare --workspace
-
       - name: Run compiler check
         run: nix develop --command cargo check --workspace
-
       - name: Run cargo clippy
         run: nix develop --command cargo clippy --workspace -- -D warnings -A unknown-lints --no-deps
-
       - name: Run cargo fmt
         run: nix develop --command cargo fmt --all -- --check
-
   node_lint:
     runs-on: ubuntu-latest
     needs: determine_jobs
     if: needs.determine_jobs.outputs.format == 'true'
     steps:
       - uses: actions/checkout@v5
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v12
-
       - name: Setup Cachix
         uses: cachix/cachix-action@v12
         with:
           name: nix-community
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: true
-
       - name: Install dependencies
         run: nix develop --command pnpm install --frozen-lockfile --prefer-offline
-
       - name: Check prettier
         run: nix develop --command pnpm prettier --check .
-
       - name: Check eslint
         run: nix develop --command pnpm lint
-
       - name: Run typecheck
         run: nix develop --command pnpm typecheck

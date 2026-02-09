@@ -1,280 +1,136 @@
-# Nix Development Environment
 
-> **Philosophy**: No cron jobs. No background daemons. No active memory burden.  
-> Just declarative, self-pruning infrastructure that doesn't rot.
+# Nix Flake Architecture
 
----
+This flake provides **three development shells** optimized for different use cases:
 
-## Structure
+## Shell Comparison
 
-```
-nix/
-├── README.md              # You are here
-├── rust-env.nix           # Rust toolchain + build deps
-└── whisper-manager.nix    # ML model lifecycle management
-```
+| Shell       | Purpose              | Includes                                    |
+|-------------|----------------------|---------------------------------------------|
+| `default`   | Local development    | Rust + dev tools + Whisper + audio libs     |
+| `rust`      | Rust-only work       | Rust + build deps + dev tools               |
+| `ci`        | CI/CD pipelines      | **Minimal**: Rust compiler + build deps only|
 
-Each module is **self-contained** and **composable**. The root `flake.nix` just wires them together.
+## Usage
 
----
+### Local Development (Full Environment)
 
-## Quick Start
-
-### Enter the default environment (Rust + Whisper)
 ```bash
+# Enter full dev environment
 nix develop
+
+# Available commands:
+# - cargo, rustc, clippy, rust-analyzer
+# - cargo-audit, cargo-watch, cargo-expand, etc.
+# - whisper download/prune/list
+# - sqlx, just, jq, etc.
 ```
 
-You now have:
-- Full Rust toolchain (stable + rust-analyzer + clippy)
-- Whisper model management CLI
-- Build essentials (OpenSSL, ALSA, LLVM, etc.)
-
-### Use specialized shells
+### Rust-Only Development
 
 ```bash
-# Rust-only (lighter, no ML tools)
+# Skip whisper manager
 nix develop .#rust
-
-# Whisper-only (model management without Rust overhead)
-nix develop .#whisper
 ```
 
----
+### CI/CD (Minimal)
 
-## Modules
+```bash
+# Minimal environment - no dev tools, no whisper
+nix develop .#ci --command cargo build --release
 
-### `rust-env.nix` – Rust Toolchain
+# In GitHub Actions:
+# nix develop .#ci --command cargo build -p my-package
+```
 
-**What it provides:**
-- `rustc`, `cargo`, `rust-analyzer`, `clippy`
-- Build tools: `pkg-config`, `cmake`, `clang`
-- Database CLIs: `sqlite`, `duckdb`, `sqlx-cli`
-- Dev utils: `cargo-watch`, `cargo-audit`, `just`, `jq`
-- Audio libs: `alsa-lib`
+## What Gets Excluded in CI
 
-**Configuration:**
-Edit targets/extensions directly in the file:
+The `.#ci` shell removes:
+
+- ❌ Whisper manager (scripts, wget, curl)
+- ❌ Audio libraries (alsa-lib)
+- ❌ Dev tooling (cargo-watch, cargo-audit, flamegraph, etc.)
+- ❌ Database CLIs (sqlite, duckdb)
+- ❌ Utilities (jq, just, jsonnet)
+- ❌ IDE extensions (rust-analyzer, rust-src)
+- ❌ Shell hooks and environment customization
+
+This significantly reduces:
+- Closure size (~500MB+ savings)
+- Evaluation time
+- Network bandwidth
+- Cache storage
+
+## CI Detection
+
+The flake automatically detects `CI=true` environment variable:
+
+```bash
+# Automatic CI mode
+export CI=true
+nix develop  # Uses minimal buildInputs
+
+# Manual CI shell
+nix develop .#ci  # Explicitly uses minimal shell
+```
+
+## File Structure
+
+```
+.
+├── flake.nix                 # Main flake with shell definitions
+└── nix/
+    ├── rust-env.nix          # Rust toolchain (CI-aware)
+    └── whisper-manager.nix   # Whisper models (disabled in CI)
+```
+
+## Modifying Active Packages
+
+### Add a Dev Tool (Local Only)
+
+Edit `nix/rust-env.nix`:
+
 ```nix
-targets = [
-  "x86_64-unknown-linux-gnu"
-  # "wasm32-unknown-unknown"  # Uncomment for WASM
+devTools = with pkgs; [
+  # ... existing tools
+  your-new-tool
 ];
 ```
 
----
+### Add a Build Dependency (Included in CI)
 
-### `whisper-manager.nix` – ML Model Lifecycle
+Edit `nix/rust-env.nix`:
 
-**Problem it solves:**  
-You download 5 Whisper models, forget which ones you need, run out of disk space, and have no idea what to delete.
+```nix
+coreBuildInputs = with pkgs; [
+  # ... existing deps
+  your-build-dep
+];
+```
 
-**Solution:**  
-Declarative model registry. Only models in `activeModels` are kept. Everything else gets pruned automatically.
+### Change Active Whisper Models
 
-#### Configuration
-
-Edit the `activeModels` list in `whisper-manager.nix`:
+Edit `nix/whisper-manager.nix`:
 
 ```nix
 activeModels = [
-  "ggml-base.en-q5_1.bin"        # Keep this
-  # "ggml-small.en-q5_1.bin"     # Commented out = will be pruned
+  "ggml-base.en-q5_1.bin"   # Uncomment to activate
+  "ggml-small.en-q5_1.bin"  # Add more as needed
 ];
 ```
 
-#### Commands
+## Verification
+
+Check what's in each shell:
 
 ```bash
-whisper download   # Interactive model download (auto-prunes unused first)
-whisper prune      # Remove models not in activeModels list
-whisper list       # Show active vs downloaded models + disk usage
+# See all packages in default shell
+nix develop --command sh -c 'echo $buildInputs'
+
+# See minimal CI packages
+nix develop .#ci --command sh -c 'echo $buildInputs'
+
+# Compare sizes
+nix path-info -rsSh $(nix eval .#devShells.x86_64-linux.default --raw)
+nix path-info -rsSh $(nix eval .#devShells.x86_64-linux.ci --raw)
 ```
-
-#### Design Principles
-
-1. **Reactive, not scheduled**: Pruning happens before downloads, not on a timer
-2. **Single source of truth**: Your Nix file IS your inventory
-3. **Zero daemons**: No cron, no systemd timers, no background processes
-4. **Self-documenting**: `whisper list` always shows ground truth
-
-#### Workflow Example
-
-```bash
-# Download a model
-$ whisper download
-[Interactive menu appears]
-Select model (1-4): 3
-⬇️  Downloading ggml-small.en-q5_1.bin...
-✅ Downloaded (240MB)
-
-⚠️  Add to activeModels in nix/whisper-manager.nix:
-   activeModels = [ "ggml-small.en-q5_1.bin" ];
-
-# Edit nix/whisper-manager.nix to register it
-# (Otherwise it'll be pruned next time)
-
-# Later, decide you don't need it
-# Just comment it out:
-activeModels = [
-  "ggml-base.en-q5_1.bin"
-  # "ggml-small.en-q5_1.bin"  # Don't need anymore
-];
-
-# Next download or prune operation removes it
-$ whisper download
-🧹 Pruning models not in active registry...
-🗑️  Removing unused: ggml-small.en-q5_1.bin
-✅ Pruning complete
-```
-
----
-
-## Adding New Modules
-
-Want to add a Python environment, Docker tools, or Postgres?
-
-1. **Create a new module** (e.g., `nix/python-env.nix`)
-2. **Import it in root `flake.nix`:**
-   ```nix
-   pythonEnv = import ./nix/python-env.nix { inherit pkgs; };
-   ```
-3. **Add to buildInputs or create a new shell:**
-   ```nix
-   devShells.python = pkgs.mkShell {
-     buildInputs = pythonEnv.packages;
-     shellHook = pythonEnv.shellHook;
-   };
-   ```
-
-**Rule of thumb:**  
-If it's >30 lines or has its own config, it gets its own module.
-
----
-
-## Why This Structure?
-
-### Traditional approach (god-file):
-```nix
-# flake.nix (500 lines)
-# - Rust stuff
-# - Python stuff  
-# - Docker stuff
-# - ML models
-# - Database migrations
-# - ...you get the idea
-```
-❌ Hard to read  
-❌ Merge conflicts  
-❌ Can't reuse across projects  
-❌ No separation of concerns  
-
-### Modular approach (this repo):
-```nix
-# flake.nix (30 lines - just composition)
-# nix/rust-env.nix (focused, reusable)
-# nix/whisper-manager.nix (focused, reusable)
-```
-✅ Clear responsibilities  
-✅ Easy git history  
-✅ Copy modules to other projects  
-✅ Change Rust config without touching ML config  
-
----
-
-## Philosophy: No Active Memory Burden
-
-Traditional systems require you to remember:
-- "Did I set up a cron job for model cleanup?"
-- "Which models am I using again?"
-- "Is there a systemd timer I forgot about?"
-
-This Nix setup requires you to remember **nothing**.
-
-Want to know what models you're using?  
-→ Look at `activeModels` in `whisper-manager.nix`
-
-Want to know what's installed?  
-→ `nix flake show` or check the module files
-
-Want to clean up unused models?  
-→ Don't. They self-prune on next operation.
-
-**Your flake is your memory. Your git history is your audit log.**
-
----
-
-## Debugging
-
-### Shell not loading?
-```bash
-# Check flake syntax
-nix flake check
-
-# Verbose output
-nix develop --print-build-logs
-```
-
-### Module import failing?
-```bash
-# Ensure paths are correct (relative to flake.nix)
-# Should be: import ./nix/module-name.nix
-```
-
-### Whisper models not pruning?
-```bash
-# Run manually to see output
-whisper-prune
-
-# Check what's active
-whisper list
-```
-
----
-
-## Related Docs
-
-- [Root README](../README.md) – Project overview
-- [System Architecture](../docs/system_design/) – Service topology
-- [whisper.cpp repo](https://github.com/ggerganov/whisper.cpp) – Model source
-
----
-
-## Contributing to Nix Modules
-
-When adding new functionality:
-
-1. **Keep modules focused** – one concern per file
-2. **Export a shell** – makes testing easy (`nix develop .#yourmodule`)
-3. **Document config options** – future you will thank present you
-4. **No side effects** – modules should be pure functions of `{ pkgs }`
-
-**Good module structure:**
-```nix
-{ pkgs }:
-let
-  # Configuration at the top
-  config = { ... };
-  
-  # Tools/scripts
-  myTool = pkgs.writeShellScriptBin "tool" ''...'';
-in
-{
-  packages = [ myTool ];
-  shellHook = ''...'';
-  shell = pkgs.mkShell { ... };
-}
-```
-
----
-
-## Known Issues
-
-- **Model downloads require internet** – obviously, but worth stating
-- **Disk space checks are advisory** – won't stop you from filling /
-- **No integrity checking** – we trust Hugging Face's CDN
-- **Concurrent prunes might race** – don't run `whisper prune` in parallel
-
-None of these are critical for a dev environment. If you need production robustness, consider adding checksums and locking.
-
----

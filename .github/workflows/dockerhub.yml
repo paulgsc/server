@@ -113,7 +113,7 @@ jobs:
       - name: Build application with Nix
         run: |
           echo "🔨 Building ${{ matrix.image.name }} with Nix..."
-          nix develop --command cargo build --release -p ${{ matrix.image.name }}
+          nix develop .#ci --command cargo build --release -p ${{ matrix.image.name }}
           mkdir -p ./target/docker/
           cp ./target/release/${{ matrix.image.name }} ./target/docker/
       - name: Extract metadata
