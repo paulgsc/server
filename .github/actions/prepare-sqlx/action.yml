@@ -14,12 +14,11 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-sqlx-cli-0.8-sqlite
+        key: ${{ runner.os }}-sqlx-cli-sqlite
     - name: Install SQLx CLI
       if: inputs.needs-sqlx == 'true' && steps.cache-sqlx.outputs.cache-hit != 'true'
       run: |
         nix develop .#ci --command cargo install sqlx-cli \
-          --version 0.8 \
           --no-default-features \
           --features sqlite
       shell: bash
