@@ -1,58 +1,42 @@
 name: Prepare SQLx
 inputs:
-  image-name: {required: true}
-  needs-sqlx: {required: true}
-  needs-migrations: {required: true}
+  image-name:
+    required: true
+  needs-sqlx:
+    required: true
+  needs-migrations:
+    required: true
 runs:
   using: composite
   steps:
-    - uses: DeterminateSystems/nix-installer-action@v12
-    # Cache SQLx CLI binary
-    - name: Cache SQLx CLI
-      if: inputs.needs-sqlx == 'true'
-      id: cache-sqlx
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-sqlx-cli-sqlite
-    - name: Install SQLx CLI
-      if: inputs.needs-sqlx == 'true' && steps.cache-sqlx.outputs.cache-hit != 'true'
-      run: |
-        nix develop .#ci --command cargo install sqlx-cli \
-          --no-default-features \
-          --features sqlite
-      shell: bash
-    # Create database and run all migrations from discovered paths
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v12
+    # Create database and run migrations
     - name: Setup database and run migrations
       if: inputs.needs-migrations == 'true'
+      shell: bash
+      env:
+        DATABASE_URL: sqlite://./dev.db
       run: |
-        export PATH="$HOME/.cargo/bin:$PATH"
-
         echo "Creating database..."
-        mkdir -p $(dirname ./dev.db)
-        sqlx database create
+        mkdir -p "$(dirname ./dev.db)"
+        nix develop .#ci --command sqlx database create
 
         echo "Discovering and running migrations..."
 
-        # Find all migration directories and run them in sorted order
         find crates -type d -name migrations 2>/dev/null | sort | while read migration_dir; do
           echo "Running migrations from: $migration_dir"
-          sqlx migrate run --source "$migration_dir"
+          nix develop .#ci --command sqlx migrate run --source "$migration_dir"
         done
 
         echo "All migrations completed successfully"
-      shell: bash
-      env:
-        DATABASE_URL: sqlite://./dev.db
-    # Generate workspace-level .sqlx folder for offline query verification
+    # Generate workspace-level .sqlx metadata
     - name: Generate SQLx metadata
       if: inputs.needs-sqlx == 'true'
-      run: |
-        export PATH="$HOME/.cargo/bin:$PATH"
-        echo "Generating workspace-level SQLx metadata..."
-
-        # Generate single workspace .sqlx folder
-        cargo sqlx prepare --workspace -- --bin ${{ inputs.image-name }}
       shell: bash
       env:
         DATABASE_URL: sqlite://./dev.db
+      run: |
+        echo "Generating workspace-level SQLx metadata..."
+        nix develop .#ci --command \
+          cargo sqlx prepare --workspace -- --bin ${{ inputs.image-name }}

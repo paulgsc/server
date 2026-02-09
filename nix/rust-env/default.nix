@@ -20,6 +20,8 @@
     llvmPackages.libclang
     llvmPackages.bintools
     cmake
+    sqlx-cli # need this in ci as well for migrations and prepare
+    sqlite # need this in ci as well for migrations and prepare
   ];
 
   # Development-only tooling (excluded from CI)
@@ -29,10 +31,8 @@
     cargo-watch
     cargo-expand
     cargo-flamegraph
-    sqlx-cli
     jq
     just
-    sqlite
     duckdb
     alsa-lib
     go-jsonnet
