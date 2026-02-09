@@ -17,7 +17,6 @@ struct ImageSpec {
 	repo_suffix: &'static str,
 	needs_sqlx: bool,
 	needs_migrations: bool,
-	migration_paths: Option<&'static [&'static str]>,
 
 	#[serde(skip_serializing)]
 	manifest: &'static str,
@@ -37,7 +36,6 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "server",
 		needs_sqlx: true,
 		needs_migrations: true,
-		migration_paths: Some(&["apps/servers/file_host/migrations"]),
 		manifest: "apps/servers/file_host/Cargo.toml",
 	},
 	ImageSpec {
@@ -46,7 +44,6 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "obs",
 		needs_sqlx: false,
 		needs_migrations: false,
-		migration_paths: None,
 		manifest: "apps/some-obs/Cargo.toml",
 	},
 	ImageSpec {
@@ -55,7 +52,6 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "orchestrator",
 		needs_sqlx: false,
 		needs_migrations: false,
-		migration_paths: None,
 		manifest: "apps/orchestrator/Cargo.toml",
 	},
 ];
@@ -173,20 +169,6 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 	}
 
-	// Check if migration paths changed (if applicable)
-	if let Some(migration_paths) = image.migration_paths {
-		for migration_path in migration_paths {
-			let migration_dir = normalize_path(Path::new(migration_path), workspace_root);
-			for file in changed_files {
-				let normalized_file = normalize_path(file, workspace_root);
-				if is_under_dir(&normalized_file, &migration_dir) {
-					eprintln!("  ✓ Migration changed: {}", file.display());
-					return true;
-				}
-			}
-		}
-	}
-
 	// Find the package by manifest path
 	let pkg = metadata.packages.iter().find(|p| {
 		let pkg_manifest = Path::new(&p.manifest_path);
@@ -201,10 +183,6 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 		None => {
 			eprintln!("  ✗ Package not found for manifest: {}", image.manifest);
-			eprintln!("    Available manifests:");
-			for p in &metadata.packages {
-				eprintln!("      - {}", p.manifest_path);
-			}
 			return false;
 		}
 	};
