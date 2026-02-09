@@ -15,6 +15,7 @@ runs:
       with:
         path: ~/.cargo/bin/sqlx
         key: ${{ runner.os }}-sqlx-cli-sqlite
+    # Install SQLx CLI if not cached
     - name: Install SQLx CLI
       if: inputs.needs-sqlx == 'true' && steps.cache-sqlx.outputs.cache-hit != 'true'
       run: |
@@ -22,18 +23,6 @@ runs:
           --no-default-features \
           --features sqlite
       shell: bash
-    # Run all migrations (auto-discovers all migration folders)
-    - name: Run migrations
-      if: inputs.needs-migrations == 'true'
-      run: |
-        export PATH="$HOME/.cargo/bin:$PATH"
-        echo "Running all workspace migrations for ${{ inputs.image-name }}..."
-
-        # Auto-discover and run all migrations in workspace
-        sqlx migrate run
-      shell: bash
-      env:
-        DATABASE_URL: sqlite://./dev.db
     # Generate workspace-level .sqlx folder for offline query verification
     - name: Generate SQLx metadata
       if: inputs.needs-sqlx == 'true'
