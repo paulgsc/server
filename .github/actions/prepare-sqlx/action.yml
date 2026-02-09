@@ -31,7 +31,7 @@ runs:
         echo "Generating workspace-level SQLx metadata..."
 
         # Generate single workspace .sqlx folder
-        sqlx prepare --workspace -- --bin ${{ inputs.image-name }}
+        cargo sqlx prepare --workspace -- --bin ${{ inputs.image-name }}
       shell: bash
       env:
         DATABASE_URL: sqlite://./dev.db
