@@ -1,52 +1,41 @@
-name: Build Image
+name: Build & Push Images
 on:
   workflow_call:
     inputs:
       matrix:
-        description: "JSON array of image specs"
+        description: "JSON matrix of image specifications from detector"
         required: true
         type: string
-      push: # New input to control the "Penguin Safety" toggle
-        description: "Whether to push to DockerHub"
+      push:
+        description: "Push images to DockerHub"
         required: false
         default: false
         type: boolean
 jobs:
   build:
+    name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # Build other images even if one fails
-      matrix: ${{ fromJSON(inputs.matrix) }}
-    env:
-      DOCKER_REPO: pgathondu/${{ matrix.repo_suffix }}
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix).include }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      # If your SQLx preparation is heavy, ensure that action 
-      # also uses internal caching for the cargo/sqlx-cli binaries.
-      - name: Prepare SQLx + migrations
-        if: matrix.needs_sqlx == true || matrix.needs_migrations == true
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Prepare SQLx environment
+        if: matrix.needs_sqlx || matrix.needs_migrations
         uses: ./.github/actions/prepare-sqlx
         with:
           image-name: ${{ matrix.name }}
           needs-sqlx: ${{ matrix.needs_sqlx }}
           needs-migrations: ${{ matrix.needs_migrations }}
           migration-paths: ${{ toJSON(matrix.migration_paths) }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        if: inputs.push == true
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Build & Push
+      - name: Build and push Docker image
         uses: ./.github/actions/docker-build
         with:
           dockerfile: ${{ matrix.dockerfile }}
-          image-name: ${{ matrix.repo_suffix }}
-          docker-repo: ${{ env.DOCKER_REPO }}
-          push: ${{ inputs.push }} # Pass the toggle down
-          # Ensure your local action uses: 
-          # cache-from: type=gha
-          # cache-to: type=gha,mode=max
+          image-name: ${{ matrix.name }}
+          docker-repo: pgathondu/${{ matrix.repo_suffix }}
+          push: ${{ inputs.push }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}

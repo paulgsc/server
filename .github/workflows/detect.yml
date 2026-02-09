@@ -13,59 +13,56 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
-      matrix_has_entries: ${{ steps.compute.outputs.matrix_has_entries }}
+      has_changes: ${{ steps.compute.outputs.has_changes }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Cache Detector Binary
+      - name: Cache detector binary
         id: cache-detector
         uses: actions/cache@v4
         with:
           path: .github/scripts/detect/target/release/detect
-          key: ${{ runner.os }}-rust-${{ hashFiles('.github/scripts/detect/Cargo.lock') }}
-      - name: Compile detector
+          key: ${{ runner.os }}-detector-${{ hashFiles('.github/scripts/detect/Cargo.lock', '.github/scripts/detect/Cargo.toml', '.github/scripts/detect/src/**') }}
+      - name: Build detector
         if: steps.cache-detector.outputs.cache-hit != 'true'
         run: cargo build --release
         working-directory: .github/scripts/detect
-      - name: Compute matrix
+      - name: Compute build matrix
         id: compute
         run: |
-          # Determine base ref
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_REF="${{ github.event.pull_request.base.ref }}"
+          # Determine comparison base
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
           else
             BASE_REF="origin/main"
+            git fetch origin main --depth=1
           fi
 
-          git fetch origin "$BASE_REF" --depth=1
-          git diff --name-only "origin/$BASE_REF...HEAD" \
-            | .github/scripts/detect/target/release/detect > matrix.json
+          # Generate matrix
+          git diff --name-only "$BASE_REF...HEAD" \
+            | .github/scripts/detect/target/release/detect \
+            | tee matrix.json
 
-          # Clean up JSON for GitHub Actions
-          MATRIX=$(tr -d '\n' < matrix.json)
-
-          # Check if there are entries to build
-          MATRIX_HAS_ENTRIES=false
-          if [ -s matrix.json ]; then
-            # Safely check if 'include' array exists and has length > 0
-            INCLUDE_COUNT=$(jq '.include | length // 0' matrix.json)
-            if [ "$INCLUDE_COUNT" -gt 0 ]; then
-              MATRIX_HAS_ENTRIES=true
-            fi
-          fi
+          # Extract matrix and check if empty
+          MATRIX=$(jq -c . matrix.json)
+          INCLUDE_COUNT=$(jq '.include | length' matrix.json)
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "matrix_has_entries=$MATRIX_HAS_ENTRIES" >> "$GITHUB_OUTPUT"
-        working-directory: .
+
+          if [[ "$INCLUDE_COUNT" -gt 0 ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Building $INCLUDE_COUNT image(s)"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No images require rebuilding"
+          fi
   build:
     needs: detect
-    runs-on: ubuntu-latest
-    if: ${{ needs.detect.matrix_has_entries == 'true' }}
-    steps:
-      - name: Run build-image workflow
-        uses: ./.github/workflows/build-image.yml
-        with:
-          matrix: ${{ needs.detect.outputs.matrix }}
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: needs.detect.outputs.has_changes == 'true'
+    uses: ./.github/workflows/build-image.yml
+    secrets: inherit
+    with:
+      matrix: ${{ needs.detect.outputs.matrix }}
+      push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
