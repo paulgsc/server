@@ -12,11 +12,13 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.detect.outputs.matrix }}
+      matrix: ${{ steps.compute.outputs.matrix }}
+      matrix_has_entries: ${{ steps.compute.outputs.matrix_has_entries }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required for accurate diffs
+          fetch-depth: 0
       - name: Cache Detector Binary
         id: cache-detector
         uses: actions/cache@v4
@@ -28,9 +30,9 @@ jobs:
         run: cargo build --release
         working-directory: .github/scripts/detect
       - name: Compute matrix
-        id: detect
+        id: compute
         run: |
-          # Determine base ref intelligently
+          # Determine base ref
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE_REF="${{ github.event.pull_request.base.ref }}"
           else
@@ -41,18 +43,29 @@ jobs:
           git diff --name-only "origin/$BASE_REF...HEAD" \
             | .github/scripts/detect/target/release/detect > matrix.json
 
-          # Escape JSON newlines/spaces for GitHub Actions
+          # Clean up JSON for GitHub Actions
           MATRIX=$(tr -d '\n' < matrix.json)
+
+          # Check if there are entries to build
+          MATRIX_HAS_ENTRIES=false
+          if [ -s matrix.json ]; then
+            # Safely check if 'include' array exists and has length > 0
+            INCLUDE_COUNT=$(jq '.include | length // 0' matrix.json)
+            if [ "$INCLUDE_COUNT" -gt 0 ]; then
+              MATRIX_HAS_ENTRIES=true
+            fi
+          fi
+
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-        working-directory: . # ✅ CRITICAL: run from workspace root
+          echo "matrix_has_entries=$MATRIX_HAS_ENTRIES" >> "$GITHUB_OUTPUT"
+        working-directory: .
   build:
     needs: detect
-    # Only run if matrix has at least one image
-    if: >
-      always() && needs.detect.result == 'success' && needs.detect.outputs.matrix != '' && fromJSON(needs.detect.outputs.matrix).include != null && (fromJson(needs.detect.outputs.matrix).include | length) > 0
-
-    uses: ./.github/workflows/build-image.yml
-    with:
-      matrix: ${{ needs.detect.outputs.matrix }}
-      push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    if: ${{ needs.detect.matrix_has_entries == 'true' }}
+    steps:
+      - name: Run build-image workflow
+        uses: ./.github/workflows/build-image.yml
+        with:
+          matrix: ${{ needs.detect.outputs.matrix }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

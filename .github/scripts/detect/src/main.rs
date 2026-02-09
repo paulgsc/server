@@ -66,6 +66,7 @@ const IMAGES: &[ImageSpec] = &[
 struct Metadata {
 	packages: Vec<Package>,
 	resolve: Resolve,
+	workspace_root: String,
 }
 
 #[derive(Deserialize)]
@@ -94,10 +95,36 @@ fn load_metadata() -> Metadata {
 		.expect("failed to run cargo metadata");
 
 	if !output.status.success() {
+		eprintln!("cargo metadata stderr: {}", String::from_utf8_lossy(&output.stderr));
 		panic!("cargo metadata failed");
 	}
 
 	serde_json::from_slice(&output.stdout).expect("invalid metadata json")
+}
+
+/* ------------------------- PATH UTILITIES ------------------------- */
+
+/// Convert to absolute path relative to workspace root
+fn normalize_path(path: &Path, workspace_root: &Path) -> PathBuf {
+	if path.is_absolute() {
+		path.to_path_buf()
+	} else {
+		workspace_root.join(path)
+	}
+}
+
+/// Check if file is under directory (handles both relative and absolute)
+fn is_under_dir(file: &Path, dir: &Path) -> bool {
+	// Try direct prefix check
+	if file.starts_with(dir) {
+		return true;
+	}
+
+	// Try canonicalized paths (handles symlinks, .., etc)
+	match (file.canonicalize(), dir.canonicalize()) {
+		(Ok(file_canon), Ok(dir_canon)) => file_canon.starts_with(dir_canon),
+		_ => false,
+	}
 }
 
 /* ------------------------- DEP GRAPH ------------------------- */
@@ -132,23 +159,61 @@ fn dependency_closure(root: &str, graph: &HashMap<String, HashSet<String>>) -> H
 /* ------------------------- REBUILD LOGIC ------------------------- */
 
 fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metadata, graph: &HashMap<String, HashSet<String>>) -> bool {
-	let dockerfile = Path::new(image.dockerfile);
+	let workspace_root = Path::new(&metadata.workspace_root);
 
-	if changed_files.iter().any(|f| f == dockerfile) {
-		return true;
+	eprintln!("Checking image: {}", image.name);
+
+	// Check if Dockerfile changed
+	let dockerfile = normalize_path(Path::new(image.dockerfile), workspace_root);
+	for file in changed_files {
+		let normalized_file = normalize_path(file, workspace_root);
+		if normalized_file == dockerfile {
+			eprintln!("  ✓ Dockerfile changed: {}", image.dockerfile);
+			return true;
+		}
 	}
 
-	// map manifest path → package id
-	let pkg = metadata.packages.iter().find(|p| p.manifest_path.ends_with(image.manifest));
+	// Check if migration paths changed (if applicable)
+	if let Some(migration_paths) = image.migration_paths {
+		for migration_path in migration_paths {
+			let migration_dir = normalize_path(Path::new(migration_path), workspace_root);
+			for file in changed_files {
+				let normalized_file = normalize_path(file, workspace_root);
+				if is_under_dir(&normalized_file, &migration_dir) {
+					eprintln!("  ✓ Migration changed: {}", file.display());
+					return true;
+				}
+			}
+		}
+	}
+
+	// Find the package by manifest path
+	let pkg = metadata.packages.iter().find(|p| {
+		let pkg_manifest = Path::new(&p.manifest_path);
+		let expected_manifest = normalize_path(Path::new(image.manifest), workspace_root);
+		pkg_manifest == expected_manifest
+	});
 
 	let pkg = match pkg {
-		Some(p) => p,
-		None => return false,
+		Some(p) => {
+			eprintln!("  Found package: {}", p.id);
+			p
+		}
+		None => {
+			eprintln!("  ✗ Package not found for manifest: {}", image.manifest);
+			eprintln!("    Available manifests:");
+			for p in &metadata.packages {
+				eprintln!("      - {}", p.manifest_path);
+			}
+			return false;
+		}
 	};
 
+	// Get all dependencies
 	let closure = dependency_closure(&pkg.id, graph);
+	eprintln!("  Dependency closure size: {}", closure.len());
 
-	// build package id → crate root dir
+	// Build set of all crate directories in the dependency tree
 	let mut crate_dirs = HashSet::new();
 
 	for p in &metadata.packages {
@@ -159,12 +224,22 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 	}
 
+	eprintln!("  Watching {} crate directories", crate_dirs.len());
+
+	// Check if any changed file is in a relevant crate
 	for file in changed_files {
-		if crate_dirs.iter().any(|dir| file.starts_with(dir)) {
-			return true;
+		let normalized_file = normalize_path(file, workspace_root);
+
+		for dir in &crate_dirs {
+			if is_under_dir(&normalized_file, dir) {
+				eprintln!("  ✓ Changed file in dependency: {}", file.display());
+				eprintln!("    (matches crate: {})", dir.display());
+				return true;
+			}
 		}
 	}
 
+	eprintln!("  ✗ No relevant changes detected");
 	false
 }
 
@@ -172,6 +247,9 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 
 fn main() {
 	let force = env::var("FORCE_BUILD").is_ok();
+
+	eprintln!("=== Docker Build Matrix Generator ===");
+	eprintln!("FORCE_BUILD: {}", force);
 
 	let changed_files: Vec<PathBuf> = io::stdin()
 		.lock()
@@ -182,18 +260,29 @@ fn main() {
 		.map(PathBuf::from)
 		.collect();
 
+	eprintln!("Changed files ({}):", changed_files.len());
+	for file in &changed_files {
+		eprintln!("  - {}", file.display());
+	}
+
 	let metadata = load_metadata();
+	eprintln!("Workspace root: {}", metadata.workspace_root);
+
 	let graph = build_graph(&metadata);
 
 	let mut include = Vec::new();
 
 	for image in IMAGES {
 		if force || needs_rebuild(image, &changed_files, &metadata, &graph) {
+			eprintln!("➜ REBUILDING: {}", image.name);
 			include.push(image.clone());
 		}
 	}
 
-	let matrix = Matrix { include };
+	let matrix = Matrix { include: include.clone() };
+
+	eprintln!("\n=== Final Matrix ===");
+	eprintln!("Images to build: {}", include.len());
 
 	println!("{}", serde_json::to_string(&matrix).unwrap());
 }
