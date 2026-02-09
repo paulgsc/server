@@ -31,7 +31,7 @@ struct Matrix {
 
 const IMAGES: &[ImageSpec] = &[
 	ImageSpec {
-		name: "file_host",
+		name: "maishatu-server",
 		dockerfile: "./infra/docker/Dockerfile.server",
 		repo_suffix: "server",
 		needs_sqlx: true,
@@ -39,7 +39,7 @@ const IMAGES: &[ImageSpec] = &[
 		manifest: "apps/servers/file_host/Cargo.toml",
 	},
 	ImageSpec {
-		name: "some-obs",
+		name: "maishatu-obs",
 		dockerfile: "./infra/docker/Dockerfile.obs",
 		repo_suffix: "obs",
 		needs_sqlx: false,
