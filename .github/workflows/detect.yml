@@ -2,12 +2,11 @@ name: Detect & Build
 on:
   push:
     branches: [main]
-  pull_request: # The "Pre-flight" addition
+  pull_request:
     branches: [main]
   workflow_dispatch:
-# The Penguin Protector: cancels previous runs on the same branch
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 jobs:
   detect:
@@ -15,39 +14,45 @@ jobs:
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      # GREEN STEP: Cache the Rust binary to save 30-60s of CPU time
+          fetch-depth: 0 # Required for accurate diffs
       - name: Cache Detector Binary
         id: cache-detector
         uses: actions/cache@v4
         with:
           path: .github/scripts/detect/target/release/detect
-          key: ${{ runner.os }}-detect-${{ hashFiles('.github/scripts/detect/src/**') }}
+          key: ${{ runner.os }}-rust-${{ hashFiles('.github/scripts/detect/Cargo.lock') }}
       - name: Compile detector
         if: steps.cache-detector.outputs.cache-hit != 'true'
-        run: |
-          cd .github/scripts/detect
-          cargo build --release
+        run: cargo build --release
+        working-directory: .github/scripts/detect
       - name: Compute matrix
         id: detect
         run: |
-          # Use the PR merge base or origin/main for diffing
-          BASE_REF="${{ github.base_ref || 'origin/main' }}"
-          git fetch origin "$BASE_REF"
+          # Determine base ref intelligently
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+          else
+            BASE_REF="origin/main"
+          fi
 
-          git diff --name-only "origin/$BASE_REF..HEAD" \
+          git fetch origin "$BASE_REF" --depth=1
+          git diff --name-only "origin/$BASE_REF...HEAD" \
             | .github/scripts/detect/target/release/detect > matrix.json
 
-          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+          # Escape JSON newlines/spaces for GitHub Actions
+          MATRIX=$(tr -d '\n' < matrix.json)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+        working-directory: . # ✅ CRITICAL: run from workspace root
   build:
     needs: detect
-    # Logic: Only run if the matrix isn't empty
-    if: "always() && \nneeds.detect.result == 'success' && \nfromJSON(needs.detect.outputs.matrix).include[0] != null\n"
+    # Only run if matrix has at least one image
+    if: >
+      always() && needs.detect.result == 'success' && needs.detect.outputs.matrix != '' && fromJSON(needs.detect.outputs.matrix).include != null && (fromJson(needs.detect.outputs.matrix).include | length) > 0
+
     uses: ./.github/workflows/build-image.yml
     with:
       matrix: ${{ needs.detect.outputs.matrix }}
-      # Pass a flag to build-image.yml so it knows whether to PUSH or just BUILD
       push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
