@@ -6,18 +6,24 @@ on:
         description: "JSON array of image specs"
         required: true
         type: string
+      push: # New input to control the "Penguin Safety" toggle
+        description: "Whether to push to DockerHub"
+        required: false
+        default: false
+        type: boolean
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: false # Build other images even if one fails
       matrix: ${{ fromJSON(inputs.matrix) }}
     env:
-      IMAGE_NAME: ${{ matrix.repo_suffix }}
       DOCKER_REPO: pgathondu/${{ matrix.repo_suffix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+      # If your SQLx preparation is heavy, ensure that action 
+      # also uses internal caching for the cargo/sqlx-cli binaries.
       - name: Prepare SQLx + migrations
         if: matrix.needs_sqlx == true || matrix.needs_migrations == true
         uses: ./.github/actions/prepare-sqlx
@@ -26,9 +32,21 @@ jobs:
           needs-sqlx: ${{ matrix.needs_sqlx }}
           needs-migrations: ${{ matrix.needs_migrations }}
           migration-paths: ${{ toJSON(matrix.migration_paths) }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        if: inputs.push == true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build & Push
         uses: ./.github/actions/docker-build
         with:
           dockerfile: ${{ matrix.dockerfile }}
-          image-name: ${{ env.IMAGE_NAME }}
+          image-name: ${{ matrix.repo_suffix }}
           docker-repo: ${{ env.DOCKER_REPO }}
+          push: ${{ inputs.push }} # Pass the toggle down
+          # Ensure your local action uses: 
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max

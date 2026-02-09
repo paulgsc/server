@@ -2,7 +2,13 @@ name: Detect & Build
 on:
   push:
     branches: [main]
+  pull_request: # The "Pre-flight" addition
+    branches: [main]
   workflow_dispatch:
+# The Penguin Protector: cancels previous runs on the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   detect:
     runs-on: ubuntu-latest
@@ -12,22 +18,36 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      # GREEN STEP: Cache the Rust binary to save 30-60s of CPU time
+      - name: Cache Detector Binary
+        id: cache-detector
+        uses: actions/cache@v4
+        with:
+          path: .github/scripts/detect/target/release/detect
+          key: ${{ runner.os }}-detect-${{ hashFiles('.github/scripts/detect/src/**') }}
       - name: Compile detector
+        if: steps.cache-detector.outputs.cache-hit != 'true'
         run: |
           cd .github/scripts/detect
           cargo build --release
       - name: Compute matrix
         id: detect
         run: |
-          git fetch origin main
-          git diff --name-only origin/main..HEAD \
+          # Use the PR merge base or origin/main for diffing
+          BASE_REF="${{ github.base_ref || 'origin/main' }}"
+          git fetch origin "$BASE_REF"
+
+          git diff --name-only "origin/$BASE_REF..HEAD" \
             | .github/scripts/detect/target/release/detect > matrix.json
 
           echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
   build:
     needs: detect
-    if: fromJSON(needs.detect.outputs.matrix).include != null && fromJSON(needs.detect.outputs.matrix).include[0] != null
+    # Logic: Only run if the matrix isn't empty
+    if: "always() && \nneeds.detect.result == 'success' && \nfromJSON(needs.detect.outputs.matrix).include[0] != null\n"
     uses: ./.github/workflows/build-image.yml
     with:
       matrix: ${{ needs.detect.outputs.matrix }}
+      # Pass a flag to build-image.yml so it knows whether to PUSH or just BUILD
+      push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
