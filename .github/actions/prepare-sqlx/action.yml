@@ -35,7 +35,7 @@ runs:
         echo "Discovering and running migrations..."
 
         # Find all migration directories and run them in sorted order
-        find apps crates -type d -name migrations 2>/dev/null | sort | while read migration_dir; do
+        find crates -type d -name migrations 2>/dev/null | sort | while read migration_dir; do
           echo "Running migrations from: $migration_dir"
           sqlx migrate run --source "$migration_dir"
         done
