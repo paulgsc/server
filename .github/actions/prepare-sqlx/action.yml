@@ -1,0 +1,23 @@
+name: Prepare SQLx
+inputs:
+  image-name:
+    required: true
+  needs-sqlx:
+    required: true
+  needs-migrations:
+    required: true
+  migration-paths:
+    required: false
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@v12
+    - if: inputs.needs-sqlx == 'true'
+      run: |
+        nix develop .#ci --command cargo install sqlx-cli \
+          --no-default-features --features sqlite
+      shell: bash
+    - if: inputs.needs-migrations == 'true'
+      run: |
+        echo "Run migrations here"
+      shell: bash

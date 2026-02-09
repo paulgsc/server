@@ -1,0 +1,33 @@
+name: Detect & Build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Compile detector
+        run: |
+          cd .github/scripts/detect
+          cargo build --release
+      - name: Compute matrix
+        id: detect
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main..HEAD \
+            | .github/scripts/detect/target/release/detect > matrix.json
+
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+  build:
+    needs: detect
+    if: fromJSON(needs.detect.outputs.matrix).include != null && fromJSON(needs.detect.outputs.matrix).include[0] != null
+    uses: ./.github/workflows/build-image.yml
+    with:
+      matrix: ${{ needs.detect.outputs.matrix }}
+    secrets: inherit
