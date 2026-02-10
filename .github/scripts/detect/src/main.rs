@@ -31,7 +31,7 @@ struct Matrix {
 
 const IMAGES: &[ImageSpec] = &[
 	ImageSpec {
-		name: "maishatu-server",
+		name: "file_host",
 		dockerfile: "./infra/docker/Dockerfile.server",
 		repo_suffix: "server",
 		needs_sqlx: true,
