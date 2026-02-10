@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY apps/ apps/
 RUN cargo chef prepare --recipe-path recipe.json --bin file_host
 
 FROM chef AS builder
@@ -23,6 +24,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
 COPY crates/ crates/
 COPY .sqlx/ .sqlx/
 
@@ -76,10 +78,14 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/file_host"]
 
-# Build arguments
+# Build metadata (populated by CI)
+ARG APP_NAME=unknown
 ARG BUILD_VERSION=unknown
-ARG BUILD_DATE
-ARG VCS_REF
+ARG BUILD_DATE=unknown
+ARG VCS_REF=unknown
 
-LABEL maintainer="your-email@example.com" \
-      version="${BUILD_VERSION}"
+LABEL org.opencontainers.image.title="${APP_NAME}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="https://github.com/paulgsc/server"

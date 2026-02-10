@@ -1,0 +1,68 @@
+name: Detect & Build
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      has_changes: ${{ steps.compute.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Cache detector binary
+        id: cache-detector
+        uses: actions/cache@v4
+        with:
+          path: .github/scripts/detect/target/release/detect
+          key: ${{ runner.os }}-detector-${{ hashFiles('.github/scripts/detect/Cargo.lock', '.github/scripts/detect/Cargo.toml', '.github/scripts/detect/src/**') }}
+      - name: Build detector
+        if: steps.cache-detector.outputs.cache-hit != 'true'
+        run: cargo build --release
+        working-directory: .github/scripts/detect
+      - name: Compute build matrix
+        id: compute
+        run: |
+          # Determine comparison base
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_REF="origin/main"
+            git fetch origin main --depth=1
+          fi
+
+          # Generate matrix
+          git diff --name-only "$BASE_REF...HEAD" \
+            | .github/scripts/detect/target/release/detect \
+            | tee matrix.json
+
+          # Extract matrix and check if empty
+          MATRIX=$(jq -c . matrix.json)
+          INCLUDE_COUNT=$(jq '.include | length' matrix.json)
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+          if [[ "$INCLUDE_COUNT" -gt 0 ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Building $INCLUDE_COUNT image(s)"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No images require rebuilding"
+          fi
+  build:
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    uses: ./.github/workflows/build-image.yml
+    secrets: inherit
+    with:
+      matrix: ${{ needs.detect.outputs.matrix }}
+      push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

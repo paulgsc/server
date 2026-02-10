@@ -42,7 +42,7 @@ where
 {
 	/// Creates a new `TransportReceiver` from a type implementing [`ReceiverTrait`].
 	#[inline]
-	pub fn new(receiver: R) -> Self {
+	pub const fn new(receiver: R) -> Self {
 		Self {
 			inner: receiver,
 			_marker: PhantomData,

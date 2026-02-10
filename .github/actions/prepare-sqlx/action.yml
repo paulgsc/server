@@ -1,0 +1,42 @@
+name: Prepare SQLx
+inputs:
+  image-name:
+    required: true
+  needs-sqlx:
+    required: true
+  needs-migrations:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v12
+    # Create database and run migrations
+    - name: Setup database and run migrations
+      if: inputs.needs-migrations == 'true'
+      shell: bash
+      env:
+        DATABASE_URL: sqlite://./dev.db
+      run: |
+        echo "Creating database..."
+        mkdir -p "$(dirname ./dev.db)"
+        nix develop .#ci --command sqlx database create
+
+        echo "Discovering and running migrations..."
+
+        find crates -type d -name migrations 2>/dev/null | sort | while read migration_dir; do
+          echo "Running migrations from: $migration_dir"
+          nix develop .#ci --command sqlx migrate run --source "$migration_dir"
+        done
+
+        echo "All migrations completed successfully"
+    # Generate workspace-level .sqlx metadata
+    - name: Generate SQLx metadata
+      if: inputs.needs-sqlx == 'true'
+      shell: bash
+      env:
+        DATABASE_URL: sqlite://./dev.db
+      run: |
+        echo "Generating workspace-level SQLx metadata..."
+        nix develop .#ci --command \
+          cargo sqlx prepare --workspace -- --bin ${{ inputs.image-name }}

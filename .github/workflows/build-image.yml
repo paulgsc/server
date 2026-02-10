@@ -1,0 +1,41 @@
+name: Build & Push Images
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: "JSON matrix of image specifications from detector"
+        required: true
+        type: string
+      push:
+        description: "Push images to DockerHub"
+        required: false
+        default: false
+        type: boolean
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix).include }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Prepare SQLx environment
+        if: matrix.needs_sqlx || matrix.needs_migrations
+        uses: ./.github/actions/prepare-sqlx
+        with:
+          image-name: ${{ matrix.name }}
+          needs-sqlx: ${{ matrix.needs_sqlx }}
+          needs-migrations: ${{ matrix.needs_migrations }}
+          migration-paths: ${{ toJSON(matrix.migration_paths) }}
+      - name: Build and push Docker image
+        uses: ./.github/actions/docker-build
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          image-name: ${{ matrix.name }}
+          docker-repo: pgathondu/${{ matrix.repo_suffix }}
+          push: ${{ inputs.push }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
