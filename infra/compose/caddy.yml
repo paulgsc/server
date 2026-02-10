@@ -1,0 +1,15 @@
+services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ${REPO_ROOT}/infra/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
