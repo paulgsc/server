@@ -36,8 +36,8 @@ jobs:
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BASE_REF="${{ github.event.pull_request.base.sha }}"
           else
-            BASE_REF="origin/main"
-            git fetch origin main --depth=1
+            # Use the SHA before the push
+            BASE_REF="${{ github.event.before }}"
           fi
 
           # Generate matrix

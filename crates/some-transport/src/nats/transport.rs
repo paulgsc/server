@@ -140,7 +140,7 @@ where
 
 	/// Generates a subject name for a connection-specific channel.
 	fn channel_subject(connection_key: &str) -> String {
-		format!("channel.{}", connection_key)
+		format!("channel.{connection_key}")
 	}
 
 	/// The broadcast subject used for global messages.
