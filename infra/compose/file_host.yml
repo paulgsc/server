@@ -1,6 +1,6 @@
 services:
   file-host:
-    image: pgathondu/self-hosting-maishatu:latest
+    image: pgathondu/server:latest
     container_name: file-host-server
     ports:
       - '3000:3000'
