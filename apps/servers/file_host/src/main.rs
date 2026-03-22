@@ -39,7 +39,7 @@ async fn handle_tower_error(error: BoxError) -> FileHostError {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenv::dotenv().ok();
+	dotenvy::dotenv().ok();
 	let config = Config::parse();
 
 	// Handle health check flag

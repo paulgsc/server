@@ -23,7 +23,7 @@ axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }
 bytes = { version = "1.10.1" }
 clap = { workspace = true }
-dotenv = { workspace = true }
+dotenvy = { workspace = true }
 garde = { version =  "0.22.0", features = ["full"] }
 log = "0.4.14"
 lazy_static = { workspace = true }

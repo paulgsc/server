@@ -13,7 +13,7 @@ use nest::{init_tracing, ApiBuilder, MultiDbHandler, Run};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenv::dotenv().ok();
+	dotenvy::dotenv().ok();
 	let config = Config::parse();
 	let _ = init_tracing(&config);
 

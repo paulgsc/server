@@ -218,7 +218,7 @@ async fn process_scores(output_meta: OutputMetadata, scores: Vec<TeamScore>, ser
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	dotenv::dotenv().ok();
+	dotenvy::dotenv().ok();
 	rustls::crypto::ring::default_provider()
 		.install_default()
 		.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
