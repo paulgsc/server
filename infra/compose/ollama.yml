@@ -1,0 +1,75 @@
+#
+# Usage:
+#   docker compose -f compose/llm.yml up -d          # start
+#   docker compose -f compose/llm.yml exec ollama \  # pull models
+#     ollama pull nomic-embed-text
+#   docker compose -f compose/llm.yml exec ollama \
+#     ollama pull llama3.2:1b                         # smallest capable model
+#
+# Model selection guidance (CPU, ≤500 GB SSD):
+#
+#   nomic-embed-text   274 MB   embedding         required
+#   llama3.2:1b        ~1 GB    edge/track derive  fastest (recommended start)
+#   llama3.2:3b        ~2 GB    edge/track derive  better reasoning
+#   mistral:7b-q4      ~4 GB    edge/track derive  strong JSON adherence
+#   llama3:8b-q4       ~5 GB    edge/track derive  best open model on CPU
+#
+# On a typical CPU (4-8 cores):
+#   1b  → ~10 tok/s   (acceptable for pipeline, ~1–2 min per stage)
+#   3b  → ~5  tok/s
+#   7b  → ~2  tok/s   (slow but usable; add OLLAMA_NUM_THREAD)
+#
+# Environment overrides (set in shell or .env):
+#   OLLAMA_HOST_PORT   default 11434
+#   OLLAMA_MODELS_PATH default ./ollama-models (relative to compose file)
+#   OLLAMA_NUM_THREAD  default unset (Ollama picks automatically)
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tabsched-ollama
+    # CPU-only: do NOT add the 'deploy: resources: reservations: devices' GPU block.
+    # Ollama auto-detects no GPU and falls back to CPU inference.
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MODELS=/root/.ollama/models
+      # Uncomment to pin thread count (useful on shared boxes):
+      # - OLLAMA_NUM_THREAD=4
+    ports:
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
+    volumes:
+      # Persistent model storage on the ext SSD.
+      # Override OLLAMA_MODELS_PATH in your shell or .env to point at /mnt/ssd/...
+      - ${OLLAMA_MODELS_PATH:-./ollama-models}:/root/.ollama/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  # One-shot service that pulls the required models on first start.
+  # Re-running `docker compose -f compose/llm.yml up model-bootstrap` is idempotent.
+  model-bootstrap:
+    image: ollama/ollama:latest
+    container_name: tabsched-model-bootstrap
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      set -e
+      echo '==> Pulling nomic-embed-text (embedding model)…'
+      ollama pull nomic-embed-text
+
+      echo '==> Pulling llama3.2:1b (LLM — smallest, fastest on CPU)…'
+      ollama pull llama3.2:1b
+
+      echo '==> All models ready.'
+      ollama list
+      "
+    volumes:
+      - ${OLLAMA_MODELS_PATH:-./ollama-models}:/root/.ollama/models
+    restart: no
