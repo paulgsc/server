@@ -254,6 +254,10 @@ impl CacheStore {
 		Ok(Self { redis_client, config })
 	}
 
+	pub fn redis_client(&self) -> &redis::Client {
+		&self.redis_client
+	}
+
 	// Generate prefixed key
 	fn make_key(&self, key: &str) -> String {
 		format!("{}{}", self.config.key_prefix, key)

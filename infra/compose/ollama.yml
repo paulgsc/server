@@ -1,0 +1,47 @@
+#
+# CPU-only Ollama model server.
+# Joins monitoring-network so the pipeline daemon and any other service
+# can reach it at http://ollama:11434.
+#
+# Model storage lives on the ext SSD.  Override OLLAMA_MODELS_PATH to
+# point at your mount (e.g. /mnt/ssd/ollama-models).
+#
+# Bootstrap:
+#   docker compose exec ollama ollama pull nomic-embed-text
+#   docker compose exec ollama ollama pull llama3.2:1b
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tabsched-ollama
+    restart: unless-stopped
+    # CPU-only: no GPU device block.
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MODELS=/root/.ollama/models
+      # Uncomment to pin thread count on shared hosts:
+      # - OLLAMA_NUM_THREAD=4
+    ports:
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
+    volumes:
+      - ${OLLAMA_MODELS_PATH:-/mnt/storage/users/dev/models/ollama-models}:/root/.ollama/models
+    networks:
+      - monitoring-network
+    mem_limit: 8G
+    cpus: 4.0
+    pids_limit: 100
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+          pids: 100
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    healthcheck:
+      # `ollama list` exits 0 when the server is ready, non-zero if not.
+      test: ['CMD', 'ollama', 'list']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s

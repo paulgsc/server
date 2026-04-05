@@ -1,0 +1,94 @@
+#
+# tabsched pipeline daemon.
+# Joins monitoring-network (Redis + NATS already deployed there).
+# Ollama is also on this network (see ollama.yml).
+#
+# Include order in docker-compose.yml:
+#   - path: ./infra/compose/pipeline.yml   (after base.yml, before nothing)
+#
+# Required host mounts (set in environment or .env):
+#   REPO_ROOT            — repo root, same as other services
+#   PIPELINE_PROMPTS_SRC — host path containing derive-edges.md + derive-tracks.md
+#                          defaults to ${REPO_ROOT}/pipeline/prompts
+#
+# No ports exposed — daemon is purely a consumer/worker, no inbound HTTP.
+services:
+  tabsched-pipeline:
+    build:
+      context: ${REPO_ROOT:-.}
+      dockerfile: infra/compose/pipeline.Dockerfile
+      args:
+        APP_NAME: tabsched-pipeline
+        BUILD_VERSION: ${BUILD_VERSION:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+        VCS_REF: ${VCS_REF:-unknown}
+    image: tabsched/pipeline:${BUILD_VERSION:-latest}
+    container_name: tabsched-pipeline
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
+      - RUST_BACKTRACE=1
+      # ── Transport ──────────────────────────────────────────────────────
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+      # ── LLM / embed ────────────────────────────────────────────────────
+      - OLLAMA_HOST=http://ollama:11434
+      - LLM_MODE=${LLM_MODE:-local}
+      - LLM_MODEL=${LLM_MODEL:-llama3.2:1b}
+      - EMBED_PROVIDER=${EMBED_PROVIDER:-ollama}
+      - EMBED_MODEL=${EMBED_MODEL:-text-embedding-3-small}
+      # Only needed when EMBED_PROVIDER=openai or LLM_MODE=openai
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # ── Pipeline tuning ────────────────────────────────────────────────
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD:-0.65}
+      - WINDOW_SIZE=${WINDOW_SIZE:-20}
+      # 2 workers is the ceiling for a single-host CPU Ollama setup.
+      # Bump only if EMBED_PROVIDER=openai where network parallelism helps.
+      - PIPELINE_WORKERS=${PIPELINE_WORKERS:-2}
+      # Must exceed worst-case LLM stage duration.
+      # llama3.2:1b on CPU: ~2–5 min per stage → 600s is conservative-correct.
+      - PIPELINE_ACK_WAIT_SECS=${PIPELINE_ACK_WAIT_SECS:-600}
+      # After this many redeliveries the server TERMs the message → DLQ.
+      - PIPELINE_MAX_DELIVER=${PIPELINE_MAX_DELIVER:-5}
+      # ── Paths (container-internal) ─────────────────────────────────────
+      - PIPELINE_PROMPTS_DIR=/app/prompts
+      # Only relevant in dump mode — prompts written here for manual paste.
+      - PROMPTS_OUT_DIR=/app/prompts-dump
+    volumes:
+      # Prompt templates — read-only.  Must contain derive-edges.md + derive-tracks.md.
+      - ${PIPELINE_PROMPTS_SRC:-${REPO_ROOT:-.}/pipeline/prompts}:/app/prompts:ro
+      # Dump-mode output — writable, scoped to container volume.
+      # Not mounted to host by default; override if you want to read prompt files locally.
+      - pipeline_prompts_dump:/app/prompts-dump
+    networks:
+      - monitoring-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    # Pipeline is CPU-bound (Ollama inference + embedding).
+    # 2 workers × Ollama serialisation = ~2 CPU effective throughput.
+    # Reserve 0.5 so the host stays responsive; limit at 2.0.
+    mem_limit: 2G
+    cpus: 2.0
+    pids_limit: 100
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # No HTTP endpoint to probe — pipeline binary accepts --help without
+    # connecting to any service, so it's safe as a liveness probe.
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/pipeline', '--help']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

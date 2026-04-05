@@ -1,9 +1,18 @@
-# Keep your existing Debian-based builder
+# ── Stage 1: chef base ────────────────────────────────────────────────────
+# Purpose:
+#   - Provide a reusable Rust toolchain layer
+#   - Install cargo-chef for dependency caching
+#   - Install native build dependencies required by workspace crates
+#
+# This stage is shared by planner and builder to avoid duplication.
 FROM rustlang/rust:nightly-slim AS chef
+
 WORKDIR /app
 
+# Install cargo-chef for dependency graph caching
 RUN cargo install cargo-chef --locked
 
+# Install system dependencies required for building the workspace
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -13,34 +22,69 @@ RUN apt-get update && apt-get install -y \
     libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+
+# ── Stage 2: planner ──────────────────────────────────────────────────────
+# Purpose:
+#   - Compute the dependency graph (recipe.json)
+#   - This layer changes only when Cargo.toml / dependency structure changes
+#
+# Result:
+#   - recipe.json describing all dependencies needed to build `file_host`
 FROM chef AS planner
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY apps/ apps/
+
 RUN cargo chef prepare --recipe-path recipe.json --bin file_host
 
+
+# ── Stage 3: builder ──────────────────────────────────────────────────────
+# Purpose:
+#   - Build dependencies first (cacheable layer)
+#   - Then build the actual binary
+#
+# Strategy:
+#   1. Cook dependencies using recipe.json (stable cache layer)
+#   2. Copy full source
+#   3. Build only the target binary
 FROM chef AS builder
+
+# Step 1: build dependency layer
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
+# Step 2: copy full source (invalidates only this layer on code changes)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY crates/ crates/
+COPY apps/ apps/
 COPY .sqlx/ .sqlx/
 
+# Build configuration
 ENV CARGO_INCREMENTAL=0
 ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
 ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
 ENV SQLX_OFFLINE=true
 
+# Step 3: build the binary
 RUN cargo build --release --bin file_host
+
+# Strip debug symbols to reduce binary size
 RUN strip target/release/file_host
 
-# Use Debian runtime instead of Alpine (glibc compatible)
-FROM debian:12-slim as runtime
 
-# Install minimal runtime dependencies
+# ── Stage 4: runtime ──────────────────────────────────────────────────────
+# Purpose:
+#   - Provide a minimal runtime environment (glibc-based)
+#   - Contain only the compiled binary + required shared libraries
+#
+# Notes:
+#   - No Rust toolchain or source code is included
+#   - Keeps image small and reduces attack surface
+FROM debian:12-slim AS runtime
+
+# Install only runtime dependencies (no build tools)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libasound2 \
@@ -53,32 +97,36 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Create directories
-RUN mkdir -p /app/data /app/secrets /app/config && \
-    chown -R nonroot:nonroot /app
+# Create required runtime directories
+RUN mkdir -p /app/data /app/secrets /app/config \
+    && chown -R nonroot:nonroot /app
 
-# Copy the binary (same glibc environment)
-COPY --from=builder --chown=nonroot:nonroot /app/target/release/file_host /usr/local/bin/file_host
+# Copy only the final binary from builder stage
+COPY --from=builder --chown=nonroot:nonroot \
+    /app/target/release/file_host /usr/local/bin/file_host
 
-# Make executable and test
-RUN chmod +x /usr/local/bin/file_host && \
-    /usr/local/bin/file_host --version
+# Ensure executable
+RUN chmod +x /usr/local/bin/file_host \
+    && /usr/local/bin/file_host --version
 
 USER nonroot:nonroot
 
-# Environment variables
+# Runtime configuration
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 ENV CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
 ENV DATA_DIR=/app/data
 
+# Healthcheck endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["/usr/local/bin/file_host", "--health-check"] || exit 1
 
 EXPOSE 3000
+
 ENTRYPOINT ["/usr/local/bin/file_host"]
 
-# Build metadata (populated by CI)
+# ── Metadata ──────────────────────────────────────────────────────────────
+# Populated by CI at build time
 ARG APP_NAME=unknown
 ARG BUILD_VERSION=unknown
 ARG BUILD_DATE=unknown

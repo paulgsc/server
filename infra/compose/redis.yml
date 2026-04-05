@@ -1,0 +1,28 @@
+services:
+  redis:
+    image: redis:latest
+    container_name: some-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 30s
+      timeout: 10s
+      retries: 5

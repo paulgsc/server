@@ -4,8 +4,8 @@ mod models;
 mod routes;
 
 use crate::routes::{
-	audio_files::get_audio, db::mood_events, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets, tab_metadata::post_now_playing,
-	utterance::post_utterance,
+	audio_files::get_audio, capture::capture_routes, db::mood_events, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets,
+	tab_metadata::post_now_playing, utterance::post_utterance,
 };
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
@@ -39,7 +39,7 @@ async fn handle_tower_error(error: BoxError) -> FileHostError {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenv::dotenv().ok();
+	dotenvy::dotenv().ok();
 	let config = Config::parse();
 
 	// Handle health check flag
@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
 		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
+		.merge(capture_routes())
 		.merge(post_utterance());
 
 	let max_requests = config.clone().max_request_size.try_into()?;

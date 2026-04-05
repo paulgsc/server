@@ -1,4 +1,5 @@
 pub mod audio_files;
+pub mod capture;
 pub mod db;
 pub mod gdrive_images;
 pub mod github;

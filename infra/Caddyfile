@@ -1,0 +1,5 @@
+
+file_host.nixos.local {
+    tls internal  # Use Caddy's internal CA for local development
+    reverse_proxy file_host:3000
+}

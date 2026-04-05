@@ -1,0 +1,21 @@
+[package]
+name = "tabsched-cli"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+tabsched.workspace = true
+anyhow =  { workspace = true } 
+clap.workspace = true
+owo-colors = "4.3.0"
+serde.workspace = true
+toml = "1.0.7"
+dirs-next = "2.0.0"
+dotenvy.workspace = true
+
+[lints]
+workspace = true

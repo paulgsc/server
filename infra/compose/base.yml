@@ -2,6 +2,10 @@ networks:
   monitoring-network:
     driver: bridge
 volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
   prometheus_data:
     driver: local
   grafana_data:
@@ -11,4 +15,8 @@ volumes:
   redisinsight_data:
     driver: local
   metabase_data:
+    driver: local
+  nats_jetstream:
+    driver: local
+  pipeline_prompts_dump:
     driver: local

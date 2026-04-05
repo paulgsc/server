@@ -1,0 +1,36 @@
+[package]
+name = "tabsched-pipeline"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "Offline embedding + LLM edge/track derivation pipeline for tabsched"
+
+[[bin]]
+name = "pipeline"
+path = "src/bin/pipeline.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive", "env"] }
+dotenvy.workspace = true
+futures.workspace = true
+prost = "0.14.3"
+redis = { version = "1.2.0", features = ["tokio-comp", "connection-manager", "aio"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+some-transport = { workspace = true, features = ["nats"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "signal"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.23.0", features = ["v4"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,100 @@
+
+# ── Stage 1: chef base ────────────────────────────────────────────────────
+# Mirrors the existing file_host pattern: nightly + cargo-chef for layer caching.
+# Pipeline binary has no SQLite/audio deps — significantly smaller build layer.
+FROM rustlang/rust:nightly-slim AS chef
+WORKDIR /app
+RUN cargo install cargo-chef --locked
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Stage 2: planner ──────────────────────────────────────────────────────
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+RUN cargo chef prepare --recipe-path recipe.json --bin pipeline
+
+# ── Stage 3: builder ──────────────────────────────────────────────────────
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Cook deps layer first — this layer is cache-stable across source changes.
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+
+ENV CARGO_INCREMENTAL=0
+# Match existing RUSTFLAGS. dylib-lto requires nightly; safe here.
+ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
+ENV RUST_BACKTRACE=1
+
+RUN cargo build --release --bin pipeline
+RUN strip target/release/pipeline
+
+# ── Stage 4: runtime ──────────────────────────────────────────────────────
+# debian:12-slim for glibc compatibility
+FROM debian:12-slim AS runtime
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && groupadd -g 10001 nonroot \
+    && useradd -u 10000 -g nonroot -d /app -s /bin/bash nonroot
+
+WORKDIR /app
+
+# Pipeline needs two directories:
+#   /app/prompts  — read-only mount for derive-edges.md + derive-tracks.md
+#   /app/prompts-dump — writable only in dump mode (MarkdownDump output)
+RUN mkdir -p /app/prompts /app/prompts-dump \
+    && chown -R nonroot:nonroot /app
+
+COPY --from=builder --chown=nonroot:nonroot \
+    /app/target/release/pipeline /usr/local/bin/pipeline
+
+RUN chmod +x /usr/local/bin/pipeline
+
+USER nonroot:nonroot
+
+# Defaults — all overridable via compose environment.
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
+ENV PIPELINE_PROMPTS_DIR=/app/prompts
+ENV PROMPTS_OUT_DIR=/app/prompts-dump
+ENV LLM_MODE=local
+ENV EMBED_PROVIDER=ollama
+ENV OLLAMA_HOST=http://ollama:11434
+ENV LLM_MODEL=llama3.2:1b
+ENV SIMILARITY_THRESHOLD=0.65
+ENV WINDOW_SIZE=20
+ENV PIPELINE_WORKERS=2
+ENV PIPELINE_ACK_WAIT_SECS=600
+ENV PIPELINE_MAX_DELIVER=5
+# Injected at runtime by compose — no defaults here intentionally.
+# ENV REDIS_URL
+# ENV NATS_URL
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD ["/usr/local/bin/pipeline", "--help"] || exit 1
+
+EXPOSE 0
+
+ENTRYPOINT ["/usr/local/bin/pipeline"]
+
+ARG APP_NAME=tabsched-pipeline
+ARG BUILD_VERSION=unknown
+ARG BUILD_DATE=unknown
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="${APP_NAME}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}"
+
