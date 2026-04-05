@@ -1,12 +1,17 @@
-use anyhow::Result;
+/// Stage 4: LLM track grouping.
+///
+/// Changes from v1: StageError classification, per-call deadline.
 use serde::Deserialize;
+use tokio::time::timeout;
 use tracing::instrument;
 
+use crate::error::StageError;
 use crate::llm::{extract_json, LlmBackend};
 use crate::stages::prompts::{fill_template, format_resources_and_edges};
 use crate::types::{CandidateGraph, DerivedEdge, DerivedTrack, TopologyChange};
 
-// LLM response shape for track grouping
+pub const STAGE_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Deserialize)]
 struct TrackResponse {
 	tracks: Vec<TrackItem>,
@@ -21,9 +26,6 @@ struct TrackItem {
 	target: u32,
 	#[serde(default)]
 	resource_labels: Vec<String>,
-	#[allow(dead_code)]
-	#[serde(default)]
-	derived_by: String,
 	rationale: String,
 }
 
@@ -41,8 +43,8 @@ pub async fn run_derive_tracks(
 	current_tracks: Option<&serde_json::Value>,
 	window_size: u32,
 	template: &str,
-) -> Result<(Vec<DerivedTrack>, Vec<TopologyChange>)> {
-	tracing::info!("Stage 4: deriving tracks via LLM…");
+) -> Result<(Vec<DerivedTrack>, Vec<TopologyChange>), StageError> {
+	tracing::info!("Stage 4: deriving tracks via LLM");
 
 	let current_tracks_str = current_tracks
 		.map(|t| serde_json::to_string_pretty(t).unwrap_or_default())
@@ -57,8 +59,12 @@ pub async fn run_derive_tracks(
 		],
 	);
 
-	let raw = llm.complete(&prompt, "derive-tracks").await?;
-	let parsed: TrackResponse = extract_json(&raw)?;
+	let raw = timeout(std::time::Duration::from_secs(STAGE_TIMEOUT_SECS), llm.complete(&prompt, "derive-tracks"))
+		.await
+		.map_err(|_| StageError::retryable(anyhow::anyhow!("derive-tracks LLM call timed out")))?
+		.map_err(|e| StageError::retryable(anyhow::anyhow!("LLM complete error: {}", e)))?;
+
+	let parsed: TrackResponse = extract_json(&raw).map_err(|e| StageError::permanent(anyhow::anyhow!("derive-tracks: LLM returned unparseable JSON: {}", e)))?;
 
 	let tracks: Vec<DerivedTrack> = parsed
 		.tracks
@@ -66,7 +72,7 @@ pub async fn run_derive_tracks(
 		.map(|t| DerivedTrack {
 			label: t.label,
 			parent: t.parent,
-			target: t.target,
+			target: t.target.max(1),
 			resource_labels: t.resource_labels,
 			derived_by: "llm".into(),
 			rationale: t.rationale,
@@ -82,7 +88,7 @@ pub async fn run_derive_tracks(
 		})
 		.collect();
 
-	tracing::info!("  → {} tracks derived", tracks.len());
+	tracing::info!(tracks = tracks.len(), "Stage 4 complete");
 
 	Ok((tracks, changes))
 }

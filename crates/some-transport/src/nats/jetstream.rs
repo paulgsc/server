@@ -29,7 +29,10 @@ impl PipelineSubjects {
 /// `AckHandle::heartbeat` periodically to extend the lease.
 #[derive(Debug, Clone)]
 pub struct JetStreamConfig {
+	pub nats_url: String,
 	pub consumer_name: String,
+	pub max_bytes: i64,
+	pub max_message_size: i32,
 	pub ack_wait: Duration,
 	/// Server terminates after this many deliveries; routes remainder to DLQ.
 	pub max_deliver: i64,
@@ -39,7 +42,10 @@ pub struct JetStreamConfig {
 impl Default for JetStreamConfig {
 	fn default() -> Self {
 		Self {
+			nats_url: "nats://localhost:4222".into(),
 			consumer_name: "pipeline-worker".into(),
+			max_bytes: 512 * 1024 * 1024,
+			max_message_size: 8 * 1024 * 1024,
 			ack_wait: Duration::from_secs(600),
 			max_deliver: 5,
 			fetch_batch: 1,
@@ -113,8 +119,8 @@ where
 				subjects: vec![PipelineSubjects::JOBS.into(), PipelineSubjects::DLQ.into()],
 				retention: jetstream::stream::RetentionPolicy::WorkQueue,
 				max_age: Duration::from_secs(86_400),
-				max_bytes: 512 * 1024 * 1024,
-				max_message_size: 8 * 1024 * 1024,
+				max_bytes: config.max_bytes,
+				max_message_size: config.max_message_size,
 				num_replicas: 1,
 				..Default::default()
 			})
@@ -145,8 +151,8 @@ where
 	}
 
 	/// Resolves the client from `NatsConnectionPool::global()`.
-	pub async fn connect(nats_url: &str, config: JetStreamConfig) -> Result<Self> {
-		let client = NatsConnectionPool::global().get_or_connect(nats_url).await?;
+	pub async fn connect(config: JetStreamConfig) -> Result<Self> {
+		let client = NatsConnectionPool::global().get_or_connect(&config.nats_url).await?;
 		Self::bind(client, config).await
 	}
 
@@ -160,7 +166,7 @@ where
 	/// Note: for stages whose duration may exceed `JetStreamConfig::ack_wait`,
 	/// drive `AckHandle::heartbeat` at sub-`ack_wait` intervals. Without it,
 	/// the server will redeliver concurrently before `max_deliver` is reached.
-	pub async fn next_msg(&mut self, deadline: Duration, max_payload_bytes: usize) -> Result<Option<(T, AckHandle)>> {
+	pub async fn next_msg(&mut self, deadline: Duration) -> Result<Option<(T, AckHandle)>> {
 		use futures::StreamExt;
 
 		let mut batch = self
@@ -178,7 +184,7 @@ where
 			None => return Ok(None),
 		};
 
-		if msg.payload.len() > max_payload_bytes {
+		if msg.payload.len() > self.config.max_message_size as usize {
 			msg.ack_with(AckKind::Term).await.map_err(|e| TransportError::NatsError(e.to_string()))?;
 			return Err(TransportError::NatsError(format!("payload too large: {} bytes", msg.payload.len())));
 		}

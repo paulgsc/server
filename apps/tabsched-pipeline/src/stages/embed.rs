@@ -1,28 +1,46 @@
 ///
-/// Concurrency model:
-///   - OpenAI: single batched request (the API accepts arrays).
-///   - Ollama: individual requests fired concurrently with join_all
-///     (Ollama's /api/embeddings does not support batching).
-///
-/// Both paths return Vec<Vec<f32>> in input order.
-///
-/// After embedding, cosine similarity is computed in a pure O(n²) loop
-/// (n is small — a single browser session is typically < 100 tabs).
-use anyhow::{Context, Result};
+/// Stage 2: embedding + candidate edge computation.
+/// Changes from v1:
+///   - All returns are StageError, not anyhow::Error.
+///   - Input guardrails: max captures, max text bytes per capture.
+///   - Ollama concurrent path is bounded by a semaphore (MAX_CONCURRENT_EMBEDS)
+///     to prevent flooding the local model.
+///   - Per-request timeout via tokio::time::timeout (not the global reqwest timeout).
+///   - Network errors → Retryable; schema errors → Permanent.
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument};
+use std::sync::Arc;
+use tokio::{sync::Semaphore, time::timeout};
+use tracing::{info, instrument, warn};
 
+use crate::error::StageError;
 use crate::stages::label::derive_label;
 use crate::types::{CandidateEdge, CandidateGraph, EmbeddedResource, TabCapture};
+
+// ── Guardrails ────────────────────────────────────────────────────────────
+
+/// Hard cap on captures processed per session.
+/// Sessions larger than this are truncated (not rejected) — we embed
+/// the first N and log a warning.
+pub const MAX_CAPTURES: usize = 200;
+
+/// Hard cap on embed text bytes per capture (pre-request).
+/// Text is truncated to this length, not rejected.
+pub const MAX_EMBED_TEXT_BYTES: usize = 2_048;
+
+/// Maximum concurrent Ollama embed requests.
+/// Ollama serialises internally anyway; this cap prevents spawning
+/// hundreds of tasks against a single-threaded model server.
+pub const MAX_CONCURRENT_EMBEDS: usize = 8;
+
+/// Per-request timeout for a single embed call.
+pub const EMBED_TIMEOUT_SECS: u64 = 30;
 
 // ── Config ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum EmbedProvider {
-	/// OpenAI text-embedding-3-small (or any batching-compatible endpoint).
 	OpenAI { api_key: String, base_url: String, model: String },
-	/// Ollama nomic-embed-text (or any single-prompt embedding endpoint).
 	Ollama { host: String, model: String },
 }
 
@@ -53,23 +71,37 @@ struct OpenAIEmbedDatum {
 	embedding: Vec<f32>,
 }
 
-async fn embed_openai(client: &reqwest::Client, api_key: &str, base_url: &str, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+async fn embed_openai(client: &reqwest::Client, api_key: &str, base_url: &str, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, StageError> {
 	let url = format!("{}/embeddings", base_url);
-	let resp = client
-		.post(&url)
-		.bearer_auth(api_key)
-		.json(&OpenAIEmbedRequest { model, input: texts })
-		.send()
-		.await
-		.context("OpenAI embed request failed")?;
 
+	let fut = client.post(&url).bearer_auth(api_key).json(&OpenAIEmbedRequest { model, input: texts }).send();
+
+	let resp = timeout(std::time::Duration::from_secs(EMBED_TIMEOUT_SECS * texts.len().max(1) as u64), fut)
+		.await
+		.map_err(|_| StageError::retryable(anyhow::anyhow!("OpenAI embed request timed out")))?
+		.map_err(|e| StageError::retryable(anyhow::anyhow!("OpenAI embed request: {}", e)))?;
+
+	if resp.status().is_server_error() {
+		return Err(StageError::retryable(anyhow::anyhow!("OpenAI embed server error: {}", resp.status())));
+	}
 	if !resp.status().is_success() {
-		let status = resp.status();
 		let body = resp.text().await.unwrap_or_default();
-		anyhow::bail!("OpenAI embed error {}: {}", status, body);
+		return Err(StageError::permanent(anyhow::anyhow!("OpenAI embed client error: {}", body)));
 	}
 
-	let parsed: OpenAIEmbedResponse = resp.json().await.context("parse OpenAI embed response")?;
+	let parsed: OpenAIEmbedResponse = resp
+		.json()
+		.await
+		.map_err(|e| StageError::permanent(anyhow::anyhow!("parse OpenAI embed response: {}", e)))?;
+
+	if parsed.data.len() != texts.len() {
+		return Err(StageError::permanent(anyhow::anyhow!(
+			"OpenAI returned {} embeddings for {} inputs",
+			parsed.data.len(),
+			texts.len()
+		)));
+	}
+
 	Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
 
@@ -86,39 +118,51 @@ struct OllamaEmbedResponse {
 	embedding: Vec<f32>,
 }
 
-async fn embed_single_ollama(client: &reqwest::Client, host: &str, model: &str, text: &str) -> Result<Vec<f32>> {
-	let url = format!("{}/api/embeddings", host);
-	let resp = client
-		.post(&url)
-		.json(&OllamaEmbedRequest { model, prompt: text })
-		.send()
-		.await
-		.context("Ollama embed request failed")?;
+async fn embed_single_ollama(client: &reqwest::Client, host: &str, model: &str, text: &str, sem: Arc<Semaphore>) -> Result<Vec<f32>, StageError> {
+	let _permit = sem.acquire_owned().await.map_err(|e| StageError::retryable(anyhow::anyhow!("semaphore closed: {}", e)))?;
 
+	let url = format!("{}/api/embeddings", host);
+
+	let resp = timeout(
+		std::time::Duration::from_secs(EMBED_TIMEOUT_SECS),
+		client.post(&url).json(&OllamaEmbedRequest { model, prompt: text }).send(),
+	)
+	.await
+	.map_err(|_| StageError::retryable(anyhow::anyhow!("Ollama embed timed out")))?
+	.map_err(|e| StageError::retryable(anyhow::anyhow!("Ollama embed request: {}", e)))?;
+
+	if resp.status().is_server_error() {
+		return Err(StageError::retryable(anyhow::anyhow!("Ollama server error: {}", resp.status())));
+	}
 	if !resp.status().is_success() {
-		let status = resp.status();
 		let body = resp.text().await.unwrap_or_default();
-		anyhow::bail!("Ollama embed error {}: {}", status, body);
+		return Err(StageError::permanent(anyhow::anyhow!("Ollama embed client error: {}", body)));
 	}
 
-	let parsed: OllamaEmbedResponse = resp.json().await.context("parse Ollama embed response")?;
+	let parsed: OllamaEmbedResponse = resp
+		.json()
+		.await
+		.map_err(|e| StageError::permanent(anyhow::anyhow!("parse Ollama embed response: {}", e)))?;
+
 	Ok(parsed.embedding)
 }
 
-async fn embed_ollama(client: &reqwest::Client, host: &str, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-	// Fire all requests concurrently — Ollama serialises on its end anyway,
-	// but this avoids head-of-line blocking for network latency.
-	let futures: Vec<_> = texts.iter().map(|t| embed_single_ollama(client, host, model, t)).collect();
+async fn embed_ollama(client: &reqwest::Client, host: &str, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, StageError> {
+	let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_EMBEDS));
+
+	let futures: Vec<_> = texts.iter().map(|t| embed_single_ollama(client, host, model, t, sem.clone())).collect();
 
 	let results = join_all(futures).await;
-	results.into_iter().collect::<Result<Vec<_>>>()
+
+	// Collect, propagating first error.
+	results.into_iter().collect::<Result<Vec<_>, _>>()
 }
 
-// ── Text to embed ─────────────────────────────────────────────────────────
+// ── Text preparation ──────────────────────────────────────────────────────
 
 fn build_embed_text(capture: &TabCapture) -> String {
 	let c = &capture.content;
-	[
+	let raw = [
 		c.title.clone(),
 		c.headings.iter().take(5).cloned().collect::<Vec<_>>().join(" "),
 		c.keywords.join(" "),
@@ -127,7 +171,21 @@ fn build_embed_text(capture: &TabCapture) -> String {
 	.into_iter()
 	.filter(|s| !s.is_empty())
 	.collect::<Vec<_>>()
-	.join(" | ")
+	.join(" | ");
+
+	// Truncate to byte limit rather than rejecting — embed text is not
+	// security-sensitive, and a long summary doesn't make a session invalid.
+	if raw.len() > MAX_EMBED_TEXT_BYTES {
+		warn!(
+				url = %capture.url,
+				original_bytes = raw.len(),
+				limit = MAX_EMBED_TEXT_BYTES,
+				"embed text truncated"
+		);
+		raw[..MAX_EMBED_TEXT_BYTES].to_string()
+	} else {
+		raw
+	}
 }
 
 // ── Cosine similarity ─────────────────────────────────────────────────────
@@ -139,13 +197,30 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 		norm_a += x * x;
 		norm_b += y * y;
 	}
-	dot / (norm_a.sqrt() * norm_b.sqrt())
+	let denom = norm_a.sqrt() * norm_b.sqrt();
+	if denom == 0.0 {
+		0.0
+	} else {
+		dot / denom
+	}
 }
 
 // ── Public entry point ────────────────────────────────────────────────────
 
 #[instrument(skip(client, provider, captures), fields(n = captures.len()))]
-pub async fn run_embed_stage(client: &reqwest::Client, provider: &EmbedProvider, captures: &[TabCapture], similarity_threshold: f32) -> Result<CandidateGraph> {
+pub async fn run_embed_stage(client: &reqwest::Client, provider: &EmbedProvider, captures: &[TabCapture], similarity_threshold: f32) -> Result<CandidateGraph, StageError> {
+	// ── Input guardrails ──────────────────────────────────────────────────
+	if captures.is_empty() {
+		return Err(StageError::poison(anyhow::anyhow!("no captures to embed after extraction_ok filter")));
+	}
+
+	let captures = if captures.len() > MAX_CAPTURES {
+		warn!(total = captures.len(), limit = MAX_CAPTURES, "session exceeds MAX_CAPTURES — truncating");
+		&captures[..MAX_CAPTURES]
+	} else {
+		captures
+	};
+
 	info!("Stage 2: embedding {} resources", captures.len());
 
 	let texts: Vec<String> = captures.iter().map(build_embed_text).collect();
@@ -155,7 +230,15 @@ pub async fn run_embed_stage(client: &reqwest::Client, provider: &EmbedProvider,
 		EmbedProvider::Ollama { host, model } => embed_ollama(client, host, model, &texts).await?,
 	};
 
-	// Build EmbeddedResource objects
+	// Sanity check: provider must return one embedding per input.
+	if embeddings.len() != captures.len() {
+		return Err(StageError::permanent(anyhow::anyhow!(
+			"embedding count mismatch: got {}, expected {}",
+			embeddings.len(),
+			captures.len()
+		)));
+	}
+
 	let resources: Vec<EmbeddedResource> = captures
 		.iter()
 		.zip(embeddings.iter())
@@ -173,7 +256,7 @@ pub async fn run_embed_stage(client: &reqwest::Client, provider: &EmbedProvider,
 		})
 		.collect();
 
-	// Compute candidate edges (upper triangle)
+	// Compute candidate edges (upper triangle, O(n²), n is small).
 	let mut candidate_edges: Vec<CandidateEdge> = vec![];
 	for i in 0..resources.len() {
 		for j in (i + 1)..resources.len() {
@@ -188,12 +271,10 @@ pub async fn run_embed_stage(client: &reqwest::Client, provider: &EmbedProvider,
 		}
 	}
 
-	// Sort descending by similarity
 	candidate_edges.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
 
 	info!("Found {} candidate edges above threshold {}", candidate_edges.len(), similarity_threshold);
 
-	// Strip embeddings before serialising — they're large and unused downstream
 	let resources_stripped = resources
 		.into_iter()
 		.map(|mut r| {

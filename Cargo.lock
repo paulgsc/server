@@ -162,9 +162,18 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.7.1"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
 
 [[package]]
 name = "argminmax"
@@ -322,7 +331,7 @@ dependencies = [
  "anyhow",
  "atty",
  "cpal 0.16.0",
- "prost 0.14.1",
+ "prost 0.14.3",
  "some-transport",
  "tokio",
  "ws-events",
@@ -468,6 +477,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
 ]
 
 [[package]]
@@ -4056,7 +4074,7 @@ dependencies = [
  "cursorium",
  "dashmap",
  "futures",
- "prost 0.14.1",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "some-transport",
@@ -4984,12 +5002,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.1"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7231bd9b3d3d33c86b58adbac74b5ec0ad9f496b19d22801d773636feaa95f3d"
+checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
 dependencies = [
  "bytes",
- "prost-derive 0.14.1",
+ "prost-derive 0.14.3",
 ]
 
 [[package]]
@@ -5007,9 +5025,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.1"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
+checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -5344,6 +5362,34 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url 2.5.8",
+]
+
+[[package]]
+name = "redis"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f44e94c96d8870a387d88ce3de3fdd608cbfc0705f03cb343cdde91509d3e49a"
+dependencies = [
+ "arc-swap",
+ "arcstr",
+ "async-lock",
+ "backon",
+ "bytes",
+ "cfg-if",
+ "combine",
+ "futures-channel",
+ "futures-util",
+ "itoa 1.0.15",
+ "num-bigint",
+ "percent-encoding 2.3.2",
+ "pin-project-lite",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.6.1",
+ "tokio",
+ "tokio-util",
+ "url 2.5.8",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -6286,7 +6332,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "obs-websocket",
- "prost 0.14.1",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "some-transport",
@@ -6315,7 +6361,7 @@ dependencies = [
  "async-trait",
  "dashmap",
  "futures",
- "prost 0.14.1",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -6891,10 +6937,14 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "dotenvy",
  "futures",
+ "prost 0.14.3",
+ "redis 1.2.0",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "some-transport",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -8704,7 +8754,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "obs-websocket",
- "prost 0.14.1",
+ "prost 0.14.3",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
