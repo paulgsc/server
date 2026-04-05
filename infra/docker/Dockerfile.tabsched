@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y \
 # ── Stage 2: planner ──────────────────────────────────────────────────────
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-# Pipeline is a standalone crate — only its src is needed for the recipe.
-COPY pipeline/ pipeline/
+COPY crates/ crates/
+COPY apps/ apps/
 RUN cargo chef prepare --recipe-path recipe.json --bin pipeline
 
 # ── Stage 3: builder ──────────────────────────────────────────────────────
@@ -26,7 +26,8 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
-COPY pipeline/ pipeline/
+COPY crates/ crates/
+COPY apps/ apps/
 
 ENV CARGO_INCREMENTAL=0
 # Match existing RUSTFLAGS. dylib-lto requires nightly; safe here.
@@ -37,8 +38,7 @@ RUN cargo build --release --bin pipeline
 RUN strip target/release/pipeline
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────
-# debian:12-slim for glibc compatibility, matches file_host runtime.
-# No SQLite, no audio — only TLS + certs needed (reqwest + NATS TLS).
+# debian:12-slim for glibc compatibility
 FROM debian:12-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
