@@ -1,75 +1,47 @@
 #
-# Usage:
-#   docker compose -f compose/llm.yml up -d          # start
-#   docker compose -f compose/llm.yml exec ollama \  # pull models
-#     ollama pull nomic-embed-text
-#   docker compose -f compose/llm.yml exec ollama \
-#     ollama pull llama3.2:1b                         # smallest capable model
+# CPU-only Ollama model server.
+# Joins monitoring-network so the pipeline daemon and any other service
+# can reach it at http://ollama:11434.
 #
-# Model selection guidance (CPU, ≤500 GB SSD):
+# Model storage lives on the ext SSD.  Override OLLAMA_MODELS_PATH to
+# point at your mount (e.g. /mnt/ssd/ollama-models).
 #
-#   nomic-embed-text   274 MB   embedding         required
-#   llama3.2:1b        ~1 GB    edge/track derive  fastest (recommended start)
-#   llama3.2:3b        ~2 GB    edge/track derive  better reasoning
-#   mistral:7b-q4      ~4 GB    edge/track derive  strong JSON adherence
-#   llama3:8b-q4       ~5 GB    edge/track derive  best open model on CPU
-#
-# On a typical CPU (4-8 cores):
-#   1b  → ~10 tok/s   (acceptable for pipeline, ~1–2 min per stage)
-#   3b  → ~5  tok/s
-#   7b  → ~2  tok/s   (slow but usable; add OLLAMA_NUM_THREAD)
-#
-# Environment overrides (set in shell or .env):
-#   OLLAMA_HOST_PORT   default 11434
-#   OLLAMA_MODELS_PATH default ./ollama-models (relative to compose file)
-#   OLLAMA_NUM_THREAD  default unset (Ollama picks automatically)
+# Bootstrap:
+#   docker compose exec ollama ollama pull nomic-embed-text
+#   docker compose exec ollama ollama pull llama3.2:1b
 services:
   ollama:
     image: ollama/ollama:latest
     container_name: tabsched-ollama
-    # CPU-only: do NOT add the 'deploy: resources: reservations: devices' GPU block.
-    # Ollama auto-detects no GPU and falls back to CPU inference.
+    restart: unless-stopped
+    # CPU-only: no GPU device block.
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_MODELS=/root/.ollama/models
-      # Uncomment to pin thread count (useful on shared boxes):
+      # Uncomment to pin thread count on shared hosts:
       # - OLLAMA_NUM_THREAD=4
     ports:
       - "${OLLAMA_HOST_PORT:-11434}:11434"
     volumes:
-      # Persistent model storage on the ext SSD.
-      # Override OLLAMA_MODELS_PATH in your shell or .env to point at /mnt/ssd/...
-      - ${OLLAMA_MODELS_PATH:-./ollama-models}:/root/.ollama/models
-    restart: unless-stopped
+      - ${OLLAMA_MODELS_PATH:-/mnt/storage/users/dev/models/ollama-models}:/root/.ollama/models
+    networks:
+      - monitoring-network
+    mem_limit: 8G
+    cpus: 4.0
+    pids_limit: 100
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+          pids: 100
+        reservations:
+          cpus: '1.0'
+          memory: 2G
     healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
+      # `ollama list` exits 0 when the server is ready, non-zero if not.
+      test: ['CMD', 'ollama', 'list']
+      interval: 15s
+      timeout: 10s
       retries: 10
       start_period: 30s
-  # One-shot service that pulls the required models on first start.
-  # Re-running `docker compose -f compose/llm.yml up model-bootstrap` is idempotent.
-  model-bootstrap:
-    image: ollama/ollama:latest
-    container_name: tabsched-model-bootstrap
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      "
-      set -e
-      echo '==> Pulling nomic-embed-text (embedding model)…'
-      ollama pull nomic-embed-text
-
-      echo '==> Pulling llama3.2:1b (LLM — smallest, fastest on CPU)…'
-      ollama pull llama3.2:1b
-
-      echo '==> All models ready.'
-      ollama list
-      "
-    volumes:
-      - ${OLLAMA_MODELS_PATH:-./ollama-models}:/root/.ollama/models
-    restart: no

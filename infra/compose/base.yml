@@ -16,3 +16,7 @@ volumes:
     driver: local
   metabase_data:
     driver: local
+  nats_jetstream:
+    driver: local
+  pipeline_prompts_dump:
+    driver: local

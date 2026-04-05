@@ -3,6 +3,10 @@ x-environment: &root-env
 include:
   - path: ./infra/compose/base.yml
   - path: ./infra/compose/caddy.yml
+  - path: ./infra/compose/nats.yml
+  - path: ./infra/compose/redis.yml
   - path: ./infra/compose/file_host.yml
   - path: ./infra/compose/orchestrator.yml
+  - path: ./infra/compose/ollama.yml
+  - path: ./infra/compose/pipeline.yml
   - path: ./infra/compose/monitoring.yml

@@ -1,0 +1,50 @@
+#
+# NATS with JetStream enabled.
+#
+# Replaces the inline `nats` service in file_host.yml.
+# The existing `file_host` service declared `condition: service_started`
+# for NATS — that is now promoted to `condition: service_healthy` so
+# dependents (file-host, tabsched-pipeline) don't race the server.
+#
+# JetStream is enabled via the config file mounted at /etc/nats/nats.conf.
+# The store_dir is a named volume so stream state survives restarts.
+#
+# Monitoring port 8222 is retained — the healthcheck uses it.
+services:
+  nats:
+    image: nats:latest
+    container_name: nats-server
+    restart: unless-stopped
+    # Pass the config file.  The -js flag alone also works, but a config
+    # file makes max_payload and store limits explicit and reviewable.
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - '4222:4222' # client
+      - '8222:8222' # HTTP monitoring
+    volumes:
+      # Config — read-only.
+      - ${REPO_ROOT:-.}/infra/nats/nats.conf:/etc/nats/nats.conf:ro
+      # JetStream persistence — survives container restarts.
+      - nats_jetstream:/data/jetstream
+    networks:
+      - monitoring-network
+    mem_limit: 512M
+    cpus: 0.5
+    pids_limit: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 30
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Promoted from service_started to service_healthy.
+    # Uses the monitoring port — available even under load.
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8222/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
