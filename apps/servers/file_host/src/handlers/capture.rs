@@ -8,7 +8,8 @@ use axum::{
 	Json,
 };
 use serde::Deserialize;
-use tracing::instrument;
+use tracing::{error, instrument};
+use ws_events::tabsched::JobEnvelope;
 
 // Precondition: body deserialises to CaptureSession; session_id non-empty.
 // Postcondition: full session written to Redis via dedup cache;
@@ -18,10 +19,13 @@ use tracing::instrument;
 #[axum::debug_handler]
 #[instrument(name = "post_capture", skip(state), fields(otel.kind = "server"))]
 pub async fn post_capture(State(state): State<AppState>, Json(session): Json<CaptureSession>) -> Result<Json<CaptureSummary>, FileHostError> {
+	let session_id = session.session_id.clone();
+	let captured_at = session.captured_at.clone();
 	let summary = CaptureSummary::from(&session);
-	let key = session_cache_key(&session.session_id);
-	let score = epoch_ms_score(&session.captured_at);
+	let key = session_cache_key(&session_id);
+	let score = epoch_ms_score(&captured_at);
 
+	// 1. Write to Redis (The Truth)
 	state
 		.realtime
 		.dedup_cache
@@ -32,6 +36,21 @@ pub async fn post_capture(State(state): State<AppState>, Json(session): Json<Cap
 		.await?;
 
 	index_insert(&state, &session.session_id, score).await?;
+
+	// 2. Publish to JetStream (The Signal)
+	let envelope = JobEnvelope {
+		session_id: session_id.clone(),
+		captured_at,
+		attempt: 1,
+	};
+
+	// We publish to "pipeline.jobs" as defined in your PipelineSubjects
+	state.realtime.pipeline_publisher.publish(&envelope).await.map_err(|e| {
+		error!(%session_id, error = %e, "JetStream signaling failed");
+		// We return an error to prevent the client from thinking
+		// the background processing has started.
+		e
+	})?;
 
 	Ok(Json(summary))
 }

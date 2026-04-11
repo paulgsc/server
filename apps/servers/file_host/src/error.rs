@@ -83,6 +83,9 @@ pub enum FileHostError {
 	#[error("CacheStore Error: {0}")]
 	CacheStoreError(#[from] crate::cache::CacheError),
 
+	#[error("Nats Transport Error: {0}")]
+	NatsTransportError(#[from] some_transport::TransportError),
+
 	#[error("Audio File Fetch Error: {0}")]
 	AudioFetchError(#[from] crate::AudioServiceError),
 
@@ -127,6 +130,7 @@ impl FileHostError {
 			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
 			Self::DedupCacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::BroadcastError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::NatsTransportError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::CacheStoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::GSheetError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}

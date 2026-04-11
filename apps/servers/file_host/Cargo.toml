@@ -17,7 +17,7 @@ some-services  = { workspace = true }
 ws-connection  = { workspace = true }
 ws-conn-manager  = { workspace = true }
 some-transport  = { workspace = true , features = ["nats", "mpsc_utils"] }
-ws-events  = { workspace = true }
+ws-events = { workspace = true, features = ["tabsched", "ws-events"] }
 
 axum = { workspace = true , features = ["ws"]}
 anyhow = { workspace = true }

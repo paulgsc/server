@@ -1,12 +1,12 @@
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
 use sdk::{GitHubClient, ReadDrive, ReadSheets};
-use some_transport::NatsTransport;
+use some_transport::{nats::JetStreamPublisher, NatsTransport};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
-use ws_events::UnifiedEvent;
+use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
 pub mod cache;
 pub mod config;
@@ -53,6 +53,7 @@ pub struct RealtimeContext {
 	pub ws: WebSocketFsm,
 	pub dedup_cache: Arc<DedupCache>,
 	pub transport: NatsTransport<UnifiedEvent>,
+	pub pipeline_publisher: Arc<JetStreamPublisher<JobEnvelope>>,
 }
 
 #[derive(Clone)]
@@ -90,9 +91,18 @@ impl AppState {
 		let nats_url = config.nats_url.as_deref().unwrap_or("nats://localhost:4222");
 		let transport = NatsTransport::connect_pooled(nats_url).await?;
 
+		// Reuse the Arc<Client> from the transport for JetStream
+		let client = transport.client().clone();
+		let pipeline_publisher = Arc::new(JetStreamPublisher::from_client(Arc::new(client)));
+
 		let ws = WebSocketFsm::new();
 
-		let realtime = RealtimeContext { ws, dedup_cache, transport };
+		let realtime = RealtimeContext {
+			ws,
+			dedup_cache,
+			transport,
+			pipeline_publisher,
+		};
 
 		Ok(Self { core, external, realtime })
 	}
