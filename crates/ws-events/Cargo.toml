@@ -7,6 +7,11 @@ homepage.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[features]
+default = []              # features enabled by default
+ws-events = []
+tabsched = []
+
 [dependencies]
 # Core dependencies (always included)
 serde = { workspace = true, features = ["derive"] }

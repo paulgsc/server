@@ -1,3 +1,5 @@
+#![cfg(feature = "ws-events")]
+
 mod common;
 mod unified;
 
