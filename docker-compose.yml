@@ -8,5 +8,5 @@ include:
   - path: ./infra/compose/file_host.yml
   - path: ./infra/compose/orchestrator.yml
   - path: ./infra/compose/ollama.yml
-  # - path: ./infra/compose/pipeline.yml
+  - path: ./infra/compose/pipeline.yml
   - path: ./infra/compose/monitoring.yml
