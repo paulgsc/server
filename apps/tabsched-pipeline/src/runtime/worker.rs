@@ -1,9 +1,10 @@
-use super::{JobEnvelope, JobRecord, JobState, Store};
+use super::{JobRecord, JobState, Store};
 use crate::{engine::process_job, error::StageError, llm::LlmBackend, stages::EmbedProvider};
 use some_transport::nats::{AckHandle, DurableConsumer, JetStreamConfig, JetStreamPublisher};
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
+use ws_events::tabsched::JobEnvelope;
 // ── Shared worker context ─────────────────────────────────────────────────
 
 /// Everything a worker needs, cheap to clone (Arc internals).

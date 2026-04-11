@@ -62,7 +62,7 @@ impl Store {
 		let key = capture_key(session_id);
 		let raw: Option<Vec<u8>> = self.conn.get(&key).await.context("fetch_capture get")?;
 
-		let raw = raw.ok_or_else(|| anyhow::anyhow!("capture session not found in Redis: {}", session_id))?;
+		let raw = raw.ok_or_else(|| anyhow::anyhow!("capture session not found in Redis: {}", key))?;
 
 		if raw.len() > MAX_PAYLOAD_BYTES {
 			anyhow::bail!("capture payload too large: {} bytes (limit {})", raw.len(), MAX_PAYLOAD_BYTES);
