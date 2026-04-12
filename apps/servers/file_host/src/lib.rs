@@ -21,7 +21,7 @@ pub mod utils;
 pub mod websocket;
 
 pub use crate::websocket::WebSocketFsm;
-pub use cache::{CacheConfig, CacheStore, DedupCache, DedupError};
+pub use cache::{CacheConfig, CacheStore, DedupCache};
 pub use config::*;
 pub use handlers::audio_files::error::AudioServiceError;
 pub use handlers::utterance::UtteranceMetadata;
@@ -84,7 +84,7 @@ impl AppState {
 			github_client: Arc::new(GitHubClient::new(config.github_token.clone())?),
 		};
 
-		let cache_store = CacheStore::new(CacheConfig::from(config.clone()))?;
+		let cache_store = CacheStore::new(config.as_cache_config())?;
 		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
 
 		// Initialize NATS transports

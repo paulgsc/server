@@ -42,8 +42,6 @@ polars = { version =  "0.46.0", features = ["lazy"] }
 tokio-stream = "0.1.17"
 dashmap = "6.1.0"
 hex = "0.4.3"
-flate2 = "1.1.2"
-moka = { version =  "0.12.10", features = ["future", "sync"] }
 sha2 = "0.10.9"
 uuid = "1.18.0"
 chrono.workspace = true
@@ -57,6 +55,7 @@ opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "t
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry", "tracing-log" ] }
 tracing-opentelemetry = { workspace = true }
+some-cache.workspace = true
 
 
 [lints]

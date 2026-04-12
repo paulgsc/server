@@ -176,4 +176,8 @@ impl Config {
 	pub fn new() -> Self {
 		Self::parse()
 	}
+
+	pub fn as_cache_config(&self) -> some_cache::CacheConfig {
+		some_cache::CacheConfig::new(self.redis_url.clone().unwrap_or_else(|| "redis://127.0.0.1:6379".into())).with_ttl(self.cache_ttl)
+	}
 }

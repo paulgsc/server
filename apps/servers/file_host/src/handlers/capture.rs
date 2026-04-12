@@ -1,6 +1,6 @@
 use crate::{
-	models::capture::{epoch_ms_score, index_insert, index_range, index_remove, session_cache_key, CaptureSession, CaptureSummary},
-	AppState, DedupError, FileHostError,
+	models::capture::{epoch_ms_score, index_insert, index_range, index_remove, session_cache_key},
+	AppState, FileHostError,
 };
 use axum::{
 	extract::{Path, Query, State},
@@ -8,8 +8,9 @@ use axum::{
 	Json,
 };
 use serde::Deserialize;
+use some_cache::DedupCacheError;
 use tracing::{error, instrument};
-use ws_events::tabsched::JobEnvelope;
+use ws_events::tabsched::{CaptureSession, CaptureSummary, JobEnvelope};
 
 // Precondition: body deserialises to CaptureSession; session_id non-empty.
 // Postcondition: full session written to Redis via dedup cache;
@@ -31,7 +32,7 @@ pub async fn post_capture(State(state): State<AppState>, Json(session): Json<Cap
 		.dedup_cache
 		.get_or_fetch(&key, || {
 			let session = session.clone();
-			async move { Ok::<CaptureSession, DedupError>(session) }
+			async move { Ok::<CaptureSession, DedupCacheError>(session) }
 		})
 		.await?;
 
@@ -66,7 +67,7 @@ pub async fn get_capture(State(state): State<AppState>, Path(session_id): Path<S
 	let (session, _cached) = state
 		.realtime
 		.dedup_cache
-		.get_or_fetch(&key, || async { Err(DedupError::OperationError(format!("not_found: {}", key))) })
+		.get_or_fetch(&key, || async { Err(DedupCacheError::OperationError(format!("not_found: {}", key))) })
 		.await?;
 
 	Ok(Json(session))
@@ -88,15 +89,15 @@ pub async fn list_captures(State(state): State<AppState>, Query(params): Query<L
 	let from = params.from.unwrap_or(0.0);
 	let to = params.to.unwrap_or(f64::MAX);
 
-	let ids = index_range(&state, from, to, limit).await?;
+	let ids: Vec<String> = index_range(&state, from, to, limit).await?;
 
-	let mut summaries = Vec::with_capacity(ids.len());
+	let mut summaries = Vec::<CaptureSummary>::with_capacity(ids.len());
 	for id in ids.iter().rev() {
 		let key = session_cache_key(id);
 		let fetch_result = state
 			.realtime
 			.dedup_cache
-			.get_or_fetch::<CaptureSession, _, _>(&key, || async { Err(DedupError::OperationError("not_found".into())) })
+			.get_or_fetch::<CaptureSession, _, _>(&key, || async { Err(DedupCacheError::OperationError("not_found".into())) })
 			.await;
 		if let Ok((session, _)) = fetch_result {
 			summaries.push(CaptureSummary::from(&session));
@@ -116,7 +117,7 @@ pub async fn delete_capture(State(state): State<AppState>, Path(session_id): Pat
 
 	let deleted = state.realtime.dedup_cache.delete(&key).await?;
 	if !deleted {
-		return Err(DedupError::OperationError(format!("not_found: {}", session_id)).into());
+		return Err(DedupCacheError::OperationError(format!("not_found: {}", session_id)).into());
 	}
 
 	index_remove(&state, &session_id).await?;

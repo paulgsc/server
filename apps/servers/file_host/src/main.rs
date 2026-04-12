@@ -13,7 +13,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	perform_health_check, AppState, AudioServiceError, Config, DedupCache, DedupError,
+	perform_health_check, AppState, AudioServiceError, Config, DedupCache,
 };
 use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;

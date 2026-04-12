@@ -1,7 +1,8 @@
 use crate::metrics::otel::{record_cache_hit, OperationTimer};
-use crate::{AppState, DedupError, FileHostError};
+use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
 use sdk::Repository;
+use some_cache::DedupCacheError;
 use tracing::instrument;
 
 #[axum::debug_handler]
@@ -16,7 +17,7 @@ pub async fn get_github_repos(State(state): State<AppState>) -> Result<Json<Vec<
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_github_repos", "fetch_data");
-			fetch_github_repositories(state.clone()).await
+			fetch_github_repositories(state.clone()).await.map_err(|e| DedupCacheError::OperationError(e.to_string()))
 		})
 		.await?;
 
@@ -27,10 +28,10 @@ pub async fn get_github_repos(State(state): State<AppState>) -> Result<Json<Vec<
 
 /// Fetch repositories from GitHub API
 #[instrument(name = "fetch_github_repositories", skip(state), fields(otel.kind = "internal"))]
-async fn fetch_github_repositories(state: AppState) -> Result<Vec<Repository>, DedupError> {
+async fn fetch_github_repositories(state: AppState) -> Result<Vec<Repository>, FileHostError> {
 	let _timer = OperationTimer::new("fetch_github_repositories", "get_repositories");
 
-	let repositories = state.external.github_client.get_repositories().await?;
+	let repositories = state.external.github_client.get_repositories().await.map_err(|e| FileHostError::upstream(e))?;
 
 	Ok(repositories)
 }
@@ -53,7 +54,7 @@ pub async fn get_github_repos_with_ttl(State(state): State<AppState>) -> Result<
 		.dedup_cache
 		.get_or_fetch_with_ttl(&cache_key, ttl, || async {
 			let _fetch_timer = OperationTimer::new("get_github_repos_with_ttl", "fetch_data");
-			fetch_github_repositories(state.clone()).await
+			fetch_github_repositories(state.clone()).await.map_err(|e| DedupCacheError::OperationError(e.to_string()))
 		})
 		.await?;
 
