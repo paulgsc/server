@@ -15,7 +15,8 @@ use tracing::{info, instrument, warn};
 
 use crate::error::StageError;
 use crate::stages::label::derive_label;
-use crate::types::{CandidateEdge, CandidateGraph, EmbeddedResource, TabCapture};
+use crate::types::{CandidateEdge, CandidateGraph, EmbeddedResource};
+use ws_events::tabsched::TabCapture;
 
 // ── Guardrails ────────────────────────────────────────────────────────────
 

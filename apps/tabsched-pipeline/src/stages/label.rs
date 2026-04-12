@@ -1,6 +1,6 @@
 ///
 /// Direct port of deriveLabel() + slugify() from pipeline/embed.ts.
-use crate::types::TabCapture;
+use ws_events::tabsched::TabCapture;
 
 /// Derive a short slug label from a capture URL.
 ///

@@ -1,56 +1,5 @@
-///
-/// These mirror the JSON shapes produced by the browser extension and the
-/// Rust Axum capture handler.  All fields are Option-tolerant for forward
-/// compatibility with extension schema drift.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-// ── Capture session (extension output / Axum POST body) ──────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContentKind(pub String);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedContent {
-	pub kind: ContentKind,
-	pub title: String,
-	pub summary: String,
-	pub headings: Vec<String>,
-	pub keywords: Vec<String>,
-	pub raw_length: u64,
-	#[serde(default)]
-	pub meta: HashMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TabCapture {
-	pub tab_id: i64,
-	pub url: String,
-	pub tab_title: String,
-	pub captured_at: String,
-	pub extractor: String,
-	pub domain: String,
-	pub content: ExtractedContent,
-	pub extraction_ok: bool,
-	pub extraction_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkippedTab {
-	pub tab_id: i64,
-	pub url: String,
-	pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptureSession {
-	pub session_id: String,
-	pub captured_at: String,
-	pub extension_version: String,
-	pub total_open_tabs: u64,
-	pub captures: Vec<TabCapture>,
-	pub skipped: Vec<SkippedTab>,
-}
+use ws_events::tabsched::Domain;
 
 // ── Stage 1: embedded resource ────────────────────────────────────────────
 
@@ -60,7 +9,7 @@ pub struct EmbeddedResource {
 	pub url: String,
 	/// Short TOML-safe slug derived from the URL.
 	pub label: String,
-	pub domain: String,
+	pub domain: Domain,
 	pub content_kind: String,
 	pub title: String,
 	pub summary: String,
