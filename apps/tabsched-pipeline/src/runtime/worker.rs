@@ -1,6 +1,6 @@
 use super::{JobRecord, JobState, Store};
 use crate::{engine::process_job, error::StageError, llm::LlmBackend, stages::EmbedProvider};
-use some_transport::nats::{AckHandle, DurableConsumer, JetStreamConfig, JetStreamPublisher};
+use some_transport::nats::{AckHandle, DurableConsumer, JetStreamConfig, JetStreamPublisher, NatsTransport};
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
@@ -14,6 +14,7 @@ pub struct WorkerCtx {
 	pub embed_provider: Arc<EmbedProvider>,
 	pub llm: Arc<dyn LlmBackend>,
 	pub store: Store,
+	pub transport: NatsTransport<JobEnvelope>,
 	pub publisher: Arc<JetStreamPublisher<JobEnvelope>>,
 	pub edge_template: Arc<String>,
 	pub track_template: Arc<String>,
@@ -27,7 +28,7 @@ pub struct WorkerCtx {
 pub async fn worker(worker_id: usize, ctx: WorkerCtx, js_config: JetStreamConfig, shutdown: Arc<tokio::sync::Notify>) {
 	info!(worker_id, "worker starting");
 
-	let mut consumer = match DurableConsumer::<JobEnvelope>::connect(js_config).await {
+	let mut consumer = match DurableConsumer::<JobEnvelope>::bind(ctx.transport.client().clone(), js_config).await {
 		Ok(c) => c,
 		Err(e) => {
 			error!(worker_id, error = %e, "worker failed to connect to JetStream");

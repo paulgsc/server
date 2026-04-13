@@ -16,6 +16,9 @@ serde.workspace = true
 toml = "1.0.7"
 dirs-next = "2.0.0"
 dotenvy.workspace = true
+some-cache.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing.workspace = true
 
 [lints]
 workspace = true

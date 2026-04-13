@@ -31,7 +31,7 @@
 ///   before the worker loop starts.  Paths are not user-controlled.
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use some_transport::nats::{JetStreamConfig, JetStreamPublisher};
+use some_transport::nats::{JetStreamConfig, JetStreamPublisher, NatsTransport};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::signal;
@@ -212,7 +212,9 @@ async fn main() -> Result<()> {
 	info!("Redis connected: {}", args.redis_url);
 
 	// 6. Connect NATS publisher (for DLQ publishes).
-	let publisher = Arc::new(JetStreamPublisher::connect(&args.nats_url).await?);
+	let transport = NatsTransport::connect_pooled(&args.nats_url).await?;
+	let nats_client = transport.client().clone();
+	let publisher = Arc::new(JetStreamPublisher::from_client(nats_client.clone()));
 	info!("NATS publisher connected: {}", args.nats_url);
 
 	// ── Build shared context ──────────────────────────────────────────────
@@ -224,6 +226,7 @@ async fn main() -> Result<()> {
 		llm,
 		store,
 		publisher,
+		transport: transport.clone(),
 		edge_template: Arc::new(edge_template),
 		track_template: Arc::new(track_template),
 		similarity_threshold: args.similarity_threshold,

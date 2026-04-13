@@ -92,5 +92,5 @@ pub fn artifact_key(session_id: &str, stage: &str) -> String {
 
 /// TTL applied to all pipeline artifacts in Redis.
 /// After this window the job is assumed stale and keys are evicted.
-/// 24 hours is intentionally generous — a pipeline run takes minutes.
-pub const ARTIFACT_TTL_SECS: u64 = 86_400;
+/// 2 hours is intentionally generous — a pipeline run takes minutes.
+pub const ARTIFACT_TTL_SECS: u64 = 7_200;

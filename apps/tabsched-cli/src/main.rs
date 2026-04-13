@@ -20,6 +20,7 @@
 //! - `topology.toml` — track/resource definitions (user-edited)
 //! - `state.json`    — session history (managed by ts)
 
+mod cache;
 mod cmd;
 mod config;
 mod ctx;
@@ -63,7 +64,8 @@ enum Command {
 	History(cmd::history::Args),
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
 	dotenvy::dotenv().ok();
 	let cli = Cli::parse();
 	let data_dir = resolve_data_dir(cli.data_dir)?;
@@ -73,7 +75,7 @@ fn main() -> Result<()> {
 		return cmd::init::run(&data_dir);
 	}
 
-	let mut ctx = ctx::Ctx::load(&data_dir).context("failed to load scheduler state")?;
+	let mut ctx = ctx::Ctx::load(&data_dir).await.context("failed to load scheduler state")?;
 
 	match &cli.command {
 		Command::Init => unreachable!(),
