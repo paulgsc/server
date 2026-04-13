@@ -93,7 +93,7 @@ impl AppState {
 
 		// Reuse the Arc<Client> from the transport for JetStream
 		let client = transport.client().clone();
-		let pipeline_publisher = Arc::new(JetStreamPublisher::from_client(Arc::new(client)));
+		let pipeline_publisher = Arc::new(JetStreamPublisher::from_client(client));
 
 		let ws = WebSocketFsm::new();
 
