@@ -10,7 +10,6 @@ use async_nats::jetstream::{
 };
 use async_nats::Client;
 use prost::Message as ProstMessage;
-use std::sync::Arc;
 use std::time::Duration;
 
 // ── Subject constants ──────────────────────────────────────────────────────
@@ -107,11 +106,11 @@ impl<T> DurableConsumer<T>
 where
 	T: ProstMessage + Default,
 {
-	/// Bind to the durable consumer using a shared `Arc<Client>` from the pool.
+	/// Bind to the durable consumer using a shared `Client` from the pool.
 	///
 	/// Postcondition: stream `pipeline` exists with WorkQueue retention.
-	pub async fn bind(client: Arc<Client>, config: JetStreamConfig) -> Result<Self> {
-		let js = jetstream::new((*client).clone());
+	pub async fn bind(client: Client, config: JetStreamConfig) -> Result<Self> {
+		let js = jetstream::new((client).clone());
 
 		let stream = js
 			.get_or_create_stream(StreamConfig {
@@ -199,7 +198,7 @@ where
 
 /// Publishes prost-encoded `T` to the pipeline stream.
 ///
-/// Shares the `Arc<Client>` from `NatsConnectionPool`; no second TCP
+/// Shares the `Client` from `NatsConnectionPool`; no second TCP
 /// connection is opened.
 pub struct JetStreamPublisher<T>
 where
@@ -213,8 +212,8 @@ impl<T> JetStreamPublisher<T>
 where
 	T: ProstMessage,
 {
-	pub fn from_client(client: Arc<Client>) -> Self {
-		let js = jetstream::new((*client).clone());
+	pub fn from_client(client: Client) -> Self {
+		let js = jetstream::new((client).clone());
 		Self {
 			js,
 			_marker: std::marker::PhantomData,

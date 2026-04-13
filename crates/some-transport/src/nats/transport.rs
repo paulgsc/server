@@ -18,7 +18,7 @@ use std::sync::Arc;
 ///
 /// # Idempotent Connection Management
 ///
-/// The transport uses `Arc<Client>` internally, making it safe and efficient
+/// The transport uses `Client` internally, making it safe and efficient
 /// to clone. Multiple clones share the same underlying NATS connection.
 /// Use `NatsConnectionPool` or the `connect_pooled()` method for managing
 /// singleton connections across your app.
@@ -26,7 +26,7 @@ use std::sync::Arc;
 /// # Connection Resilience
 ///
 /// The async_nats client automatically handles reconnection when network
-/// failures occur. The same `Arc<Client>` will reconnect when the network
+/// failures occur. The same `Client` will reconnect when the network
 /// recovers, so there's no need to clear the connection pool for transient
 /// failures. Operations perform lightweight connection state checks to
 /// fail-fast when the connection is known to be down.
@@ -57,7 +57,7 @@ pub struct NatsTransport<E>
 where
 	E: Clone + Send + Sync + Message + Default + 'static,
 {
-	client: Arc<Client>,
+	client: Client,
 	active_channels: Arc<AtomicUsize>,
 	_marker: PhantomData<E>,
 }
@@ -69,7 +69,7 @@ where
 	/// Creates a new NATS transport from a connected client.
 	pub fn new(client: Client) -> Self {
 		Self {
-			client: Arc::new(client),
+			client: client,
 			active_channels: Arc::new(AtomicUsize::new(0)),
 			_marker: PhantomData,
 		}
@@ -113,7 +113,7 @@ where
 	}
 
 	/// Creates a transport from an Arc'd client (useful with connection pools).
-	pub fn from_client(client: Arc<Client>) -> Self {
+	pub fn from_client(client: Client) -> Self {
 		Self {
 			client,
 			active_channels: Arc::new(AtomicUsize::new(0)),
@@ -331,7 +331,7 @@ mod tests {
 		assert_eq!(t2.active_channels(), 0);
 
 		// They should share the same underlying connection
-		// (verified by pointer equality of Arc<Client>)
+		// (verified by pointer equality of Client)
 		assert!(Arc::ptr_eq(&t1.client, &t2.client));
 	}
 
