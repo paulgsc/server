@@ -79,8 +79,4 @@ impl Config {
 		let src = std::fs::read_to_string(path)?;
 		Ok(Self::from_toml(&src)?)
 	}
-
-	pub async fn from_cache(handle: &crate::cache::CacheHandle, key: &str) -> anyhow::Result<Option<Self>> {
-		handle.get_topology(key).await
-	}
 }

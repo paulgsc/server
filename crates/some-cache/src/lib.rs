@@ -35,9 +35,11 @@ pub mod entry;
 pub mod error;
 pub mod metrics;
 pub mod store;
+pub mod stream;
 
 pub use config::CacheConfig;
 pub use dedup::DedupCache;
 pub use entry::CacheEntry;
 pub use error::{CacheError, DedupCacheError};
 pub use store::CacheStore;
+pub use stream::StreamHandle;

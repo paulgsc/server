@@ -80,7 +80,7 @@ impl CacheStore {
 
 	// ── Retry ─────────────────────────────────────────────────────────────
 
-	async fn with_retry<F, T>(&self, operation_name: &str, mut operation: F) -> Result<T, CacheError>
+	pub(crate) async fn with_retry<F, T>(&self, operation_name: &str, mut operation: F) -> Result<T, CacheError>
 	where
 		F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, CacheError>> + Send>>,
 	{

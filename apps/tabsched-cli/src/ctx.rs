@@ -1,18 +1,16 @@
 //! Runtime context shared across all command handlers.
 //!
 //! `Ctx` is the single owner of mutable scheduler state within a CLI
-//! invocation. It is constructed once in `main`, then passed by `&mut`
-//! into each command handler. No global state, no lazy statics.
+//! invocation.  It is constructed once in `main`, then passed by `&mut`
+//! into each command handler.  No global state, no lazy statics.
 //!
-//! `Ctx` also knows its own data directory so command handlers do not
-//! need to construct paths themselves.
+//! `Ctx::load` reads only from the local filesystem — no network I/O.
+//! Redis is touched exclusively by `ts init` and `ts pull` (see `cache.rs`).
 
 use std::path::{Path, PathBuf};
 
-use crate::cache::CacheHandle;
 use anyhow::Context;
 use tabsched::{Engine, State, Topology};
-use tracing::warn;
 
 use crate::config::LabelIndex;
 
@@ -24,47 +22,22 @@ pub struct Ctx {
 }
 
 impl Ctx {
-	/// Load or initialise scheduler state from `data_dir`.
+	/// Load scheduler state from `data_dir` — filesystem only.
 	///
-	/// - `topology.toml`  — track/resource definitions (required)
+	/// Reads:
+	/// - `topology.toml`  — track/resource definitions (required; written by
+	///                       `ts pull` or manually by the user)
 	/// - `state.json`     — persisted session history (created on first run)
 	///
-	/// The `Topology` is leaked to `'static` so `Engine` can hold a
-	/// reference without lifetime propagation infecting every call-site.
-	/// This is acceptable because:
-	/// 1. There is exactly one `Ctx` per process.
-	/// 2. `Topology` is immutable after construction.
-	/// 3. The process exits when the CLI command completes.
-	/// Async because topology may be fetched from Redis.
-	pub async fn load(data_dir: &Path) -> anyhow::Result<Self> {
+	/// The `Topology` is leaked to `'static` so `Engine` can hold a reference
+	/// without lifetime propagation infecting every call-site.  Acceptable
+	/// because there is exactly one `Ctx` per process, `Topology` is immutable
+	/// after construction, and the process exits when the command completes.
+	pub fn load(data_dir: &Path) -> anyhow::Result<Self> {
 		let toml_path = data_dir.join("topology.toml");
 		let state_path = data_dir.join("state.json");
 
-		// ── Build cache handle (non-fatal on failure)
-		let cache = CacheHandle::from_env().unwrap_or_else(|e| {
-			warn!("cache unavailable, falling back to FS only: {}", e);
-			// Construct a no-op handle that will always miss.
-			// from_env() only fails on bad redis URL construction, not
-			// on connection - so this path is unusual.
-			CacheHandle::from_env().expect("infallible default redis URL")
-		});
-
-		let cache_key = CacheHandle::topology_key(data_dir);
-		let config = match crate::config::Config::from_cache(&cache, &cache_key).await {
-			Ok(Some(cached)) => {
-				tracing::debug!("topology cache hit ({})", cache_key);
-				cached
-			}
-			Ok(None) => {
-				tracing::debug!("topology cache miss, reading from FS");
-				let cfg = crate::config::Config::from_file(&toml_path).with_context(|| format!("reading {}", toml_path.display()))?;
-				cfg
-			}
-			Err(e) => {
-				warn!("topology cache get failed, falling back to FS: {}", e);
-				crate::config::Config::from_file(&toml_path).with_context(|| format!("reading {}", toml_path.display()))?
-			}
-		};
+		let config = crate::config::Config::from_file(&toml_path).with_context(|| format!("reading {} (run `ts pull` to fetch from pipeline)", toml_path.display()))?;
 
 		let (topology, index) = crate::config::build(&config).context("building topology from config")?;
 

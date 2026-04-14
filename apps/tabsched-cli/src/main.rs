@@ -69,6 +69,10 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+	tracing_subscriber::fmt()
+		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+		.init();
+
 	dotenvy::dotenv().ok();
 	let cli = Cli::parse();
 	let data_dir = resolve_data_dir(cli.data_dir)?;
@@ -83,7 +87,7 @@ async fn main() -> Result<()> {
 		return cmd::pull::run(&data_dir).await;
 	}
 
-	let mut ctx = ctx::Ctx::load(&data_dir).await.context("failed to load scheduler state")?;
+	let mut ctx = ctx::Ctx::load(&data_dir).context("failed to load scheduler state")?;
 
 	match &cli.command {
 		Command::Init => unreachable!(),
