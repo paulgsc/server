@@ -1,3 +1,4 @@
+
 # Track Grouping Prompt
 
 You are grouping learning resources into scheduler tracks for tabsched.
@@ -11,7 +12,6 @@ in a fixed cycle — session 1 → resource A, session 2 → resource B,
 session 3 → resource A again, etc.
 
 Tracks form a two-level tree:
-
 - **Internal tracks** (no resources): routing nodes that group
   related leaf tracks. They do not directly receive sessions.
 - **Leaf tracks** (have resources): execution units. The scheduler
@@ -59,45 +59,34 @@ Apply these in order of priority:
 
 {{RESOURCES_AND_EDGES}}
 
-### User's current tracks (soft constraints)
-
-Treat these as the user's expressed intent. You may reorganize leaf
-tracks and adjust targets, but explain any change to the top-level
-domain structure.
-
-{{CURRENT_TRACKS}}
-
 ### Window size
 
 {{WINDOW_SIZE}}
 
-## Output format
+### Previous tracks (reference only)
 
-Respond with JSON only. No explanation text outside the JSON object.
+The following is a summary of the prior run's track structure.
+It reflects the user's expressed intent and may be used as a
+continuity signal, but it is NOT authoritative.
 
-```json
-{
-  "tracks": [
-    {
-      "label": "string — human readable, unique",
-      "parent": "string — parent track label, or null for root",
-      "target": "number — sessions per window, > 0",
-      "resource_labels": ["array of resource labels, in cycle order"],
-      "derived_by": "llm",
-      "rationale": "one sentence — why this grouping"
-    }
-  ],
-  "changes_from_current": [
-    {
-      "kind": "moved" | "split" | "merged" | "retargeted" | "added" | "removed",
-      "description": "what changed and why"
-    }
-  ]
-}
-```
+- It may be incomplete or structurally incorrect.
+- Do NOT copy it. Do NOT imitate its field values.
+- Recompute all tracks from scratch using the resources and edge
+  graph above.
 
-Rules:
+{{CURRENT_TRACKS}}
 
+## Output requirements
+
+Every track object MUST include ALL of these fields:
+- `label`         — human readable, unique string
+- `parent`        — parent track label, or null for root
+- `target`        — integer > 0
+- `resource_labels` — array (empty for internal, non-empty for leaf)
+- `derived_by`    — always the string "llm"
+- `rationale`     — required; one sentence explaining this grouping
+
+Structural invariants:
 - Emit exactly one root track (parent = null).
 - Internal tracks have empty `resource_labels` array.
 - Leaf tracks have non-empty `resource_labels`.
@@ -106,3 +95,27 @@ Rules:
 - Every input resource must appear in exactly one leaf track.
 - Emit tracks in BFS order (parents before children).
 
+## Output format
+
+Respond with JSON only. No explanation text outside the JSON object.
+
+```json
+{
+  "tracks": [
+  {
+    "label": "string — human readable, unique",
+      "parent": "string — parent track label, or null for root",
+      "target": "number — sessions per window, > 0",
+      "resource_labels": ["array of resource labels, in cycle order"],
+      "derived_by": "llm",
+      "rationale": "one sentence — why this grouping"
+  }
+  ],
+  "changes_from_current": [
+    {
+      "kind": "moved | split | merged | retargeted | added | removed",
+      "description": "what changed and why"
+    }
+  ]
+}
+```

@@ -18,7 +18,16 @@ use ws_events::tabsched::{CaptureSession, CaptureSummary, JobEnvelope};
 //   Idempotent — re-POST of same session_id is a no-op on the cache write.
 // Returns: CaptureSummary.
 #[axum::debug_handler]
-#[instrument(name = "post_capture", skip(state), fields(otel.kind = "server"))]
+#[instrument(
+	name = "post_capture",
+	skip_all,
+	fields(
+		otel.kind = "server",
+		session_id = tracing::field::Empty,
+		captured_at = tracing::field::Empty,
+		total_tabs = tracing::field::Empty
+	)
+)]
 pub async fn post_capture(State(state): State<AppState>, Json(session): Json<CaptureSession>) -> Result<Json<CaptureSummary>, FileHostError> {
 	let session_id = session.session_id.clone();
 	let captured_at = session.captured_at.clone();
@@ -60,7 +69,16 @@ pub async fn post_capture(State(state): State<AppState>, Json(session): Json<Cap
 // Postcondition: returns full CaptureSession.
 // Failure: DedupError::OperationError("not_found") → 404 via DedupError::into_response.
 #[axum::debug_handler]
-#[instrument(name = "get_capture", skip(state), fields(session_id = %session_id, otel.kind = "server"))]
+#[instrument(
+	name = "get_capture",
+	skip_all,
+	fields(
+		otel.kind = "server",
+		session_id = tracing::field::Empty,
+		captured_at = tracing::field::Empty,
+		total_tabs = tracing::field::Empty
+	)
+)]
 pub async fn get_capture(State(state): State<AppState>, Path(session_id): Path<String>) -> Result<Json<CaptureSession>, FileHostError> {
 	let key = session_cache_key(&session_id);
 

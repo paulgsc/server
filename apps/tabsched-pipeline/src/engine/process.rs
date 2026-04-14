@@ -1,3 +1,4 @@
+// process.rs
 use crate::{
 	error::{with_retry, RetryPolicy, StageError},
 	runtime::{JobRecord, JobState},
@@ -7,6 +8,7 @@ use crate::{
 
 use crate::resume_or_run;
 use crate::runtime::WorkerCtx;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use uuid::Uuid;
 
@@ -20,8 +22,20 @@ use uuid::Uuid;
 /// Invariant: every intermediate artifact is written to Redis before the
 /// next stage begins.  The function is therefore safe to retry from any
 /// point — resume_or_run! skips already-completed stages.
-#[instrument(skip(ctx), fields(session_id = %session_id))]
-pub async fn process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageError> {
+#[instrument(skip(ctx, token), fields(session_id = %session_id))]
+pub async fn process_job(ctx: &WorkerCtx, session_id: &str, token: CancellationToken) -> Result<(), StageError> {
+	tokio::select! {
+		biased;
+		_ = token.cancelled() => {
+			info!(session_id, "job preempted by shutdown — NAK for redeliver");
+			Err(StageError::retryable(anyhow::anyhow!("shutdown mid-job")))
+		}
+		res = do_process_job(ctx, session_id) => res,
+	}
+}
+
+/// Inner function — all existing process_job body moves here verbatim.
+async fn do_process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageError> {
 	// ── Fetch + validate CaptureSession from Redis ────────────────────────
 	let session = ctx.store.clone().fetch_capture(session_id).await.map_err(|e| {
 		// Missing key → Poison (extension never posted it, or TTL expired).
