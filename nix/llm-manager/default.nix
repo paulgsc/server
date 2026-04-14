@@ -251,9 +251,9 @@ in {
   packages = [llmCLI pkgs.docker-compose];
   shell = pkgs.mkShell {
     buildInputs = [llmCLI pkgs.docker-compose];
+    shellHook = ''
+      export OLLAMA_MODELS_PATH="${modelsDir}"
+      echo "🤖  LLM Manager loaded — commands: llm download | list | status | guard"
+    '';
   };
-  shellHook = ''
-    export OLLAMA_MODELS_PATH="${modelsDir}"
-    echo "🤖  LLM Manager loaded — commands: llm download | list | status | guard"
-  '';
 }
