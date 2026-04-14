@@ -16,10 +16,9 @@
 use anyhow::{Context, Result};
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
-use std::sync::Arc;
 use tracing::instrument;
 
-use some_cache::{CacheConfig, CacheEntry, CacheStore};
+use some_cache::{CacheConfig, CacheEntry, CacheStore, StreamHandle};
 
 use super::job::{artifact_key, capture_key, state_key, JobRecord, ARTIFACT_TTL_SECS};
 use ws_events::tabsched::CaptureSession;
@@ -35,7 +34,7 @@ pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 pub struct Store {
 	/// Typed cache for all job state and pipeline artifacts.
 	/// Handles serialization (postcard), compression (zstd), retry, and TTL.
-	cache: Arc<CacheStore>,
+	cache: CacheStore,
 
 	/// Raw Redis connection for operations with no CacheStore equivalent:
 	/// currently only push_dlq (LPUSH + LTRIM).
@@ -70,7 +69,7 @@ impl Store {
 			touch_probability: Some(0.0), // pipeline artifacts are write-once; no sliding TTL
 		};
 
-		let cache = Arc::new(CacheStore::new(config).context("building CacheStore")?);
+		let cache = CacheStore::new(config).context("building CacheStore")?;
 
 		// ── DLQ connection ────────────────────────────────────────────────
 		let client = redis::Client::open(redis_url).context("invalid Redis URL")?;
@@ -186,5 +185,15 @@ impl Store {
 		self.dlq_conn.lpush::<_, _, ()>("pipeline:dlq", entry.to_string()).await.context("push_dlq")?;
 		self.dlq_conn.ltrim::<_, ()>("pipeline:dlq", 0, 999).await.context("dlq trim")?;
 		Ok(())
+	}
+
+	/// Notify downstream consumers (like the CLI) that a pipeline run is finished.
+	/// This is fire-and-forget; failures are logged but not returned as Errors
+	/// to avoid stalling the pipeline.
+	pub async fn notify_completion(&self, session_id: &str) {
+		let stream = StreamHandle::pipeline_completed(self.cache.clone(), "pipeline-worker");
+		if let Err(e) = stream.publish_completed(session_id).await {
+			tracing::warn!(session_id, error = %e, "failed to publish completion event to stream");
+		}
 	}
 }

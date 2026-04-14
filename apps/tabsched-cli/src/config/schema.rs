@@ -35,10 +35,10 @@
 //! resources = ["dp-patterns-tab", "leetcode-75-dp"]
 //! ```
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Root of the TOML config file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
 	/// Rolling window size (number of slots). Fairness is enforced over
 	/// this window. Typical value: 10–30.
@@ -51,7 +51,7 @@ pub struct Config {
 }
 
 /// One `[[track]]` entry.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TrackConfig {
 	/// Unique human label. Used as the stable identifier in the config;
 	/// numeric IDs are assigned during build.

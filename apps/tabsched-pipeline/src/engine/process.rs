@@ -113,6 +113,10 @@ pub async fn process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageE
 	let toml_str = generate_toml(&output);
 	ctx.store.clone().write_artifact(session_id, "toml", &toml_str).await.map_err(StageError::retryable)?;
 
+	// ── Notify CLI consumers via Redis Stream ────────────────────────────
+	// Non-fatal: failures won't block ACK.
+	ctx.store.notify_completion(session_id).await;
+
 	record.transition(JobState::Completed);
 	ctx.store.clone().write_state(&record).await.ok();
 

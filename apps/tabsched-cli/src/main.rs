@@ -62,6 +62,9 @@ enum Command {
 
 	/// View recent session history.
 	History(cmd::history::Args),
+
+	/// Fetch topology updates published by the pipeline daemon.
+	Pull,
 }
 
 #[tokio::main]
@@ -75,10 +78,16 @@ async fn main() -> Result<()> {
 		return cmd::init::run(&data_dir);
 	}
 
+	// `pull` also doesn't need a fully-loaded Ctx — topology may not exist yet.
+	if let Command::Pull = &cli.command {
+		return cmd::pull::run(&data_dir).await;
+	}
+
 	let mut ctx = ctx::Ctx::load(&data_dir).await.context("failed to load scheduler state")?;
 
 	match &cli.command {
 		Command::Init => unreachable!(),
+		Command::Pull => unreachable!(),
 		Command::Next => cmd::next::run(&ctx),
 		Command::Step(args) => cmd::step::run(&mut ctx, args),
 		Command::Done(args) => cmd::done::run(&mut ctx, args),

@@ -19,6 +19,7 @@ dotenvy.workspace = true
 some-cache.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
+hostname = "0.4.2"
 
 [lints]
 workspace = true
