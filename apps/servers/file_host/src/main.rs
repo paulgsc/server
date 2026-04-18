@@ -4,8 +4,15 @@ mod models;
 mod routes;
 
 use crate::routes::{
-	audio_files::get_audio, capture::capture_routes, db::mood_events, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets,
-	tab_metadata::post_now_playing, utterance::post_utterance,
+	audio_files::get_audio,
+	capture::capture_routes,
+	db::{capture_sessions, mood_events},
+	gdrive::get_gdrive_image,
+	github::get_repos,
+	health::get_health,
+	sheets::get_sheets,
+	tab_metadata::post_now_playing,
+	utterance::post_utterance,
 };
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
@@ -58,6 +65,7 @@ async fn main() -> Result<()> {
 		.merge(get_gdrive_image())
 		.merge(get_repos())
 		.merge(mood_events())
+		.merge(capture_sessions())
 		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
