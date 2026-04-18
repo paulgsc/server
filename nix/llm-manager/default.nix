@@ -201,15 +201,25 @@ else let
   llmDownload = pkgs.writeShellScriptBin "llm-download" ''
     set -euo pipefail
 
-    # Verify storage path before writing anything
     ${llmGuard}/bin/llm-guard
 
     echo ""
     echo -e "\033[0;34m📥  Ollama Model Downloader\033[0m"
     echo ""
-    echo "  1. llama3.2:1b      (1.3 GB)  — Smallest/Fastest LLM"
-    echo "  2. llama3.2:3b      (2.0 GB)  — Balanced LLM"
-    echo "  3. nomic-embed-text (274 MB)  — Required for RAG/Embeddings"
+    echo "  ── Small / Fast ─────────────────────────────"
+    echo "  1. llama3.2:1b        (1.3 GB)  — Fastest, weakest reasoning"
+    echo "  2. llama3.2:3b        (2.0 GB)  — Good baseline"
+    echo ""
+    echo "  ── Balanced (Recommended) ──────────────────"
+    echo "  3. llama3.1:8b        (~4–6 GB) — Strong local baseline"
+    echo "  4. mistral:7b         (~4–5 GB) — Often better reasoning than 8B LLaMA"
+    echo ""
+    echo "  ── Larger (CPU but slow) ───────────────────"
+    echo "  5. llama3:8b          (~4–6 GB) — Slightly older but solid"
+    echo "  6. llama2:13b         (~8–10 GB) — Noticeably slower, better structure"
+    echo ""
+    echo "  ── Embeddings ──────────────────────────────"
+    echo "  7. nomic-embed-text   (274 MB)  — Recommended embeddings"
     echo ""
     read -p "Select model [1]: " CHOICE
     CHOICE=''${CHOICE:-1}
@@ -217,7 +227,11 @@ else let
     case $CHOICE in
       1) MODEL="llama3.2:1b" ;;
       2) MODEL="llama3.2:3b" ;;
-      3) MODEL="nomic-embed-text" ;;
+      3) MODEL="llama3.1:8b" ;;
+      4) MODEL="mistral:7b" ;;
+      5) MODEL="llama3:8b" ;;
+      6) MODEL="llama2:13b" ;;
+      7) MODEL="nomic-embed-text" ;;
       *) echo "Invalid choice"; exit 1 ;;
     esac
 
