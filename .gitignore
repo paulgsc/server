@@ -81,3 +81,4 @@ grafana/csv/
 # Workflow
 *errors.json
 *issues.json
+.dump

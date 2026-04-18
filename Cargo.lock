@@ -638,6 +638,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "ws-events",
+]
+
+[[package]]
 name = "card-validate"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,6 +1711,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "capture_repo",
  "chrono",
  "clap",
  "dashmap",
