@@ -11,6 +11,7 @@ use crate::stages::prompts::{fill_template, format_resources_and_edges};
 use crate::types::{CandidateGraph, DerivedEdge, DerivedTrack, TopologyChange};
 
 pub const STAGE_TIMEOUT_SECS: u64 = 300;
+const MAX_PROMPT_LEN: usize = 16_000;
 
 #[derive(Deserialize)]
 struct TrackResponse {
@@ -70,6 +71,14 @@ pub async fn run_derive_tracks(
 			("WINDOW_SIZE", &window_size.to_string()),
 		],
 	);
+	let prompt_len = prompt.len();
+
+	if prompt_len > MAX_PROMPT_LEN {
+		tracing::error!(prompt_len, "derive-tracks: prompt is very large; risk of context overflow / echo");
+		return Err(StageError::retryable(anyhow::anyhow!("derive-tracks: prompt too large (len={})", prompt_len)));
+	} else {
+		tracing::debug!(prompt_len = prompt.len(), resources_len = graph.resources.len(), tracks_len = current_tracks_str.len(),);
+	}
 
 	tracing::debug!(len = current_tracks_str.len(), has_previous = current_tracks.is_some(), "derive-tracks: prior state");
 	let raw = timeout(std::time::Duration::from_secs(STAGE_TIMEOUT_SECS), llm.complete(&prompt, "derive-tracks"))
