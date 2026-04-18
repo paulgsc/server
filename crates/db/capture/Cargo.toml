@@ -1,0 +1,15 @@
+[package]
+name = "capture_repo"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+ws-events = { workspace = true, features = ["tabsched"] }
+
+[lints]
+workspace = true
