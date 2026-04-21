@@ -1,2 +1,3 @@
-mod repository;
-pub use repository::{CaptureSessionRepository, StoredSession};
+pub mod repository;
+
+pub use repository::TabRepository;
