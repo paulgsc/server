@@ -101,6 +101,12 @@ struct Args {
 	#[arg(long, default_value = "nats://127.0.0.1:4222", env = "NATS_URL")]
 	nats_url: String,
 
+	/// Base URL of the Axum tab server.
+	/// Pipeline fetches Vec<TabCapture> from GET {axum_base_url}/tabs
+	/// on each job, replacing the Redis staging hop.
+	#[arg(long, default_value = "http://localhost:3000", env = "AXUM_BASE_URL")]
+	axum_base_url: String,
+
 	/// Number of concurrent worker tasks.
 	/// Each worker holds one JetStream message at a time.
 	/// On CPU with local Ollama, 2 is the recommended ceiling.
@@ -220,6 +226,7 @@ async fn main() -> Result<()> {
 
 	// ── Build shared context ──────────────────────────────────────────────
 	let ctx = WorkerCtx {
+		axum_base_url: args.axum_base_url.clone(),
 		http: reqwest::Client::builder()
 			// No global timeout — per-stage timeouts are enforced inside each stage.
 			.build()?,

@@ -40,41 +40,18 @@ pub struct SkippedTab {
 	pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptureSession {
-	pub session_id: String,
-	pub captured_at: String,
-	pub extension_version: String,
-	pub total_open_tabs: u64,
-	pub captures: Vec<TabCapture>,
-	pub skipped: Vec<SkippedTab>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptureSummary {
-	pub session_id: String,
-	pub captured_at: String,
-	pub total_tabs: u64,
-	pub captured_ok: usize,
-	pub captured_fail: usize,
-	pub skipped: usize,
-}
-
 impl std::fmt::Display for Domain {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_str(&self.0)
 	}
 }
 
-impl From<&CaptureSession> for CaptureSummary {
-	fn from(s: &CaptureSession) -> Self {
-		Self {
-			session_id: s.session_id.clone(),
-			captured_at: s.captured_at.clone(),
-			total_tabs: s.total_open_tabs,
-			captured_ok: s.captures.iter().filter(|c| c.extraction_ok).count(),
-			captured_fail: s.captures.iter().filter(|c| !c.extraction_ok).count(),
-			skipped: s.skipped.len(),
-		}
-	}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabSummary {
+	pub tab_id: i64,
+	pub url: String,
+	pub tab_title: String,
+	pub domain: String,
+	pub last_seen_at: String,
+	pub extraction_ok: bool,
 }

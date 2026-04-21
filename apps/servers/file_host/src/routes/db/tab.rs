@@ -45,5 +45,8 @@ where
 		// ── Query ───────────────────────────────────────────────────────────
 		// GET    /tabs/summaries  → lightweight TabSummary list (no blobs)
 		.route("/tabs/summaries", get(routes::get_tab_summaries))
+		// ── Pipeline ─────────────────────────────────────────────────────────
+		// POST    /tabs/pipeline    → Trigger NATS job for offline processing
+		.route("/tabs/pipeline", post(routes::trigger_pipeline))
 		.layer(cors)
 }

@@ -1,5 +1,5 @@
-mod capture;
 mod hopium;
+mod tab;
 
-pub use capture::capture_sessions;
 pub use hopium::mood_events;
+pub use tab::tabs;

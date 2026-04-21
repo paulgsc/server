@@ -5,12 +5,13 @@ use axum::{
 	http::StatusCode,
 	Json,
 };
+use chrono::Utc;
 use some_cache::DedupCacheError;
 use std::sync::Arc;
-use tracing::instrument;
+use tracing::{error, instrument};
 
 use capture_repo::TabRepository;
-use ws_events::tabsched::{TabCapture, TabSummary};
+use ws_events::tabsched::{JobEnvelope, TabCapture, TabSummary};
 
 // ── Request/Response types ────────────────────────────────────────────────────
 
@@ -58,6 +59,14 @@ pub struct ReconcileRequest {
 pub struct ReconcileResponse {
 	/// tab_ids in DB that the extension did not report as active.
 	pub absent_tab_ids: Vec<i64>,
+}
+
+/// POST /tabs/pipeline response.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PipelineResponse {
+	/// Opaque run identifier. Scopes all Redis artifacts for this pipeline run.
+	/// Carried in the JobEnvelope; pipeline uses it as an artifact key prefix.
+	pub session_id: String,
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -241,7 +250,7 @@ pub async fn batch_upsert_tabs(State(state): State<AppState>, Json(request): Jso
 		let _db = OperationTimer::new("batch_upsert_tabs", "database_batch_upsert");
 		repo.batch_upsert(request.tabs).await
 	}
-	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+	.map_err(FileHostError::from)?;
 
 	{
 		let _ct = OperationTimer::new("batch_upsert_tabs", "cache_invalidation");
@@ -359,4 +368,57 @@ pub async fn get_tab_summaries(State(state): State<AppState>) -> Result<Json<Vec
 	record_cache_hit("get_tab_summaries", was_cached);
 
 	Ok(Json(summaries))
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+
+/// POST /tabs/pipeline
+///
+/// Responsibility: signal only. No data movement.
+///
+/// The Axum server is the authority on tab data (SQLite).
+/// The pipeline daemon is a separate process that owns its own HTTP client.
+/// This handler publishes a JobEnvelope to NATS; the daemon worker receives
+/// it and fetches Vec<TabCapture> directly from GET /tabs via HTTP.
+///
+/// Eliminated indirections vs. previous iterations:
+///   - No Redis write from Axum (pipeline reads HTTP, not Redis staging keys)
+///   - No CaptureSession wrapper (pipeline receives Vec<TabCapture> directly)
+///   - No pipeline_store on AppState (Store is daemon-internal)
+///
+/// session_id scopes the Redis artifacts written by the pipeline daemon
+/// (embed, edges, tracks, output). It is not a Redis key on the Axum side.
+///
+/// Retry behaviour: if the daemon fails to fetch /tabs (Axum unreachable),
+/// it returns StageError::Retryable → NAK → JetStream redelivers. The
+/// session_id is stable for the lifetime of the envelope so artifact keys
+/// are consistent across retries.
+#[axum::debug_handler]
+#[instrument(
+    name = "trigger_pipeline",
+    skip_all,
+    fields(otel.kind = "server", session_id = tracing::field::Empty)
+)]
+pub async fn trigger_pipeline(State(state): State<AppState>) -> Result<Json<PipelineResponse>, FileHostError> {
+	let _timer = OperationTimer::new("trigger_pipeline", "total");
+
+	let captured_at = Utc::now();
+	// session_id scopes pipeline artifacts in Redis for this run.
+	// Not a Redis key on the Axum side — purely an artifact namespace token.
+	let session_id = format!("tabs-{}", captured_at.timestamp());
+
+	tracing::Span::current().record("session_id", &session_id);
+
+	let envelope = JobEnvelope {
+		session_id: session_id.clone(),
+		captured_at: captured_at.to_rfc3339(),
+		attempt: 1,
+	};
+
+	state.realtime.pipeline_publisher.publish(&envelope).await.map_err(|e| {
+		error!(session_id, error = %e, "JetStream publish failed");
+		FileHostError::OperationError(e.to_string())
+	})?;
+
+	Ok(Json(PipelineResponse { session_id }))
 }

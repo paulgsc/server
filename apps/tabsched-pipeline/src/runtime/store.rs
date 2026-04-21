@@ -5,23 +5,16 @@
 /// Contract:
 ///   - All reads/writes are namespaced under known key prefixes (see job.rs).
 ///   - All writes carry an explicit TTL — no indefinite retention.
-///   - Serialization is postcard (binary) via some-cache CacheStore.
-///   - The capture session is READ from the key written by the Axum capture
 ///     handler. The pipeline never writes to capture:session:* keys.
 ///
-/// Wire format note:
-///   If the Axum capture handler writes CaptureSession as raw JSON (pre-migration),
-///   fetch_capture will fail to deserialize with a postcard error. In that case,
-///   use fetch_capture_json (feature-flagged below) until the handler is migrated.
 use anyhow::{Context, Result};
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::instrument;
 
-use some_cache::{CacheConfig, CacheEntry, CacheStore, StreamHandle};
+use some_cache::{CacheConfig, CacheStore, StreamHandle};
 
-use super::job::{artifact_key, capture_key, state_key, JobRecord, ARTIFACT_TTL_SECS};
-use ws_events::tabsched::CaptureSession;
+use super::job::{artifact_key, state_key, JobRecord, ARTIFACT_TTL_SECS};
 
 /// Reject any single payload larger than this before deserialisation.
 /// Acts as a poison guard at ingestion — prevents OOM on malformed entries.
@@ -89,47 +82,6 @@ impl Store {
 	pub async fn read_state(&self, session_id: &str) -> Result<Option<JobRecord>> {
 		let key = state_key(session_id);
 		self.cache.get(&key).await.context("read_state")
-	}
-
-	// ── Capture session (read-only — written by Axum handler) ────────────
-
-	/// Fetch the CaptureSession written by the Axum /capture endpoint.
-	///
-	/// Size guard runs on the raw encoded bytes before deserialization to
-	/// prevent OOM on oversized or malformed payloads (poison detection).
-	///
-	/// Assumes the Axum handler writes CaptureSession via some-cache
-	/// (postcard-encoded). If the handler is still writing raw JSON, use
-	/// fetch_capture_json below and migrate together.
-	#[instrument(skip(self), fields(session_id))]
-	pub async fn fetch_capture(&self, session_id: &str) -> Result<CaptureSession> {
-		let key = capture_key(session_id);
-
-		// Use get_raw so we can enforce MAX_PAYLOAD_BYTES before deserializing.
-		// CacheStore::get would deserialize eagerly with no size visibility.
-		let raw = self
-			.cache
-			.get_raw_payload(&key)
-			.await
-			.context("fetch_capture get")?
-			.ok_or_else(|| anyhow::anyhow!("capture session not found: {}", key))?;
-
-		if raw.len() > MAX_PAYLOAD_BYTES {
-			anyhow::bail!("capture payload too large: {} bytes (limit {})", raw.len(), MAX_PAYLOAD_BYTES);
-		}
-
-		let entry: CacheEntry<CaptureSession> = self.cache.deserialize_payload(&raw).map_err(|e| {
-			// This preserves the structured CacheError inside the anyhow context
-			// Convert bytes to string, replacing invalid UTF-8 with
-			// Log the raw data along with the error
-			tracing::error!(
-				error = ?e,
-				"failed to deserialize CacheEntry envelope"
-			);
-			anyhow::Error::from(e).context("failed to deserialize CacheEntry")
-		})?;
-
-		Ok(entry.data)
 	}
 
 	// ── Intermediate artifacts ────────────────────────────────────────────

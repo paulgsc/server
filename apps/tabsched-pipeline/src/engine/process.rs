@@ -1,6 +1,6 @@
 use crate::{
 	error::{with_retry, RetryPolicy, StageError},
-	runtime::{JobRecord, JobState},
+	runtime::{fetch_tabs_from_server, JobRecord, JobState},
 	stages::{derive_edges::run_derive_edges, derive_tracks::run_derive_tracks, embed::run_embed_stage, toml_gen::generate_toml},
 	types::PipelineOutput,
 };
@@ -19,43 +19,30 @@ use uuid::Uuid;
 /// Returns Err(StageError) on failure (caller dispatches NAK/TERM).
 ///
 /// Invariant: every intermediate artifact is written to Redis before the
-/// next stage begins.  The function is therefore safe to retry from any
+/// next stage begins. The function is therefore safe to retry from any
 /// point — resume_or_run! skips already-completed stages.
 #[instrument(skip(ctx, token), fields(session_id = %session_id))]
 pub async fn process_job(ctx: &WorkerCtx, session_id: &str, token: CancellationToken) -> Result<(), StageError> {
 	tokio::select! {
-		biased;
-		_ = token.cancelled() => {
-			info!(session_id, "job preempted by shutdown — NAK for redeliver");
-			Err(StageError::retryable(anyhow::anyhow!("shutdown mid-job")))
-		}
-		res = do_process_job(ctx, session_id) => res,
+			biased;
+			_ = token.cancelled() => {
+					info!(session_id, "job preempted by shutdown — NAK for redeliver");
+					Err(StageError::retryable(anyhow::anyhow!("shutdown mid-job")))
+			}
+			res = do_process_job(ctx, session_id) => res,
 	}
 }
 
-/// Inner function — all existing process_job body moves here verbatim.
 async fn do_process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageError> {
-	// ── Fetch + validate CaptureSession from Redis ────────────────────────
-	let session = ctx.store.clone().fetch_capture(session_id).await.map_err(|e| {
-		// Missing key → Poison (extension never posted it, or TTL expired).
-		// Oversized → Poison (guardrail in store.rs).
-		StageError::poison(e)
-	})?;
-
-	// Validate session_id matches envelope (prevent key collisions).
-	if session.session_id != session_id {
-		return Err(StageError::poison(anyhow::anyhow!(
-			"session_id mismatch: envelope={} payload={}",
-			session_id,
-			session.session_id
-		)));
-	}
-
-	// Filter to valid captures.
-	let captures: Vec<_> = session.captures.into_iter().filter(|c| c.extraction_ok).collect();
+	// ── Fetch Vec<TabCapture> from Axum server ────────────────────────────
+	//
+	// The server (SQLite) is the authority. No Redis staging on the Axum side.
+	// Network failure → Retryable (JetStream NAK + redeliver).
+	// Empty response  → Poison (no point retrying an empty db).
+	let captures = fetch_tabs_from_server(&ctx.http, &ctx.axum_base_url).await.map_err(StageError::retryable)?;
 
 	if captures.is_empty() {
-		return Err(StageError::poison(anyhow::anyhow!("no extraction_ok captures in session")));
+		return Err(StageError::poison(anyhow::anyhow!("server returned no extraction_ok tabs for session_id={}", session_id)));
 	}
 
 	// ── Update job state ──────────────────────────────────────────────────
@@ -92,7 +79,6 @@ async fn do_process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageEr
 	record.transition(JobState::Tracks);
 	ctx.store.clone().write_state(&record).await.ok();
 
-	// Fetch previous run's output as soft constraint (missing key = None = first run).
 	let current_tracks = ctx.store.clone().fetch_current_tracks(session_id).await.unwrap_or(None);
 
 	let (tracks, changes) = resume_or_run!(
@@ -105,7 +91,7 @@ async fn do_process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageEr
 		})
 	);
 
-	// ── Assemble + persist PipelineOutput ────────────────────────────────
+	// ── Assemble + persist PipelineOutput ─────────────────────────────────
 	let output = PipelineOutput {
 		run_id: Uuid::new_v4().to_string(),
 		run_at: chrono::Utc::now().to_rfc3339(),
@@ -121,13 +107,9 @@ async fn do_process_job(ctx: &WorkerCtx, session_id: &str) -> Result<(), StageEr
 
 	ctx.store.clone().write_artifact(session_id, "output", &output).await.map_err(StageError::retryable)?;
 
-	// Also write the TOML so downstream can read it from Redis by key
-	// `pipeline:artifact:<session_id>:toml`.
 	let toml_str = generate_toml(&output);
 	ctx.store.clone().write_artifact(session_id, "toml", &toml_str).await.map_err(StageError::retryable)?;
 
-	// ── Notify CLI consumers via Redis Stream ────────────────────────────
-	// Non-fatal: failures won't block ACK.
 	ctx.store.notify_completion(session_id).await;
 
 	record.transition(JobState::Completed);

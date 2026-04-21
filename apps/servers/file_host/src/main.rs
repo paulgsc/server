@@ -5,8 +5,7 @@ mod routes;
 
 use crate::routes::{
 	audio_files::get_audio,
-	capture::capture_routes,
-	db::{capture_sessions, mood_events},
+	db::{mood_events, tabs},
 	gdrive::get_gdrive_image,
 	github::get_repos,
 	health::get_health,
@@ -65,11 +64,10 @@ async fn main() -> Result<()> {
 		.merge(get_gdrive_image())
 		.merge(get_repos())
 		.merge(mood_events())
-		.merge(capture_sessions())
+		.merge(tabs())
 		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
-		.merge(capture_routes())
 		.merge(post_utterance());
 
 	let max_requests = config.clone().max_request_size.try_into()?;

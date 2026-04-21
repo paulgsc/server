@@ -11,6 +11,7 @@ use ws_events::tabsched::JobEnvelope;
 /// Everything a worker needs, cheap to clone (Arc internals).
 #[derive(Clone)]
 pub struct WorkerCtx {
+	pub axum_base_url: String,
 	pub http: reqwest::Client,
 	pub embed_provider: Arc<EmbedProvider>,
 	pub llm: Arc<dyn LlmBackend>,

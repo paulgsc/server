@@ -81,11 +81,6 @@ pub fn state_key(session_id: &str) -> String {
 	format!("pipeline:state:{}", session_id)
 }
 
-pub fn capture_key(session_id: &str) -> String {
-	// Mirrors the Axum handler's `session_cache_key`.
-	format!("cache:capture:session:{}", session_id)
-}
-
 pub fn artifact_key(session_id: &str, stage: &str) -> String {
 	format!("pipeline:artifact:{}:{}", session_id, stage)
 }
