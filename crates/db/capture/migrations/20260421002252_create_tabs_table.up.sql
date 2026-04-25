@@ -1,7 +1,8 @@
 -- Add up migration script here
 
 CREATE TABLE tabs (
-    tab_id           INTEGER PRIMARY KEY,
+    url_hash         TEXT    PRIMARY KEY, -- SHA-256 of the normalized URL
+    tab_id           INTEGER NOT NULL,    -- Last known browser session ID
     url              TEXT    NOT NULL,
     tab_title        TEXT    NOT NULL,
     domain           TEXT    NOT NULL,

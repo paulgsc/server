@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use sqlx::types::Json;
 use sqlx::{FromRow, SqlitePool};
 use ws_events::tabsched::{ExtractedContent, TabCapture, TabSummary};
@@ -6,6 +7,8 @@ use ws_events::tabsched::{ExtractedContent, TabCapture, TabSummary};
 
 #[derive(FromRow)]
 struct TabRow {
+	#[allow(dead_code)]
+	url_hash: String,
 	tab_id: i64,
 	url: String,
 	tab_title: String,
@@ -54,29 +57,34 @@ impl TabRepository {
 	/// This is the canonical write operation; "create" and "update" are
 	/// the same thing from the caller's perspective.
 	pub async fn upsert(&self, tab: TabCapture) -> Result<TabCapture, sqlx::Error> {
+		let url_hash = compute_url_hash(&tab.url);
 		let content = Json(&tab.content);
 		let domain = tab.domain.0.as_str();
 
 		sqlx::query!(
 			r#"
-            INSERT INTO tabs (
-                tab_id, url, tab_title, domain,
-                captured_at, extractor,
-                content, extraction_ok, extraction_error,
-                last_seen_at, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(tab_id) DO UPDATE SET
-                url               = excluded.url,
-                tab_title         = excluded.tab_title,
-                domain            = excluded.domain,
-                captured_at       = excluded.captured_at,
-                extractor         = excluded.extractor,
-                content           = excluded.content,
-                extraction_ok     = excluded.extraction_ok,
-                extraction_error  = excluded.extraction_error,
-                last_seen_at      = excluded.last_seen_at
-            "#,
+			INSERT INTO tabs (
+			    url_hash, tab_id, url, tab_title, domain,
+			    captured_at, extractor, content, extraction_ok, 
+			    extraction_error, last_seen_at, created_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+			ON CONFLICT(url_hash) DO UPDATE SET
+			    -- Always update these to keep the session/pruning current
+			    tab_id           = excluded.tab_id,
+			    last_seen_at     = excluded.last_seen_at,
+
+			    -- Conditionally update content ONLY if the new capture succeeded
+			    url              = CASE WHEN excluded.extraction_ok THEN excluded.url ELSE tabs.url END,
+			    tab_title        = CASE WHEN excluded.extraction_ok THEN excluded.tab_title ELSE tabs.tab_title END,
+			    domain           = CASE WHEN excluded.extraction_ok THEN excluded.domain ELSE tabs.domain END,
+			    captured_at      = CASE WHEN excluded.extraction_ok THEN excluded.captured_at ELSE tabs.captured_at END,
+			    extractor        = CASE WHEN excluded.extraction_ok THEN excluded.extractor ELSE tabs.extractor END,
+			    content          = CASE WHEN excluded.extraction_ok THEN excluded.content ELSE tabs.content END,
+			    extraction_ok    = CASE WHEN excluded.extraction_ok THEN excluded.extraction_ok ELSE tabs.extraction_ok END,
+			    extraction_error = CASE WHEN excluded.extraction_ok THEN excluded.extraction_error ELSE tabs.extraction_error END
+			"#,
+			url_hash,
 			tab.tab_id,
 			tab.url,
 			tab.tab_title,
@@ -95,21 +103,21 @@ impl TabRepository {
 		Ok(tab)
 	}
 
-	pub async fn get_by_tab_id(&self, tab_id: i64) -> Result<Option<TabCapture>, sqlx::Error> {
+	pub async fn get_by_tab_id(&self, url_hash: String) -> Result<Option<TabCapture>, sqlx::Error> {
 		let row = sqlx::query_as!(
 			TabRow,
 			r#"
-            SELECT
-                tab_id, url, tab_title, domain,
-                captured_at, extractor,
-                content as "content: Json<ExtractedContent>",
-                extraction_ok as "extraction_ok: bool",
-                extraction_error,
-                last_seen_at, created_at
-            FROM tabs
-            WHERE tab_id = ?
-            "#,
-			tab_id
+	    SELECT
+		url_hash as "url_hash!", tab_id, url, tab_title, domain,
+		captured_at, extractor,
+		content as "content: Json<ExtractedContent>",
+		extraction_ok as "extraction_ok: bool",
+		extraction_error,
+		last_seen_at, created_at
+	    FROM tabs
+	    WHERE url_hash = ?
+	    "#,
+			url_hash
 		)
 		.fetch_optional(&self.pool)
 		.await?;
@@ -121,16 +129,16 @@ impl TabRepository {
 		let rows = sqlx::query_as!(
 			TabRow,
 			r#"
-            SELECT
-                tab_id as "tab_id!", url, tab_title, domain,
-                captured_at, extractor,
-                content as "content: Json<ExtractedContent>",
-                extraction_ok as "extraction_ok: bool",
-                extraction_error,
-                last_seen_at, created_at
-            FROM tabs
-            ORDER BY last_seen_at DESC
-            "#
+	    SELECT
+		url_hash as "url_hash!", tab_id as "tab_id!", url, tab_title, domain,
+		captured_at, extractor,
+		content as "content: Json<ExtractedContent>",
+		extraction_ok as "extraction_ok: bool",
+		extraction_error,
+		last_seen_at, created_at
+	    FROM tabs
+	    ORDER BY last_seen_at DESC
+	    "#
 		)
 		.fetch_all(&self.pool)
 		.await?;
@@ -138,8 +146,8 @@ impl TabRepository {
 		Ok(rows.into_iter().map(Into::into).collect())
 	}
 
-	pub async fn delete_by_tab_id(&self, tab_id: i64) -> Result<bool, sqlx::Error> {
-		let rows_affected = sqlx::query!("DELETE FROM tabs WHERE tab_id = ?", tab_id).execute(&self.pool).await?.rows_affected();
+	pub async fn delete_by_tab_id(&self, url_hash: String) -> Result<bool, sqlx::Error> {
+		let rows_affected = sqlx::query!("DELETE FROM tabs WHERE url_hash = ?", url_hash).execute(&self.pool).await?.rows_affected();
 
 		Ok(rows_affected > 0)
 	}
@@ -153,29 +161,34 @@ impl TabRepository {
 		let count = tabs.len() as u64;
 
 		for tab in tabs {
+			let url_hash = compute_url_hash(&tab.url);
 			let content = Json(&tab.content);
 			let domain = tab.domain.0.as_str();
 
 			sqlx::query!(
 				r#"
-                INSERT INTO tabs (
-                    tab_id, url, tab_title, domain,
-                    captured_at, extractor,
-                    content, extraction_ok, extraction_error,
-                    last_seen_at, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT(tab_id) DO UPDATE SET
-                    url               = excluded.url,
-                    tab_title         = excluded.tab_title,
-                    domain            = excluded.domain,
-                    captured_at       = excluded.captured_at,
-                    extractor         = excluded.extractor,
-                    content           = excluded.content,
-                    extraction_ok     = excluded.extraction_ok,
-                    extraction_error  = excluded.extraction_error,
-                    last_seen_at      = excluded.last_seen_at
-                "#,
+			INSERT INTO tabs (
+			    url_hash, tab_id, url, tab_title, domain,
+			    captured_at, extractor, content, extraction_ok, 
+			    extraction_error, last_seen_at, created_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+			ON CONFLICT(url_hash) DO UPDATE SET
+			    -- Always update these to keep the session/pruning current
+			    tab_id           = excluded.tab_id,
+			    last_seen_at     = excluded.last_seen_at,
+
+			    -- Conditionally update content ONLY if the new capture succeeded
+			    url              = CASE WHEN excluded.extraction_ok THEN excluded.url ELSE tabs.url END,
+			    tab_title        = CASE WHEN excluded.extraction_ok THEN excluded.tab_title ELSE tabs.tab_title END,
+			    domain           = CASE WHEN excluded.extraction_ok THEN excluded.domain ELSE tabs.domain END,
+			    captured_at      = CASE WHEN excluded.extraction_ok THEN excluded.captured_at ELSE tabs.captured_at END,
+			    extractor        = CASE WHEN excluded.extraction_ok THEN excluded.extractor ELSE tabs.extractor END,
+			    content          = CASE WHEN excluded.extraction_ok THEN excluded.content ELSE tabs.content END,
+			    extraction_ok    = CASE WHEN excluded.extraction_ok THEN excluded.extraction_ok ELSE tabs.extraction_ok END,
+			    extraction_error = CASE WHEN excluded.extraction_ok THEN excluded.extraction_error ELSE tabs.extraction_error END
+			"#,
+				url_hash,
 				tab.tab_id,
 				tab.url,
 				tab.tab_title,
@@ -195,12 +208,12 @@ impl TabRepository {
 		Ok(count)
 	}
 
-	pub async fn batch_delete(&self, tab_ids: Vec<i64>) -> Result<u64, sqlx::Error> {
+	pub async fn batch_delete(&self, urls_hash: Vec<String>) -> Result<u64, sqlx::Error> {
 		let mut tx = self.pool.begin().await?;
 		let mut deleted = 0u64;
 
-		for tab_id in &tab_ids {
-			let n = sqlx::query!("DELETE FROM tabs WHERE tab_id = ?", tab_id).execute(&mut *tx).await?.rows_affected();
+		for url_hash in &urls_hash {
+			let n = sqlx::query!("DELETE FROM tabs WHERE url_hash = ?", url_hash).execute(&mut *tx).await?.rows_affected();
 			deleted += n;
 		}
 
@@ -216,9 +229,9 @@ impl TabRepository {
 	pub async fn prune_stale(&self, older_than_days: i64) -> Result<u64, sqlx::Error> {
 		let rows_affected = sqlx::query!(
 			r#"
-            DELETE FROM tabs
-            WHERE last_seen_at < datetime('now', printf('-%d days', ?))
-            "#,
+	    DELETE FROM tabs
+	    WHERE last_seen_at < datetime('now', printf('-%d days', ?))
+	    "#,
 			older_than_days
 		)
 		.execute(&self.pool)
@@ -233,16 +246,16 @@ impl TabRepository {
 	pub async fn get_summaries(&self) -> Result<Vec<TabSummary>, sqlx::Error> {
 		let rows = sqlx::query!(
 			r#"
-            SELECT
-                tab_id as "tab_id!",
-                url,
-                tab_title,
-                domain,
-                last_seen_at,
-                extraction_ok as "extraction_ok: bool"
-            FROM tabs
-            ORDER BY last_seen_at DESC
-            "#
+	    SELECT
+		tab_id as "tab_id!",
+		url,
+		tab_title,
+		domain,
+		last_seen_at,
+		extraction_ok as "extraction_ok: bool"
+	    FROM tabs
+	    ORDER BY last_seen_at DESC
+	    "#
 		)
 		.fetch_all(&self.pool)
 		.await?;
@@ -272,4 +285,12 @@ impl TabRepository {
 		let active_set: std::collections::HashSet<i64> = active_tab_ids.iter().copied().collect();
 		Ok(all_ids.into_iter().filter(|id| !active_set.contains(id)).collect())
 	}
+}
+
+fn compute_url_hash(url: &str) -> String {
+	// Basic normalization: lowercase and strip trailing slash/fragments if desired
+	let normalized = url.trim_end_matches('/').to_lowercase();
+	let mut hasher = Sha256::new();
+	hasher.update(normalized.as_bytes());
+	hex::encode(hasher.finalize())
 }
