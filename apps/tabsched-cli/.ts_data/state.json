@@ -3,12 +3,12 @@
   "history": [
     {
       "slot_index": 0,
-      "track": 6,
-      "resource": 3,
+      "track": 12,
+      "resource": 7,
       "outcome": "Unrecorded"
     }
   ],
   "cursors": {
-    "6": 1
+    "12": 1
   }
 }

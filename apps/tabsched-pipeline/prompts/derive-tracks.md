@@ -11,6 +11,16 @@ to its target over that window. Resources within a track are visited
 in a fixed cycle — session 1 → resource A, session 2 → resource B,
 session 3 → resource A again, etc.
 
+A leaf track represents a **repeatable workflow loop**, not a topic
+cluster. Ask: "would I naturally alternate between these resources
+session-by-session?" If no, they should not share a leaf track.
+
+Examples of valid workflow loops:
+- "DFS problem drill" — problem list + active contest
+- "Rust memory internals" — docs page + OSS source + chat notes
+- "Korean study loop" — textbook + grammar reference + vocab drill
+- "Korean immersion" — drama episode + media playlist
+
 Tracks form a tree:
 - **Internal tracks** (no resources): routing nodes that group
   related leaf tracks. They do not directly receive sessions.
@@ -23,35 +33,66 @@ A track CANNOT be both.
 
 ---
 
+## Fixed Segment Layer (REQUIRED — enforce before all else)
+
+You MUST organize all tracks under the following fixed top-level segments.
+These are the ONLY permitted direct children of the root:
+
+| Segment label      | What belongs here                                        |
+|--------------------|----------------------------------------------------------|
+| `math`             | Pure math, proof-based texts, analysis, discrete math    |
+| `dsa`              | Algorithms, data structures, LeetCode, competitive prog  |
+| `systems`          | Rust, kernel, networking, memory, compilers, low-level   |
+| `infra`            | NixOS, DevOps, monitoring, local tooling, config         |
+| `language`         | Korean, HSK, any natural language — study and media      |
+| `career`           | Job applications, resume prep, interview resources       |
+| `leisure`          | Drama, music, passive media with no study intent         |
+
+Rules — these are not suggestions:
+
+1. These seven segments MUST appear as direct children of root.
+2. Every resource MUST be assigned to exactly one segment.
+3. You MUST NOT create additional top-level categories beyond these seven.
+4. You MUST NOT rename, merge, or omit any segment, even if it has zero
+   resources. A segment with zero resources still appears as an internal
+   node with no children.
+5. All leaf tracks must descend from one of these segments (possibly
+   via intermediate internal nodes).
+6. If a resource does not clearly fit any segment, assign it to the
+   closest one by primary intent. When in doubt, use the resource URL
+   and title — not the embedding similarity — to decide.
+
+---
+
 ## Topology Construction (REQUIRED)
 
 You MUST construct a valid tree. Follow this procedure in order:
 
-1. Create leaf tracks that cover all resources.
-   - Every input resource must appear in exactly one leaf track.
-   - Each leaf track must have at least one resource.
+1. For each segment, collect all resources that belong to it.
 
-2. Count the resulting leaf tracks:
-   - If there is exactly one leaf track → it is also the root.
-     Set its "parent" to null. Done.
-   - If there are two or more leaf tracks → you MUST create exactly
-     one internal root track (see step 3).
+2. Within each segment, form leaf tracks:
+   - Every resource in the segment must appear in exactly one leaf track.
+   - Each leaf track must have 1–5 resources.
+   - Resources in a leaf track must form a coherent workflow loop
+     (see definition above). Do not group by topic alone.
+   - If a segment has zero resources, emit it as a childless internal
+     node with target = 0.
 
-3. Create the root internal track:
+3. If a segment has more than one leaf track, you MAY create intermediate
+   internal nodes within the segment to sub-group them. This is optional.
+
+4. Create the root internal track:
    - "parent": null
    - "resource_labels": []
-   - Assign every top-level leaf (or intermediate internal) track
-     to this root by setting their "parent" to the root label.
-
-4. Optionally create intermediate internal tracks to reflect domain
-   grouping. Each intermediate internal track must itself have a
-   parent (either the root or another internal track).
+   - The seven segments are its direct children.
 
 5. Before emitting JSON, verify:
-   - Exactly one track has "parent": null.
+   - Exactly one track has "parent": null (the root).
+   - The root has exactly seven children, one per segment.
    - Every other track references a label that appears in the output.
    - No track has both non-empty resource_labels AND child tracks.
    - Every input resource appears in exactly one leaf track.
+   - No resource appears in more than one leaf track.
 
 Outputs that violate these rules are invalid. Do not emit them.
 
@@ -59,11 +100,12 @@ Outputs that violate these rules are invalid. Do not emit them.
 
 ## Grouping principles
 
-Apply these when deciding which resources share a leaf track:
+Apply these when deciding how to form leaf tracks within a segment:
 
-1. **Orthogonal resources must be in separate tracks.**
-   Resources with zero shared edges are cognitively unrelated. Each
-   disconnected cluster of resources should be its own leaf track.
+1. **Orthogonal resources within a segment go in separate tracks.**
+   Even within the same segment, unrelated workflow loops should not
+   be merged. A Rust docs page and a Rust OSS codebase are both
+   `systems`, but if they belong to different work loops, split them.
 
 2. **Tightly connected resources belong in the same track.**
    Resources with edge weight ≥ 0.8 and kind "similar" are nearly
@@ -79,15 +121,38 @@ Apply these when deciding which resources share a leaf track:
    Larger cycles dilute exposure. If a natural group exceeds 5,
    split it into sibling leaf tracks under a shared internal parent.
 
-5. **Target proportional to resource count and domain priority.**
-   Baseline: target = resource_count × 2 per leaf track.
-   Adjust up for high-priority domains, down for lower priority.
-   Internal track target = sum of children targets.
-   Root track target = sum of all leaf targets.
+5. **Cross-domain grouping is forbidden.**
+   Resources assigned to different segments MUST NOT share a leaf
+   track, regardless of edge weight or embedding similarity. A math
+   PDF and a YouTube explainer that happen to be similar are still
+   in different segments.
 
-6. **Preserve domain structure where reasonable.**
-   Use the edge graph as the primary signal. The previous tracks
-   summary is a continuity hint only — do not copy it.
+6. **Avoid generic or catch-all labels.**
+   Track labels like "general", "misc", "multimedia", "mixed", or
+   "learning" are invalid. Every label must reflect a specific
+   workflow loop within a known segment. Good: "rust-memory-loop",
+   "dfs-contest-drill", "korean-textbook-cycle". Bad: "general-study".
+
+7. **Targets are calculated per segment priority.**
+   Use these domain multipliers:
+
+   | Segment   | Multiplier |
+   |-----------|------------|
+   | math      | 1.2        |
+   | dsa       | 1.2        |
+   | systems   | 1.3        |
+   | infra     | 1.0        |
+   | language  | 1.0        |
+   | career    | 0.8        |
+   | leisure   | 0.6        |
+
+   Leaf target = ceil(resource_count × 2 × multiplier).
+   Internal/segment target = sum of children targets.
+   Root target = sum of all segment targets.
+
+8. **Preserve continuity where reasonable.**
+   The previous tracks summary is a continuity hint only. Do not
+   copy it. Use the edge graph as primary signal.
 
 ---
 
@@ -123,10 +188,11 @@ Every track object MUST include ALL of these fields:
 The "parent" field MUST always be present. Use null explicitly for
 the root. Never omit this field.
 
-Emit tracks in BFS order: root first, then its children, then their
-children, and so on.
+Emit tracks in BFS order: root first, then its seven segment children,
+then their children, and so on.
 
 ---
+
 ## Output format
 
 Respond with JSON only. No explanation outside the JSON object.
@@ -135,22 +201,23 @@ Do not use placeholder labels like "root", "leaf-example", or
 
 Schema:
 
+```json
 {
   "tracks": [
     {
-      "label":           <string — derived from actual input, unique>,
-      "parent":          <string — parent track label> | null,
-      "target":          <integer greater than 0>,
-      "resource_labels": <array of actual input resource labels, or []>,
+      "label":           "<string — derived from actual input, unique>",
+      "parent":          "<string — parent track label> | null",
+      "target":          "<integer greater than 0>",
+      "resource_labels": "<array of actual input resource labels, or []>",
       "derived_by":      "llm",
-      "rationale":       <string — one sentence>
+      "rationale":       "<string — one sentence>"
     }
   ],
   "changes_from_current": [
     {
       "kind":        "moved | split | merged | retargeted | added | removed",
-      "description": <string>
+      "description": "<string>"
     }
   ]
 }
-
+```

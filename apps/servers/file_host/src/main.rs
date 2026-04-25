@@ -23,8 +23,8 @@ use file_host::{
 };
 use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;
-use sqlx::SqlitePool;
-use std::{net::SocketAddr, sync::Arc};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -54,7 +54,16 @@ async fn main() -> Result<()> {
 	}
 
 	let config = Arc::new(config);
-	let pool = SqlitePool::connect(&config.database_url).await?;
+	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
+		.create_if_missing(true)
+		.journal_mode(SqliteJournalMode::Wal) // Allows concurrent reads/writes
+		.synchronous(SqliteSynchronous::Normal) // Best performance for WAL mode
+		.busy_timeout(std::time::Duration::from_secs(5)); // Prevents instant crashes on locks
+
+	let pool = SqlitePoolOptions::new()
+		.max_connections(5) // Don't go too high with SQLite
+		.connect_with(connection_options)
+		.await?;
 	let shutdown_token = CancellationToken::new();
 
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;

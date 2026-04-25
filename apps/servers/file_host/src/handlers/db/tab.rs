@@ -27,7 +27,7 @@ pub struct BatchUpsertResponse {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchDeleteRequest {
-	pub tab_ids: Vec<i64>,
+	pub urls_hash: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -91,7 +91,7 @@ fn all_key() -> &'static str {
 	"tabs_all"
 }
 
-fn tab_key(tab_id: i64) -> String {
+fn tab_key(tab_id: &str) -> String {
 	format!("tab_{}", tab_id)
 }
 
@@ -123,7 +123,7 @@ pub async fn upsert_tab(State(state): State<AppState>, Json(tab): Json<TabCaptur
 
 	{
 		let _ct = OperationTimer::new("upsert_tab", "cache_invalidation");
-		state.realtime.dedup_cache.delete(&tab_key(result.tab_id)).await?;
+		state.realtime.dedup_cache.delete(&tab_key(&result.url)).await?;
 		state.realtime.dedup_cache.delete(all_key()).await?;
 		state.realtime.dedup_cache.delete(summaries_key()).await?;
 		record_cache_invalidation("upsert_tab", 3);
@@ -161,12 +161,12 @@ pub async fn get_all_tabs(State(state): State<AppState>) -> Result<Json<Vec<TabC
 	skip_all,
 	fields(otel.kind = "server", tab_id = tracing::field::Empty)
 )]
-pub async fn get_tab(State(state): State<AppState>, Path(tab_id): Path<i64>) -> Result<Json<TabCapture>, FileHostError> {
-	tracing::Span::current().record("tab_id", tab_id);
+pub async fn get_tab(State(state): State<AppState>, Path(tab_id): Path<String>) -> Result<Json<TabCapture>, FileHostError> {
+	tracing::Span::current().record("tab_id", &tab_id);
 	let _timer = OperationTimer::new("get_tab", "total");
 
 	let repo = Arc::new(TabRepository::new(state.core.shared_db));
-	let cache_key = tab_key(tab_id);
+	let cache_key = tab_key(&tab_id);
 
 	let (tab_opt, was_cached) = state
 		.realtime
@@ -192,22 +192,22 @@ pub async fn get_tab(State(state): State<AppState>, Path(tab_id): Path<i64>) -> 
 	skip_all,
 	fields(otel.kind = "server", tab_id = tracing::field::Empty)
 )]
-pub async fn delete_tab(State(state): State<AppState>, Path(tab_id): Path<i64>) -> Result<StatusCode, FileHostError> {
-	tracing::Span::current().record("tab_id", tab_id);
+pub async fn delete_tab(State(state): State<AppState>, Path(tab_id): Path<String>) -> Result<StatusCode, FileHostError> {
+	tracing::Span::current().record("tab_id", &tab_id);
 	let _timer = OperationTimer::new("delete_tab", "total");
 
 	let repo = Arc::new(TabRepository::new(state.core.shared_db));
 
 	let deleted = {
 		let _db = OperationTimer::new("delete_tab", "database_delete");
-		repo.delete_by_tab_id(tab_id).await
+		repo.delete_by_tab_id(tab_id.clone()).await
 	}
 	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
 
 	if deleted {
 		{
 			let _ct = OperationTimer::new("delete_tab", "cache_invalidation");
-			state.realtime.dedup_cache.delete(&tab_key(tab_id)).await?;
+			state.realtime.dedup_cache.delete(&tab_key(&tab_id)).await?;
 			state.realtime.dedup_cache.delete(all_key()).await?;
 			state.realtime.dedup_cache.delete(summaries_key()).await?;
 			record_cache_invalidation("delete_tab", 3);
@@ -242,7 +242,7 @@ pub async fn batch_upsert_tabs(State(state): State<AppState>, Json(request): Jso
 	{
 		let _ct = OperationTimer::new("batch_upsert_tabs", "cache_pre_invalidation");
 		for tab in &request.tabs {
-			state.realtime.dedup_cache.delete(&tab_key(tab.tab_id)).await?;
+			state.realtime.dedup_cache.delete(&tab_key(&tab.url)).await?;
 		}
 	}
 
@@ -270,26 +270,26 @@ pub async fn batch_upsert_tabs(State(state): State<AppState>, Json(request): Jso
 	fields(otel.kind = "server", count = tracing::field::Empty)
 )]
 pub async fn batch_delete_tabs(State(state): State<AppState>, Json(request): Json<BatchDeleteRequest>) -> Result<Json<BatchDeleteResponse>, FileHostError> {
-	tracing::Span::current().record("count", request.tab_ids.len());
+	tracing::Span::current().record("count", request.urls_hash.len());
 	let _timer = OperationTimer::new("batch_delete_tabs", "total");
 
-	if request.tab_ids.is_empty() {
-		return Err(TabError::ValidationError("tab_ids list cannot be empty".into()).into());
+	if request.urls_hash.is_empty() {
+		return Err(TabError::ValidationError("urls_hash list cannot be empty".into()).into());
 	}
 
 	let repo = Arc::new(TabRepository::new(state.core.shared_db));
 
 	let deleted_count = {
 		let _db = OperationTimer::new("batch_delete_tabs", "database_batch_delete");
-		repo.batch_delete(request.tab_ids.clone()).await
+		repo.batch_delete(request.urls_hash.clone()).await
 	}
 	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
 
 	{
 		let _ct = OperationTimer::new("batch_delete_tabs", "cache_invalidation");
-		let n = request.tab_ids.len() + 2;
-		for id in &request.tab_ids {
-			state.realtime.dedup_cache.delete(&tab_key(*id)).await?;
+		let n = request.urls_hash.len() + 2;
+		for id in &request.urls_hash {
+			state.realtime.dedup_cache.delete(&tab_key(id)).await?;
 		}
 		state.realtime.dedup_cache.delete(all_key()).await?;
 		state.realtime.dedup_cache.delete(summaries_key()).await?;
