@@ -10,3 +10,4 @@ include:
   - path: ./infra/compose/ollama.yml
   - path: ./infra/compose/pipeline.yml
   - path: ./infra/compose/monitoring.yml
+  - path: ./infra/compose/analytics.yml
