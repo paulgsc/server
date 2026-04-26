@@ -5,10 +5,23 @@
       "slot_index": 0,
       "track": 12,
       "resource": 7,
+      "outcome": "Stuck"
+    },
+    {
+      "slot_index": 1,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Stuck"
+    },
+    {
+      "slot_index": 2,
+      "track": 12,
+      "resource": 8,
       "outcome": "Unrecorded"
     }
   ],
   "cursors": {
-    "12": 1
+    "12": 2,
+    "15": 1
   }
 }
