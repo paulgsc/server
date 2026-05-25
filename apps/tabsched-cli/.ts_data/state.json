@@ -5,23 +5,393 @@
       "slot_index": 0,
       "track": 12,
       "resource": 7,
-      "outcome": "Stuck"
+      "outcome": "Unrecorded"
     },
     {
       "slot_index": 1,
       "track": 15,
       "resource": 17,
-      "outcome": "Stuck"
+      "outcome": "Unrecorded"
     },
     {
       "slot_index": 2,
       "track": 12,
       "resource": 8,
       "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 3,
+      "track": 15,
+      "resource": 18,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 4,
+      "track": 12,
+      "resource": 9,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 5,
+      "track": 15,
+      "resource": 19,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 6,
+      "track": 12,
+      "resource": 10,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 7,
+      "track": 15,
+      "resource": 20,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 8,
+      "track": 12,
+      "resource": 11,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 9,
+      "track": 13,
+      "resource": 12,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 10,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 11,
+      "track": 12,
+      "resource": 7,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 12,
+      "track": 15,
+      "resource": 18,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 13,
+      "track": 13,
+      "resource": 13,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 14,
+      "track": 12,
+      "resource": 8,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 15,
+      "track": 9,
+      "resource": 1,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 16,
+      "track": 15,
+      "resource": 19,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 17,
+      "track": 10,
+      "resource": 5,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 18,
+      "track": 12,
+      "resource": 9,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 19,
+      "track": 9,
+      "resource": 2,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 20,
+      "track": 13,
+      "resource": 14,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 21,
+      "track": 14,
+      "resource": 15,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 22,
+      "track": 15,
+      "resource": 20,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 23,
+      "track": 12,
+      "resource": 10,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 24,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 25,
+      "track": 12,
+      "resource": 11,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 26,
+      "track": 15,
+      "resource": 18,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 27,
+      "track": 12,
+      "resource": 7,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 28,
+      "track": 15,
+      "resource": 19,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 29,
+      "track": 12,
+      "resource": 8,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 30,
+      "track": 13,
+      "resource": 12,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 31,
+      "track": 15,
+      "resource": 20,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 32,
+      "track": 12,
+      "resource": 9,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 33,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 34,
+      "track": 13,
+      "resource": 13,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 35,
+      "track": 12,
+      "resource": 10,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 36,
+      "track": 9,
+      "resource": 3,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 37,
+      "track": 15,
+      "resource": 18,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 38,
+      "track": 10,
+      "resource": 5,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 39,
+      "track": 12,
+      "resource": 11,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 40,
+      "track": 9,
+      "resource": 4,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 41,
+      "track": 13,
+      "resource": 14,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 42,
+      "track": 14,
+      "resource": 16,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 43,
+      "track": 15,
+      "resource": 19,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 44,
+      "track": 12,
+      "resource": 7,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 45,
+      "track": 15,
+      "resource": 20,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 46,
+      "track": 12,
+      "resource": 8,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 47,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 48,
+      "track": 12,
+      "resource": 9,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 49,
+      "track": 15,
+      "resource": 18,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 50,
+      "track": 12,
+      "resource": 10,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 51,
+      "track": 13,
+      "resource": 12,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 52,
+      "track": 15,
+      "resource": 19,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 53,
+      "track": 12,
+      "resource": 11,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 54,
+      "track": 15,
+      "resource": 20,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 55,
+      "track": 13,
+      "resource": 13,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 56,
+      "track": 12,
+      "resource": 7,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 57,
+      "track": 9,
+      "resource": 1,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 58,
+      "track": 15,
+      "resource": 17,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 59,
+      "track": 10,
+      "resource": 5,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 60,
+      "track": 12,
+      "resource": 8,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 61,
+      "track": 9,
+      "resource": 2,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 62,
+      "track": 13,
+      "resource": 14,
+      "outcome": "Unrecorded"
+    },
+    {
+      "slot_index": 63,
+      "track": 14,
+      "resource": 15,
+      "outcome": "Unrecorded"
     }
   ],
   "cursors": {
-    "12": 2,
-    "15": 1
+    "14": 3,
+    "15": 21,
+    "9": 6,
+    "12": 22,
+    "13": 9,
+    "10": 3
   }
 }
