@@ -1,0 +1,12 @@
+{
+  "max_entries": 128,
+  "registers": [
+    {
+      "id": "1a2b5e0b-b131-4e3e-8b5c-9521a9ebe0f2",
+      "label": "pdf_filter",
+      "value": "filter: invert(1) hue-rotate(180deg) sepia(0.12) brightness(0.5)\n    contrast(0.92) !important;",
+      "created_at": "2026-06-01T02:26:11.250862246Z",
+      "last_used_at": "2026-06-01T02:26:11.250862246Z"
+    }
+  ]
+}
