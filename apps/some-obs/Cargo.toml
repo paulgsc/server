@@ -10,7 +10,7 @@ edition.workspace = true
 [dependencies]
 obs-websocket = { workspace = true, features = ["websocket"] }
 some-transport = { workspace = true , features = ["nats"] }
-ws-events = { workspace = true }
+ws-events = { workspace = true, features = ["ws-events"] }
 tokio = { workspace = true, features = ["signal", "macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

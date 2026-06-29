@@ -1,18 +1,22 @@
-use super::{JobEnvelope, JobRecord, JobState, Store};
+use super::{JobRecord, JobState, Store};
 use crate::{engine::process_job, error::StageError, llm::LlmBackend, stages::EmbedProvider};
-use some_transport::nats::{AckHandle, DurableConsumer, JetStreamConfig, JetStreamPublisher};
+use some_transport::nats::{AckHandle, DurableConsumer, JetStreamConfig, JetStreamPublisher, NatsTransport};
 use std::sync::Arc;
 use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use ws_events::tabsched::JobEnvelope;
 // ── Shared worker context ─────────────────────────────────────────────────
 
 /// Everything a worker needs, cheap to clone (Arc internals).
 #[derive(Clone)]
 pub struct WorkerCtx {
+	pub axum_base_url: String,
 	pub http: reqwest::Client,
 	pub embed_provider: Arc<EmbedProvider>,
 	pub llm: Arc<dyn LlmBackend>,
 	pub store: Store,
+	pub transport: NatsTransport<JobEnvelope>,
 	pub publisher: Arc<JetStreamPublisher<JobEnvelope>>,
 	pub edge_template: Arc<String>,
 	pub track_template: Arc<String>,
@@ -23,10 +27,10 @@ pub struct WorkerCtx {
 // ── Worker loop ───────────────────────────────────────────────────────────
 
 /// Single worker task.  Runs until the cancellation token fires.
-pub async fn worker(worker_id: usize, ctx: WorkerCtx, js_config: JetStreamConfig, shutdown: Arc<tokio::sync::Notify>) {
+pub async fn worker(worker_id: usize, ctx: WorkerCtx, js_config: JetStreamConfig, token: CancellationToken) {
 	info!(worker_id, "worker starting");
 
-	let mut consumer = match DurableConsumer::<JobEnvelope>::connect(js_config).await {
+	let mut consumer = match DurableConsumer::<JobEnvelope>::bind(ctx.transport.client().clone(), js_config).await {
 		Ok(c) => c,
 		Err(e) => {
 			error!(worker_id, error = %e, "worker failed to connect to JetStream");
@@ -38,7 +42,7 @@ pub async fn worker(worker_id: usize, ctx: WorkerCtx, js_config: JetStreamConfig
 		// Honour shutdown signal.
 		tokio::select! {
 				biased;
-				_ = shutdown.notified() => {
+				_ = token.cancelled() => {
 						info!(worker_id, "worker shutting down");
 						return;
 				}
@@ -58,7 +62,7 @@ pub async fn worker(worker_id: usize, ctx: WorkerCtx, js_config: JetStreamConfig
 										let session_id = envelope.session_id.clone();
 										info!(worker_id, session_id = %session_id, attempt = envelope.attempt, "job received");
 
-										let result = process_job(&ctx, &session_id).await;
+										let result = process_job(&ctx, &session_id, token.clone()).await;
 										settle(result, handle, &ctx, &session_id, worker_id).await;
 								}
 						}

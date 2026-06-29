@@ -14,15 +14,7 @@
 # No ports exposed — daemon is purely a consumer/worker, no inbound HTTP.
 services:
   tabsched-pipeline:
-    build:
-      context: ${REPO_ROOT:-.}
-      dockerfile: infra/compose/pipeline.Dockerfile
-      args:
-        APP_NAME: tabsched-pipeline
-        BUILD_VERSION: ${BUILD_VERSION:-dev}
-        BUILD_DATE: ${BUILD_DATE:-unknown}
-        VCS_REF: ${VCS_REF:-unknown}
-    image: tabsched/pipeline:${BUILD_VERSION:-latest}
+    image: pgathondu/tabsched-pipeline:latest
     container_name: tabsched-pipeline
     restart: unless-stopped
     environment:
@@ -66,7 +58,7 @@ services:
       redis:
         condition: service_healthy
       nats:
-        condition: service_healthy
+        condition: service_started
       ollama:
         condition: service_healthy
     # Pipeline is CPU-bound (Ollama inference + embedding).

@@ -31,12 +31,13 @@
 ///   before the worker loop starts.  Paths are not user-controlled.
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use some_transport::nats::{JetStreamConfig, JetStreamPublisher};
+use some_transport::nats::{JetStreamConfig, JetStreamPublisher, NatsTransport};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::signal;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::Duration;
-use tracing::info;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use tabsched_pipeline::{
@@ -99,6 +100,12 @@ struct Args {
 	/// NATS server URL for JetStream job queue.
 	#[arg(long, default_value = "nats://127.0.0.1:4222", env = "NATS_URL")]
 	nats_url: String,
+
+	/// Base URL of the Axum tab server.
+	/// Pipeline fetches Vec<TabCapture> from GET {axum_base_url}/tabs
+	/// on each job, replacing the Redis staging hop.
+	#[arg(long, default_value = "http://localhost:3000", env = "AXUM_BASE_URL")]
+	axum_base_url: String,
 
 	/// Number of concurrent worker tasks.
 	/// Each worker holds one JetStream message at a time.
@@ -212,11 +219,14 @@ async fn main() -> Result<()> {
 	info!("Redis connected: {}", args.redis_url);
 
 	// 6. Connect NATS publisher (for DLQ publishes).
-	let publisher = Arc::new(JetStreamPublisher::connect(&args.nats_url).await?);
+	let transport = NatsTransport::connect_pooled(&args.nats_url).await?;
+	let nats_client = transport.client().clone();
+	let publisher = Arc::new(JetStreamPublisher::from_client(nats_client.clone()));
 	info!("NATS publisher connected: {}", args.nats_url);
 
 	// ── Build shared context ──────────────────────────────────────────────
 	let ctx = WorkerCtx {
+		axum_base_url: args.axum_base_url.clone(),
 		http: reqwest::Client::builder()
 			// No global timeout — per-stage timeouts are enforced inside each stage.
 			.build()?,
@@ -224,6 +234,7 @@ async fn main() -> Result<()> {
 		llm,
 		store,
 		publisher,
+		transport: transport.clone(),
 		edge_template: Arc::new(edge_template),
 		track_template: Arc::new(track_template),
 		similarity_threshold: args.similarity_threshold,
@@ -241,15 +252,18 @@ async fn main() -> Result<()> {
 	};
 
 	// ── Shutdown signal ───────────────────────────────────────────────────
-	let shutdown = Arc::new(tokio::sync::Notify::new());
+	let token = CancellationToken::new();
 
-	// Spawn shutdown listener.
-	let shutdown_tx = shutdown.clone();
+	// Spawn shutdown listener — handles both SIGINT and SIGTERM.
+	let token_tx = token.clone();
 	tokio::spawn(async move {
-		signal::ctrl_c().await.ok();
-		info!("SIGINT received — notifying workers");
-		// Notify all workers (notify_waiters broadcasts).
-		shutdown_tx.notify_waiters();
+		let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+		let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+		tokio::select! {
+				_ = sigint.recv()  => info!("SIGINT received — cancelling workers"),
+				_ = sigterm.recv() => info!("SIGTERM received — cancelling workers"),
+		}
+		token_tx.cancel();
 	});
 
 	// ── Spawn workers ─────────────────────────────────────────────────────
@@ -259,17 +273,21 @@ async fn main() -> Result<()> {
 	for id in 0..args.workers {
 		let ctx = ctx.clone();
 		let config = js_config.clone();
-		let sd = shutdown.clone();
+		let tok = token.clone();
 		handles.push(tokio::spawn(async move {
-			worker(id, ctx, config, sd).await;
+			worker(id, ctx, config, tok).await;
 		}));
 	}
 
-	// Wait for all workers to exit cleanly.
-	for h in handles {
-		h.await.ok();
+	// Drain with a hard timeout — prevents indefinite hang if a stage is stuck.
+	// ack_wait_secs is the worst-case stage duration, so that's the right ceiling.
+	let drain_timeout = Duration::from_secs(args.ack_wait_secs);
+	let drain = futures::future::join_all(handles);
+	match tokio::time::timeout(drain_timeout, drain).await {
+		Ok(_) => info!("all workers stopped cleanly"),
+		Err(_) => error!("drain timeout ({drain_timeout:?}) — forcing exit"),
 	}
+	info!("daemon exiting");
 
-	info!("all workers stopped — daemon exiting");
 	Ok(())
 }

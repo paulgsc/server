@@ -4,8 +4,14 @@ mod models;
 mod routes;
 
 use crate::routes::{
-	audio_files::get_audio, capture::capture_routes, db::mood_events, gdrive::get_gdrive_image, github::get_repos, health::get_health, sheets::get_sheets,
-	tab_metadata::post_now_playing, utterance::post_utterance,
+	audio_files::get_audio,
+	db::{mood_events, tabs},
+	gdrive::get_gdrive_image,
+	github::get_repos,
+	health::get_health,
+	sheets::get_sheets,
+	tab_metadata::post_now_playing,
+	utterance::post_utterance,
 };
 use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
@@ -13,12 +19,12 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	perform_health_check, AppState, AudioServiceError, Config, DedupCache, DedupError,
+	perform_health_check, AppState, AudioServiceError, Config, DedupCache,
 };
 use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;
-use sqlx::SqlitePool;
-use std::{net::SocketAddr, sync::Arc};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -48,7 +54,16 @@ async fn main() -> Result<()> {
 	}
 
 	let config = Arc::new(config);
-	let pool = SqlitePool::connect(&config.database_url).await?;
+	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
+		.create_if_missing(true)
+		.journal_mode(SqliteJournalMode::Wal) // Allows concurrent reads/writes
+		.synchronous(SqliteSynchronous::Normal) // Best performance for WAL mode
+		.busy_timeout(std::time::Duration::from_secs(5)); // Prevents instant crashes on locks
+
+	let pool = SqlitePoolOptions::new()
+		.max_connections(5) // Don't go too high with SQLite
+		.connect_with(connection_options)
+		.await?;
 	let shutdown_token = CancellationToken::new();
 
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
@@ -58,10 +73,10 @@ async fn main() -> Result<()> {
 		.merge(get_gdrive_image())
 		.merge(get_repos())
 		.merge(mood_events())
+		.merge(tabs())
 		.merge(get_audio())
 		.merge(post_now_playing())
 		.merge(get_health())
-		.merge(capture_routes())
 		.merge(post_utterance());
 
 	let max_requests = config.clone().max_request_size.try_into()?;

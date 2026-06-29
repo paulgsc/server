@@ -17,12 +17,17 @@ services:
     # CPU-only: no GPU device block.
     environment:
       - OLLAMA_HOST=0.0.0.0
+      # Pins Ollama's write path to the bind-mounted directory.
+      # Must match the container-side target of the volume entry below.
       - OLLAMA_MODELS=/root/.ollama/models
       # Uncomment to pin thread count on shared hosts:
       # - OLLAMA_NUM_THREAD=4
     ports:
       - "${OLLAMA_HOST_PORT:-11434}:11434"
     volumes:
+      # Bind mount: host path → container path
+      # Override OLLAMA_MODELS_PATH in .env or environment to redirect to
+      # a different host location (e.g. /mnt/ssd/ollama-models).
       - ${OLLAMA_MODELS_PATH:-/mnt/storage/users/dev/models/ollama-models}:/root/.ollama/models
     networks:
       - monitoring-network

@@ -1,5 +1,5 @@
 use crate::metrics::otel::{record_cache_hit, record_file_download, OperationTimer};
-use crate::{AppState, DedupError, FileHostError};
+use crate::{AppState, FileHostError};
 use axum::{
 	extract::{Path, State},
 	http::header,
@@ -7,6 +7,7 @@ use axum::{
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use some_cache::DedupCacheError;
 use std::sync::OnceLock;
 use tracing::instrument;
 
@@ -43,7 +44,9 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 		.dedup_cache
 		.get_or_fetch_binary(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("serve_gdrive_image", "fetch_file");
-			let drive_response = fetch_gdrive_file(state.clone(), &image_id).await?;
+			let drive_response = fetch_gdrive_file(state.clone(), &image_id)
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 			let mime_type = drive_response.metadata.mime_type.clone();
 
 			// Return as binary data with content type
@@ -74,17 +77,17 @@ pub async fn serve_gdrive_image(State(state): State<AppState>, Path(image_id): P
 
 /// Fetch file from Google Drive with metadata
 #[instrument(name = "fetch_gdrive_file", skip(state), fields(image_id, otel.kind = "internal"))]
-async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, DedupError> {
+async fn fetch_gdrive_file(state: AppState, image_id: &str) -> Result<GDriveResponse, FileHostError> {
 	// Fetch metadata
 	let file = {
 		let _timer = OperationTimer::new("fetch_gdrive_file", "get_file_metadata");
-		state.external.gdrive_reader.get_file_metadata(image_id).await
+		state.external.gdrive_reader.get_file_metadata(image_id).await.map_err(|e| FileHostError::upstream(e))
 	}?;
 
 	// Download file content
 	let bytes = {
 		let _timer = OperationTimer::new("fetch_gdrive_file", "download_file");
-		state.external.gdrive_reader.download_file(image_id).await
+		state.external.gdrive_reader.download_file(image_id).await.map_err(|e| FileHostError::upstream(e))
 	}?;
 
 	let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
@@ -117,7 +120,12 @@ pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(im
 		.dedup_cache
 		.get_or_fetch(&metadata_cache_key, || async {
 			let _meta_timer = OperationTimer::new("serve_gdrive_image_optimized", "get_file_metadata");
-			let file = state.external.gdrive_reader.get_file_metadata(&image_id).await?;
+			let file = state
+				.external
+				.gdrive_reader
+				.get_file_metadata(&image_id)
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 			let size = file.size.unwrap_or(0).try_into().unwrap_or(0);
 			let metadata = FileMetadata {
@@ -144,7 +152,12 @@ pub async fn serve_gdrive_image_optimized(State(state): State<AppState>, Path(im
 		.dedup_cache
 		.get_or_fetch_binary(&file_cache_key, || async {
 			let _download_timer = OperationTimer::new("serve_gdrive_image_optimized", "download_file");
-			let bytes = state.external.gdrive_reader.download_file(&image_id).await?;
+			let bytes = state
+				.external
+				.gdrive_reader
+				.download_file(&image_id)
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 			Ok((bytes.to_vec(), Some(metadata.mime_type.clone())))
 		})

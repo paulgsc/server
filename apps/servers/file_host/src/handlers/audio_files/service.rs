@@ -1,8 +1,9 @@
 use super::{AudioConfig, AudioMetadata, AudioSearchResponse, CachedAudio, GetAudioRequest, SearchAudioRequest};
-use crate::{AudioServiceError, DedupCache, DedupError, FileHostError, ReadDrive};
+use crate::{AudioServiceError, DedupCache, FileHostError, ReadDrive};
 use bytes::Bytes;
 use garde::Validate;
 use sdk::FileMetadata;
+use some_cache::DedupCacheError;
 use std::sync::Arc;
 use tracing::{error, info, instrument, warn};
 
@@ -56,7 +57,9 @@ impl AudioService {
 		// Use DedupCache's get_or_fetch_with_ttl to handle everything automatically
 		let (audio, was_cached) = match self
 			.cache
-			.get_or_fetch_with_ttl(&cache_key, self.cache_ttl, || async { self.fetch_audio(&req.id).await })
+			.get_or_fetch_with_ttl(&cache_key, self.cache_ttl, || async {
+				self.fetch_audio(&req.id).await.map_err(|e| DedupCacheError::OperationError(e.to_string()))
+			})
 			.await
 		{
 			Ok(result) => result,
@@ -132,7 +135,7 @@ impl AudioService {
 	}
 
 	#[instrument(skip(self), fields(audio_id = %id))]
-	async fn fetch_audio(&self, id: &str) -> Result<CachedAudio, DedupError> {
+	async fn fetch_audio(&self, id: &str) -> Result<CachedAudio, FileHostError> {
 		let metadata = match self.drive_client.get_file_metadata(id).await {
 			Ok(metadata) => metadata,
 			Err(e) => {

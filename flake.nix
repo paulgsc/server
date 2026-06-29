@@ -32,18 +32,24 @@
         inherit pkgs isCI;
       };
 
+      llmManager = import ./nix/llm-manager {
+        inherit pkgs isCI;
+      };
+
       # Combine inputs (whisper auto-excludes in CI)
       combinedBuildInputs =
         (rustEnv.buildInputs or [])
-        ++ (whisperManager.packages or []);
+        ++ (whisperManager.packages or [])
+        ++ (llmManager.packages or []);
 
       combinedShellHook = ''
         export CARGO_BUILD_JOBS=3
         ${rustEnv.shellHook or ""}
         ${whisperManager.shellHook or ""}
+        ${llmManager.shellHook or ""}
         ${
           if !isCI
-          then ''echo "🦀 Rust + Whisper environment loaded!"''
+          then ''echo "🦀 Rust + Whisper  + LLM environment loaded!"''
           else ""
         }
       '';
@@ -57,6 +63,7 @@
       # Individual shells for modular use
       devShells.rust = rustEnv.shell;
       devShells.whisper = whisperManager.shell;
+      devShells.llm = llmManager.shell;
 
       # Minimal CI shell - no dev tools, no whisper, no hooks
       devShells.ci = pkgs.mkShell {

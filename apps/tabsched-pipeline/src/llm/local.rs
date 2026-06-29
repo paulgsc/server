@@ -86,7 +86,13 @@ impl LlmBackend for LocalLlm {
 
 		let mut req = self.client.post(&url).json(&ChatRequest {
 			model: &self.config.model,
-			messages: vec![Message { role: "user", content: prompt }],
+			messages: vec![
+				Message {
+					role: "system",
+					content: "You are a strict JSON generator. You must output valid JSON only.",
+				},
+				Message { role: "user", content: prompt },
+			],
 			max_tokens: self.config.max_tokens,
 			temperature: self.config.temperature,
 		});

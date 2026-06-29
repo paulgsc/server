@@ -10,6 +10,7 @@ services:
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
       - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
       - SQLX_OFFLINE=false
       - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json

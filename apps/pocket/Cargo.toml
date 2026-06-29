@@ -1,0 +1,33 @@
+[package]
+name = "pocket"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+fuzzy-matcher = "0.3"
+# Atomic file writes (prevent torn writes)
+atomicwrites = "0.4"
+
+# Home directory resolution
+dirs-next = "2"
+
+# Temporary files (used in `edit` command)
+tempfile = "3"
+
+# Terminal UI (skim = FZF-like picker in pure Rust)
+skim = "0.10"
+
+# UUIDs
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

@@ -2,10 +2,11 @@ use crate::metrics::otel::{record_cache_hit, OperationTimer};
 use crate::{
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
-	AppState, DedupError, FileHostError,
+	AppState, FileHostError,
 };
 use axum::extract::{Path, Query, State};
 use axum::Json;
+use some_cache::DedupCacheError;
 use std::{borrow::Cow, collections::HashMap};
 use tracing::instrument;
 
@@ -22,7 +23,9 @@ pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<Stri
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_attributions", "fetch_data");
-			fetch_sheet_data(state.clone(), &id, Some(&range)).await
+			fetch_sheet_data(state.clone(), &id, Some(&range))
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))
 		})
 		.await?;
 
@@ -49,7 +52,9 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_video_chapters", "fetch_data");
-			fetch_sheet_data(state.clone(), &id, Some(&range)).await
+			fetch_sheet_data(state.clone(), &id, Some(&range))
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))
 		})
 		.await?;
 
@@ -76,7 +81,9 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_gantt", "fetch_data");
-			let raw_data = fetch_sheet_data(state.clone(), &id, Some(&range)).await?;
+			let raw_data = fetch_sheet_data(state.clone(), &id, Some(&range))
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 			let boxed: Box<[Box<[Cow<str>]>]> = {
 				let _box_timer = OperationTimer::new("get_gantt", "box_transform");
@@ -112,14 +119,19 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_nfl_tennis", "retrieve_all_sheets_data");
-			let sheet_data = state.external.gsheet_reader.retrieve_all_sheets_data(&id).await?;
+			let sheet_data = state
+				.external
+				.gsheet_reader
+				.retrieve_all_sheets_data(&id)
+				.await
+				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 			let mut collection = Vec::new();
 
 			for (sheet_name, data) in sheet_data {
-				let scores = NFLGameScores::from_gsheet(&data, true)?;
-				let df = NFLGameScores::create_dataframe(scores)?;
-				let standings = NFLGameScores::get_team_standings(&df)?;
+				let scores = NFLGameScores::from_gsheet(&data, true).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+				let df = NFLGameScores::create_dataframe(scores).map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
+				let standings = NFLGameScores::get_team_standings(&df).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 				let sheet_item = SheetDataItem { name: sheet_name, standings };
 				collection.push(sheet_item);
@@ -152,7 +164,9 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 		.dedup_cache
 		.get_or_fetch(&cache_key, || async {
 			let _fetch_timer = OperationTimer::new("get_nfl_roster", "fetch_data");
-			let raw_data = fetch_sheet_data(state.clone(), &id, None).await?;
+			let raw_data = fetch_sheet_data(state.clone(), &id, None)
+				.await
+				.map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
 
 			let boxed: Box<[Box<[Cow<str>]>]> = raw_data
 				.into_iter()
@@ -174,16 +188,21 @@ pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String
 }
 
 #[instrument(name = "fetch_sheet_data", skip(state), fields(sheet_id, otel.kind = "internal"))]
-async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, DedupError> {
+async fn fetch_sheet_data(state: AppState, sheet_id: &str, range: Option<&str>) -> Result<Vec<Vec<String>>, FileHostError> {
 	let data = match range {
 		Some(query) => {
 			let _timer = OperationTimer::new("fetch_sheet_data", "read_data_with_query");
-			state.external.gsheet_reader.read_data(sheet_id, query).await?
+			state.external.gsheet_reader.read_data(sheet_id, query).await.map_err(|e| FileHostError::upstream(e))?
 		}
 		None => {
 			let _timer = OperationTimer::new("fetch_sheet_data", "retrieve_all_sheets");
-			let res = state.external.gsheet_reader.retrieve_all_sheets_data(sheet_id).await?;
-			let (_, data) = res.into_iter().next().ok_or(DedupError::UnexpectedSinglePair)?;
+			let res = state
+				.external
+				.gsheet_reader
+				.retrieve_all_sheets_data(sheet_id)
+				.await
+				.map_err(|e| FileHostError::upstream(e))?;
+			let (_, data) = res.into_iter().next().ok_or(FileHostError::UnexpectedSinglePair)?;
 			data
 		}
 	};
@@ -251,10 +270,10 @@ fn naive_roster_transform(data: Box<[Box<[Cow<str>]>]>) -> Vec<HexData> {
 		.collect()
 }
 
-fn extract_and_validate_range(q: RangeQuery) -> Result<String, DedupError> {
-	let range = q.range.ok_or(DedupError::TypeMismatch("range is required".to_string()))?;
+fn extract_and_validate_range(q: RangeQuery) -> Result<String, FileHostError> {
+	let range = q.range.ok_or(some_cache::DedupCacheError::TypeMismatch("range is required".to_string()))?;
 	if !validate_range(&range) {
-		return Err(DedupError::SheetError(sdk::SheetError::InvalidRange(range.into())));
+		return Err(FileHostError::upstream(sdk::SheetError::InvalidRange(range.into())));
 	}
 	Ok(range)
 }

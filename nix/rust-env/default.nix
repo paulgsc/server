@@ -51,7 +51,7 @@
     then ""
     else ''
       export RUST_BACKTRACE=1
-      export RUST_LOG=info,async_nats=warn,orchestrator=info,file_host=debug
+      export RUST_LOG=info,async_nats=warn,orchestrator=info,file_host=debug,tabsched_pipeline=debug
       export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.alsa-lib]}:$LD_LIBRARY_PATH"
       export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
       echo "🦀 Rust development environment loaded!"

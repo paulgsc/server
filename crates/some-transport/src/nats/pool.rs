@@ -30,7 +30,7 @@ use tokio::sync::OnceCell;
 /// ```
 #[derive(Clone)]
 pub struct NatsConnectionPool {
-	connections: Arc<dashmap::DashMap<String, Arc<OnceCell<Arc<Client>>>>>,
+	connections: Arc<dashmap::DashMap<String, Arc<OnceCell<Client>>>>,
 }
 
 impl NatsConnectionPool {
@@ -54,7 +54,7 @@ impl NatsConnectionPool {
 	/// This method is idempotent - multiple calls with the same URL will
 	/// return the same connection. The first call performs the actual connection,
 	/// subsequent calls return the cached client.
-	pub async fn get_or_connect(&self, url: impl Into<String>) -> Result<Arc<Client>> {
+	pub async fn get_or_connect(&self, url: impl Into<String>) -> Result<Client> {
 		let url = url.into();
 
 		let cell = self.connections.entry(url.clone()).or_insert_with(|| Arc::new(OnceCell::new())).clone();
@@ -62,7 +62,7 @@ impl NatsConnectionPool {
 		let client = cell
 			.get_or_try_init(|| async {
 				let client = async_nats::connect(&url).await.map_err(|e| TransportError::NatsError(e.to_string()))?;
-				Ok::<_, TransportError>(Arc::new(client))
+				Ok::<_, TransportError>(client.clone())
 			})
 			.await?;
 
@@ -78,7 +78,7 @@ impl NatsConnectionPool {
 	///
 	/// Returns the client if it existed. Note that existing references
 	/// to the client will continue to work until all are dropped.
-	pub fn remove(&self, url: &str) -> Option<Arc<Client>> {
+	pub fn remove(&self, url: &str) -> Option<Client> {
 		self.connections.remove(url).and_then(|(_, cell)| cell.get().cloned())
 	}
 

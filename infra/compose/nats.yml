@@ -40,11 +40,11 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-    # Promoted from service_started to service_healthy.
+    # Doesn't apply to distroless image
     # Uses the monitoring port — available even under load.
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8222/healthz']
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # healthcheck:
+    #   test: ['CMD', 'curl', '-f', 'http://localhost:8222/healthz']
+    #   interval: 15s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 10s
