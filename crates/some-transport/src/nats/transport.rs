@@ -69,7 +69,7 @@ where
 	/// Creates a new NATS transport from a connected client.
 	pub fn new(client: Client) -> Self {
 		Self {
-			client: client,
+			client,
 			active_channels: Arc::new(AtomicUsize::new(0)),
 			_marker: PhantomData,
 		}
@@ -184,9 +184,9 @@ where
 	}
 
 	async fn broadcast(&self, _event: E) -> Result<usize> {
-		Err(TransportError::InvalidOperation(format!(
-			"broadcast is not supported on this transport (async_broadcast channel only!"
-		)))
+		Err(TransportError::InvalidOperation(
+			"broadcast is not supported on this transport (async_broadcast channel only!".to_string(),
+		))
 	}
 
 	async fn send_to_subject(&self, subject: &str, event: E) -> Result<()> {

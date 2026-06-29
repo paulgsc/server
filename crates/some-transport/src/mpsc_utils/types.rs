@@ -1,7 +1,6 @@
 #![cfg(feature = "mpsc_utils")]
 
 /// Utilities for working with tokio mpsc channels with graceful error handling
-
 /// Result type for send operations
 #[derive(Debug)]
 pub enum SendResult<T> {

@@ -46,7 +46,7 @@ impl NatsConnectionPool {
 	/// This is the recommended way to manage NATS connections across your app.
 	pub fn global() -> &'static Self {
 		static POOL: std::sync::OnceLock<NatsConnectionPool> = std::sync::OnceLock::new();
-		POOL.get_or_init(NatsConnectionPool::new)
+		POOL.get_or_init(Self::new)
 	}
 
 	/// Gets or creates a connection to the specified NATS URL.

@@ -110,7 +110,7 @@ where
 	///
 	/// Postcondition: stream `pipeline` exists with WorkQueue retention.
 	pub async fn bind(client: Client, config: JetStreamConfig) -> Result<Self> {
-		let js = jetstream::new((client).clone());
+		let js = jetstream::new(client);
 
 		let stream = js
 			.get_or_create_stream(StreamConfig {
@@ -213,7 +213,7 @@ where
 	T: ProstMessage,
 {
 	pub fn from_client(client: Client) -> Self {
-		let js = jetstream::new((client).clone());
+		let js = jetstream::new(client);
 		Self {
 			js,
 			_marker: std::marker::PhantomData,
