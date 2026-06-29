@@ -1,5 +1,9 @@
 [package]
 name = "some-obs"
+description = "OBS automation application"
+categories = ["multimedia"]
+keywords = ["obs", "streaming", "automation"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

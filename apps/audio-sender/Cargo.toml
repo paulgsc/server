@@ -1,5 +1,9 @@
 [package]
 name = "audio-sender"
+description = "Audio streaming sender application"
+categories = ["multimedia::audio"]
+keywords = ["audio", "streaming", "sender"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -1,5 +1,9 @@
 [package]
 name = "stream-stepper"
+description = "Async stream stepping utilities"
+categories = ["asynchronous"]
+keywords = ["stream", "async", "tokio"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

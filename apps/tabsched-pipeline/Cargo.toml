@@ -1,5 +1,8 @@
 [package]
 name = "tabsched-pipeline"
+categories = ["development-tools"]
+keywords = ["tabsched", "pipeline", "embedding"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

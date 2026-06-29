@@ -1,5 +1,8 @@
 [package]
 name = "some-utility"
+description = "General utility functions"
+categories = ["development-tools"]
+keywords = ["utility", "helpers"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

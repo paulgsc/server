@@ -1,5 +1,9 @@
 [package]
 name = "sdk"
+description = "Core SDK library"
+categories = ["development-tools"]
+keywords = ["sdk", "library"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -69,7 +69,7 @@ where
 
 	/// Returns a reference to the inner receiver.
 	#[inline]
-	pub fn inner(&self) -> &R {
+	pub const fn inner(&self) -> &R {
 		&self.inner
 	}
 

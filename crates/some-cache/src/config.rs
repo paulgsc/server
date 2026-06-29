@@ -50,6 +50,7 @@ impl CacheConfig {
 		}
 	}
 
+	#[must_use]
 	pub fn with_ttl(mut self, ttl: u64) -> Self {
 		self.default_ttl = ttl;
 		self

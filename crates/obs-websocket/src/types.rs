@@ -815,22 +815,22 @@ impl Default for ObsStats {
 
 impl ObsEvent {
 	/// Check if this event should trigger a status broadcast
-	pub const fn should_broadcast(&self) -> bool {
-		match self {
+	pub fn should_broadcast(&self) -> bool {
+		matches!(
+			self,
 			Self::StreamStatusResponse(_)
-			| Self::RecordingStatusResponse(_)
-			| Self::SceneListResponse(_)
-			| Self::CurrentSceneResponse(_)
-			| Self::VirtualCamStatusResponse(_)
-			| Self::ReplayBufferStatusResponse(_)
-			| Self::StudioModeResponse(_)
-			| Self::StreamStateChanged(_)
-			| Self::RecordStateChanged(_)
-			| Self::CurrentProgramSceneChanged(_)
-			| Self::VirtualcamStateChanged(_)
-			| Self::ReplayBufferStateChanged(_)
-			| Self::StudioModeStateChanged(_) => true,
-			_ => false,
-		}
+				| Self::RecordingStatusResponse(_)
+				| Self::SceneListResponse(_)
+				| Self::CurrentSceneResponse(_)
+				| Self::VirtualCamStatusResponse(_)
+				| Self::ReplayBufferStatusResponse(_)
+				| Self::StudioModeResponse(_)
+				| Self::StreamStateChanged(_)
+				| Self::RecordStateChanged(_)
+				| Self::CurrentProgramSceneChanged(_)
+				| Self::VirtualcamStateChanged(_)
+				| Self::ReplayBufferStateChanged(_)
+				| Self::StudioModeStateChanged(_)
+		)
 	}
 }

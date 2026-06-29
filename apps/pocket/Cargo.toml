@@ -1,5 +1,9 @@
 [package]
 name = "pocket"
+description = "Pocket integration application"
+categories = ["web-programming"]
+keywords = ["pocket", "bookmarks"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -85,7 +85,7 @@ impl ObsMessageProcessor {
 
 	/// Update internal message processing statistics
 	fn update_message_stats(&mut self, op_code: u64) {
-		let op_key = format!("op_{}", op_code);
+		let op_key = format!("op_{op_code}");
 		*self.message_stats.entry(op_key).or_insert(0) += 1;
 
 		trace!("Message stats updated. Current counts: {:?}", self.message_stats);

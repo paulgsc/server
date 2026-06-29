@@ -1,5 +1,9 @@
 [package]
 name = "file_host"
+description = "File hosting server"
+categories = ["web-programming::http-server"]
+keywords = ["file", "host", "server"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

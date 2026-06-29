@@ -1,5 +1,9 @@
 [package]
 name = "ws-connection"
+description = "WebSocket connection abstractions"
+categories = ["network-programming"]
+keywords = ["websocket", "connection"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

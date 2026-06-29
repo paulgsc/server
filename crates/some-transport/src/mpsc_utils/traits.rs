@@ -102,7 +102,7 @@ where
 {
 	fn send_graceful(&self, msg: T, context: &str) -> SendResult<T> {
 		match self.send(msg) {
-			Ok(_) => SendResult::Sent,
+			Ok(()) => SendResult::Sent,
 			Err(SendError(msg)) => {
 				error!(context = context, "Failed to send message: receiver dropped");
 				SendResult::ReceiverDropped(msg)
@@ -115,7 +115,7 @@ where
 		F: FnOnce(&SendError<T>),
 	{
 		match self.send(msg) {
-			Ok(_) => SendResult::Sent,
+			Ok(()) => SendResult::Sent,
 			Err(e) => {
 				handler(&e);
 				SendResult::ReceiverDropped(e.0)
@@ -270,7 +270,7 @@ where
 {
 	fn try_send_graceful(&self, msg: T, context: &str) -> SendResult<T> {
 		match self.try_send(msg) {
-			Ok(_) => SendResult::Sent,
+			Ok(()) => SendResult::Sent,
 			Err(mpsc::error::TrySendError::Full(msg)) => {
 				error!(context = context, capacity = self.capacity(), "Channel full, message dropped");
 				SendResult::ChannelFull(msg)

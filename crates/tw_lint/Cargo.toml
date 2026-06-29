@@ -1,5 +1,8 @@
 [package]
 name = "tw_lint"
+description = "Tailwind CSS class linting utilities"
+categories = ["development-tools"]
+keywords = ["tailwind", "lint", "css"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

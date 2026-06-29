@@ -1,5 +1,8 @@
 [package]
 name = "ws-events"
+description = "WebSocket event types and serialization"
+categories = ["network-programming"]
+keywords = ["websocket", "events", "serde"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

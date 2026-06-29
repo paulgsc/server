@@ -1,5 +1,9 @@
 [package]
 name = "tabsched"
+description = "Tab scheduler core types and logic"
+categories = ["development-tools"]
+keywords = ["tabsched", "scheduler"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

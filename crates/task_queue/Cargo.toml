@@ -1,5 +1,8 @@
 [package]
 name = "task_queue"
+description = "Async task queue implementation"
+categories = ["asynchronous"]
+keywords = ["task", "queue", "async"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

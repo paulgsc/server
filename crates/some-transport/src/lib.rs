@@ -5,7 +5,7 @@
 //!
 //! # Features
 //!
-//! - `inmem` - Enable in-memory transport using async_broadcast
+//! - `inmem` - Enable in-memory transport using `async_broadcast`
 //! - `nats` - Enable NATS-based distributed transport
 //!
 //! # Architecture

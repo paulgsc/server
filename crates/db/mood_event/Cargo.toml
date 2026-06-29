@@ -1,5 +1,9 @@
 [package]
 name = "mood_event"
+description = "Mood event database models"
+categories = ["database"]
+keywords = ["mood", "event", "sqlite"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

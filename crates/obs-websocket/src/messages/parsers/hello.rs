@@ -16,10 +16,13 @@ impl HelloMessageParser {
 		let _d_extractor = JsonExtractor::new(&Value::Object(d.clone()), "Hello message data");
 
 		// Extract OBS version with fallback
-		let obs_version = d.get("obsWebSocketVersion").and_then(Value::as_str).map(String::from).unwrap_or_else(|| {
-			warn!("obsWebSocketVersion not found or invalid, using 'unknown' as fallback");
-			"unknown".to_string()
-		});
+		let obs_version = d.get("obsWebSocketVersion").and_then(Value::as_str).map_or_else(
+			|| {
+				warn!("obsWebSocketVersion not found or invalid, using 'unknown' as fallback");
+				"unknown".to_string()
+			},
+			String::from,
+		);
 
 		Ok(ObsEvent::Hello(HelloData { obs_version }))
 	}

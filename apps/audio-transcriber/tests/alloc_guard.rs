@@ -1,4 +1,3 @@
-
 /// Zero-allocation test harness for the hotpath module.
 ///
 /// This module provides a custom global allocator that panics on any allocation
@@ -29,36 +28,36 @@ static ALLOC_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 pub struct GuardedAllocator;
 
 unsafe impl GlobalAlloc for GuardedAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if ALLOC_FORBIDDEN.load(Ordering::SeqCst) {
-            panic!(
-                "ZERO-ALLOC VIOLATION: heap allocation of {} bytes (align {}) \
+	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+		if ALLOC_FORBIDDEN.load(Ordering::SeqCst) {
+			panic!(
+				"ZERO-ALLOC VIOLATION: heap allocation of {} bytes (align {}) \
                  occurred inside an assert_no_alloc block. \
                  The hotpath must not allocate.",
-                layout.size(),
-                layout.align()
-            );
-        }
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        System.alloc(layout)
-    }
+				layout.size(),
+				layout.align()
+			);
+		}
+		ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+		System.alloc(layout)
+	}
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
-    }
+	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+		System.dealloc(ptr, layout)
+	}
 
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if ALLOC_FORBIDDEN.load(Ordering::SeqCst) {
-            panic!(
-                "ZERO-ALLOC VIOLATION: heap reallocation from {} to {} bytes \
+	unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+		if ALLOC_FORBIDDEN.load(Ordering::SeqCst) {
+			panic!(
+				"ZERO-ALLOC VIOLATION: heap reallocation from {} to {} bytes \
                  occurred inside an assert_no_alloc block.",
-                layout.size(),
-                new_size
-            );
-        }
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
-    }
+				layout.size(),
+				new_size
+			);
+		}
+		ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+		System.realloc(ptr, layout, new_size)
+	}
 }
 
 #[global_allocator]
@@ -69,12 +68,12 @@ static GLOBAL: GuardedAllocator = GuardedAllocator;
 /// Must be paired with `disable_alloc_guard()`.
 /// Prefer using the `assert_no_alloc!` macro which handles pairing automatically.
 pub fn enable_alloc_guard() {
-    ALLOC_FORBIDDEN.store(true, Ordering::SeqCst);
+	ALLOC_FORBIDDEN.store(true, Ordering::SeqCst);
 }
 
 /// Disable the allocation guard.
 pub fn disable_alloc_guard() {
-    ALLOC_FORBIDDEN.store(false, Ordering::SeqCst);
+	ALLOC_FORBIDDEN.store(false, Ordering::SeqCst);
 }
 
 /// Run `$block` with the allocation guard active.
@@ -89,30 +88,30 @@ pub fn disable_alloc_guard() {
 /// ```
 #[macro_export]
 macro_rules! assert_no_alloc {
-    ($block:block) => {{
-        $crate::enable_alloc_guard();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $block));
-        $crate::disable_alloc_guard();
-        match result {
-            Ok(v) => v,
-            Err(e) => std::panic::resume_unwind(e),
-        }
-    }};
+	($block:block) => {{
+		$crate::enable_alloc_guard();
+		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $block));
+		$crate::disable_alloc_guard();
+		match result {
+			Ok(v) => v,
+			Err(e) => std::panic::resume_unwind(e),
+		}
+	}};
 }
 
 /// Return the total number of allocations since process start.
 /// Useful for before/after comparison when assert_no_alloc is too strict.
 pub fn alloc_count() -> usize {
-    ALLOC_COUNT.load(Ordering::Relaxed)
+	ALLOC_COUNT.load(Ordering::Relaxed)
 }
 
 /// Run `$block` and return the number of allocations it made.
 #[macro_export]
 macro_rules! count_allocs {
-    ($block:block) => {{
-        let before = $crate::alloc_count();
-        let result = $block;
-        let after = $crate::alloc_count();
-        (result, after - before)
-    }};
+	($block:block) => {{
+		let before = $crate::alloc_count();
+		let result = $block;
+		let after = $crate::alloc_count();
+		(result, after - before)
+	}};
 }

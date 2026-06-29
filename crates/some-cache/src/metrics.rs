@@ -76,6 +76,7 @@ pub static DEDUP_WAITERS: Lazy<Result<CounterVec, prometheus::Error>> = Lazy::ne
 /// "capture:session:abc123" → "capture:session"
 /// "embed:xyz"              → "embed"
 /// "simplekey"              → "simplekey"
+#[must_use]
 pub fn namespace_of(key: &str) -> &str {
 	// Find the last ':' that precedes a non-structural segment (the id portion).
 	// Convention: keys are `namespace:id` or `namespace:sub:id`.

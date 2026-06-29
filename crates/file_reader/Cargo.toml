@@ -1,5 +1,9 @@
 [package]
 name = "file_reader"
+description = "File reading utilities"
+categories = ["filesystem"]
+keywords = ["file", "reader", "io"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

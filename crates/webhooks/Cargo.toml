@@ -1,5 +1,9 @@
 [package]
 name = "webhooks"
+description = "Webhook handler utilities"
+categories = ["web-programming"]
+keywords = ["webhooks", "http", "events"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

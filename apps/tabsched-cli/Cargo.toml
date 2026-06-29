@@ -1,5 +1,9 @@
 [package]
 name = "tabsched-cli"
+description = "Tab scheduler CLI application"
+categories = ["command-line-interface"]
+keywords = ["tabsched", "scheduler", "cli"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

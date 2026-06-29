@@ -5,7 +5,7 @@ use tracing::trace;
 type Result<T> = std::result::Result<T, ObsMessagesError>;
 
 /// Extracts and validates JSON fields with proper error handling
-pub(crate) struct JsonExtractor<'a> {
+pub struct JsonExtractor<'a> {
 	json: &'a Value,
 	context: String,
 }

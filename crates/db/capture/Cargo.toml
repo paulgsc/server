@@ -1,5 +1,9 @@
 [package]
 name = "capture_repo"
+description = "Repository capture database layer"
+categories = ["database"]
+keywords = ["capture", "sqlite", "repository"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

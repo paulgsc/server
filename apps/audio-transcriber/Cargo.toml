@@ -1,5 +1,8 @@
 [package]
 name = "audio-transcriber"
+description = "Audio transcription application"
+categories = ["multimedia::audio"]
+keywords = ["audio", "transcription", "speech"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -271,7 +271,6 @@ fn parse_xread_response(val: redis::Value) -> Vec<(String, String)> {
 
 	let streams = match val {
 		redis::Value::Array(v) => v,
-		redis::Value::Nil => return out,
 		_ => return out,
 	};
 

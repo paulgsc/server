@@ -87,7 +87,7 @@ pub async fn maybe_identify(
 	sink: &mut SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
 	stream: &mut SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-	if !hello.get("d").and_then(|d| d.get("authentication")).and_then(Value::as_object).is_some() {
+	if hello.get("d").and_then(|d| d.get("authentication")).and_then(Value::as_object).is_none() {
 		let identify_msg = json!({
 			"op": 1,
 			"d": {

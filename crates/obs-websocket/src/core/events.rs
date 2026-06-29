@@ -79,7 +79,6 @@ impl EventHandler {
 				}
 				Err(StateError::EventFailed(msg)) if msg.contains("Timeout") => {
 					debug!(%msg, "timeout, continuing loop");
-					continue;
 				}
 				Err(StateError::ChannelOverflow(e)) => {
 					error!("channel has overflowed, messages skipped: {}", e);
