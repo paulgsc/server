@@ -45,6 +45,7 @@ impl RetryPolicy {
 			if opened_at.elapsed() < self.config.circuit_breaker_timeout {
 				tokio::time::sleep(Duration::from_secs(30)).await;
 				return true;
+			}
 			// Reset circuit breaker
 			self.circuit_breaker_opened_at = None;
 			self.consecutive_failures = 0;
