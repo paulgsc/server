@@ -11,12 +11,12 @@ enum-variant-size-threshold = 200
 disallowed-methods = [
   { path = "serde_json::to_string", reason = "expensive before tracing; prefer tracing!(?value)" },
   { path = "serde_json::to_vec", reason = "expensive before tracing; prefer tracing!(?value)" },
-  { path = "format", reason = "may cause eager allocation; use tracing!(?value) or lazy display" },
 ]
 
 # Ban std logging macros (enforce tracing-only)
 disallowed-macros = [
-  { path = "println", reason = "use tracing macros instead" },
-  { path = "eprintln", reason = "use tracing macros instead" },
-  { path = "dbg", reason = "use tracing::debug!(?value) or allow only in tests (see allow-dbg-in-tests)" },
+  { path = "std::format", reason = "may cause eager allocation; use tracing!(?value) or lazy display" },
+  { path = "std::println", reason = "use tracing macros instead" },
+  { path = "std::eprintln", reason = "use tracing macros instead" },
+  { path = "std::dbg", reason = "use tracing::debug!(?value) or allow only in tests (see allow-dbg-in-tests)" },
 ]

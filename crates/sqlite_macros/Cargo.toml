@@ -1,5 +1,9 @@
 [package]
 name = "sqlite_macros"
+description = "Procedural macros for SQLite schema generation"
+categories = ["development-tools"]
+keywords = ["sqlite", "macros", "database"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

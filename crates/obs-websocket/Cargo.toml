@@ -1,5 +1,9 @@
 [package]
 name = "obs-websocket"
+description = "OBS WebSocket client library"
+categories = ["multimedia"]
+keywords = ["obs", "websocket", "streaming"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

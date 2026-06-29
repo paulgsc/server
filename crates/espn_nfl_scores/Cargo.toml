@@ -1,5 +1,9 @@
 [package]
 name = "espn_nfl_scores"
+description = "ESPN NFL score fetching client"
+categories = ["web-programming"]
+keywords = ["espn", "nfl", "scores", "sports"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

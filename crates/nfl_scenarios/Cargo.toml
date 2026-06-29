@@ -1,5 +1,9 @@
 [package]
 name = "nfl_scenarios"
+description = "NFL game scenario modeling"
+categories = ["simulation"]
+keywords = ["nfl", "scenarios", "sports"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -1,5 +1,8 @@
 [package]
 name = "orchestrator"
+description = "Service orchestration application"
+categories = ["development-tools"]
+keywords = ["orchestrator", "services"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

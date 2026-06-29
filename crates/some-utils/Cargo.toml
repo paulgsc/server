@@ -1,5 +1,9 @@
 [package]
 name = "some-utils"
+description = "Shared utility types and functions"
+categories = ["development-tools"]
+keywords = ["utils", "helpers", "shared"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -1,5 +1,9 @@
 [package]
 name = "some-services"
+description = "Shared service definitions"
+categories = ["development-tools"]
+keywords = ["services", "shared"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

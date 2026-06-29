@@ -1,5 +1,9 @@
 [package]
 name = "cursorium"
+description = "Cursor position and movement utilities"
+categories = ["development-tools"]
+keywords = ["cursor", "terminal"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -1,5 +1,9 @@
 [package]
 name = "some-cache"
+description = "Caching abstractions and utilities"
+categories = ["caching"]
+keywords = ["cache", "redis"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

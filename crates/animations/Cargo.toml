@@ -1,5 +1,9 @@
 [package]
 name = "animations"
+description = "Terminal animation utilities"
+categories = ["command-line-interface"]
+keywords = ["animation", "terminal", "crossterm"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

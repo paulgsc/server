@@ -1,5 +1,8 @@
 [package]
 name = "audio_capture"
+description = "Audio capture utilities"
+categories = ["multimedia::audio"]
+keywords = ["audio", "capture"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

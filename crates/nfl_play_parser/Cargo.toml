@@ -1,5 +1,9 @@
 [package]
 name = "nfl_play_parser"
+description = "NFL play-by-play data parser"
+categories = ["parser-implementations"]
+keywords = ["nfl", "play", "parser", "sports"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

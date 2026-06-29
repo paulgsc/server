@@ -1,5 +1,9 @@
 [package]
 name = "gsheet_derive"
+description = "Derive macro for Google Sheets integration"
+categories = ["development-tools"]
+keywords = ["google", "sheets", "derive"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

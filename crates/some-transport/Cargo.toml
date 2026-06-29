@@ -1,5 +1,9 @@
 [package]
 name = "some-transport"
+description = "Transport layer abstractions"
+categories = ["network-programming"]
+keywords = ["transport", "nats", "messaging"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

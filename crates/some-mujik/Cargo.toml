@@ -1,5 +1,8 @@
 [package]
 name = "some-mujik"
+description = "Music/audio data utilities"
+categories = ["multimedia::audio"]
+keywords = ["music", "audio"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

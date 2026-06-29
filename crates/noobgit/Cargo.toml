@@ -1,5 +1,8 @@
 [package]
 name = "noobgit"
+description = "Git repository watcher utilities"
+categories = ["development-tools"]
+keywords = ["git", "watch", "filesystem"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

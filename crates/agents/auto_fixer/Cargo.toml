@@ -1,5 +1,8 @@
 [package]
 name = "auto_fixer"
+description = "Automated code fix agent"
+categories = ["development-tools"]
+keywords = ["auto", "fixer", "agent"]
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -1,5 +1,9 @@
 [package]
 name = "enum-name-derive"
+description = "Derive macro for enum variant names"
+categories = ["development-tools"]
+keywords = ["derive", "enum", "macro"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

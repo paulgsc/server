@@ -1,5 +1,9 @@
 [package]
 name = "nest"
+description = "Nested data structure utilities"
+categories = ["data-structures"]
+keywords = ["nest", "data", "structure"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

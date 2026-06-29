@@ -1,5 +1,9 @@
 [package]
 name = "ts-bindgen"
+description = "TypeScript bindings generator"
+categories = ["development-tools"]
+keywords = ["typescript", "bindings", "codegen"]
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
