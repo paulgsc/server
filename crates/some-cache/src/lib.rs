@@ -33,6 +33,7 @@ pub mod config;
 pub mod dedup;
 pub mod entry;
 pub mod error;
+pub mod inproc;
 pub mod metrics;
 pub mod store;
 pub mod stream;
