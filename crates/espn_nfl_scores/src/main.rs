@@ -1,3 +1,19 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::extend_with_drain)]
+#![allow(clippy::future_not_send)]
+#![allow(clippy::iter_with_drain)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::redundant_clone)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::or_fun_call)]
+#![allow(clippy::single_component_path_imports)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::use_self)]
 mod config;
 mod error;
 

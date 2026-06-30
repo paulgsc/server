@@ -1,11 +1,21 @@
-/// Generic Path-Dependent Optimality Engine
-///
-/// Generic over discrete event types `e ∈ E` with:
-/// - Finite discrete outcome sets
-/// - Deterministic state transitions: `R_w = R_{w-1} ⊕ e_w`
-/// - Additive utility functions
-///
-/// Team records (Win/Loss/Tie) are one implementation of this generic framework.
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::suboptimal_flops)]
+#![allow(clippy::use_self)]
+//! Generic Path-Dependent Optimality Engine
+//!
+//! Generic over discrete event types `e ∈ E` with:
+//! - Finite discrete outcome sets
+//! - Deterministic state transitions: `R_w = R_{w-1} ⊕ e_w`
+//! - Additive utility functions
+//!
+//! Team records (Win/Loss/Tie) are one implementation of this generic framework.
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;

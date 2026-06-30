@@ -1,3 +1,10 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::single_match_else)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unnecessary_debug_formatting)]
 ///
 /// Execution model:
 ///   main() boots N worker tasks (PIPELINE_WORKERS, default 2).

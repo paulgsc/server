@@ -1,3 +1,8 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::use_self)]
 use crossterm::{
 	cursor,
 	terminal::{self, Clear, ClearType},

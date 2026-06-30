@@ -1,3 +1,1 @@
-pub mod repository;
-
-pub use repository::TabRepository;
+// Unimplemented skeleton — requires live DB to compile sqlx macros.

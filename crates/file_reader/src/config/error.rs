@@ -16,7 +16,7 @@ pub enum PathPartError {
 		/// The source path
 		path: String,
 		/// The part containing the error
-		source: Box<PathPartError>,
+		source: Box<Self>,
 	},
 
 	#[error("Unable to convert path \"{path}\" to URL")]

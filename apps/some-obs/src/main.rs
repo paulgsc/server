@@ -1,3 +1,4 @@
+#![allow(clippy::multiple_crate_versions)]
 use some_obs::{Config, ObsNatsService};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

@@ -1,3 +1,4 @@
+#![allow(clippy::multiple_crate_versions)]
 use anyhow::Result;
 use orchestrator::OrchestratorService;
 use some_transport::NatsTransport;

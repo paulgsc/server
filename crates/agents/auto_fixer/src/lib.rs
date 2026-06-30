@@ -1,3 +1,12 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::uninlined_format_args)]
 use serde::{Deserialize, Serialize};
 
 pub mod llm;

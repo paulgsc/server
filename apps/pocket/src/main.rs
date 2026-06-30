@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::multiple_crate_versions)]
 use clap::Parser;
 use pocket::{
 	cli::{handlers, Cli, Command},

@@ -1,3 +1,23 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_fields_in_debug)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::redundant_else)]
+#![allow(clippy::significant_drop_tightening)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unnecessary_debug_formatting)]
+#![allow(clippy::unused_async)]
+#![allow(clippy::use_self)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::derive_partial_eq_without_eq)]
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

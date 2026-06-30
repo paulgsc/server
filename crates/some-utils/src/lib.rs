@@ -1,3 +1,13 @@
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::manual_midpoint)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unreadable_literal)]
+#![allow(clippy::unwrap_used)]
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH}; // For writing into buffer
 

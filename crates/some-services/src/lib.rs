@@ -1,1 +1,12 @@
+#![allow(clippy::single_match)]
+#![allow(clippy::single_match_else)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::needless_continue)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::disallowed_methods)]
 pub mod rate_limiter;

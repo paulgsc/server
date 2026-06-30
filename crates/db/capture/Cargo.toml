@@ -12,10 +12,6 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-hex = "0.4.3"
-sha2 = "0.11.0"
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
-ws-events = { workspace = true, features = ["tabsched"] }
 
 [lints]
 workspace = true

@@ -83,6 +83,7 @@ impl Path {
 		self.is_absolute
 	}
 
+	#[must_use]
 	pub fn prefix_match<'a>(&'a self, prefix: &Self) -> Option<impl Iterator<Item = PathPart<'a>>> {
 		// Absolute/relative paths should only match with same type
 		if self.is_absolute != prefix.is_absolute {
@@ -101,6 +102,7 @@ impl Path {
 		self.prefix_match(prefix).is_some()
 	}
 
+	#[must_use]
 	pub fn parts(&self) -> impl Iterator<Item = PathPart<'_>> {
 		self.raw.split(DELIMITER).map(PathPart::from)
 	}
@@ -125,13 +127,13 @@ impl Path {
 			}
 		} else {
 			Self {
-				raw: format!("{}{}{}", self.raw, DELIMITER, encoded_segment),
+				raw: [self.raw.as_str(), DELIMITER, encoded_segment.as_str()].concat(),
 				is_absolute: self.is_absolute,
 			}
 		}
 	}
 
-	/// Returns the raw path string without prefix.
+	/// Returns the raw path string.
 	#[must_use]
 	pub fn raw(&self) -> &str {
 		&self.raw
@@ -141,7 +143,7 @@ impl Path {
 	#[must_use]
 	pub fn to_string_with_prefix(&self) -> String {
 		if self.is_absolute && !self.raw.is_empty() {
-			format!("/{}", self.raw)
+			["/", self.raw.as_str()].concat()
 		} else if self.is_absolute {
 			"/".to_string()
 		} else {

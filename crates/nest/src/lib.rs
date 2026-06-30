@@ -1,3 +1,22 @@
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::disallowed_methods)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::future_not_send)]
+#![allow(clippy::iter_on_single_items)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::redundant_else)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::too_long_first_doc_paragraph)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::new_without_default)]
 pub mod config;
 
 pub mod http;

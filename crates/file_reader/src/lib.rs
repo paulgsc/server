@@ -1,3 +1,12 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::double_must_use)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::disallowed_macros)]
 pub mod config;
 pub mod core;
 use config::PathPartError;

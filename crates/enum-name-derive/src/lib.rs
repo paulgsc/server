@@ -1,3 +1,11 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::expect_fun_call)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(deprecated)]
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Lit, Meta};

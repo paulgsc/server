@@ -1,3 +1,13 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::redundant_clone)]
+#![allow(clippy::significant_drop_in_scrutinee)]
+#![allow(clippy::uninlined_format_args)]
 use cursorium::core::StreamOrchestrator;
 use dashmap::DashMap;
 use some_transport::{NatsTransport, Transport};

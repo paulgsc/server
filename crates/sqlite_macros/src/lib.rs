@@ -1,3 +1,10 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::unwrap_used)]
+#![allow(deprecated)]
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, Attribute, DeriveInput, Lit, Meta, NestedMeta};

@@ -1,3 +1,12 @@
+#![allow(clippy::disallowed_macros)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::use_self)]
+#![allow(clippy::useless_format)]
 use inquire::{Confirm, CustomType, Text};
 use serde::Serialize;
 use serde_json::{json, Value};

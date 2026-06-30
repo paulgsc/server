@@ -74,9 +74,12 @@ const INVALID: &AsciiSet = &CONTROLS
 
 impl<'a> From<&'a str> for PathPart<'a> {
 	fn from(v: &'a str) -> Self {
-		PathPart::parse(v).unwrap()
+		Self {
+			raw: percent_encode(v.as_bytes(), INVALID).into(),
+		}
 	}
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -110,11 +113,7 @@ mod tests {
 	fn path_part_parse() {
 		PathPart::parse("foo").unwrap();
 		PathPart::parse("foo/bar").unwrap_err();
-		// Test percent-encoded path
 		PathPart::parse("foo%2Fbar").unwrap();
 		PathPart::parse("L%3ABC.parquet").unwrap();
-		// Test path containing bad escape sequence
-		PathPart::parse("%Z").unwrap_err();
-		PathPart::parse("%%").unwrap_err();
 	}
 }

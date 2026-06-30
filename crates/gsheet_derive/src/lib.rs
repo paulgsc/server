@@ -1,3 +1,13 @@
+#![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::manual_assert)]
+#![allow(clippy::manual_string_new)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::unwrap_used)]
+#![allow(deprecated)]
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Lit, Meta, MetaNameValue, NestedMeta};

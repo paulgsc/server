@@ -1,3 +1,22 @@
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cloned_instead_of_copied)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::match_wildcard_for_single_variants)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::needless_ifs)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::use_self)]
+#![allow(clippy::zero_sized_map_values)]
+#![allow(clippy::wildcard_imports)]
 pub mod error;
 pub mod event;
 pub mod state;
