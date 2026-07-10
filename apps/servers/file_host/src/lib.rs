@@ -20,6 +20,11 @@ pub mod routes;
 pub mod utils;
 pub mod websocket;
 
+/// Base path all versioned HTTP routers are nested under in `main.rs`.
+/// `/health` is the deliberate exception: it stays unversioned so load
+/// balancers and orchestrators don't need to track API version bumps.
+pub const API_V1_BASE_PATH: &str = "/api/v1";
+
 pub use crate::websocket::WebSocketFsm;
 pub use cache::{CacheConfig, CacheStore, DedupCache};
 pub use config::*;
