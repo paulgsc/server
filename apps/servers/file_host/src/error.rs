@@ -143,48 +143,111 @@ impl From<DedupCacheError> for FileHostError {
 	}
 }
 
+#[derive(serde::Serialize)]
+struct ErrorBody {
+	code: &'static str,
+	message: &'static str,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	details: Option<HashMap<Cow<'static, str>, Vec<Cow<'static, str>>>>,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorEnvelope {
+	error: ErrorBody,
+}
+
+impl FileHostError {
+	fn status_code(&self) -> StatusCode {
+		match self {
+			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+			Self::Unauthorized => StatusCode::UNAUTHORIZED,
+			Self::Forbidden => StatusCode::FORBIDDEN,
+			Self::NotFound => StatusCode::NOT_FOUND,
+			Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
+			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::OperationError(_) | Self::UnexpectedSinglePair => {
+				StatusCode::BAD_REQUEST
+			}
+			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
+			Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
+			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
+			Self::Cache(e) => match e {
+				DedupCacheError::NotFound => StatusCode::NOT_FOUND,
+				DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST,
+				_ => StatusCode::INTERNAL_SERVER_ERROR,
+			},
+			_ => StatusCode::INTERNAL_SERVER_ERROR,
+		}
+	}
+
+	fn code(&self) -> &'static str {
+		match self {
+			Self::Unauthorized => "unauthorized",
+			Self::Forbidden => "forbidden",
+			Self::NotFound => "not_found",
+			Self::InvalidData => "invalid_data",
+			Self::InvalidMimeType(_) => "invalid_mime_type",
+			Self::InvalidEncodedDate(_) => "invalid_encoded_date",
+			Self::UnprocessableEntity { .. } => "unprocessable_entity",
+			Self::MaxRecordLimitExceeded => "max_record_limit_exceeded",
+			Self::NonSerializableData(_) => "serialization_error",
+			Self::IntegerConversionError(_) => "integer_conversion_error",
+			Self::ResponseBuildError(_) => "response_build_error",
+			Self::IoError(_) => "io_error",
+			Self::TowerError(_) => "tower_error",
+			Self::NatsTransportError(_) => "nats_transport_error",
+			Self::AudioFetchError(_) => "audio_fetch_error",
+			Self::BroadcastError(_) => "broadcast_error",
+			Self::GSheetError(_) => "sheet_derive_error",
+			Self::Upstream(_) => "upstream_error",
+			Self::Cache(_) => "cache_error",
+			Self::Sqlite(_) => "database_error",
+			Self::Polars(_) => "polars_error",
+			Self::OperationError(_) => "operation_error",
+			Self::UnexpectedSinglePair => "unexpected_single_pair",
+			Self::RequestTimeout => "request_timeout",
+			Self::ServiceOverloaded => "service_overloaded",
+		}
+	}
+
+	// Client-facing message. Kept generic for anything that might carry
+	// internal details (DB/IO/upstream errors) so those never leak into the response body.
+	fn message(&self) -> &'static str {
+		match self {
+			Self::Unauthorized => "authentication required",
+			Self::Forbidden => "user may not perform that action",
+			Self::NotFound => "request path not found",
+			Self::InvalidData => "invalid data schema",
+			Self::InvalidMimeType(_) => "invalid mime type",
+			Self::InvalidEncodedDate(_) => "invalid encoded date",
+			Self::UnprocessableEntity { .. } => "error in request body",
+			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
+			Self::RequestTimeout => "request timeout",
+			Self::ServiceOverloaded => "service temporarily overloaded",
+			Self::AudioFetchError(_) => "audio fetch error",
+			_ => "internal server error",
+		}
+	}
+}
+
 impl IntoResponse for FileHostError {
 	fn into_response(self) -> Response<Body> {
 		tracing::error!(error = ?self, "request failed");
 
-		match self {
-			// ---- structured bodies ----
-			Self::UnprocessableEntity { errors } => {
-				#[derive(serde::Serialize)]
-				struct Body {
-					errors: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>>,
-				}
-				(StatusCode::UNPROCESSABLE_ENTITY, Json(Body { errors })).into_response()
-			}
+		let status = self.status_code();
+		let code = self.code();
+		let message = self.message();
+		let is_unauthorized = matches!(&self, Self::Unauthorized);
+		let details = match self {
+			Self::UnprocessableEntity { errors } => Some(errors),
+			_ => None,
+		};
 
-			Self::Unauthorized => (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, HeaderValue::from_static("Token"))], "authentication required").into_response(),
+		let mut response = (status, Json(ErrorEnvelope { error: ErrorBody { code, message, details } })).into_response();
 
-			Self::Upstream(ref e) => {
-				log::error!("upstream error: {:?}", e);
-				(StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
-			}
-
-			// ---- status-only arms ----
-			other => {
-				let status = match &other {
-					Self::Forbidden => StatusCode::FORBIDDEN,
-					Self::NotFound => StatusCode::NOT_FOUND,
-					Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
-					Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::OperationError(_) | Self::UnexpectedSinglePair => {
-						StatusCode::BAD_REQUEST
-					}
-					Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
-					Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
-					Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
-					Self::Cache(e) => match e {
-						DedupCacheError::NotFound => StatusCode::NOT_FOUND,
-						DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST,
-						_ => StatusCode::INTERNAL_SERVER_ERROR,
-					},
-					_ => StatusCode::INTERNAL_SERVER_ERROR,
-				};
-				(status, "internal server error").into_response()
-			}
+		if is_unauthorized {
+			response.headers_mut().insert(WWW_AUTHENTICATE, HeaderValue::from_static("Token"));
 		}
+
+		response
 	}
 }

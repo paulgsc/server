@@ -27,10 +27,10 @@ pub async fn list_files_example() -> Result<(), DriveError> {
 	let folder_id = Some("1Jma3JVtL2o-eY8L3EcnKHOk-P_uhvpI6");
 	let page_size = 100; // Number of results to return
 
-	let files = drive_client.list_files(folder_id, page_size).await?;
+	let page = drive_client.list_files(folder_id, page_size, None).await?;
 
-	println!("Found {} files:", files.len());
-	for file in files {
+	println!("Found {} files:", page.files.len());
+	for file in page.files {
 		println!("ID: {}, Name: {}, Type: {}, Size: {:?}", file.id, file.name, file.mime_type, file.size);
 	}
 

@@ -69,12 +69,12 @@ async fn main() -> Result<()> {
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
 	let mut protected_routes = Router::new()
-		.merge(get_sheets())
+		.merge(get_sheets(&config))
 		.merge(get_gdrive_image())
 		.merge(get_repos())
 		.merge(mood_events())
 		.merge(tabs())
-		.merge(get_audio())
+		.merge(get_audio(&config))
 		.merge(post_now_playing())
 		.merge(get_health())
 		.merge(post_utterance());

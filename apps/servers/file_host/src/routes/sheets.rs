@@ -1,26 +1,22 @@
 use crate::handlers::read_sheets as routes;
-use crate::AppState;
+use crate::routes::cors::allowlisted_cors;
+use crate::{AppState, Config};
 use axum::routing::get;
 use axum::{
 	extract::FromRef,
 	http::{
 		header::{AUTHORIZATION, CONTENT_TYPE},
-		{HeaderValue, Method},
+		Method,
 	},
 	Router,
 };
-use tower_http::cors::CorsLayer;
 
-pub fn get_sheets<S>() -> Router<S>
+pub fn get_sheets<S>(config: &Config) -> Router<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = CorsLayer::new()
-		.allow_origin("http://nixos.local:6006".parse::<HeaderValue>().unwrap())
-		.allow_methods([Method::GET])
-		.allow_headers([CONTENT_TYPE, AUTHORIZATION])
-		.allow_credentials(true);
+	let cors = allowlisted_cors(config, vec![Method::GET], vec![CONTENT_TYPE, AUTHORIZATION]);
 
 	Router::new()
 		// TODO: Add path validation: something about must start with slashes?

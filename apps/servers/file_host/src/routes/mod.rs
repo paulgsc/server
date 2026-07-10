@@ -1,4 +1,5 @@
 pub mod audio_files;
+pub mod cors;
 pub mod db;
 pub mod gdrive;
 pub mod github;
