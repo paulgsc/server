@@ -19,7 +19,7 @@ use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::{
 	error::{FileHostError, GSheetDeriveError},
-	perform_health_check, AppState, AudioServiceError, Config, DedupCache,
+	perform_health_check, AppState, AudioServiceError, Config, DedupCache, API_V1_BASE_PATH,
 };
 use sdk::ReadDrive;
 use some_services::rate_limiter::TokenBucketRateLimiter;
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
 
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
-	let mut protected_routes = Router::new()
+	let mut versioned_routes = Router::new()
 		.merge(get_sheets(&config))
 		.merge(get_gdrive_image())
 		.merge(get_repos())
@@ -76,15 +76,15 @@ async fn main() -> Result<()> {
 		.merge(tabs())
 		.merge(get_audio(&config))
 		.merge(post_now_playing())
-		.merge(get_health())
 		.merge(post_utterance());
 
 	let max_requests = config.clone().max_request_size.try_into()?;
 	// TODO: Is this even working! boyo needs to know!
-	protected_routes = protected_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
+	versioned_routes = versioned_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
 
 	let app = Router::new()
-		.merge(protected_routes)
+		.nest(API_V1_BASE_PATH, versioned_routes)
+		.merge(get_health())
 		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
 
