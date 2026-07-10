@@ -1,26 +1,22 @@
 use crate::handlers::audio_files as routes;
-use crate::AppState;
+use crate::routes::cors::allowlisted_cors;
+use crate::{AppState, Config};
 use axum::routing::{get, post};
 use axum::{
 	extract::FromRef,
 	http::{
 		header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ETAG, LAST_MODIFIED},
-		{HeaderValue, Method},
+		Method,
 	},
 	Router,
 };
-use tower_http::cors::CorsLayer;
 
-pub fn get_audio<S>() -> Router<S>
+pub fn get_audio<S>(config: &Config) -> Router<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = CorsLayer::new()
-		.allow_origin("http://nixos.local:6006".parse::<HeaderValue>().unwrap())
-		.allow_methods([Method::GET, Method::POST])
-		.allow_headers([CONTENT_TYPE, AUTHORIZATION, CACHE_CONTROL, ETAG, LAST_MODIFIED])
-		.allow_credentials(true);
+	let cors = allowlisted_cors(config, vec![Method::GET, Method::POST], vec![CONTENT_TYPE, AUTHORIZATION, CACHE_CONTROL, ETAG, LAST_MODIFIED]);
 
 	Router::new()
 		// Get specific audio file by ID

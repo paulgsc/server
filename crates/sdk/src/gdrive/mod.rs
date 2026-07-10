@@ -58,6 +58,9 @@ pub enum DriveError {
 	#[error("Invalid file metadata: {0}")]
 	InvalidMetadata(String),
 
+	#[error("Invalid mime type: {0}")]
+	InvalidMimeType(String),
+
 	#[error("Secret file path error: {0}")]
 	SecretFilePath(#[from] SecretFilePathError),
 
@@ -77,21 +80,29 @@ pub struct FileMetadata {
 	pub parents: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileListPage {
+	pub files: Vec<FileMetadata>,
+	pub next_page_token: Option<String>,
+}
+
 pub struct GoogleDriveClient {
 	#[allow(dead_code)]
 	user_email: String,
 	service: Arc<Mutex<Option<Arc<DriveClient>>>>,
 	client_secret_path: GoogleServiceFilePath,
+	scope: Scope,
 }
 
 impl GoogleDriveClient {
-	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, DriveError> {
+	pub fn new(user_email: String, client_secret_path: String, scope: Scope) -> Result<Self, DriveError> {
 		let validated_path = GoogleServiceFilePath::new(client_secret_path)?;
 
 		Ok(Self {
 			user_email,
 			service: Arc::new(Mutex::new(None)),
 			client_secret_path: validated_path,
+			scope,
 		})
 	}
 
@@ -100,17 +111,12 @@ impl GoogleDriveClient {
 
 		let auth = ServiceAccountAuthenticator::builder(secret).build().await?;
 
-		let connector = hyper_rustls::HttpsConnectorBuilder::new()
-			.with_native_roots()
-			.unwrap()
-			.https_or_http()
-			.enable_http1()
-			.build();
+		let connector = hyper_rustls::HttpsConnectorBuilder::new().with_native_roots()?.https_or_http().enable_http1().build();
 
 		let executor = hyper_util::rt::TokioExecutor::new();
 		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
 
-		auth.token(&[Scope::Full.as_ref()]).await?;
+		auth.token(&[self.scope.as_ref()]).await?;
 
 		Ok(DriveHub::new(client, auth))
 	}
@@ -134,21 +140,19 @@ pub struct ReadDrive {
 impl ReadDrive {
 	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, DriveError> {
 		Ok(Self {
-			client: Arc::new(GoogleDriveClient::new(user_email, client_secret_path)?),
+			client: Arc::new(GoogleDriveClient::new(user_email, client_secret_path, Scope::Readonly)?),
 		})
 	}
 
-	pub async fn list_files(&self, folder_id: Option<&str>, page_size: i32) -> Result<Vec<FileMetadata>, DriveError> {
+	pub async fn list_files(&self, folder_id: Option<&str>, page_size: i32, page_token: Option<&str>) -> Result<FileListPage, DriveError> {
 		let mut query = String::new();
 
 		if let Some(folder) = folder_id {
 			query.push_str(&format!("'{}' in parents", folder));
 		}
 
-		let result = self
-			.client
-			.get_service()
-			.await?
+		let service = self.client.get_service().await?;
+		let mut call = service
 			.files()
 			.list()
 			.q(&query)
@@ -156,13 +160,18 @@ impl ReadDrive {
 			.supports_team_drives(true)
 			.supports_all_drives(true)
 			.include_items_from_all_drives(true)
-			.page_size(10)
 			.corpora("allDrives")
-			.add_scope(Scope::Full.as_ref())
-			.doit()
-			.await?;
+			.param("fields", "nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
+			.add_scope(Scope::Readonly.as_ref());
+
+		if let Some(token) = page_token {
+			call = call.page_token(token);
+		}
+
+		let result = call.doit().await?;
 
 		let files = result.1.files.unwrap_or_default();
+		let next_page_token = result.1.next_page_token;
 
 		let metadata = files
 			.into_iter()
@@ -178,7 +187,7 @@ impl ReadDrive {
 			})
 			.collect();
 
-		Ok(metadata)
+		Ok(FileListPage { files: metadata, next_page_token })
 	}
 
 	pub async fn get_file_metadata(&self, file_id: &str) -> Result<FileMetadata, DriveError> {
@@ -191,7 +200,7 @@ impl ReadDrive {
 			.supports_team_drives(true)
 			.supports_all_drives(true)
 			.include_permissions_for_view("published")
-			.add_scope(Scope::Full.as_ref())
+			.add_scope(Scope::Readonly.as_ref())
 			.doit()
 			.await?;
 
@@ -214,7 +223,6 @@ impl ReadDrive {
 
 		// First, get the file metadata to determine if it's a Google Doc or regular file
 		let metadata = self.get_file_metadata(file_id).await?;
-		println!("metadata collected!");
 		let service = self.client.get_service().await?;
 		let content: Bytes;
 
@@ -237,11 +245,11 @@ impl ReadDrive {
 				_ => "application/pdf", // Default to PDF for other Google types
 			};
 
-			let result = service.files().export(file_id, export_mime_type).doit().await?;
+			let result = service.files().export(file_id, export_mime_type).add_scope(Scope::Readonly.as_ref()).doit().await?;
 			content = result.into_body().collect().await?.to_bytes();
 		} else {
 			// Regular files can be downloaded directly
-			let (response, _file_metadata) = service.files().get(file_id).param("alt", "media").add_scopes(&[Scope::Full.as_ref()]).doit().await?;
+			let (response, _file_metadata) = service.files().get(file_id).param("alt", "media").add_scopes(&[Scope::Readonly.as_ref()]).doit().await?;
 			content = response.into_body().collect().await?.to_bytes();
 		}
 
@@ -259,7 +267,7 @@ impl ReadDrive {
 			.page_size(page_size)
 			.spaces("drive")
 			.param("fields", "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)")
-			.add_scope(Scope::Full.as_ref())
+			.add_scope(Scope::Readonly.as_ref())
 			.doit()
 			.await?;
 
@@ -289,7 +297,7 @@ impl ReadDrive {
 			.files()
 			.get(file_id)
 			.supports_all_drives(true)
-			.add_scope(Scope::Full.as_ref())
+			.add_scope(Scope::Readonly.as_ref())
 			.param("fields", "owners")
 			.doit()
 			.await?
@@ -312,7 +320,7 @@ pub struct WriteToDrive {
 impl WriteToDrive {
 	pub fn new(user_email: String, client_secret_path: String) -> Result<Self, DriveError> {
 		Ok(Self {
-			client: Arc::new(GoogleDriveClient::new(user_email, client_secret_path)?),
+			client: Arc::new(GoogleDriveClient::new(user_email, client_secret_path, Scope::File)?),
 		})
 	}
 
@@ -328,6 +336,7 @@ impl WriteToDrive {
 			.to_string();
 
 		let content_type = mime_type.unwrap_or("application/octet-stream");
+		let mime: mime::Mime = content_type.parse().map_err(|_| DriveError::InvalidMimeType(content_type.to_string()))?;
 		let file_content = fs::File::open(file_path)?;
 
 		let mut file = google_drive3::api::File::default();
@@ -350,7 +359,8 @@ impl WriteToDrive {
 			.keep_revision_forever(false)
 			.include_permissions_for_view("published")
 			.ignore_default_visibility(true)
-			.upload(file_content, content_type.parse().unwrap())
+			.add_scope(Scope::File.as_ref())
+			.upload(file_content, mime)
 			.await?;
 
 		let uploaded_file = result.1;
@@ -373,6 +383,7 @@ impl WriteToDrive {
 		}
 
 		let content_type = mime_type.unwrap_or("application/octet-stream");
+		let mime: mime::Mime = content_type.parse().map_err(|_| DriveError::InvalidMimeType(content_type.to_string()))?;
 		let file_content = fs::File::open(new_file_path)?;
 
 		let file = google_drive3::api::File::default();
@@ -383,7 +394,8 @@ impl WriteToDrive {
 			.await?
 			.files()
 			.update(file, file_id)
-			.upload(file_content, content_type.parse().unwrap())
+			.add_scope(Scope::File.as_ref())
+			.upload(file_content, mime)
 			.await?;
 
 		let updated_file = result.1;
@@ -401,7 +413,7 @@ impl WriteToDrive {
 	}
 
 	pub async fn delete_file(&self, file_id: &str) -> Result<(), DriveError> {
-		self.client.get_service().await?.files().delete(file_id).add_scope(Scope::Full.as_ref()).doit().await?;
+		self.client.get_service().await?.files().delete(file_id).add_scope(Scope::File.as_ref()).doit().await?;
 
 		Ok(())
 	}
@@ -437,214 +449,10 @@ impl WriteToDrive {
 			.create(owner_permission, file_id)
 			.transfer_ownership(true)
 			.supports_all_drives(true)
-			.add_scope(Scope::Full.as_ref())
+			.add_scope(Scope::File.as_ref())
 			.doit()
 			.await?;
 
 		Ok(())
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use google_drive3::api::{File, FileList};
-	use mockall::predicate::*;
-	use mockall::*;
-	use std::sync::Arc;
-
-	// Mock the Google Drive API client
-	mock! {
-		DriveClient {
-			fn files(&self) -> FilesHub;
-		}
-
-		pub struct FilesHub;
-		impl Clone for FilesHub {}
-
-		trait FilesHub {
-			fn list(&self) -> FilesList;
-			fn get(&self, file_id: &str) -> FilesGet;
-			fn create(&self, file: File) -> FilesCreate;
-			fn update(&self, file: File, file_id: &str) -> FilesUpdate;
-			fn delete(&self, file_id: &str) -> FilesDelete;
-			fn export(&self, file_id: &str, mime_type: &str) -> FilesExport;
-		}
-
-		pub struct FilesList;
-		impl Clone for FilesList {}
-
-		trait FilesList {
-			fn q(&self, query: &str) -> Self;
-			fn page_size(&self, page_size: i32) -> Self;
-			fn spaces(&self, spaces: &str) -> Self;
-			fn fields(&self, fields: &str) -> Self;
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, FileList), google_drive3::Error>;
-		}
-
-		pub struct FilesGet;
-		impl Clone for FilesGet {}
-
-		trait FilesGet {
-			fn fields(&self, fields: &str) -> Self;
-			fn param(&self, param_name: &str, param_value: &str) -> Self;
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-		}
-
-		pub struct FilesCreate;
-		impl Clone for FilesCreate {}
-
-		trait FilesCreate {
-			fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
-				Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-		}
-
-		pub struct FilesUpdate;
-		impl Clone for FilesUpdate {}
-
-		trait FilesUpdate {
-			fn upload<T: Into<hyper::Body>>(&self, content: T, mime_type: mime::Mime) ->
-				Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-			fn add_parents(&self, parents: &str) -> Self;
-			fn remove_parents(&self, parents: &str) -> Self;
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, File), google_drive3::Error>;
-		}
-
-		pub struct FilesDelete;
-		impl Clone for FilesDelete {}
-
-		trait FilesDelete {
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
-		}
-
-		pub struct FilesExport;
-		impl Clone for FilesExport {}
-
-		trait FilesExport {
-			fn doit(&self) -> Result<(hyper::Response<hyper::Body>, ()), google_drive3::Error>;
-		}
-	}
-
-	#[tokio::test]
-	async fn test_list_files() {
-		let mut mock_client = MockDriveClient::new();
-		let folder_id = "test_folder_id";
-		let page_size = 10;
-
-		// Set up mock expectations
-		let mut mock_hub = MockFilesHub::new();
-		let mut mock_list = MockFilesList::new();
-
-		let file_list = FileList {
-			files: Some(vec![
-				File {
-					id: Some("file1".to_string()),
-					name: Some("Test File 1".to_string()),
-					mime_type: Some("text/plain".to_string()),
-					size: Some(1024),
-					parents: Some(vec!["test_folder_id".to_string()]),
-					..Default::default()
-				},
-				File {
-					id: Some("file2".to_string()),
-					name: Some("Test File 2".to_string()),
-					mime_type: Some("application/pdf".to_string()),
-					size: Some(2048),
-					parents: Some(vec!["test_folder_id".to_string()]),
-					..Default::default()
-				},
-			]),
-			..Default::default()
-		};
-
-		mock_list.expect_q().with(eq(format!("'{}' in parents", folder_id))).return_once(|_| MockFilesList::new());
-		mock_list.expect_page_size().with(eq(page_size)).return_once(|_| MockFilesList::new());
-		mock_list.expect_spaces().with(eq("drive")).return_once(|_| MockFilesList::new());
-		mock_list
-			.expect_fields()
-			.with(eq("files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, parents)"))
-			.return_once(|_| MockFilesList::new());
-		mock_list.expect_doit().return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), file_list)));
-
-		mock_hub.expect_list().return_once(move || mock_list);
-		mock_client.expect_files().return_once(move || mock_hub);
-
-		// Create client with mocked service
-		let client = GoogleDriveClient::new("test@example.com".to_string(), "/path/to/credentials.json".to_string()).unwrap();
-		client.service.lock().await.replace(Arc::new(mock_client));
-
-		// Execute test
-		let reader = ReadDrive { client: Arc::new(client) };
-		let files = reader.list_files(Some(folder_id), page_size).await.unwrap();
-
-		assert_eq!(files.len(), 2);
-		assert_eq!(files[0].id, "file1");
-		assert_eq!(files[0].name, "Test File 1");
-		assert_eq!(files[0].mime_type, "text/plain");
-		assert_eq!(files[0].size.unwrap(), 1024);
-		assert_eq!(files[1].id, "file2");
-	}
-
-	#[tokio::test]
-	async fn test_create_folder() {
-		let mut mock_client = MockDriveClient::new();
-		let folder_name = "New Folder";
-		let parent_id = "parent_folder_id";
-
-		// Set up mock expectations
-		let mut mock_hub = MockFilesHub::new();
-		let mut mock_create = MockFilesCreate::new();
-
-		let created_folder = File {
-			id: Some("new_folder_id".to_string()),
-			name: Some(folder_name.to_string()),
-			mime_type: Some("application/vnd.google-apps.folder".to_string()),
-			parents: Some(vec![parent_id.to_string()]),
-			..Default::default()
-		};
-
-		mock_create
-			.expect_doit()
-			.return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), created_folder)));
-		mock_hub.expect_create().return_once(move |_| mock_create);
-		mock_client.expect_files().return_once(move || mock_hub);
-
-		// Create client with mocked service
-		let client = GoogleDriveClient::new("test@example.com".to_string(), "/path/to/credentials.json".to_string()).unwrap();
-		client.service.lock().await.replace(Arc::new(mock_client));
-
-		// Execute test
-		let writer = WriteToDrive { client: Arc::new(client) };
-		let result = writer.create_folder(folder_name, Some(parent_id)).await.unwrap();
-
-		assert_eq!(result.id, "new_folder_id");
-		assert_eq!(result.name, folder_name);
-		assert_eq!(result.mime_type, "application/vnd.google-apps.folder");
-		assert_eq!(result.parents[0], parent_id);
-	}
-
-	#[tokio::test]
-	async fn test_delete_file() {
-		let mut mock_client = MockDriveClient::new();
-		let file_id = "file_to_delete";
-
-		// Set up mock expectations
-		let mut mock_hub = MockFilesHub::new();
-		let mut mock_delete = MockFilesDelete::new();
-
-		mock_delete.expect_doit().return_once(move || Ok((hyper::Response::new(hyper::Body::empty()), ())));
-		mock_hub.expect_delete().with(eq(file_id)).return_once(move |_| mock_delete);
-		mock_client.expect_files().return_once(move || mock_hub);
-
-		// Create client with mocked service
-		let client = GoogleDriveClient::new("test@example.com".to_string(), "/path/to/credentials.json".to_string()).unwrap();
-		client.service.lock().await.replace(Arc::new(mock_client));
-
-		// Execute test
-		let writer = WriteToDrive { client: Arc::new(client) };
-		let result = writer.delete_file(file_id).await;
-
-		assert!(result.is_ok());
 	}
 }

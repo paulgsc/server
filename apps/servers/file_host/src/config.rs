@@ -52,6 +52,12 @@ pub struct Config {
 	#[arg(long, env = "ENABLE_CORS")]
 	pub enable_cors: bool,
 
+	/// Comma-separated list of allowed CORS origins for browser-facing read routes
+	/// (sheets, audio). Other routes deliberately allow any origin (extensions, etc.)
+	/// and are unaffected by this setting.
+	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = "http://nixos.local:6006")]
+	pub allowed_origins: Vec<String>,
+
 	/// Log level
 	#[arg(long, env = "LOG_LEVEL", default_value = "info")]
 	pub log_level: LogLevel,
