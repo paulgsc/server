@@ -379,6 +379,23 @@ impl ReadDrive {
 		let service = self.client.get_service().await?;
 		service.get_file_owner_email(file_id).await
 	}
+
+	/// Look up a file by exact name within a folder. Used by upsert-style
+	/// writers that need to decide between creating and updating a file.
+	pub async fn find_file_by_name(&self, folder_id: &str, name: &str) -> Result<Option<FileMetadata>, DriveError> {
+		let query = format!(
+			"name = '{}' and '{}' in parents and trashed = false",
+			escape_drive_query_value(name),
+			escape_drive_query_value(folder_id)
+		);
+
+		let mut results = self.search_files(&query, 1).await?;
+		Ok(if results.is_empty() { None } else { Some(results.remove(0)) })
+	}
+}
+
+fn escape_drive_query_value(value: &str) -> String {
+	value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 pub struct WriteToDrive {
@@ -403,12 +420,18 @@ impl WriteToDrive {
 			.to_string_lossy()
 			.to_string();
 
+		let content = fs::read(file_path)?;
+		self.upload_bytes(&file_name, parent_folder_id, content, mime_type).await
+	}
+
+	/// Same as [`Self::upload_file`], but for content already in memory
+	/// (e.g. an HTTP request body) rather than a file on local disk.
+	pub async fn upload_bytes(&self, name: &str, parent_folder_id: Option<&str>, content: Vec<u8>, mime_type: Option<&str>) -> Result<FileMetadata, DriveError> {
 		let content_type = mime_type.unwrap_or("application/octet-stream");
 		let mime: mime::Mime = content_type.parse().map_err(|_| DriveError::InvalidMimeType(content_type.to_string()))?;
-		let content = fs::read(file_path)?;
 
 		let metadata = DriveFile {
-			name: Some(file_name),
+			name: Some(name.to_string()),
 			mime_type: Some(content_type.to_string()),
 			parents: parent_folder_id.map(|id| vec![id.to_string()]),
 			..Default::default()
@@ -423,9 +446,15 @@ impl WriteToDrive {
 			return Err(DriveError::FileNotFound(new_file_path.display().to_string()));
 		}
 
+		let content = fs::read(new_file_path)?;
+		self.update_file_bytes(file_id, content, mime_type).await
+	}
+
+	/// Same as [`Self::update_file`], but for content already in memory
+	/// (e.g. an HTTP request body) rather than a file on local disk.
+	pub async fn update_file_bytes(&self, file_id: &str, content: Vec<u8>, mime_type: Option<&str>) -> Result<FileMetadata, DriveError> {
 		let content_type = mime_type.unwrap_or("application/octet-stream");
 		let mime: mime::Mime = content_type.parse().map_err(|_| DriveError::InvalidMimeType(content_type.to_string()))?;
-		let content = fs::read(new_file_path)?;
 
 		let service = self.client.get_service().await?;
 		service.update_file_content(file_id, content, mime).await?.try_into()
@@ -606,5 +635,19 @@ mod tests {
 		let mock = MockDrive::default();
 		mock.grant_owner_permission("f1", "owner@example.com").await.unwrap();
 		assert_eq!(mock.granted_owner.lock().unwrap().clone(), Some(("f1".to_string(), "owner@example.com".to_string())));
+	}
+
+	#[test]
+	fn escape_drive_query_value_escapes_quotes_and_backslashes() {
+		assert_eq!(escape_drive_query_value("O'Brien"), "O\\'Brien");
+		assert_eq!(escape_drive_query_value(r"back\slash"), r"back\\slash");
+	}
+
+	#[tokio::test]
+	async fn search_files_returns_lossy_metadata_for_upsert_lookups() {
+		let mock: Arc<dyn DriveService> = Arc::new(MockDrive::with_files(vec![sample_file("f1", "seed.json")]));
+		let results = mock.search_files("name = 'seed.json'", 1).await.unwrap();
+		assert_eq!(results.len(), 1);
+		assert_eq!(results[0].id.as_deref(), Some("f1"));
 	}
 }

@@ -6,7 +6,7 @@ mod routes;
 use crate::routes::{
 	audio_files::get_audio,
 	db::{mood_events, tabs},
-	gdrive::get_gdrive_image,
+	gdrive::{get_gdrive_image, write_gdrive_fs},
 	github::get_repos,
 	health::get_health,
 	sheets::get_sheets,
@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
 	let mut versioned_routes = Router::new()
 		.merge(get_sheets(&config))
 		.merge(get_gdrive_image())
+		.merge(write_gdrive_fs(&config))
 		.merge(get_repos())
 		.merge(mood_events())
 		.merge(tabs())
