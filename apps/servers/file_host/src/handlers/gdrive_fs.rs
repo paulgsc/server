@@ -1,4 +1,5 @@
-use crate::metrics::otel::{record_cache_hit, OperationTimer};
+use crate::handlers::pipeline::fetch_cached;
+use crate::metrics::otel::OperationTimer;
 use crate::models::gdrive::{ListQuery, UpsertResponse};
 use crate::{AppState, FileHostError};
 use axum::extract::{Path, Query, State};
@@ -32,22 +33,15 @@ async fn list_gdrive_files(state: AppState, folder_id: Option<String>, query: Li
 		query.page_token.as_deref().unwrap_or("first")
 	);
 
-	let _timer = OperationTimer::new("list_gdrive_files", "total");
-
-	let (page, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			state
-				.external
-				.gdrive_reader
-				.list_files(folder_id.as_deref(), page_size, query.page_token.as_deref())
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))
-		})
-		.await?;
-
-	record_cache_hit("list_gdrive_files", was_cached);
+	let (page, _) = fetch_cached(&state, "list_gdrive_files", &cache_key, || async {
+		state
+			.external
+			.gdrive_reader
+			.list_files(folder_id.as_deref(), page_size, query.page_token.as_deref())
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))
+	})
+	.await?;
 
 	Ok(Json(page))
 }
@@ -57,23 +51,16 @@ async fn list_gdrive_files(state: AppState, folder_id: Option<String>, query: Li
 pub async fn read_gdrive_json(State(state): State<AppState>, Path(file_id): Path<String>) -> Result<Json<serde_json::Value>, FileHostError> {
 	let cache_key = format!("gdrive_json_{}", file_id);
 
-	let _timer = OperationTimer::new("read_gdrive_json", "total");
-
-	let (value, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let bytes = state
-				.external
-				.gdrive_reader
-				.download_file(&file_id)
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
-			serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| DedupCacheError::OperationError(e.to_string()))
-		})
-		.await?;
-
-	record_cache_hit("read_gdrive_json", was_cached);
+	let (value, _) = fetch_cached(&state, "read_gdrive_json", &cache_key, || async {
+		let bytes = state
+			.external
+			.gdrive_reader
+			.download_file(&file_id)
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+		serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| DedupCacheError::OperationError(e.to_string()))
+	})
+	.await?;
 
 	Ok(Json(value))
 }
