@@ -1,6 +1,6 @@
 use crate::error::{FileHostError, GSheetDeriveError};
 use axum::extract::FromRef;
-use sdk::{GitHubClient, ReadDrive, ReadSheets};
+use sdk::{GitHubClient, ReadDrive, ReadSheets, WriteToDrive};
 use some_transport::{nats::JetStreamPublisher, NatsTransport};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
@@ -49,6 +49,7 @@ pub struct CoreContext {
 pub struct ExternalApis {
 	pub gsheet_reader: Arc<ReadSheets>,
 	pub gdrive_reader: Arc<ReadDrive>,
+	pub gdrive_writer: Arc<WriteToDrive>,
 	pub github_client: Arc<GitHubClient>,
 }
 
@@ -86,6 +87,7 @@ impl AppState {
 		let external = ExternalApis {
 			gsheet_reader: Arc::new(ReadSheets::new(use_email.clone(), secret_file.clone())?),
 			gdrive_reader: Arc::new(ReadDrive::new(use_email.clone(), secret_file.clone())?),
+			gdrive_writer: Arc::new(WriteToDrive::new(use_email.clone(), secret_file.clone())?),
 			github_client: Arc::new(GitHubClient::new(config.github_token.clone())?),
 		};
 

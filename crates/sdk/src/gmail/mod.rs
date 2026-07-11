@@ -1,14 +1,14 @@
+use crate::google_client::{self, ClientCache, GoogleClientError, HttpsConnectorType};
 use crate::{GoogleServiceFilePath, SecretFilePathError};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use chrono::{DateTime, Utc};
 use google_gmail1::api::{Message, MessagePart};
 use google_gmail1::yup_oauth2::Error as OAuth2Error;
-use google_gmail1::yup_oauth2::ServiceAccountAuthenticator;
+use google_gmail1::yup_oauth2::InstalledFlowAuthenticator;
+use google_gmail1::yup_oauth2::InstalledFlowReturnMethod;
 use google_gmail1::{Error as GmailError, Gmail};
 use hyper::Error as HyperError;
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
-use once_cell::unsync::OnceCell;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
@@ -23,11 +23,13 @@ const SCOPES: [&str; 5] = [
 	"https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
 ];
 
-type HttpsConnectorType = HttpsConnector<HttpConnector>;
 type GmailClient = Gmail<HttpsConnectorType>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GmailServiceError {
+	#[error("Client error: {0}")]
+	Client(#[from] GoogleClientError),
+
 	#[error("OAuth2 error: {0}")]
 	OAuth2(#[from] OAuth2Error),
 
@@ -133,9 +135,10 @@ impl FromStr for ServiceMode {
 	}
 }
 
+static GMAIL_CLIENT_CACHE: Lazy<ClientCache<GmailClient>> = Lazy::new(ClientCache::new);
+
 pub struct GoogleGmailClient {
 	user_email: &'static str,
-	service: OnceCell<Arc<GmailClient>>,
 	client_secret_path: GoogleServiceFilePath,
 	service_mode: ServiceMode,
 }
@@ -148,78 +151,52 @@ impl GoogleGmailClient {
 
 		Ok(Self {
 			user_email,
-			service: OnceCell::new(),
 			client_secret_path: validated_path,
 			service_mode,
 		})
 	}
 
 	async fn initialize_service(&self) -> Result<GmailClient, GmailServiceError> {
-		let secret = google_gmail1::yup_oauth2::read_service_account_key(&self.client_secret_path.as_ref()).await?;
-
-		let auth = ServiceAccountAuthenticator::builder(secret).build().await?;
-
-		let connector = hyper_rustls::HttpsConnectorBuilder::new()
-			.with_native_roots()
-			.unwrap()
-			.https_or_http()
-			.enable_http1()
-			.build();
-
-		let executor = hyper_util::rt::TokioExecutor::new();
-		let client = hyper_util::client::legacy::Client::builder(executor).build(connector);
+		let auth = google_client::build_service_account_authenticator(&self.client_secret_path).await?;
+		let client = google_client::build_http_client()?;
 
 		let service = Gmail::new(client, auth);
-		let auth = &service.auth;
-		auth.get_token(&SCOPES).await?;
+		service.auth.get_token(&SCOPES).await?;
 
 		Ok(service)
 	}
 
 	#[allow(dead_code)]
 	async fn initialize_oauth_service(&self) -> Result<GmailClient, GmailServiceError> {
-		// rustls::crypto::ring::default_provider()
-		// 	.install_default()
-		// 	.map_err(|_| SheetError::ServiceInit(format!("Failed to initialize crypto provider: ")))?;
-
 		let secret = google_gmail1::yup_oauth2::read_application_secret(&self.client_secret_path.as_ref()).await?;
+		let client = google_client::build_http_client()?;
+		let auth_client = google_client::build_legacy_client()?;
 
-		let connector = hyper_rustls::HttpsConnectorBuilder::new()
-			.with_native_roots()
-			.unwrap()
-			.https_or_http()
-			.enable_http1()
-			.build();
-
-		let executor = hyper_util::rt::TokioExecutor::new();
-		let client = hyper_util::client::legacy::Client::builder(executor.clone()).build(connector.clone());
-
-		let auth = google_gmail1::yup_oauth2::InstalledFlowAuthenticator::with_client(
-			secret,
-			google_gmail1::yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-			hyper_util::client::legacy::Client::builder(executor).build(connector),
-		)
-		.persist_tokens_to_disk(".googleapis/gmail")
-		.build()
-		.await?;
+		let auth = InstalledFlowAuthenticator::with_client(secret, InstalledFlowReturnMethod::HTTPRedirect, auth_client)
+			.persist_tokens_to_disk(".googleapis/gmail")
+			.build()
+			.await?;
 
 		auth.token(&SCOPES).await?;
 
 		Ok(Gmail::new(client, auth))
 	}
 
-	pub async fn get_service(&self) -> Result<&Arc<GmailClient>, GmailServiceError> {
-		if self.service.get().is_none() {
-			let service = match self.service_mode {
-				ServiceMode::ServiceAccount => self.initialize_service().await?,
-				ServiceMode::Oauth => self.initialize_oauth_service().await?,
-			};
-			self
-				.service
-				.set(Arc::new(service))
-				.map_err(|_| GmailServiceError::ServiceInit("Failed to set service".to_string()))?;
-		}
-		Ok(self.service.get().unwrap())
+	pub async fn get_service(&self) -> Result<Arc<GmailClient>, GmailServiceError> {
+		let kind = match self.service_mode {
+			ServiceMode::ServiceAccount => "gmail:service",
+			ServiceMode::Oauth => "gmail:oauth",
+		};
+
+		GMAIL_CLIENT_CACHE
+			.get_or_try_init(kind, self.user_email, self.client_secret_path.as_str(), || async move {
+				let service = match self.service_mode {
+					ServiceMode::ServiceAccount => self.initialize_service().await?,
+					ServiceMode::Oauth => self.initialize_oauth_service().await?,
+				};
+				Ok::<Arc<GmailClient>, GmailServiceError>(Arc::new(service))
+			})
+			.await
 	}
 }
 

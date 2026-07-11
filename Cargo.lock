@@ -6065,6 +6065,7 @@ dependencies = [
 name = "sdk"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "file_reader",
@@ -6075,6 +6076,7 @@ dependencies = [
  "google-youtube3",
  "google-youtubeanalytics2",
  "http 1.3.1",
+ "http-body 1.0.1",
  "http-body-util",
  "hyper 1.8.1",
  "hyper-rustls 0.27.7",

@@ -1,4 +1,5 @@
-use crate::metrics::otel::{record_cache_hit, OperationTimer};
+use crate::handlers::pipeline::fetch_cached;
+use crate::metrics::otel::OperationTimer;
 use crate::{
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},
@@ -16,20 +17,13 @@ pub async fn get_attributions(State(state): State<AppState>, Path(id): Path<Stri
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_attributions_{}_{}", id, range);
 
-	let _timer = OperationTimer::new("get_attributions", "total");
-
-	let (raw_data, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let _fetch_timer = OperationTimer::new("get_attributions", "fetch_data");
-			fetch_sheet_data(state.clone(), &id, Some(&range))
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))
-		})
-		.await?;
-
-	record_cache_hit("get_attributions", was_cached);
+	let (raw_data, _) = fetch_cached(&state, "get_attributions", &cache_key, || async {
+		let _fetch_timer = OperationTimer::new("get_attributions", "fetch_data");
+		fetch_sheet_data(state.clone(), &id, Some(&range))
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))
+	})
+	.await?;
 
 	let attributions = {
 		let _transform_timer = OperationTimer::new("get_attributions", "transform_data");
@@ -45,20 +39,13 @@ pub async fn get_video_chapters(State(state): State<AppState>, Path(id): Path<St
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_video_chapters_{}_{}", id, range);
 
-	let _timer = OperationTimer::new("get_video_chapters", "total");
-
-	let (raw_data, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let _fetch_timer = OperationTimer::new("get_video_chapters", "fetch_data");
-			fetch_sheet_data(state.clone(), &id, Some(&range))
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))
-		})
-		.await?;
-
-	record_cache_hit("get_video_chapters", was_cached);
+	let (raw_data, _) = fetch_cached(&state, "get_video_chapters", &cache_key, || async {
+		let _fetch_timer = OperationTimer::new("get_video_chapters", "fetch_data");
+		fetch_sheet_data(state.clone(), &id, Some(&range))
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))
+	})
+	.await?;
 
 	let video_chapters = {
 		let _transform_timer = OperationTimer::new("get_video_chapters", "transform_data");
@@ -74,35 +61,28 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 	let range = extract_and_validate_range(q)?;
 	let cache_key = format!("get_gantt_{}_{}", id, range);
 
-	let _timer = OperationTimer::new("get_gantt", "total");
+	let (gantt_chapters, _) = fetch_cached(&state, "get_gantt", &cache_key, || async {
+		let _fetch_timer = OperationTimer::new("get_gantt", "fetch_data");
+		let raw_data = fetch_sheet_data(state.clone(), &id, Some(&range))
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
-	let (gantt_chapters, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let _fetch_timer = OperationTimer::new("get_gantt", "fetch_data");
-			let raw_data = fetch_sheet_data(state.clone(), &id, Some(&range))
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+		let boxed: Box<[Box<[Cow<str>]>]> = {
+			let _box_timer = OperationTimer::new("get_gantt", "box_transform");
+			raw_data
+				.into_iter()
+				.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
+				.collect::<Box<[_]>>()
+		};
 
-			let boxed: Box<[Box<[Cow<str>]>]> = {
-				let _box_timer = OperationTimer::new("get_gantt", "box_transform");
-				raw_data
-					.into_iter()
-					.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
-					.collect::<Box<[_]>>()
-			};
+		let chapters = {
+			let _gantt_timer = OperationTimer::new("get_gantt", "gantt_transform");
+			naive_gantt_transform(boxed)
+		};
 
-			let chapters = {
-				let _gantt_timer = OperationTimer::new("get_gantt", "gantt_transform");
-				naive_gantt_transform(boxed)
-			};
-
-			Ok(chapters)
-		})
-		.await?;
-
-	record_cache_hit("get_gantt", was_cached);
+		Ok(chapters)
+	})
+	.await?;
 
 	Ok(Json(gantt_chapters))
 }
@@ -112,36 +92,29 @@ pub async fn get_gantt(State(state): State<AppState>, Path(id): Path<String>, Qu
 pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<DataResponse<Vec<SheetDataItem>>>, FileHostError> {
 	let cache_key = format!("get_nfl_tennis_{}", id);
 
-	let _timer = OperationTimer::new("get_nfl_tennis", "total");
+	let (sheet_collection, _) = fetch_cached(&state, "get_nfl_tennis", &cache_key, || async {
+		let _fetch_timer = OperationTimer::new("get_nfl_tennis", "retrieve_all_sheets_data");
+		let sheet_data = state
+			.external
+			.gsheet_reader
+			.retrieve_all_sheets_data(&id)
+			.await
+			.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
-	let (sheet_collection, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let _fetch_timer = OperationTimer::new("get_nfl_tennis", "retrieve_all_sheets_data");
-			let sheet_data = state
-				.external
-				.gsheet_reader
-				.retrieve_all_sheets_data(&id)
-				.await
-				.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+		let mut collection = Vec::new();
 
-			let mut collection = Vec::new();
+		for (sheet_name, data) in sheet_data {
+			let scores = NFLGameScores::from_gsheet(&data, true).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+			let df = NFLGameScores::create_dataframe(scores).map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
+			let standings = NFLGameScores::get_team_standings(&df).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
-			for (sheet_name, data) in sheet_data {
-				let scores = NFLGameScores::from_gsheet(&data, true).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
-				let df = NFLGameScores::create_dataframe(scores).map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
-				let standings = NFLGameScores::get_team_standings(&df).map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
+			let sheet_item = SheetDataItem { name: sheet_name, standings };
+			collection.push(sheet_item);
+		}
 
-				let sheet_item = SheetDataItem { name: sheet_name, standings };
-				collection.push(sheet_item);
-			}
-
-			Ok(collection)
-		})
-		.await?;
-
-	record_cache_hit("get_nfl_tennis", was_cached);
+		Ok(collection)
+	})
+	.await?;
 
 	Ok(Json(DataResponse {
 		data: sheet_collection,
@@ -157,32 +130,25 @@ pub async fn get_nfl_tennis(State(state): State<AppState>, Path(id): Path<String
 pub async fn get_nfl_roster(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Vec<HexData>>, FileHostError> {
 	let cache_key = format!("get_nfl_roster_{}", id);
 
-	let _timer = OperationTimer::new("get_nfl_roster", "total");
+	let (roster, _) = fetch_cached(&state, "get_nfl_roster", &cache_key, || async {
+		let _fetch_timer = OperationTimer::new("get_nfl_roster", "fetch_data");
+		let raw_data = fetch_sheet_data(state.clone(), &id, None)
+			.await
+			.map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
 
-	let (roster, was_cached) = state
-		.realtime
-		.dedup_cache
-		.get_or_fetch(&cache_key, || async {
-			let _fetch_timer = OperationTimer::new("get_nfl_roster", "fetch_data");
-			let raw_data = fetch_sheet_data(state.clone(), &id, None)
-				.await
-				.map_err(|e| DedupCacheError::OperationError(format!("dataframe error: {e}")))?;
+		let boxed: Box<[Box<[Cow<str>]>]> = raw_data
+			.into_iter()
+			.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
+			.collect::<Box<[_]>>();
 
-			let boxed: Box<[Box<[Cow<str>]>]> = raw_data
-				.into_iter()
-				.map(|inner| inner.into_iter().map(Cow::Owned).collect::<Box<[_]>>())
-				.collect::<Box<[_]>>();
+		let roster = {
+			let _transform_timer = OperationTimer::new("get_nfl_roster", "transform_data");
+			naive_roster_transform(boxed)
+		};
 
-			let roster = {
-				let _transform_timer = OperationTimer::new("get_nfl_roster", "transform_data");
-				naive_roster_transform(boxed)
-			};
-
-			Ok(roster)
-		})
-		.await?;
-
-	record_cache_hit("get_nfl_roster", was_cached);
+		Ok(roster)
+	})
+	.await?;
 
 	Ok(Json(roster))
 }
