@@ -124,35 +124,10 @@ var/logs/ # Symfony logs
 # Keep Cargo.lock for reproducible builds in containers (uncomment if desired)
 # Cargo.lock
 
-# Monorepo - ignore unrelated crates to reduce context size
+# Monorepo - ignore build output to reduce context size
 crates/*/target/
-# !crates/file_host/
-# !crates/sdk/
-# !crates/gsheet_derive/
-# !crates/enum-name-derive/
-# !crates/obs-websocket/
-# !crates/nest/
-# !crates/file_reader/
-# !crates/espn_nfl_scores/
-# crates/nfl_play_parser/
-# crates/nfl_scenarios/
-# crates/noobgit/
-# crates/servers/chrome_tabs_server/
-# crates/servers/nfl_server/
-# crates/splay_diagram/
-# crates/task_queue/
-# crates/tuvitu/
-# crates/webhooks/
-# crates/foo/
-# crates/sqlite_macros/
-# crates/animations/
-# crates/audio_capture/
-# crates/tw_lint/
-# crates/leaderboard/
-# crates/some-mujik/
-# crates/some-redact/
-# crates/stream-stepper/
-# crates/some-utils/
+apps/*/target/
+apps/*/*/target/
 
 # ----------------------------------------------------------------------
 # Frontend Specific

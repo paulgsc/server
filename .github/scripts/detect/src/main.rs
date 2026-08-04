@@ -54,14 +54,6 @@ const IMAGES: &[ImageSpec] = &[
 		needs_migrations: false,
 		manifest: "apps/orchestrator/Cargo.toml",
 	},
-	ImageSpec {
-		name: "tabsched-pipeline",
-		dockerfile: "./infra/docker/Dockerfile.tabsched",
-		repo_suffix: "tabsched-pipeline",
-		needs_sqlx: false,
-		needs_migrations: false,
-		manifest: "apps/tabsched-pipeline/Cargo.toml",
-	},
 ];
 
 /* ------------------------- METADATA TYPES ------------------------- */
