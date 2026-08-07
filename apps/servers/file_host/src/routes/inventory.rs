@@ -117,6 +117,22 @@ pub const ROUTES: &[RouteDescriptor] = &[
 	RouteDescriptor { method: "GET", path: "/get_audio/:id", versioned: true, module: "audio_files" },
 	RouteDescriptor { method: "GET", path: "/search_audio", versioned: true, module: "audio_files" },
 	RouteDescriptor { method: "POST", path: "/search_audio", versioned: true, module: "audio_files" },
+	// ── sessions ────────────────────────────────────────────────────────────
+	RouteDescriptor { method: "PATCH", path: "/sessions/status", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "GET", path: "/sessions", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "POST", path: "/sessions", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "DELETE", path: "/sessions", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "GET", path: "/sessions/:id", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "PATCH", path: "/sessions/:id", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "DELETE", path: "/sessions/:id", versioned: true, module: "sessions" },
+	RouteDescriptor { method: "POST", path: "/sessions/:id/duplicate", versioned: true, module: "sessions" },
+	// ── push ────────────────────────────────────────────────────────────────
+	RouteDescriptor { method: "GET", path: "/push/vapid-key", versioned: true, module: "push" },
+	RouteDescriptor { method: "POST", path: "/push/subscriptions", versioned: true, module: "push" },
+	RouteDescriptor { method: "DELETE", path: "/push/subscriptions", versioned: true, module: "push" },
+	RouteDescriptor { method: "POST", path: "/push/test", versioned: true, module: "push" },
+	// ── signals ─────────────────────────────────────────────────────────────
+	RouteDescriptor { method: "POST", path: "/signals", versioned: true, module: "signals" },
 	// ── misc ────────────────────────────────────────────────────────────────
 	RouteDescriptor { method: "POST", path: "/now-playing", versioned: true, module: "tab_metadata" },
 	RouteDescriptor { method: "POST", path: "/utter", versioned: true, module: "utterance" },
@@ -188,6 +204,9 @@ mod tests {
 		("github", include_str!("github.rs"), true),
 		("mood_events", include_str!("db/hopium.rs"), true),
 		("tabs", include_str!("db/tab.rs"), true),
+		("sessions", include_str!("db/session.rs"), true),
+		("push", include_str!("push.rs"), true),
+		("signals", include_str!("signals.rs"), true),
 		("audio_files", include_str!("audio_files.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),
 		("utterance", include_str!("utterance.rs"), true),

@@ -1,26 +1,25 @@
 use crate::handlers::db::hopium as routes;
-use crate::AppState;
+use crate::routes::cors::allowlisted_cors_with_credentials;
+use crate::{AppState, Config};
 use axum::routing::{delete, get, patch, post};
 use axum::{
 	extract::FromRef,
 	http::{
 		header::{AUTHORIZATION, CONTENT_TYPE},
-		HeaderValue, Method,
+		Method,
 	},
 	Router,
 };
-use tower_http::cors::CorsLayer;
 
-pub fn mood_events<S>() -> Router<S>
+pub fn mood_events<S>(config: &Config) -> Router<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = CorsLayer::new()
-		.allow_origin("http://nixos.local:6006".parse::<HeaderValue>().unwrap())
-		.allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
-		.allow_headers([CONTENT_TYPE, AUTHORIZATION])
-		.allow_credentials(true);
+	// Was a hardcoded `http://nixos.local:6006` — Storybook's port, not the
+	// app's. Now the same `ALLOWED_ORIGINS` list every other browser-facing
+	// route uses, which is what lets the HTTPS study origin reach it.
+	let cors = allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::PATCH, Method::DELETE], vec![CONTENT_TYPE, AUTHORIZATION]);
 
 	Router::new()
 		// Single mood event operations

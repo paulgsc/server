@@ -61,7 +61,7 @@ sha2 = "0.10.9"
 uuid = "1.18.0"
 chrono.workspace = true
 tokio-util = { workspace = true }
-reqwest = { version =  "0.12.23", features = ["json"] }
+reqwest = { workspace = true }
 rand = "0.9.2"
 
 opentelemetry = { workspace = true }
@@ -72,6 +72,13 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json", "regi
 tracing-opentelemetry = { workspace = true }
 some-cache.workspace = true
 capture_repo = { workspace = true }
+push_repo = { workspace = true }
+engagement_repo = { workspace = true }
+session_repo = { workspace = true }
+push_kit = { workspace = true, features = ["reqwest-transport"] }
+intervention = { workspace = true }
+study_domain = { workspace = true }
+chrono-tz = "0.10"
 
 
 [dev-dependencies]

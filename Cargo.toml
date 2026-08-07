@@ -14,6 +14,12 @@ members = [
   "crates/cursorium",
   "crates/db/capture",
   "crates/db/mood_event",
+  "crates/db/engagement",
+  "crates/db/push",
+  "crates/intervention",
+  "crates/push_kit",
+  "crates/study_domain",
+  "crates/db/session",
   "crates/enum-name-derive",
   "crates/file_reader",
   "crates/gsheet_derive",
@@ -34,6 +40,14 @@ all = { level = "deny", priority = 2 }
 pedantic = { level = "deny", priority = 2 }
 nursery = { level = "deny", priority = 2 }
 cargo = { level = "deny", priority = 2 }
+
+# Duplicate transitive versions are not ours to resolve. `web-push` reaches
+# `jwt-simple` -> `superboring`, which pulls a second major of `cpufeatures`,
+# `heck`, `r-efi`, and `wit-bindgen`; nothing short of forking the dependency
+# changes that. Left denied, the lint fails the build of every crate in the
+# workspace for a fact none of them can act on, so it is off deliberately
+# rather than by accident. The rest of the `cargo` group still applies.
+multiple_crate_versions = { level = "allow", priority = 3 }
 
 
 [workspace.package]
@@ -60,6 +74,12 @@ ws-events = { path = "crates/ws-events" }
 cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 capture_repo = { path = "crates/db/capture" }
+push_repo = { path = "crates/db/push" }
+engagement_repo = { path = "crates/db/engagement" }
+push_kit = { path = "crates/push_kit" }
+intervention = { path = "crates/intervention" }
+study_domain = { path = "crates/study_domain" }
+session_repo = { path = "crates/db/session" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
@@ -87,6 +107,9 @@ tower = { version = "0.4", features = ["util", "timeout"] }
 tower-http = { version = "0.5.0", features = ["add-extension", "trace", "cors"] }
 tracing = "0.1.37"
 regex = "1.7.0"
+base64 = "0.22"
+reqwest = { version = "0.12.23", features = ["json"] }
+web-push = { version = "0.11", default-features = false }
 
 opentelemetry = "0.29.1"
 opentelemetry_sdk = { version = "0.29.0"  }

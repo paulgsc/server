@@ -1,0 +1,21 @@
+[package]
+name = "push_repo"
+description = "Web Push subscription storage and nudge delivery log"
+categories = ["database"]
+keywords = ["push", "notification", "sqlite", "repository"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+push_kit = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "engagement_repo"
+description = "Durable engagement charge and intervention history"
+categories = ["database"]
+keywords = ["engagement", "ledger", "sqlite", "repository"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+
+[lints]
+workspace = true

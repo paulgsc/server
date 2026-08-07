@@ -5,11 +5,13 @@
 // `-D warnings` despite being used by the library's other consumers.
 use file_host::routes::{
 	audio_files::get_audio,
-	db::{mood_events, tabs},
+	db::{mood_events, sessions, tabs},
 	gdrive::{get_gdrive_image, write_gdrive_fs},
 	github::get_repos,
 	health::get_health,
+	push::push,
 	sheets::get_sheets,
+	signals::signals,
 	tab_metadata::post_now_playing,
 	utterance::post_utterance,
 };
@@ -17,7 +19,7 @@ use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
 use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
-use file_host::{error::FileHostError, perform_health_check, AppState, Config, API_V1_BASE_PATH};
+use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::TokenBucketRateLimiter;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -68,9 +70,12 @@ async fn main() -> Result<()> {
 		.merge(get_sheets(&config))
 		.merge(get_gdrive_image())
 		.merge(write_gdrive_fs(&config))
-		.merge(get_repos())
-		.merge(mood_events())
-		.merge(tabs())
+		.merge(get_repos(&config))
+		.merge(mood_events(&config))
+		.merge(tabs(&config))
+		.merge(sessions(&config))
+		.merge(push(&config))
+		.merge(signals(&config))
 		.merge(get_audio(&config))
 		.merge(post_now_playing())
 		.merge(post_utterance());
@@ -95,6 +100,21 @@ async fn main() -> Result<()> {
 			.layer(LoadShedLayer::new())
 			.layer(AddExtensionLayer::new(config.clone())),
 	);
+
+	// Only starts when the deployment asked for it *and* has a usable VAPID
+	// identity — `AppState::build` has already refused to boot if those two
+	// disagree, so reaching here with `nudge_enabled` and no context is
+	// impossible rather than merely unlikely.
+	//
+	// Not a scheduler. The waker runs `WHERE eligible_at <= now` — an index
+	// probe over instants the arithmetic already solved — so this interval is
+	// the resolution at which decided work is picked up, not a cadence at which
+	// anything is decided. See `nudge::waker`.
+	if app_state.nudge.is_some() && config.nudge_enabled {
+		nudge::waker::spawn(app_state.clone(), Duration::from_secs(config.nudge_waker_seconds.max(30)));
+	} else {
+		tracing::info!("engagement waker is not running; /api/v1/push and /api/v1/signals still work");
+	}
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);

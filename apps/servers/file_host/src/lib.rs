@@ -5,7 +5,7 @@ use some_transport::{nats::JetStreamPublisher, NatsTransport};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
-use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
+use ws_conn_manager::ConnectionGuard;
 use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
 pub mod cache;
@@ -15,8 +15,10 @@ pub mod handlers;
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod nudge;
 pub mod rate_limiter;
 pub mod routes;
+pub mod subject;
 pub mod utils;
 pub mod websocket;
 
@@ -62,11 +64,35 @@ pub struct RealtimeContext {
 	pub pipeline_publisher: Arc<JetStreamPublisher<JobEnvelope>>,
 }
 
+/// Everything the study nudge needs, or `None` when the deployment has not
+/// configured it.
+///
+/// An `Option` rather than a set of `Option` fields inside `CoreContext`,
+/// because "push is configured" is a single fact: without a VAPID keypair
+/// there is no identity to sign with, and every part of the feature is
+/// downstream of that. Callers check once.
+#[derive(Clone)]
+pub struct NudgeContext {
+	pub clock: nudge::clock::NudgeClock,
+	pub vapid: push_kit::VapidIdentity,
+	pub sender: Arc<push_kit::Sender<push_kit::ReqwestTransport>>,
+	pub enabled: bool,
+	pub quiet_hours_start: u32,
+	pub quiet_hours_end: u32,
+	pub presence_freshness: std::time::Duration,
+	pub base_url: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
 	pub core: CoreContext,
 	pub external: ExternalApis,
 	pub realtime: RealtimeContext,
+	/// `None` when `VAPID_*` is unset. The `/push` routes answer `503` in that
+	/// case and the tick never starts, which is deliberately different from
+	/// failing: a deployment that does not want notifications should not have
+	/// to configure them to boot.
+	pub nudge: Option<NudgeContext>,
 }
 
 impl AppState {
@@ -111,7 +137,67 @@ impl AppState {
 			pipeline_publisher,
 		};
 
-		Ok(Self { core, external, realtime })
+		let nudge = Self::build_nudge(&config)?;
+
+		Ok(Self { core, external, realtime, nudge })
+	}
+
+	/// Validate the nudge's configuration once, at startup.
+	///
+	/// Two rules, and both are about failing at a moment someone is watching:
+	///
+	/// - Keys absent and `NUDGE_ENABLED` off — fine, the feature is simply not
+	///   deployed here. Logged so nobody wonders why nothing arrives.
+	/// - Keys absent and `NUDGE_ENABLED` on — a hard error. Discovering a
+	///   missing `VAPID_PRIVATE_KEY` at the first send is discovering it hours
+	///   later, in a log nobody is reading, from a feature whose only symptom
+	///   is silence.
+	///
+	/// A mismatched keypair fails here too. It is the failure with the longest
+	/// fuse: every subscription is made with one public key, and signing with
+	/// the other returns `403` on all of them, forever, until every browser
+	/// re-subscribes.
+	fn build_nudge(config: &Config) -> anyhow::Result<Option<NudgeContext>> {
+		use push_kit::VapidIdentity;
+
+		let identity = VapidIdentity::from_config(config.vapid_private_key.as_deref(), config.vapid_public_key.as_deref(), &config.vapid_subject);
+
+		let identity = match identity {
+			Ok(identity) => identity,
+			Err(err) if config.nudge_enabled => {
+				anyhow::bail!("NUDGE_ENABLED is set but the VAPID identity is unusable: {err}");
+			}
+			Err(err) => {
+				tracing::warn!(reason = %err, "study nudge is not configured; /api/v1/push will answer 503 and no tick will run");
+				return Ok(None);
+			}
+		};
+
+		let (clock, zone_source) = nudge::clock::NudgeClock::resolve(config.nudge_timezone.as_deref());
+		match &zone_source {
+			nudge::clock::ZoneSource::Configured(name) => {
+				tracing::info!(zone = %name, "study nudge is using the configured timezone");
+			}
+			nudge::clock::ZoneSource::Unset => {
+				// Not an error, but never silent: a container is UTC by default,
+				// and a UTC day boundary is how an evening reminder arrives at 3am.
+				tracing::warn!("NUDGE_TIMEZONE is unset; the day boundary and quiet hours will be evaluated in UTC");
+			}
+			nudge::clock::ZoneSource::Unparseable(name) => {
+				tracing::error!(zone = %name, "NUDGE_TIMEZONE is not an IANA zone name; falling back to UTC");
+			}
+		}
+
+		Ok(Some(NudgeContext {
+			clock,
+			sender: Arc::new(push_kit::Sender::new(identity.clone(), push_kit::ReqwestTransport::default())),
+			vapid: identity,
+			enabled: config.nudge_enabled,
+			quiet_hours_start: config.nudge_quiet_hours_start,
+			quiet_hours_end: config.nudge_quiet_hours_end,
+			presence_freshness: std::time::Duration::from_secs(config.nudge_presence_freshness_seconds),
+			base_url: config.app_base_url.clone(),
+		}))
 	}
 }
 
