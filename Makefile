@@ -89,3 +89,24 @@ build-multi: ## Build multi-platform image (linux/amd64,linux/arm64)
 check: ## Check if image exists locally
 	@docker images | grep $(DOCKER_REPO) || echo "No local images found for $(DOCKER_REPO)"
 
+
+# ── Contract boundary ────────────────────────────────────────────────────────
+# The client repo (paulgsc/some-ui) keeps a checked-in snapshot of this
+# server's HTTP surface and diffs its contracts against it. Regenerate the
+# snapshot whenever a route is added, renamed, or removed.
+#
+# `dump-routes` reads a compile-time constant, so it needs no config, no
+# database and no network — but building it does require DATABASE_URL to point
+# at a migrated SQLite file, because sqlx checks queries at compile time.
+
+ROUTES_JSON ?= routes.server.json
+
+.PHONY: routes routes-check
+
+routes: ## Emit the HTTP route inventory as JSON (override path with ROUTES_JSON=...)
+	@cargo run -q --bin dump-routes > $(ROUTES_JSON)
+	@echo "Wrote $(ROUTES_JSON) ($$(grep -c '"method"' $(ROUTES_JSON)) routes)"
+	@echo "Copy it to the client repo at packages/contract-harness/routes.server.json"
+
+routes-check: ## Assert the declared inventory still matches the actual routers
+	@cargo test -p file_host --lib routes::inventory
