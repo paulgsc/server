@@ -14,6 +14,11 @@ rustflags = [
     "-W", "clippy::doc_markdown",
     "-A", "clippy::missing_docs_in_private_items",
     "-A", "clippy::module_name_repetitions",
+    # Cargo appends RUSTFLAGS after the `[lints]` table's flags, so `-W
+    # clippy::cargo` above re-enables lints the workspace manifest allows.
+    # `multiple_crate_versions` is allowed there deliberately — see the comment
+    # on it in the root Cargo.toml — and has to be re-allowed here to stick.
+    "-A", "clippy::multiple_crate_versions",
     "-D", "warnings"
 ]
 

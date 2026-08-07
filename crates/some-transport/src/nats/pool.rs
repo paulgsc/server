@@ -14,18 +14,18 @@ use tokio::sync::OnceCell;
 /// # Example
 /// ```rust,no_run
 /// use some_transport::NatsConnectionPool;
-/// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let pool = NatsConnectionPool::global();
-///     
+///
 ///     // Multiple calls return the same connection
 ///     let client1 = pool.get_or_connect("nats://localhost:4222").await.unwrap();
 ///     let client2 = pool.get_or_connect("nats://localhost:4222").await.unwrap();
-///     
-///     // Arc pointers are equal
-///     assert!(Arc::ptr_eq(&client1, &client2));
+///
+///     // The server gives each distinct connection its own id, so a matching
+///     // id means the cached connection was reused.
+///     assert_eq!(client1.server_info().client_id, client2.server_info().client_id);
 /// }
 /// ```
 #[derive(Clone)]
@@ -118,8 +118,11 @@ mod tests {
 
 		// Both should succeed (assuming NATS is running)
 		if let (Ok(c1), Ok(c2)) = (client1, client2) {
-			// Verify they're the same Arc pointer
-			assert!(Arc::ptr_eq(&c1, &c2));
+			// `Client` is an owned handle to a shared connection, so the pool
+			// hands back clones rather than a shared pointer. The server gives
+			// each distinct connection its own id, so a matching id is the
+			// cached connection being reused.
+			assert_eq!(c1.server_info().client_id, c2.server_info().client_id);
 		}
 	}
 

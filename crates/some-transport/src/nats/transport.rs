@@ -35,7 +35,7 @@ use std::sync::Arc;
 /// ```rust,no_run
 /// # use some_transport::NatsTransport;
 /// # use prost::Message;
-/// # #[derive(Clone, Debug, PartialEq, Message)]
+/// # #[derive(Clone, PartialEq, Message)]
 /// # pub struct MyEvent {
 /// #     #[prost(string, tag = "1")]
 /// #     pub data: String,
@@ -94,7 +94,7 @@ where
 	/// ```rust,no_run
 	/// # use some_transport::NatsTransport;
 	/// # use prost::Message;
-	/// # #[derive(Clone, Debug, PartialEq, Message)]
+	/// # #[derive(Clone, PartialEq, Message)]
 	/// # pub struct MyEvent {
 	/// #     #[prost(string, tag = "1")]
 	/// #     pub data: String,
@@ -269,8 +269,9 @@ mod tests {
 	use std::time::Duration;
 	use tokio::time::timeout;
 
-	// Test event type
-	#[derive(Clone, Debug, PartialEq, Message)]
+	// Test event type. `prost::Message` derives `Debug` itself, so deriving it
+	// here too collides.
+	#[derive(Clone, PartialEq, Message)]
 	struct TestEvent {
 		#[prost(uint64, tag = "1")]
 		id: u64,
@@ -330,9 +331,11 @@ mod tests {
 		assert_eq!(t1.active_channels(), 0);
 		assert_eq!(t2.active_channels(), 0);
 
-		// They should share the same underlying connection
-		// (verified by pointer equality of Client)
-		assert!(Arc::ptr_eq(&t1.client, &t2.client));
+		// They should share the same underlying connection. `Client` is already
+		// an owned handle to a shared connection, so identity is not a pointer
+		// question — the server hands every distinct connection its own id, so
+		// a matching id is the connection being reused.
+		assert_eq!(t1.client.server_info().client_id, t2.client.server_info().client_id);
 	}
 
 	#[tokio::test]
@@ -343,10 +346,9 @@ mod tests {
 		}
 
 		let client = async_nats::connect(nats_url()).await.unwrap();
-		let arc_client = Arc::new(client);
-		let transport = NatsTransport::<TestEvent>::from_client(arc_client.clone());
+		let transport = NatsTransport::<TestEvent>::from_client(client.clone());
 
-		assert!(Arc::ptr_eq(&transport.client, &arc_client));
+		assert_eq!(transport.client.server_info().client_id, client.server_info().client_id);
 	}
 
 	#[tokio::test]
@@ -537,7 +539,7 @@ mod tests {
 		let t2 = t1.clone();
 
 		// Both should share the same client
-		assert!(Arc::ptr_eq(&t1.client, &t2.client));
+		assert_eq!(t1.client.server_info().client_id, t2.client.server_info().client_id);
 
 		// Both should work independently
 		let mut r1 = t1.open_channel("clone-test-1").await;

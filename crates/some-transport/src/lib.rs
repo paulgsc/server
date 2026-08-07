@@ -21,9 +21,9 @@
 //!
 //! #[cfg(feature = "inmem")]
 //! async fn example_inmem() {
-//!     use transport::InMemTransport;
+//!     use some_transport::InMemTransport;
 //!     
-//!     let (transport, mut rx) = InMemTransport::<String>::with_receiver(100);
+//!     let (transport, mut rx) = InMemTransport::<String>::with_receiver(100).await;
 //!     
 //!     transport.broadcast("Hello!".to_string()).await.ok();
 //!     

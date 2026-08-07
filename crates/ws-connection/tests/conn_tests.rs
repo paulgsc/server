@@ -1,575 +1,55 @@
+//! Tests for the connection layer.
+//!
+//! The crate splits a connection into three pieces, and the modules below
+//! mirror that split: `Connection` is immutable metadata, `ConnectionState`
+//! is the mutable half the actor owns, and `ConnectionHandle` is the only way
+//! the two are reached from outside the actor task.
+
 #[cfg(test)]
-mod tests {
+mod connection_metadata {
+	use std::net::SocketAddr;
 	use std::thread::sleep;
-	use std::{
-		net::SocketAddr,
-		time::{Duration, Instant},
-	};
+	use std::time::{Duration, Instant};
 	use ws_connection::core::conn::Connection;
-	use ws_connection::types::*;
+	use ws_connection::types::ClientId;
 
-	// Example enum for compile-time event type checking
-	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	enum UserEvent {
-		Created,
-		Updated,
-		Deleted,
-	}
-
-	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	#[allow(dead_code)]
-	enum OrderEvent {
-		Placed,
-		Shipped,
-		Delivered,
-		Cancelled,
-	}
-
-	// Helper function to create test connection with String events
-	fn create_test_connection() -> Connection<String> {
-		let client_id = ClientId::new("test-client");
-		let addr = "127.0.0.1:8080".parse().unwrap();
-		Connection::new(client_id, addr)
-	}
-
-	// Helper to create connection with enum events
-	fn create_user_event_connection() -> Connection<UserEvent> {
-		let client_id = ClientId::new("test-client");
-		let addr = "127.0.0.1:8080".parse().unwrap();
-		Connection::new(client_id, addr)
-	}
-
-	fn create_order_event_connection() -> Connection<OrderEvent> {
-		let client_id = ClientId::new("test-client");
-		let addr = "127.0.0.1:8080".parse().unwrap();
-		Connection::new(client_id, addr)
-	}
-
-	// Helper to create connection with custom client_id
-	fn create_connection_with_client(client_id: &str) -> Connection<String> {
-		let addr = "127.0.0.1:8080".parse().unwrap();
-		Connection::new(ClientId::new(client_id), addr)
+	fn test_connection() -> Connection {
+		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+		Connection::new(ClientId::new("test-client"), addr)
 	}
 
 	#[test]
-	fn test_new_connection_creation() {
+	fn new_records_the_client_and_address_it_was_given() {
 		let client_id = ClientId::new("test-client");
-		let addr = "127.0.0.1:8080".parse().unwrap();
-		let conn: Connection<String> = Connection::new(client_id.clone(), addr);
+		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+		let conn = Connection::new(client_id.clone(), addr);
 
 		assert_eq!(conn.client_id, client_id);
 		assert_eq!(conn.source_addr, addr);
-		assert!(conn.is_active());
-		assert_eq!(conn.get_subscription_count(), 0);
 	}
 
 	#[test]
-	fn test_connection_with_enum_event_types() {
-		let mut conn = create_user_event_connection();
-
-		// Type-safe subscriptions - compiler ensures only UserEvent variants
-		let change = conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
-
-		assert_eq!(change.added, 2);
-		assert_eq!(change.total, 2);
-		assert!(conn.is_subscribed_to(&UserEvent::Created));
-		assert!(conn.is_subscribed_to(&UserEvent::Updated));
-		assert!(!conn.is_subscribed_to(&UserEvent::Deleted));
-	}
-
-	#[test]
-	fn test_different_enum_types_are_separate() {
-		// These are different types - compile-time safety
-		let mut user_conn = create_user_event_connection();
-		let mut order_conn = create_order_event_connection();
-
-		user_conn.subscribe(vec![UserEvent::Created]);
-		order_conn.subscribe(vec![OrderEvent::Placed]);
-
-		assert_eq!(user_conn.get_subscription_count(), 1);
-		assert_eq!(order_conn.get_subscription_count(), 1);
-	}
-
-	#[test]
-	fn test_connection_has_unique_ids() {
-		let conn1 = create_test_connection();
-		let conn2 = create_test_connection();
+	fn each_connection_gets_a_unique_id() {
+		let conn1 = test_connection();
+		let conn2 = test_connection();
 
 		assert_ne!(conn1.id, conn2.id);
 	}
 
 	#[test]
-	fn test_new_connection_is_active() {
-		let conn = create_test_connection();
-
-		assert!(conn.is_active());
-		assert!(!conn.is_stale());
-		assert!(!conn.is_disconnected());
-
-		match conn.state {
-			ConnectionState::Active { .. } => (),
-			_ => panic!("Expected Active state"),
-		}
-	}
-
-	#[test]
-	fn test_record_activity_updates_timestamp() {
-		let mut conn = create_test_connection();
-
-		sleep(Duration::from_millis(10));
-		let before_activity = conn.last_activity;
-
-		conn.record_activity();
-
-		assert!(conn.last_activity > before_activity);
-	}
-
-	#[test]
-	fn test_record_activity_updates_last_ping_when_active() {
-		let mut conn = create_test_connection();
-
-		sleep(Duration::from_millis(10));
-
-		let initial_ping = match conn.state {
-			ConnectionState::Active { last_ping } => last_ping,
-			_ => panic!("Expected Active state"),
-		};
-
-		conn.record_activity();
-
-		let new_ping = match conn.state {
-			ConnectionState::Active { last_ping } => last_ping,
-			_ => panic!("Expected Active state"),
-		};
-
-		assert!(new_ping > initial_ping);
-	}
-
-	#[test]
-	fn test_record_activity_does_not_change_state_from_stale() {
-		let mut conn = create_test_connection();
-		conn.mark_stale("timeout".to_string());
-
-		conn.record_activity();
-
-		assert!(conn.is_stale());
-	}
-
-	#[test]
-	fn test_subscribe_to_single_event() {
-		let mut conn = create_test_connection();
-
-		let change = conn.subscribe(vec!["user.created".to_string()]);
-
-		assert_eq!(change.added, 1);
-		assert_eq!(change.removed, 0);
-		assert_eq!(change.total, 1);
-		assert!(conn.is_subscribed_to(&"user.created".to_string()));
-	}
-
-	#[test]
-	fn test_subscribe_to_multiple_events() {
-		let mut conn = create_test_connection();
-
-		let events = vec!["user.created".to_string(), "user.updated".to_string(), "user.deleted".to_string()];
-
-		let change = conn.subscribe(events.clone());
-
-		assert_eq!(change.added, 3);
-		assert_eq!(change.total, 3);
-
-		for event in events {
-			assert!(conn.is_subscribed_to(&event));
-		}
-	}
-
-	#[test]
-	fn test_subscribe_enum_variants() {
-		let mut conn = create_user_event_connection();
-
-		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated, UserEvent::Deleted]);
-
-		assert_eq!(conn.get_subscription_count(), 3);
-		assert!(conn.is_subscribed_to(&UserEvent::Created));
-		assert!(conn.is_subscribed_to(&UserEvent::Updated));
-		assert!(conn.is_subscribed_to(&UserEvent::Deleted));
-	}
-
-	#[test]
-	fn test_subscribe_duplicate_events_not_counted_twice() {
-		let mut conn = create_test_connection();
-
-		conn.subscribe(vec!["user.created".to_string()]);
-		let change = conn.subscribe(vec!["user.created".to_string()]);
-
-		assert_eq!(change.added, 0);
-		assert_eq!(change.total, 1);
-	}
-
-	#[test]
-	fn test_subscribe_duplicate_enum_variants_not_counted_twice() {
-		let mut conn = create_user_event_connection();
-
-		conn.subscribe(vec![UserEvent::Created]);
-		let change = conn.subscribe(vec![UserEvent::Created]);
-
-		assert_eq!(change.added, 0);
-		assert_eq!(change.total, 1);
-	}
-
-	#[test]
-	fn test_subscribe_mixed_new_and_existing() {
-		let mut conn = create_test_connection();
-
-		conn.subscribe(vec!["event1".to_string()]);
-		let change = conn.subscribe(vec!["event1".to_string(), "event2".to_string(), "event3".to_string()]);
-
-		assert_eq!(change.added, 2);
-		assert_eq!(change.total, 3);
-	}
-
-	#[test]
-	fn test_unsubscribe_from_subscribed_event() {
-		let mut conn = create_test_connection();
-		conn.subscribe(vec!["user.created".to_string()]);
-
-		let change = conn.unsubscribe(vec!["user.created".to_string()]);
-
-		assert_eq!(change.removed, 1);
-		assert_eq!(change.total, 0);
-		assert!(!conn.is_subscribed_to(&"user.created".to_string()));
-	}
-
-	#[test]
-	fn test_unsubscribe_enum_variants() {
-		let mut conn = create_user_event_connection();
-		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
-
-		let change = conn.unsubscribe(vec![UserEvent::Created]);
-
-		assert_eq!(change.removed, 1);
-		assert_eq!(change.total, 1);
-		assert!(!conn.is_subscribed_to(&UserEvent::Created));
-		assert!(conn.is_subscribed_to(&UserEvent::Updated));
-	}
-
-	#[test]
-	fn test_unsubscribe_from_multiple_events() {
-		let mut conn = create_test_connection();
-		conn.subscribe(vec!["event1".to_string(), "event2".to_string(), "event3".to_string()]);
-
-		let change = conn.unsubscribe(vec!["event1".to_string(), "event2".to_string()]);
-
-		assert_eq!(change.removed, 2);
-		assert_eq!(change.total, 1);
-		assert!(conn.is_subscribed_to(&"event3".to_string()));
-	}
-
-	#[test]
-	fn test_unsubscribe_from_non_subscribed_event() {
-		let mut conn = create_test_connection();
-
-		let change = conn.unsubscribe(vec!["nonexistent".to_string()]);
-
-		assert_eq!(change.removed, 0);
-		assert_eq!(change.total, 0);
-	}
-
-	#[test]
-	fn test_mark_stale_transitions_from_active() {
-		let mut conn = create_test_connection();
-
-		conn.mark_stale("timeout".to_string());
-
-		assert!(conn.is_stale());
-		assert!(!conn.is_active());
-
-		match conn.state {
-			ConnectionState::Stale { ref reason, .. } => {
-				assert_eq!(reason, "timeout");
-			}
-			_ => panic!("Expected Stale state"),
-		}
-	}
-
-	#[test]
-	fn test_mark_stale_preserves_last_ping() {
-		let mut conn = create_test_connection();
-
-		let original_ping = match conn.state {
-			ConnectionState::Active { last_ping } => last_ping,
-			_ => panic!("Expected Active state"),
-		};
-
-		sleep(Duration::from_millis(10));
-		conn.mark_stale("timeout".to_string());
-
-		let stale_ping = match conn.state {
-			ConnectionState::Stale { last_ping, .. } => last_ping,
-			_ => panic!("Expected Stale state"),
-		};
-
-		assert_eq!(original_ping, stale_ping);
-	}
-
-	#[test]
-	fn test_mark_stale_does_not_affect_disconnected() {
-		let mut conn = create_test_connection();
-		conn.disconnect("closed".to_string());
-
-		conn.mark_stale("timeout".to_string());
-
-		assert!(conn.is_disconnected());
-		assert!(!conn.is_stale());
-	}
-
-	#[test]
-	fn test_disconnect_transitions_state() {
-		let mut conn = create_test_connection();
-
-		conn.disconnect("user requested".to_string());
-
-		assert!(conn.is_disconnected());
-		assert!(!conn.is_active());
-		assert!(!conn.is_stale());
-	}
-
-	#[test]
-	fn test_disconnect_captures_reason() {
-		let mut conn = create_test_connection();
-		let reason = "connection timeout".to_string();
-
-		conn.disconnect(reason.clone());
-
-		match conn.state {
-			ConnectionState::Disconnected { reason: ref r, .. } => {
-				assert_eq!(r, &reason);
-			}
-			_ => panic!("Expected Disconnected state"),
-		}
-	}
-
-	#[test]
-	fn test_disconnect_from_stale_state() {
-		let mut conn = create_test_connection();
-		conn.mark_stale("timeout".to_string());
-
-		conn.disconnect("cleanup".to_string());
-
-		assert!(conn.is_disconnected());
-	}
-
-	#[test]
-	fn test_should_be_stale_returns_false_for_fresh_connection() {
-		let conn = create_test_connection();
-
-		let timeout = Duration::from_secs(60);
-		assert!(!conn.should_be_stale(timeout));
-	}
-
-	#[test]
-	fn test_should_be_stale_returns_true_after_timeout() {
-		let mut conn = create_test_connection();
-
-		// Manually set state with old timestamp
-		let old_time = Instant::now() - Duration::from_secs(120);
-		conn.state = ConnectionState::Active { last_ping: old_time };
-
-		let timeout = Duration::from_secs(60);
-		assert!(conn.should_be_stale(timeout));
-	}
-
-	#[test]
-	fn test_should_be_stale_returns_false_for_stale_state() {
-		let mut conn = create_test_connection();
-		conn.mark_stale("timeout".to_string());
-
-		let timeout = Duration::from_secs(60);
-		assert!(!conn.should_be_stale(timeout));
-	}
-
-	#[test]
-	fn test_should_be_stale_returns_false_for_disconnected_state() {
-		let mut conn = create_test_connection();
-		conn.disconnect("closed".to_string());
-
-		let timeout = Duration::from_secs(60);
-		assert!(!conn.should_be_stale(timeout));
-	}
-
-	#[test]
-	fn test_is_subscribed_to_returns_false_for_unsubscribed() {
-		let conn = create_test_connection();
-
-		assert!(!conn.is_subscribed_to(&"user.created".to_string()));
-	}
-
-	#[test]
-	fn test_get_duration_increases_over_time() {
-		let conn = create_test_connection();
-
-		let duration1 = conn.get_duration();
-		sleep(Duration::from_millis(10));
-		let duration2 = conn.get_duration();
-
-		assert!(duration2 > duration1);
-	}
-
-	#[test]
-	fn test_get_subscription_count_starts_at_zero() {
-		let conn = create_test_connection();
-
-		assert_eq!(conn.get_subscription_count(), 0);
-	}
-
-	#[test]
-	fn test_get_subscription_count_updates_with_subscriptions() {
-		let mut conn = create_test_connection();
-
-		conn.subscribe(vec!["event1".to_string(), "event2".to_string()]);
-		assert_eq!(conn.get_subscription_count(), 2);
-
-		conn.subscribe(vec!["event3".to_string()]);
-		assert_eq!(conn.get_subscription_count(), 3);
-
-		conn.unsubscribe(vec!["event1".to_string()]);
-		assert_eq!(conn.get_subscription_count(), 2);
-	}
-
-	#[test]
-	fn test_get_subscriptions_returns_all_subscribed_events() {
-		let mut conn = create_test_connection();
-
-		let events = vec!["event1".to_string(), "event2".to_string(), "event3".to_string()];
-
-		conn.subscribe(events.clone());
-		let subscriptions = conn.get_subscriptions();
-
-		assert_eq!(subscriptions.len(), 3);
-		for event in events {
-			assert!(subscriptions.contains(&event));
-		}
-	}
-
-	#[test]
-	fn test_get_subscriptions_returns_empty_set_initially() {
-		let conn = create_test_connection();
-
-		let subscriptions = conn.get_subscriptions();
-		assert!(subscriptions.is_empty());
-	}
-
-	#[test]
-	fn test_get_subscriptions_with_enum_types() {
-		let mut conn = create_user_event_connection();
-
-		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
-		let subscriptions = conn.get_subscriptions();
-
-		assert_eq!(subscriptions.len(), 2);
-		assert!(subscriptions.contains(&UserEvent::Created));
-		assert!(subscriptions.contains(&UserEvent::Updated));
-	}
-
-	#[test]
-	fn test_state_transitions_are_one_way() {
-		let mut conn = create_test_connection();
-
-		// Active -> Stale
-		conn.mark_stale("timeout".to_string());
-		assert!(conn.is_stale());
-
-		// Stale -> Disconnected
-		conn.disconnect("cleanup".to_string());
-		assert!(conn.is_disconnected());
-
-		// Cannot go back to stale
-		conn.mark_stale("trying again".to_string());
-		assert!(conn.is_disconnected());
-	}
-
-	#[test]
-	fn test_connection_preserves_client_id() {
-		let client_id = ClientId::new("unique-client-123");
-		let addr = "192.168.1.1:9000".parse().unwrap();
-		let conn: Connection<String> = Connection::new(client_id.clone(), addr);
-
-		assert_eq!(conn.client_id, client_id);
-	}
-
-	#[test]
-	fn test_connection_preserves_source_addr() {
-		let addr: SocketAddr = "10.0.0.1:3000".parse().unwrap();
-		let conn: Connection<String> = Connection::new(ClientId::new("test"), addr);
-
-		assert_eq!(conn.source_addr, addr);
-	}
-
-	#[test]
-	fn test_subscriptions_survive_state_transitions() {
-		let mut conn = create_test_connection();
-
-		conn.subscribe(vec!["event1".to_string(), "event2".to_string()]);
-		assert_eq!(conn.get_subscription_count(), 2);
-
-		conn.mark_stale("timeout".to_string());
-		assert_eq!(conn.get_subscription_count(), 2);
-		assert!(conn.is_subscribed_to(&"event1".to_string()));
-
-		conn.disconnect("cleanup".to_string());
-		assert_eq!(conn.get_subscription_count(), 2);
-		assert!(conn.is_subscribed_to(&"event2".to_string()));
-	}
-
-	#[test]
-	fn test_enum_subscriptions_survive_state_transitions() {
-		let mut conn = create_user_event_connection();
-
-		conn.subscribe(vec![UserEvent::Created, UserEvent::Updated]);
-		assert_eq!(conn.get_subscription_count(), 2);
-
-		conn.mark_stale("timeout".to_string());
-		assert!(conn.is_subscribed_to(&UserEvent::Created));
-
-		conn.disconnect("cleanup".to_string());
-		assert!(conn.is_subscribed_to(&UserEvent::Updated));
-	}
-
-	#[test]
-	fn test_subscription_change_has_changes() {
-		let mut conn = create_test_connection();
-
-		let change1 = conn.subscribe(vec!["event1".to_string()]);
-		assert!(change1.has_changes());
-
-		let change2 = conn.subscribe(vec!["event1".to_string()]);
-		assert!(!change2.has_changes());
-	}
-
-	#[test]
-	fn test_subscription_change_net_change() {
-		let mut conn = create_test_connection();
-
-		let change = conn.subscribe(vec!["event1".to_string(), "event2".to_string()]);
-		assert_eq!(change.net_change(), 2);
-
-		let change = conn.unsubscribe(vec!["event1".to_string()]);
-		assert_eq!(change.net_change(), -1);
-	}
-
-	#[test]
-	fn test_multiple_clients_can_coexist() {
-		let conn1 = create_connection_with_client("client1");
-		let conn2 = create_connection_with_client("client2");
+	fn distinct_clients_stay_distinct() {
+		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+		let conn1 = Connection::new(ClientId::new("client1"), addr);
+		let conn2 = Connection::new(ClientId::new("client2"), addr);
 
 		assert_ne!(conn1.id, conn2.id);
 		assert_ne!(conn1.client_id, conn2.client_id);
 	}
 
 	#[test]
-	fn test_established_at_is_set_on_creation() {
+	fn established_at_is_stamped_during_construction() {
 		let before = Instant::now();
-		let conn = create_test_connection();
+		let conn = test_connection();
 		let after = Instant::now();
 
 		assert!(conn.established_at >= before);
@@ -577,39 +57,382 @@ mod tests {
 	}
 
 	#[test]
-	fn test_last_activity_matches_established_at_initially() {
-		let conn = create_test_connection();
+	fn get_duration_grows_with_wall_clock_time() {
+		let conn = test_connection();
 
-		// They should be very close (same instant in practice)
-		let diff = if conn.last_activity > conn.established_at {
-			conn.last_activity.duration_since(conn.established_at)
-		} else {
-			conn.established_at.duration_since(conn.last_activity)
-		};
+		let first = conn.get_duration();
+		sleep(Duration::from_millis(10));
+		let second = conn.get_duration();
 
-		assert!(diff < Duration::from_millis(1));
+		assert!(second > first);
 	}
 
 	#[test]
-	fn test_empty_subscription_operations() {
-		let mut conn = create_test_connection();
+	fn cloning_preserves_identity() {
+		let conn = test_connection();
+		let clone = conn.clone();
 
-		let change = conn.subscribe(Vec::<String>::new());
-		assert_eq!(change.added, 0);
-		assert_eq!(change.total, 0);
-
-		let change = conn.unsubscribe(Vec::<String>::new());
-		assert_eq!(change.removed, 0);
-		assert_eq!(change.total, 0);
+		assert_eq!(conn.id, clone.id);
+		assert_eq!(conn.client_id, clone.client_id);
+		assert_eq!(conn.source_addr, clone.source_addr);
 	}
 
 	#[test]
-	fn test_connection_debug_format() {
-		let conn = create_test_connection();
-		let debug_str = format!("{:?}", conn);
+	fn debug_output_names_the_struct_and_its_fields() {
+		let conn = test_connection();
+		let debug_str = format!("{conn:?}");
 
 		assert!(debug_str.contains("Connection"));
 		assert!(debug_str.contains("id"));
 		assert!(debug_str.contains("client_id"));
+	}
+}
+
+#[cfg(test)]
+mod connection_state {
+	use std::thread::sleep;
+	use std::time::Duration as StdDuration;
+	use tokio::time::Duration;
+	use ws_connection::actor::ConnectionState;
+
+	#[test]
+	fn new_state_is_active_and_neither_stale_nor_disconnected() {
+		let state = ConnectionState::new();
+
+		assert!(state.is_active);
+		assert!(!state.is_stale);
+		assert!(state.stale_reason.is_none());
+		assert!(state.disconnect_reason.is_none());
+	}
+
+	#[test]
+	fn default_matches_new() {
+		let state = ConnectionState::default();
+
+		assert!(state.is_active);
+		assert!(!state.is_stale);
+	}
+
+	#[test]
+	fn record_activity_advances_the_timestamp() {
+		let mut state = ConnectionState::new();
+		let before = state.last_activity;
+
+		sleep(StdDuration::from_millis(10));
+		state.record_activity();
+
+		assert!(state.last_activity > before);
+	}
+
+	#[test]
+	fn should_be_stale_is_false_while_activity_is_recent() {
+		let state = ConnectionState::new();
+
+		assert!(!state.should_be_stale(Duration::from_secs(60)));
+	}
+
+	#[test]
+	fn should_be_stale_is_true_once_the_timeout_elapses() {
+		let state = ConnectionState::new();
+
+		sleep(StdDuration::from_millis(20));
+
+		assert!(state.should_be_stale(Duration::from_millis(1)));
+	}
+
+	#[test]
+	fn recording_activity_resets_the_staleness_clock() {
+		let mut state = ConnectionState::new();
+		sleep(StdDuration::from_millis(20));
+		assert!(state.should_be_stale(Duration::from_millis(1)));
+
+		state.record_activity();
+
+		assert!(!state.should_be_stale(Duration::from_secs(60)));
+	}
+
+	#[test]
+	fn should_be_stale_is_false_for_a_connection_already_marked_stale() {
+		let mut state = ConnectionState::new();
+		state.mark_stale("timeout".to_string());
+
+		sleep(StdDuration::from_millis(20));
+
+		assert!(!state.should_be_stale(Duration::from_millis(1)));
+	}
+
+	#[test]
+	fn mark_stale_deactivates_and_captures_the_reason() {
+		let mut state = ConnectionState::new();
+
+		state.mark_stale("timeout".to_string());
+
+		assert!(!state.is_active);
+		assert!(state.is_stale);
+		assert_eq!(state.stale_reason.as_deref(), Some("timeout"));
+	}
+
+	#[test]
+	fn mark_stale_keeps_the_first_reason() {
+		let mut state = ConnectionState::new();
+		state.mark_stale("timeout".to_string());
+
+		state.mark_stale("something else".to_string());
+
+		assert_eq!(state.stale_reason.as_deref(), Some("timeout"));
+	}
+
+	#[test]
+	fn disconnect_captures_the_reason_and_clears_active() {
+		let mut state = ConnectionState::new();
+
+		state.disconnect("user requested".to_string());
+
+		assert!(!state.is_active);
+		assert!(!state.is_stale);
+		assert_eq!(state.disconnect_reason.as_deref(), Some("user requested"));
+	}
+
+	#[test]
+	fn disconnect_supersedes_stale() {
+		let mut state = ConnectionState::new();
+		state.mark_stale("timeout".to_string());
+
+		state.disconnect("cleanup".to_string());
+
+		assert!(!state.is_stale);
+		assert_eq!(state.disconnect_reason.as_deref(), Some("cleanup"));
+	}
+
+	#[test]
+	fn a_disconnected_connection_cannot_go_back_to_stale() {
+		let mut state = ConnectionState::new();
+		state.disconnect("closed".to_string());
+
+		state.mark_stale("trying again".to_string());
+
+		assert!(!state.is_stale);
+		assert!(state.stale_reason.is_none());
+		assert_eq!(state.disconnect_reason.as_deref(), Some("closed"));
+	}
+
+	#[test]
+	fn as_str_describes_each_stage_of_the_lifecycle() {
+		let mut state = ConnectionState::new();
+		assert_eq!(state.as_str(), "active");
+
+		state.mark_stale("timeout".to_string());
+		assert_eq!(state.as_str(), "inactive, stale(timeout)");
+
+		state.disconnect("cleanup".to_string());
+		assert_eq!(state.as_str(), "inactive, disconnected(cleanup)");
+	}
+
+	#[test]
+	fn display_matches_as_str() {
+		let mut state = ConnectionState::new();
+		state.mark_stale("timeout".to_string());
+
+		assert_eq!(state.to_string(), state.as_str());
+	}
+}
+
+#[cfg(test)]
+mod connection_actor {
+	use std::net::SocketAddr;
+	use std::time::Duration;
+	use tokio_util::sync::CancellationToken;
+	use ws_connection::actor::ConnectionHandle;
+	use ws_connection::core::conn::Connection;
+	use ws_connection::types::ClientId;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	enum UserEvent {
+		Created,
+		Updated,
+		Deleted,
+	}
+
+	/// Spawn an actor and hand back the only thing callers ever hold: its
+	/// handle. The `CancellationToken` is kept alive by the returned guard so
+	/// the parent token is not dropped out from under the child.
+	fn spawn_handle<K>() -> (ConnectionHandle<K>, CancellationToken)
+	where
+		K: ws_connection::core::subscription::EventKey,
+	{
+		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+		let connection = Connection::new(ClientId::new("test-client"), addr);
+		let parent = CancellationToken::new();
+		let (handle, actor, _token) = ConnectionHandle::new(connection, 16, &parent);
+
+		tokio::spawn(actor.run());
+
+		(handle, parent)
+	}
+
+	#[tokio::test]
+	async fn a_fresh_actor_reports_no_subscriptions() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		let subs = handle.get_subscriptions().await.unwrap();
+
+		assert!(subs.is_empty());
+	}
+
+	#[tokio::test]
+	async fn the_handle_caches_the_immutable_connection_metadata() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		assert_eq!(handle.connection.client_id, ClientId::new("test-client"));
+		assert_eq!(handle.connection.source_addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
+	}
+
+	#[tokio::test]
+	async fn subscribe_is_visible_to_a_later_query() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.subscribe(vec!["user.created".to_string(), "user.updated".to_string()]).await.unwrap();
+
+		let subs = handle.get_subscriptions().await.unwrap();
+		assert_eq!(subs.len(), 2);
+		assert!(handle.is_subscribed_to("user.created".to_string()).await.unwrap());
+		assert!(!handle.is_subscribed_to("user.deleted".to_string()).await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn subscribe_deduplicates_across_calls() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.subscribe(vec!["event1".to_string()]).await.unwrap();
+		handle.subscribe(vec!["event1".to_string(), "event2".to_string()]).await.unwrap();
+
+		let subs = handle.get_subscriptions().await.unwrap();
+		assert_eq!(subs.len(), 2);
+	}
+
+	#[tokio::test]
+	async fn unsubscribe_removes_only_the_named_keys() {
+		let (handle, _parent) = spawn_handle::<String>();
+		handle.subscribe(vec!["e1".to_string(), "e2".to_string(), "e3".to_string()]).await.unwrap();
+
+		handle.unsubscribe(vec!["e1".to_string(), "e2".to_string()]).await.unwrap();
+
+		let subs = handle.get_subscriptions().await.unwrap();
+		assert_eq!(subs.len(), 1);
+		assert!(handle.is_subscribed_to("e3".to_string()).await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn unsubscribing_an_unknown_key_is_a_no_op() {
+		let (handle, _parent) = spawn_handle::<String>();
+		handle.subscribe(vec!["e1".to_string()]).await.unwrap();
+
+		handle.unsubscribe(vec!["nonexistent".to_string()]).await.unwrap();
+
+		assert!(handle.is_subscribed_to("e1".to_string()).await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn enum_keys_work_the_same_as_string_keys() {
+		let (handle, _parent) = spawn_handle::<UserEvent>();
+
+		handle.subscribe(vec![UserEvent::Created, UserEvent::Updated]).await.unwrap();
+
+		assert!(handle.is_subscribed_to(UserEvent::Created).await.unwrap());
+		assert!(handle.is_subscribed_to(UserEvent::Updated).await.unwrap());
+		assert!(!handle.is_subscribed_to(UserEvent::Deleted).await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn record_activity_holds_off_a_staleness_check() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.record_activity().await.unwrap();
+		handle.check_stale(Duration::from_secs(60)).await.unwrap();
+
+		let state = handle.get_state().await.unwrap();
+		assert!(state.is_active);
+		assert!(!state.is_stale);
+	}
+
+	#[tokio::test]
+	async fn check_stale_marks_the_connection_once_the_timeout_elapses() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		handle.check_stale(Duration::from_millis(1)).await.unwrap();
+
+		let state = handle.get_state().await.unwrap();
+		assert!(state.is_stale);
+		assert!(!state.is_active);
+		assert_eq!(state.stale_reason.as_deref(), Some("timeout"));
+	}
+
+	#[tokio::test]
+	async fn mark_stale_records_the_caller_supplied_reason() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.mark_stale("idle".to_string()).await.unwrap();
+
+		let state = handle.get_state().await.unwrap();
+		assert!(state.is_stale);
+		assert_eq!(state.stale_reason.as_deref(), Some("idle"));
+	}
+
+	#[tokio::test]
+	async fn subscriptions_survive_being_marked_stale() {
+		let (handle, _parent) = spawn_handle::<String>();
+		handle.subscribe(vec!["e1".to_string(), "e2".to_string()]).await.unwrap();
+
+		handle.mark_stale("timeout".to_string()).await.unwrap();
+
+		let subs = handle.get_subscriptions().await.unwrap();
+		assert_eq!(subs.len(), 2);
+	}
+
+	#[tokio::test]
+	async fn disconnect_stops_the_actor() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.disconnect("user requested".to_string()).await.unwrap();
+
+		// `Disconnect` breaks the actor loop, so the command channel closes and
+		// every later request fails rather than hanging.
+		let outcome = wait_for_actor_exit(&handle).await;
+		assert!(outcome.is_err(), "actor should stop accepting commands after disconnect");
+	}
+
+	#[tokio::test]
+	async fn shutdown_stops_the_actor() {
+		let (handle, _parent) = spawn_handle::<String>();
+
+		handle.shutdown().await.unwrap();
+
+		let outcome = wait_for_actor_exit(&handle).await;
+		assert!(outcome.is_err(), "actor should stop accepting commands after shutdown");
+	}
+
+	#[tokio::test]
+	async fn cloned_handles_address_the_same_actor() {
+		let (handle, _parent) = spawn_handle::<String>();
+		let clone = handle.clone();
+
+		clone.subscribe(vec!["shared".to_string()]).await.unwrap();
+
+		assert!(handle.is_subscribed_to("shared".to_string()).await.unwrap());
+	}
+
+	/// Poll the actor until it stops answering. The actor exits asynchronously
+	/// after `Disconnect`/`Shutdown`, so a single immediate query can still land
+	/// in the channel buffer and succeed; this retries until the channel closes.
+	async fn wait_for_actor_exit<K>(handle: &ConnectionHandle<K>) -> ws_connection::actor::error::Result<()>
+	where
+		K: ws_connection::core::subscription::EventKey,
+	{
+		for _ in 0..100 {
+			handle.record_activity().await?;
+			tokio::time::sleep(Duration::from_millis(5)).await;
+		}
+		Ok(())
 	}
 }

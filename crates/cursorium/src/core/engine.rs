@@ -174,14 +174,14 @@ impl OrchestratorEngine {
 								Ok(new_mode) => {
 									Self::apply_mode_change(mode, new_mode, &mut session, &self.state_tx);
 									mode = new_mode;
-									Self::handle_operations(&cmd, &mut session, &self.state_tx);
+									Self::handle_operations(&cmd, mode, &mut session, &self.state_tx);
 									Ok(())
 								}
 								Err(e) => Err(e),
 							}
 						}
 						_ => {
-							Self::handle_operations(&cmd, &mut session, &self.state_tx);
+							Self::handle_operations(&cmd, mode, &mut session, &self.state_tx);
 							Ok(())
 						}
 					};
@@ -298,8 +298,20 @@ impl OrchestratorEngine {
 	}
 
 	/// Handle non-FSM operational commands
-	fn handle_operations(command: &OrchestratorCommand, session: &mut Option<Session>, state_tx: &watch::Sender<OrchestratorState>) {
+	///
+	/// `mode` is the engine's current mode, which these commands never change.
+	/// It has to be passed in and stamped onto every published snapshot:
+	/// `engine_state.state.mode` is not maintained — the engine's local `mode`
+	/// is the authority, and publishing without the stamp leaks the default
+	/// `Unconfigured` to every subscriber.
+	fn handle_operations(command: &OrchestratorCommand, mode: OrchestratorMode, session: &mut Option<Session>, state_tx: &watch::Sender<OrchestratorState>) {
 		let Some(s) = session else { return };
+
+		let publish = |state_tx: &watch::Sender<OrchestratorState>, engine_state: &super::EngineState| {
+			let mut state = engine_state.state.clone();
+			state.mode = mode;
+			state_tx.send_replace(state);
+		};
 
 		match command {
 			OrchestratorCommand::ForceScene(scene_name) => {
@@ -316,8 +328,7 @@ impl OrchestratorEngine {
 				if let Some(event) = target_event {
 					let target_time = event.at;
 					s.engine_state.reconstruct_from_start(&mut s.cursor, &s.timeline, target_time);
-					let state = s.engine_state.state.clone();
-					state_tx.send_replace(state);
+					publish(state_tx, &s.engine_state);
 					info!("Forced scene: {}", scene_name);
 				} else {
 					warn!("Scene not found: {}", scene_name);
@@ -332,8 +343,7 @@ impl OrchestratorEngine {
 				if let Some(next) = next_scene {
 					let target_time = next.at;
 					s.engine_state.reconstruct_from_start(&mut s.cursor, &s.timeline, target_time);
-					let state = s.engine_state.state.clone();
-					state_tx.send_replace(state);
+					publish(state_tx, &s.engine_state);
 					info!("Skipped to next scene");
 				} else {
 					warn!("No next scene to skip to");
@@ -350,7 +360,7 @@ impl OrchestratorEngine {
 					stream_time: *stream_time,
 					timecode: timecode.clone(),
 				};
-				state_tx.send_replace(s.engine_state.state.clone());
+				publish(state_tx, &s.engine_state);
 			}
 
 			_ => {} // FSM commands already handled
