@@ -87,7 +87,7 @@ impl<K: EventKey> SubscriptionManager<K> {
 
 	/// Get all current subscriptions.
 	#[must_use]
-	pub fn get_subscriptions(&self) -> &HashSet<K> {
+	pub const fn get_subscriptions(&self) -> &HashSet<K> {
 		&self.subscriptions
 	}
 
@@ -157,12 +157,14 @@ impl SubscriptionChange {
 	pub fn net_change(&self) -> i32 {
 		let added = i64::try_from(self.added).unwrap_or(i64::MAX);
 		let removed = i64::try_from(self.removed).unwrap_or(i64::MAX);
-		(added - removed).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+		let net = added - removed;
+		// Saturate rather than truncate if the delta exceeds `i32`.
+		i32::try_from(net).unwrap_or_else(|_| if net.is_negative() { i32::MIN } else { i32::MAX })
 	}
 
 	/// Whether there were any changes.
 	#[must_use]
-	pub fn has_changes(&self) -> bool {
+	pub const fn has_changes(&self) -> bool {
 		self.added > 0 || self.removed > 0
 	}
 }

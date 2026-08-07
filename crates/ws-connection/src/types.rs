@@ -6,24 +6,35 @@ use uuid::Uuid;
 pub struct ConnectionId(Uuid);
 
 impl ConnectionId {
+	#[must_use]
 	pub fn new() -> Self {
 		Self(Uuid::new_v4()) // or new_v7() if you want time-ordered
 	}
 
-	pub fn from_uuid(uuid: Uuid) -> Self {
+	#[must_use]
+	pub const fn from_uuid(uuid: Uuid) -> Self {
 		Self(uuid)
 	}
 
-	pub fn as_uuid(&self) -> &Uuid {
+	#[must_use]
+	pub const fn as_uuid(&self) -> &Uuid {
 		&self.0
 	}
 
+	#[must_use]
 	pub fn as_string(&self) -> String {
 		self.0.to_string()
 	}
 
-	pub fn as_bytes(&self) -> &[u8; 16] {
+	#[must_use]
+	pub const fn as_bytes(&self) -> &[u8; 16] {
 		self.0.as_bytes()
+	}
+}
+
+impl Default for ConnectionId {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
@@ -42,6 +53,7 @@ impl ClientId {
 		Self(id.into())
 	}
 
+	#[must_use]
 	pub fn as_str(&self) -> &str {
 		&self.0
 	}

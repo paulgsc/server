@@ -15,6 +15,7 @@ pub struct Connection {
 
 impl Connection {
 	/// Create a new connection
+	#[must_use]
 	pub fn new(client_id: ClientId, source_addr: SocketAddr) -> Self {
 		Self {
 			id: ConnectionId::new(),
@@ -25,6 +26,7 @@ impl Connection {
 	}
 
 	/// Get connection duration
+	#[must_use]
 	pub fn get_duration(&self) -> Duration {
 		self.established_at.elapsed()
 	}

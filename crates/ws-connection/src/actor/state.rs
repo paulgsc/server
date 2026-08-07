@@ -53,6 +53,7 @@ impl ConnectionState {
 	}
 
 	/// Returns a concise string representation of the state
+	#[must_use]
 	pub fn as_str(&self) -> String {
 		let mut s = if self.is_active { "active".to_string() } else { "inactive".to_string() };
 
