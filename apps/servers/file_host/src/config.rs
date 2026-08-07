@@ -53,9 +53,20 @@ pub struct Config {
 	pub enable_cors: bool,
 
 	/// Comma-separated list of allowed CORS origins for browser-facing read routes
-	/// (sheets, audio). Other routes deliberately allow any origin (extensions, etc.)
-	/// and are unaffected by this setting.
-	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = "http://nixos.local:6006")]
+	/// (sheets, audio, push, sessions). Other routes deliberately allow any origin
+	/// (extensions, etc.) and are unaffected by this setting.
+	///
+	/// The default carries three entries rather than one because the study app is
+	/// not on `:6006` — that is Storybook. Service workers, `Notification`, and
+	/// `PushManager` are all gated on a secure context, so the origin a
+	/// subscription is actually posted from is an HTTPS one, and a list that only
+	/// admits the Storybook origin blocks it.
+	#[arg(
+		long,
+		env = "ALLOWED_ORIGINS",
+		value_delimiter = ',',
+		default_value = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006"
+	)]
 	pub allowed_origins: Vec<String>,
 
 	/// Log level
@@ -149,6 +160,72 @@ pub struct Config {
 	/// DATABASE URL
 	#[arg(long, env = "DATABASE_URL")]
 	pub database_url: String,
+
+	// ── Study nudge ──────────────────────────────────────────────────────────
+	//
+	// See `docs/study-nudge.md`. Everything below is off by default: this is a
+	// feature that speaks without being spoken to, and one that turns itself on
+	// because a container happened to have a database is worse than one that
+	// never runs.
+	/// Whether the daily nudge tick runs at all.
+	///
+	/// With this off, the `/push` routes still work — a browser can subscribe and
+	/// a manual send can be triggered — but nothing fires on a schedule.
+	#[arg(long, env = "NUDGE_ENABLED", default_value = "false")]
+	pub nudge_enabled: bool,
+
+	/// VAPID public key, base64url, uncompressed P-256 point.
+	///
+	/// Handed to the browser as `applicationServerKey`. It is baked into every
+	/// subscription made with it, so changing it does not re-key them — it
+	/// silently invalidates all of them.
+	#[arg(long, env = "VAPID_PUBLIC_KEY")]
+	pub vapid_public_key: Option<String>,
+
+	/// VAPID private key, base64url, the raw 32-byte P-256 scalar. Secret.
+	#[arg(long, env = "VAPID_PRIVATE_KEY")]
+	pub vapid_private_key: Option<String>,
+
+	/// The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender.
+	/// Push services reject or deprioritise senders without one.
+	#[arg(long, env = "VAPID_SUBJECT", default_value = "mailto:admin@maishatu.com")]
+	pub vapid_subject: String,
+
+	/// IANA timezone name deciding when a day starts and when quiet hours apply.
+	///
+	/// Deliberately an `Option` with no default. A container is UTC unless told
+	/// otherwise, and a silent UTC fallback is how an evening reminder arrives at
+	/// 3am; leaving this unset is allowed but is logged as the choice it is.
+	#[arg(long, env = "NUDGE_TIMEZONE")]
+	pub nudge_timezone: Option<String>,
+
+	/// Local hour, 0-23, at which nudges stop.
+	#[arg(long, env = "NUDGE_QUIET_HOURS_START", default_value = "22")]
+	pub nudge_quiet_hours_start: u32,
+
+	/// Local hour, 0-23, at which nudges resume. May be less than the start hour;
+	/// the range wraps midnight. Equal bounds mean no quiet hours at all.
+	#[arg(long, env = "NUDGE_QUIET_HOURS_END", default_value = "8")]
+	pub nudge_quiet_hours_end: u32,
+
+	/// How often the waker picks up work the engine already decided.
+	///
+	/// Not a schedule. Eligibility instants are solved when signals arrive and
+	/// written to an index; this is the resolution at which they are noticed, so
+	/// shortening it lands interventions closer to their computed instant
+	/// without changing which ones happen.
+	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300")]
+	pub nudge_waker_seconds: u64,
+
+	/// How recently a WebSocket must have been active to count as presence.
+	#[arg(long, env = "NUDGE_PRESENCE_FRESHNESS_SECONDS", default_value = "120")]
+	pub nudge_presence_freshness_seconds: u64,
+
+	/// Base URL of the study app, used to build the notification's deep link.
+	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
+	/// the server has to produce the same shape or clicks land on the dashboard.
+	#[arg(long, env = "APP_BASE_URL", default_value = "https://nixos.local:5173/")]
+	pub app_base_url: String,
 
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]

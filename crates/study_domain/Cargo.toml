@@ -1,0 +1,20 @@
+[package]
+name = "study_domain"
+description = "The study app's intervention vocabulary for the current release"
+categories = ["algorithms"]
+keywords = ["study", "engagement", "typestate"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+intervention = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

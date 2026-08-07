@@ -49,6 +49,37 @@ impl WebSocketFsm {
 	{
 		Router::new().route("/ws", get(websocket_handler))
 	}
+
+	/// How many connections are held, and how many of those are genuinely live.
+	///
+	/// Returns `(connected, live)`. A connection is live when its actor reports
+	/// it active, not stale, and last active within `freshness`. The nudge's
+	/// presence check needs that distinction: a pinned background tab holds its
+	/// socket open all day, and a half-open one holds a handle after the peer is
+	/// gone, so "the store has entries" is not "someone is there".
+	///
+	/// Exists so the nudge sender can ask about presence without reaching into
+	/// the connection store — see `nudge::presence` for the reasoning behind
+	/// treating the answer as an input rather than a veto.
+	pub async fn live_connection_count(&self, freshness: Duration) -> (usize, usize) {
+		let keys = self.store.keys();
+		let connected = keys.len();
+		let mut live = 0;
+
+		for key in keys {
+			let Some(handle) = self.store.get(&key) else { continue };
+			// An actor that cannot answer is not evidence of anyone being
+			// present, so a failed query counts as absence rather than
+			// propagating — presence must never be able to fail *closed*.
+			if let Ok(state) = handle.get_state().await {
+				if state.is_active && !state.is_stale && state.last_activity.elapsed() <= freshness {
+					live += 1;
+				}
+			}
+		}
+
+		(connected, live)
+	}
 }
 
 struct ConnectionCleanup {

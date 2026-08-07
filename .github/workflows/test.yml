@@ -37,7 +37,9 @@ jobs:
           PATTERNS: |
             Cargo.toml
             Cargo.lock
+            apps/**
             crates/**
+            fixtures/**
             .cargo/**
             rust-toolchain
             !**.md
@@ -59,6 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: determine_jobs
     if: needs.determine_jobs.outputs.rust == 'true'
+    env:
+      DATABASE_URL: sqlite://${{ github.workspace }}/test.db
     steps:
       - uses: actions/checkout@v5
         with:
@@ -68,8 +72,50 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
-      - name: Run cargo check
-        run: cargo check
-      - name: Run tests
-        run: cargo test --verbose
 
+      # `sqlx::query!` verifies SQL against a real schema at compile time, so
+      # `cargo check` needs a migrated database — or the `.sqlx` cache built
+      # from one. `.sqlx` is gitignored deliberately, which makes preparing it
+      # here the intended pattern rather than an optimisation. Without these
+      # three steps `cargo check` fails before compiling anything, which is
+      # what it had been doing.
+      - name: Cache sqlx-cli
+        id: cache-sqlx-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqlx
+          key: sqlx-cli-${{ runner.os }}-0.7
+
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx-cli.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --no-default-features --features sqlite
+
+      - name: Create the database and run every crate's migrations
+        # One SQLite file, several crates' migrations directories. The filename
+        # prefixes are timestamps precisely so they order globally across
+        # crates; collecting them into one directory preserves that order.
+        run: |
+          set -euo pipefail
+          root_db="${GITHUB_WORKSPACE}/test.db"
+          rm -f "$root_db"
+          staged="${GITHUB_WORKSPACE}/.migrations"
+          rm -rf "$staged" && mkdir -p "$staged"
+
+          find . -path '*/migrations/*.up.sql' -type f | sort | while read -r migration; do
+            cp "$migration" "$staged/$(basename "$migration" .up.sql).sql"
+          done
+
+          sqlx database create
+          sqlx migrate run --source "$staged"
+          rm -rf "$staged"
+
+      - name: Prepare sqlx offline metadata
+        # Written to .sqlx/, which is gitignored — this is the working copy the
+        # compiler reads, regenerated per run rather than committed.
+        run: cargo sqlx prepare --workspace
+
+      - name: Run cargo check
+        run: cargo check --workspace
+
+      - name: Run tests
+        run: cargo test --workspace --verbose

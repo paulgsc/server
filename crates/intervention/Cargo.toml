@@ -1,0 +1,18 @@
+[package]
+name = "intervention"
+description = "A domain-agnostic engine for deciding when a system should intervene"
+categories = ["algorithms"]
+keywords = ["policy", "typestate", "engagement", "notification"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+
+[lints]
+workspace = true

@@ -109,6 +109,13 @@ pub enum FileHostError {
 
 	#[error("service temporarily overloaded")]
 	ServiceOverloaded,
+
+	// A feature this build supports but this deployment has not configured —
+	// the study nudge without its VAPID keys, for instance. Distinct from an
+	// error on purpose: nothing is broken, and a client that gets a 500 here
+	// will report an outage rather than a missing environment variable.
+	#[error("feature not configured: {0}")]
+	FeatureNotConfigured(&'static str),
 }
 
 impl FileHostError {
@@ -168,7 +175,7 @@ impl FileHostError {
 				StatusCode::BAD_REQUEST
 			}
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
-			Self::ServiceOverloaded => StatusCode::SERVICE_UNAVAILABLE,
+			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
 			Self::Cache(e) => match e {
 				DedupCacheError::NotFound => StatusCode::NOT_FOUND,
@@ -206,6 +213,7 @@ impl FileHostError {
 			Self::UnexpectedSinglePair => "unexpected_single_pair",
 			Self::RequestTimeout => "request_timeout",
 			Self::ServiceOverloaded => "service_overloaded",
+			Self::FeatureNotConfigured(_) => "feature_not_configured",
 		}
 	}
 
@@ -223,6 +231,7 @@ impl FileHostError {
 			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
+			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
 			Self::AudioFetchError(_) => "audio fetch error",
 			_ => "internal server error",
 		}

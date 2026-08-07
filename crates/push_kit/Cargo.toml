@@ -1,0 +1,33 @@
+[package]
+name = "push_kit"
+description = "Web Push actuation — VAPID identity, subscriptions, and a transport seam"
+categories = ["web-programming"]
+keywords = ["web-push", "vapid", "notification", "rfc8291"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+web-push = { workspace = true }
+
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+default = []
+# The only adapter shipped here. Anything else — hyper, isahc, an offline
+# recorder in a test — implements `PushTransport` in its own crate and needs
+# nothing from this one but the trait.
+reqwest-transport = ["dep:reqwest"]
+
+[lints]
+workspace = true
