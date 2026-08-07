@@ -53,13 +53,17 @@ pub async fn rate_limit_middleware(State(limiter): State<Arc<SlidingWindowRateLi
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use clap::Parser;
-	use tokio::time::sleep;
+
+	// These tests previously called `new(Arc::new(Config::parse()))` against a
+	// signature that takes `usize`, so the module had not compiled in some
+	// time. Rewritten against the real constructor: the limit is now passed
+	// directly instead of being read out of ambient config, which also makes
+	// the assertions deterministic rather than dependent on whatever
+	// `RATE_LIMIT` happened to be set in the environment.
 
 	#[tokio::test]
-	async fn test_allow_request_within_limit() {
-		dotenv::dotenv().ok();
-		let limiter = SlidingWindowRateLimiter::new(Arc::new(Config::parse()));
+	async fn allows_requests_up_to_the_limit() {
+		let limiter = SlidingWindowRateLimiter::new(3);
 
 		assert!(limiter.allow_request().await);
 		assert!(limiter.allow_request().await);
@@ -67,23 +71,29 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_deny_request_exceeding_limit() {
-		let limiter = SlidingWindowRateLimiter::new(Arc::new(Config::parse()));
+	async fn denies_requests_past_the_limit() {
+		let limiter = SlidingWindowRateLimiter::new(2);
 
 		assert!(limiter.allow_request().await);
 		assert!(limiter.allow_request().await);
-		assert!(!limiter.allow_request().await);
+		assert!(!limiter.allow_request().await, "third request should be rejected with a limit of 2");
 	}
 
-	#[tokio::test]
-	async fn test_request_allowed_after_window_expires() {
-		let limiter = SlidingWindowRateLimiter::new(Arc::new(Config::parse()));
+	/// The old version of this test slept two seconds against a sixty-second
+	/// window and asserted the window had expired, so it could only ever have
+	/// failed. Uses tokio's paused clock instead: no wall-clock wait, and it
+	/// advances past the real window rather than a made-up one.
+	#[tokio::test(start_paused = true)]
+	async fn allows_requests_again_once_the_window_expires() {
+		let limiter = SlidingWindowRateLimiter::new(2);
 
 		assert!(limiter.allow_request().await);
 		assert!(limiter.allow_request().await);
 		assert!(!limiter.allow_request().await);
 
-		sleep(Duration::from_secs(2)).await;
-		assert!(limiter.allow_request().await);
+		// Strictly greater than `window_size` - the eviction check is `>`.
+		tokio::time::advance(Duration::from_secs(61)).await;
+
+		assert!(limiter.allow_request().await, "window should have slid past both earlier requests");
 	}
 }

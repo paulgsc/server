@@ -1,9 +1,9 @@
-mod handlers;
-mod metrics;
-mod models;
-mod routes;
-
-use crate::routes::{
+// These modules live in the library crate (`src/lib.rs`) and are used from
+// there rather than re-declared here. Declaring `mod routes;` compiled a second
+// copy of the whole tree into this binary, which meant anything the binary did
+// not happen to call — the route inventory, for one — tripped `dead_code` under
+// `-D warnings` despite being used by the library's other consumers.
+use file_host::routes::{
 	audio_files::get_audio,
 	db::{mood_events, tabs},
 	gdrive::{get_gdrive_image, write_gdrive_fs},
@@ -17,11 +17,7 @@ use anyhow::Result;
 use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
 use clap::Parser;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
-use file_host::{
-	error::{FileHostError, GSheetDeriveError},
-	perform_health_check, AppState, AudioServiceError, Config, DedupCache, API_V1_BASE_PATH,
-};
-use sdk::ReadDrive;
+use file_host::{error::FileHostError, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::TokenBucketRateLimiter;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};

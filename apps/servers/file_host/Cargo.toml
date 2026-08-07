@@ -11,6 +11,17 @@ homepage.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# Declared explicitly because the second binary needs a name Cargo would not
+# derive from its filename. `dump-routes` emits the HTTP surface as JSON for
+# the client repo's contract harness; see `src/routes/inventory.rs`.
+[[bin]]
+name = "file_host"
+path = "src/main.rs"
+
+[[bin]]
+name = "dump-routes"
+path = "src/bin/dump_routes.rs"
+
 [dependencies]
 # path crates
 sdk  = { workspace = true }
@@ -62,6 +73,11 @@ tracing-opentelemetry = { workspace = true }
 some-cache.workspace = true
 capture_repo = { workspace = true }
 
+
+[dev-dependencies]
+# `test-util` gives the paused clock the sliding-window rate limiter tests use
+# to step over a sixty-second window without sleeping for it.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true
