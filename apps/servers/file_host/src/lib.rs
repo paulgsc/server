@@ -5,7 +5,7 @@ use some_transport::{nats::JetStreamPublisher, NatsTransport};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
-use ws_conn_manager::{AcquireErrorKind, ConnectionGuard, ConnectionPermit};
+use ws_conn_manager::ConnectionGuard;
 use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
 pub mod cache;
