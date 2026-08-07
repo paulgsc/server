@@ -40,6 +40,7 @@ macro_rules! recv_or_break {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use tokio::sync::mpsc;
 	use tokio::time::Duration;
 
 	#[tokio::test]

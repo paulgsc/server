@@ -21,7 +21,7 @@ use std::marker::PhantomData;
 /// use some_transport::NatsReceiver;
 /// use some_transport::TransportReceiver;
 /// # use prost::Message;
-/// # #[derive(Clone, Debug, PartialEq, Message)]
+/// # #[derive(Clone, PartialEq, Message)]
 /// # pub struct MyEvent {
 /// #     #[prost(string, tag = "1")]
 /// #     pub data: String,
@@ -110,7 +110,8 @@ mod tests {
 	use super::*;
 	use crate::receiver::TransportReceiver;
 
-	#[derive(Debug, Clone, Message, PartialEq)]
+	// `prost::Message` derives `Debug` itself, so deriving it here too collides.
+	#[derive(Clone, Message, PartialEq)]
 	struct TestEvent {
 		#[prost(uint32, tag = "1")]
 		id: u32,

@@ -14,13 +14,13 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use transport::inmem::InMemTransport;
-//! use transport::traits::Transport;
+//! use some_transport::inmem::InMemTransport;
+//! use some_transport::traits::Transport;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     // Create transport with buffer size
-//!     let (transport, mut main_rx) = InMemTransport::<String>::with_receiver(100);
+//!     let (transport, mut main_rx) = InMemTransport::<String>::with_receiver(100).await;
 //!     
 //!     // Subscribe to broadcasts
 //!     tokio::spawn(async move {

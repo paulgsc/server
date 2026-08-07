@@ -39,8 +39,12 @@ impl<K: EventKey> SubscriptionManager<K> {
 		}
 	}
 
+	// The mutating methods below return a `SubscriptionChange` for callers that
+	// report on it — the actor loop does. Deliberately not `#[must_use]`: the
+	// mutation is the point of the call, and the summary is a courtesy, so
+	// dropping it is a legitimate use rather than the bug that attribute flags.
+
 	/// Subscribe to event keys.
-	#[must_use]
 	pub fn subscribe<I>(&mut self, event_keys: I) -> SubscriptionChange
 	where
 		I: IntoIterator<Item = K>,
@@ -60,7 +64,6 @@ impl<K: EventKey> SubscriptionManager<K> {
 	}
 
 	/// Unsubscribe from event keys.
-	#[must_use]
 	pub fn unsubscribe<I>(&mut self, event_keys: I) -> SubscriptionChange
 	where
 		I: IntoIterator<Item = K>,
@@ -104,7 +107,6 @@ impl<K: EventKey> SubscriptionManager<K> {
 	}
 
 	/// Clear all subscriptions.
-	#[must_use]
 	pub fn clear(&mut self) -> SubscriptionChange {
 		let removed_count = self.subscriptions.len();
 		self.subscriptions.clear();
@@ -117,7 +119,6 @@ impl<K: EventKey> SubscriptionManager<K> {
 	}
 
 	/// Replace current subscriptions with a new set.
-	#[must_use]
 	pub fn set_subscriptions<I>(&mut self, event_keys: I) -> SubscriptionChange
 	where
 		I: IntoIterator<Item = K>,

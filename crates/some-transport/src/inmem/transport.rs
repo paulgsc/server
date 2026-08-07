@@ -27,8 +27,8 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```rust,no_run
-/// use transport::inmem::InMemTransport;
-/// use transport::traits::Transport;
+/// use some_transport::inmem::InMemTransport;
+/// use some_transport::traits::Transport;
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -36,7 +36,7 @@ use std::sync::Arc;
 ///     let transport = InMemTransport::<String>::new(100);
 ///     
 ///     // Subscribe to global broadcasts
-///     let mut rx = transport.subscribe();
+///     let mut rx = transport.subscribe().await;
 ///     
 ///     // Broadcast to all subscribers
 ///     transport.broadcast("Hello world!".to_string()).await.ok();
@@ -70,7 +70,7 @@ where
 	/// # Example
 	///
 	/// ```rust,no_run
-	/// use transport::inmem::InMemTransport;
+	/// use some_transport::inmem::InMemTransport;
 	///
 	/// let transport = InMemTransport::<String>::new(100);
 	/// ```
@@ -174,12 +174,12 @@ where
 	/// # Example
 	///
 	/// ```rust,no_run
-	/// use transport::inmem::InMemTransport;
-	/// use transport::traits::Transport;
+	/// use some_transport::inmem::InMemTransport;
+	/// use some_transport::traits::Transport;
 	///
 	/// #[tokio::main]
 	/// async fn main() {
-	///     let (transport, mut rx) = InMemTransport::<String>::with_receiver(100);
+	///     let (transport, mut rx) = InMemTransport::<String>::with_receiver(100).await;
 	///     
 	///     // Can immediately start receiving
 	///     tokio::spawn(async move {
@@ -205,7 +205,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_broadcast() {
-		let (transport, mut rx) = InMemTransport::<String>::with_receiver(10);
+		let (transport, mut rx) = InMemTransport::<String>::with_receiver(10).await;
 
 		transport.broadcast("test message".to_string()).await.unwrap();
 
@@ -215,7 +215,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_multiple_subscribers() {
-		let (transport, mut rx1) = InMemTransport::<i32>::with_receiver(10);
+		let (transport, mut rx1) = InMemTransport::<i32>::with_receiver(10).await;
 		let mut rx2 = transport.subscribe().await;
 		let mut rx3 = transport.subscribe().await;
 
@@ -261,7 +261,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_total_receivers() {
-		let (transport, _rx1) = InMemTransport::<String>::with_receiver(10);
+		let (transport, _rx1) = InMemTransport::<String>::with_receiver(10).await;
 		assert_eq!(transport.total_receivers(), 1);
 
 		let _rx2 = transport.subscribe().await;

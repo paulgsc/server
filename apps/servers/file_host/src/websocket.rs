@@ -1,5 +1,4 @@
 use crate::AppState;
-use ws_conn_manager::{AcquireErrorKind, ConnectionPermit};
 use axum::{
 	extract::{
 		ws::{WebSocket, WebSocketUpgrade},
@@ -16,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use ws_conn_manager::{AcquireErrorKind, ConnectionPermit};
 use ws_connection::ConnectionStore;
 use ws_events::events::EventType;
 

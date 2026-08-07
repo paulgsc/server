@@ -1,7 +1,7 @@
 error: proc-macro derive panicked
- --> tests/ui/invalid_enum.rs:4:10
+ --> tests/ui/invalid_enum.rs:3:10
   |
-4 | #[derive(EnumFilename)]
-  |          ^^^^^^^^^^^^
+3 | #[derive(EnumFilenameAndFromString)]
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: message: EnumFilename can only be derived for enums
+  = help: message: EnumFilenameAndFromString can only be derived for enums

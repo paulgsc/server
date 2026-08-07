@@ -1,19 +1,19 @@
 use crate::config::PathPartError;
 use percent_encoding::percent_decode;
-/// Copyright [2024] [pgdev]
-///
-/// Licensed under the Apache License, Version 2.0 (the "License");
-/// you may not use this file except in compliance with the License.
-/// You may obtain a copy of the License at
-///
-///     http://www.apache.org/licenses/LICENSE-2.0
-///
-/// Unless required by applicable law or agreed to in writing, software
-/// distributed under the License is distributed on an "AS IS" BASIS,
-/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-/// See the License for the specific language governing permissions and
-/// limitations under the License.
-///
+// Copyright [2024] [pgdev]
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 // This file has been modified from its original version.
 //
 use std::iter::FromIterator;
@@ -40,7 +40,11 @@ impl Path {
 	/// Returns `PathPartError` if the path contains empty segments or invalid path parts.
 	pub fn parse(s: &str) -> Result<Self, PathPartError> {
 		let is_absolute = s.starts_with('/');
-		let stripped = s.trim_matches('/');
+		// Strip exactly one slash from each end, not every one: `//foo` has an
+		// empty leading segment and must be rejected rather than quietly
+		// normalised to `foo`.
+		let stripped = s.strip_prefix(DELIMITER).unwrap_or(s);
+		let stripped = stripped.strip_suffix(DELIMITER).unwrap_or(stripped);
 
 		if stripped.is_empty() {
 			return Ok(Self { raw: String::new(), is_absolute });
@@ -310,8 +314,12 @@ mod tests {
 
 	#[test]
 	fn parse_invalid_characters() {
-		let err = Path::parse("foo/\x7F/bar").unwrap_err(); // Using a control character
-		assert!(matches!(err, PathPartError::NonUnicode { .. }));
+		// A control character is valid UTF-8, so it reaches `PathPart::parse`
+		// and comes back as a bad segment — `NonUnicode` is reachable only
+		// through `from_url_path`, where percent-decoding can produce
+		// non-UTF-8 bytes.
+		let err = Path::parse("foo/\x7F/bar").unwrap_err();
+		assert!(matches!(err, PathPartError::BadSegment { .. }));
 	}
 
 	#[test]

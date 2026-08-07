@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 ///
 /// ```
 /// use tokio::sync::mpsc;
-/// use your_crate::mpsc_utils::{UnboundedSenderExt, SendResult};
+/// use some_transport::mpsc_utils::{UnboundedSenderExt, SendResult};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -49,7 +49,7 @@ pub trait UnboundedSenderExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{UnboundedSenderExt, SendResult};
+	/// use some_transport::mpsc_utils::{UnboundedSenderExt, SendResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -76,7 +76,7 @@ pub trait UnboundedSenderExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{UnboundedSenderExt, SendResult};
+	/// use some_transport::mpsc_utils::{UnboundedSenderExt, SendResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -134,7 +134,7 @@ where
 /// ```
 /// use tokio::sync::mpsc;
 /// use std::time::Duration;
-/// use your_crate::mpsc_utils::{SenderExt, SendResult};
+/// use some_transport::mpsc_utils::{SenderExt, SendResult};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -169,7 +169,7 @@ pub trait SenderExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{SenderExt, SendResult};
+	/// use some_transport::mpsc_utils::{SenderExt, SendResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -211,7 +211,7 @@ pub trait SenderExt<T> {
 	/// ```
 	/// use tokio::sync::mpsc;
 	/// use std::time::Duration;
-	/// use your_crate::mpsc_utils::{SenderExt, SendResult};
+	/// use some_transport::mpsc_utils::{SenderExt, SendResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -250,7 +250,7 @@ pub trait SenderExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{SenderExt, SendResult};
+	/// use some_transport::mpsc_utils::{SenderExt, SendResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -335,7 +335,7 @@ where
 /// ```
 /// use tokio::sync::mpsc;
 /// use std::time::Duration;
-/// use your_crate::mpsc_utils::{ReceiverExt, RecvResult};
+/// use some_transport::mpsc_utils::{ReceiverExt, RecvResult};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -369,7 +369,7 @@ pub trait ReceiverExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{ReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{ReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -408,12 +408,12 @@ pub trait ReceiverExt<T> {
 	/// ```
 	/// use tokio::sync::mpsc;
 	/// use std::time::Duration;
-	/// use your_crate::mpsc_utils::{ReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{ReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
-	///     let (tx, mut rx) = mpsc::channel(10);
-	///     
+	///     let (tx, mut rx) = mpsc::channel::<i32>(10);
+	///
 	///     // Try to receive with 100ms timeout
 	///     match rx.recv_timeout(Duration::from_millis(100), "api_handler").await {
 	///         RecvResult::Message(msg) => println!("Got message: {}", msg),
@@ -437,11 +437,11 @@ pub trait ReceiverExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{ReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{ReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
-	///     let (tx, mut rx) = mpsc::channel(10);
+	///     let (tx, mut rx) = mpsc::channel::<i32>(10);
 	///     drop(tx); // Close the channel
 	///     
 	///     let result = rx.recv_with_closed_handler(|| {
@@ -507,7 +507,7 @@ where
 ///
 /// ```
 /// use tokio::sync::mpsc;
-/// use your_crate::mpsc_utils::{UnboundedReceiverExt, RecvResult};
+/// use some_transport::mpsc_utils::{UnboundedReceiverExt, RecvResult};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -541,7 +541,7 @@ pub trait UnboundedReceiverExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{UnboundedReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{UnboundedReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
@@ -581,12 +581,12 @@ pub trait UnboundedReceiverExt<T> {
 	/// ```
 	/// use tokio::sync::mpsc;
 	/// use std::time::Duration;
-	/// use your_crate::mpsc_utils::{UnboundedReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{UnboundedReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
-	///     let (tx, mut rx) = mpsc::unbounded_channel();
-	///     
+	///     let (tx, mut rx) = mpsc::unbounded_channel::<i32>();
+	///
 	///     // Try to receive with 50ms timeout
 	///     match rx.recv_timeout(Duration::from_millis(50), "timeout_test").await {
 	///         RecvResult::Message(msg) => println!("Got: {}", msg),
@@ -610,11 +610,11 @@ pub trait UnboundedReceiverExt<T> {
 	///
 	/// ```
 	/// use tokio::sync::mpsc;
-	/// use your_crate::mpsc_utils::{UnboundedReceiverExt, RecvResult};
+	/// use some_transport::mpsc_utils::{UnboundedReceiverExt, RecvResult};
 	///
 	/// #[tokio::main]
 	/// async fn main() {
-	///     let (tx, mut rx) = mpsc::unbounded_channel();
+	///     let (tx, mut rx) = mpsc::unbounded_channel::<i32>();
 	///     drop(tx);
 	///     
 	///     let result = rx.recv_with_closed_handler(|| {

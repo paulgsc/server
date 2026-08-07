@@ -14,8 +14,8 @@ use async_trait::async_trait;
 /// # Example
 /// ```rust,no_run
 /// use async_broadcast::broadcast;
-/// use transport::inmem::InMemReceiver;
-/// use transport::receiver::{TransportReceiver, ReceiverTrait};
+/// use some_transport::inmem::InMemReceiver;
+/// use some_transport::receiver::{TransportReceiver, ReceiverTrait};
 ///
 /// let (tx, rx) = broadcast::<String>(10);
 /// let receiver = InMemReceiver(rx);
@@ -91,7 +91,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_inmem_receiver_recv() {
-		let (mut tx, rx) = broadcast::<String>(10);
+		let (tx, rx) = broadcast::<String>(10);
 		let receiver = InMemReceiver::new(rx);
 		let mut transport_rx = TransportReceiver::new(receiver);
 
@@ -104,7 +104,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_inmem_receiver_try_recv() {
-		let (mut tx, rx) = broadcast::<i32>(10);
+		let (tx, rx) = broadcast::<i32>(10);
 		let receiver = InMemReceiver::new(rx);
 		let mut transport_rx = TransportReceiver::new(receiver);
 

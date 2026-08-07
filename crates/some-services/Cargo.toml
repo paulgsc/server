@@ -15,5 +15,10 @@ edition.workspace = true
 axum.workspace = true
 thiserror.workspace = true
 
+# The rate limiter is sync, but its tests need a runtime to sleep through a
+# refill window, so tokio is a test-only dependency here.
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
 [lints]
 workspace = true
