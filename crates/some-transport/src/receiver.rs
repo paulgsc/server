@@ -50,12 +50,32 @@ where
 	}
 
 	/// Receives a message asynchronously, waiting until one is available.
+	///
+	/// # Errors
+	///
+	/// Propagates whatever the underlying receiver reports — typically
+	/// [`TransportError::Closed`] once the channel has been closed, or
+	/// [`TransportError::Overflowed`] if this receiver lagged far enough
+	/// behind that messages were dropped.
+	///
+	/// [`TransportError::Closed`]: crate::error::TransportError::Closed
+	/// [`TransportError::Overflowed`]: crate::error::TransportError::Overflowed
 	#[inline]
 	pub async fn recv(&mut self) -> Result<E> {
 		self.inner.recv().await
 	}
 
 	/// Attempts to receive a message without blocking.
+	///
+	/// # Errors
+	///
+	/// Propagates whatever the underlying receiver reports — typically
+	/// [`TransportError::Closed`] when the channel is closed, or
+	/// [`TransportError::Overflowed`] when messages were dropped. An empty
+	/// channel is also reported as an error rather than blocking.
+	///
+	/// [`TransportError::Closed`]: crate::error::TransportError::Closed
+	/// [`TransportError::Overflowed`]: crate::error::TransportError::Overflowed
 	#[inline]
 	pub fn try_recv(&mut self) -> Result<E> {
 		self.inner.try_recv()
@@ -75,7 +95,7 @@ where
 
 	/// Returns a mutable reference to the inner receiver.
 	#[inline]
-	pub fn inner_mut(&mut self) -> &mut R {
+	pub const fn inner_mut(&mut self) -> &mut R {
 		&mut self.inner
 	}
 }
@@ -130,5 +150,15 @@ where
 	///
 	/// Returns immediately with either a message or an error indicating
 	/// the channel is empty, closed, or overflowed.
+	///
+	/// # Errors
+	///
+	/// Implementors should report [`TransportError::Closed`] once the
+	/// channel is closed and [`TransportError::Overflowed`] when messages
+	/// were dropped. An empty channel must also be reported as an error
+	/// rather than blocking.
+	///
+	/// [`TransportError::Closed`]: crate::error::TransportError::Closed
+	/// [`TransportError::Overflowed`]: crate::error::TransportError::Overflowed
 	fn try_recv(&mut self) -> Result<E>;
 }

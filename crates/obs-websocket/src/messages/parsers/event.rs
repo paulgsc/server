@@ -16,7 +16,7 @@ impl EventMessageParser {
 		let val = Value::Object(d.clone());
 		let d_extractor = JsonExtractor::new(&val, "Event data");
 		let event_type_str = d_extractor.get_string("eventType")?;
-		let event_type = ObsEventType::from_str(event_type_str);
+		let event_type = ObsEventType::from(event_type_str);
 
 		trace!("Parsing event type: {}", event_type_str);
 

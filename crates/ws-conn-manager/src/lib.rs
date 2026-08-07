@@ -1,4 +1,4 @@
-//! # ConnectionGuard Crate
+//! # `ConnectionGuard` Crate
 //!
 //! This crate implements a *multi-tenant connection limiter* designed for
 //! environments such as WebSocket servers where each client may open
@@ -119,10 +119,10 @@
 //!   global from per-client resource pools.
 //! - Expose structured diagnostics for testing invariants under load.
 //! - Replace `tokio::spawn` in Drop with explicit async cleanup method.
-//! - Benchmark and optimize lock-free alternatives to VecDeque + DashMap.
+//! - Benchmark and optimize lock-free alternatives to `VecDeque` + `DashMap`.
 //!
 //! ---
-//! **Summary:**  
+//! **Summary:**\
 //! This crate currently provides *correct RAII-based invariant enforcement*
 //! for bounded connection concurrency with automatic cleanup, but fairness,
 //! fine-grained scheduling, and lock-free optimizations are deferred to
@@ -203,13 +203,14 @@ pub struct ConnectionGuardInner {
 	pub clients: DashMap<String, ClientState>,
 }
 
-/// Public ConnectionGuard
+/// Public `ConnectionGuard`
 #[derive(Clone)]
 pub struct ConnectionGuard {
 	pub inner: Arc<ConnectionGuardInner>,
 }
 
 impl ConnectionGuard {
+	#[must_use]
 	pub fn new() -> Self {
 		Self {
 			inner: Arc::new(ConnectionGuardInner {
@@ -219,6 +220,14 @@ impl ConnectionGuard {
 		}
 	}
 
+	/// Acquires a connection permit for `client_id`, queueing the caller if the
+	/// client is already at its per-client limit.
+	///
+	/// # Errors
+	///
+	/// Returns [`AcquireErrorKind::GlobalLimit`] if the global semaphore has
+	/// been closed, and [`AcquireErrorKind::QueueFull`] if the client is at its
+	/// per-client limit and its wait queue is already full.
 	pub async fn acquire(&self, client_id: String) -> Result<ConnectionPermit, AcquireError> {
 		info!("Client {} attempting to acquire connection permit", client_id);
 
@@ -257,8 +266,14 @@ impl ConnectionGuard {
 
 			let _ = rx.await;
 
-			// Re-acquire lock to increment active count
-			let client_state = self.inner.clients.get(&client_id).expect("client state should exist");
+			// Re-acquire lock to increment active count. `ConnectionPermit::cleanup`
+			// may have reclaimed the entry between signalling this waiter and the
+			// lookup below (it pops the waiter before deciding the state is idle),
+			// so recreate it instead of assuming it is still present.
+			let client_state = self.inner.clients.entry(client_id.clone()).or_insert_with(|| ClientState {
+				active: AtomicUsize::new(0),
+				queue: VecDeque::new(),
+			});
 			client_state.active.fetch_add(1, Ordering::SeqCst);
 
 			info!(
@@ -281,16 +296,19 @@ impl ConnectionGuard {
 		})
 	}
 
+	#[must_use]
 	pub fn try_acquire_permit_hint(&self) -> bool {
 		self.inner.global.available_permits() > 0
 	}
 
+	#[must_use]
 	pub fn active_global(&self) -> usize {
 		MAX_GLOBAL - self.inner.global.available_permits()
 	}
 
+	#[must_use]
 	pub fn active_per_client(&self, client_id: &str) -> usize {
-		self.inner.clients.get(client_id).map(|c| c.active.load(Ordering::SeqCst)).unwrap_or(0)
+		self.inner.clients.get(client_id).map_or(0, |c| c.active.load(Ordering::SeqCst))
 	}
 }
 
