@@ -38,6 +38,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Record recent activity
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn record_activity(&self) -> Result<()> {
 		self
 			.sender
@@ -47,6 +52,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Subscribe to event types
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn subscribe(&self, event_types: Vec<K>) -> Result<()> {
 		self
 			.sender
@@ -56,6 +66,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Unsubscribe from event types
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn unsubscribe(&self, event_types: Vec<K>) -> Result<()> {
 		self
 			.sender
@@ -65,6 +80,12 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Check if subscribed to an event type
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed, or if the actor drops the
+	/// reply channel before answering.
 	pub async fn is_subscribed_to(&self, event_type: K) -> Result<bool> {
 		let (tx, rx) = oneshot::channel();
 		self
@@ -77,6 +98,12 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Get all subscriptions
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed, or if the actor drops the
+	/// reply channel before answering.
 	pub async fn get_subscriptions(&self) -> Result<HashSet<K>> {
 		let (tx, rx) = oneshot::channel();
 		self
@@ -89,6 +116,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Check if connection should be marked stale
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn check_stale(&self, timeout: Duration) -> Result<()> {
 		self
 			.sender
@@ -98,6 +130,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Mark connection as stale
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn mark_stale(&self, reason: String) -> Result<()> {
 		self
 			.sender
@@ -107,6 +144,11 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Disconnect the connection
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed.
 	pub async fn disconnect(&self, reason: String) -> Result<()> {
 		self
 			.sender
@@ -116,6 +158,12 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Get current connection state
+	///
+	/// # Errors
+	///
+	/// Returns [`ConnectionError::ActorUnavailable`] if the actor has already
+	/// shut down and its command channel is closed, or if the actor drops the
+	/// reply channel before answering.
 	pub async fn get_state(&self) -> Result<ConnectionState> {
 		let (tx, rx) = oneshot::channel();
 		self
@@ -128,6 +176,13 @@ impl<K: EventKey> ConnectionHandle<K> {
 	}
 
 	/// Request actor shutdown
+	///
+	/// # Errors
+	///
+	/// Currently infallible: a closed command channel means the actor is
+	/// already gone, which satisfies the request, so the cancellation token is
+	/// still tripped and `Ok(())` returned. The signature stays fallible so
+	/// shutdown can start reporting failures without a breaking change.
 	pub async fn shutdown(&self) -> Result<()> {
 		let _ = self
 			.sender

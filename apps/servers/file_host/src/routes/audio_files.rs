@@ -16,7 +16,11 @@ where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = allowlisted_cors(config, vec![Method::GET, Method::POST], vec![CONTENT_TYPE, AUTHORIZATION, CACHE_CONTROL, ETAG, LAST_MODIFIED]);
+	let cors = allowlisted_cors(
+		config,
+		vec![Method::GET, Method::POST],
+		vec![CONTENT_TYPE, AUTHORIZATION, CACHE_CONTROL, ETAG, LAST_MODIFIED],
+	);
 
 	Router::new()
 		// Get specific audio file by ID

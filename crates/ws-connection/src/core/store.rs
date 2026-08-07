@@ -11,6 +11,7 @@ pub struct ConnectionStore<K: EventKey = String> {
 }
 
 impl<K: EventKey> ConnectionStore<K> {
+	#[must_use]
 	pub fn new() -> Self {
 		Self {
 			handles: Arc::new(DashMap::new()),
@@ -18,6 +19,7 @@ impl<K: EventKey> ConnectionStore<K> {
 	}
 
 	/// Insert connection handle and spawn its actor
+	#[must_use]
 	pub fn insert(self: &Arc<Self>, key: String, connection: Connection, parent_token: &CancellationToken) -> ConnectionHandle<K> {
 		let (handle, actor, token) = ConnectionHandle::new(connection, 100, parent_token);
 		let store = self.clone();
@@ -26,10 +28,10 @@ impl<K: EventKey> ConnectionStore<K> {
 			let key = key.clone();
 			async move {
 				tokio::select! {
-					_ = actor.run() => {
+					() = actor.run() => {
 						tracing::info!("actor {key} finished normally");
 					}
-					_ = token.cancelled() => {
+					() = token.cancelled() => {
 						tracing::info!("actor {key} received cancellation");
 						store.remove(&key).await; // graceful cleanup if implemented
 					}
@@ -42,6 +44,7 @@ impl<K: EventKey> ConnectionStore<K> {
 	}
 
 	/// Get connection handle
+	#[must_use]
 	pub fn get(&self, key: &str) -> Option<ConnectionHandle<K>> {
 		self.handles.get(key).map(|entry| entry.value().clone())
 	}
@@ -56,14 +59,17 @@ impl<K: EventKey> ConnectionStore<K> {
 		}
 	}
 
+	#[must_use]
 	pub fn len(&self) -> usize {
 		self.handles.len()
 	}
 
+	#[must_use]
 	pub fn is_empty(&self) -> bool {
 		self.handles.is_empty()
 	}
 
+	#[must_use]
 	pub fn keys(&self) -> Vec<String> {
 		self.handles.iter().map(|entry| entry.key().clone()).collect()
 	}
@@ -123,10 +129,10 @@ impl<K: EventKey> ConnectionStore<K> {
 
 		while let Some(result) = join_set.join_next().await {
 			match result {
-				Ok(Ok(state)) => {
-					if state.is_active {
+				Ok(Ok(conn_state)) => {
+					if conn_state.is_active {
 						active += 1;
-					} else if state.is_stale {
+					} else if conn_state.is_stale {
 						stale += 1;
 					} else {
 						disconnected += 1;

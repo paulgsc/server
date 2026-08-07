@@ -242,7 +242,13 @@ impl IntoResponse for FileHostError {
 			_ => None,
 		};
 
-		let mut response = (status, Json(ErrorEnvelope { error: ErrorBody { code, message, details } })).into_response();
+		let mut response = (
+			status,
+			Json(ErrorEnvelope {
+				error: ErrorBody { code, message, details },
+			}),
+		)
+			.into_response();
 
 		if is_unauthorized {
 			response.headers_mut().insert(WWW_AUTHENTICATE, HeaderValue::from_static("Token"));
