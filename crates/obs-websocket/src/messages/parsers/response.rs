@@ -16,7 +16,7 @@ impl ResponseMessageParser {
 		let val = Value::Object(d.clone());
 		let d_extractor = JsonExtractor::new(&val, "Response data");
 		let request_type_str = d_extractor.get_string("requestType")?;
-		let request_type = ObsRequestType::from_str(request_type_str);
+		let request_type = ObsRequestType::from(request_type_str);
 
 		trace!("Parsing response type: {}", request_type_str);
 

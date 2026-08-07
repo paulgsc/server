@@ -103,6 +103,7 @@ pub enum ObsRequestType {
 }
 
 impl ObsRequestType {
+	#[must_use]
 	pub fn as_str(&self) -> &str {
 		match self {
 			Self::GetVersion => "GetVersion",
@@ -149,8 +150,12 @@ impl ObsRequestType {
 			Self::Unknown(s) => s,
 		}
 	}
+}
 
-	pub fn from_str(s: &str) -> Self {
+impl From<&str> for ObsRequestType {
+	/// Maps an OBS request type name to its variant, falling back to
+	/// [`Self::Unknown`] for names this crate does not model.
+	fn from(s: &str) -> Self {
 		match s {
 			"GetStreamStatus" => Self::GetStreamStatus,
 			"GetRecordStatus" => Self::GetRecordStatus,
@@ -231,6 +236,7 @@ pub enum ObsEventType {
 
 impl ObsEventType {
 	#[allow(dead_code)]
+	#[must_use]
 	pub fn as_str(&self) -> &str {
 		match self {
 			Self::StreamStateChanged => "StreamStateChanged",
@@ -248,8 +254,12 @@ impl ObsEventType {
 			Self::Unknown(s) => s,
 		}
 	}
+}
 
-	pub fn from_str(s: &str) -> Self {
+impl From<&str> for ObsEventType {
+	/// Maps an OBS event type name to its variant, falling back to
+	/// [`Self::Unknown`] for names this crate does not model.
+	fn from(s: &str) -> Self {
 		match s {
 			"StreamStateChanged" => Self::StreamStateChanged,
 			"RecordStateChanged" => Self::RecordStateChanged,
@@ -716,7 +726,8 @@ pub enum YouTubePrivacy {
 }
 
 impl YouTubePrivacy {
-	pub fn as_str(&self) -> &str {
+	#[must_use]
+	pub const fn as_str(&self) -> &str {
 		match self {
 			Self::Public => "public",
 			Self::Unlisted => "unlisted",
@@ -815,7 +826,8 @@ impl Default for ObsStats {
 
 impl ObsEvent {
 	/// Check if this event should trigger a status broadcast
-	pub fn should_broadcast(&self) -> bool {
+	#[must_use]
+	pub const fn should_broadcast(&self) -> bool {
 		matches!(
 			self,
 			Self::StreamStatusResponse(_)
