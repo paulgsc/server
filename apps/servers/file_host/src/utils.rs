@@ -144,7 +144,7 @@ mod tests {
 		// Six rows across the two ranges, so sampling "all" of them is k = 6.
 		// This said 5 and then asserted the result equalled all six, which could
 		// never hold; it went unnoticed because this crate's tests did not
-		// compile at all (see rate_limiter::sliding_window).
+		// compile at all.
 		let k = 6;
 		let result = sample_random_rows(&ranges, k);
 		assert_eq!(result.len(), k);
