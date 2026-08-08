@@ -18,16 +18,34 @@ runs:
       env:
         DATABASE_URL: sqlite://./dev.db
       run: |
+        set -euo pipefail
         echo "Creating database..."
         mkdir -p "$(dirname ./dev.db)"
         nix develop .#ci --command sqlx database create
 
-        echo "Discovering and running migrations..."
+        # sqlx tracks applied migrations in one `_sqlx_migrations` table per
+        # database. Running `sqlx migrate run --source <dir>` once per crate
+        # against this same dev.db made every crate after the first fail with
+        # "migration ... was previously applied but is missing in the
+        # resolved migrations" — the second invocation's --source doesn't
+        # contain the first crate's migration files, so sqlx's own
+        # already-applied bookkeeping no longer resolves. One shared
+        # database needs one shared migrations directory; this stages every
+        # crate's *.up.sql into one before running sqlx once. Mirrors
+        # .github/workflows/test.yml's "Create the database and run every
+        # crate's migrations" step, which solved the same problem the same
+        # way.
+        echo "Staging migrations from every crate..."
+        staged="$(pwd)/.migrations"
+        rm -rf "$staged" && mkdir -p "$staged"
 
-        find crates -type d -name migrations 2>/dev/null | sort | while read migration_dir; do
-          echo "Running migrations from: $migration_dir"
-          nix develop .#ci --command sqlx migrate run --source "$migration_dir"
+        find crates -path '*/migrations/*.up.sql' -type f 2>/dev/null | sort | while read -r migration; do
+          cp "$migration" "$staged/$(basename "$migration" .up.sql).sql"
         done
+
+        echo "Running staged migrations..."
+        nix develop .#ci --command sqlx migrate run --source "$staged"
+        rm -rf "$staged"
 
         echo "All migrations completed successfully"
     # Generate workspace-level .sqlx metadata
