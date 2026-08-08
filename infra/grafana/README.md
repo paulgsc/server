@@ -14,12 +14,14 @@ Every panel's query is checked against what this workspace actually emits
 by `scripts/check_metric_contract.py` (#217) — see
 `docs/dashboard-honesty.md` for the rule that check exists to enforce, and
 why "no data" and "healthy" have to be visually different states.
+`docs/fault-conditions.md` (#213) is the companion definition for the six
+conditions `dashboard.jsonnet`'s HEALTH row renders a verdict on.
 
 ## Active dashboards
 
 | Dashboard | Answers | Backed by | Owning epic |
 |---|---|---|---|
-| `dashboard.jsonnet` | Is file_host up, and is its one instrumented operation path within latency budget? | `probe_success`/`probe_duration_seconds` (blackbox-exporter), `operation_duration_seconds` (file_host, `metrics` facade) | #212 (G2/G3) |
+| `dashboard.jsonnet` | Is file_host in a fault state (six conditions, `docs/fault-conditions.md`), and is its instrumented traffic within latency budget? | `up`, `dependency_up`, `http_requests_total`/`http_request_duration_seconds`, `refusals_total`, `service_info`, `process_start_time_seconds` (file_host, `metrics` facade), `probe_success`/`probe_duration_seconds` (blackbox-exporter), `operation_duration_seconds` | #212 (G2/G3), #213 (F1–F5) |
 | `sys-dashboard.jsonnet` | Is the host itself healthy — CPU, memory, disk, network? | `node_*` (node_exporter) | #212 (G2/G3) |
 | `processor.jsonnet` ("WHO DUNNIT") | If the host hangs, which process/container did it? | `namedprocess_*` (process-exporter), `container_*` (cadvisor), `node_*`, `up`, `ALERTS` | #212 (G2/G3) |
 | `cache-dashboard.jsonnet` | Is `some-cache`'s hit rate healthy, and is the dedup guard absorbing thundering herds? | `cache_hits_total`, `cache_misses_total`, `cache_fetch_duration_seconds`, `cache_dedup_waiters_total` (some-cache, `metrics` facade, namespace-labeled) | #212 (G2/G3/G4 — rewritten from a 14-fake-name version) |
@@ -40,7 +42,7 @@ reason: a parked dashboard's query isn't a claim Grafana is currently making.
 
 | Dashboard | Assumes | Returns via |
 |---|---|---|
-| `rate-limit.jsonnet` | `http_requests_total*` — no axum-prometheus layer or manual counter emits this | the [ABUSE] epic, once it defines a real request counter |
+| `rate-limit.jsonnet` | `http_requests_total{status="429"}` — #213 (F2) landed the `http_requests_total{route,method,status}` metric this dashboard queries, and the rate limiter does answer `429` (`apps/servers/file_host/src/rate_limiter/token_bucket.rs`), so the metric this dashboard assumes now exists. Still parked: the panels themselves need the [ABUSE] epic's own pass — the queries were written against a different (client-IP-labelled) assumption than what F2 actually shipped, and `http_requests_total_by_client` specifically is still unbounded cardinality per F2's own non-goals | the [ABUSE] epic |
 | `ws-dashboard.jsonnet` | `ws_connection_*`/`ws_client_*` — registered in `apps/servers/file_host/src/websocket/connection/instrument.rs` via the raw `prometheus` crate, but every recording macro has zero call sites, so nothing ever dereferences the `lazy_static` | the [CLIENTS] epic, once those call sites exist (or the metrics move to the `metrics` facade) |
 
 ## Removed

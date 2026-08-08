@@ -4,8 +4,13 @@
 // not happen to call — the route inventory, for one — tripped `dead_code` under
 // `-D warnings` despite being used by the library's other consumers.
 use anyhow::Result;
-use axum::{error_handling::HandleErrorLayer, middleware::from_fn_with_state, Router};
+use axum::{
+	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next, response::Response,
+	Router,
+};
 use clap::Parser;
+use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
+use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::routes::{
 	audio_files::get_audio,
@@ -15,6 +20,7 @@ use file_host::routes::{
 	health::get_health,
 	metrics::get_metrics,
 	push::push,
+	readiness::get_readiness,
 	sheets::get_sheets,
 	signals::signals,
 	tab_metadata::post_now_playing,
@@ -32,14 +38,31 @@ use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer,
 async fn handle_tower_error(error: BoxError) -> FileHostError {
 	if error.is::<tower::timeout::error::Elapsed>() {
 		tracing::warn!("Request timeout: {}", error);
+		refusals::record_http("timeout");
 		FileHostError::RequestTimeout
 	} else if error.is::<tower::load_shed::error::Overloaded>() {
 		tracing::warn!("Service overloaded: {}", error);
+		refusals::record_http("load_shed");
 		FileHostError::ServiceOverloaded
 	} else {
 		tracing::error!("Unhandled tower error: {}", error);
 		FileHostError::TowerError(error)
 	}
+}
+
+/// `RequestBodyLimitLayer` answers an over-limit request directly — a `413`
+/// built inside the layer itself, never routed through `handle_tower_error`
+/// (see #223/F3). This wraps it from the outside instead, watching for that
+/// status on the way back out. Placed as the first layer inside
+/// `ServiceBuilder`'s chain so it sees everything `RequestBodyLimitLayer`
+/// (and everything beneath it) produces.
+async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
+	let response = next.run(req).await;
+	if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+		tracing::warn!("Request body exceeded the configured limit");
+		refusals::record_http("body_limit");
+	}
+	response
 }
 
 #[tokio::main]
@@ -56,7 +79,18 @@ async fn main() -> Result<()> {
 	// `counter!`/`histogram!` call anywhere in this process, direct or via
 	// `crate::metrics::instruments`, writes through this recorder from here
 	// on; the handle below is what turns its state into a scrape payload.
-	let metrics_handle = some_metrics::install()?;
+	//
+	// `install_with` rather than `install`: the request-duration histogram
+	// (#213/F2) needs a bucket above `TASK_TIMEOUT_MS`'s 15s, and the
+	// exporter's default buckets top out at 10s — see
+	// `metrics::http::HTTP_DURATION_BUCKETS`'s own doc comment.
+	let metrics_builder = some_metrics::PrometheusBuilder::new().set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?;
+	let metrics_handle = some_metrics::install_with(metrics_builder)?;
+
+	// #213 (F4): which build the dashboard is describing, stamped once at
+	// startup so a restart shows as a discontinuity rather than an inference
+	// from a gap in an unrelated series.
+	file_host::metrics::build_info::record();
 
 	let config = Arc::new(config);
 	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
@@ -94,9 +128,19 @@ async fn main() -> Result<()> {
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
 		.merge(get_health())
+		.merge(get_readiness())
 		.merge(get_metrics(metrics_handle))
 		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
+
+	// #213 (F2): applied to the fully merged router so `MatchedPath` covers
+	// `/health`, `/ready`, `/metrics` and `/ws` alongside the versioned
+	// surface, not just `/api/v1/*`. `.layer(...)` only runs for requests
+	// axum's router actually matched; `.fallback(unmatched)` is the
+	// complementary path for everything else, recorded with a fixed
+	// `route="unmatched"` label so an unbounded set of garbage paths can
+	// never grow this metric's cardinality.
+	let app = app.layer(from_fn(track_http_metrics)).fallback(unmatched);
 
 	let app = app.layer(
 		ServiceBuilder::new()
@@ -108,6 +152,15 @@ async fn main() -> Result<()> {
 			.layer(LoadShedLayer::new())
 			.layer(AddExtensionLayer::new(config.clone())),
 	);
+
+	// #223 (F3): outermost, so it wraps `RequestBodyLimitLayer` above (and
+	// everything else) from the outside — see `track_body_limit_refusals`'s
+	// own doc comment for why that layer's own rejection can't be caught via
+	// `handle_tower_error`. `axum::middleware::from_fn` doesn't compose
+	// cleanly with `HandleErrorLayer` from inside the same `ServiceBuilder`
+	// chain (ambiguous `Service` inference), hence applying it as a separate
+	// `Router::layer` call rather than folding it into the chain above.
+	let app = app.layer(from_fn(track_body_limit_refusals));
 
 	// Only starts when the deployment asked for it *and* has a usable VAPID
 	// identity — `AppState::build` has already refused to boot if those two

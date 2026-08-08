@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Compute build date
+        id: build_date
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Prepare SQLx environment
         if: matrix.needs_sqlx || matrix.needs_migrations
         uses: ./.github/actions/prepare-sqlx
@@ -39,3 +42,9 @@ jobs:
           push: ${{ inputs.push }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+          # #213 (F4): file_host's build.rs reads these same names (VCS_REF,
+          # BUILD_DATE) to stamp the `service_info` metric it exposes at
+          # runtime — see infra/docker/Dockerfile.server's builder stage.
+          # Harmless for images that don't read them.
+          vcs-ref: ${{ github.sha }}
+          build-date: ${{ steps.build_date.outputs.value }}

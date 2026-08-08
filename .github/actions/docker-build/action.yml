@@ -20,6 +20,14 @@ inputs:
   dockerhub-token:
     description: "DockerHub token (required if push=true)"
     required: false
+  vcs-ref:
+    description: "Git commit SHA to stamp into the image (OCI label and, for images whose build.rs reads it, the running binary's own service_info metric)"
+    required: false
+    default: "unknown"
+  build-date:
+    description: "RFC 3339 build timestamp to stamp into the image, same reasoning as vcs-ref"
+    required: false
+    default: "unknown"
 runs:
   using: composite
   steps:
@@ -40,5 +48,9 @@ runs:
         tags: |
           ${{ inputs.docker-repo }}:latest
           ${{ inputs.docker-repo }}:${{ github.sha }}
+        build-args: |
+          VCS_REF=${{ inputs.vcs-ref }}
+          BUILD_DATE=${{ inputs.build-date }}
+          APP_NAME=${{ inputs.image-name }}
         cache-from: type=gha,scope=${{ inputs.image-name }}
         cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}

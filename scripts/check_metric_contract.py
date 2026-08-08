@@ -63,6 +63,7 @@ EXEMPT_QUERIED_PREFIXES: dict[str, str] = {
 EXEMPT_QUERIED_EXACT: dict[str, str] = {
 	"up": "Prometheus's own per-target scrape-health series",
 	"ALERTS": "Prometheus's own built-in firing-alerts series",
+	"nudge_waker_last_pass_timestamp_seconds": "owned by #236 ([PUSH] P4), not yet landed — the HEALTH row's LOOPS/SIGNAL panels (#213/#225) query it ahead of the emitter on purpose, per #219's rule that an absent series renders grey rather than green",
 }
 
 # Metrics this workspace emits through the `metrics` facade with no
@@ -76,7 +77,14 @@ EXEMPT_EMITTED: dict[str, str] = {
 	"file_size_bytes": "file_host download-size histogram; no dedicated panel yet, same as operation_errors_total",
 }
 
-METRICS_FACADE_CALL = re.compile(r'\b(?:counter|histogram|gauge)!\s*\(\s*"([^"]+)"')
+METRICS_FACADE_CALL = re.compile(r'\b(?:counter|histogram|gauge)!\s*\(\s*(?:"([^"]+)"|([A-Z_][A-Z0-9_]*))')
+
+# `histogram!(HTTP_DURATION_METRIC, ...)` — a call site naming its metric via
+# a constant instead of a literal, so the name can't drift from wherever else
+# that constant is used (e.g. a `PrometheusBuilder::set_buckets_for_metric`
+# call needing the identical name). Resolved by first collecting every
+# `const NAME: &str = "literal"` in the workspace, then substituting.
+CONST_STR_DECL = re.compile(r'\bconst\s+([A-Z_][A-Z0-9_]*)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"')
 
 # Prometheus expands a histogram's base name into `_bucket`/`_sum`/`_count`
 # series at scrape time; a dashboard querying one of those is querying the
@@ -133,15 +141,29 @@ def rust_source_files() -> list[Path]:
 	return sorted(files)
 
 
+def const_str_declarations(files: list[Path]) -> dict[str, str]:
+	"""`const NAME: &str = "literal"` -> literal, across every given file."""
+	consts: dict[str, str] = {}
+	for path in files:
+		for match in CONST_STR_DECL.finditer(path.read_text()):
+			consts[match.group(1)] = match.group(2)
+	return consts
+
+
 def emitted_metrics() -> dict[str, list[str]]:
 	"""metric name -> sorted list of `path:line` call sites."""
+	files = rust_source_files()
+	consts = const_str_declarations(files)
+
 	sites: dict[str, list[str]] = {}
-	for path in rust_source_files():
+	for path in files:
 		text = path.read_text()
 		# Whole-file, not line-by-line: `counter!(\n  "name", ...)` — the
 		# facade's multi-arg calls routinely put the name on its own line.
 		for match in METRICS_FACADE_CALL.finditer(text):
-			name = match.group(1)
+			name = match.group(1) if match.group(1) is not None else consts.get(match.group(2))
+			if name is None:
+				continue  # a non-const, non-literal first argument (e.g. a runtime String) — not lexically resolvable, and not a name this check can assert about either way
 			lineno = text.count("\n", 0, match.start()) + 1
 			sites.setdefault(name, []).append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
 	return sites

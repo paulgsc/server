@@ -119,6 +119,7 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 
 	if !state.core.connection_guard.try_acquire_permit_hint() {
 		warn!("Global limit exceeded — rejecting early");
+		crate::metrics::refusals::record_ws("global_capacity");
 		return (StatusCode::SERVICE_UNAVAILABLE, "Too many connections").into_response();
 	}
 
@@ -127,15 +128,21 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr, permit, cancel_token)),
 		Ok(Err(err)) => {
 			use AcquireErrorKind::*;
-			let reason = match err.kind {
-				QueueFull => "Too many pending connections for this client",
-				GlobalLimit => "Server is at capacity",
+			let (reason, metric_reason) = match err.kind {
+				QueueFull => ("Too many pending connections for this client", "queue_full"),
+				// A second, near-unreachable path to the same fast-path
+				// hint's conclusion — it only fires if the global semaphore
+				// is closed, which nothing in this codebase does today —
+				// so it shares that reason rather than inventing a fourth.
+				GlobalLimit => ("Server is at capacity", "global_capacity"),
 			};
 			error!("Rejecting WS for {client_id}: {reason}");
+			crate::metrics::refusals::record_ws(metric_reason);
 			(StatusCode::SERVICE_UNAVAILABLE, reason).into_response()
 		}
 		Err(_timeout_elapsed) => {
 			error!("Timeout waiting for permit for {client_id}");
+			crate::metrics::refusals::record_ws("permit_timeout");
 			(StatusCode::REQUEST_TIMEOUT, "Connection acquisition timed out").into_response()
 		}
 	}

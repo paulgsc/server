@@ -132,10 +132,25 @@ where
 	/// wasted work. The async_nats client will automatically reconnect
 	/// when the network recovers.
 	fn check_connection(&self) -> Result<()> {
-		if self.client.connection_state() != async_nats::connection::State::Connected {
+		if !self.is_connected() {
 			return Err(TransportError::NatsError("Connection not established".to_string()));
 		}
 		Ok(())
+	}
+
+	/// A non-blocking read of the client's last-known connection state.
+	///
+	/// Not a round-trip — `async_nats::Client` maintains this itself and
+	/// updates it as its background reconnect loop observes the socket, so
+	/// this never blocks or can hang. That is a deliberate readiness-probe
+	/// property (see #221): a check that can hang is worse than one that
+	/// answers instantly with slightly stale information, and asking this
+	/// client for round-trip proof of liveness would require a `.flush()`
+	/// waiting on the server, which is not bounded by anything shorter than
+	/// its own retry backoff.
+	#[must_use]
+	pub fn is_connected(&self) -> bool {
+		self.client.connection_state() == async_nats::connection::State::Connected
 	}
 
 	/// Generates a subject name for a connection-specific channel.
