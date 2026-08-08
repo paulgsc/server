@@ -53,9 +53,19 @@ jobs:
             **/*.{yml,yaml,md,mdx,js,jsx,ts,tsx,json,toml,css}
             !Cargo.toml
 
+      - name: Detect infra-related changes
+        id: infra
+        uses: technote-space/get-diff-action@v6
+        with:
+          PATTERNS: |
+            infra/**
+            docker-compose.yml
+            scripts/check_scrape_inventory.py
+
     outputs:
       rust: ${{ steps.rust.outputs.diff != '' }}
       format: ${{ steps.format.outputs.diff != '' }}
+      infra: ${{ steps.infra.outputs.diff != '' }}
 
   rust_ci:
     runs-on: ubuntu-latest
@@ -119,3 +129,28 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --verbose
+
+  infra_ci:
+    runs-on: ubuntu-latest
+    needs: determine_jobs
+    if: needs.determine_jobs.outputs.infra == 'true'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      # `docker compose config` is what resolves `docker-compose.yml`'s
+      # `include:` directives into the actual service set — see
+      # infra/prometheus/inventory.yml's own header for why the check reads
+      # that instead of hand-parsing the compose files.
+      - name: Validate docker compose config resolves
+        run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
+
+      - name: Check scrape inventory reconciles (#146)
+        run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py

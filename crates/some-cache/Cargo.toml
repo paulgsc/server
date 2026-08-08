@@ -13,7 +13,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-prometheus = { workspace = true }
+metrics = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

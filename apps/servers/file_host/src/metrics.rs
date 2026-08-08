@@ -1,7 +1,7 @@
 #[allow(dead_code)]
-pub mod observability;
+pub mod instruments;
 #[allow(dead_code)]
-pub mod otel;
+pub mod observability;
 
 #[allow(unused_imports)]
 pub use observability::{ObservabilityError, OtelGuard};

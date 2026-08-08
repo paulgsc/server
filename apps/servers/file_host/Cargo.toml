@@ -66,11 +66,13 @@ rand = "0.9.2"
 
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "trace"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry", "tracing-log" ] }
 tracing-opentelemetry = { workspace = true }
+metrics = { workspace = true }
 some-cache.workspace = true
+some-metrics.workspace = true
 capture_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }

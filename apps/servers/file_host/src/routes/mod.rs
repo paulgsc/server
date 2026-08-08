@@ -5,6 +5,7 @@ pub mod gdrive;
 pub mod github;
 pub mod health;
 pub mod inventory;
+pub mod metrics;
 pub mod push;
 pub mod sheets;
 pub mod signals;

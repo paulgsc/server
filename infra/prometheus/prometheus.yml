@@ -14,6 +14,12 @@ scrape_configs:
       - targets: ['file-host-server:3000']
     metrics_path: '/metrics'
     scrape_interval: 5s
+  # Orchestrator — internal-only listener, not published to the host (#143)
+  - job_name: 'orchestrator'
+    static_configs:
+      - targets: ['orchestrator-service:9464']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
   # Redis metrics via exporter
   - job_name: 'redis'
     static_configs:
@@ -33,10 +39,6 @@ scrape_configs:
     static_configs:
       - targets: ['process-exporter:9256']
   # Container-level metrics
-  - job_name: 'otel-collector'
-    scrape_interval: 60s
-    static_configs:
-      - targets: ['localhost:4318']
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']

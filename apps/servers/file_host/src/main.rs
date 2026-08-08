@@ -13,6 +13,7 @@ use file_host::routes::{
 	gdrive::{get_gdrive_image, write_gdrive_fs},
 	github::get_repos,
 	health::get_health,
+	metrics::get_metrics,
 	push::push,
 	sheets::get_sheets,
 	signals::signals,
@@ -51,6 +52,12 @@ async fn main() -> Result<()> {
 		return perform_health_check(&config).await;
 	}
 
+	// Installs the global `metrics` recorder — see #139 (P1). Every
+	// `counter!`/`histogram!` call anywhere in this process, direct or via
+	// `crate::metrics::instruments`, writes through this recorder from here
+	// on; the handle below is what turns its state into a scrape payload.
+	let metrics_handle = some_metrics::install()?;
+
 	let config = Arc::new(config);
 	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
 		.create_if_missing(true)
@@ -87,6 +94,7 @@ async fn main() -> Result<()> {
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
 		.merge(get_health())
+		.merge(get_metrics(metrics_handle))
 		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
 

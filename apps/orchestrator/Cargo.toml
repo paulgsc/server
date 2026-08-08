@@ -12,6 +12,7 @@ edition.workspace = true
 
 [dependencies]
 some-transport = { workspace = true, features = ["nats"] }
+some-metrics = { workspace = true }
 ws-connection = { workspace = true }
 ws-events = { workspace = true, features = ["ws-events"] }
 cursorium = { workspace = true }

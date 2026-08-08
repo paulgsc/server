@@ -1,5 +1,5 @@
 use crate::handlers::pipeline::fetch_cached;
-use crate::metrics::otel::OperationTimer;
+use crate::metrics::instruments::OperationTimer;
 use crate::models::gdrive::{ListQuery, UpsertResponse};
 use crate::{AppState, FileHostError};
 use axum::extract::{Path, Query, State};

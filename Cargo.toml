@@ -26,6 +26,7 @@ members = [
   "crates/obs-websocket",
   "crates/sdk",
   "crates/some-cache",
+  "crates/some-metrics",
   "crates/some-services",
   "crates/some-transport",
   "crates/ws-conn-manager",
@@ -73,6 +74,7 @@ ws-conn-manager = { path = "crates/ws-conn-manager" }
 ws-events = { path = "crates/ws-events" }
 cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
+some-metrics = { path = "crates/some-metrics" }
 capture_repo = { path = "crates/db/capture" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }
@@ -89,6 +91,8 @@ chrono = "0.4.23"
 dotenvy = "0.15.7"
 futures = "0.3.26"
 lazy_static = "1.4.0"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 mime = "0.3.17"
 notify = "6.1.1"
 once_cell = "1.17.1"

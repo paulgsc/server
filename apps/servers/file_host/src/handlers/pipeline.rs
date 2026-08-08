@@ -1,4 +1,4 @@
-use crate::metrics::otel::{record_cache_hit, OperationTimer};
+use crate::metrics::instruments::{record_cache_hit, OperationTimer};
 use crate::{AppState, FileHostError};
 use serde::{Deserialize, Serialize};
 use some_cache::DedupCacheError;
