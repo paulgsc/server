@@ -76,6 +76,10 @@ grafana/plugins/
 grafana/png/
 grafana/csv/
 
+# Python (scripts/check_*.py)
+__pycache__/
+*.pyc
+
 
 
 # Workflow

@@ -190,51 +190,16 @@ local utils = import 'utils.libsonnet';
     type: 'timeseries',
   },
 
-  // =============== EXISTING APPLICATION METRICS ===============
-
-  httpRequestRate: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.timeSeriesFieldConfig('reqps', 80),
-    id: 7,
-    options: utils.timeSeriesOptions,
-    targets: [
-      {
-        datasource: config.prometheusDataSource,
-        expr: 'rate(http_requests_total[1m])',
-        legendFormat: '{{method}} {{route}} → {{status}}',
-        range: true,
-        refId: 'A',
-      },
-    ],
-    title: '📨 HTTP Request Rate (RPS)',
-    type: 'timeseries',
-  },
-
-  httpLatency: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.timeSeriesFieldConfig('s', 1),
-    id: 8,
-    options: utils.timeSeriesOptions,
-    targets: [
-      {
-        expr: 'histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))',
-        legendFormat: 'p50 - {{method}} {{route}}',
-        refId: 'A',
-      },
-      {
-        expr: 'histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))',
-        legendFormat: 'p90 - {{method}} {{route}}',
-        refId: 'B',
-      },
-      {
-        expr: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, route))',
-        legendFormat: 'p99 - {{method}} {{route}}',
-        refId: 'C',
-      },
-    ],
-    title: '⏱️ HTTP Latency (P50/P90/P99)',
-    type: 'timeseries',
-  },
+  // =============== APPLICATION METRICS ===============
+  //
+  // #212/#217: this used to also carry an HTTP request-rate/latency row and
+  // a cache row. Both queried `http_requests_total*` and
+  // `cache_operations_total*` — names no crate in this workspace has ever
+  // emitted (no `axum-prometheus` layer, no manual counter for either
+  // family). Rate limiting and per-namespace cache detail get their own
+  // dashboards once real metrics back them (parked `rate-limit.jsonnet` /
+  // rebuilt `cache-dashboard.jsonnet`); this one keeps only what
+  // `file_host` actually records today.
 
   operationDuration: {
     datasource: config.prometheusDataSource,
@@ -250,108 +215,5 @@ local utils = import 'utils.libsonnet';
     ],
     title: '⚙️ Operation Duration (P95)',
     type: 'timeseries',
-  },
-
-  cacheHitsMisses: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.timeSeriesFieldConfig('none', 1),
-    id: 10,
-    options: utils.timeSeriesOptions,
-    targets: [
-      {
-        expr: 'sum(cache_operations_total{result="hit"}) by (handler)',
-        legendFormat: '{{handler}} - Hit',
-        refId: 'A',
-      },
-      {
-        expr: 'sum(cache_operations_total{result="miss"}) by (handler)',
-        legendFormat: '{{handler}} - Miss',
-        refId: 'B',
-      },
-    ],
-    title: '📦 Cache Hits vs Misses',
-    type: 'timeseries',
-  },
-
-  totalRequests: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.statFieldConfig('none', 'semi-dark-orange', 100),
-    id: 11,
-    options: utils.statOptions,
-    targets: [
-      {
-        expr: 'sum(http_requests_total)',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🔢 Total Requests',
-    type: 'stat',
-  },
-
-  totalCacheOps: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.statFieldConfig('ops', 'dark-purple', 50),
-    id: 12,
-    options: utils.statOptions,
-    targets: [
-      {
-        expr: 'sum(cache_operations_total)',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🧮 Total Cache Ops',
-    type: 'stat',
-  },
-
-  cacheHitRate: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'thresholds' },
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'red', value: 0 },
-            { color: 'orange', value: 70 },
-            { color: 'green', value: 90 },
-          ],
-        },
-        unit: 'percent',
-      },
-    },
-    id: 13,
-    options: utils.statOptions { graphMode: 'none' },
-    targets: [
-      {
-        expr: 'sum(cache_operations_total{result="hit"}) / sum(cache_operations_total) * 100',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🎯 Cache Hit Rate',
-    type: 'stat',
-  },
-
-  rateLimitedRequests: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { fixedColor: 'semi-dark-blue', mode: 'fixed' },
-        unit: 'short',
-      },
-    },
-    id: 14,
-    options: utils.statOptions,
-    targets: [
-      {
-        expr: 'sum(http_requests_total{status="429"})',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🚦 Rate Limited (429)',
-    type: 'stat',
   },
 }

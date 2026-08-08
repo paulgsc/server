@@ -3,6 +3,7 @@
 // Designed for docker-compose stack with file-host, metabase, grafana, prometheus, redis
 
 local forensicPanels = import 'lib/forensic-panels.libsonnet';
+local panelDefaults = import 'lib/panel-defaults.libsonnet';
 
 // Utility function for grid positioning
 local gridPos(x, y, w, h) = {
@@ -17,10 +18,9 @@ local dashboard = {
     list: [
       {
         builtIn: 1,
-        datasource: {
-          type: 'datasource',
-          uid: 'prometheus',
-        },
+        // Grafana's own built-in "Annotations & Alerts" store, not
+        // Prometheus — always present under this literal uid. See #218.
+        datasource: { type: 'grafana', uid: '-- Grafana --' },
         enable: true,
         hide: true,
         iconColor: 'rgba(0, 211, 255, 1)',
@@ -88,25 +88,23 @@ local dashboard = {
     },
   ],
   liveNow: false,
-  panels: [
+  panels: panelDefaults.hardenAll([
     // ========== ROW 1: CRITICAL SYSTEM INVARIANTS (RED ALERT ZONE) ==========
 
     // System hang detector - primary alert
     forensicPanels.systemHangDetector {
       id: 1,
-      gridPos: gridPos(0, 0, 8, 6),
+      gridPos: gridPos(0, 0, 12, 6),
     },
 
-    // Request rate invariant violation
-    forensicPanels.requestRateInvariant {
-      id: 2,
-      gridPos: gridPos(8, 0, 8, 6),
-    },
+    // #212/#217: `requestRateInvariant` used to sit here — a contradiction
+    // panel against `http_requests_total`, which nothing in this workspace
+    // emits. Removed; see forensic-panels.libsonnet.
 
     // Blocked processes count
     forensicPanels.blockedProcesses {
       id: 3,
-      gridPos: gridPos(16, 0, 8, 6),
+      gridPos: gridPos(12, 0, 12, 6),
     },
 
     // ========== ROW 2: PRIMARY SUSPECTS - WHO DUNNIT ==========
@@ -210,7 +208,12 @@ local dashboard = {
       id: 18,
       gridPos: gridPos(12, 38, 12, 6),
     },
-  ],
+
+    // #219: if this goes grey for a given job, that job's exporter isn't
+    // being scraped — every forensic panel above would otherwise read as
+    // "system quiet" instead of "instrumentation dark".
+    panelDefaults.livenessPanel('Exporter liveness', ['node', 'process_exporter', 'cadvisor'], 19, gridPos(0, 44, 24, 2)),
+  ]),
   refresh: '5s',
   schemaVersion: 38,
   style: 'dark',
@@ -227,32 +230,16 @@ local dashboard = {
     list: [
       {
         current: {
-          selected: false,
-          text: 'prometheus',
-          value: 'prometheus',
-        },
-        hide: 0,
-        includeAll: false,
-        label: 'Data Source',
-        multi: false,
-        name: 'datasource',
-        options: [],
-        query: 'prometheus',
-        queryValue: '',
-        refresh: 1,
-        regex: '',
-        skipUrlSync: false,
-        type: 'datasource',
-      },
-      {
-        current: {
           selected: true,
           text: ['All'],
           value: ['$__all'],
         },
+        // One datasource does not need a picker; #218 drops the
+        // `datasource`-type template variable this used to route through
+        // and references the provisioned uid directly.
         datasource: {
           type: 'prometheus',
-          uid: '${datasource}',
+          uid: 'prometheus',
         },
         definition: 'label_values(namedprocess_namegroup_cpu_seconds_total, groupname)',
         hide: 0,
@@ -279,7 +266,7 @@ local dashboard = {
         },
         datasource: {
           type: 'prometheus',
-          uid: '${datasource}',
+          uid: 'prometheus',
         },
         definition: 'label_values(container_cpu_usage_seconds_total{name!=""}, name)',
         hide: 0,

@@ -1,6 +1,7 @@
 // dashboard.libsonnet - Node System Metrics Dashboard
 local panels = import 'lib/node-panels.libsonnet';
 local utils = import 'lib/utils.libsonnet';
+local panelDefaults = import 'lib/panel-defaults.libsonnet';
 
 local dashboard = {
   annotations: {
@@ -8,8 +9,11 @@ local dashboard = {
       {
         builtIn: 1,
         datasource: {
-          type: 'datasource',
-          uid: '${DS_PROMETHEUS}',  // Fixed: use same DS as panels
+          // Grafana's own built-in "Annotations & Alerts" store, not
+          // Prometheus — always present under this literal uid, so unlike
+          // the panels below it needs no provisioning to resolve. See #218.
+          type: 'grafana',
+          uid: '-- Grafana --',
         },
         enable: true,
         hide: true,
@@ -31,7 +35,7 @@ local dashboard = {
   id: null,  // Let Grafana assign ID on import
   links: [],
   liveNow: false,
-  panels: [
+  panels: panelDefaults.hardenAll([
     // === Row 1: Overview Stats ===
     panels.systemUptime { gridPos: utils.gridPos(0, 0, 6, 4) },
     panels.cpuCores { gridPos: utils.gridPos(6, 0, 6, 4) },
@@ -80,7 +84,11 @@ local dashboard = {
 
     // === Row 11: System Temperature (Optional, may not be present on all systems) ===
     panels.systemTemperature { gridPos: utils.gridPos(0, 76, 24, 8) },
-  ],
+
+    // #219: if this goes grey, node_exporter isn't being scraped — every
+    // panel above would otherwise read as "system idle" instead.
+    panelDefaults.livenessPanel('node_exporter liveness', ['node'], 200, utils.gridPos(0, 84, 24, 2)),
+  ]),
   refresh: '30s',
   schemaVersion: 38,
   tags: ['node_exporter', 'system', 'infrastructure'],

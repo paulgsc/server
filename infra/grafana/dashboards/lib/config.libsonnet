@@ -1,9 +1,13 @@
 // config.libsonnet
 {
-  // Prometheus datasource
+  // The one provisioned datasource (infra/grafana/provisioning/datasources/datasources.yml
+  // pins uid: prometheus). Every panel in every surviving dashboard takes
+  // its datasource reference from here — see #218. One datasource does not
+  // need a template-variable picker, so this is the uid directly rather
+  // than an indirection through `$datasource`.
   prometheusDataSource: {
     type: 'prometheus',
-    uid: '$datasource',  // Grafana template var
+    uid: 'prometheus',
   },
 
   // Blackbox job names (make them configurable!)

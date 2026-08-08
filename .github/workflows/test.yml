@@ -154,3 +154,23 @@ jobs:
 
       - name: Check scrape inventory reconciles (#146)
         run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
+
+  # #212 (G1/#217): unconditional, unlike the two jobs above — a phantom
+  # query is introduced by editing infra/grafana/ (the `infra` diff), and an
+  # orphaned emitter is introduced by editing apps/ or crates/ (the `rust`
+  # diff). Gating this on either alone would miss the other, and the check
+  # itself is a stdlib-only regex scan with no docker/database setup, so
+  # running it unconditionally costs little.
+  metric_contract_ci:
+    runs-on: ubuntu-latest
+    needs: determine_jobs
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Check dashboards query only what the workspace emits (#217)
+        run: python3 scripts/check_metric_contract.py

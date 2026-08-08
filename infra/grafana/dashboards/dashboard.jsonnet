@@ -1,12 +1,15 @@
 local panels = import 'lib/panels.libsonnet';
 local utils = import 'lib/utils.libsonnet';
+local panelDefaults = import 'lib/panel-defaults.libsonnet';
 
 local dashboard = {
   annotations: {
     list: [
       {
         builtIn: 1,
-        datasource: { type: 'datasource', uid: 'P00000000' },
+        // Grafana's own built-in "Annotations & Alerts" store, not
+        // Prometheus — always present under this literal uid. See #218.
+        datasource: { type: 'grafana', uid: '-- Grafana --' },
         enable: true,
         hide: true,
         iconColor: 'rgba(0, 211, 255, 1)',
@@ -21,7 +24,7 @@ local dashboard = {
   id: 1,
   links: [],
   liveNow: false,
-  panels: [
+  panels: panelDefaults.hardenAll([
     // =============== ROW 1: UPTIME SLA (TOP PRIORITY) ===============
     panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 0, 6, 4) },
     panels.uptimeSLA30d { gridPos: utils.gridPos(6, 0, 6, 4) },
@@ -33,18 +36,12 @@ local dashboard = {
     panels.probeDiagnostics { gridPos: utils.gridPos(12, 4, 12, 8) },
 
     // =============== ROW 3: APPLICATION METRICS ===============
-    panels.httpRequestRate { gridPos: utils.gridPos(0, 12, 12, 8) },
-    panels.httpLatency { gridPos: utils.gridPos(12, 12, 12, 8) },
+    panels.operationDuration { gridPos: utils.gridPos(0, 12, 12, 8) },
 
-    panels.operationDuration { gridPos: utils.gridPos(0, 20, 12, 8) },
-    panels.cacheHitsMisses { gridPos: utils.gridPos(12, 20, 12, 8) },
-
-    // =============== ROW 4: STATS ===============
-    panels.totalRequests { gridPos: utils.gridPos(0, 28, 6, 4) },
-    panels.totalCacheOps { gridPos: utils.gridPos(6, 28, 6, 4) },
-    panels.cacheHitRate { gridPos: utils.gridPos(12, 28, 6, 4) },
-    panels.rateLimitedRequests { gridPos: utils.gridPos(18, 28, 6, 4) },
-  ],
+    // #219: "no data everywhere" on this row should read as "file_host is
+    // not being scraped", not as "operations dropped to zero".
+    panelDefaults.livenessPanel('file_host liveness', ['file_host'], 15, utils.gridPos(12, 12, 12, 8)),
+  ]),
   refresh: '10s',
   schemaVersion: 38,
   tags: ['rust', 'axum', 'prometheus', 'sla'],
