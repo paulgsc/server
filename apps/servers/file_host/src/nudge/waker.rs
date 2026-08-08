@@ -44,9 +44,12 @@ const BATCH: i64 = 32;
 /// Spawn the waker, cancelled through the shared token.
 pub fn spawn(state: AppState, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
+	crate::metrics::waker::record_interval(interval);
 
 	tokio::spawn(async move {
 		info!(interval_secs = interval.as_secs(), "engagement waker started");
+		let mut ticker = tokio::time::interval(interval);
+		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
 		loop {
 			tokio::select! {
@@ -54,9 +57,10 @@ pub fn spawn(state: AppState, interval: Duration) {
 					info!("engagement waker cancelled");
 					return;
 				}
-				() = tokio::time::sleep(interval) => {
-					if let Err(err) = run_once(&state).await {
-						error!(error = %err, "waker pass failed");
+				_ = ticker.tick() => {
+					match run_once(&state).await {
+						Ok(_) => crate::metrics::waker::record_successful_pass(),
+						Err(err) => error!(error = %err, "waker pass failed"),
 					}
 				}
 			}

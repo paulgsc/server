@@ -427,7 +427,7 @@
       },
       "targets": [
         {
-          "expr": "(time() - nudge_waker_last_pass_timestamp_seconds) > bool 900",
+          "expr": "(time() - nudge_waker_last_pass_timestamp_seconds) > bool (3 * nudge_waker_interval_seconds)",
           "instant": true,
           "refId": "A"
         }
@@ -509,7 +509,7 @@
       },
       "targets": [
         {
-          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_pass_timestamp_seconds))\n) or vector(0)\n",
+          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_pass_timestamp_seconds))\n  or sum(absent(nudge_waker_interval_seconds))\n) or vector(0)\n",
           "instant": true,
           "refId": "A"
         }
@@ -574,7 +574,7 @@
         {
           "expr": "service_info",
           "instant": true,
-          "legendFormat": "{{git_sha}} · rustc {{rust}} · built {{built_at}}",
+          "legendFormat": "{{git_sha}} \u00b7 rustc {{rust}} \u00b7 built {{built_at}}",
           "refId": "A"
         }
       ],
@@ -1833,7 +1833,7 @@
                 },
                 "1": {
                   "color": "red",
-                  "text": "FIRING — limiter not enforcing"
+                  "text": "FIRING \u2014 limiter not enforcing"
                 }
               },
               "type": "value"
@@ -1890,7 +1890,7 @@
           "refId": "A"
         }
       ],
-      "title": "INVARIANT: Traffic Above Limit ∧ Zero Rejections",
+      "title": "INVARIANT: Traffic Above Limit \u2227 Zero Rejections",
       "type": "stat"
     },
     {
@@ -1964,7 +1964,7 @@
           "refId": "A"
         }
       ],
-      "title": "✅ Overall Uptime Status",
+      "title": "\u2705 Overall Uptime Status",
       "type": "stat"
     },
     {
@@ -2004,11 +2004,11 @@
               },
               {
                 "color": "yellow",
-                "value": 99.900000000000006
+                "value": 99.9
               },
               {
                 "color": "green",
-                "value": 99.950000000000003
+                "value": 99.95
               }
             ]
           },
@@ -2047,7 +2047,7 @@
           "refId": "A"
         }
       ],
-      "title": "🎯 30-Day Uptime SLA",
+      "title": "\ud83c\udfaf 30-Day Uptime SLA",
       "type": "stat"
     },
     {
@@ -2116,7 +2116,7 @@
           "refId": "A"
         }
       ],
-      "title": "🔌 TCP Connectivity (Port 3000)",
+      "title": "\ud83d\udd0c TCP Connectivity (Port 3000)",
       "type": "stat"
     },
     {
@@ -2185,7 +2185,7 @@
           "refId": "A"
         }
       ],
-      "title": "💬 HTTP /ws Probe (101/429/503)",
+      "title": "\ud83d\udcac HTTP /ws Probe (101/429/503)",
       "type": "stat"
     },
     {
@@ -2218,7 +2218,7 @@
               },
               {
                 "color": "red",
-                "value": 99.900000000000006
+                "value": 99.9
               }
             ]
           },
@@ -2254,7 +2254,7 @@
           "refId": "A"
         }
       ],
-      "title": "📈 7-Day Uptime Trend",
+      "title": "\ud83d\udcc8 7-Day Uptime Trend",
       "type": "timeseries"
     },
     {
@@ -2327,7 +2327,7 @@
           "refId": "D"
         }
       ],
-      "title": "🔍 Probe Diagnostics (Duration & Failures)",
+      "title": "\ud83d\udd0d Probe Diagnostics (Duration & Failures)",
       "type": "timeseries"
     },
     {
@@ -2391,7 +2391,7 @@
           "refId": "A"
         }
       ],
-      "title": "⚙️ Operation Duration (P95)",
+      "title": "\u2699\ufe0f Operation Duration (P95)",
       "type": "timeseries"
     }
   ],
@@ -2413,7 +2413,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "🩺 file_host Operational Dashboard",
+  "title": "\ud83e\ude7a file_host Operational Dashboard",
   "uid": "file-host-dashboard",
   "version": 1
 }
