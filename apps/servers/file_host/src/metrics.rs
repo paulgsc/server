@@ -9,6 +9,7 @@ pub mod instruments;
 pub mod observability;
 pub mod periodic;
 pub mod pool;
+pub mod rate_limit;
 pub mod refusals;
 
 #[allow(unused_imports)]

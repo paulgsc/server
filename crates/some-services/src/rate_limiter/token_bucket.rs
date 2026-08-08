@@ -1,6 +1,5 @@
-use axum::{body::Body, extract::State, http::Response, middleware::Next, response::IntoResponse};
+use axum::{body::Body, http::Response, response::IntoResponse};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -25,56 +24,62 @@ impl IntoResponse for RateLimitError {
 	}
 }
 
+/// The window `config.rs`'s `rate_limit` field already documents itself as:
+/// "requests per minute". See #215/#231 (A2).
+pub const DEFAULT_REFILL_PERIOD_MS: u64 = 60_000;
+
 pub struct TokenBucketRateLimiter {
 	max_tokens: u32,
-	refill_rate_per_ms: u64, // tokens per millisecond (scaled by 1000 for precision)
+	refill_period_ms: u64,
 	tokens: AtomicU32,
 	last_refill: AtomicU64, // timestamp in milliseconds
 }
 
 impl TokenBucketRateLimiter {
 	#[must_use]
-	pub fn new(max_tokens: u32) -> Self {
-		Self::new_with_refill_period(max_tokens, 60_000) // 60 seconds default
+	pub fn new_with_refill_period(max_tokens: u32, refill_period_ms: u64) -> Self {
+		Self {
+			max_tokens,
+			refill_period_ms: refill_period_ms.max(1),
+			tokens: AtomicU32::new(max_tokens), // start with full bucket
+			last_refill: AtomicU64::new(Self::current_time_millis()),
+		}
 	}
 
 	#[must_use]
-	pub fn new_with_refill_period(max_tokens: u32, refill_period_ms: u64) -> Self {
-		// Calculate refill rate: how many tokens per millisecond (scaled by 1000)
-		// This ensures we don't lose precision for small rates
-		let refill_rate_per_ms = (u64::from(max_tokens) * 1000) / refill_period_ms;
-
-		Self {
-			max_tokens,
-			refill_rate_per_ms: refill_rate_per_ms.max(1), // Ensure at least 1/1000 token per ms
-			tokens: AtomicU32::new(max_tokens),            // start with full bucket
-			last_refill: AtomicU64::new(Self::current_time_millis()),
-		}
+	pub const fn max_tokens(&self) -> u32 {
+		self.max_tokens
 	}
 
 	fn current_time_millis() -> u64 {
 		SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().try_into().unwrap_or(u64::MAX)
 	}
 
+	/// #215/#231 (A2): the previous version precomputed a `refill_rate_per_ms`
+	/// (tokens per millisecond, scaled by 1000) and floored it to a minimum of
+	/// 1 — so any configuration wanting fewer than one token per second (the
+	/// entire range where a per-*minute* limit lives, including the default
+	/// 10 tokens / 60s) got silently promoted to 1 token/second, six times
+	/// the configured rate for that default.
+	///
+	/// Computing the accrued tokens directly from elapsed time on each call,
+	/// in `u128` to avoid overflow, removes the floor entirely:
+	/// `tokens_to_add` is genuinely `0` (never artificially 1) until enough
+	/// time has actually elapsed for the configured rate to owe a whole
+	/// token, and `last_refill` only advances when it does — so no fractional
+	/// token is ever lost between calls, however far apart they land.
 	fn refill_tokens(&self, now: u64) {
 		const MAX_ATTEMPTS: usize = 3;
 
 		for _ in 0..MAX_ATTEMPTS {
 			let last_refill = self.last_refill.load(Ordering::Acquire);
-
-			// Check if enough time has passed to warrant a refill
 			let time_elapsed = now.saturating_sub(last_refill);
-			if time_elapsed < 10 {
-				// Less than 10ms, skip refill
-				break;
-			}
 
-			// Calculate tokens to add (scaled by 1000 for precision)
-			let tokens_to_add_scaled = time_elapsed * self.refill_rate_per_ms;
-			let tokens_to_add = u32::try_from(tokens_to_add_scaled / 1000).unwrap_or(self.max_tokens);
+			let tokens_to_add_scaled = u128::from(time_elapsed) * u128::from(self.max_tokens) / u128::from(self.refill_period_ms);
+			let tokens_to_add = u32::try_from(tokens_to_add_scaled).unwrap_or(self.max_tokens);
 
 			if tokens_to_add == 0 {
-				break; // Not enough time elapsed
+				break; // Not enough time elapsed yet — leave `last_refill` alone so elapsed time keeps accumulating toward the next whole token.
 			}
 
 			// Try to update the refill timestamp first
@@ -90,16 +95,15 @@ impl TokenBucketRateLimiter {
 	fn add_tokens(&self, tokens_to_add: u32) {
 		loop {
 			let current_tokens = self.tokens.load(Ordering::Acquire);
-			let new_tokens = (current_tokens + tokens_to_add).min(self.max_tokens);
+			let new_tokens = current_tokens.saturating_add(tokens_to_add).min(self.max_tokens);
 
 			// Only update if there's actually a change
 			if new_tokens == current_tokens {
 				break;
 			}
 
-			match self.tokens.compare_exchange_weak(current_tokens, new_tokens, Ordering::AcqRel, Ordering::Acquire) {
-				Ok(_) => break, // Successfully added tokens
-				Err(_) => {}
+			if self.tokens.compare_exchange_weak(current_tokens, new_tokens, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+				break; // Successfully added tokens
 			}
 		}
 	}
@@ -111,13 +115,14 @@ impl TokenBucketRateLimiter {
 	/// Returns `RateLimitError::ClockError` if there's a system time error (though this is
 	/// handled gracefully in the current implementation).
 	pub fn allow_request(&self) -> Result<bool, RateLimitError> {
+		const MAX_ATTEMPTS: usize = 10;
+
 		let now = Self::current_time_millis();
 
 		// Refill tokens based on elapsed time
 		self.refill_tokens(now);
 
 		// Try to consume a token
-		const MAX_ATTEMPTS: usize = 10;
 		for _ in 0..MAX_ATTEMPTS {
 			let current_tokens = self.tokens.load(Ordering::Acquire);
 			if current_tokens == 0 {
@@ -125,10 +130,14 @@ impl TokenBucketRateLimiter {
 			}
 
 			// Try to atomically decrement
-			match self.tokens.compare_exchange_weak(current_tokens, current_tokens - 1, Ordering::AcqRel, Ordering::Acquire) {
-				Ok(_) => return Ok(true), // Successfully consumed a token
-				Err(_) => continue,       // CAS failed, retry
+			if self
+				.tokens
+				.compare_exchange_weak(current_tokens, current_tokens - 1, Ordering::AcqRel, Ordering::Acquire)
+				.is_ok()
+			{
+				return Ok(true); // Successfully consumed a token
 			}
+			// CAS failed, retry
 		}
 
 		// If we've retried too many times, assume no tokens available
@@ -140,18 +149,6 @@ impl TokenBucketRateLimiter {
 		let now = Self::current_time_millis();
 		self.refill_tokens(now);
 		self.tokens.load(Ordering::Acquire)
-	}
-}
-
-pub async fn rate_limit_middleware(
-	State(limiter): State<Arc<TokenBucketRateLimiter>>,
-	request: axum::http::Request<Body>,
-	next: Next,
-) -> Result<impl IntoResponse, RateLimitError> {
-	match limiter.allow_request() {
-		Ok(true) => Ok(next.run(request).await),
-		Ok(false) => Err(RateLimitError::RateLimited),
-		Err(e) => Err(e),
 	}
 }
 
@@ -177,7 +174,7 @@ mod tests {
 
 		// Should have ~5 tokens now
 		let available = limiter.get_current_tokens();
-		assert!(available >= 4 && available <= 6); // Allow some variance
+		assert!((4..=6).contains(&available)); // Allow some variance
 
 		// Should allow requests again
 		assert!(limiter.allow_request().unwrap());
@@ -200,5 +197,29 @@ mod tests {
 		for _ in 0..5 {
 			assert!(limiter.allow_request().unwrap(), "Should allow request after refill");
 		}
+	}
+
+	/// #231's own acceptance criterion, at the exact configuration its
+	/// context section names: `max_tokens=10, refill_period_ms=60_000`. The
+	/// pre-fix arithmetic floored the rate to 1 token/second (60/minute) for
+	/// this configuration — six times too fast. The correct rate accrues one
+	/// token every `60_000 / 10 = 6_000`ms; sleeping past that boundary
+	/// should yield exactly one token, not six.
+	#[tokio::test]
+	async fn refill_rate_matches_the_configured_period_at_ten_per_minute() {
+		let limiter = TokenBucketRateLimiter::new_with_refill_period(10, 60_000);
+
+		for _ in 0..10 {
+			assert!(limiter.allow_request().unwrap());
+		}
+		assert!(!limiter.allow_request().unwrap(), "bucket should start empty after 10 requests");
+
+		sleep(Duration::from_millis(6_100)).await;
+
+		assert_eq!(
+			limiter.get_current_tokens(),
+			1,
+			"10 tokens per 60s should refill 1 token every 6s, not the pre-fix bug's 1 token/second"
+		);
 	}
 }

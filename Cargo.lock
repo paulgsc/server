@@ -6097,6 +6097,7 @@ name = "some-services"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "dashmap",
  "thiserror 1.0.69",
  "tokio",
 ]
