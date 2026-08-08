@@ -24,8 +24,15 @@ pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Mes
 	Ok(())
 }
 
-pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str) {
+/// Removes a connection that was added to the store but will never get a
+/// `ConnectionCleanup` (`websocket.rs`) — the handshake send failed before
+/// that guard was ever constructed, so nothing else will record its removal.
+/// `client_type` is passed in by the caller (recomputed from the same
+/// headers/addr `add_connection` used) rather than looked up here, since the
+/// store entry is gone by the time this returns.
+pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {
 	let result = state.remove_connection(conn_key, "Connection failed during setup".to_string()).await;
+	super::instrument::record_removed(client_type, "error", 0.0);
 
 	if let Err(e) = result {
 		error!(

@@ -1,322 +1,131 @@
-use lazy_static::lazy_static;
-use prometheus::{register_histogram_vec, register_int_counter_vec, register_int_gauge_vec, HistogramVec, IntCounterVec, IntGaugeVec};
+//! WebSocket connection metrics, recorded through the `metrics` facade per
+//! [#139][issue-139] (P1) — see #226 (C1) and #227 (C2).
+//!
+//! This file used to declare eight `prometheus` `lazy_static!` families and
+//! eight recording macros, none of which had a call site. Because a
+//! `lazy_static!` registers on first dereference, that meant the families
+//! were never registered at all — not zero, absent — and one macro
+//! (`connection_health_check!`) referenced a module path
+//! (`$crate::connection::instrument`) that doesn't resolve, so it could not
+//! have compiled at any call site either. #226 picked, per family, whether
+//! to wire it at its real call site or delete it:
+//!
+//!   - `ws_connection_lifecycle_total{event}` — kept, `created`/`removed`
+//!     only. `marked_stale`/`disconnected` are gone: nothing in the live
+//!     code path ever drives `ConnectionState` through those transitions
+//!     (`ConnectionCommand::MarkStale`/`Disconnect` have no caller — the
+//!     only "monitor" that would have sent them, `ws-connection`'s
+//!     `core/monitor.rs`, references a `crate::websocket` module tree that
+//!     doesn't exist in this crate and isn't declared in `lib.rs`, so it
+//!     has never compiled into anything). Keeping those event values would
+//!     have meant a counter that reads real but is structurally unable to
+//!     move.
+//!   - `ws_client_connections{client_type}` — kept, paired with lifecycle.
+//!   - `ws_connection_duration_seconds{end_reason}` — kept, recorded once
+//!     per socket at the `ConnectionCleanup::drop` choke point
+//!     (`websocket.rs`) rather than at store-level removal: `Drop` is the
+//!     one place every connection's teardown provably passes through
+//!     exactly once, including the server-shutdown path where the store
+//!     entry is reclaimed directly by `ConnectionStore`'s own cancellation
+//!     handling rather than through `WebSocketFsm::remove_connection`.
+//!   - `ws_connection_messages_total{message_type}` — kept, relabelled onto
+//!     the raw WebSocket frame kind (`text`/`ping`/`pong`/`close`/`binary`)
+//!     recorded in `message/handlers.rs::handle_websocket_message`, the one
+//!     site every inbound frame passes through regardless of payload.
+//!   - `ws_connection_errors_total{error_type,phase}` — kept, wired at the
+//!     real failure points in connection setup and message handling.
+//!   - `ws_connection_states{state}` — deleted. `state="stale"` could never
+//!     move for the same reason `marked_stale` above couldn't: nothing
+//!     drives a connection into `ConnectionState::is_stale`. Superseded by
+//!     `ws_connections{state}` below, which answers the question this
+//!     dashboard row actually needs (connected/live/subscribed) instead of
+//!     a state the code never reaches.
+//!   - `ws_connection_subscriptions{event_type}` — deleted per #226's own
+//!     note that it overlaps with #227's needs. A per-event-type breakdown
+//!     has no reader: the CLIENTS row (#229) asks "does this connection
+//!     want anything", not "which event types are popular".
+//!   - `ws_timeout_monitor_operations_total{operation,result}` — deleted.
+//!     Its `operation` label values (`mark_stale`/`cleanup`/`health_check`)
+//!     describe `ws-connection::core::monitor::TimeoutMonitor`, which — see
+//!     above — is not part of this workspace's compiled graph. There is no
+//!     monitor loop to instrument.
+//!
+//! `ws_connections{state}` (connected/live/subscribed) and the
+//! `ConnectionGuard` occupancy/capacity gauges are #227's new families —
+//! see `websocket.rs::WebSocketFsm::connection_gauges` and
+//! `metrics::periodic` for where they're computed and refreshed.
+//!
+//! [issue-139]: https://github.com/paulgsc/server/issues/139
 
-lazy_static! {
-		// Connection-specific metrics
-		pub static ref CONNECTION_LIFECYCLE: IntCounterVec = register_int_counter_vec!(
-				"ws_connection_lifecycle_total",
-				"Connection lifecycle events",
-				&["event"] // "created", "marked_stale", "disconnected", "removed"
-		).expect("Failed to register CONNECTION_LIFECYCLE");
+use metrics::{counter, gauge, histogram};
 
-		pub static ref CONNECTION_STATES: IntGaugeVec = register_int_gauge_vec!(
-				"ws_connection_states",
-				"Current connection counts by state",
-				&["state"] // "active", "stale"
-		).expect("Failed to register CONNECTION_STATES");
-
-		pub static ref CONNECTION_DURATION: HistogramVec = register_histogram_vec!(
-				"ws_connection_duration_seconds",
-				"Connection lifetime duration",
-				&["end_reason"], // "timeout", "client_disconnect", "error", "cleanup"
-				vec![1.0, 5.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0]
-		).expect("Failed to register CONNECTION_DURATION");
-
-		pub static ref CLIENT_CONNECTIONS: IntGaugeVec = register_int_gauge_vec!(
-				"ws_client_connections",
-				"Active connections per client",
-				&["client_type"] // "auth", "proxy", "direct"
-		).expect("Failed to register CLIENT_CONNECTIONS");
-
-		pub static ref CONNECTION_MESSAGES: IntCounterVec = register_int_counter_vec!(
-				"ws_connection_messages_total",
-				"Messages processed per connection",
-				&["message_type"] // "ping", "pong", "subscribe", "unsubscribe", "broadcast"
-		).expect("Failed to register CONNECTION_MESSAGES");
-
-		pub static ref TIMEOUT_MONITOR_OPERATIONS: IntCounterVec = register_int_counter_vec!(
-				"ws_timeout_monitor_operations_total",
-				"Timeout monitor operations",
-				&["operation", "result"] // operation: "mark_stale", "cleanup", "health_check"
-		).expect("Failed to register TIMEOUT_MONITOR_OPERATIONS");
-
-		pub static ref CONNECTION_SUBSCRIPTIONS: IntGaugeVec = register_int_gauge_vec!(
-				"ws_connection_subscriptions",
-				"Subscription counts by event type",
-				&["event_type"]
-		).expect("Failed to register CONNECTION_SUBSCRIPTIONS");
-
-		pub static ref CONNECTION_ERRORS: IntCounterVec = register_int_counter_vec!(
-				"ws_connection_errors_total",
-				"Connection-related errors",
-				&["error_type", "phase"] // phase: "creation", "operation", "cleanup"
-		).expect("Failed to register CONNECTION_ERRORS");
+/// A connection was added to the store. Paired with [`record_removed`].
+pub fn record_created(client_type: &'static str) {
+	counter!("ws_connection_lifecycle_total", "event" => "created").increment(1);
+	gauge!("ws_client_connections", "client_type" => client_type).increment(1.0);
 }
 
-/// Records connection creation
-#[macro_export]
-macro_rules! record_connection_created {
-    ($connection_id:expr, $client_id:expr) => {
-        $crate::websocket::connection::instrument::CONNECTION_LIFECYCLE
-            .with_label_values(&["created"])
-            .inc();
-
-        $crate::websocket::connection::instrument::CONNECTION_STATES
-            .with_label_values(&["active"])
-            .inc();
-
-        // Track client type distribution
-        let client_type = if $client_id.as_str().starts_with("auth:") {
-            "auth"
-        } else if $client_id.as_str().starts_with("proxy:") {
-            "proxy"
-        } else {
-            "direct"
-        };
-
-        $crate::websocket::connection::instrument::CLIENT_CONNECTIONS
-            .with_label_values(&[client_type])
-            .inc();
-
-        info!(
-            connection_id = %$connection_id,
-            client_id = %$client_id,
-            client_type = client_type,
-            "Connection created"
-        );
-    };
+/// A connection's socket-level resources (tasks, permit) were torn down —
+/// called exactly once per socket, from `ConnectionCleanup::drop`.
+///
+/// `end_reason` is one of `timeout` | `client_disconnect` | `error` |
+/// `cleanup`, decided by the caller from why the teardown happened, not
+/// inferred here from a free-text reason string the way the deleted macro
+/// did it.
+pub fn record_removed(client_type: &'static str, end_reason: &'static str, duration_secs: f64) {
+	counter!("ws_connection_lifecycle_total", "event" => "removed").increment(1);
+	gauge!("ws_client_connections", "client_type" => client_type).decrement(1.0);
+	histogram!("ws_connection_duration_seconds", "end_reason" => end_reason).record(duration_secs);
 }
 
-/// Records connection state transitions
-#[macro_export]
-macro_rules! record_connection_state_change {
-    ($connection_id:expr, $client_id:expr, $from_state:expr, $to_state:expr) => {
-        match (&$from_state, &$to_state) {
-            (ConnectionState::Active { .. }, ConnectionState::Stale { .. }) => {
-                $crate::websocket::connection::instrument::CONNECTION_LIFECYCLE
-                    .with_label_values(&["marked_stale"])
-                    .inc();
-
-                $crate::websocket::connection::instrument::CONNECTION_STATES
-                    .with_label_values(&["active"])
-                    .dec();
-
-                $crate::websocket::connection::instrument::CONNECTION_STATES
-                    .with_label_values(&["stale"])
-                    .inc();
-
-                info!(
-                    connection_id = %$connection_id,
-                    client_id = %$client_id,
-                    "Connection marked as stale"
-                );
-            },
-            (ConnectionState::Active { .. }, ConnectionState::Disconnected { .. }) => {
-                $crate::websocket::connection::instrument::CONNECTION_LIFECYCLE
-                    .with_label_values(&["disconnected"])
-                    .inc();
-
-                $crate::websocket::connection::instrument::CONNECTION_STATES
-                    .with_label_values(&["active"])
-                    .dec();
-
-                info!(
-                    connection_id = %$connection_id,
-                    client_id = %$client_id,
-                    "Connection disconnected from active state"
-                );
-            },
-            (ConnectionState::Stale { .. }, ConnectionState::Disconnected { .. }) => {
-                $crate::websocket::connection::instrument::CONNECTION_LIFECYCLE
-                    .with_label_values(&["disconnected"])
-                    .inc();
-
-                $crate::websocket::connection::instrument::CONNECTION_STATES
-                    .with_label_values(&["stale"])
-                    .dec();
-
-                info!(
-                    connection_id = %$connection_id,
-                    client_id = %$client_id,
-                    "Connection disconnected from stale state"
-                );
-            },
-            _ => {
-                warn!(
-                    connection_id = %$connection_id,
-                    client_id = %$client_id,
-                    from_state = ?$from_state,
-                    to_state = ?$to_state,
-                    "Unexpected state transition"
-                );
-            }
-        }
-    };
+/// A raw WebSocket frame was processed, labelled by its frame kind
+/// (`text`/`ping`/`pong`/`close`/`binary`) rather than by parsed message
+/// content — see this module's header comment for why.
+pub fn record_message(message_type: &'static str) {
+	counter!("ws_connection_messages_total", "message_type" => message_type).increment(1);
 }
 
-/// Records connection removal with duration tracking
-#[macro_export]
-macro_rules! record_connection_removed {
-    ($connection_id:expr, $client_id:expr, $duration:expr, $reason:expr) => {
-        $crate::websocket::connection::instrument::CONNECTION_LIFECYCLE
-            .with_label_values(&["removed"])
-            .inc();
-
-        // Determine end reason category for histogram
-        let reason_category = if $reason.contains("timeout") || $reason.contains("stale") {
-            "timeout"
-        } else if $reason.contains("closed") || $reason.contains("disconnect") {
-            "client_disconnect"
-        } else if $reason.contains("error") || $reason.contains("failed") {
-            "error"
-        } else {
-            "cleanup"
-        };
-
-        $crate::websocket::connection::instrument::CONNECTION_DURATION
-            .with_label_values(&[reason_category])
-            .observe($duration.as_secs_f64());
-
-        // Update client connection count
-        let client_type = if $client_id.as_str().starts_with("auth:") {
-            "auth"
-        } else if $client_id.as_str().starts_with("proxy:") {
-            "proxy"
-        } else {
-            "direct"
-        };
-
-        $crate::websocket::connection::instrument::CLIENT_CONNECTIONS
-            .with_label_values(&[client_type])
-            .dec();
-
-        info!(
-            connection_id = %$connection_id,
-            client_id = %$client_id,
-            duration_secs = $duration.as_secs(),
-            reason = $reason,
-            reason_category = reason_category,
-            "Connection removed"
-        );
-    };
+/// A connection-related failure, at one of the real failure points in
+/// connection setup (`phase = "creation"`) or message handling
+/// (`phase = "operation"`).
+pub fn record_error(error_type: &'static str, phase: &'static str) {
+	counter!("ws_connection_errors_total", "error_type" => error_type, "phase" => phase).increment(1);
 }
 
-/// Records message processing for a connection
-#[macro_export]
-macro_rules! record_connection_message {
-    ($connection_id:expr, $message_type:expr) => {
-        $crate::websocket::connection::instrument::CONNECTION_MESSAGES
-            .with_label_values(&[$message_type])
-            .inc();
-
-        debug!(
-            connection_id = %$connection_id,
-            message_type = $message_type,
-            "Message processed"
-        );
-    };
+/// `connected` / `live` / `subscribed` — see #227. `connected` is cheap
+/// (a `DashMap::len()`) and is also set synchronously from
+/// `add_connection`/`remove_connection`; `live` and `subscribed` require
+/// awaiting every connection actor and are refreshed only by
+/// `metrics::periodic`'s background sweep, never from the request or scrape
+/// path.
+pub fn set_presence_gauges(connected: usize, live: usize, subscribed: usize) {
+	set_connected(connected);
+	#[allow(clippy::cast_precision_loss)]
+	gauge!("ws_connections", "state" => "live").set(live as f64);
+	#[allow(clippy::cast_precision_loss)]
+	gauge!("ws_connections", "state" => "subscribed").set(subscribed as f64);
 }
 
-/// Records subscription changes
-#[macro_export]
-macro_rules! record_subscription_change {
-    ($connection_id:expr, $operation:expr, $event_types:expr, $changed_count:expr) => {
-        for event_type in $event_types {
-            let event_type_str = format!("{:?}", event_type);
-            match $operation {
-                "subscribe" => {
-                    $crate::websocket::connection::instrument::CONNECTION_SUBSCRIPTIONS
-                        .with_label_values(&[&event_type_str])
-                        .inc();
-                },
-                "unsubscribe" => {
-                    $crate::websocket::connection::instrument::CONNECTION_SUBSCRIPTIONS
-                        .with_label_values(&[&event_type_str])
-                        .dec();
-                },
-                _ => {}
-            }
-        }
-
-        debug!(
-            connection_id = %$connection_id,
-            operation = $operation,
-            changed_count = $changed_count,
-            event_types = ?$event_types,
-            "Subscription change recorded"
-        );
-    };
+/// Just `connected` — cheap enough to call from `add_connection` and
+/// `remove_connection` directly, so it moves within one scrape interval
+/// instead of waiting for the next periodic sweep.
+pub fn set_connected(connected: usize) {
+	#[allow(clippy::cast_precision_loss)]
+	gauge!("ws_connections", "state" => "connected").set(connected as f64);
 }
 
-/// Records timeout monitor operations
-#[macro_export]
-macro_rules! record_timeout_operation {
-	($operation:expr, $result:expr, $count:expr) => {
-		$crate::websocket::connection::instrument::TIMEOUT_MONITOR_OPERATIONS
-			.with_label_values(&[$operation, $result])
-			.inc();
-
-		if $count > 0 {
-			info!(operation = $operation, result = $result, count = $count, "Timeout monitor operation completed");
-		}
-	};
+/// `ConnectionGuard`'s global semaphore occupancy — permits held right now.
+/// Diverging from `connected` (held steady while `connected` drops toward
+/// zero) is the signature of a leaked permit; see #227.
+pub fn set_guard_occupancy(occupancy: usize) {
+	#[allow(clippy::cast_precision_loss)]
+	gauge!("ws_connection_guard_occupancy").set(occupancy as f64);
 }
 
-/// Records connection errors with context
-#[macro_export]
-macro_rules! record_connection_error {
-    ($error_type:expr, $phase:expr, $error:expr) => {
-        $crate::websocket::connection::instrument::CONNECTION_ERRORS
-            .with_label_values(&[$error_type, $phase])
-            .inc();
-
-        error!(
-            error_type = $error_type,
-            phase = $phase,
-            error = %$error,
-            "Connection error recorded"
-        );
-    };
-
-    ($error_type:expr, $phase:expr, $connection_id:expr, $error:expr) => {
-        $crate::websocket::connection::instrument::CONNECTION_ERRORS
-            .with_label_values(&[$error_type, $phase])
-            .inc();
-
-        error!(
-            error_type = $error_type,
-            phase = $phase,
-            connection_id = %$connection_id,
-            error = %$error,
-            "Connection error recorded with context"
-        );
-    };
-}
-
-/// Health check for connection module invariants
-#[macro_export]
-macro_rules! connection_health_check {
-	($connections:expr) => {{
-		let active_count = $connections.iter().filter(|entry| entry.value().is_active()).count();
-
-		let stale_count = $connections.iter().filter(|entry| entry.value().is_stale()).count();
-
-		let total_count = $connections.len();
-
-		// Update current state metrics to ensure accuracy
-		$crate::connection::instrument::CONNECTION_STATES.with_label_values(&["active"]).set(active_count as i64);
-
-		$crate::connection::instrument::CONNECTION_STATES.with_label_values(&["stale"]).set(stale_count as i64);
-
-		// Log health snapshot
-		debug!(
-			total_connections = total_count,
-			active_connections = active_count,
-			stale_connections = stale_count,
-			"Connection health check completed"
-		);
-
-		// Return health data for caller
-		(total_count, active_count, stale_count)
-	}};
+/// `ConnectionGuard`'s configured global capacity (`ws_conn_manager::MAX_GLOBAL`).
+/// Set once at startup, the same "fixed value, dashboarded so it doesn't
+/// have to be memorised" shape as `metrics::build_info::record`.
+pub fn set_guard_capacity(capacity: usize) {
+	#[allow(clippy::cast_precision_loss)]
+	gauge!("ws_connection_guard_capacity").set(capacity as f64);
 }

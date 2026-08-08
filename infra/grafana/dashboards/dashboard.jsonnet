@@ -2,6 +2,7 @@ local panels = import 'lib/panels.libsonnet';
 local utils = import 'lib/utils.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
 local health = import 'lib/health-panels.libsonnet';
+local clients = import 'lib/clients-panels.libsonnet';
 
 local dashboard = {
   annotations: {
@@ -62,21 +63,45 @@ local dashboard = {
     health.requestRateByOutcome { gridPos: utils.gridPos(0, 6, 24, 6) },
     health.httpLatencyByRoute { gridPos: utils.gridPos(0, 12, 24, 6) },
 
+    // =============== CLIENTS (#214/#229) ===============
+    // Is anybody there, and is anyone holding a socket for nothing. WS
+    // CONNS/LIVE/SUBSCRIBED are read as a triple — see
+    // clients-panels.libsonnet's header — so they sit adjacent rather than
+    // in separate rows the way HEALTH's independent conditions do.
+    clients.wsConns { gridPos: utils.gridPos(0, 18, 6, 4), id: 910 },
+    clients.live { gridPos: utils.gridPos(6, 18, 6, 4), id: 911 },
+    clients.subscribed { gridPos: utils.gridPos(12, 18, 6, 4), id: 912 },
+    clients.reqPerMin { gridPos: utils.gridPos(18, 18, 6, 4), id: 913 },
+
+    clients.churn { gridPos: utils.gridPos(0, 22, 12, 6), id: 914 },
+    clients.closesByReason { gridPos: utils.gridPos(12, 22, 12, 6), id: 915 },
+
+    clients.cacheHitMissByNamespace { gridPos: utils.gridPos(0, 28, 12, 6), id: 916 },
+    clients.sqlitePool { gridPos: utils.gridPos(12, 28, 12, 6), id: 917 },
+
+    // WS internals — see clients-panels.libsonnet's own comment: readers
+    // for the families #226 kept but that didn't make the epic's own
+    // mock-up, reclaimed from `parked/ws-panels.libsonnet`.
+    clients.guardOccupancy { gridPos: utils.gridPos(0, 34, 12, 6), id: 918 },
+    clients.clientTypeDistribution { gridPos: utils.gridPos(12, 34, 12, 6), id: 919 },
+    clients.messageRate { gridPos: utils.gridPos(0, 40, 12, 6), id: 920 },
+    clients.connectionErrors { gridPos: utils.gridPos(12, 40, 12, 6), id: 921 },
+
     // =============== ROW 1: UPTIME SLA ===============
-    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 18, 6, 4) },
-    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 18, 6, 4) },
-    panels.tcpConnectivity { gridPos: utils.gridPos(12, 18, 6, 4) },
-    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 18, 6, 4) },
+    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 46, 6, 4) },
+    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 46, 6, 4) },
+    panels.tcpConnectivity { gridPos: utils.gridPos(12, 46, 6, 4) },
+    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 46, 6, 4) },
 
     // =============== ROW 2: UPTIME TRENDS & DIAGNOSTICS ===============
-    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 22, 12, 8) },
-    panels.probeDiagnostics { gridPos: utils.gridPos(12, 22, 12, 8) },
+    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 50, 12, 8) },
+    panels.probeDiagnostics { gridPos: utils.gridPos(12, 50, 12, 8) },
 
     // =============== ROW 3: APPLICATION METRICS ===============
     // The standalone liveness stat this row used to carry (#212/G3) is
     // superseded by the HEALTH row's UP panel above, which is the same
     // `up{job="file_host"}` query — no need for both.
-    panels.operationDuration { gridPos: utils.gridPos(0, 30, 24, 8) },
+    panels.operationDuration { gridPos: utils.gridPos(0, 58, 24, 8) },
   ]),
   refresh: '5s',
   schemaVersion: 38,

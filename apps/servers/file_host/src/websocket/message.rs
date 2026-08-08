@@ -1,3 +1,4 @@
+use crate::websocket::connection::instrument;
 use crate::WebSocketFsm;
 use some_transport::{NatsTransport, UnboundedSenderExt};
 use tokio::sync::mpsc::UnboundedSender;
@@ -21,6 +22,7 @@ impl WebSocketFsm {
 					raw_message = %raw_message,
 					"Failed to deserialize websocket JSON message"
 				);
+				instrument::record_error("invalid_json", "operation");
 
 				self.send_error_to_client(ws_tx, &format!("Invalid JSON: {}", e));
 				return;
@@ -58,6 +60,7 @@ impl WebSocketFsm {
 				error = %e,
 				"Failed to subscribe to event types"
 			);
+			instrument::record_error("subscription_update_failed", "operation");
 			self.send_error_to_client(ws_tx, &format!("Subscription failed: {}", e));
 			return;
 		}
@@ -75,6 +78,7 @@ impl WebSocketFsm {
 				error = %e,
 				"Failed to unsubscribe from event types"
 			);
+			instrument::record_error("subscription_update_failed", "operation");
 			self.send_error_to_client(ws_tx, &format!("Unsubscription failed: {}", e));
 			return;
 		}

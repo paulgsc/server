@@ -14,6 +14,21 @@ pub mod instrument;
 use errors::ConnectionError;
 pub(crate) use handlers::{clear_connection, establish_connection, send_initial_handshake};
 
+/// `client_type` label for [`instrument::record_created`]/[`instrument::record_removed`]
+/// and `ConnectionCleanup`'s own decrement in `websocket.rs` — the same
+/// `auth:`/`proxy:`/`direct:` prefix convention `client_id_from_request`
+/// writes, read back out. A free function rather than a method so
+/// `websocket.rs` can derive the label without going through the store.
+pub(crate) fn client_type_label(client_id: &ClientId) -> &'static str {
+	if client_id.as_str().starts_with("auth:") {
+		"auth"
+	} else if client_id.as_str().starts_with("proxy:") {
+		"proxy"
+	} else {
+		"direct"
+	}
+}
+
 // Connection management operations
 impl WebSocketFsm {
 	/// Generate a ClientId from request headers and socket address
@@ -50,6 +65,7 @@ impl WebSocketFsm {
 	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
 		let start = Instant::now();
 		let client_id = self.client_id_from_request(headers, addr);
+		let client_type = client_type_label(&client_id);
 
 		let domain_conn = Connection::new(client_id.clone(), *addr);
 
@@ -61,8 +77,20 @@ impl WebSocketFsm {
 
 		let handle = self.store.insert(client_key.clone(), domain_conn, cancel_token);
 
+		// The entry occupies a store slot from this point regardless of
+		// whether the subscribe below succeeds, so `created`/`connected` are
+		// recorded here rather than after — a subscribe failure that leaves
+		// this entry stranded (see the `?` below: nothing removes it on this
+		// path today) should show up as `connected` growing, not disappear
+		// from the count entirely.
+		instrument::record_created(client_type);
+		instrument::set_connected(self.store.len());
+
 		// Update the actor's subscription state to match
-		handle.subscribe(default_subs).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;
+		handle.subscribe(default_subs).await.map_err(|e| {
+			instrument::record_error("subscription_failed", "creation");
+			ConnectionError::SubscriptionFailed(e)
+		})?;
 		let elapsed = start.elapsed();
 
 		info!(
@@ -139,6 +167,16 @@ impl WebSocketFsm {
 					cleanup_duration_ms = elapsed.as_millis(),
 					"Connection removed"
 				);
+
+				// `ws_connection_lifecycle_total{event="removed"}` and the
+				// duration histogram are recorded once per socket at
+				// `ConnectionCleanup::drop` (websocket.rs), not here — this
+				// function is called from several places that Drop still
+				// runs after (stale timeout, client close, forwarder end),
+				// and double-instrumenting both would double-count. Only
+				// `connected` — cheap, and this store entry genuinely just
+				// left — is refreshed here for immediacy.
+				instrument::set_connected(self.store.len());
 
 				Ok(())
 			}
