@@ -82,6 +82,12 @@ pub const ROUTES: &[RouteDescriptor] = &[
 	},
 	RouteDescriptor {
 		method: "GET",
+		path: "/ready",
+		versioned: false,
+		module: "readiness",
+	},
+	RouteDescriptor {
+		method: "GET",
 		path: "/ws",
 		versioned: false,
 		module: "websocket",
@@ -458,6 +464,7 @@ mod tests {
 	/// half of that mistake it can see.
 	const SOURCES: &[(&str, &str, bool)] = &[
 		("health", include_str!("health.rs"), false),
+		("readiness", include_str!("readiness.rs"), false),
 		("websocket", include_str!("../websocket.rs"), false),
 		("sheets", include_str!("sheets.rs"), true),
 		("gdrive", include_str!("gdrive.rs"), true),

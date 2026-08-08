@@ -50,6 +50,17 @@ RUN cargo chef prepare --recipe-path recipe.json --bin file_host
 #   3. Build only the target binary
 FROM chef AS builder
 
+# Populated by CI via --build-arg (see .github/actions/docker-build). Not
+# just OCI LABEL metadata (below) — apps/servers/file_host/build.rs reads
+# these same names to stamp the `service_info` metric the binary itself
+# reports (#213/F4), since `.git` isn't in this build context for it to
+# derive them from directly. Defaulted so a local `docker build` with no
+# --build-arg still produces a working, honestly-"unknown"-labelled image.
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+ENV VCS_REF=${VCS_REF}
+ENV BUILD_DATE=${BUILD_DATE}
+
 # Step 1: build dependency layer
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -126,7 +137,9 @@ EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/file_host"]
 
 # ── Metadata ──────────────────────────────────────────────────────────────
-# Populated by CI at build time
+# Populated by CI at build time. ARGs don't cross the FROM boundary from the
+# builder stage above, so VCS_REF/BUILD_DATE are declared again here — same
+# --build-arg values, now labelling the image rather than feeding build.rs.
 ARG APP_NAME=unknown
 ARG BUILD_VERSION=unknown
 ARG BUILD_DATE=unknown

@@ -7,6 +7,7 @@ pub mod health;
 pub mod inventory;
 pub mod metrics;
 pub mod push;
+pub mod readiness;
 pub mod sheets;
 pub mod signals;
 pub mod tab_metadata;

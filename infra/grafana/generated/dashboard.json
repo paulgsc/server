@@ -12,6 +12,19 @@
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
         "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "expr": "changes(process_start_time_seconds[$__interval]) > 0",
+        "iconColor": "purple",
+        "name": "Restarts",
+        "step": "60s",
+        "titleFormat": "file_host restarted",
+        "type": "dashboard"
       }
     ]
   },
@@ -22,6 +35,776 @@
   "links": [],
   "liveNow": false,
   "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "DOWN"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "UP"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8E8E8E",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "id": 900,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#unreachable"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "name_and_value"
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"file_host\"}",
+          "instant": true,
+          "legendFormat": "file_host",
+          "refId": "A"
+        }
+      ],
+      "title": "UP",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 3
+              }
+            ]
+          },
+          "unit": "/3"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "id": 901,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#dependency-down"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(dependency_up)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "DEPS",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "id": 902,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#rejecting"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ERRORS",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "id": 903,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#saturated"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(refusals_total[5m]))",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "REFUSALS",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "text": "ok"
+                },
+                "1": {
+                  "color": "red",
+                  "text": "STALLED"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8E8E8E",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "id": 904,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#stalled"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "(time() - nudge_waker_last_pass_timestamp_seconds) > bool 900",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "LOOPS",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "text": "ok"
+                },
+                "1": {
+                  "color": "red",
+                  "text": "BLIND"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8E8E8E",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "id": 905,
+      "links": [
+        {
+          "targetBlank": true,
+          "title": "What this means",
+          "url": "https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md#blind"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_pass_timestamp_seconds))\n) or vector(0)\n",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SIGNAL",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "text",
+            "mode": "fixed"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8E8E8E",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 18,
+        "x": 0,
+        "y": 4
+      },
+      "id": 906,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "name"
+      },
+      "targets": [
+        {
+          "expr": "service_info",
+          "instant": true,
+          "legendFormat": "{{git_sha}} · rustc {{rust}} · built {{built_at}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Build",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "text",
+            "mode": "fixed"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8E8E8E",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "id": 907,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "time() - process_start_time_seconds",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Uptime",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "refused"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "served"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 908,
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"2..|3..\"}[5m]))",
+          "legendFormat": "served",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"4..\"}[5m]))",
+          "legendFormat": "4xx",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+          "legendFormat": "5xx",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(refusals_total[5m]))",
+          "legendFormat": "refused",
+          "refId": "D"
+        }
+      ],
+      "title": "Request Rate by Outcome",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 909,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP Latency by Route (P95)",
+      "type": "timeseries"
+    },
     {
       "datasource": {
         "type": "prometheus",
@@ -65,7 +848,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 18
       },
       "id": 1,
       "options": {
@@ -148,7 +931,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 18
       },
       "id": 2,
       "options": {
@@ -222,7 +1005,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 18
       },
       "id": 4,
       "options": {
@@ -291,7 +1074,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 18
       },
       "id": 5,
       "options": {
@@ -358,7 +1141,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 22
       },
       "id": 3,
       "options": {
@@ -422,7 +1205,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 22
       },
       "id": 6,
       "options": {
@@ -498,9 +1281,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 12
+        "y": 30
       },
       "id": 9,
       "options": {
@@ -522,105 +1305,16 @@
       ],
       "title": "⚙️ Operation Duration (P95)",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "text": "DOWN"
-                },
-                "1": {
-                  "color": "green",
-                  "text": "UP"
-                }
-              },
-              "type": "value"
-            },
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            },
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#8E8E8E",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "id": 15,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "name_and_value"
-      },
-      "targets": [
-        {
-          "expr": "up{job=\"file_host\"}",
-          "instant": true,
-          "legendFormat": "file_host",
-          "refId": "A"
-        }
-      ],
-      "title": "file_host liveness",
-      "type": "stat"
     }
   ],
-  "refresh": "10s",
+  "refresh": "5s",
   "schemaVersion": 38,
   "tags": [
     "rust",
     "axum",
     "prometheus",
-    "sla"
+    "sla",
+    "health"
   ],
   "templating": {
     "list": []
@@ -631,7 +1325,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "🚀 Service Uptime & Performance Dashboard",
+  "title": "🩺 file_host Operational Dashboard",
   "uid": "file-host-dashboard",
   "version": 1
 }

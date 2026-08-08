@@ -9,8 +9,14 @@
 //! [issue-139]: https://github.com/paulgsc/server/issues/139
 
 use axum::{extract::Extension, routing::get, Router};
-use metrics_exporter_prometheus::{BuildError, PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{BuildError, PrometheusHandle};
 use std::net::SocketAddr;
+
+// Re-exported so a caller can configure the builder (histogram buckets,
+// quantiles, …) before installing it, without taking its own direct
+// dependency on `metrics-exporter-prometheus` — this crate already owns
+// that version pin. See [`install_with`].
+pub use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetricsError {
@@ -36,7 +42,8 @@ impl MetricsHandle {
 	}
 }
 
-/// Install the global `metrics` recorder, backed by a Prometheus exporter.
+/// Install the global `metrics` recorder, backed by a Prometheus exporter,
+/// with the exporter's default configuration.
 ///
 /// Call this exactly once per process, before anything records a
 /// measurement. The returned handle is what turns the recorder's state into
@@ -47,7 +54,26 @@ impl MetricsHandle {
 /// Returns [`MetricsError::Install`] if a global recorder is already
 /// installed — this must be called at most once per process.
 pub fn install() -> Result<MetricsHandle, MetricsError> {
-	let handle = PrometheusBuilder::new().install_recorder()?;
+	install_with(PrometheusBuilder::new())
+}
+
+/// Install the global `metrics` recorder from a caller-configured builder —
+/// for a service that needs its own histogram buckets (default buckets top
+/// out at 10s; a request-duration histogram sitting behind a 15s timeout
+/// needs a bucket above it, or timeouts fall off the end of the histogram)
+/// or quantiles. `PrometheusBuilder` and [`Matcher`] are re-exported from
+/// this crate so a caller never needs its own direct
+/// `metrics-exporter-prometheus` dependency.
+///
+/// Otherwise identical to [`install`] — same one-call-per-process rule, same
+/// use of the returned handle.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::Install`] if a global recorder is already
+/// installed, or if `builder` was misconfigured (e.g. empty buckets).
+pub fn install_with(builder: PrometheusBuilder) -> Result<MetricsHandle, MetricsError> {
+	let handle = builder.install_recorder()?;
 	Ok(MetricsHandle(handle))
 }
 
