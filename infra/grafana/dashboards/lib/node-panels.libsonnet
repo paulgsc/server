@@ -4,7 +4,7 @@
   cpuUsage: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -77,7 +77,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
@@ -94,7 +94,7 @@
   memoryUsage: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -165,7 +165,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes',
@@ -176,7 +176,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_MemAvailable_bytes',
@@ -193,7 +193,7 @@
   memoryBreakdown: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -264,7 +264,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_MemTotal_bytes - node_memory_MemFree_bytes - node_memory_Buffers_bytes - node_memory_Cached_bytes',
@@ -275,7 +275,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_Buffers_bytes',
@@ -286,7 +286,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_Cached_bytes',
@@ -297,7 +297,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_MemFree_bytes',
@@ -314,7 +314,7 @@
   networkPackets: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -398,7 +398,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_receive_packets_total{device!="lo"}[5m])',
@@ -409,7 +409,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_transmit_packets_total{device!="lo"}[5m])',
@@ -426,7 +426,7 @@
   diskSpaceAvailable: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -472,7 +472,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 * (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})',
@@ -489,7 +489,7 @@
   fileDescriptors: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -560,7 +560,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_filefd_allocated',
@@ -571,7 +571,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_filefd_maximum',
@@ -588,7 +588,7 @@
   networkErrors: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -659,7 +659,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_receive_errs_total{device!="lo"}[5m])',
@@ -670,7 +670,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_transmit_errs_total{device!="lo"}[5m])',
@@ -681,7 +681,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_receive_drop_total{device!="lo"}[5m])',
@@ -692,7 +692,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_transmit_drop_total{device!="lo"}[5m])',
@@ -709,7 +709,7 @@
   diskUtilization: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -786,7 +786,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_disk_io_time_seconds_total[5m]) * 100',
@@ -803,7 +803,7 @@
   systemTemperature: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -878,7 +878,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_hwmon_temp_celsius',
@@ -895,7 +895,7 @@
   interrupts: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -966,7 +966,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_intr_total[5m])',
@@ -983,7 +983,7 @@
   entropyAvailable: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1031,7 +1031,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_entropy_available_bits',
@@ -1048,7 +1048,7 @@
   swapUsage: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1119,7 +1119,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes',
@@ -1130,7 +1130,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_SwapFree_bytes',
@@ -1147,7 +1147,7 @@
   filesystemInodes: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1203,7 +1203,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 * (1 - (node_filesystem_files_free{fstype!="tmpfs"} / node_filesystem_files{fstype!="tmpfs"}))',
@@ -1220,7 +1220,7 @@
   tcpConnections: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1291,7 +1291,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_netstat_Tcp_CurrEstab',
@@ -1302,7 +1302,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_sockstat_TCP_tw',
@@ -1313,7 +1313,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_sockstat_sockets_used',
@@ -1330,7 +1330,7 @@
   forkRate: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1401,7 +1401,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_forks_total[5m])',
@@ -1418,7 +1418,7 @@
   memoryUtilizationPercent: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1464,7 +1464,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))',
@@ -1481,7 +1481,7 @@
   diskUsage: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1537,7 +1537,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 * (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"}))',
@@ -1554,7 +1554,7 @@
   networkIO: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1638,7 +1638,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_receive_bytes_total{device!="lo"}[5m])',
@@ -1649,7 +1649,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_network_transmit_bytes_total{device!="lo"}[5m])',
@@ -1666,7 +1666,7 @@
   diskIO: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1750,7 +1750,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_disk_read_bytes_total[5m])',
@@ -1761,7 +1761,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_disk_written_bytes_total[5m])',
@@ -1778,7 +1778,7 @@
   loadAverage: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1849,7 +1849,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_load1',
@@ -1860,7 +1860,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_load5',
@@ -1871,7 +1871,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_load15',
@@ -1888,7 +1888,7 @@
   systemUptime: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1928,7 +1928,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'time() - node_boot_time_seconds',
@@ -1945,7 +1945,7 @@
   cpuCores: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -1985,7 +1985,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'count(count by (cpu)(node_cpu_seconds_total))',
@@ -2002,7 +2002,7 @@
   memoryTotal: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -2042,7 +2042,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_memory_MemTotal_bytes',
@@ -2059,7 +2059,7 @@
   cpuByCore: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -2132,7 +2132,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: '100 - (avg by (cpu)(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
@@ -2149,7 +2149,7 @@
   filesystemIOPS: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -2233,7 +2233,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_disk_reads_completed_total[5m])',
@@ -2244,7 +2244,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_disk_writes_completed_total[5m])',
@@ -2261,7 +2261,7 @@
   processCount: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -2332,7 +2332,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_procs_running',
@@ -2343,7 +2343,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'node_procs_blocked',
@@ -2360,7 +2360,7 @@
   contextSwitches: {
     datasource: {
       type: 'prometheus',
-      uid: '${DS_PROMETHEUS}',
+      uid: 'prometheus',
     },
     fieldConfig: {
       defaults: {
@@ -2431,7 +2431,7 @@
       {
         datasource: {
           type: 'prometheus',
-          uid: '${DS_PROMETHEUS}',
+          uid: 'prometheus',
         },
         editorMode: 'code',
         expr: 'irate(node_context_switches_total[5m])',

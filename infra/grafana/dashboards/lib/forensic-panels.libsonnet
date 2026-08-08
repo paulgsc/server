@@ -7,7 +7,7 @@
 
   // ✅ FIXED: System Hang Detector — High Load + Low CPU
   systemHangDetector:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         mappings: [
@@ -40,7 +40,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
             (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > 3
@@ -59,63 +59,16 @@
     type: 'stat',
   },
 
-  // ✅ FIXED: Request Rate vs Throttling — assumes http_requests_total exists
-  // ⚠️ You must have an app exposing this metric (e.g. via /metrics)
-  requestRateInvariant:: {
-    datasource: 'Prometheus',
-    fieldConfig: {
-      defaults: {
-        mappings: [
-          {
-            options: {
-              '0': { text: 'Rate Limiting Active', color: 'green' },
-              '1': { text: '🚨 NO THROTTLING!', color: 'red' },
-            },
-            type: 'value',
-          },
-        ],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'green', value: null },
-            { color: 'red', value: 0.5 },
-          ],
-        },
-        unit: 'none',
-      },
-      overrides: [],
-    },
-    options: {
-      colorMode: 'background',
-      graphMode: 'none',
-      justifyMode: 'center',
-      orientation: 'auto',
-      textMode: 'name',
-    },
-    targets: [
-      {
-        datasource: 'Prometheus',
-        expr: |||
-          (
-            sum(rate(http_requests_total{job=~".*file-host.*"}[1m])) > 20
-          )
-          unless
-          (
-            sum(rate(http_requests_total{job=~".*file-host.*", status="429"}[1m])) > 0
-          )
-        |||,
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🚨 High Load + No Rate Limiting',
-    description: 'file-host receiving >20 req/sec without any 429 responses',
-    type: 'stat',
-  },
+  // #212/#217: `requestRateInvariant` used to live here — a contradiction
+  // panel against `http_requests_total`, a name nothing in this workspace
+  // emits (no axum-prometheus layer, no manual counter). Same idea, same
+  // missing premise as the parked `rate-limit.jsonnet`; removed rather than
+  // parked since this file's other 17 panels are real and it has no home
+  // of its own to park into. Returns once [ABUSE] defines a real counter.
 
   // ✅ FIXED: Blocked Processes (D state) — node_procs_blocked is correct
   blockedProcesses:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         thresholds: {
@@ -139,7 +92,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'node_procs_blocked',
         refId: 'A',
       },
@@ -153,7 +106,7 @@
 
   // ✅ FIXED: Top CPU Offenders — process-exporter metric corrected
   topCpuOffenders:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: {
@@ -189,7 +142,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(15,
             sum by (groupname) (
@@ -218,7 +171,7 @@
 
   // ✅ FIXED: Top Memory Consumers — RSS memory is correct
   topMemoryConsumers:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { align: 'auto', displayMode: 'auto' },
@@ -242,7 +195,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(15,
             sum by (groupname) (
@@ -271,7 +224,7 @@
 
   // ✅ FIXED: Top I/O Bandwidth — read + write bytes per second
   topIoOffenders:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { align: 'auto', displayMode: 'auto' },
@@ -291,7 +244,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(10,
             sum by (groupname) (
@@ -323,7 +276,7 @@
 
   // ✅ FIXED: Load vs CPU — per-core normalization corrected
   loadVsCpuDivergence:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { thresholdsStyle: { mode: 'line' } },
@@ -353,13 +306,13 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})',
         legendFormat: 'Load per Core',
         refId: 'A',
       },
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: '100 - (avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
         legendFormat: 'CPU Usage %',
         refId: 'B',
@@ -372,7 +325,7 @@
 
   // ✅ FIXED: Process States — state labels: R, S, D, Z, etc.
   processStates:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { stacking: { mode: 'normal', group: 'A' } },
@@ -399,7 +352,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'sum by (state) (namedprocess_namegroup_states{state!=""})',
         legendFormat: 'State: {{state}}',
         refId: 'A',
@@ -414,7 +367,7 @@
 
   // ✅ FIXED: Container CPU Usage — cAdvisor metric
   containerCpuUsage:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: { custom: {}, unit: 'none' },
       overrides: [
@@ -441,7 +394,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(8,
             sum by (name) (
@@ -460,7 +413,7 @@
 
   // ✅ FIXED: Container Memory Pressure — usage vs limit
   containerMemoryPressure:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { thresholdsStyle: { mode: 'line' } },
@@ -483,7 +436,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
             container_memory_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
@@ -502,7 +455,7 @@
 
   // ✅ FIXED: Container I/O Bandwidth — cAdvisor fs metrics
   containerIoBandwidth:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: { custom: {}, unit: 'Bps' },
       overrides: [],
@@ -513,7 +466,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(6,
             sum by (name) (
@@ -535,7 +488,7 @@
 
   // ✅ FIXED: Context Switches — involuntary switches indicate contention
   contextSwitches:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: { custom: {}, unit: 'ops' },
       overrides: [
@@ -554,7 +507,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(6,
             sum by (groupname) (
@@ -566,7 +519,7 @@
         refId: 'A',
       },
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'rate(node_context_switches_total[1m])',
         legendFormat: 'System Total',
         refId: 'B',
@@ -579,7 +532,7 @@
 
   // ✅ FIXED: Major Page Faults — disk-backed page faults
   majorPageFaults:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: {},
@@ -601,7 +554,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(8,
             sum by (groupname) (
@@ -620,7 +573,7 @@
 
   // ✅ FIXED: Thread Count — Tokio/Go apps spawn many threads
   threadExplosion:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: {},
@@ -650,7 +603,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(10,
             sum by (groupname) (
@@ -669,7 +622,7 @@
 
   // ✅ FIXED: File Descriptor Usage — worst_fd_ratio is correct
   fileDescriptorUsage:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: {},
@@ -692,7 +645,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(10,
             max by (groupname) (
@@ -713,7 +666,7 @@
 
   // ✅ FIXED: Disk I/O Queue — node_disk_io_now is correct
   diskIoQueue:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: {},
@@ -740,13 +693,13 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'avg_over_time(node_disk_io_now[5m])',
         legendFormat: 'Avg Queue Depth (5m)',
         refId: 'A',
       },
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'node_disk_io_now',
         legendFormat: 'Current Queue Depth',
         refId: 'B',
@@ -759,7 +712,7 @@
 
   // ✅ FIXED: Swap Thrashing — combine usage % and page faults
   swapThrashing:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: { custom: {}, unit: 'percent' },
       overrides: [
@@ -787,7 +740,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
             (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)
@@ -799,7 +752,7 @@
         refId: 'A',
       },
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: 'rate(node_vmstat_pgmajfault[1m])',
         legendFormat: 'Major Page Faults/sec',
         refId: 'B',
@@ -812,7 +765,7 @@
 
   // ✅ FIXED: Container Process Limits — cAdvisor process count
   containerProcessLimits:: {
-    datasource: 'Prometheus',
+    datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
         custom: { align: 'auto', displayMode: 'auto' },
@@ -835,7 +788,7 @@
     },
     targets: [
       {
-        datasource: 'Prometheus',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           container_processes{
             name!="",

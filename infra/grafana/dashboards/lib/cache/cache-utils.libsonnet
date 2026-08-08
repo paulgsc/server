@@ -294,57 +294,6 @@
     },
   },
 
-  // Predefined queries for common metrics
-  queries: {
-    cacheOperationsTotal: 'sum(rate(cache_operations_total[5m]))',
-    cacheOperationsByType: 'sum(rate(cache_operations_total[5m])) by (operation)',
-    cacheOperationsByResult: 'sum(rate(cache_operations_total[5m])) by (result)',
-    cacheSuccessRate: 'sum(rate(cache_operations_total{result="success"}[5m])) / sum(rate(cache_operations_total[5m])) * 100',
-    cacheErrorRate: 'sum(rate(cache_operations_total{result="error"}[5m])) / sum(rate(cache_operations_total[5m])) * 100',
-    cacheHitRate: 'sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))) * 100',
-    cacheHits: 'sum(rate(cache_hits_total[5m]))',
-    cacheMisses: 'sum(rate(cache_misses_total[5m]))',
-    cacheHitsByOperation: 'sum(rate(cache_hits_total[5m])) by (operation)',
-    cacheErrors: 'sum(rate(cache_errors_total[5m])) by (error_type)',
-    cacheRetries: 'sum(rate(cache_retries_total[5m])) by (operation)',
-    compressionOps: 'sum(rate(cache_compressions_total[5m]))',
-    compressionRatio: 'cache_compression_ratio',
-    entryAge: 'cache_entry_age_seconds',
-
-    // Histogram quantiles
-    operationDurationP50: 'histogram_quantile(0.50, sum(rate(cache_operation_duration_seconds_bucket[5m])) by (operation, le))',
-    operationDurationP95: 'histogram_quantile(0.95, sum(rate(cache_operation_duration_seconds_bucket[5m])) by (operation, le))',
-    operationDurationP99: 'histogram_quantile(0.99, sum(rate(cache_operation_duration_seconds_bucket[5m])) by (operation, le))',
-
-    redisConnectionDurationP50: 'histogram_quantile(0.50, sum(rate(cache_redis_connection_duration_seconds_bucket[5m])) by (le))',
-    redisConnectionDurationP95: 'histogram_quantile(0.95, sum(rate(cache_redis_connection_duration_seconds_bucket[5m])) by (le))',
-    redisConnectionDurationP99: 'histogram_quantile(0.99, sum(rate(cache_redis_connection_duration_seconds_bucket[5m])) by (le))',
-
-    compressionDurationP50: 'histogram_quantile(0.50, sum(rate(cache_compression_duration_seconds_bucket[5m])) by (le))',
-    compressionDurationP95: 'histogram_quantile(0.95, sum(rate(cache_compression_duration_seconds_bucket[5m])) by (le))',
-
-    decompressionDurationP50: 'histogram_quantile(0.50, sum(rate(cache_decompression_duration_seconds_bucket[5m])) by (le))',
-    decompressionDurationP95: 'histogram_quantile(0.95, sum(rate(cache_decompression_duration_seconds_bucket[5m])) by (le))',
-
-    dataSizeP50: 'histogram_quantile(0.50, sum(rate(cache_data_size_bytes_bucket[5m])) by (le))',
-    dataSizeP95: 'histogram_quantile(0.95, sum(rate(cache_data_size_bytes_bucket[5m])) by (le))',
-
-    compressedSizeP50: 'histogram_quantile(0.50, sum(rate(cache_compressed_size_bytes_bucket[5m])) by (le))',
-    compressedSizeP95: 'histogram_quantile(0.95, sum(rate(cache_compressed_size_bytes_bucket[5m])) by (le))',
-
-    ttlP50: 'histogram_quantile(0.50, sum(rate(cache_ttl_seconds_bucket[5m])) by (le))',
-    ttlP95: 'histogram_quantile(0.95, sum(rate(cache_ttl_seconds_bucket[5m])) by (le))',
-    ttlP99: 'histogram_quantile(0.99, sum(rate(cache_ttl_seconds_bucket[5m])) by (le))',
-
-    accessCountP50: 'histogram_quantile(0.50, sum(rate(cache_access_count_bucket[5m])) by (le))',
-    accessCountP95: 'histogram_quantile(0.95, sum(rate(cache_access_count_bucket[5m])) by (le))',
-
-    // Average calculations
-    avgDataSize: 'sum(rate(cache_data_size_bytes_sum[5m])) / sum(rate(cache_data_size_bytes_count[5m]))',
-    avgCompressedSize: 'sum(rate(cache_compressed_size_bytes_sum[5m])) / sum(rate(cache_compressed_size_bytes_count[5m]))',
-    avgOperationDuration: 'sum(rate(cache_operation_duration_seconds_sum[5m])) / sum(rate(cache_operation_duration_seconds_count[5m]))',
-  },
-
   // Helper function to create a basic stat panel
   createStatPanel(title, query, unit, thresholds): {
     title: title,
@@ -406,27 +355,9 @@
     table: { w: 24, h: 10 },
   },
 
-  // Alert configurations for common thresholds
-  alerts: {
-    highErrorRate: {
-      condition: 'sum(rate(cache_operations_total{result="error"}[5m])) / sum(rate(cache_operations_total[5m])) * 100 > 5',
-      summary: 'High cache error rate detected',
-      description: 'Cache error rate is above 5% for the last 5 minutes',
-    },
-    lowHitRate: {
-      condition: 'sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))) * 100 < 70',
-      summary: 'Low cache hit rate detected',
-      description: 'Cache hit rate is below 70% for the last 5 minutes',
-    },
-    highLatency: {
-      condition: 'histogram_quantile(0.95, sum(rate(cache_operation_duration_seconds_bucket[5m])) by (le)) > 1.0',
-      summary: 'High cache operation latency detected',
-      description: '95th percentile of cache operation duration is above 1 second',
-    },
-    highRetryRate: {
-      condition: 'sum(rate(cache_retries_total[5m])) > 10',
-      summary: 'High cache retry rate detected',
-      description: 'Cache retry rate is above 10/sec for the last 5 minutes',
-    },
-  },
+  // #219: no Grafana alert rules at this stage — the dashboard's visual
+  // state is the alert. This used to hold four `condition:` strings against
+  // `cache_operations_total`/`cache_operation_duration_seconds`/
+  // `cache_retries_total`, none of which this workspace has ever emitted,
+  // wired to no provisioning directory that would have loaded them.
 }

@@ -1,5 +1,5 @@
-local panels = import 'lib/ws-panels.libsonnet';
-local utils = import 'lib/ws-utils.libsonnet';
+local panels = import 'ws-panels.libsonnet';
+local utils = import 'ws-utils.libsonnet';
 
 {
   annotations: {

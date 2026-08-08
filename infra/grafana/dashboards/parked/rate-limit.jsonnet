@@ -1,4 +1,4 @@
-local panels = import 'lib/rate-limiting/rate-limit.libsonnet';
+local panels = import 'rate-limiting/rate-limit.libsonnet';
 
 {
   __inputs: [],
