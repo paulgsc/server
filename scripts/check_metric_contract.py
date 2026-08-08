@@ -63,7 +63,6 @@ EXEMPT_QUERIED_PREFIXES: dict[str, str] = {
 EXEMPT_QUERIED_EXACT: dict[str, str] = {
 	"up": "Prometheus's own per-target scrape-health series",
 	"ALERTS": "Prometheus's own built-in firing-alerts series",
-	"nudge_waker_last_pass_timestamp_seconds": "owned by #236 ([PUSH] P4), not yet landed — the HEALTH row's LOOPS/SIGNAL panels (#213/#225) query it ahead of the emitter on purpose, per #219's rule that an absent series renders grey rather than green",
 }
 
 # Metrics this workspace emits through the `metrics` facade with no

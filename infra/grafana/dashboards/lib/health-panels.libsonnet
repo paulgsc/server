@@ -8,18 +8,9 @@ local panelDefaults = import 'panel-defaults.libsonnet';
 
 local docsUrl = 'https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md';
 
-// #236 ([PUSH] P4, a sibling epic) has not landed yet — nothing in this
-// workspace emits `nudge_waker_last_pass_timestamp_seconds`, which the
-// LOOPS/SIGNAL panels below query anyway: #219's rule is exactly built for
-// this, a query against an as-yet-unemitted metric renders grey (unknown),
-// never green, so the panel is honest on day one and starts reporting real
-// data the moment #236 lands with no dashboard change required.
-// scripts/check_metric_contract.py carries the matching EXEMPT_QUERIED
-// entry with this same reason. LOOPS' `900` threshold is 3x
-// `nudge_waker_seconds`' own default (config.rs) — #236's own task list
-// promises a `nudge_waker_interval_seconds` gauge so this can derive from
-// live configuration instead; until it lands, 3x the *default* interval is
-// the best static approximation available.
+// #216/P4 (#236) exports both the most recent successful pass and the live
+// configured interval. An empty pass counts as successful: quiet success and
+// a stopped task are precisely the two states this signal must separate.
 
 local docLink(anchor) = [
   {
@@ -96,22 +87,15 @@ local docLink(anchor) = [
     options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
   },
 
-  // LOOPS — condition #5 (stalled). See `waker_last_pass`/`stalledAfterSeconds`
-  // above for why this queries a metric #236 hasn't landed yet, and why the
-  // threshold is a static stand-in for that story's own configured-interval
-  // gauge.
+  // LOOPS — condition #5 (stalled). Three missed configured intervals is a
+  // fault; deriving the threshold from the exported interval keeps a tuned
+  // deployment honest.
   loops: {
     title: 'LOOPS',
     type: 'stat',
     id: 904,
     links: docLink('stalled'),
-    // #217's contract check (scripts/check_metric_contract.py) reads
-    // `expr:` literally out of this file, the same way it reads every other
-    // panel library — jsonnet's `%` string interpolation would hide the
-    // literal metric name from it, so this is written out directly rather
-    // than built from `waker_last_pass`/`stalledAfterSeconds` above (which
-    // exist to document *why*, not to be interpolated from).
-    targets: [{ expr: '(time() - nudge_waker_last_pass_timestamp_seconds) > bool 900', instant: true, refId: 'A' }],
+    targets: [{ expr: '(time() - nudge_waker_last_pass_timestamp_seconds) > bool (3 * nudge_waker_interval_seconds)', instant: true, refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 'none',
@@ -148,6 +132,7 @@ local docLink(anchor) = [
           or sum(absent(http_requests_total))
           or sum(absent(refusals_total))
           or sum(absent(nudge_waker_last_pass_timestamp_seconds))
+          or sum(absent(nudge_waker_interval_seconds))
         ) or vector(0)
       |||,
       instant: true,
