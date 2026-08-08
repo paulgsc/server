@@ -1,3 +1,4 @@
+use crate::websocket::connection::instrument;
 use crate::WebSocketFsm;
 use axum::extract::ws::{Message, WebSocket};
 use futures::stream::{SplitStream, StreamExt};
@@ -18,11 +19,16 @@ pub(crate) fn spawn_process_incoming_messages(
 	ws_tx: UnboundedSender<Event>,
 	conn_key: String,
 	cancel_token: CancellationToken,
-) -> JoinHandle<u64> {
+) -> JoinHandle<(u64, &'static str)> {
 	tokio::spawn(async move { process_incoming_messages(receiver, state, transport, ws_tx, conn_key, cancel_token).await })
 }
 
-/// Process all incoming messages from the WebSocket
+/// Process all incoming messages from the WebSocket.
+///
+/// Returns `(messages_processed, end_reason)` — `end_reason` is one of
+/// `timeout` | `client_disconnect` | `error` | `cleanup`, the same label set
+/// `ConnectionCleanup::drop` (`websocket.rs`) records under, decided here
+/// because this loop is the one place that actually knows *why* it broke.
 async fn process_incoming_messages(
 	mut receiver: SplitStream<WebSocket>,
 	state: WebSocketFsm,
@@ -30,13 +36,14 @@ async fn process_incoming_messages(
 	ws_tx: UnboundedSender<Event>,
 	conn_key: String,
 	cancel_token: CancellationToken,
-) -> u64 {
+) -> (u64, &'static str) {
 	let mut message_count = 0u64;
 
 	let mut stale_check_interval = interval(Duration::from_secs(30));
-	let stale_timeout = Duration::from_secs(120);
+	let stale_timeout = crate::websocket::STALE_TIMEOUT;
 
 	let store = state.store.clone();
+	let end_reason: &'static str;
 
 	loop {
 		tokio::select! {
@@ -46,6 +53,7 @@ async fn process_incoming_messages(
 					messages_processed = message_count,
 					"WebSocket message processing cancelled - shutting down"
 				);
+				end_reason = "cleanup";
 				break;
 			}
 
@@ -55,6 +63,7 @@ async fn process_incoming_messages(
 						connection_id = %conn_key,
 						"Connection actor missing during stale check - closing"
 					);
+					end_reason = "cleanup";
 					break;
 				};
 
@@ -76,6 +85,7 @@ async fn process_incoming_messages(
 									"Stale connection - no inbound activity".to_string(),
 								)
 								.await;
+							end_reason = "timeout";
 							break;
 						}
 					}
@@ -85,6 +95,8 @@ async fn process_incoming_messages(
 							error = ?e,
 							"Failed to fetch connection state - closing"
 						);
+						instrument::record_error("state_fetch_failed", "operation");
+						end_reason = "error";
 						break;
 					}
 				}
@@ -100,6 +112,7 @@ async fn process_incoming_messages(
 								connection_id = %conn_key,
 								"Connection actor missing on inbound frame"
 							);
+							end_reason = "cleanup";
 							break;
 						};
 
@@ -109,6 +122,8 @@ async fn process_incoming_messages(
 								error = ?e,
 								"Failed to record inbound activity - closing"
 							);
+							instrument::record_error("activity_record_failed", "operation");
+							end_reason = "error";
 							break;
 						}
 
@@ -123,6 +138,7 @@ async fn process_incoming_messages(
 							.await
 								.is_err()
 						{
+							end_reason = "client_disconnect";
 							break;
 						}
 					}
@@ -135,6 +151,8 @@ async fn process_incoming_messages(
 							error = %e,
 							"WebSocket error"
 						);
+						instrument::record_error("stream_error", "operation");
+						end_reason = "error";
 						break;
 					}
 
@@ -143,6 +161,7 @@ async fn process_incoming_messages(
 							connection_id = %conn_key,
 							"WebSocket stream ended"
 						);
+						end_reason = "client_disconnect";
 						break;
 					}
 				}
@@ -150,7 +169,7 @@ async fn process_incoming_messages(
 		}
 	}
 
-	message_count
+	(message_count, end_reason)
 }
 
 /// Handle a single WebSocket message based on its type
@@ -163,16 +182,24 @@ async fn handle_websocket_message(
 ) -> Result<(), ()> {
 	match msg {
 		Message::Text(text) => {
+			instrument::record_message("text");
 			// Process the message
 			state.process_message(transport, ws_tx, conn_key, text).await;
 			Ok(())
 		}
 
-		Message::Ping(_) => Ok(()),
+		Message::Ping(_) => {
+			instrument::record_message("ping");
+			Ok(())
+		}
 
-		Message::Pong(_) => Ok(()),
+		Message::Pong(_) => {
+			instrument::record_message("pong");
+			Ok(())
+		}
 
 		Message::Close(reason) => {
+			instrument::record_message("close");
 			let reason_str = reason
 				.as_ref()
 				.map(|f| format!("{}: {}", f.code, f.reason))
@@ -189,6 +216,9 @@ async fn handle_websocket_message(
 			Err(())
 		}
 
-		Message::Binary(_) => Ok(()),
+		Message::Binary(_) => {
+			instrument::record_message("binary");
+			Ok(())
+		}
 	}
 }

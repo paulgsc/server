@@ -92,6 +92,11 @@ async fn main() -> Result<()> {
 	// from a gap in an unrelated series.
 	file_host::metrics::build_info::record();
 
+	// #227 (C2): the configured ceiling `ws_connection_guard_occupancy` is
+	// measured against, stamped once for the same reason build info is —
+	// fixed for the process's life, so no reason to recompute it every tick.
+	file_host::websocket::connection::instrument::set_guard_capacity(ws_conn_manager::MAX_GLOBAL);
+
 	let config = Arc::new(config);
 	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
 		.create_if_missing(true)
@@ -176,6 +181,15 @@ async fn main() -> Result<()> {
 	} else {
 		tracing::info!("engagement waker is not running; /api/v1/push and /api/v1/signals still work");
 	}
+
+	// #227 (C2) / #228 (C3): `connected`/`live`/`subscribed`, guard
+	// occupancy, and SQLite pool gauges — unconditional, unlike the nudge
+	// waker above, since none of them depend on optional configuration.
+	// `file_host::websocket::STALE_TIMEOUT` is the same "recently heard
+	// from" window the WS message loop already uses for its own stale
+	// check, so `live` here and the connections it actually closes agree on
+	// what "recent" means.
+	file_host::metrics::periodic::spawn(app_state.clone(), file_host::websocket::STALE_TIMEOUT, Duration::from_secs(10));
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);

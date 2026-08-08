@@ -43,7 +43,6 @@ garde = { version =  "0.22.0", features = ["full"] }
 log = "0.4.14"
 lazy_static = { workspace = true }
 futures = { workspace = true }
-prometheus = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -87,6 +86,7 @@ chrono-tz = "0.10"
 # `test-util` gives the paused clock the sliding-window rate limiter tests use
 # to step over a sixty-second window without sleeping for it.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+metrics-util = { workspace = true }
 
 [lints]
 workspace = true

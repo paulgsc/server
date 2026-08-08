@@ -43,3 +43,38 @@ pub fn namespace_of(key: &str) -> &str {
 		None => key,
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::namespace_of;
+
+	// #228 (C3): "confirm `namespace_of` produces a bounded label set for
+	// the key patterns actually in use; a key with no `:` becomes its own
+	// namespace." The `cache_hits_total{namespace}` label's cardinality is
+	// bounded by the number of *prefixes* callers use, not by the number of
+	// keys — these are the two ways that could fail to hold.
+
+	#[test]
+	fn collapses_varying_ids_under_the_same_prefix() {
+		// A namespace with a thousand different ids is still one label
+		// value, not a thousand — the whole point of prefix-based namespacing.
+		for id in ["abc123", "def456", "0"] {
+			assert_eq!(namespace_of(&format!("capture:session:{id}")), "capture:session");
+		}
+	}
+
+	#[test]
+	fn single_segment_key_is_its_own_namespace() {
+		// The documented edge case: a key with no ':' at all has no prefix
+		// to collapse onto, so it becomes its own (unbounded-in-principle)
+		// namespace. Callers are responsible for not minting keys shaped
+		// this way at unbounded cardinality — `namespace_of` cannot enforce
+		// a convention its caller didn't follow, only report it faithfully.
+		assert_eq!(namespace_of("simplekey"), "simplekey");
+	}
+
+	#[test]
+	fn two_segment_key_is_the_prefix_alone() {
+		assert_eq!(namespace_of("embed:xyz"), "embed");
+	}
+}
