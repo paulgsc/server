@@ -1,5 +1,5 @@
 use crate::handlers::pipeline::fetch_cached;
-use crate::metrics::otel::OperationTimer;
+use crate::metrics::instruments::OperationTimer;
 use crate::{
 	models::gsheet::{validate_range, Attribution, DataResponse, FromGSheet, GanttChapter, GanttSubChapter, HexData, Metadata, RangeQuery, VideoChapters},
 	models::nfl_tennis::{NFLGameScores, SheetDataItem},

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use orchestrator::OrchestratorService;
 use some_transport::NatsTransport;
+use std::net::SocketAddr;
 use tracing::Level;
 use ws_events::events::UnifiedEvent;
 
@@ -10,6 +11,22 @@ async fn main() -> Result<()> {
 	tracing_subscriber::fmt().with_max_level(Level::INFO).with_target(true).with_line_number(true).init();
 
 	tracing::info!("🎬 Starting NATS Orchestrator Service");
+
+	// Orchestrator has no other HTTP surface (#143 (C1)) — this listener
+	// exists purely to be scraped. Bind on all interfaces so it's reachable
+	// from `monitoring-network`, but do not publish the port to the host:
+	// `infra/compose/orchestrator.yml` deliberately declares no `ports`, and
+	// this must not change that.
+	let metrics_handle = some_metrics::install()?;
+	let metrics_addr: SocketAddr = std::env::var("METRICS_ADDR")
+		.ok()
+		.and_then(|addr| addr.parse().ok())
+		.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 9464)));
+	tokio::spawn(async move {
+		if let Err(error) = some_metrics::serve(metrics_addr, metrics_handle).await {
+			tracing::error!(%error, "metrics listener exited");
+		}
+	});
 
 	// Get NATS URL from environment or use default
 	let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());

@@ -3,11 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Arc, time::Instant};
 use tracing::instrument;
 
-use crate::{
-	error::DedupCacheError,
-	metrics::{namespace_of, DEDUP_WAITERS, FETCH_DURATION},
-	store::CacheStore,
-};
+use crate::{error::DedupCacheError, metrics::namespace_of, store::CacheStore};
+use metrics::{counter, histogram};
 
 // ── DedupCache ────────────────────────────────────────────────────────────────
 //
@@ -16,11 +13,13 @@ use crate::{
 // This is where application-layer metrics get recorded, because this is where
 // application-layer events actually happen:
 //
-//   FETCH_DURATION  — time from miss detection to Redis write. redis_exporter
-//                     cannot see upstream fetch latency.
+//   cache_fetch_duration_seconds — time from miss detection to Redis write.
+//                                  redis_exporter cannot see upstream fetch
+//                                  latency.
 //
-//   DEDUP_WAITERS   — requests that coalesced behind an in-flight fetch.
-//                     redis_exporter cannot see this at all.
+//   cache_dedup_waiters_total    — requests that coalesced behind an
+//                                  in-flight fetch. redis_exporter cannot
+//                                  see this at all.
 //
 // Hit/miss counters are recorded in CacheStore (per namespace) because that's
 // where the Redis GET happens. Everything else (connection latency, command
@@ -84,9 +83,7 @@ impl DedupCache {
 				store.set(&key, &value, ttl).await.map_err(|e| e.to_string())?;
 
 				// Record fetch latency only for the fetcher, not waiters.
-				if let Ok(h) = &*FETCH_DURATION {
-					h.with_label_values(&[&ns]).observe(t.elapsed().as_secs_f64());
-				}
+				histogram!("cache_fetch_duration_seconds", "namespace" => ns.clone()).record(t.elapsed().as_secs_f64());
 
 				let bytes: Arc<[u8]> = serde_json::to_vec(&value).map_err(|e| e.to_string())?.into();
 
@@ -97,9 +94,7 @@ impl DedupCache {
 
 		// If this caller was a waiter (not the fetcher), record it.
 		if !is_fetcher {
-			if let Ok(c) = &*DEDUP_WAITERS {
-				c.with_label_values(&[&ns]).inc();
-			}
+			counter!("cache_dedup_waiters_total", "namespace" => ns.clone()).increment(1);
 		}
 
 		let value: T = serde_json::from_slice(&bytes).map_err(DedupCacheError::SerializationError)?;
@@ -147,9 +142,7 @@ impl DedupCache {
 				let (data, content_type) = fetcher().await.map_err(|e| e.to_string())?;
 				store.set_binary(&key, &data, content_type.clone(), ttl).await.map_err(|e| e.to_string())?;
 
-				if let Ok(h) = &*FETCH_DURATION {
-					h.with_label_values(&[&ns]).observe(t.elapsed().as_secs_f64());
-				}
+				histogram!("cache_fetch_duration_seconds", "namespace" => ns.clone()).record(t.elapsed().as_secs_f64());
 
 				let bytes: Arc<[u8]> = serde_json::to_vec(&(&data, &content_type)).map_err(|e| e.to_string())?.into();
 
@@ -159,9 +152,7 @@ impl DedupCache {
 			.map_err(|e| DedupCacheError::OperationError(e.to_string()))?;
 
 		if !is_fetcher {
-			if let Ok(c) = &*DEDUP_WAITERS {
-				c.with_label_values(&[&ns]).inc();
-			}
+			counter!("cache_dedup_waiters_total", "namespace" => ns.clone()).increment(1);
 		}
 
 		let (data, content_type): (Vec<u8>, Option<String>) = serde_json::from_slice(&bytes).map_err(DedupCacheError::SerializationError)?;

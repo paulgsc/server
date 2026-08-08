@@ -1,12 +1,8 @@
-use prometheus::Error as PrometheusError;
 use thiserror::Error;
 
 /// Low-level Redis/compression/serde errors for `CacheStore`.
 #[derive(Debug, Error)]
 pub enum CacheError {
-	#[error("Failed to register Prometheus metric")]
-	MetricRegistrationError(#[from] PrometheusError),
-
 	#[error("Redis connection failed")]
 	RedisConnectionError(#[from] redis::RedisError),
 

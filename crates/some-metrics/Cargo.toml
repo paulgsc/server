@@ -1,0 +1,23 @@
+[package]
+name = "some-metrics"
+description = "The one exposure path: install the metrics facade recorder and serve /metrics"
+categories = ["development-tools::profiling"]
+keywords = ["metrics", "prometheus"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

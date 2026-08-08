@@ -13,6 +13,11 @@ services:
     networks:
       - monitoring-network
     restart: unless-stopped
+    # /metrics only — reachable by Prometheus on monitoring-network, never
+    # published to the host. See #143 (C1): this service has no other HTTP
+    # surface, and pipeline.yml's "no ports exposed" property is deliberate.
+    expose:
+      - '9464'
     mem_limit: 1G
     cpus: 1.0
     pids_limit: 100

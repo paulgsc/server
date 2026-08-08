@@ -1,4 +1,4 @@
-use crate::metrics::otel::{record_cache_hit, record_cache_invalidation, OperationTimer};
+use crate::metrics::instruments::{record_cache_hit, record_cache_invalidation, OperationTimer};
 use crate::{AppState, FileHostError};
 use axum::{
 	extract::{Path, State},

@@ -1,7 +1,6 @@
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-	metrics::{PeriodicReader, SdkMeterProvider},
 	trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
 	Resource,
 };
@@ -17,20 +16,20 @@ pub enum ObservabilityError {
 	#[error("Failed to initialize OTLP exporter: {0}")]
 	ExporterInit(#[from] opentelemetry_otlp::ExporterBuildError),
 
-	#[error("Failed to initialize OTLP metrics: {0}")]
-	MetricsInit(String),
-
 	#[error("OpenTelemetry error: {0}")]
 	OpenTelemetry(String),
 }
 
+/// Tracing-only. Per #139 (P1), application measurements go through the
+/// `metrics` facade and a Prometheus scrape (see `metrics::instruments`
+/// and the `some-metrics` seam crate), not OTLP — this guard no longer
+/// carries a meter provider.
 pub struct OtelGuard {
 	tracer_provider: SdkTracerProvider,
-	meter_provider: SdkMeterProvider,
 }
 
 impl OtelGuard {
-	/// Create and initialize OpenTelemetry with tracing subscriber
+	/// Create and initialize `OpenTelemetry` tracing with the tracing subscriber.
 	pub fn new() -> Result<Self, ObservabilityError> {
 		let config = OtelConfig::from_env();
 
@@ -42,7 +41,6 @@ impl OtelGuard {
 			])
 			.build();
 
-		// === Tracing ===
 		let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
 			.with_tonic()
 			.with_endpoint(&config.otlp_endpoint)
@@ -50,7 +48,7 @@ impl OtelGuard {
 			.build()?;
 
 		let tracer_provider = SdkTracerProvider::builder()
-			.with_resource(resource.clone())
+			.with_resource(resource)
 			.with_sampler(config.sampler.clone())
 			.with_id_generator(RandomIdGenerator::default())
 			.with_batch_exporter(trace_exporter)
@@ -60,22 +58,6 @@ impl OtelGuard {
 
 		global::set_tracer_provider(tracer_provider.clone());
 
-		// === Metrics ===
-		let metrics_exporter = opentelemetry_otlp::MetricExporter::builder()
-			.with_tonic()
-			.with_endpoint(&config.otlp_endpoint)
-			.with_timeout(Duration::from_secs(config.metrics_export_timeout_secs))
-			.build()?;
-
-		let reader = PeriodicReader::builder(metrics_exporter)
-			.with_interval(Duration::from_secs(config.metrics_export_interval_secs))
-			.build();
-
-		let meter_provider = SdkMeterProvider::builder().with_resource(resource).with_reader(reader).build();
-
-		global::set_meter_provider(meter_provider.clone());
-
-		// === Tracing subscriber ===
 		let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 		let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -89,18 +71,16 @@ impl OtelGuard {
 			service_name = %config.service_name,
 			otlp_endpoint = %config.otlp_endpoint,
 			sampler = ?config.sampler,
-			metrics_export_interval_secs = %config.metrics_export_interval_secs,
-			"OpenTelemetry initialized"
+			"OpenTelemetry tracing initialized"
 		);
 
-		Ok(Self { tracer_provider, meter_provider })
+		Ok(Self { tracer_provider })
 	}
 
-	/// Shutdown OpenTelemetry providers
+	/// Shutdown the tracer provider.
 	/// Note: This consumes self because shutdown needs to take ownership
 	pub async fn shutdown(self) -> Result<(), ObservabilityError> {
 		self.tracer_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?;
-		self.meter_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?;
 		Ok(())
 	}
 }
@@ -116,8 +96,6 @@ struct OtelConfig {
 	otlp_endpoint: String,
 	sampler: Sampler,
 	environment: String,
-	metrics_export_interval_secs: u64,
-	metrics_export_timeout_secs: u64,
 }
 
 impl OtelConfig {
@@ -127,8 +105,6 @@ impl OtelConfig {
 			otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4317".to_string()),
 			sampler: Self::sampler_from_env(),
 			environment: std::env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()),
-			metrics_export_interval_secs: std::env::var("OTEL_METRIC_EXPORT_INTERVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
-			metrics_export_timeout_secs: std::env::var("OTEL_METRIC_EXPORT_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
 		}
 	}
 

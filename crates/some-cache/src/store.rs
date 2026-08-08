@@ -8,8 +8,9 @@ use crate::{
 	config::CacheConfig,
 	entry::{BinaryCacheEntry, CacheEntry},
 	error::CacheError,
-	metrics::{namespace_of, CACHE_HITS, CACHE_MISSES},
+	metrics::namespace_of,
 };
+use metrics::counter;
 
 // ── Payload encoding ──────────────────────────────────────────────────────────
 //
@@ -195,15 +196,11 @@ impl CacheStore {
 
 		match raw {
 			None => {
-				if let Ok(c) = &*CACHE_MISSES {
-					c.with_label_values(&[ns]).inc();
-				}
+				counter!("cache_misses_total", "namespace" => ns.to_string()).increment(1);
 				Ok((None, 0))
 			}
 			Some(bytes) => {
-				if let Ok(c) = &*CACHE_HITS {
-					c.with_label_values(&[ns]).inc();
-				}
+				counter!("cache_hits_total", "namespace" => ns.to_string()).increment(1);
 
 				let decoded = self.decode_payload(&bytes)?;
 				let entry: CacheEntry<T> = serde_json::from_slice(&decoded)?;
@@ -313,15 +310,11 @@ impl CacheStore {
 
 		match raw {
 			None => {
-				if let Ok(c) = &*CACHE_MISSES {
-					c.with_label_values(&[ns]).inc();
-				}
+				counter!("cache_misses_total", "namespace" => ns.to_string()).increment(1);
 				Ok(None)
 			}
 			Some(bytes) => {
-				if let Ok(c) = &*CACHE_HITS {
-					c.with_label_values(&[ns]).inc();
-				}
+				counter!("cache_hits_total", "namespace" => ns.to_string()).increment(1);
 
 				let decoded = self.decode_payload(&bytes)?;
 				let entry: BinaryCacheEntry = serde_json::from_slice(&decoded)?;

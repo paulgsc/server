@@ -1,4 +1,4 @@
-use crate::metrics::otel::{record_cache_hit, OperationTimer};
+use crate::metrics::instruments::{record_cache_hit, OperationTimer};
 use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
 use sdk::Repository;

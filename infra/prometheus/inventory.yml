@@ -1,0 +1,129 @@
+# The checked-in fact of "what runs, and is it measured" — see #146 (C4).
+#
+# `scripts/check_scrape_inventory.py` fails when this drifts from either
+# side of the pipe it sits between:
+#
+#   docker compose config --services   (ground truth: what actually runs,
+#                                        includes resolved)
+#            |
+#            v
+#     this file's `services:` list
+#            |
+#            v
+#   infra/prometheus/prometheus.yml    (ground truth: what Prometheus
+#                                        actually scrapes)
+#
+# Every compose service needs an entry. Every entry needs either a
+# `scrape.job` + `scrape.target` that resolves to a real prometheus.yml job,
+# or a `scrape.reason` explaining why it deliberately isn't scraped — the
+# check accepts "unscraped" but never accepts "unaccounted for".
+#
+# `hoist_set` marks membership in the M5 hoist set as defined by epic #136:
+# file_host, redis, nats, orchestrator, tabsched-pipeline, ollama. Everything
+# else here is observability-stack infrastructure or a UI, not a sizing
+# candidate.
+
+services:
+  # ── hoist set (epic #136) ──────────────────────────────────────────────
+  - service: file-host
+    container_name: file-host-server
+    hoist_set: true
+    scrape:
+      job: file_host
+      target: file-host-server:3000
+  - service: redis
+    container_name: some-redis
+    hoist_set: true
+    scrape:
+      reason: covered by the redis-exporter job (redis_exporter can't be told apart from the redis container it targets, so this entry doesn't duplicate it)
+  - service: nats
+    container_name: nats-server
+    hoist_set: true
+    scrape:
+      reason: covered by the nats-exporter job, same reasoning as redis
+  - service: orchestrator
+    container_name: orchestrator-service
+    hoist_set: true
+    scrape:
+      job: orchestrator
+      target: orchestrator-service:9464
+  - service: ollama
+    container_name: tabsched-ollama
+    hoist_set: true
+    scrape:
+      reason: 'unmeasured — the single largest declared consumer in the stack; [HM-COVER] C2 (#144) is the story that adds this job, not landed yet'
+
+  # ── observability stack and exporters ───────────────────────────────────
+  - service: redis-exporter
+    container_name: redis-exporter
+    hoist_set: false
+    scrape:
+      job: redis
+      target: redis-exporter:9121
+  - service: nats-exporter
+    container_name: nats-exporter
+    hoist_set: false
+    scrape:
+      job: nats
+      target: nats-exporter:7777
+  - service: node_exporter
+    container_name: node_exporter
+    hoist_set: false
+    scrape:
+      job: node
+      target: node_exporter:9100
+  - service: process-exporter
+    container_name: process_exporter
+    hoist_set: false
+    scrape:
+      job: process_exporter
+      target: process-exporter:9256
+  - service: cadvisor
+    container_name: cadvisor
+    hoist_set: false
+    scrape:
+      job: cadvisor
+      target: 'cadvisor:8080'
+  - service: blackbox-exporter
+    container_name: blackbox_exporter
+    hoist_set: false
+    scrape:
+      reason: the probe target, not itself scraped — websocket_blackbox_tcp/http jobs scrape file-host-server through it
+  - service: prometheus
+    container_name: prometheus
+    hoist_set: false
+    scrape:
+      job: prometheus
+      target: localhost:9090
+  - service: grafana
+    container_name: grafana
+    hoist_set: false
+    scrape:
+      reason: consumes the data, doesn't emit it — not part of M5's sizing surface
+  - service: dashboard-builder
+    container_name: dashboard-builder
+    hoist_set: false
+    scrape:
+      reason: init container — builds the dashboards and exits, nothing to scrape
+
+  # ── operator tooling, not part of M5's sizing surface ───────────────────
+  - service: redisinsight
+    container_name: redisinsight
+    hoist_set: false
+    scrape:
+      reason: operator UI over redis, not application signal
+  - service: metabase
+    container_name: metabase
+    hoist_set: false
+    scrape:
+      reason: analytics UI, not application signal
+
+# Named in the hoist set or in a sibling epic's non-goals, but not present
+# in `docker-compose.yml`'s `include:` list — so `docker compose config`
+# will never see them, and the check must not demand an entry above for
+# them.
+out_of_stack:
+  - service: caddy
+    reason: "infra/compose/caddy.yml exists but is deliberately excluded from docker-compose.yml (\"We set caddy at NIXOS sys level\") — [HM-COVER] C3 (#145) is the story that gives it a byte counter"
+  - service: tabsched-pipeline
+    reason: 'in the hoist set per epic #136, but no compose file or crate exists in this repo yet — [HM-COVER] C1 (#143) covers orchestrator only until it lands'
