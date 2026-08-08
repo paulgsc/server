@@ -11,13 +11,21 @@
 
 use crate::websocket::connection::instrument;
 use crate::AppState;
+use some_services::rate_limiter::PartitionedTokenBucketLimiter;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Spawn the periodic gauge refresh, cancelled through the shared token.
 /// Unconditional — unlike the nudge waker, there is no configuration under
 /// which these gauges shouldn't run.
-pub fn spawn(state: AppState, freshness: Duration, interval: Duration) {
+///
+/// `rate_limiter` rides this same cadence for two reasons: its state gauges
+/// (#215/#230) are cheap atomic reads batched in with everything else here,
+/// same as the `SQLite` pool's, and its idle-bucket eviction (#231) is
+/// exactly the kind of "not on the request or scrape path" work this sweep
+/// already exists for.
+pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, freshness: Duration, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
 
 	tokio::spawn(async move {
@@ -35,6 +43,12 @@ pub fn spawn(state: AppState, freshness: Duration, interval: Duration) {
 					instrument::set_presence_gauges(snapshot.connected, snapshot.live, snapshot.subscribed);
 					instrument::set_guard_occupancy(state.core.connection_guard.active_global());
 					crate::metrics::pool::record(&state.core.shared_db);
+
+					let evicted = rate_limiter.evict_idle();
+					if evicted > 0 {
+						debug!(evicted, "reclaimed idle rate limiter buckets");
+					}
+					crate::metrics::rate_limit::record_state(rate_limiter.average_tokens_available(), rate_limiter.active_clients());
 				}
 			}
 		}

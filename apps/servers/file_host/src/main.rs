@@ -27,7 +27,7 @@ use file_host::routes::{
 	utterance::post_utterance,
 };
 use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
-use some_services::rate_limiter::TokenBucketRateLimiter;
+use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{net::TcpListener, time::Duration};
@@ -126,9 +126,15 @@ async fn main() -> Result<()> {
 		.merge(post_now_playing())
 		.merge(post_utterance());
 
-	let max_requests = config.clone().max_request_size.try_into()?;
-	// TODO: Is this even working! boyo needs to know!
-	versioned_routes = versioned_routes.layer(from_fn_with_state(Arc::new(TokenBucketRateLimiter::new(max_requests)), rate_limit_middleware));
+	// #215 (A1/A2): capacity is `config.rate_limit` — documented as requests
+	// per minute — never `max_request_size`, which is megabytes of payload
+	// and was only ever the rate limiter's capacity by coincidence of both
+	// living on the same `Config` struct. Partitioned per client (keyed like
+	// `ConnectionGuard`'s WS admission) so one client's burst can't deny
+	// every other client; see `some_services::rate_limiter` for both fixes.
+	let rate_limiter = Arc::new(PartitionedTokenBucketLimiter::new(config.rate_limit, DEFAULT_REFILL_PERIOD_MS));
+	file_host::metrics::rate_limit::record_capacity(config.rate_limit);
+	versioned_routes = versioned_routes.layer(from_fn_with_state(rate_limiter.clone(), rate_limit_middleware));
 
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
@@ -189,7 +195,7 @@ async fn main() -> Result<()> {
 	// from" window the WS message loop already uses for its own stale
 	// check, so `live` here and the connections it actually closes agree on
 	// what "recent" means.
-	file_host::metrics::periodic::spawn(app_state.clone(), file_host::websocket::STALE_TIMEOUT, Duration::from_secs(10));
+	file_host::metrics::periodic::spawn(app_state.clone(), rate_limiter, file_host::websocket::STALE_TIMEOUT, Duration::from_secs(10));
 
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);

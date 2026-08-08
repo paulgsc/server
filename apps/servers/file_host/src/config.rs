@@ -44,7 +44,11 @@ pub struct Config {
 	#[arg(long, env = "API_VERSION", default_value = "v1")]
 	pub api_version: String,
 
-	/// Rate limit (requests per minute)
+	/// Rate limit, in requests per minute, per client (`main.rs`'s
+	/// `rate_limit_middleware` partitions by peer IP). See #215/#231: this
+	/// field previously declared the right unit but was unread — the
+	/// limiter's capacity was `max_request_size` (megabytes of upload
+	/// payload) instead.
 	#[arg(long, env = "RATE_LIMIT", default_value = "60")]
 	pub rate_limit: u32,
 
