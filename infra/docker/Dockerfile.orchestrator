@@ -3,7 +3,14 @@
 # ==============================================================================
 FROM rust:1.90-bookworm AS chef
 
-RUN cargo install cargo-chef
+# --locked: without it, `cargo install` re-resolves cargo-chef's own
+# dependencies against whatever is newest on crates.io at build time rather
+# than what cargo-chef's release was tested against. That is what broke this
+# build — a newer `cargo-platform` transitive dependency started requiring
+# rustc 1.91, which this pinned 1.90 base doesn't have. Dockerfile.server
+# and Dockerfile.obs already install cargo-chef with --locked; this matches
+# them.
+RUN cargo install cargo-chef --locked
 
 WORKDIR /app
 
