@@ -123,6 +123,18 @@ fn is_under_dir(file: &Path, dir: &Path) -> bool {
 	}
 }
 
+/// Check whether a changed file affects the image build/publish pipeline.
+fn is_build_pipeline_file(file: &Path, workspace_root: &Path) -> bool {
+	const PIPELINE_FILES: &[&str] = &[".github/workflows/detect.yml", ".github/workflows/build-image.yml", ".github/workflows/push-image.yml"];
+	const PIPELINE_DIRS: &[&str] = &[".github/actions/docker-build", ".github/actions/docker-push", ".github/scripts/detect"];
+
+	PIPELINE_FILES.iter().map(|path| normalize_path(Path::new(path), workspace_root)).any(|path| file == path)
+		|| PIPELINE_DIRS
+			.iter()
+			.map(|path| normalize_path(Path::new(path), workspace_root))
+			.any(|path| is_under_dir(file, &path))
+}
+
 /* ------------------------- DEP GRAPH ------------------------- */
 
 fn build_graph(metadata: &Metadata) -> HashMap<String, HashSet<String>> {
@@ -158,6 +170,29 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 	let workspace_root = Path::new(&metadata.workspace_root);
 
 	eprintln!("Checking image: {}", image.name);
+
+	// Changes to the shared build/publish pipeline can alter the output or
+	// publishing behavior of every image. Rebuild immediately so a CI-only
+	// fix is rolled out without waiting for an unrelated application change.
+	for file in changed_files {
+		let normalized_file = normalize_path(file, workspace_root);
+		if is_build_pipeline_file(&normalized_file, workspace_root) {
+			eprintln!("  ✓ Image pipeline changed: {}", file.display());
+			return true;
+		}
+	}
+
+	// SQLx preparation is only used by images which opt in to SQLx metadata.
+	if image.needs_sqlx {
+		let prepare_sqlx = normalize_path(Path::new(".github/actions/prepare-sqlx"), workspace_root);
+		for file in changed_files {
+			let normalized_file = normalize_path(file, workspace_root);
+			if is_under_dir(&normalized_file, &prepare_sqlx) {
+				eprintln!("  ✓ SQLx preparation changed: {}", file.display());
+				return true;
+			}
+		}
+	}
 
 	// Check if Dockerfile changed
 	let dockerfile = normalize_path(Path::new(image.dockerfile), workspace_root);
