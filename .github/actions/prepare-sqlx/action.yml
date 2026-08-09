@@ -23,23 +23,14 @@ runs:
         mkdir -p "$(dirname ./dev.db)"
         nix develop .#ci --command sqlx database create
 
-        # sqlx tracks applied migrations in one `_sqlx_migrations` table per
-        # database. Running `sqlx migrate run --source <dir>` once per crate
-        # against this same dev.db made every crate after the first fail with
-        # "migration ... was previously applied but is missing in the
-        # resolved migrations" — the second invocation's --source doesn't
-        # contain the first crate's migration files, so sqlx's own
-        # already-applied bookkeeping no longer resolves. One shared
-        # database needs one shared migrations directory; this stages every
-        # crate's *.up.sql into one before running sqlx once. Mirrors
-        # .github/workflows/test.yml's "Create the database and run every
-        # crate's migrations" step, which solved the same problem the same
-        # way.
-        echo "Staging migrations from every crate..."
+        # Reversible migrations are owned by the workspace now. SQLx expects
+        # the up migrations to have a .sql suffix when given a custom source,
+        # so stage that half of each pair before preparing the query cache.
+        echo "Staging workspace migrations..."
         staged="$(pwd)/.migrations"
         rm -rf "$staged" && mkdir -p "$staged"
 
-        find crates -path '*/migrations/*.up.sql' -type f 2>/dev/null | sort | while read -r migration; do
+        find migrations -maxdepth 1 -name '*.up.sql' -type f | sort | while read -r migration; do
           cp "$migration" "$staged/$(basename "$migration" .up.sql).sql"
         done
 

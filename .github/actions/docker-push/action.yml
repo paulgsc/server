@@ -1,5 +1,5 @@
-name: Docker Build
-description: Build Docker images with scoped layer caching
+name: Docker Push
+description: Authenticate, build, and push Docker images with scoped layer caching
 inputs:
   dockerfile:
     description: "Path to Dockerfile"
@@ -10,12 +10,18 @@ inputs:
   docker-repo:
     description: "Docker repository (e.g., user/image-name)"
     required: true
+  dockerhub-username:
+    description: "DockerHub username"
+    required: true
+  dockerhub-token:
+    description: "DockerHub token"
+    required: true
   vcs-ref:
-    description: "Git commit SHA to stamp into the image (OCI label and, for images whose build.rs reads it, the running binary's own service_info metric)"
+    description: "Git commit SHA to stamp into the image"
     required: false
     default: "unknown"
   build-date:
-    description: "RFC 3339 build timestamp to stamp into the image, same reasoning as vcs-ref"
+    description: "RFC 3339 build timestamp to stamp into the image"
     required: false
     default: "unknown"
 runs:
@@ -23,12 +29,17 @@ runs:
   steps:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-    - name: Build
+    - name: Log in to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-token }}
+    - name: Build and push
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ${{ inputs.dockerfile }}
-        push: false
+        push: true
         tags: |
           ${{ inputs.docker-repo }}:latest
           ${{ inputs.docker-repo }}:${{ github.sha }}
