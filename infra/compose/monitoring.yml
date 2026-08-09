@@ -159,8 +159,8 @@ services:
       retries: 3
   dashboard-builder:
     build:
-      context: .
-      dockerfile: ./infra/docker/Dockerfile.grafana.builder
+      context: ${REPO_ROOT}
+      dockerfile: ${REPO_ROOT}/infra/docker/Dockerfile.grafana.builder
     container_name: dashboard-builder
     volumes:
       - ${REPO_ROOT}/infra/grafana/dashboards:/workspace
