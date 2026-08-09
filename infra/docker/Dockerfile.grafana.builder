@@ -1,5 +1,5 @@
 # ---- Builder stage: named 'builder' ----
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 RUN apk add --no-cache git make
 RUN go install github.com/google/go-jsonnet/cmd/jsonnet@latest && \
     go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
