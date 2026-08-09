@@ -1,4 +1,4 @@
-name: Build Images
+name: Push Images
 on:
   workflow_call:
     inputs:
@@ -7,8 +7,8 @@ on:
         required: true
         type: string
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
+  push:
+    name: Push ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,15 +27,13 @@ jobs:
           image-name: ${{ matrix.name }}
           needs-sqlx: ${{ matrix.needs_sqlx }}
           needs-migrations: ${{ matrix.needs_migrations }}
-      - name: Build Docker image
-        uses: ./.github/actions/docker-build
+      - name: Push Docker image
+        uses: ./.github/actions/docker-push
         with:
           dockerfile: ${{ matrix.dockerfile }}
           image-name: ${{ matrix.name }}
           docker-repo: pgathondu/${{ matrix.repo_suffix }}
-          # #213 (F4): file_host's build.rs reads these same names (VCS_REF,
-          # BUILD_DATE) to stamp the `service_info` metric it exposes at
-          # runtime — see infra/docker/Dockerfile.server's builder stage.
-          # Harmless for images that don't read them.
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
           vcs-ref: ${{ github.sha }}
           build-date: ${{ steps.build_date.outputs.value }}

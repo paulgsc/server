@@ -114,26 +114,29 @@ table downstream already keyed by subject.
 real step, not a detail, and it is the same step `capture_repo` and
 `mood_event` already need.
 
-Each crate owns its own `migrations/` directory with paired
-`<timestamp>_name.up.sql` / `.down.sql` files, and they all target the one
-SQLite file named by `DATABASE_URL`. Apply them with `sqlx-cli`:
+The workspace owns one migration history in the repository-root `migrations/`
+directory. Migrations are paired `<timestamp>_name.up.sql` / `.down.sql` files
+and target the SQLite file named by `DATABASE_URL`. `sqlx-cli` expects the
+forward migrations in a custom source to end in `.sql`, so stage the `.up.sql`
+half of each pair before applying it:
 
 ```sh
 cargo install sqlx-cli --no-default-features --features sqlite
 
-# One database, several crates' migrations. Collect them by timestamp; the
-# prefixes are globally ordered, which is why they are timestamps.
-mkdir -p /tmp/migrations
-find crates -path '*/migrations/*.up.sql' | sort | while read -r f; do
-  cp "$f" "/tmp/migrations/$(basename "$f" .up.sql).sql"
+# One database, one workspace migration history.
+rm -rf /tmp/hopium-migrations && mkdir -p /tmp/hopium-migrations
+find migrations -maxdepth 1 -name '*.up.sql' -type f | sort | while read -r f; do
+  cp "$f" "/tmp/hopium-migrations/$(basename "$f" .up.sql).sql"
 done
 
-DATABASE_URL="sqlite:///path/to/hopium.db" sqlx migrate run --source /tmp/migrations
+DATABASE_URL="sqlite:///path/to/hopium.db" \
+  sqlx migrate run --source /tmp/hopium-migrations
 ```
 
-This is exactly what `.github/workflows/lint.yml` does, and it is worth keeping
-the two in step: if you change how migrations are applied, that workflow is the
-other place that has to know.
+This is also how `.github/actions/prepare-sqlx/action.yml` prepares image builds.
+The test and lint workflows apply the same root migration history before
+compiling SQLx queries. Keep all three in step if the migration layout or
+staging convention changes.
 
 #### Building without a database
 
@@ -147,7 +150,7 @@ DATABASE_URL="sqlite:///path/to/hopium.db" cargo sqlx prepare --workspace
 `.sqlx/` is in `.gitignore` on purpose: the cache is a build artifact of a
 schema the migrations already define, and committing it means a second copy of
 the schema to keep in step. CI therefore builds it, the same way you just did —
-`test.yml`'s `rust_ci` job creates a database, runs every crate's migrations
+`test.yml`'s `rust_ci` job creates a database, runs the workspace migrations
 into it, and runs `cargo sqlx prepare` before `cargo check`. That job had been
 running a bare `cargo check` with no database and failing before it compiled
 anything; the setup steps are what make it a real check.

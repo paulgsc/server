@@ -13,9 +13,7 @@ defaults:
     working-directory: ./
 
 permissions:
-  actions: write
   contents: read
-  pull-requests: write
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -25,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,16 +86,12 @@ jobs:
       # here the intended pattern rather than an optimisation. Without these
       # three steps `cargo check` fails before compiling anything, which is
       # what it had been doing.
-      - name: Cache sqlx-cli
-        id: cache-sqlx-cli
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/sqlx
-          key: sqlx-cli-${{ runner.os }}-0.7
-
       - name: Install sqlx-cli
-        if: steps.cache-sqlx-cli.outputs.cache-hit != 'true'
-        run: cargo install sqlx-cli --no-default-features --features sqlite
+        # Do not cache and execute ~/.cargo/bin/sqlx. This workflow also runs
+        # for release events, so a shared executable cache populated by a pull
+        # request would cross a trust boundary. Installing a locked, exact
+        # version is deterministic and avoids cache-poisoning the release job.
+        run: cargo install sqlx-cli --version 0.7.4 --locked --no-default-features --features sqlite
 
       - name: Create the database and run every crate's migrations
         # One SQLite file, several crates' migrations directories. The filename
