@@ -2,10 +2,12 @@ services:
   file-host:
     image: pgathondu/server:latest
     container_name: file-host-server
+    # Pass all variables from your .env file into the container:
+    env_file:
+      - .env
     ports:
       - '3000:3000'
     environment:
-      - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
@@ -16,9 +18,6 @@ services:
       - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
       - HMAC_KEY=${HMAC_KEY:-placeholder}
       - GITHUB_API_TOKEN=${GITHUB_API_TOKEN:-placeholder}
-      - EMAIL_SERVICE_URL=${EMAIL_SERVICE_URL:-aulgondu@gmail.com}
-      - OBS_WEBSOCKET_PWD=${OBS_WEBSOCKET_PWD:-QVNJXLc0ipLSwohv}
-      - OBS_WEBSOCKET_IP=${OBS_WEBSOCKET_IP:-10.0.0.25}
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
