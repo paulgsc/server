@@ -72,7 +72,7 @@ jobs:
           nix develop .#ci --command rustc --version
           nix develop .#ci --command cargo --version
       - name: Install sqlx-cli
-        run: nix develop .#ci --command cargo install sqlx-cli --no-default-features --features sqlite
+        run: nix develop .#ci --command cargo install sqlx-cli --version 0.7.4 --locked --no-default-features --features sqlite
       - name: Setup databases and run migrations
         run: |
           root_db="${GITHUB_WORKSPACE}/test.db"
