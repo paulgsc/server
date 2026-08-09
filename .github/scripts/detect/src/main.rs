@@ -169,6 +169,19 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 	}
 
+	// The server's schema is owned by the hoisted workspace migrations
+	// directory rather than by an individual crate in its dependency graph.
+	if image.needs_migrations {
+		let migrations = normalize_path(Path::new("migrations"), workspace_root);
+		for file in changed_files {
+			let normalized_file = normalize_path(file, workspace_root);
+			if is_under_dir(&normalized_file, &migrations) {
+				eprintln!("  ✓ Workspace migration changed: {}", file.display());
+				return true;
+			}
+		}
+	}
+
 	// Find the package by manifest path
 	let pkg = metadata.packages.iter().find(|p| {
 		let pkg_manifest = Path::new(&p.manifest_path);

@@ -1,4 +1,4 @@
-name: Detect & Build
+name: Detect, Build & Push
 on:
   push:
     branches: [main]
@@ -62,7 +62,12 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
     uses: ./.github/workflows/build-image.yml
+    with:
+      matrix: ${{ needs.detect.outputs.matrix }}
+  push:
+    needs: [detect, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect.outputs.has_changes == 'true'
+    uses: ./.github/workflows/push-image.yml
     secrets: inherit
     with:
       matrix: ${{ needs.detect.outputs.matrix }}
-      push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
