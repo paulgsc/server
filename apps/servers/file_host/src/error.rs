@@ -171,9 +171,7 @@ impl FileHostError {
 			Self::Forbidden => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
 			Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
-			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::OperationError(_) | Self::UnexpectedSinglePair => {
-				StatusCode::BAD_REQUEST
-			}
+			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
