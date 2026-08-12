@@ -4,7 +4,7 @@ services:
     container_name: file-host-server
     # Pass all variables from your .env file into the container:
     env_file:
-      - .env
+      - ${REPO_ROOT}/.env
     ports:
       - '3000:3000'
     environment:

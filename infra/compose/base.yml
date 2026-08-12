@@ -1,5 +1,6 @@
 networks:
   monitoring-network:
+    name: shared-dev-network
     driver: bridge
 volumes:
   caddy_data:
