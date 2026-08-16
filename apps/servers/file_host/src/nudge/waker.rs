@@ -25,6 +25,7 @@
 use crate::nudge::constraints::StudyConstraints;
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
+use crate::websocket::WebSocketFsm;
 use crate::{AppState, NudgeContext};
 use chrono::Utc;
 use engagement_repo::EngagementRepository;
@@ -32,6 +33,7 @@ use intervention::{Charge, Engine, Verdict};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{SessionRepository, SessionStatus};
+use sqlx::SqlitePool;
 use std::time::Duration;
 use study_domain::{StudyAction, StudyCalibration, StudySelector, StudyV1};
 use tracing::{debug, error, info, warn};
@@ -42,8 +44,24 @@ use tracing::{debug, error, info, warn};
 const BATCH: i64 = 32;
 
 /// Spawn the waker, cancelled through the shared token.
-pub fn spawn(state: AppState, interval: Duration) {
+///
+/// Takes `&AppState` — only the pieces this needs are cloned out for the
+/// spawned task to own, so the caller isn't made to clone the whole state
+/// just to start a background loop.
+///
+/// Guards `state.nudge` exactly once, here, rather than inside the pass that
+/// runs every tick. `main.rs` already only calls `spawn` once a nudge is
+/// configured, so this arm is unreachable in practice; keeping the check at
+/// this single boundary means everything downstream can take a `&NudgeContext`
+/// outright instead of re-deriving "is this even configured?" on every pass.
+pub fn spawn(state: &AppState, interval: Duration) {
+	let Some(nudge) = state.nudge.clone() else {
+		warn!("waker spawn called without a configured nudge; not starting");
+		return;
+	};
 	let cancel = state.core.cancel_token.clone();
+	let db = state.core.shared_db.clone();
+	let ws = state.realtime.ws.clone();
 	crate::metrics::waker::record_interval(interval);
 
 	tokio::spawn(async move {
@@ -58,7 +76,7 @@ pub fn spawn(state: AppState, interval: Duration) {
 					return;
 				}
 				_ = ticker.tick() => {
-					match run_once(&state).await {
+					match run_once(&db, &ws, &nudge).await {
 						Ok(_) => crate::metrics::waker::record_successful_pass(),
 						Err(err) => error!(error = %err, "waker pass failed"),
 					}
@@ -70,13 +88,17 @@ pub fn spawn(state: AppState, interval: Duration) {
 
 /// One pass. Public so a debug endpoint can force it without waiting.
 ///
+/// Takes the database pool, the websocket layer, and a proven-present
+/// `&NudgeContext` — the projection of `AppState` this pass actually reads —
+/// rather than `&AppState` itself. `spawn` is the only caller and it borrows
+/// these once per interval, not once per due subject, so the loop below
+/// passes the same three references through without re-deriving them.
+///
 /// # Errors
 /// Any storage failure. Per-subject failures are logged and skipped rather than
 /// aborting the pass — one bad row must not stop everyone else's.
-pub async fn run_once(state: &AppState) -> Result<usize, sqlx::Error> {
-	let Some(nudge) = state.nudge.clone() else { return Ok(0) };
-
-	let engagement = EngagementRepository::new(state.core.shared_db.clone());
+pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) -> Result<usize, sqlx::Error> {
+	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
 
@@ -88,7 +110,7 @@ pub async fn run_once(state: &AppState) -> Result<usize, sqlx::Error> {
 	let mut intervened = 0;
 
 	for gate in due {
-		match consider(state, &nudge, &engagement, &gate.subject_id).await {
+		match consider(db, ws, nudge, &engagement, &gate.subject_id).await {
 			Ok(true) => intervened += 1,
 			Ok(false) => {}
 			Err(err) => error!(subject = %gate.subject_id, error = %err, "could not consider a due subject"),
@@ -99,7 +121,7 @@ pub async fn run_once(state: &AppState) -> Result<usize, sqlx::Error> {
 }
 
 /// Evaluate one subject, and act if the engine says so.
-async fn consider(state: &AppState, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> Result<bool, sqlx::Error> {
+async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> Result<bool, sqlx::Error> {
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;
@@ -108,13 +130,13 @@ async fn consider(state: &AppState, nudge: &NudgeContext, engagement: &Engagemen
 	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
 	let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
 
-	let subscriptions = PushSubscriptionRepository::new(state.core.shared_db.clone()).for_subject(subject_id).await?;
+	let subscriptions = PushSubscriptionRepository::new(db.clone()).for_subject(subject_id).await?;
 	let consented_topics: Vec<Topic> = Topic::ALL.iter().copied().filter(|topic| subscriptions.iter().any(|sub| sub.accepts(*topic))).collect();
 
 	// What is prepared and untouched. Without one there is nothing to point at,
 	// and the selector returns `None` rather than inventing a reminder that
 	// opens nothing.
-	let sessions = SessionRepository::new(state.core.shared_db.clone()).list().await.unwrap_or_default();
+	let sessions = SessionRepository::new(db.clone()).list().await.unwrap_or_default();
 	let prepared_session = sessions
 		.iter()
 		.find(|session| matches!(session.status, SessionStatus::Scheduled | SessionStatus::Paused | SessionStatus::Draft))
@@ -125,7 +147,7 @@ async fn consider(state: &AppState, nudge: &NudgeContext, engagement: &Engagemen
 		enabled: nudge.enabled,
 		quiet_hours_start: nudge.quiet_hours_start,
 		quiet_hours_end: nudge.quiet_hours_end,
-		presence: presence::observe(&state.realtime.ws, nudge.presence_freshness).await,
+		presence: presence::observe(ws, nudge.presence_freshness).await,
 		consented_topics,
 	};
 
@@ -178,7 +200,7 @@ async fn consider(state: &AppState, nudge: &NudgeContext, engagement: &Engagemen
 	let (levels, as_of) = charge.to_storage();
 	engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &next_eligible.to_rfc3339()).await?;
 
-	let accepted = actuate(state, nudge, &action, subject_id).await?;
+	let accepted = actuate(db, nudge, &action, subject_id).await?;
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
 		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
@@ -194,8 +216,8 @@ async fn consider(state: &AppState, nudge: &NudgeContext, engagement: &Engagemen
 ///
 /// Returns how many were **accepted** — which, as `push_kit` is at pains to
 /// say, is not how many were delivered.
-async fn actuate(state: &AppState, nudge: &NudgeContext, action: &StudyAction, subject_id: &str) -> Result<usize, sqlx::Error> {
-	let subscriptions_repo = PushSubscriptionRepository::new(state.core.shared_db.clone());
+async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, subject_id: &str) -> Result<usize, sqlx::Error> {
+	let subscriptions_repo = PushSubscriptionRepository::new(db.clone());
 	let subscriptions = subscriptions_repo.for_subject(subject_id).await?;
 
 	let payload = NudgePayload::for_action(&nudge.base_url, action);
@@ -248,8 +270,8 @@ async fn actuate(state: &AppState, nudge: &NudgeContext, action: &StudyAction, s
 ///
 /// # Errors
 /// Propagates any storage failure.
-pub async fn observe(state: &AppState, subject_id: &str, signal: &study_domain::StudySignal) -> Result<chrono::DateTime<Utc>, sqlx::Error> {
-	let engagement = EngagementRepository::new(state.core.shared_db.clone());
+pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::StudySignal) -> Result<chrono::DateTime<Utc>, sqlx::Error> {
+	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;

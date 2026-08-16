@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
 	// the resolution at which decided work is picked up, not a cadence at which
 	// anything is decided. See `nudge::waker`.
 	if app_state.nudge.is_some() && config.nudge_enabled {
-		nudge::waker::spawn(app_state.clone(), Duration::from_secs(config.nudge_waker_seconds.max(30)));
+		nudge::waker::spawn(&app_state, Duration::from_secs(config.nudge_waker_seconds.max(30)));
 	} else {
 		tracing::info!("engagement waker is not running; /api/v1/push and /api/v1/signals still work");
 	}

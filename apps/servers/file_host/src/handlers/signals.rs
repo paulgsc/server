@@ -39,7 +39,7 @@ pub struct SignalAccepted {
 pub async fn observe(State(state): State<AppState>, subject: SubjectId, Json(signal): Json<StudySignal>) -> Result<Json<SignalAccepted>, FileHostError> {
 	tracing::Span::current().record("signal", signal.kind());
 
-	let eligible_at = waker::observe(&state, subject.as_str(), &signal)
+	let eligible_at = waker::observe(&state.core.shared_db, subject.as_str(), &signal)
 		.await
 		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
 
