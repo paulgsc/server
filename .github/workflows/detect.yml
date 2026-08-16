@@ -6,11 +6,12 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Every main push must reach the staging job; otherwise a newer push could
+  # cancel an older one before its changeset has been added to the release PR.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   detect:
     runs-on: ubuntu-latest
@@ -71,9 +72,23 @@ jobs:
     needs: [detect, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore pending changesets
+        env:
+          CHANGESET_BRANCH: automation/docker-image-changesets
+        run: |
+          if git ls-remote --exit-code --heads origin "$CHANGESET_BRANCH" >/dev/null; then
+            git fetch origin "$CHANGESET_BRANCH:refs/remotes/origin/$CHANGESET_BRANCH"
+            git checkout "refs/remotes/origin/$CHANGESET_BRANCH" -- \
+              .github/docker-changesets
+          fi
       - name: Record image changeset
         env:
           MATRIX: ${{ needs.detect.outputs.matrix }}

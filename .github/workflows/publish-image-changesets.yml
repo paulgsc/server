@@ -4,6 +4,8 @@ on:
     branches: [main]
     paths:
       - ".github/docker-changesets/*.json"
+permissions:
+  contents: read
 concurrency:
   group: publish-image-changesets
   cancel-in-progress: false
