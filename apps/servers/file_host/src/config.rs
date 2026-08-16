@@ -57,7 +57,7 @@ pub struct Config {
 	pub enable_cors: bool,
 
 	/// Comma-separated list of allowed CORS origins for browser-facing read routes
-	/// (sheets, audio, push, sessions). Other routes deliberately allow any origin
+	/// (push and sessions). Other routes deliberately allow any origin
 	/// (extensions, etc.) and are unaffected by this setting.
 	///
 	/// The default carries three entries rather than one because the study app is
@@ -81,10 +81,6 @@ pub struct Config {
 	#[arg(long, env = "LOG_FILE")]
 	pub log_file: Option<String>,
 
-	/// Secret file path
-	#[arg(long, env = "CLIENT_SECRET_FILE")]
-	pub client_secret_file: String,
-
 	/// Enable user registration
 	#[arg(long, env = "ENABLE_USER_REGISTRATION")]
 	pub enable_user_registration: bool,
@@ -96,10 +92,6 @@ pub struct Config {
 	/// Enable two-factor authentication
 	#[arg(long, env = "ENABLE_TWO_FACTOR_AUTH")]
 	pub enable_two_factor_auth: bool,
-
-	/// Email service URL
-	#[arg(long, env = "EMAIL_SERVICE_URL")]
-	pub email_service_url: Option<String>,
 
 	/// SMS service URL
 	#[arg(long, env = "SMS_SERVICE_URL")]
@@ -156,10 +148,6 @@ pub struct Config {
 	/// OBS Websocket Server Password
 	#[arg(long, env = "OBS_WEBSOCKET_PWD")]
 	pub obs_password: String,
-
-	/// GITHUB API SECRET TOKEN
-	#[arg(long, env = "GITHUB_API_TOKEN")]
-	pub github_token: String,
 
 	/// DATABASE URL
 	#[arg(long, env = "DATABASE_URL")]

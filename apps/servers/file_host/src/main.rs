@@ -13,15 +13,11 @@ use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCK
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::routes::{
-	audio_files::get_audio,
 	db::{mood_events, sessions, tabs},
-	gdrive::{get_gdrive_image, write_gdrive_fs},
-	github::get_repos,
 	health::get_health,
 	metrics::get_metrics,
 	push::push,
 	readiness::get_readiness,
-	sheets::get_sheets,
 	signals::signals,
 	tab_metadata::post_now_playing,
 	utterance::post_utterance,
@@ -113,16 +109,11 @@ async fn main() -> Result<()> {
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
 	let mut versioned_routes = Router::new()
-		.merge(get_sheets(&config))
-		.merge(get_gdrive_image())
-		.merge(write_gdrive_fs(&config))
-		.merge(get_repos(&config))
 		.merge(mood_events(&config))
 		.merge(tabs(&config))
 		.merge(sessions(&config))
 		.merge(push(&config))
 		.merge(signals(&config))
-		.merge(get_audio(&config))
 		.merge(post_now_playing())
 		.merge(post_utterance());
 

@@ -7,23 +7,6 @@ use axum::{
 use some_cache::DedupCacheError;
 use std::{borrow::Cow, collections::HashMap};
 
-// ── GSheetDeriveError ────────────────────────────────────────────────────────
-
-#[derive(thiserror::Error, Debug)]
-pub enum GSheetDeriveError {
-	#[error("Missing required field {0} at column {1}")]
-	MissingRequiredField(String, String),
-
-	#[error("Failed to parse field {0} at column {1}: {2}")]
-	ParseError(String, String, String),
-
-	#[error("Column {0} not found in header")]
-	ColumnNotFound(String),
-
-	#[error("Missing header row")]
-	MissingHeader,
-}
-
 // ── FileHostError ────────────────────────────────────────────────────────────
 
 #[derive(thiserror::Error, Debug)]
@@ -73,16 +56,10 @@ pub enum FileHostError {
 	#[error("NATS transport error: {0}")]
 	NatsTransportError(#[from] some_transport::TransportError),
 
-	#[error("audio fetch error: {0}")]
-	AudioFetchError(#[from] crate::AudioServiceError),
-
 	#[error("broadcast error: {0}")]
 	BroadcastError(#[from] crate::websocket::broadcast::BroadcastError),
 
-	#[error("sheet derive error: {0}")]
-	GSheetError(#[from] GSheetDeriveError),
-
-	// ---- upstream SDK errors (collapsed to anyhow) ----
+	// ---- upstream errors (collapsed to anyhow) ----
 	#[error("upstream error: {0}")]
 	Upstream(#[from] anyhow::Error),
 
@@ -93,9 +70,6 @@ pub enum FileHostError {
 	// ---- former DedupError variants ----
 	#[error("database error: {0}")]
 	Sqlite(#[from] sqlx::Error),
-
-	#[error("polars error: {0}")]
-	Polars(#[from] polars::error::PolarsError),
 
 	#[error("operation error: {0}")]
 	OperationError(String),
@@ -174,7 +148,6 @@ impl FileHostError {
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
-			Self::AudioFetchError(_) => StatusCode::BAD_REQUEST,
 			Self::Cache(e) => match e {
 				DedupCacheError::NotFound => StatusCode::NOT_FOUND,
 				DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST,
@@ -200,13 +173,10 @@ impl FileHostError {
 			Self::IoError(_) => "io_error",
 			Self::TowerError(_) => "tower_error",
 			Self::NatsTransportError(_) => "nats_transport_error",
-			Self::AudioFetchError(_) => "audio_fetch_error",
 			Self::BroadcastError(_) => "broadcast_error",
-			Self::GSheetError(_) => "sheet_derive_error",
 			Self::Upstream(_) => "upstream_error",
 			Self::Cache(_) => "cache_error",
 			Self::Sqlite(_) => "database_error",
-			Self::Polars(_) => "polars_error",
 			Self::OperationError(_) => "operation_error",
 			Self::UnexpectedSinglePair => "unexpected_single_pair",
 			Self::RequestTimeout => "request_timeout",
@@ -230,7 +200,6 @@ impl FileHostError {
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
-			Self::AudioFetchError(_) => "audio fetch error",
 			_ => "internal server error",
 		}
 	}

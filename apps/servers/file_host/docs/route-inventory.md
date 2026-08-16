@@ -55,7 +55,7 @@ still compiles), and `no_duplicate_method_path_pairs` (axum panics at startup on
 a duplicate registration — better as a test failure than a boot crash).
 
 The check is source-level on purpose. Verifying against a live `Router` would
-need a fully built `AppState` — SQLite, NATS, Google clients — which would make
+need a fully built `AppState` — SQLite and NATS — which would make
 the cheapest invariant in the crate the most expensive one to run.
 
 ## Adding a route
