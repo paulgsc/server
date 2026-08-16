@@ -44,9 +44,14 @@ jobs:
             BASE_REF="${{ github.event.before }}"
           fi
 
-          # Generate matrix
-          git diff --name-only "$BASE_REF...HEAD" \
-            | .github/scripts/detect/target/release/detect \
+          # Materialize and print the input before running the detector. This
+          # makes an unexpectedly empty comparison distinguishable from a
+          # detector which saw paths but classified all of them as irrelevant.
+          git diff --name-only "$BASE_REF...HEAD" > changed-files.txt
+          echo "Changed files passed to detector:"
+          sed 's/^/  - /' changed-files.txt
+
+          .github/scripts/detect/target/release/detect < changed-files.txt \
             | tee matrix.json
 
           # Extract matrix and check if empty
