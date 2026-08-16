@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source_sha }}
       - name: Compute build date
         id: build_date
         run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
@@ -35,5 +37,5 @@ jobs:
           docker-repo: pgathondu/${{ matrix.repo_suffix }}
           dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
-          vcs-ref: ${{ github.sha }}
+          vcs-ref: ${{ matrix.source_sha }}
           build-date: ${{ steps.build_date.outputs.value }}
