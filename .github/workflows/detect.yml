@@ -36,6 +36,11 @@ jobs:
       - name: Compute build matrix
         id: compute
         run: |
+          # GitHub's bash wrapper enables `-e` but not `pipefail`. Without
+          # this, a detector panic is hidden by a successful `tee`, leaving an
+          # empty matrix file which jq treats as an empty output stream.
+          set -o pipefail
+
           # Determine comparison base
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BASE_REF="${{ github.event.pull_request.base.sha }}"
@@ -44,13 +49,20 @@ jobs:
             BASE_REF="${{ github.event.before }}"
           fi
 
-          # Generate matrix
-          git diff --name-only "$BASE_REF...HEAD" \
-            | .github/scripts/detect/target/release/detect \
+          # Materialize and print the input before running the detector. This
+          # makes an unexpectedly empty comparison distinguishable from a
+          # detector which saw paths but classified all of them as irrelevant.
+          git diff --name-only "$BASE_REF...HEAD" > changed-files.txt
+          echo "Changed files passed to detector:"
+          sed 's/^/  - /' changed-files.txt
+
+          .github/scripts/detect/target/release/detect < changed-files.txt \
             | tee matrix.json
 
           # Extract matrix and check if empty
-          MATRIX=$(jq -c . matrix.json)
+          # `-e` makes empty input fail instead of assigning an empty string;
+          # also validate the one field the downstream reusable workflow needs.
+          MATRIX=$(jq -ce 'if (.include | type) == "array" then . else error("matrix.include must be an array") end' matrix.json)
           INCLUDE_COUNT=$(jq '.include | length' matrix.json)
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

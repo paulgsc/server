@@ -140,6 +140,18 @@ fn is_build_pipeline_file(file: &Path, workspace_root: &Path) -> bool {
 			.any(|path| is_under_dir(file, &path))
 }
 
+/// Check whether a path belongs to the image's application crate.
+///
+/// This check deliberately uses the configured manifest path instead of the
+/// Cargo dependency graph. In particular, deleted source files cannot be
+/// canonicalized, but they still have to rebuild the image which previously
+/// contained them.
+fn is_image_crate_file(image: &ImageSpec, file: &Path, workspace_root: &Path) -> bool {
+	let manifest = normalize_path(Path::new(image.manifest), workspace_root);
+	let crate_dir = manifest.parent().expect("image manifest must have a parent directory");
+	is_under_dir(file, crate_dir)
+}
+
 /* ------------------------- DEP GRAPH ------------------------- */
 
 fn build_graph(metadata: &Metadata) -> HashMap<String, HashSet<String>> {
@@ -175,6 +187,17 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 	let workspace_root = Path::new(&metadata.workspace_root);
 
 	eprintln!("Checking image: {}", image.name);
+
+	// An image always owns its application crate. Check that stable boundary
+	// before consulting Cargo metadata so source deletions and dependency
+	// removals cannot disappear from the post-change dependency graph.
+	for file in changed_files {
+		let normalized_file = normalize_path(file, workspace_root);
+		if is_image_crate_file(image, &normalized_file, workspace_root) {
+			eprintln!("  ✓ Changed file in image crate: {}", file.display());
+			return true;
+		}
+	}
 
 	// Changes to the shared build/publish pipeline can alter the output or
 	// publishing behavior of every image. Rebuild immediately so a CI-only
@@ -316,4 +339,26 @@ fn main() {
 	eprintln!("Images to build: {}", include.len());
 
 	println!("{}", serde_json::to_string(&matrix).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{is_image_crate_file, normalize_path, IMAGES};
+	use std::path::Path;
+
+	#[test]
+	fn deleted_file_in_image_crate_is_detected() {
+		let workspace_root = Path::new("/tmp/detect-workspace");
+		let deleted_file = normalize_path(Path::new("apps/servers/file_host/src/routes/sheets.rs"), workspace_root);
+
+		assert!(is_image_crate_file(&IMAGES[0], &deleted_file, workspace_root));
+	}
+
+	#[test]
+	fn another_images_crate_is_not_detected() {
+		let workspace_root = Path::new("/tmp/detect-workspace");
+		let obs_file = normalize_path(Path::new("apps/some-obs/src/main.rs"), workspace_root);
+
+		assert!(!is_image_crate_file(&IMAGES[0], &obs_file, workspace_root));
+	}
 }

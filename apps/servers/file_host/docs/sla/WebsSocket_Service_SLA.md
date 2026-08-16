@@ -178,7 +178,6 @@ Example:
 ```rust
 // For your routes:
 // - GET /sheets/...
-// - GET /gdrive/...
 // - GET /repos
 // - POST /mood-events
 // - POST /utterance
@@ -212,7 +211,6 @@ async fn metrics_middleware(req: Request, next: Next) -> Response {
   - HTTP parsing
   - Authentication/authorization
   - Database queries
-  - External API calls (Sheets/Drive/GitHub)
   - Response serialization
 
 **Your Current State:**

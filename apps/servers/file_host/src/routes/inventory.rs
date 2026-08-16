@@ -23,7 +23,7 @@
 //! test, and so does the reverse.
 //!
 //! That check is source-level on purpose: verifying against a live `Router`
-//! would require a fully built `AppState` (SQLite, NATS, Google clients), which
+//! would require a fully built `AppState` (SQLite and NATS), which
 //! would make the cheapest invariant in the crate the most expensive one to
 //! run.
 
@@ -91,75 +91,6 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		path: "/ws",
 		versioned: false,
 		module: "websocket",
-	},
-	// ── sheets ──────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_attributions/:sheet_id",
-		versioned: true,
-		module: "sheets",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_video_chapters/:sheet_id",
-		versioned: true,
-		module: "sheets",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_gantt/:sheet_id",
-		versioned: true,
-		module: "sheets",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_nfl_tennis/:sheet_id",
-		versioned: true,
-		module: "sheets",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_nfl_roster/:sheet_id",
-		versioned: true,
-		module: "sheets",
-	},
-	// ── gdrive ──────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/gdrive/image/:image_id",
-		versioned: true,
-		module: "gdrive",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/gdrive/list",
-		versioned: true,
-		module: "gdrive",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/gdrive/list/:folder_id",
-		versioned: true,
-		module: "gdrive",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/gdrive/json/:file_id",
-		versioned: true,
-		module: "gdrive",
-	},
-	RouteDescriptor {
-		method: "PUT",
-		path: "/gdrive/write/:folder_id/:name",
-		versioned: true,
-		module: "gdrive",
-	},
-	// ── github ──────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_github_repos",
-		versioned: true,
-		module: "github",
 	},
 	// ── mood events ─────────────────────────────────────────────────────────
 	RouteDescriptor {
@@ -288,25 +219,6 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		path: "/tabs/pipeline",
 		versioned: true,
 		module: "tabs",
-	},
-	// ── audio ───────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/get_audio/:id",
-		versioned: true,
-		module: "audio_files",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/search_audio",
-		versioned: true,
-		module: "audio_files",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/search_audio",
-		versioned: true,
-		module: "audio_files",
 	},
 	// ── sessions ────────────────────────────────────────────────────────────
 	RouteDescriptor {
@@ -466,15 +378,11 @@ mod tests {
 		("health", include_str!("health.rs"), false),
 		("readiness", include_str!("readiness.rs"), false),
 		("websocket", include_str!("../websocket.rs"), false),
-		("sheets", include_str!("sheets.rs"), true),
-		("gdrive", include_str!("gdrive.rs"), true),
-		("github", include_str!("github.rs"), true),
 		("mood_events", include_str!("db/hopium.rs"), true),
 		("tabs", include_str!("db/tab.rs"), true),
 		("sessions", include_str!("db/session.rs"), true),
 		("push", include_str!("push.rs"), true),
 		("signals", include_str!("signals.rs"), true),
-		("audio_files", include_str!("audio_files.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),
 		("utterance", include_str!("utterance.rs"), true),
 	];

@@ -1,6 +1,5 @@
-use crate::error::{FileHostError, GSheetDeriveError};
+use crate::error::FileHostError;
 use axum::extract::FromRef;
-use sdk::{GitHubClient, ReadDrive, ReadSheets, WriteToDrive};
 use some_transport::{nats::JetStreamPublisher, NatsTransport};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
@@ -30,7 +29,6 @@ pub const API_V1_BASE_PATH: &str = "/api/v1";
 pub use crate::websocket::WebSocketFsm;
 pub use cache::{CacheConfig, CacheStore, DedupCache};
 pub use config::*;
-pub use handlers::audio_files::error::AudioServiceError;
 pub use handlers::utterance::UtteranceMetadata;
 pub use health::perform_health_check;
 pub use metrics::{ObservabilityError, OtelGuard};
@@ -44,15 +42,6 @@ pub struct CoreContext {
 	pub connection_guard: ConnectionGuard,
 	// Wrap in Mutex<Option<>> so we can take ownership during shutdown
 	pub otel_guard: Arc<Mutex<Option<OtelGuard>>>,
-}
-
-/// External APIs: third-party integrations with independent lifecycles
-#[derive(Clone)]
-pub struct ExternalApis {
-	pub gsheet_reader: Arc<ReadSheets>,
-	pub gdrive_reader: Arc<ReadDrive>,
-	pub gdrive_writer: Arc<WriteToDrive>,
-	pub github_client: Arc<GitHubClient>,
 }
 
 /// Realtime: websocket and ephemeral caching subsystem
@@ -86,7 +75,6 @@ pub struct NudgeContext {
 #[derive(Clone)]
 pub struct AppState {
 	pub core: CoreContext,
-	pub external: ExternalApis,
 	pub realtime: RealtimeContext,
 	/// `None` when `VAPID_*` is unset. The `/push` routes answer `503` in that
 	/// case and the tick never starts, which is deliberately different from
@@ -105,16 +93,6 @@ impl AppState {
 			shared_db: pool,
 			connection_guard: ConnectionGuard::new(),
 			otel_guard,
-		};
-
-		let secret_file = config.client_secret_file.clone();
-		let use_email = config.email_service_url.clone().unwrap_or_default();
-
-		let external = ExternalApis {
-			gsheet_reader: Arc::new(ReadSheets::new(use_email.clone(), secret_file.clone())?),
-			gdrive_reader: Arc::new(ReadDrive::new(use_email.clone(), secret_file.clone())?),
-			gdrive_writer: Arc::new(WriteToDrive::new(use_email.clone(), secret_file.clone())?),
-			github_client: Arc::new(GitHubClient::new(config.github_token.clone())?),
 		};
 
 		let cache_store = CacheStore::new(config.as_cache_config())?;
@@ -139,7 +117,7 @@ impl AppState {
 
 		let nudge = Self::build_nudge(&config)?;
 
-		Ok(Self { core, external, realtime, nudge })
+		Ok(Self { core, realtime, nudge })
 	}
 
 	/// Validate the nudge's configuration once, at startup.
@@ -205,12 +183,6 @@ impl AppState {
 impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
 		state.realtime.dedup_cache.clone()
-	}
-}
-
-impl FromRef<AppState> for Arc<ReadSheets> {
-	fn from_ref(state: &AppState) -> Self {
-		state.external.gsheet_reader.clone()
 	}
 }
 
