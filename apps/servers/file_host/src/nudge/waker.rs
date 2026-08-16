@@ -32,7 +32,7 @@ use engagement_repo::EngagementRepository;
 use intervention::{Charge, Engine, Verdict};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
-use session_repo::{SessionRepository, SessionStatus};
+use session_repo::{LayoutMode, SessionRecord, SessionRepository, SessionStatus};
 use sqlx::SqlitePool;
 use std::time::Duration;
 use study_domain::{StudyAction, StudyCalibration, StudySelector, StudyV1};
@@ -97,7 +97,7 @@ pub fn spawn(state: &AppState, interval: Duration) {
 /// # Errors
 /// Any storage failure. Per-subject failures are logged and skipped rather than
 /// aborting the pass — one bad row must not stop everyone else's.
-pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) -> Result<usize, sqlx::Error> {
+pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) -> anyhow::Result<usize> {
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
@@ -121,7 +121,7 @@ pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) 
 }
 
 /// Evaluate one subject, and act if the engine says so.
-async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> Result<bool, sqlx::Error> {
+async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> anyhow::Result<bool> {
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;
@@ -133,15 +133,6 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	let subscriptions = PushSubscriptionRepository::new(db.clone()).for_subject(subject_id).await?;
 	let consented_topics: Vec<Topic> = Topic::ALL.iter().copied().filter(|topic| subscriptions.iter().any(|sub| sub.accepts(*topic))).collect();
 
-	// What is prepared and untouched. Without one there is nothing to point at,
-	// and the selector returns `None` rather than inventing a reminder that
-	// opens nothing.
-	let sessions = SessionRepository::new(db.clone()).list().await.unwrap_or_default();
-	let prepared_session = sessions
-		.iter()
-		.find(|session| matches!(session.status, SessionStatus::Scheduled | SessionStatus::Paused | SessionStatus::Draft))
-		.map(|session| session.id.clone());
-
 	let constraints = StudyConstraints {
 		clock: nudge.clock.clone(),
 		enabled: nudge.enabled,
@@ -151,14 +142,29 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 		consented_topics,
 	};
 
-	let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(constraints, StudySelector { prepared_session });
+	// Selection needs a target in order to choose the message, but provisioning
+	// must not happen until constraints admit the intervention (quiet hours or
+	// missing consent must not create sessions). Replace this sentinel with the
+	// persisted session before claiming or sending.
+	let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(
+		constraints,
+		StudySelector {
+			prepared_session: Some(String::new()),
+		},
+	);
 	let gate = engagement.gate(subject_id).await?;
 	let last_intervened_at = gate
 		.and_then(|row| row.last_intervened_at)
 		.and_then(|raw| crate::nudge::clock::parse_timestamp(raw.as_str()));
 
 	let action = match engine.evaluate(&charge, now, last_intervened_at) {
-		Verdict::Intervene(action) => action,
+		Verdict::Intervene(action) => {
+			// Provision before announcing. Inactivity commonly means that the
+			// person never created a draft; requiring one made this path a
+			// cyclical `NothingToSay` no-op.
+			let session_id = prepare_session(&SessionRepository::new(db.clone()), now).await?;
+			action.with_session(session_id)
+		}
 		Verdict::Wait { until } => {
 			// Push the gate out so this subject stops being returned by `due`.
 			// Without it the waker would re-read the same row every pass.
@@ -210,6 +216,60 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	engagement.mark_actuated(log_id, &Utc::now().to_rfc3339()).await?;
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	Ok(true)
+}
+
+trait WithSession {
+	fn with_session(self, session_id: String) -> Self;
+}
+
+impl WithSession for StudyAction {
+	fn with_session(self, session_id: String) -> Self {
+		match self {
+			Self::LessonReady { .. } => Self::LessonReady { session_id },
+			Self::ResumeAbandoned { .. } => Self::ResumeAbandoned { session_id },
+			Self::SuggestReview { .. } => Self::SuggestReview { session_id },
+			Self::NewMaterial { .. } => Self::NewMaterial { session_id },
+		}
+	}
+}
+
+/// Return a session the notification can open, scheduling one when the user
+/// has no work waiting. Provisioning precedes the engagement claim and push so
+/// a notification is never accepted for a session that does not exist yet.
+async fn prepare_session(sessions: &SessionRepository, now: chrono::DateTime<Utc>) -> Result<String, session_repo::repository::SessionRepoError> {
+	if let Some(mut session) = sessions
+		.list()
+		.await?
+		.into_iter()
+		.find(|session| matches!(session.status, SessionStatus::Scheduled | SessionStatus::Paused | SessionStatus::Draft))
+	{
+		if session.status == SessionStatus::Draft {
+			session.status = SessionStatus::Scheduled;
+			session.updated_at = now.to_rfc3339();
+			sessions.upsert(&session).await?;
+		}
+		return Ok(session.id);
+	}
+
+	let stamp = now.to_rfc3339();
+	let session = SessionRecord {
+		id: format!("session-{}", uuid::Uuid::new_v4()),
+		name: "Today's session".to_owned(),
+		status: SessionStatus::Scheduled,
+		activities: Vec::new(),
+		scenes: Vec::new(),
+		layout_mode: LayoutMode::Basic,
+		layout: None,
+		total_duration_ms: 0,
+		created_at: stamp.clone(),
+		updated_at: stamp,
+		started_at: None,
+		completed_at: None,
+		final_elapsed_ms: None,
+	};
+
+	sessions.upsert(&session).await?;
+	Ok(session.id)
 }
 
 /// Put an action on the wire, to every device that consented to its topic.
@@ -292,4 +352,73 @@ pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::S
 
 	debug!(subject = %subject_id, signal = signal.kind(), eligible_at = %eligible_at, "signal folded in");
 	Ok(eligible_at)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::prepare_session;
+	use chrono::{TimeZone as _, Utc};
+	use session_repo::{LayoutMode, SessionRecord, SessionRepository, SessionStatus};
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	async fn sessions() -> SessionRepository {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		sqlx::query(
+			r#"CREATE TABLE sessions (
+				id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+				layout_mode TEXT NOT NULL, total_duration_ms INTEGER NOT NULL,
+				created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+				started_at TEXT, completed_at TEXT, final_elapsed_ms INTEGER,
+				activities TEXT NOT NULL, scenes TEXT NOT NULL, layout TEXT
+			)"#,
+		)
+		.execute(&pool)
+		.await
+		.unwrap();
+		SessionRepository::new(pool)
+	}
+
+	fn at_noon() -> chrono::DateTime<Utc> {
+		Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap()
+	}
+
+	#[tokio::test]
+	async fn inactivity_provisions_a_scheduled_session_before_the_nudge() {
+		let sessions = sessions().await;
+
+		let id = prepare_session(&sessions, at_noon()).await.unwrap();
+		let stored = sessions.get(&id).await.unwrap().unwrap();
+
+		assert_eq!(stored.status, SessionStatus::Scheduled);
+		assert_eq!(stored.name, "Today's session");
+		assert!(stored.activities.is_empty());
+	}
+
+	#[tokio::test]
+	async fn a_draft_is_scheduled_instead_of_creating_a_duplicate() {
+		let sessions = sessions().await;
+		let stamp = at_noon().to_rfc3339();
+		let draft = SessionRecord {
+			id: "session-draft".to_owned(),
+			name: "Prepared lesson".to_owned(),
+			status: SessionStatus::Draft,
+			activities: Vec::new(),
+			scenes: Vec::new(),
+			layout_mode: LayoutMode::Basic,
+			layout: None,
+			total_duration_ms: 0,
+			created_at: stamp.clone(),
+			updated_at: stamp,
+			started_at: None,
+			completed_at: None,
+			final_elapsed_ms: None,
+		};
+		sessions.upsert(&draft).await.unwrap();
+
+		let id = prepare_session(&sessions, at_noon()).await.unwrap();
+
+		assert_eq!(id, draft.id);
+		assert_eq!(sessions.get(&id).await.unwrap().unwrap().status, SessionStatus::Scheduled);
+		assert_eq!(sessions.list().await.unwrap().len(), 1);
+	}
 }
