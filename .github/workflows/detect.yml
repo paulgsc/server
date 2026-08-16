@@ -1,10 +1,13 @@
-name: Detect, Build & Push
+name: Detect, Build & Stage
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -64,10 +67,29 @@ jobs:
     uses: ./.github/workflows/build-image.yml
     with:
       matrix: ${{ needs.detect.outputs.matrix }}
-  push:
+  stage:
     needs: [detect, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect.outputs.has_changes == 'true'
-    uses: ./.github/workflows/push-image.yml
-    secrets: inherit
-    with:
-      matrix: ${{ needs.detect.outputs.matrix }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Record image changeset
+        env:
+          MATRIX: ${{ needs.detect.outputs.matrix }}
+        run: |
+          mkdir -p .github/docker-changesets
+          jq --arg source_sha "${{ github.sha }}" \
+            '{source_sha: $source_sha, include: .include}' \
+            <<< "$MATRIX" > ".github/docker-changesets/${{ github.sha }}.json"
+      - name: Create or update Docker image changeset pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/docker-image-changesets
+          delete-branch: true
+          commit-message: "chore(docker): stage image changesets"
+          title: "chore(docker): publish pending image changes"
+          body: |
+            Merging this pull request publishes the accumulated Docker image changes to Docker Hub.
+
+            This pull request is maintained automatically as image-affecting changes land on `main`.
