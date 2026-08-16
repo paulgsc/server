@@ -1,0 +1,79 @@
+name: Publish Image Changesets
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/docker-changesets/*.json"
+permissions:
+  contents: read
+concurrency:
+  group: publish-image-changesets
+  cancel-in-progress: false
+jobs:
+  changesets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+      has_changes: ${{ steps.collect.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Collect newly merged changesets
+        id: collect
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          mapfile -t CHANGESETS < <(
+            git diff --diff-filter=A --name-only "$BEFORE" "${{ github.sha }}" -- \
+              '.github/docker-changesets/*.json'
+          )
+
+          if (( ${#CHANGESETS[@]} == 0 )); then
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_changes=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The filenames are commit hashes, so their lexical order does not
+          # describe which image specification is newest. Order the files by
+          # their source commits in main's history and reject any source that
+          # is not part of the commit being published.
+          declare -A CHANGESET_BY_SOURCE
+          for changeset in "${CHANGESETS[@]}"; do
+            source_sha=$(jq -er '.source_sha' "$changeset")
+            if ! git merge-base --is-ancestor "$source_sha" "${{ github.sha }}"; then
+              echo "::error file=$changeset::Changeset source $source_sha is not an ancestor of ${{ github.sha }}"
+              exit 1
+            fi
+            CHANGESET_BY_SOURCE["$source_sha"]=$changeset
+          done
+
+          ORDERED_CHANGESETS=()
+          while read -r source_sha; do
+            if [[ -n "${CHANGESET_BY_SOURCE[$source_sha]+present}" ]]; then
+              ORDERED_CHANGESETS+=("${CHANGESET_BY_SOURCE[$source_sha]}")
+              unset 'CHANGESET_BY_SOURCE[$source_sha]'
+            fi
+          done < <(git rev-list --reverse --topo-order "${{ github.sha }}")
+
+          if (( ${#CHANGESET_BY_SOURCE[@]} != 0 )); then
+            echo '::error::Could not order every Docker image changeset by source commit'
+            exit 1
+          fi
+
+          MATRIX=$(jq -c -s \
+            'map(. as $changeset | $changeset.include[] + {source_sha: $changeset.source_sha})
+             | reduce .[] as $image ({}; .[$image.name] = $image)
+             | {include: [.[]]}' \
+            "${ORDERED_CHANGESETS[@]}")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo 'has_changes=true' >> "$GITHUB_OUTPUT"
+  publish:
+    needs: changesets
+    if: needs.changesets.outputs.has_changes == 'true'
+    uses: ./.github/workflows/push-image.yml
+    secrets: inherit
+    with:
+      matrix: ${{ needs.changesets.outputs.matrix }}

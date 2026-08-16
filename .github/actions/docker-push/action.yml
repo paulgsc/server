@@ -42,7 +42,7 @@ runs:
         push: true
         tags: |
           ${{ inputs.docker-repo }}:latest
-          ${{ inputs.docker-repo }}:${{ github.sha }}
+          ${{ inputs.docker-repo }}:${{ inputs.vcs-ref }}
         build-args: |
           VCS_REF=${{ inputs.vcs-ref }}
           BUILD_DATE=${{ inputs.build-date }}

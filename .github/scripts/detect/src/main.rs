@@ -125,7 +125,12 @@ fn is_under_dir(file: &Path, dir: &Path) -> bool {
 
 /// Check whether a changed file affects the image build/publish pipeline.
 fn is_build_pipeline_file(file: &Path, workspace_root: &Path) -> bool {
-	const PIPELINE_FILES: &[&str] = &[".github/workflows/detect.yml", ".github/workflows/build-image.yml", ".github/workflows/push-image.yml"];
+	const PIPELINE_FILES: &[&str] = &[
+		".github/workflows/detect.yml",
+		".github/workflows/build-image.yml",
+		".github/workflows/push-image.yml",
+		".github/workflows/publish-image-changesets.yml",
+	];
 	const PIPELINE_DIRS: &[&str] = &[".github/actions/docker-build", ".github/actions/docker-push", ".github/scripts/detect"];
 
 	PIPELINE_FILES.iter().map(|path| normalize_path(Path::new(path), workspace_root)).any(|path| file == path)
