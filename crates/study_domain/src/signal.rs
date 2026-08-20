@@ -171,6 +171,12 @@ pub enum StudyAction {
 	SuggestReview { session_id: String },
 	/// New material they have not seen.
 	NewMaterial { session_id: String },
+	/// Nobody has a session prepared yet, and the recommender that would
+	/// prepare one (`#279`–`#284`) does not exist. Plain absence is the one
+	/// deficit with an honest sessionless answer: come and start something.
+	/// It invites; it does not propose, and it carries no session id because
+	/// there is nothing to point at. Interim — see `docs/study-nudge.md`.
+	GetStarted,
 }
 
 impl StudyAction {
@@ -181,13 +187,37 @@ impl StudyAction {
 			Self::ResumeAbandoned { .. } => "resume-abandoned",
 			Self::SuggestReview { .. } => "suggest-review",
 			Self::NewMaterial { .. } => "new-material",
+			Self::GetStarted => "get-started",
 		}
 	}
 
+	/// The session this action points at, if it points at one.
+	///
+	/// Total until `GetStarted`: every earlier variant carried an id that
+	/// already existed. Two other shapes were considered and rejected, so
+	/// `#279` — which weighs this same cost — can inherit the decision rather
+	/// than re-litigate it:
+	///
+	/// - A separate `has_session()` guard beside an unchanged `-> &str`
+	///   keeps the signature but reintroduces the exact partiality-by-
+	///   convention this change removes: nothing stops a caller from calling
+	///   `session_id()` on `GetStarted` anyway.
+	/// - A split enum — `GetStarted` pulled out of `StudyAction` into a
+	///   wrapping type — keeps every other accessor total, but duplicates
+	///   `kind()` and the serde tag, and forces `payload::topic_for`,
+	///   `NudgePayload::for_action`, and every future match to handle two
+	///   enums instead of one. `GetStarted` is documented to *become* this
+	///   enum's fallback arm once `#279` lands, which only stays cheap if it
+	///   is a variant here rather than a case bolted on beside it.
+	///
+	/// `Option<&str>` is the shape that survives: total, and it costs callers
+	/// nothing they were not already going to need once a variant existed
+	/// without a session.
 	#[must_use]
-	pub fn session_id(&self) -> &str {
+	pub fn session_id(&self) -> Option<&str> {
 		match self {
-			Self::LessonReady { session_id } | Self::ResumeAbandoned { session_id } | Self::SuggestReview { session_id } | Self::NewMaterial { session_id } => session_id,
+			Self::LessonReady { session_id } | Self::ResumeAbandoned { session_id } | Self::SuggestReview { session_id } | Self::NewMaterial { session_id } => Some(session_id),
+			Self::GetStarted => None,
 		}
 	}
 }

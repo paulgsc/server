@@ -87,6 +87,25 @@ action:
 | Mastery | `SuggestReview` |
 | Freshness | `NewMaterial` |
 
+### Cold start: the one deficit with a sessionless answer
+
+Three of the four actions above need a prepared session — you cannot resume a
+session that was never started, review material that was never studied, or
+announce new material to someone who has seen none. Before the recommender
+exists (`#279`–`#284`), nothing is ever prepared, so those three stay silent
+exactly as the table implies: `StudySelector::select` returns `None` and the
+engine reaches `Verdict::NothingToSay`.
+
+Plain absence is different: it has an honest sessionless answer. When
+`prepared_session` is `None` and the dominant deficit is `Presence`, the
+selector returns `StudyAction::GetStarted` instead of staying silent — an
+invitation, deep-linking to the app base rather than a session that does not
+exist. This is a deliberately **interim** answer, not the recommender: it
+invites, it does not propose, and it does not provision anything (the
+mistake PR #251 made). `#279` starts replacing it with real proposals, and
+once `#285` lands, `GetStarted` either retires or becomes the documented
+fallback for an empty catalogue.
+
 ## Consent is a precondition, not a preference
 
 **The null case is silence.** There is no path through `push_repo` that creates a

@@ -134,9 +134,22 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	let consented_topics: Vec<Topic> = Topic::ALL.iter().copied().filter(|topic| subscriptions.iter().any(|sub| sub.accepts(*topic))).collect();
 
 	// What is prepared and untouched. Without one there is nothing to point at,
-	// and the selector returns `None` rather than inventing a reminder that
-	// opens nothing.
-	let sessions = SessionRepository::new(db.clone()).list().await.unwrap_or_default();
+	// and the selector returns `None` (or, for plain absence, `GetStarted`)
+	// rather than inventing a reminder that opens nothing. A failed read is
+	// deliberately *not* defaulted to empty: since `GetStarted` now fires on
+	// exactly that emptiness, silently swallowing the error here would be
+	// indistinguishable from a genuinely empty catalogue and could invite
+	// someone who already has a session waiting. Logged and skipped instead —
+	// `SessionRepoError` doesn't convert to this function's `sqlx::Error`, and
+	// widening the signature is a bigger change than a rare read failure
+	// warrants.
+	let sessions = match SessionRepository::new(db.clone()).list().await {
+		Ok(sessions) => sessions,
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not read sessions; skipping this subject rather than guessing whether one is prepared");
+			return Ok(false);
+		}
+	};
 	let prepared_session = sessions
 		.iter()
 		.find(|session| matches!(session.status, SessionStatus::Scheduled | SessionStatus::Paused | SessionStatus::Draft))
@@ -173,8 +186,12 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
-			// Depleted, admissible, and no action fits — which almost always
-			// means nothing is prepared. A gap in the domain, worth saying so.
+			// Depleted, admissible, and no action fits. Plain absence — the
+			// one deficit with a sessionless answer — now gets `GetStarted`
+			// even with nothing prepared, so reaching this arm means the
+			// dominant deficit is Momentum, Mastery, or Freshness with
+			// nothing to resume, review, or announce. A gap in the domain,
+			// worth saying so.
 			warn!(subject = %subject_id, "engagement is low but there is nothing to point them at");
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();

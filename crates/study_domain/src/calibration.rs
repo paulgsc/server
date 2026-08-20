@@ -87,15 +87,23 @@ pub struct StudySelector {
 
 impl Selector<StudyV1> for StudySelector {
 	fn select(&self, deficits: &[Deficit<EngagementClass>]) -> Option<StudyAction> {
-		let session_id = self.prepared_session.clone()?;
 		let dominant = deficits.first()?.class;
 
-		Some(match dominant {
-			EngagementClass::Momentum => StudyAction::ResumeAbandoned { session_id },
-			EngagementClass::Mastery => StudyAction::SuggestReview { session_id },
-			EngagementClass::Freshness => StudyAction::NewMaterial { session_id },
-			EngagementClass::Presence => StudyAction::LessonReady { session_id },
-		})
+		match &self.prepared_session {
+			Some(session_id) => Some(match dominant {
+				EngagementClass::Momentum => StudyAction::ResumeAbandoned { session_id: session_id.clone() },
+				EngagementClass::Mastery => StudyAction::SuggestReview { session_id: session_id.clone() },
+				EngagementClass::Freshness => StudyAction::NewMaterial { session_id: session_id.clone() },
+				EngagementClass::Presence => StudyAction::LessonReady { session_id: session_id.clone() },
+			}),
+			// Plain absence is the one deficit with an honest sessionless
+			// answer. The other three cannot resume a session that was never
+			// started, review material that was never studied, or announce
+			// new material to someone who has seen none — silence is still
+			// the honest answer for them.
+			None if dominant == EngagementClass::Presence => Some(StudyAction::GetStarted),
+			None => None,
+		}
 	}
 }
 
@@ -188,10 +196,51 @@ mod tests {
 	}
 
 	#[test]
-	fn with_nothing_prepared_there_is_nothing_to_say() {
+	fn with_nothing_prepared_three_of_four_deficits_stay_silent() {
+		// Still holds for Momentum, Mastery, and Freshness: none of them has
+		// anything to point at without a prepared session. Presence is the
+		// exception — see the next test.
+		let now = Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap();
+		let empty = StudySelector { prepared_session: None };
+
+		let mut abandoned = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		abandoned.apply::<StudyCalibration>(
+			&StudySignal::SessionAbandoned {
+				session_id: "session-1".to_owned(),
+				elapsed_ms: 25 * 60_000,
+			},
+			now,
+		);
+		assert!(empty.select(&abandoned.deficits::<StudyCalibration>(now)).is_none());
+
+		let mut poorly_scored = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		for _ in 0..3 {
+			poorly_scored.apply::<StudyCalibration>(
+				&StudySignal::ScoredBelowTarget {
+					activity_id: "a".to_owned(),
+					score: 0.1,
+				},
+				now,
+			);
+		}
+		assert!(empty.select(&poorly_scored.deficits::<StudyCalibration>(now)).is_none());
+
+		let mut stale = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		stale.apply::<StudyCalibration>(&StudySignal::CurriculumUpdated { curriculum_id: "c".to_owned() }, now);
+		assert!(empty.select(&stale.deficits::<StudyCalibration>(now)).is_none());
+	}
+
+	#[test]
+	fn with_nothing_prepared_plain_absence_still_invites_getting_started() {
+		// The fourth deficit has an honest sessionless answer. This is #294's
+		// whole change: `Presence` no longer goes silent just because nothing
+		// is prepared yet.
 		let now = Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap();
 		let charge = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		let later = now + Duration::days(9);
 		let empty = StudySelector { prepared_session: None };
-		assert!(empty.select(&charge.deficits::<StudyCalibration>(now)).is_none());
+
+		let action = empty.select(&charge.deficits::<StudyCalibration>(later)).unwrap();
+		assert!(matches!(action, StudyAction::GetStarted), "got {action:?}");
 	}
 }

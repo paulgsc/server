@@ -60,9 +60,13 @@ impl NudgePayload {
 			StudyAction::ResumeAbandoned { .. } => ("Pick up where you left off", "You started something and didn't finish."),
 			StudyAction::SuggestReview { .. } => ("A quick review might help", "Some of the last set didn't stick."),
 			StudyAction::NewMaterial { .. } => ("There's something new", "New material is waiting for you."),
+			StudyAction::GetStarted => ("Let's get started", "Come study something — pick anything to begin."),
 		};
 
-		Self::for_session(base_url, action.session_id(), title.to_owned(), body.to_owned())
+		match action.session_id() {
+			Some(session_id) => Self::for_session(base_url, session_id, title.to_owned(), body.to_owned()),
+			None => Self::for_base(base_url, title.to_owned(), body.to_owned()),
+		}
 	}
 
 	/// Build the payload for a session deep link.
@@ -72,13 +76,35 @@ impl NudgePayload {
 	/// different one lands the click on the dashboard instead of the session.
 	#[must_use]
 	pub fn for_session(base_url: &str, session_id: &str, title: String, body: String) -> Self {
-		let base = if base_url.ends_with('/') { base_url.to_owned() } else { format!("{base_url}/") };
-
 		Self {
 			title,
 			body,
-			url: format!("{base}sessions/{session_id}"),
+			url: format!("{}sessions/{session_id}", Self::normalize_base(base_url)),
 			tag: NUDGE_TAG.to_owned(),
+		}
+	}
+
+	/// Build the payload for the app base itself, with nothing to deep-link
+	/// into yet.
+	///
+	/// [`StudyAction::GetStarted`]'s case: there is no session to open, so the
+	/// honest destination is wherever the app lands someone with nothing
+	/// prepared, not a fabricated session URL — the defect PR #251 shipped.
+	#[must_use]
+	pub fn for_base(base_url: &str, title: String, body: String) -> Self {
+		Self {
+			title,
+			body,
+			url: Self::normalize_base(base_url),
+			tag: NUDGE_TAG.to_owned(),
+		}
+	}
+
+	fn normalize_base(base_url: &str) -> String {
+		if base_url.ends_with('/') {
+			base_url.to_owned()
+		} else {
+			format!("{base_url}/")
 		}
 	}
 
@@ -122,7 +148,11 @@ impl std::error::Error for PayloadError {}
 #[must_use]
 pub const fn topic_for(action: &StudyAction) -> Topic {
 	match action {
-		StudyAction::LessonReady { .. } => Topic::LessonReady,
+		// Closest existing grant: someone who consented to "your lesson is
+		// ready" has consented to being told to start one. `GetStarted` is
+		// interim and retires once #279 lands, which does not warrant a
+		// fifth topic for a message this short-lived.
+		StudyAction::LessonReady { .. } | StudyAction::GetStarted => Topic::LessonReady,
 		StudyAction::ResumeAbandoned { .. } | StudyAction::SuggestReview { .. } => Topic::Coaching,
 		StudyAction::NewMaterial { .. } => Topic::NewMaterial,
 	}
@@ -130,7 +160,21 @@ pub const fn topic_for(action: &StudyAction) -> Topic {
 
 #[cfg(test)]
 mod tests {
-	use super::{NudgePayload, NUDGE_TAG};
+	use super::{topic_for, NudgePayload, NUDGE_TAG};
+	use push_repo::Topic;
+	use study_domain::StudyAction;
+
+	#[test]
+	fn get_started_resolves_to_the_app_base_not_a_session() {
+		let payload = NudgePayload::for_action("https://nixos.local:5173/", &StudyAction::GetStarted);
+		assert_eq!(payload.url, "https://nixos.local:5173/");
+		assert!(!payload.url.contains("/sessions/"), "got {}", payload.url);
+	}
+
+	#[test]
+	fn get_started_borrows_the_lesson_ready_grant() {
+		assert_eq!(topic_for(&StudyAction::GetStarted), Topic::LessonReady);
+	}
 
 	#[test]
 	fn the_deep_link_matches_the_shape_the_client_builds() {
