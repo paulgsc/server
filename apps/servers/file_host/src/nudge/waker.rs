@@ -335,9 +335,12 @@ pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::S
 /// subject who already has a row, whether from a prior signal or from a
 /// previous device subscribing.
 ///
+/// Returns whether this call actually seeded the row, so [`backfill_first_contact`]
+/// can report how much of its reconciliation pass was real work.
+///
 /// # Errors
 /// Propagates any storage failure.
-pub async fn first_contact(db: &SqlitePool, subject_id: &str) -> Result<(), sqlx::Error> {
+pub async fn first_contact(db: &SqlitePool, subject_id: &str) -> Result<bool, sqlx::Error> {
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 
@@ -351,7 +354,48 @@ pub async fn first_contact(db: &SqlitePool, subject_id: &str) -> Result<(), sqlx
 		debug!(subject = %subject_id, eligible_at = %eligible_at, "first contact: gate row seeded full");
 	}
 
-	Ok(())
+	Ok(created)
+}
+
+/// Reconcile pre-existing subscriptions against `engagement_gate`, once, at
+/// boot.
+///
+/// `first_contact` only runs on a live `POST /push/subscriptions` call, and a
+/// browser that already holds a subscription from before this landed has no
+/// reason to send it again — the Push API does not re-announce an unchanged
+/// subscription on its own. Without this pass, every subject who subscribed
+/// before this release stays exactly the silence #1 victim this feature
+/// exists to fix: a `push_subscriptions` row with no path into
+/// `engagement_gate`, forever, unless they happen to unsubscribe and
+/// resubscribe.
+///
+/// Run once at startup rather than folded into the waker's per-tick loop: this
+/// is a one-time reconciliation against rows that predate the fix, not
+/// ongoing work, and `first_contact`'s own idempotency makes repeating it on
+/// every restart a cheap no-op rather than a hazard.
+///
+/// # Errors
+/// Propagates a failure to read `push_subscriptions` itself. A failure to
+/// seed one particular subject is logged and skipped rather than aborting the
+/// pass — one bad row must not leave everyone else ungated, and the next boot
+/// tries again.
+pub async fn backfill_first_contact(db: &SqlitePool) -> Result<usize, sqlx::Error> {
+	let subject_ids = PushSubscriptionRepository::new(db.clone()).distinct_subject_ids().await?;
+
+	let mut seeded = 0;
+	for subject_id in subject_ids {
+		match first_contact(db, &subject_id).await {
+			Ok(true) => seeded += 1,
+			Ok(false) => {}
+			Err(err) => error!(subject = %subject_id, error = %err, "could not backfill a gate row for an existing subscription; will retry next boot"),
+		}
+	}
+
+	if seeded > 0 {
+		info!(seeded, "backfilled gate rows for subscriptions that predate first contact");
+	}
+
+	Ok(seeded)
 }
 
 #[cfg(test)]

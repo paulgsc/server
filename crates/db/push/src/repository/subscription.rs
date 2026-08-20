@@ -198,6 +198,19 @@ impl PushSubscriptionRepository {
 		Ok(rows.into_iter().map(Into::into).collect())
 	}
 
+	/// Every subject who has ever subscribed, deduplicated.
+	///
+	/// The one caller is the first-contact backfill run at startup —
+	/// reconciling subscriptions that predate `waker::first_contact` against
+	/// `engagement_gate`. [`Self::for_subject`] is not reusable here: this asks
+	/// for the distinct *owners*, not one owner's devices.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn distinct_subject_ids(&self) -> Result<Vec<String>, sqlx::Error> {
+		sqlx::query_scalar!("SELECT DISTINCT subject_id FROM push_subscriptions").fetch_all(&self.pool).await
+	}
+
 	/// Remove a subscription. Idempotent: an explicit opt-out and a `410 Gone`
 	/// are saying the same thing, and neither is an error when it has already
 	/// happened.
