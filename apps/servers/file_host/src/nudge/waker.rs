@@ -173,8 +173,12 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
-			// Depleted, admissible, and no action fits — which almost always
-			// means nothing is prepared. A gap in the domain, worth saying so.
+			// Depleted, admissible, and no action fits. Plain absence — the
+			// one deficit with a sessionless answer — now gets `GetStarted`
+			// even with nothing prepared, so reaching this arm means the
+			// dominant deficit is Momentum, Mastery, or Freshness with
+			// nothing to resume, review, or announce. A gap in the domain,
+			// worth saying so.
 			warn!(subject = %subject_id, "engagement is low but there is nothing to point them at");
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();
