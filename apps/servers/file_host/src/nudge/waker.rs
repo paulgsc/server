@@ -310,3 +310,133 @@ pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::S
 	debug!(subject = %subject_id, signal = signal.kind(), eligible_at = %eligible_at, "signal folded in");
 	Ok(eligible_at)
 }
+
+/// First contact: give a subject who has never been observed a gate row,
+/// seeded full, so `due` can eventually find them without a signal ever
+/// having arrived.
+///
+/// Before this, the chain was: no session created ⇒ no signal ⇒ no gate row
+/// ⇒ never in `due` ⇒ never nudged. Not late — never. The only caller is
+/// `POST /push/subscriptions`: it is a person explicitly saying "you may
+/// interrupt me", the strongest statement of intent this deployment has, and
+/// (unlike a page load, which is too broad, or a dedicated "hello" route,
+/// which would just re-say what this one already implies) it happens exactly
+/// once per device before any study behaviour exists. The alternative of
+/// seeding lazily when the waker runs is not available at all: the waker can
+/// only see rows that already exist, which is the circularity this function
+/// closes.
+///
+/// Seeded **full**, by the same `Charge::full`/`eligible_at` arithmetic
+/// `observe` falls back to for an unseen subject — see the comment there.
+/// Starting empty would make a brand-new account instantly eligible; someone
+/// who installs the app at 9am must not be interrupted at 9:05.
+///
+/// Idempotent: [`EngagementRepository::seed_if_absent`] is a no-op for a
+/// subject who already has a row, whether from a prior signal or from a
+/// previous device subscribing.
+///
+/// Returns whether this call actually seeded the row, so [`backfill_first_contact`]
+/// can report how much of its reconciliation pass was real work.
+///
+/// # Errors
+/// Propagates any storage failure.
+pub async fn first_contact(db: &SqlitePool, subject_id: &str) -> Result<bool, sqlx::Error> {
+	let engagement = EngagementRepository::new(db.clone());
+	let now = Utc::now();
+
+	let charge = Charge::<StudyV1>::full::<StudyCalibration>(now);
+	let eligible_at = charge.eligible_at::<StudyCalibration>(now);
+	let (levels, as_of) = charge.to_storage();
+
+	let created = engagement.seed_if_absent(subject_id, &levels, &as_of.to_rfc3339(), &eligible_at.to_rfc3339()).await?;
+
+	if created {
+		debug!(subject = %subject_id, eligible_at = %eligible_at, "first contact: gate row seeded full");
+	}
+
+	Ok(created)
+}
+
+/// Reconcile pre-existing subscriptions against `engagement_gate`, once, at
+/// boot.
+///
+/// `first_contact` only runs on a live `POST /push/subscriptions` call, and a
+/// browser that already holds a subscription from before this landed has no
+/// reason to send it again — the Push API does not re-announce an unchanged
+/// subscription on its own. Without this pass, every subject who subscribed
+/// before this release stays exactly the silence #1 victim this feature
+/// exists to fix: a `push_subscriptions` row with no path into
+/// `engagement_gate`, forever, unless they happen to unsubscribe and
+/// resubscribe.
+///
+/// Run once at startup rather than folded into the waker's per-tick loop: this
+/// is a one-time reconciliation against rows that predate the fix, not
+/// ongoing work, and `first_contact`'s own idempotency makes repeating it on
+/// every restart a cheap no-op rather than a hazard.
+///
+/// # Errors
+/// Propagates a failure to read `push_subscriptions` itself. A failure to
+/// seed one particular subject is logged and skipped rather than aborting the
+/// pass — one bad row must not leave everyone else ungated, and the next boot
+/// tries again.
+pub async fn backfill_first_contact(db: &SqlitePool) -> Result<usize, sqlx::Error> {
+	let subject_ids = PushSubscriptionRepository::new(db.clone()).distinct_subject_ids().await?;
+
+	let mut seeded = 0;
+	for subject_id in subject_ids {
+		match first_contact(db, &subject_id).await {
+			Ok(true) => seeded += 1,
+			Ok(false) => {}
+			Err(err) => error!(subject = %subject_id, error = %err, "could not backfill a gate row for an existing subscription; will retry next boot"),
+		}
+	}
+
+	if seeded > 0 {
+		info!(seeded, "backfilled gate rows for subscriptions that predate first contact");
+	}
+
+	Ok(seeded)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::nudge::clock::NudgeClock;
+	use crate::nudge::constraints::{StudyConstraints, Suppressed};
+	use crate::nudge::presence::Presence;
+	use chrono::{Duration, TimeZone as _};
+
+	fn t0() -> chrono::DateTime<Utc> {
+		Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap()
+	}
+
+	/// #278's named edge case: someone subscribes, then unsubscribes every
+	/// device before ever becoming due. `actuate` already degrades correctly
+	/// once admission fails; the risk the issue calls out is landing in
+	/// `Verdict::NothingToSay` instead, which `consider` logs at `warn!` on
+	/// every pass. Presence — fastest half-life, highest weight — stays the
+	/// dominant deficit for a subject who has never received a single signal,
+	/// so `GetStarted` (#294) keeps firing and the engine explains the silence
+	/// as `NotConsented` at `info!` rather than falling through to a warn loop.
+	#[test]
+	fn a_first_contact_subject_who_unsubscribed_everywhere_is_suppressed_not_stuck_with_nothing_to_say() {
+		let charge = Charge::<StudyV1>::full::<StudyCalibration>(t0());
+		let far_future = t0() + Duration::days(365);
+
+		let constraints = StudyConstraints {
+			clock: NudgeClock::resolve(Some("UTC")).0,
+			enabled: true,
+			quiet_hours_start: 22,
+			quiet_hours_end: 8,
+			presence: Presence { connected: 0, live: 0 },
+			consented_topics: Vec::new(),
+		};
+		let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(constraints, StudySelector { prepared_session: None });
+
+		let verdict = engine.evaluate(&charge, far_future, None);
+		assert!(
+			matches!(verdict, Verdict::Suppressed { reason: Suppressed::NotConsented, .. }),
+			"got {verdict:?}, expected NotConsented suppression rather than NothingToSay"
+		);
+	}
+}

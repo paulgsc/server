@@ -106,6 +106,50 @@ mistake PR #251 made). `#279` starts replacing it with real proposals, and
 once `#285` lands, `GetStarted` either retires or becomes the documented
 fallback for an empty catalogue.
 
+### First contact: how a subject enters the gate at all
+
+Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
+now`, and `engagement_gate` rows were created in exactly one place —
+`waker::observe`, called from `POST /signals` — whose only caller is the
+client's session-mutation layer, fired when a session is *created*. The chain
+was: no session ⇒ no signal ⇒ no gate row ⇒ never in `due` ⇒ never nudged.
+Not late. Never. This is silence #1 in `#257`'s cold-start argument, and it
+was silent for exactly the person who most needed the nudge: someone who had
+just installed the app and done nothing else yet.
+
+`POST /push/subscriptions` closes it. `waker::first_contact` runs on every
+call, after the subscription itself is stored: it is a person explicitly
+saying "you may interrupt me" — the strongest statement of intent this
+deployment has — and, unlike a page load (too broad to count as consent) or a
+dedicated "hello" route (a new endpoint restating what this one already
+implies), it happens exactly once per device before any study behaviour
+exists at all. Seeding lazily when the waker runs was never on the table: the
+waker can only see rows that already exist, which is the circularity this
+closes.
+
+The row is written **full**, by the same `Charge::full`/`eligible_at`
+arithmetic `observe` already falls back to for an unseen subject — so a
+first-contact subject and a subject discovered through a stray signal land on
+identical footing, and `eligible_at` comes out on the order of a week later
+rather than five minutes. Idempotent by construction: the insert is guarded
+by `engagement_gate`'s own primary key (`INSERT OR IGNORE`), not a
+read-then-write, so a second device subscribing — or the same one
+resubscribing after its keys rotate — cannot reset an already-drifting
+subject back to full, and two devices racing to be the first one in cannot
+both win.
+
+The edge case worth naming: someone subscribes and then unsubscribes every
+device before ever becoming due. They keep their gate row and have no way to
+be reached. This degrades correctly rather than looping loudly — `Presence`
+(fastest half-life, highest weight) stays the dominant deficit for a subject
+who has never received a single signal, so `GetStarted` keeps firing when
+they become due, and admission fails on `NotConsented` at `info!` rather than
+falling through to `Verdict::NothingToSay`'s `warn!`.
+
+Landing this closes **P0** (`#295`'s first deployable increment): a fresh
+database, one subscription, no sessions, no signals, and the clock advanced
+is now enough to produce one notification that opens the app.
+
 ## Consent is a precondition, not a preference
 
 **The null case is silence.** There is no path through `push_repo` that creates a
@@ -288,7 +332,7 @@ All paths are under `/api/v1`.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/push/vapid-key` | The `applicationServerKey` and the topics on offer |
-| `POST` | `/push/subscriptions` | The browser's `PushSubscription` **plus the topics they agreed to** |
+| `POST` | `/push/subscriptions` | The browser's `PushSubscription` **plus the topics they agreed to**, and first contact — see below |
 | `DELETE` | `/push/subscriptions` | Withdrawing consent, idempotent, body `{ endpoint }` |
 | `POST` | `/push/test` | Send now, without waiting for a day to pass |
 
@@ -298,12 +342,17 @@ All paths are under `/api/v1`.
 |---|---|---|
 | `POST` | `/signals` | A domain event: `session-started`, `session-abandoned`, `scored-below-target`, `curriculum-updated`, … |
 
-**This is where work originates.** A signal folds into the subject's charge and
-the crossing instant is re-solved on the spot; the response returns the new
-`eligible_at`, which makes the arithmetic observable without waiting for a
-notification. A cron-driven design has no endpoint like this, because nothing
-needs to tell it anything — and that convenience is exactly what costs it the
-ability to answer *why*.
+**This is where a charge is updated.** A signal folds into the subject's
+existing charge and the crossing instant is re-solved on the spot; the
+response returns the new `eligible_at`, which makes the arithmetic observable
+without waiting for a notification. A cron-driven design has no endpoint like
+this, because nothing needs to tell it anything — and that convenience is
+exactly what costs it the ability to answer *why*.
+
+It is not, since `#278`, the only place a subject *begins* to exist:
+[first contact](#first-contact-how-a-subject-enters-the-gate-at-all)
+(`POST /push/subscriptions`) writes the initial gate row, seeded full, before
+any signal has ever arrived.
 
 ### Sessions
 
