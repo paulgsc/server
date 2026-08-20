@@ -100,8 +100,18 @@ pub async fn subscribe(State(state): State<AppState>, subject: SubjectId, Json(r
 		consented_at: now.clone(),
 	};
 
-	PushSubscriptionRepository::new(state.core.shared_db)
+	PushSubscriptionRepository::new(state.core.shared_db.clone())
 		.upsert(&request.subscription, &consent, &now)
+		.await
+		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+
+	// First contact: this is the event that says a subject exists at all —
+	// see `waker::first_contact` for why this route, and not a signal, is the
+	// honest place to seed the gate row. Propagated rather than swallowed:
+	// hiding this failure would silently recreate the exact "never due" bug
+	// (#278) this call exists to close, and the whole call is idempotent, so a
+	// client retry after a `500` is harmless.
+	crate::nudge::waker::first_contact(&state.core.shared_db, subject.as_str())
 		.await
 		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
 

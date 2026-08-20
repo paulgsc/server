@@ -231,6 +231,41 @@ mod tests {
 	}
 
 	#[test]
+	fn first_contact_seeds_full_so_a_brand_new_subject_is_not_instantly_eligible() {
+		// The constraint `waker::observe`'s comment states, which #278's first
+		// contact must preserve exactly: "No rows means never seen, and
+		// `from_storage` starts such a subject full rather than empty — an
+		// empty charge is instantly eligible, so the alternative would nudge a
+		// brand-new account before it did anything." `Charge::full` is that
+		// seed, and this pins it against the real `StudyCalibration` numbers
+		// rather than the toy calibration `intervention`'s own tests use.
+		let now = Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap();
+		let charge = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		assert!(
+			charge.eligible_at::<StudyCalibration>(now) > now,
+			"a subject seeded at first contact must not be instantly nudgeable"
+		);
+	}
+
+	#[test]
+	fn first_contact_does_become_eligible_once_the_full_charge_decays_to_threshold() {
+		// The expected instant is `eligible_at`'s own solved crossing, not a
+		// hardcoded guess like "a week" — bisection already proves elsewhere
+		// that it lands on the threshold; this pins that same property for
+		// the specific charge first contact writes.
+		let now = Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap();
+		let charge = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		let eligible = charge.eligible_at::<StudyCalibration>(now);
+
+		assert!(eligible < now + Duration::days(30), "must resolve to a real crossing, not the search horizon");
+		assert!(charge.aggregate::<StudyCalibration>(eligible) <= StudyCalibration::THRESHOLD);
+		assert!(
+			charge.aggregate::<StudyCalibration>(eligible - Duration::seconds(1)) > StudyCalibration::THRESHOLD,
+			"eligible must be the first such instant, not merely one that qualifies"
+		);
+	}
+
+	#[test]
 	fn with_nothing_prepared_plain_absence_still_invites_getting_started() {
 		// The fourth deficit has an honest sessionless answer. This is #294's
 		// whole change: `Presence` no longer goes silent just because nothing

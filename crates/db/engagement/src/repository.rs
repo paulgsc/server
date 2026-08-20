@@ -91,6 +91,58 @@ impl EngagementRepository {
 		tx.commit().await
 	}
 
+	/// Give a subject nobody has yet observed a gate row, seeded full.
+	///
+	/// The only caller is first contact (`waker::first_contact`, from
+	/// `POST /push/subscriptions`) — see that function for why subscribing is
+	/// the honest "someone exists" event. This is deliberately **not** built on
+	/// [`Self::save`]: `save`'s `ON CONFLICT` upserts both tables
+	/// unconditionally, which is exactly right for folding in a new signal and
+	/// exactly wrong here — subscribing a second device, or re-subscribing the
+	/// same one, must not reset an already-drifting subject back to full.
+	///
+	/// `INSERT OR IGNORE` against `engagement_gate`'s primary key is the guard,
+	/// not a read-then-write: two devices racing to be the first ever
+	/// subscription for a subject cannot both win, so the charge rows are only
+	/// ever written by whichever transaction's gate insert actually landed.
+	/// Returns whether this call was the one that created the row, so the
+	/// caller can log without a second read.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn seed_if_absent(&self, subject_id: &str, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<bool, sqlx::Error> {
+		let mut tx = self.pool.begin().await?;
+
+		let inserted = sqlx::query!(
+			r#"INSERT OR IGNORE INTO engagement_gate (subject_id, eligible_at, intervention_count) VALUES (?, ?, 0)"#,
+			subject_id,
+			eligible_at,
+		)
+		.execute(&mut *tx)
+		.await?;
+
+		if inserted.rows_affected() == 0 {
+			tx.rollback().await?;
+			return Ok(false);
+		}
+
+		for (class, level) in levels {
+			let class = i64::from(*class);
+			sqlx::query!(
+				r#"INSERT OR IGNORE INTO engagement_charge (subject_id, class, level, as_of) VALUES (?, ?, ?, ?)"#,
+				subject_id,
+				class,
+				level,
+				as_of,
+			)
+			.execute(&mut *tx)
+			.await?;
+		}
+
+		tx.commit().await?;
+		Ok(true)
+	}
+
 	/// # Errors
 	/// Propagates any `sqlx` failure.
 	pub async fn gate(&self, subject_id: &str) -> Result<Option<GateRow>, sqlx::Error> {
