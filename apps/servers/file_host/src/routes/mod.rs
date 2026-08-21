@@ -7,4 +7,5 @@ pub mod push;
 pub mod readiness;
 pub mod signals;
 pub mod tab_metadata;
+pub mod ts_emitter;
 pub mod utterance;

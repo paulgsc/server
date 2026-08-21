@@ -19,8 +19,9 @@ Making the surface an artifact turns that into a diff.
 | Path | Role |
 | --- | --- |
 | `src/routes/inventory.rs` | Declares the surface; tests prove the declaration matches the routers |
-| `src/bin/dump_routes.rs` | Emits it as JSON on stdout |
-| `make routes` | Writes `routes.server.json` |
+| `src/routes/ts_emitter.rs` | Renders the same inventory as a `.ts` module |
+| `src/bin/dump_routes.rs` | Emits JSON (default) or TypeScript (`--ts`) on stdout |
+| `make routes` | Writes `routes.server.json` and `routes.server.ts` |
 | `make routes-check` | Runs the parity tests alone |
 
 ## Usage
@@ -30,9 +31,34 @@ Making the surface an artifact turns that into a diff.
 DATABASE_URL="sqlite://$PWD/dev.db" make routes
 ```
 
-Then copy `routes.server.json` into the client repo at
-`packages/contract-harness/routes.server.json` and run `pnpm contract:drift`
-there. The diff on that file is the reviewable record of what moved.
+Then copy `routes.server.json` and `routes.server.ts` into the client repo at
+`packages/contract-harness/`, and run `pnpm contract:drift` there. The diff on
+either file is the reviewable record of what moved.
+
+## Two renderings, one snapshot
+
+`dump-routes` calls `inventory::snapshot()` exactly once per run and either
+`serde_json`-serialises the result or hands it to `ts_emitter::render_ts`.
+There is no second list of routes anywhere in the crate for the two outputs
+to disagree about — a route missing from one is a route missing from
+`ROUTES`, not a bug in one emitter.
+
+The `.ts` module exports:
+
+- `API_BASE_PATH` — the same `/api/v1` prefix as the JSON's `api_base_path`.
+- `ServerRoute` — a union of every versioned route's full path.
+- `UnversionedRoute` — the same for `/health`, `/ready`, `/ws`, and anything
+  else this file marks `versioned: false`.
+
+Parameter names (`:id`, `:tab_id`, ...) are not extracted into a separate
+shape; the client derives them from the literal union with a
+template-literal type (#266's own scope note), which keeps the generated
+file a flat list of strings — reviewable without knowing what a
+template-literal type is.
+
+No `INVENTORY_SCHEMA_VERSION` bump accompanies this addition. See the doc
+comment on that constant for why a second artefact is not a shape change to
+the first one.
 
 ## The declaration is checked, not trusted
 

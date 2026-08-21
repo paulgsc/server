@@ -33,6 +33,13 @@ use serde::Serialize;
 /// Bump when the emitted JSON shape changes in a way consumers must react to.
 /// The client harness refuses a snapshot it does not know how to read rather
 /// than silently misinterpreting one.
+///
+/// The TypeScript emitter added for #266 ([`super::ts_emitter`]) does not
+/// bump this. It is a second artefact, not a new shape of this one —
+/// [`RouteInventory`]'s fields are unchanged, and the `.ts` module carries no
+/// version field of its own to go stale: a route it no longer contains is a
+/// `tsc` compile error in the client, not a runtime value this constant would
+/// otherwise need to describe.
 pub const INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// One route as registered on the router, before the `/api/v1` nest is applied.

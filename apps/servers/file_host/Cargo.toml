@@ -12,8 +12,9 @@ license.workspace = true
 edition.workspace = true
 
 # Declared explicitly because the second binary needs a name Cargo would not
-# derive from its filename. `dump-routes` emits the HTTP surface as JSON for
-# the client repo's contract harness; see `src/routes/inventory.rs`.
+# derive from its filename. `dump-routes` emits the HTTP surface as JSON or,
+# with `--ts`, TypeScript, for the client repo's contract harness; see
+# `src/routes/inventory.rs` and `src/routes/ts_emitter.rs`.
 [[bin]]
 name = "file_host"
 path = "src/main.rs"
