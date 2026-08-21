@@ -7364,6 +7364,7 @@ name = "ws-events"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "num-traits",
  "obs-websocket",
  "prost 0.14.3",
  "serde",
