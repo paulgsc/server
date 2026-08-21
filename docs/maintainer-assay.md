@@ -6,9 +6,10 @@
 This document evaluates a proposed weekly-challenge workflow against the
 epistemic standard it is meant to satisfy, and specifies the amended design.
 
-The proposal's shape is right. Three of its properties, left as stated, would
-cause it to fail its own purpose. What follows is the diagnosis, the amendment,
-and the reason the amendment is cheap.
+The proposal's shape is right — weekly cadence, git-versioned prompt, PR as the
+interaction surface. What follows is a diagnosis of where it falls short and an
+amendment for each, revised once already after a first pass underweighted the
+central mechanism.
 
 ---
 
@@ -18,281 +19,449 @@ Not authorship. Not implementation capacity. A senior engineer maintains systems
 containing large amounts of code they did not write; agentic coding raises that
 fraction without changing the competency criterion.
 
-The claim under test is **counterfactual control**:
+The claim under test is **counterfactual control**, and it has two independent
+axes, not one:
 
-> Remove the implementation agent. Can the maintainer still predict,
-> interrogate, reject, repair, and deliberately evolve the system?
+> Can the maintainer detect a bad *change to the code*? Can the maintainer
+> detect when a previously sound *implementation is invalidated by a changed
+> world*?
 
-And its sharpest operational form — the one that generates good challenges:
+Formally: for code `C` and deployment assumptions `A`, an implementation
+establishes some invariant `I(C, A)`. The first axis perturbs the code —
+`(C, A) → (C', A)` — and asks whether the maintainer would accept `C'`. The
+second perturbs the assumptions — `(C, A) → (C, A')` — and asks whether the
+maintainer can name the first invariant that stops holding, and why.
 
-> Could a plausible but logically defective agent contribution get through me?
+The second axis is the one a first pass at this design underweighted, and it
+turns out to be the more important one for this specific repository. The reason
+is structural, not incidental:
 
-That question is falsifiable, which is why it is the right one. There really is
-a fact of the matter about whether a state transition is reachable, whether an
-operation is atomic, whether a type establishes the invariant it claims, whether
-a bisection converges to the value the caller assumes, or whether a retry admits
-duplicate effects. Judgment about *whether an invariant is desirable* is
-contextual and hard to score. Judgment about *whether it holds* is not. The
-assay lives in the second register.
+> **This system is deliberately single-user, single-machine, and predominantly
+> localhost.** Many of its correctness claims hold only because of that, and the
+> repository does not need to be wrong for those claims to be narrower than they
+> look.
 
----
-
-## Verdict on the proposed floor
-
-The proposed flow:
-
-> agent generates challenge → maintainer commits or does nothing → workflow
-> opens a PR → weekly cron reads the PR and history → generates the next
-> challenge → lands on main; no files accumulate, the challenge is rewritten in
-> place.
-
-**Keep:** the weekly cadence, the git-versioned prompt, the PR as the interaction
-surface, the read-back of the maintainer's commits as input to the next probe,
-and the strict separation from live source. Those are all correct and they are
-the load-bearing half of the design.
-
-**Amend:** three properties, below. None of them is a rewrite. Each is a
-structural change small enough to state in a sentence, and each is the difference
-between an artifact an examiner accepts and one they do not.
+That gives the assay something the first design didn't have: probe material that
+requires inventing nothing. No mutant has to be synthesized, no plausible-looking
+bug has to be theorized and then made to actually compile. The material already
+exists, in the gap between what the code establishes and what it would need to
+establish under a different topology. The exercise is to find that gap without
+being told where it is.
 
 ---
 
-### Defect 1 — rewrite-in-place discards the deliverable
+## The central distinction: hazard, assumption, implementation
 
-"We are not accumulating any files; on a cron we rewrite with a new challenge."
+Three things that a looser design conflates:
 
-The instinct is right about the *prompt* and fatally wrong about the *record*.
-The thing being built is an evidence system. Its output is a revision-linked,
-per-concept competency graph with staleness. Overwrite the file weekly and there
-is no graph — only a current question and a `git log -p` that no examiner will
-reconstruct on your behalf.
+| | What it is | Where it comes from |
+|---|---|---|
+| **Hazard `G`** | A production failure mode: concurrent writers, duplicate delivery, process death between effect and record, clock skew, partial network failure, version skew, resource exhaustion | An externally grounded, publicly available corpus — not house style |
+| **Assumption `A`** | This deployment's actual operating envelope: one process, one SQLite file, one machine, one clock, synchronous local calls | Read off the actual deployment, not invented |
+| **Implementation `I`** | What the code does, and is permitted to exploit `A` | The repository |
 
-**Amendment: separate the ephemeral prompt from the append-only ledger.**
+The hazards in `G` are close to objective. Concurrent writers exist or they
+don't; a process can die between an external effect and recording it or it
+can't; a network can partition or the code never crosses one. There is far less
+room to argue that duplicate delivery isn't real than there is to argue about
+which mitigation belongs in a given system. So:
+
+> **The failure modes are objective. Their admissibility and mitigation are
+> architectural decisions.**
+
+That line matters because it is what keeps the assay from becoming "did you
+recite best practices." The question is never *does `I` satisfy every `g` in
+`G`* — reflexively adding a distributed lock to a localhost single-user app
+would itself be a wrong answer, over-engineering graded as if it were rigor. The
+question is classification:
+
+```
+status(g, I, A) ∈ { impossible-under-A, handled-by-I, unhandled-but-acceptable-under-A, latent-defect }
+```
+
+For each hazard, the maintainer places it in exactly one bucket and defends the
+placement with an execution argument — a concrete sequence of events, not an
+assertion. `unhandled-but-acceptable-under-A` and `latent-defect` look identical
+from the outside; the only way to tell them apart is whether the maintainer can
+say which assumption is being spent and what would have to change in `A` before
+it stops being free.
+
+### The other direction: is the coverage bought and paid for?
+
+That classification runs hazard-first: for each `g` in `G`, is it handled. It
+has to be run in the other direction too, mechanism-first, or the assay only
+ever catches one of the two ways a maintainer can lose the gate.
+
+For each nontrivial piece of machinery `M` in `I` — a message broker, a circuit
+breaker, a retry policy, a connection pool sized above what the actual caller
+concurrency needs, a distributed cache — name the hazard `M` exists to defend
+against, then check that hazard's admissibility under the *actual* `A`, the same
+way the hazard-first direction does:
+
+```
+provisioning(M, g, A) ∈ { justified, explicit-hedge, unjustified-tax }
+```
+
+`justified` means `g` is real under `A` today. `explicit-hedge` means it isn't
+yet, but the maintainer can name the near-term change to `A` that would make it
+real and the cost of adding `M` later — a documented bet, not an oversight.
+`unjustified-tax` means `M` is being paid for continuously — an operational
+surface to run and monitor, a new failure mode of its own (the broker being
+down is a hazard `A` didn't have before `M` existed), cognitive load on every
+reader — against a hazard that is currently `impossible-under-A` with no stated
+horizon for that changing.
+
+This is the precise inverse of a latent defect, and it is exactly as diagnostic.
+A maintainer who can only produce `handled-by-I` and `latent-defect` findings
+and never an `unjustified-tax` finding is one whose relationship to the codebase
+is asymmetric in a telling way: comfortable auditing what the code does, unable
+to audit what it costs. Reflexively adding a distributed lock to a localhost
+single-user app is not rigor, it is the same failure as the latent defect, aimed
+the other direction — machinery justified by resemblance to what production
+systems do, rather than by a hazard this deployment actually has.
+
+**Candidate targets already in this repository**, named without a verdict —
+the verdict is the maintainer's to produce, not the assay's to assert:
+
+- `crates/some-transport` ships both a `nats` feature and an `inmem` feature
+  behind the same `Transport` trait — the crate itself already treats
+  broker-vs-in-process as a live axis, not a settled one. `NatsTransport` is
+  wired into the orchestrator, `some-obs`, and `file_host`. A probe: for each
+  call site, is the hazard a broker buys — multi-consumer fan-out, delivery
+  across a process crash — real for that call site under this deployment's
+  actual `A`, or would `inmem` cover it at lower cost? The crate cannot answer
+  this; only the caller's actual topology can.
+- `apps/servers/file_host/src/http/layers/circuit_breaker.rs` — a circuit
+  breaker defends against a downstream dependency degrading under sustained
+  load, which is a hazard of a call graph with a failure domain worth isolating
+  from. A probe: what is the failure domain on the other side of this
+  particular breaker, and does it have the shape that makes a breaker the right
+  primitive, versus e.g. a bounded queue or nothing at all.
+
+Naming these is not a claim that either is wrong. It's the observation that
+both are exactly the shape of thing this probe family should be pointed at:
+present, plausible, and silently resting on a claim about the world that nobody
+has been asked to state out loud recently.
+
+This reframes what "overfit to localhost" means. It is not necessarily a defect.
+It is a **claim being made implicitly**, and the question is whether anyone can
+state it. Three maintainer states, given the same non-idempotent operation:
+
+1. *"I hadn't noticed it wasn't idempotent."* — no model.
+2. *"I know it isn't, but the caller can't redeliver, so nothing exploits it."* —
+   a model, but a static one.
+3. *"I know it isn't; the invariant depends on exactly-one-invocation inside a
+   single process; putting this behind a queue would need an idempotency key or
+   a transactional dedup boundary, and here's the interleaving that breaks it
+   without one."* — a model with a boundary and a repair.
+
+Only the last two represent actual control, and only the third demonstrates it
+at the level this system exists to certify: the maintainer can locate the latent
+production boundary, not just gesture at its existence.
+
+---
+
+## Two probe families, not one
+
+The first pass treated mutation-derived refutation as close to the whole
+mechanism. It's one instance of a more general move — perturb either side of
+`(C, A)` — and for this repository the other side is at least as productive,
+because it doesn't compete with `cargo test` for difficulty.
+
+**Implementation perturbation** — `(C, A) → (C', A)`. Apply one semantically
+plausible, invariant-breaking edit to real code and present it as what it
+resembles: an agent-authored patch. *Accept, reject, or amend — and if you
+reject, construct the violating execution.*
+
+Its oracle is mechanical and remains genuinely useful:
+
+| Mutant vs. `cargo test` | Meaning | Use |
+|---|---|---|
+| fails to compile | the type system is the gate | discard |
+| tests fail | CI is the gate | weak, a warm-up at most |
+| **tests pass** | **the maintainer is the only gate** | **the challenge** |
+
+A mutation that survives the suite is, by construction, a defect the existing
+automation cannot catch — which is exactly the condition under which the
+maintainer's judgment is the thing being measured. It also produces a genuine
+by-product: a correct answer can end in *now write the test that would have
+caught it*, which is the one place this system is allowed to touch live source,
+as a maintainer-authored PR, never automatically.
+
+**Environment perturbation** — `(C, A) → (C, A')`. Change one axis of the
+deployment topology and ask what breaks, without touching the code at all.
+*Under what changed operating assumption does this design's claimed property
+stop holding, and what is the smallest execution that demonstrates it?*
+
+This family requires no synthesis of a plausible bug — the source of the first
+pass's stated risk that "interesting mutations might all get caught, collapsing
+the difficulty ladder." It starts from something known to be true rather than
+something that has to be invented: a single-machine system has necessarily been
+optimized against a narrow operating envelope, so the curriculum is just that
+envelope's axes — cardinality, concurrency, persistence topology, partial
+failure, clock authority, retries, isolation, version skew.
+
+Neither family subsumes the other. Mutation tests whether a bad *change* would
+get through; environment perturbation tests whether the maintainer's model of
+*why the current thing is right* actually extends past the world it was written
+in. A maintainer who is purely downstream of an agent can sometimes pass the
+first — pattern-matching "this looks wrong" is real signal — and will
+characteristically fail the second, because there is no surface artifact to
+pattern-match against. The question has no visible wrongness to react to; it has
+to be derived.
+
+### Grounded, not hypothetical
+
+Two real examples from this repository, found by reading rather than invented:
+
+**`apps/servers/file_host/src/nudge/waker.rs`** — `run_once` polls
+`SELECT subject_id FROM engagement_gate WHERE eligible_at <= now` with no claim
+or lock on the returned rows. Correct as long as exactly one waker process ever
+runs against the database. `A` here is *single waker instance*. A probe:
+*this runs correctly today. What is the first invariant that breaks if a second
+replica of file_host starts polling the same database, and what is the smallest
+change to `A` that would force a repair — not because two wakers would be a
+mistake to run, but because you should be able to say exactly what breaks if
+they did.*
+
+**`crates/some-services/src/rate_limiter/token_bucket.rs`** — the bucket's state
+is `AtomicU32`/`AtomicU64` fields on the struct: correct per-process coordination,
+and free of the complexity a shared store would add, as long as `A` is *one
+process serving all traffic*. A probe: *the docs describe this as enforcing
+"requests per minute." Under what deployment change does that sentence become
+false while every line of this file remains unchanged? Classify the hazard —
+`impossible-under-A`, or `latent-defect` waiting for `A` to move.*
+
+Neither of these is a bug report. Both are correct code. The point of each probe
+is not to find something to fix; it's to check whether the maintainer's model of
+*why* the code is correct extends exactly as far as the code's actual
+guarantees, no further and no less.
+
+---
+
+## Verdict on the proposed floor, restated
+
+**Defect 1 — rewrite-in-place discards the deliverable.** Unchanged from the
+first pass. "No accumulating files" is right about the *prompt*, wrong about the
+*record*. The system's output is a revision-linked, per-concept competency
+graph; overwrite the file weekly and there is no graph, only a current question.
+
+**Amendment:** separate the ephemeral prompt from an append-only ledger.
 
 | | Lifetime | Why |
 |---|---|---|
-| `challenge.md` | rewritten weekly | a stale prompt is clutter; nobody re-reads last month's question |
-| `ledger/*.json` | append-only | one small record per probe; this **is** the deliverable |
-| `COMPETENCY.md` | regenerated | a rendered view of the ledger, for the examiner |
+| `challenge.md` | rewritten weekly | a stale prompt is clutter |
+| `ledger/*.json` | append-only | one small record per probe — this **is** the deliverable |
+| `COMPETENCY.md` | regenerated | rendered view of the ledger, examiner-facing |
 
-The ledger does not grow objectionably: fifty-two records a year, each a few
-hundred bytes. The no-accumulation rule survives where it was actually about
-hygiene, and is dropped where it was about the product.
+Fifty-two small records a year is not the accumulation the no-files rule was
+written against.
 
----
+**Defect 2 — the challenge generator needs a real oracle, not one oracle.** The
+first pass proposed mutation as close to the sole mechanism, protected by a
+cryptographic seal/reveal protocol modeled on an exam with one secret answer.
+Given the two-family design above, that protocol is now **downgraded to where it
+still earns its cost, and dropped where it doesn't.**
 
-### Defect 2 — nothing makes prediction precede observation
+For a mutation challenge, there *is* a specific secret worth protecting — the
+mutant's location and the intended violation — so seal/reveal still applies
+there in a lightweight form: the mutation diff is not present in the tree the
+maintainer checks out; the maintainer's accept/reject/amend is a commit; CI
+reveals the diff and grades against it afterward.
 
-This is the serious one.
+For an environment-perturbation challenge, there usually is no single secret
+answer worth protecting that way — the rubric evaluates the *reasoning
+structure* (was the right hazard named, was the right assumption identified as
+the one being spent, was an actual execution constructed), not a hidden
+canonical string. Sealing a rubric that consists of "did they reason correctly"
+buys little. The cheaper and sufficient protocol is:
 
-The standard the harness is built to meet says: *prediction must precede
-observation*, otherwise the exercise tests post-hoc explanation rather than
-possession of a predictive model. The proposed flow has no commitment point. The
-challenge lands on main, the maintainer works in their own commits, and a week
-later the agent reads the result. Nothing in that sequence distinguishes "I
-predicted the behavior" from "I read the source, ran it, asked an agent, and then
-wrote a correct-sounding paragraph."
+> probe fixed → reasoning committed as a PR comment or `answer.md` → critique
+> generated from that commit.
 
-An examiner will ask exactly this, and the honest answer under the floor design
-is *nothing prevents it*, which collapses the artifact.
+Ordering is still enforced — the answer commit's parent still can't contain the
+critique — it's just that nothing needs to be cryptographically withheld to get
+that property, because there was never a payload worth hiding in the first
+place.
 
-**Amendment: let the git DAG carry the ordering proof.**
-
-The challenge ships with its ground truth withheld — not present in the tree at
-all. The protocol is two-phase, and each phase is a commit:
-
-1. **Seal.** The weekly workflow opens a PR containing `challenge.md` and
-   `rubric.sha256`. The rubric itself lives only in the workflow's encrypted
-   output or on an orphan ref; the tree the maintainer checks out does not
-   contain it.
-2. **Commit.** The maintainer writes `answer.md` and commits it to the PR branch.
-   That commit is the commitment. Its parent provably does not contain the
-   rubric.
-3. **Reveal.** The commit triggers CI, which publishes `rubric.md`, verifies it
-   against the sealed hash, and posts the evaluation as a review.
-4. **Seal the record.** Merging the PR appends the evidence record to the ledger
-   on main.
-
-The DAG then testifies to the ordering: the answer's tree hash predates the
-rubric's introduction, and both are signed by CI's timestamps.
-
-This is not tamper-proofing — you hold the keys to your own repository, and any
-scheme that pretends otherwise is theatre. It is something more useful: the
-ordering is *recorded by default*, so honest use produces a credible artifact
-without effort, and dishonest use requires deliberate history manipulation that
-leaves its own trace. That asymmetry is the entire point, and it is what an
-examiner is actually looking for.
-
-A corollary worth stating: **silence is evidence too.** A challenge PR that
-reaches its deadline with no answer commit closes with an evidence record of
-`declined`. That is honest, it is cheap, and it prevents the ledger from becoming
-a highlight reel.
+**Silence is still evidence.** A challenge that reaches its deadline unanswered
+closes with a `declined` record, of either family. Cheap, honest, and it keeps
+the ledger from being a highlight reel.
 
 ---
 
-### Defect 3 — "generate a challenge" will decay into repository trivia
+## The sharper competency claim
 
-Underspecified, an LLM asked weekly to "generate an interesting challenge from
-this repo" converges on comprehension questions: *what does this module do, why
-is this field an `Option`, trace this call path.* Those are answerable by reading,
-which means they test familiarity, not gatekeeping. The anti-goals list already
-names this failure; the floor design contains nothing that prevents it.
+The first pass's operational question was:
 
-**Amendment: make refutation the primary challenge class, and derive it from
-mutation.**
+> Could a plausible but logically defective agent contribution get through me?
 
-Rather than generating questions from correct code, generate a **nearby wrong
-world**. Take a real subsystem and apply one semantically plausible, invariant-
-breaking edit — move an operation across an `await`, weaken an ordering
-constraint, alter an error arm, widen a transaction boundary, change a bound,
-replace a structure with a superficially adequate one. Present it as what it
-resembles: a plausible agent-authored patch. Then:
+That's still true and still worth asking, but it's now visibly only the
+implementation-perturbation half. The complete question:
 
-> Accept, reject, or amend. If you reject, name the invariant violated and
-> construct the execution that violates it. Then state the strongest correctness
-> argument *against your own conclusion*.
+> **Can the maintainer identify both the invariants an implementation
+> establishes and the assumptions that make those invariants true — and predict
+> where each stops holding as either the code or the world changes?**
 
-This is the exercise that matches the actual job. It also has three properties
-the trivia mode lacks: the ground truth is known by construction, the difficulty
-is tunable, and — most importantly — it is mechanically gradable in part.
+Which compresses to the two sentences that should sit at the top of any future
+revision of this document — one per direction, neither optional:
 
-#### The difficulty oracle
+> **Prove that the simplifications are intentional by showing where they stop
+> being valid. Prove that the complexity is intentional by showing which hazard
+> it buys admission against, and that the hazard is real.**
 
-This repo already contains the instrument that grades the challenge before the
-maintainer sees it. Build the mutant and run the suite:
+The first without the second only certifies that the maintainer notices what's
+missing. A codebase can fail this system in either direction: it can be
+under-defended against a hazard that's actually live, or it can be paying,
+continuously, for a hazard that was never live at all — and a maintainer who
+cannot tell the difference is not exercising judgment, only pattern-matching
+toward whichever direction looks more like "production code."
 
-| Test suite result | What it means | Use |
-|---|---|---|
-| Fails to compile | the type system is the gate | discard, not a challenge |
-| Tests fail | CI is the gate | weak challenge; a warm-up at most |
-| **Tests pass** | **you are the only gate** | **the challenge** |
+And it produces a distinction worth stating plainly, because it's the one an
+examiner is actually probing for: a system can look identically well-maintained
+under both explanations —
 
-A mutation that survives `cargo test` is precisely a defect that the repository's
-existing automation cannot catch — which makes the maintainer's judgment the sole
-remaining barrier, which is the exact claim under test. No model judgment is
-required to make this determination, and the surviving-mutant set is the honest
-difficulty ladder.
+- *deliberately specialized*: every simplification is a named, defensible trade
+  against a known assumption, and the maintainer can say what would invalidate
+  it, or
+- *accidentally sufficient*: it simply hasn't been asked the question that would
+  expose the gap yet, and neither the maintainer nor the code contains a model
+  of why it currently works.
 
-It also produces a valuable by-product. Every surviving mutant is a gap in the
-test suite. A challenge answered correctly can end with: *now write the test that
-would have caught it.* That is the `Create` rung of the Bloom axis, it is
-genuinely useful work, and it is the one place where this pedagogical system is
-permitted to touch live source — as a maintainer-authored test, through the
-normal PR process, never automatically.
-
-`crates/intervention/src/charge.rs` is the ideal first target: closed-form decay,
-a bisected crossing instant, and constants (`MAX_HORIZON_DAYS = 30`,
-`BISECTION_STEPS = 40`) whose values are load-bearing for a claim stated in prose
-in `docs/study-nudge.md` — that the waker *discovers* rather than *decides*.
-Perturb the horizon, the step count, the monotonicity assumption, or the
-starting-full choice, and you get four distinct challenges with four distinct
-correct refutations, none of which are answerable by reading.
+Passive review — reading PRs, nodding along, catching the occasional obvious
+error — is compatible with either state. It cannot by itself distinguish them.
+That is the precise failure mode named in the original user story: every
+individual PR can look reasonable while the maintainer's role quietly stops
+being load-bearing. The environment-perturbation family exists specifically
+because it is the cheapest available instrument that tells the two states apart.
 
 ---
 
 ## Architecture
 
-The deterministic properties must be code; only the prose should be model-authored.
-
-Provenance, risk weighting, staleness detection, schema validation, and graph
-rendering are all mechanical. If an agent performs them, they are assertions. If
-a crate performs them, they are checkable — and the crate is itself an artifact
-the maintainer designed, which is not nothing.
-
-**The crate owns selection and the ledger. The agent owns the prose.**
+Unchanged in substance: deterministic operations are code, prose is model-
+authored, and the two are never allowed to blur.
 
 ```
-crate  →  selection brief (JSON: concept, anchors, Bloom op, risk score, why)
-agent  →  challenge.md + rubric.md, confined to the named anchors
+crate  →  selection brief (JSON: concept, anchors, hazard set G, Bloom op, risk score, why)
+crate  →  chooses probe family: implementation-perturbation (needs a compiling,
+          test-passing mutant) or environment-perturbation (needs one assumption
+          in A, read off real deployment config/docs, not invented)
+agent  →  challenge.md (+ sealed mutation diff, only for that family) + rubric.md,
+          confined to the named anchors and the named hazard set
 crate  →  validate schema, verify provenance, append record, render graph
 ```
 
-The agent never chooses the target and never decides whether an answer counted
-without a rubric it wrote before seeing the answer. That confinement is what
+The agent never selects its own target and never grades without a rubric or
+hazard classification written before it saw the answer. That confinement is what
 stops the harness from grading itself into a flattering shape.
 
 ### Placement: excluded, not a workspace member
 
-The stated requirement is that this influence no landed code. Adding a member to
-`[workspace]` violates it directly: the workspace denies `clippy::pedantic`,
-`nursery`, and `cargo` across all members, so a pedagogy crate would gate live
-CI, and its dependency additions would move `Cargo.lock` for the real binaries.
-
-The repository already solved this exact problem. `.github/scripts/detect` is a
-standalone Rust crate under `exclude = [".github/scripts"]`, with its own
-`Cargo.lock`, built and cached by its own workflow. Follow that precedent
-verbatim.
+Unchanged. Adding a member to `[workspace]` would gate live CI under
+`clippy::pedantic`/`nursery`/`cargo`-deny and move the root `Cargo.lock`.
+`.github/scripts/detect` is this repository's own precedent for an excluded,
+independently-locked crate — follow it verbatim.
 
 ```
 .github/scripts/assay/     # excluded crate: selection, ledger, validation, render
 .assay/
   challenge.md             # rewritten weekly
-  selection.json           # the brief the challenge was generated from
+  selection.json           # brief the challenge was generated from, incl. probe family
   ledger/*.json            # append-only evidence records
   COMPETENCY.md            # rendered graph, examiner-facing
 ```
 
-On the name: it should not contain `quiz`, `tutor`, or `challenge` — each
-mis-frames the artifact as pedagogy when it is evidence. `assay` fits the
-repository's register and means the right thing: a test of composition, run on a
-sample, reported as a measurement. `attest` and `gate` are acceptable
+Name: not `quiz`, `tutor`, or `challenge` — each mis-frames the artifact as
+pedagogy when it is evidence. `assay` fits: a test of composition, run on a
+sample, reported as a measurement. `attest` and `gate` remain acceptable
 alternatives.
 
 ---
 
-## Cadence
+## Cadence and selection
 
-Keep the weekly cron. Change what it reads.
+Weekly cron is the liveness floor; what it reads is the part worth getting
+right. Selection should weight by **the diff since the last challenge** — a
+concept whose supporting source changed since it was last probed is stale by
+definition, and should out-compete unprobed concepts. One
+`git diff --name-only <last_revision>..HEAD` feeding the risk weight buys most
+of the freshness property for free.
 
-The floor selects from "the repository." Selection should instead be weighted by
-**the diff since the last challenge**, because competence evidence decays exactly
-where the repository moved. A concept whose supporting source changed since it
-was last demonstrated is stale by definition, and stale concepts should
-out-compete unprobed ones. This is one `git diff --name-only <last_revision>..HEAD`
-fed into the risk weighting — no new machinery, and it buys most of the freshness
-property outright.
+Risk weighting asks *what would be expensive to misunderstand*, not *what
+haven't we asked about recently*. Signals available in this repository, roughly
+by value: a stated invariant in a doc or doc-comment (this repo has several —
+`docs/study-nudge.md`'s "discovers rather than decides" is exactly the kind of
+claim worth probing on both axes); concurrency or `await` boundaries; any point
+where the code assumes single ownership of a resource (the two examples above
+are instances of a pattern, not a complete list — a sweep for `SqlitePool`,
+`Atomic*`, in-process caches, and `OnceCell`/`lazy_static` state would surface
+the rest); transaction and persistence boundaries; commit churn; fan-in;
+absence of tests; and whether the code arrived through an agent-co-authored
+commit — 26 of the last 100 commits carry a Claude co-author trailer, a directly
+usable signal for the exact question this system exists to answer.
 
-Weekly cron is the liveness floor. The stronger trigger — probe on merge of any
-PR that touches a subsystem carrying a material invariant — is a natural second
-phase, but is not needed to make v1 correct.
+Selection should alternate probe family across weeks rather than let one
+dominate: implementation-perturbation is bounded by how many mutants survive
+`cargo test`, which will thin out over time as the suite improves — a good
+outcome for the codebase and a reason not to depend on that family alone.
+Environment-perturbation is bounded only by the number of assumptions in `A`,
+which does not thin out, because new code keeps introducing new ones.
 
-Risk weighting should ask *what would be expensive to misunderstand*, not *what
-have we not asked about recently*. Available signals in this repository, roughly
-in order of value: presence of a stated invariant in a doc or doc-comment;
-concurrency or `await` boundaries; transaction and persistence boundaries; commit
-churn; fan-in from the dependency graph; absence of tests; and whether the code
-arrived through an agent-co-authored commit — 26 of the last 100 commits carry a
-Claude co-author trailer, which is a directly usable signal for the precise
-question this system exists to answer.
+Environment-perturbation probes should themselves alternate direction: a
+hazard-first week (*is this hazard handled*) and a mechanism-first week (*is
+this machinery earning its cost*) exercise different, equally necessary halves
+of the same judgment. A generator that only ever asks the first question will
+train — and only ever produce evidence of — a maintainer who adds defenses on
+request and never removes one that stopped making sense.
 
 ---
 
 ## What this deliberately does not do
 
-It does not detect authorship, measure coverage, gamify anything, or substitute
-for review. It does not produce a global score — competence is heterogeneous and
-"Maintainer level: Expert" is a claim the design refuses to make. And it does not
-attempt to prove that assistance was never used; it proves something better and
-more defensible, which is that on the repository's material logical claims there
-exists revision-linked evidence of independent judgment recorded before the
-answer was available.
+Detect authorship. Measure test coverage. Gamify anything. Substitute for
+review. Produce a global score — competence is heterogeneous, and "Maintainer
+level: Expert" is a claim this design refuses to make. Reward reflexive
+production-hardening in either direction — correctly classifying a hazard as
+`unhandled-but-acceptable-under-A`, or a mechanism as `unjustified-tax`, is each
+a *pass*, not a near-miss, and a rubric that can't represent either as fully
+correct is a bad rubric. It does not have a house preference for either more
+defensive code or less of it; it has a preference for the maintainer being able
+to say which one the codebase currently is, and why. And it does not attempt to
+prove assistance was never used; it proves something more defensible — that on
+the repository's material logical claims there exists revision-linked evidence
+of independent judgment, on what the code does, what the world lets it assume,
+and what it's paying for that assumption not holding, recorded before the
+answer was free to look up.
 
 ---
 
 ## Acceptance criteria for v1
 
-1. Indexes the repository at a specific revision and records it in every artifact.
+1. Indexes the repository at a specific revision and records it in every
+   artifact.
 2. Selects a target by risk weight and staleness, not rotation, and emits the
-   brief as JSON before generation.
-3. Generates a mutation-derived refutation challenge whose mutant compiles and
-   survives the existing test suite.
-4. Withholds the rubric from the tree the maintainer checks out.
-5. Records the answer as a commit whose parent demonstrably lacks the rubric.
-6. Evaluates against a rubric written before the answer existed, and records the
-   specific reasoning node demonstrated *and the one missing* — never a score
-   alone.
+   brief — including chosen probe family and, for environment probes, the
+   specific assumption in `A` being perturbed — as JSON before generation.
+3. Supports both probe families: a mutation whose mutant compiles and survives
+   the existing test suite, and an assumption-perturbation whose target
+   assumption is read off real deployment config or docs, not invented. Within
+   assumption-perturbation, supports both directions — hazard-first (is a real
+   hazard handled) and mechanism-first (does existing machinery defend against
+   a hazard that is actually admissible under `A`) — and does not let one
+   direction dominate selection.
+4. For mutation probes, withholds the diff from the tree the maintainer checks
+   out; for environment probes, no withholding is required — the rubric grades
+   reasoning structure, not a hidden string.
+5. Records the maintainer's response as a commit or PR comment whose parent
+   demonstrably predates the critique, for both families.
+6. Evaluates against a rubric or hazard classification written before the
+   answer existed, and records the specific reasoning node demonstrated *and*
+   the one missing — never a score alone. `unhandled-but-acceptable-under-A`
+   and `unjustified-tax` are each scoreable as fully correct when defended with
+   an execution argument or a named, currently-inadmissible hazard.
 7. Appends one evidence record per probe; never overwrites the ledger.
 8. Renders a per-concept graph with per-concept staleness against the current
    revision.
-9. Records `declined` for unanswered challenges.
+9. Records `declined` for unanswered challenges of either family.
 10. Adds no member to `[workspace]` and does not modify the root `Cargo.lock`.
