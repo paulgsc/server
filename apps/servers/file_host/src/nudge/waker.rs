@@ -150,6 +150,10 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			return Ok(false);
 		}
 	};
+	// #262 (SLI1): the measurement, not the fix. `list()` returns every row in
+	// the table regardless of which subject is asking, so this is the number
+	// this subject's consideration cost — see `metrics::waker::record_session_rows_read`.
+	crate::metrics::waker::record_session_rows_read(sessions.len());
 	let prepared_session = sessions
 		.iter()
 		.find(|session| matches!(session.status, SessionStatus::Scheduled | SessionStatus::Paused | SessionStatus::Draft))
@@ -410,6 +414,16 @@ mod tests {
 		Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap()
 	}
 
+	/// `format!` is on `clippy.toml`'s disallowed-macros list (eager
+	/// allocation ahead of tracing); `write!` into an owned `String` is the
+	/// same workaround #299 used for the identical lint.
+	fn numbered(prefix: &str, i: impl std::fmt::Display) -> String {
+		use std::fmt::Write as _;
+		let mut s = String::from(prefix);
+		let _ = write!(s, "{i}");
+		s
+	}
+
 	/// #278's named edge case: someone subscribes, then unsubscribes every
 	/// device before ever becoming due. `actuate` already degrades correctly
 	/// once admission fails; the risk the issue calls out is landing in
@@ -437,6 +451,144 @@ mod tests {
 		assert!(
 			matches!(verdict, Verdict::Suppressed { reason: Suppressed::NotConsented, .. }),
 			"got {verdict:?}, expected NotConsented suppression rather than NothingToSay"
+		);
+	}
+
+	/// #262 (SLI1): the measurement, not the fix (that's #263/SLI2). This is a
+	/// **characterisation test**, not an `#[ignore]`d assertion of a
+	/// not-yet-decided target bound — #262's acceptance criteria offer either,
+	/// and this is the choice, for two reasons: #263 has not picked its bound
+	/// yet, so a target number here would be invented; and a test that
+	/// actually runs in CI is a stronger regression guard between now and
+	/// #263 than one nobody runs. When #263 lands, this assertion should
+	/// invert to a small constant — not be deleted, since "the waker's read
+	/// cost stays flat as the table grows" is exactly the invariant worth
+	/// keeping under test forever after.
+	///
+	/// Seeds more due subjects than `BATCH` so the assertion exercises the
+	/// cap, not just proportionality: a fix that read once per due subject
+	/// (rather than once per subject *and* per row) would already land far
+	/// below this number, and this test would need rewriting — which is the
+	/// point of committing it now.
+	#[test]
+	fn one_pass_reads_the_whole_session_table_once_per_due_subject() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+		use metrics_util::CompositeKey;
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const DUE_SUBJECTS: i64 = 40; // > BATCH (32), so the cap itself is exercised
+		const SESSIONS: usize = 200;
+
+		// The `web-push` crate's own test vector — also what `push_kit`'s own
+		// suite signs with (`crates/push_kit/src/identity.rs`). Fixed rather
+		// than generated, so this test needs neither a random source nor a
+		// `web_push`/`base64` dev-dependency just to hand `NudgeContext` a
+		// keypair that validates against itself.
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		// Embedded and run against a fresh in-memory database rather than the
+		// externally-applied `DATABASE_URL` scratch database `cargo test`
+		// already requires for `sqlx::query!` to compile: that database is
+		// one file shared by every crate's tests in one `rust_ci` run, and a
+		// row-count characterisation needs a table only this test has written
+		// to. `sqlx::migrate!` embeds the same `.up.sql`/`.down.sql` pairs at
+		// compile time, so no second migration story exists to keep in step.
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build a current-thread runtime");
+
+			rt.block_on(async {
+				// A single connection: SQLite's `:memory:` database is private
+				// to the connection that opened it, so a pool free to open a
+				// second one would silently hand some queries an empty,
+				// unmigrated schema. This test has no concurrency to justify
+				// more than one connection.
+				let pool = SqlitePoolOptions::new()
+					.max_connections(1)
+					.connect("sqlite::memory:")
+					.await
+					.expect("open an in-memory sqlite database");
+				MIGRATOR.run(&pool).await.expect("run the workspace migration history");
+
+				let now = Utc::now();
+				let past = (now - Duration::hours(1)).to_rfc3339();
+				let now_str = now.to_rfc3339();
+
+				for i in 0..DUE_SUBJECTS {
+					let subject_id = numbered("subject-", i);
+					EngagementRepository::new(pool.clone())
+						.seed_if_absent(&subject_id, &[], &now_str, &past)
+						.await
+						.expect("seed a due subject's gate row");
+				}
+
+				for i in 0..SESSIONS {
+					let id = numbered("session-", i);
+					let name = numbered("session ", i);
+					// Direct SQL, not `SessionRepository::upsert`: `upsert`
+					// does not write `subject_id` yet (#260/SUB2 is what
+					// threads a real subject through every query), and the
+					// column has been `NOT NULL` since #259 — a write through
+					// the repository fails on that constraint today.
+					sqlx::query!(
+						r#"
+						INSERT INTO sessions (
+							id, subject_id, name, status, layout_mode, total_duration_ms,
+							created_at, updated_at, activities, scenes, layout
+						) VALUES (?, 'subject-local', ?, 'draft', 'basic', 0, ?, ?, '[]', '[]', NULL)
+						"#,
+						id,
+						name,
+						now_str,
+						now_str,
+					)
+					.execute(&pool)
+					.await
+					.expect("seed a session row");
+				}
+
+				let ws = WebSocketFsm::new();
+				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
+				let nudge = NudgeContext {
+					clock: NudgeClock::resolve(Some("UTC")).0,
+					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					vapid,
+					enabled: true,
+					quiet_hours_start: 22,
+					quiet_hours_end: 8,
+					presence_freshness: std::time::Duration::from_secs(120),
+					base_url: "https://example.com".to_owned(),
+				};
+
+				run_once(&pool, &ws, &nudge)
+					.await
+					.expect("a pass over freshly-drafted sessions and unconsented subjects should not error");
+			});
+		});
+
+		let snapshot: Vec<(CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, DebugValue)> = snapshotter.snapshot().into_vec();
+		let rows_read = snapshot.iter().find_map(|(key, _, _, value)| {
+			(key.key().name() == "nudge_waker_session_rows_read_total").then_some(match value {
+				DebugValue::Counter(n) => *n,
+				_ => 0,
+			})
+		});
+
+		#[allow(clippy::cast_sign_loss)] // BATCH and DUE_SUBJECTS are both small positive constants
+		let expected = BATCH.min(DUE_SUBJECTS) as u64 * SESSIONS as u64;
+		assert_eq!(
+			rows_read,
+			Some(expected),
+			"today's waker reads the whole `sessions` table once per due subject in the batch — \
+			 BATCH.min(DUE_SUBJECTS) × SESSIONS = {expected} rows. If this now fails because the \
+			 count is *lower*, #263 (SLI2) landed: rewrite this assertion to the new bound instead \
+			 of deleting the test, since a flat read cost is the invariant worth keeping."
 		);
 	}
 }
