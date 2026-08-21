@@ -379,6 +379,16 @@ client would let the two diverge silently:
   stores `total_duration_ms` but lets the client compute it, a client that
   forgets stores a zero, and the nudge cheerfully offers you a "~1 min" session.
 
+**`sessions` has an owner now.** #259 added `subject_id`, backfilled to
+`SINGLETON_SUBJECT` for every row that existed before the migration, and
+rebuilt `idx_sessions_status` as `(subject_id, status, updated_at DESC)` since
+that scan is about to be scoped per subject. Deliberately incomplete on its
+own: `SessionRepository`'s queries still neither read nor write the column, so
+a write through `upsert` fails on the new `NOT NULL` constraint until #260
+(SUB2) threads a real subject through every method. That is fine — #259 and
+#260 land back to back in the milestone's order (#295, P1.1 then P2.1), and
+neither is a deployable increment by itself.
+
 ### Trust model, stated plainly
 
 These routes carry **no authentication** beyond the CORS origin allowlist.
@@ -506,8 +516,11 @@ silently reinterpreted — but the stored level is dropped on the floor. A relea
 that retires a class needs a migration, and there is no mechanism that would
 notice if it forgot.
 
-**One subject.** `SubjectId` is a singleton until auth lands. Everything is keyed
-by it, so nothing needs restructuring, but nothing has been exercised with two.
+**One subject.** `SubjectId` is a singleton until auth lands. Every table the
+study policy reads carries a `subject_id` column as of #259 — `sessions` was
+the last holdout — but `SessionRepository` itself does not filter or write it
+yet (#260); everything else already does. Nothing has been exercised with two
+subjects regardless.
 
 **The tag constant lives in three places.** `NUDGE_TAG` (`some-ui.study-nudge`)
 is hand-maintained in `file_host::nudge::payload`, in `public/sw.js`, and in
