@@ -100,13 +100,15 @@ check: ## Check if image exists locally
 # at a migrated SQLite file, because sqlx checks queries at compile time.
 
 ROUTES_JSON ?= routes.server.json
+ROUTES_TS ?= routes.server.ts
 
 .PHONY: routes routes-check
 
-routes: ## Emit the HTTP route inventory as JSON (override path with ROUTES_JSON=...)
+routes: ## Emit the HTTP route inventory as JSON and TypeScript (override paths with ROUTES_JSON=..., ROUTES_TS=...)
 	@cargo run -q --bin dump-routes > $(ROUTES_JSON)
-	@echo "Wrote $(ROUTES_JSON) ($$(grep -c '"method"' $(ROUTES_JSON)) routes)"
-	@echo "Copy it to the client repo at packages/contract-harness/routes.server.json"
+	@cargo run -q --bin dump-routes -- --ts > $(ROUTES_TS)
+	@echo "Wrote $(ROUTES_JSON) ($$(grep -c '"method"' $(ROUTES_JSON)) routes) and $(ROUTES_TS)"
+	@echo "Copy both to the client repo at packages/contract-harness/"
 
 routes-check: ## Assert the declared inventory still matches the actual routers
 	@cargo test -p file_host --lib routes::inventory
