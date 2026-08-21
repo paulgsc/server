@@ -74,6 +74,7 @@ EXEMPT_EMITTED: dict[str, str] = {
 	"operation_errors_total": "file_host per-operation error counter; no dedicated panel yet, tracked for a future operational-detail row rather than this uptime/SLA dashboard",
 	"file_downloads_total": "file_host per-download counter; no dedicated panel yet, same as operation_errors_total",
 	"file_size_bytes": "file_host download-size histogram; no dedicated panel yet, same as operation_errors_total",
+	"nudge_waker_session_rows_read_total": "#262 (SLI1): the measurement for the waker's per-subject session read cost, landed deliberately ahead of a dashboard reader — the story is the counter and a characterisation test (nudge::waker's test module), not a panel. A panel is reasonable once #263 (SLI2) gives this series a shape worth graphing (today it just climbs with usage); tracked the same way as the other three entries above.",
 }
 
 METRICS_FACADE_CALL = re.compile(r'\b(?:counter|histogram|gauge)!\s*\(\s*(?:"([^"]+)"|([A-Z_][A-Z0-9_]*))')
