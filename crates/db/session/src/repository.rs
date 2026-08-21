@@ -121,8 +121,19 @@ impl SessionRepository {
 
 	/// Every session, newest first.
 	///
-	/// Unpaginated on purpose: the client paginates this list in memory today,
-	/// and a page parameter nobody sends is a contract nobody tests.
+	/// Unpaginated, but no longer only on the premise that justified it
+	/// originally — "the client paginates this list in memory today, and a
+	/// page parameter nobody sends is a contract nobody tests." That was true
+	/// when `GET /sessions` was the only caller. It stopped being true when
+	/// `file_host`'s engagement waker (`nudge::waker::consider`) started
+	/// calling this once per due subject to find a prepared session: the
+	/// waker has no pagination of its own to hand a page parameter to, and no
+	/// caller upstream of it either — see `docs/study-nudge.md`'s "a read
+	/// reachable from the waker declares its own bound" invariant. The
+	/// caller-paginates assumption is retracted, not just amended, since it no
+	/// longer describes every caller, only the original one. Bounding this
+	/// query is #263 (SLI2); #262 (SLI1) only characterises today's cost, in
+	/// `nudge::waker`'s test module.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if a stored row does not parse.

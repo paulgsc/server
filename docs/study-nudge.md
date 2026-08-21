@@ -461,6 +461,26 @@ Two further brakes: an intervention **recharges** the classes it addresses, so
 the next pass finds nothing to do; and `REFRACTORY` is a hard floor whatever the
 arithmetic says.
 
+### A read reachable from the waker declares its own bound
+
+**There is no caller to paginate it.** `GET /sessions` could leave `list()`
+unpaginated because the client was the one caller, and the client already
+paginates the result in memory. `nudge::waker::consider` broke that: it calls
+`SessionRepository::list()` once per due subject to find a prepared session,
+and nothing sits above the waker to page through what comes back — the tick
+fires, the pass runs, and whatever `list()` hands back is read in full. A
+query on this path that assumes some caller will bound it is assuming a
+caller that does not exist.
+
+So the invariant is stated the other way round: **a read reachable from the
+waker declares its own bound**, in the query itself (a `LIMIT`, an indexed
+`WHERE`, or a narrower question than "everything") rather than in a caller
+that isn't there to enforce one. `list()` does not yet — `#262` (SLI1) is the
+measurement of that gap, a characterisation test in `nudge::waker`'s test
+module pinning down today's `O(BATCH × |sessions|)` cost, and `#263` (SLI2)
+is where the query itself changes. `#262` deliberately does not fix the read;
+see its own out-of-scope note.
+
 ### One policy, one language
 
 An earlier draft kept a JSON fixture so a TypeScript copy of the policy and a
