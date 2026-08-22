@@ -468,26 +468,30 @@ arithmetic says.
 
 ### A read reachable from the waker declares its own bound
 
-**There is no caller to paginate it.** `GET /sessions` could leave `list()`
-unpaginated because the client was the one caller, and the client already
-paginates the result in memory. `nudge::waker::consider` broke that: it calls
-`SessionRepository::list(subject_id)` once per due subject to find a prepared
-session, and nothing sits above the waker to page through what comes back —
-the tick fires, the pass runs, and whatever `list()` hands back is read in
-full. A query on this path that assumes some caller will bound it is assuming
-a caller that does not exist.
+**There is no caller to paginate it.** `GET /sessions` can leave `list()`
+unpaginated because the client is the one caller, and the client already
+paginates the result in memory. `nudge::waker::consider` broke that: nothing
+sits above the waker to page through what a query on this path hands back —
+the tick fires, the pass runs, and the read happens in full. A query on this
+path that assumes some caller will bound it is assuming a caller that does
+not exist.
 
 So the invariant is stated the other way round: **a read reachable from the
 waker declares its own bound**, in the query itself (a `LIMIT`, an indexed
 `WHERE`, or a narrower question than "everything") rather than in a caller
 that isn't there to enforce one. `list()` narrows *which subject's rows* it
 can see (#260/SUB2 — a query can no longer return another subject's sessions
-at all) but still does not bound *how many* — `#262` (SLI1) is the
-measurement of that gap, a characterisation test in `nudge::waker`'s test
-module pinning down today's `O(BATCH × sessions this subject owns)` cost, and
-`#263` (SLI2) is where the query itself changes to a purpose-built,
-`LIMIT 1` lookup. `#262` deliberately does not fix the read; see its own
-out-of-scope note.
+at all) but does not bound *how many*; `#262` (SLI1) measured that gap, a
+characterisation test in `nudge::waker`'s test module pinning down
+`list()`'s `O(BATCH × sessions this subject owns)` cost. `#263` (SLI2) closes
+it: the waker no longer calls `list()` at all. `SessionRepository::first_prepared(subject)`
+replaces the list-then-find with a purpose-built, `LIMIT 1` query backed by
+`idx_sessions_status` (`(subject_id, status, updated_at DESC)`) — a `paused`
+session outranks a `scheduled` one, which outranks an untouched `draft`, with
+`updated_at DESC` breaking ties within one status (see `first_prepared`'s own
+doc comment for why). #262's characterisation test now asserts this bound
+directly: at most one row read per due subject, independent of how many
+sessions it owns.
 
 ### One policy, one language
 
