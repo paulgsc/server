@@ -173,6 +173,80 @@ impl SessionRepository {
 		rows.into_iter().map(|row| SessionRecord::try_from(row).map_err(Into::into)).collect()
 	}
 
+	/// The one prepared session — `scheduled`, `paused`, or `draft` — this
+	/// subject should be offered next, or `None` if they have none.
+	///
+	/// Replaces `list(subject).iter().find(|s| matches!(s.status, ...))`, the
+	/// shape #262 (SLI1) characterised: that reads every row this subject
+	/// owns and searches it in Rust.
+	///
+	/// Two ordering decisions, made deliberately rather than defaulted into:
+	///
+	/// - **Recency, not insertion order.** The `list`-based code this
+	///   replaces took whichever candidate its `ORDER BY created_at DESC`
+	///   happened to place first — an accident of insertion order, not a
+	///   considered ranking. This orders by `updated_at DESC` instead,
+	///   matching what `idx_sessions_status`'s own comment already claims
+	///   the ranking is ("candidate ranking scans by status and breaks ties
+	///   on `updated_at`"). That is a real, if small, behaviour change from
+	///   what is live today.
+	/// - **A paused session outranks an untouched draft.** `paused` first,
+	///   then `scheduled`, then `draft`, ahead of recency rather than tied
+	///   with it. Resuming something this subject already started is more
+	///   relevant than surfacing a draft they never opened — even one
+	///   touched more recently, e.g. by an unrelated auto-save. `updated_at
+	///   DESC` remains the tiebreak within one status.
+	///
+	/// **Three bounded probes, not one sorted scan.** A single query with
+	/// `WHERE status IN (...) ORDER BY CASE status WHEN 'paused' THEN 0 ...
+	/// END, updated_at DESC LIMIT 1` was the first shape tried here, and
+	/// `LIMIT 1` hides why it is wrong: `idx_sessions_status`
+	/// (`(subject_id, status, updated_at DESC)`) can serve `WHERE subject_id
+	/// = ? AND status = ?` in already-sorted order for *one* status, but not
+	/// a `CASE`-based priority across three at once — `EXPLAIN QUERY PLAN`
+	/// on that shape reports `USE TEMP B-TREE FOR ORDER BY`, meaning every
+	/// paused, scheduled, and draft row this subject owns has to be read and
+	/// sorted before `LIMIT 1` can pick a winner. Returning one row is not
+	/// the same as reading one row; the read cost would still grow with how
+	/// many prepared sessions this subject has — narrower than #262's
+	/// original defect (scoped to three statuses, one subject, instead of
+	/// five statuses, every subject) but the same shape of unbounded.
+	///
+	/// So this issues up to three independent, single-status probes
+	/// instead — `WHERE subject_id = ? AND status = ? ORDER BY updated_at
+	/// DESC LIMIT 1`, one per status in priority order, returning on the
+	/// first hit. Each probe alone *is* served entirely by the index: an
+	/// equality on both leading columns leaves `updated_at DESC` already in
+	/// index order, so no sort step exists to show up in `EXPLAIN QUERY
+	/// PLAN`. The true bound is "at most three index seeks", independent of
+	/// how many sessions in any status this subject owns.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error.
+	pub async fn first_prepared(&self, subject_id: &str) -> Result<Option<String>, SessionRepoError> {
+		for status in ["paused", "scheduled", "draft"] {
+			let id = sqlx::query_scalar!(
+				r#"
+				SELECT id as "id!"
+				FROM sessions
+				WHERE subject_id = ? AND status = ?
+				ORDER BY updated_at DESC
+				LIMIT 1
+				"#,
+				subject_id,
+				status
+			)
+			.fetch_optional(&self.pool)
+			.await?;
+
+			if id.is_some() {
+				return Ok(id);
+			}
+		}
+
+		Ok(None)
+	}
+
 	/// One session, or `None` if there is no such id **owned by this subject**.
 	///
 	/// An id belonging to another subject returns `None`, the same as an id
@@ -582,5 +656,97 @@ mod tests {
 			matches!(foreign_after.status, SessionStatus::Draft),
 			"a foreign id in the batch must not have its status changed"
 		);
+	}
+
+	fn fixture_with_status(id: &str, status: SessionStatus, updated_at: &str) -> SessionRecord {
+		SessionRecord {
+			status,
+			updated_at: updated_at.to_owned(),
+			..fixture(id)
+		}
+	}
+
+	/// #263 (SLI2): pins the status-priority decision in `first_prepared`'s
+	/// own doc comment — a `paused` session is offered over a `scheduled` or
+	/// `draft` one even when the others were touched more recently, and a
+	/// `completed` session is never a candidate at all.
+	#[tokio::test]
+	async fn first_prepared_prefers_a_paused_session_over_scheduled_or_draft_regardless_of_recency() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo
+			.upsert("subject-a", &fixture_with_status("session-draft", SessionStatus::Draft, "2026-01-04T00:00:00Z"))
+			.await
+			.expect("seed a draft session");
+		repo
+			.upsert("subject-a", &fixture_with_status("session-scheduled", SessionStatus::Scheduled, "2026-01-03T00:00:00Z"))
+			.await
+			.expect("seed a scheduled session");
+		repo
+			.upsert("subject-a", &fixture_with_status("session-paused", SessionStatus::Paused, "2026-01-01T00:00:00Z"))
+			.await
+			.expect("seed a paused session, touched least recently of the three");
+		repo
+			.upsert("subject-a", &fixture_with_status("session-completed", SessionStatus::Completed, "2026-01-05T00:00:00Z"))
+			.await
+			.expect("seed a completed session, touched most recently of all four");
+
+		let prepared = repo.first_prepared("subject-a").await.expect("query should not fail");
+		assert_eq!(
+			prepared,
+			Some("session-paused".to_owned()),
+			"a paused session should win even though it is the least recently touched non-completed candidate"
+		);
+	}
+
+	/// #263 (SLI2): within one status, the tiebreak is `updated_at DESC`.
+	#[tokio::test]
+	async fn first_prepared_breaks_a_tie_within_one_status_by_most_recently_updated() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo
+			.upsert("subject-a", &fixture_with_status("session-older", SessionStatus::Draft, "2026-01-01T00:00:00Z"))
+			.await
+			.expect("seed the older draft");
+		repo
+			.upsert("subject-a", &fixture_with_status("session-newer", SessionStatus::Draft, "2026-01-02T00:00:00Z"))
+			.await
+			.expect("seed the more recently touched draft");
+
+		let prepared = repo.first_prepared("subject-a").await.expect("query should not fail");
+		assert_eq!(prepared, Some("session-newer".to_owned()), "the more recently updated draft should win the tie");
+	}
+
+	/// #263 (SLI2): the same isolation `get`/`list`/etc. already have,
+	/// carried over to the new query.
+	#[tokio::test]
+	async fn first_prepared_never_returns_a_different_subjects_session() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo
+			.upsert("subject-b", &fixture_with_status("session-b", SessionStatus::Paused, "2026-01-01T00:00:00Z"))
+			.await
+			.expect("seed subject-b's paused session");
+
+		assert_eq!(
+			repo.first_prepared("subject-a").await.expect("query should not fail"),
+			None,
+			"a foreign subject's prepared session must never be returned"
+		);
+	}
+
+	#[tokio::test]
+	async fn first_prepared_returns_none_when_the_subject_has_no_candidate() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo
+			.upsert("subject-a", &fixture_with_status("session-done", SessionStatus::Completed, "2026-01-01T00:00:00Z"))
+			.await
+			.expect("seed a completed session, which is not a candidate");
+
+		assert_eq!(repo.first_prepared("subject-a").await.expect("query should not fail"), None);
 	}
 }
