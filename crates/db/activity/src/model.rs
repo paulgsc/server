@@ -93,7 +93,14 @@ impl ActivityMaturity {
 /// `default_config`, and `audio` stay opaque `serde_json::Value` the same way
 /// `SessionRecord::activities`/`scenes` do: this crate persists them, it does
 /// not interpret them.
+///
+/// `camelCase` on the wire, same reasoning `SessionRecord` gives for its own
+/// rename: the client's type is the contract, and this is the side that
+/// moved. No route serves this yet (#271), but the casing is a property of
+/// the field names, not of whether a handler exists, so there is nothing for
+/// that story to decide here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActivityRecord {
 	pub id: String,
 	pub name: String,
@@ -119,7 +126,42 @@ pub struct ActivityRecord {
 
 #[cfg(test)]
 mod tests {
-	use super::{ActivityMaturity, LayoutTree};
+	use super::{ActivityMaturity, ActivityRecord, LayoutTree};
+	use serde_json::json;
+
+	/// The bug the Codex review on this PR caught: without
+	/// `#[serde(rename_all = "camelCase")]`, this struct would serialize as
+	/// `registry_key`/`layout_tree`/`default_config` -- fields
+	/// `ActivityDefinition` on the client does not have, so a `GET
+	/// /activities` handler built on this record (#271) would hand a
+	/// `some-ui` caller a shape it cannot read.
+	#[test]
+	fn the_record_serializes_with_the_clients_field_names() {
+		let record = ActivityRecord {
+			id: "honeycomb".to_owned(),
+			name: "Hangul Honeycomb".to_owned(),
+			description: "d".to_owned(),
+			icon: "hexagon".to_owned(),
+			registry_key: "hangul".to_owned(),
+			layout_tree: LayoutTree::Study,
+			maturity: ActivityMaturity::Ready,
+			min_duration_ms: Some(300_000),
+			published_at: "2026-08-01T00:00:00Z".to_owned(),
+			version: 1,
+			fields: Vec::new(),
+			default_config: json!({}),
+			audio: None,
+		};
+
+		let wire = serde_json::to_value(&record).expect("serialize the record");
+		for camel_case_key in ["registryKey", "layoutTree", "minDurationMs", "publishedAt", "defaultConfig"] {
+			assert!(wire.get(camel_case_key).is_some(), "expected `{camel_case_key}` in {wire}");
+		}
+		// `audio` is optional and absent here; the snake_case name must not
+		// leak through as an empty/null field either.
+		assert!(wire.get("audio").is_none());
+		assert!(wire.get("registry_key").is_none());
+	}
 
 	#[test]
 	fn layout_tree_round_trips_and_an_unknown_one_is_refused() {
