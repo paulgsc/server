@@ -143,16 +143,19 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	// `SessionRepoError` doesn't convert to this function's `sqlx::Error`, and
 	// widening the signature is a bigger change than a rare read failure
 	// warrants.
-	let sessions = match SessionRepository::new(db.clone()).list().await {
+	let sessions = match SessionRepository::new(db.clone()).list(subject_id).await {
 		Ok(sessions) => sessions,
 		Err(err) => {
 			error!(subject = %subject_id, error = %err, "could not read sessions; skipping this subject rather than guessing whether one is prepared");
 			return Ok(false);
 		}
 	};
-	// #262 (SLI1): the measurement, not the fix. `list()` returns every row in
-	// the table regardless of which subject is asking, so this is the number
-	// this subject's consideration cost — see `metrics::waker::record_session_rows_read`.
+	// #262 (SLI1): the measurement, not the fix. `list()` is scoped to this
+	// subject as of #260 (SUB2) — it can no longer return another subject's
+	// rows — but it is still unbounded *within* that scope, so this is still
+	// this subject's full session count, not the one row `consider` actually
+	// needs. See `metrics::waker::record_session_rows_read`. #263 (SLI2)
+	// replaces this call with a purpose-built `first_prepared` lookup.
 	crate::metrics::waker::record_session_rows_read(sessions.len());
 	let prepared_session = sessions
 		.iter()
@@ -467,18 +470,30 @@ mod tests {
 	///
 	/// Seeds more due subjects than `BATCH` so the assertion exercises the
 	/// cap, not just proportionality: a fix that read once per due subject
-	/// (rather than once per subject *and* per row) would already land far
-	/// below this number, and this test would need rewriting — which is the
-	/// point of committing it now.
+	/// (rather than once per subject *and* per row it owns) would already
+	/// land far below this number, and this test would need rewriting —
+	/// which is the point of committing it now.
+	///
+	/// Each due subject owns its own `SESSIONS_PER_SUBJECT` sessions, seeded
+	/// through `SessionRepository::upsert` rather than a shared pool of rows
+	/// under one id. Before #260 (SUB2), `list()` had no `WHERE subject_id`
+	/// clause at all, so every subject's pass genuinely re-read the same
+	/// whole table; #260 scoped that query, so a table shared across subjects
+	/// would no longer demonstrate the defect this test exists to catch — a
+	/// query that provably cannot see another subject's rows is not
+	/// "unbounded" in the sense SLI1 means. What's still true, and still
+	/// worth a test until #263, is that each subject's *own* read stays
+	/// unbounded within that scope.
 	#[test]
-	fn one_pass_reads_the_whole_session_table_once_per_due_subject() {
+	fn one_pass_reads_each_due_subjects_entire_session_set_once() {
 		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 		use metrics_util::CompositeKey;
 		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use session_repo::{LayoutMode, SessionRecord};
 		use sqlx::sqlite::SqlitePoolOptions;
 
 		const DUE_SUBJECTS: i64 = 40; // > BATCH (32), so the cap itself is exercised
-		const SESSIONS: usize = 200;
+		const SESSIONS_PER_SUBJECT: usize = 5;
 
 		// The `web-push` crate's own test vector — also what `push_kit`'s own
 		// suite signs with (`crates/push_kit/src/identity.rs`). Fixed rather
@@ -520,37 +535,35 @@ mod tests {
 				let past = (now - Duration::hours(1)).to_rfc3339();
 				let now_str = now.to_rfc3339();
 
+				let sessions_repo = SessionRepository::new(pool.clone());
 				for i in 0..DUE_SUBJECTS {
 					let subject_id = numbered("subject-", i);
 					EngagementRepository::new(pool.clone())
 						.seed_if_absent(&subject_id, &[], &now_str, &past)
 						.await
 						.expect("seed a due subject's gate row");
-				}
 
-				for i in 0..SESSIONS {
-					let id = numbered("session-", i);
-					let name = numbered("session ", i);
-					// Direct SQL, not `SessionRepository::upsert`: `upsert`
-					// does not write `subject_id` yet (#260/SUB2 is what
-					// threads a real subject through every query), and the
-					// column has been `NOT NULL` since #259 — a write through
-					// the repository fails on that constraint today.
-					sqlx::query!(
-						r#"
-						INSERT INTO sessions (
-							id, subject_id, name, status, layout_mode, total_duration_ms,
-							created_at, updated_at, activities, scenes, layout
-						) VALUES (?, 'subject-local', ?, 'draft', 'basic', 0, ?, ?, '[]', '[]', NULL)
-						"#,
-						id,
-						name,
-						now_str,
-						now_str,
-					)
-					.execute(&pool)
-					.await
-					.expect("seed a session row");
+					for j in 0..SESSIONS_PER_SUBJECT {
+						use std::fmt::Write as _;
+						let mut id = String::from("session-");
+						let _ = write!(id, "{i}-{j}");
+						let record = SessionRecord {
+							name: id.clone(),
+							id,
+							status: SessionStatus::Draft,
+							activities: Vec::new(),
+							scenes: Vec::new(),
+							layout_mode: LayoutMode::Basic,
+							layout: None,
+							total_duration_ms: 0,
+							created_at: now_str.clone(),
+							updated_at: now_str.clone(),
+							started_at: None,
+							completed_at: None,
+							final_elapsed_ms: None,
+						};
+						sessions_repo.upsert(&subject_id, &record).await.expect("seed a session row owned by this due subject");
+					}
 				}
 
 				let ws = WebSocketFsm::new();
@@ -581,14 +594,15 @@ mod tests {
 		});
 
 		#[allow(clippy::cast_sign_loss)] // BATCH and DUE_SUBJECTS are both small positive constants
-		let expected = BATCH.min(DUE_SUBJECTS) as u64 * SESSIONS as u64;
+		let expected = BATCH.min(DUE_SUBJECTS) as u64 * SESSIONS_PER_SUBJECT as u64;
 		assert_eq!(
 			rows_read,
 			Some(expected),
-			"today's waker reads the whole `sessions` table once per due subject in the batch — \
-			 BATCH.min(DUE_SUBJECTS) × SESSIONS = {expected} rows. If this now fails because the \
-			 count is *lower*, #263 (SLI2) landed: rewrite this assertion to the new bound instead \
-			 of deleting the test, since a flat read cost is the invariant worth keeping."
+			"today's waker reads a due subject's entire owned session set once per pass — \
+			 BATCH.min(DUE_SUBJECTS) × SESSIONS_PER_SUBJECT = {expected} rows. If this now fails \
+			 because the count is *lower*, #263 (SLI2) landed: rewrite this assertion to the new \
+			 bound instead of deleting the test, since a flat read cost is the invariant worth \
+			 keeping."
 		);
 	}
 }

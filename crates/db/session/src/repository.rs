@@ -77,6 +77,16 @@ pub enum SessionRepoError {
 	Row(RowError),
 	/// Serializing one of the JSON columns on the way in.
 	Serialize(serde_json::Error),
+	/// `upsert` targeted an id that already exists under a different subject.
+	///
+	/// Not folded into `Sqlx`: nothing failed at the database layer — the
+	/// `ON CONFLICT ... WHERE` guard did exactly what it was asked and left
+	/// the row untouched. Surfacing that as a distinct, named outcome is what
+	/// makes "silently no-op" impossible for a caller to mistake for success;
+	/// see `upsert`'s own doc comment for the mechanism.
+	SubjectMismatch {
+		id: String,
+	},
 }
 
 impl std::fmt::Display for SessionRepoError {
@@ -85,6 +95,7 @@ impl std::fmt::Display for SessionRepoError {
 			Self::Sqlx(err) => write!(f, "{err}"),
 			Self::Row(err) => write!(f, "{err}"),
 			Self::Serialize(err) => write!(f, "could not serialize session JSON: {err}"),
+			Self::SubjectMismatch { id } => write!(f, "session `{id}` exists under a different subject; refusing to move it"),
 		}
 	}
 }
@@ -119,7 +130,7 @@ impl SessionRepository {
 		Self { pool }
 	}
 
-	/// Every session, newest first.
+	/// Every session belonging to one subject, newest first.
 	///
 	/// Unpaginated, but no longer only on the premise that justified it
 	/// originally — "the client paginates this list in memory today, and a
@@ -131,13 +142,18 @@ impl SessionRepository {
 	/// caller upstream of it either — see `docs/study-nudge.md`'s "a read
 	/// reachable from the waker declares its own bound" invariant. The
 	/// caller-paginates assumption is retracted, not just amended, since it no
-	/// longer describes every caller, only the original one. Bounding this
-	/// query is #263 (SLI2); #262 (SLI1) only characterises today's cost, in
-	/// `nudge::waker`'s test module.
+	/// longer describes every caller, only the original one.
+	///
+	/// `subject_id` (#260/SUB2) narrows the scan to one person's rows but does
+	/// not bound its size — a subject with thousands of sessions still reads
+	/// all of them. That bound is #263 (SLI2), which replaces the waker's
+	/// caller with a purpose-built `first_prepared` query instead of tightening
+	/// this one; #262 (SLI1) characterises today's cost, in `nudge::waker`'s
+	/// test module.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if a stored row does not parse.
-	pub async fn list(&self) -> Result<Vec<SessionRecord>, SessionRepoError> {
+	pub async fn list(&self, subject_id: &str) -> Result<Vec<SessionRecord>, SessionRepoError> {
 		let rows = sqlx::query_as!(
 			SessionRow,
 			r#"
@@ -146,8 +162,10 @@ impl SessionRepository {
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
+			WHERE subject_id = ?
 			ORDER BY created_at DESC
-			"#
+			"#,
+			subject_id
 		)
 		.fetch_all(&self.pool)
 		.await?;
@@ -155,11 +173,18 @@ impl SessionRepository {
 		rows.into_iter().map(|row| SessionRecord::try_from(row).map_err(Into::into)).collect()
 	}
 
-	/// One session, or `None` if there is no such id.
+	/// One session, or `None` if there is no such id **owned by this subject**.
+	///
+	/// An id belonging to another subject returns `None`, the same as an id
+	/// that does not exist at all — deliberately indistinguishable from the
+	/// caller's side. An id is not a capability: if a foreign id returned a
+	/// distinguishable "exists, but not yours" outcome, that difference would
+	/// itself leak whether the id is in use, which is exactly the kind of
+	/// answer this method should not be able to give.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the stored row does not parse.
-	pub async fn get(&self, id: &str) -> Result<Option<SessionRecord>, SessionRepoError> {
+	pub async fn get(&self, subject_id: &str, id: &str) -> Result<Option<SessionRecord>, SessionRepoError> {
 		let row = sqlx::query_as!(
 			SessionRow,
 			r#"
@@ -168,9 +193,10 @@ impl SessionRepository {
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
-			WHERE id = ?
+			WHERE id = ? AND subject_id = ?
 			"#,
-			id
+			id,
+			subject_id
 		)
 		.fetch_optional(&self.pool)
 		.await?;
@@ -183,9 +209,28 @@ impl SessionRepository {
 	/// carrying a browser's existing `createdAt` across, and this layer should
 	/// not overwrite any of those with `now`.
 	///
+	/// `subject_id` is not a `SessionRecord` field: the record type mirrors
+	/// the client's wire shape field-for-field (see this crate's docs), and
+	/// ownership is a server-only concept the client never sends. It is
+	/// written on `INSERT` and, deliberately, **never on the `UPDATE` half**
+	/// of the upsert — `subject_id` does not appear in the `SET` list, so an
+	/// edit of an owned row cannot change who owns it even if the caller
+	/// passed a different one by mistake.
+	///
+	/// A conflict on an id owned by a *different* subject is refused outright
+	/// rather than silently skipped: the `ON CONFLICT ... WHERE` guard makes
+	/// the `DO UPDATE` a no-op in that case, which `SQLite` reports as zero rows
+	/// affected. Zero is otherwise unreachable here — a fresh id always
+	/// inserts one row, and a conflict on an id this subject owns always
+	/// updates one — so it uniquely identifies the mismatch, and this method
+	/// turns it into [`SessionRepoError::SubjectMismatch`] instead of letting
+	/// a caller read "zero rows changed" as "nothing to do."
+	///
 	/// # Errors
-	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
-	pub async fn upsert(&self, record: &SessionRecord) -> Result<(), SessionRepoError> {
+	/// Fails on any `sqlx` error, if the record's JSON does not serialize, or
+	/// with [`SessionRepoError::SubjectMismatch`] if `id` already belongs to
+	/// another subject.
+	pub async fn upsert(&self, subject_id: &str, record: &SessionRecord) -> Result<(), SessionRepoError> {
 		let status = record.status.as_str();
 		let layout_mode = record.layout_mode.as_str();
 		// `serde_json::to_string` is on clippy.toml's disallowed list to keep
@@ -199,14 +244,14 @@ impl SessionRepository {
 			record.layout.as_ref().map(serde_json::to_string).transpose()?,
 		);
 
-		sqlx::query!(
+		let result = sqlx::query!(
 			r#"
 			INSERT INTO sessions (
-			    id, name, status, layout_mode, total_duration_ms,
+			    id, subject_id, name, status, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 			    name              = excluded.name,
 			    status            = excluded.status,
@@ -219,8 +264,10 @@ impl SessionRepository {
 			    activities        = excluded.activities,
 			    scenes            = excluded.scenes,
 			    layout            = excluded.layout
+			WHERE sessions.subject_id = excluded.subject_id
 			"#,
 			record.id,
+			subject_id,
 			record.name,
 			status,
 			layout_mode,
@@ -237,59 +284,90 @@ impl SessionRepository {
 		.execute(&self.pool)
 		.await?;
 
+		if result.rows_affected() == 0 {
+			return Err(SessionRepoError::SubjectMismatch { id: record.id.clone() });
+		}
+
 		Ok(())
 	}
 
-	/// Remove one session. Returns whether a row was actually removed, so a
-	/// caller that cares about 404 can tell.
+	/// Remove one session **owned by this subject**. Returns whether a row was
+	/// actually removed, so a caller that cares about 404 can tell.
+	///
+	/// A foreign id is a no-op, not a deletion — the `WHERE` clause simply
+	/// matches nothing, and the caller sees `Ok(false)`, the same outcome as
+	/// an id that never existed.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure from the underlying statement.
-	pub async fn delete(&self, id: &str) -> Result<bool, SessionRepoError> {
-		let result = sqlx::query!("DELETE FROM sessions WHERE id = ?", id).execute(&self.pool).await?;
+	pub async fn delete(&self, subject_id: &str, id: &str) -> Result<bool, SessionRepoError> {
+		let result = sqlx::query!("DELETE FROM sessions WHERE id = ? AND subject_id = ?", id, subject_id)
+			.execute(&self.pool)
+			.await?;
 		Ok(result.rows_affected() > 0)
 	}
 
-	/// Remove several, in one transaction so a partial delete cannot survive a
-	/// failure halfway through.
+	/// Remove several **owned by this subject**, in one transaction so a
+	/// partial delete cannot survive a failure halfway through.
+	///
+	/// A foreign id among `ids` is skipped, not deleted, and does not count
+	/// toward the returned total — the same scoping as [`Self::delete`],
+	/// applied per row.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure from the underlying statements.
-	pub async fn delete_many(&self, ids: &[String]) -> Result<u64, SessionRepoError> {
+	pub async fn delete_many(&self, subject_id: &str, ids: &[String]) -> Result<u64, SessionRepoError> {
 		let mut tx = self.pool.begin().await?;
 		let mut deleted = 0_u64;
 
 		for id in ids {
-			deleted += sqlx::query!("DELETE FROM sessions WHERE id = ?", id).execute(&mut *tx).await?.rows_affected();
+			deleted += sqlx::query!("DELETE FROM sessions WHERE id = ? AND subject_id = ?", id, subject_id)
+				.execute(&mut *tx)
+				.await?
+				.rows_affected();
 		}
 
 		tx.commit().await?;
 		Ok(deleted)
 	}
 
-	/// Set one status across a group, and return the affected records.
+	/// Set one status across a group **owned by this subject**, and return the
+	/// affected records.
 	///
 	/// Status is the only field it is coherent to set identically across an
 	/// arbitrary group — the client's `updateStatusMany` makes the same
 	/// argument, and this is its server half.
 	///
+	/// A foreign id among `ids` is left untouched by the `UPDATE` and then
+	/// excluded by [`Self::get`]'s own subject scoping, so it is silently
+	/// absent from the returned `Vec` rather than reported as an error —
+	/// consistent with `ids` already being allowed to name ids that do not
+	/// exist at all. The length of the returned `Vec` is how many of `ids`
+	/// were actually owned and updated.
+	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if a stored row does not parse.
-	pub async fn set_status_many(&self, ids: &[String], status: SessionStatus, now: &str) -> Result<Vec<SessionRecord>, SessionRepoError> {
+	pub async fn set_status_many(&self, subject_id: &str, ids: &[String], status: SessionStatus, now: &str) -> Result<Vec<SessionRecord>, SessionRepoError> {
 		let status_text = status.as_str();
 		let mut tx = self.pool.begin().await?;
 
 		for id in ids {
-			sqlx::query!("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", status_text, now, id)
-				.execute(&mut *tx)
-				.await?;
+			sqlx::query!(
+				"UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND subject_id = ?",
+				status_text,
+				now,
+				id,
+				subject_id
+			)
+			.execute(&mut *tx)
+			.await?;
 		}
 
 		tx.commit().await?;
 
 		let mut updated = Vec::with_capacity(ids.len());
 		for id in ids {
-			if let Some(record) = self.get(id).await? {
+			if let Some(record) = self.get(subject_id, id).await? {
 				updated.push(record);
 			}
 		}
@@ -297,18 +375,21 @@ impl SessionRepository {
 		Ok(updated)
 	}
 
-	/// Sessions whose `started_at` or `completed_at` falls on a given local
-	/// day, expressed as the half-open UTC instant range `[from, to)` the
-	/// caller's timezone maps that day to.
+	/// Sessions **owned by this subject** whose `started_at` or `completed_at`
+	/// falls on a given local day, expressed as the half-open UTC instant
+	/// range `[from, to)` the caller's timezone maps that day to.
 	///
 	/// The range is computed by the caller rather than here because "which day
 	/// is it" is a single decision that belongs in one place —
 	/// `file_host::nudge::clock` — and a second implementation in SQL is a
-	/// second place to be wrong. Both indexed columns are covered.
+	/// second place to be wrong. `idx_sessions_started_at`/`_completed_at`
+	/// cover the time predicate; neither leads with `subject_id`, so this scan
+	/// costs an extra filter pass rather than an extra index seek until this
+	/// method gains a caller that makes tuning it worthwhile.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if a stored row does not parse.
-	pub async fn touched_between(&self, from: &str, to: &str) -> Result<Vec<SessionRecord>, SessionRepoError> {
+	pub async fn touched_between(&self, subject_id: &str, from: &str, to: &str) -> Result<Vec<SessionRecord>, SessionRepoError> {
 		let rows = sqlx::query_as!(
 			SessionRow,
 			r#"
@@ -317,15 +398,189 @@ impl SessionRepository {
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
-			WHERE (started_at   >= ?1 AND started_at   < ?2)
-			   OR (completed_at >= ?1 AND completed_at < ?2)
+			WHERE subject_id = ?3
+			  AND ((started_at   >= ?1 AND started_at   < ?2)
+			   OR  (completed_at >= ?1 AND completed_at < ?2))
 			"#,
 			from,
-			to
+			to,
+			subject_id
 		)
 		.fetch_all(&self.pool)
 		.await?;
 
 		rows.into_iter().map(|row| SessionRecord::try_from(row).map_err(Into::into)).collect()
+	}
+}
+
+/// #260 (SUB2): every method above is scoped to a subject; these tests are
+/// what "scoped" means made concrete — a foreign subject's calls must not be
+/// able to read, mutate, or move a row they do not own.
+///
+/// Run against a fresh in-memory database per test rather than the
+/// externally-applied `DATABASE_URL` scratch database `cargo test` already
+/// needs for `sqlx::query!` to compile: that database is one file shared by
+/// every crate's tests in one `rust_ci` run, and cross-subject isolation is
+/// exactly the kind of property a shared, accumulating table would make
+/// unreliable to assert. `sqlx::migrate!` embeds the same `.up.sql`/`.down.sql`
+/// pairs this workspace already has at compile time — the same choice #262
+/// made in `nudge::waker`'s test module (`apps/servers/file_host`), reused
+/// here rather than reinvented. This crate has no `AppState`/waker machinery
+/// to stand up, so unlike that test, a plain `#[tokio::test]` is enough: there
+/// is no synchronous metrics-recorder API here to wrap the runtime around.
+#[cfg(test)]
+mod tests {
+	use super::{SessionRepoError, SessionRepository};
+	use crate::model::{LayoutMode, SessionRecord, SessionStatus};
+	use sqlx::sqlite::SqlitePoolOptions;
+	use sqlx::SqlitePool;
+
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	async fn pool() -> SqlitePool {
+		// One connection: SQLite's `:memory:` database is private to the
+		// connection that opened it, so a pool free to open a second one
+		// could silently hand a query an empty, unmigrated schema.
+		let pool = SqlitePoolOptions::new()
+			.max_connections(1)
+			.connect("sqlite::memory:")
+			.await
+			.expect("open an in-memory sqlite database");
+		MIGRATOR.run(&pool).await.expect("run the workspace migration history");
+		pool
+	}
+
+	fn fixture(id: &str) -> SessionRecord {
+		let mut name = id.to_owned();
+		name.push_str(" name");
+		SessionRecord {
+			id: id.to_owned(),
+			name,
+			status: SessionStatus::Draft,
+			activities: Vec::new(),
+			scenes: Vec::new(),
+			layout_mode: LayoutMode::Basic,
+			layout: None,
+			total_duration_ms: 0,
+			created_at: "2026-01-01T00:00:00Z".to_owned(),
+			updated_at: "2026-01-01T00:00:00Z".to_owned(),
+			started_at: None,
+			completed_at: None,
+			final_elapsed_ms: None,
+		}
+	}
+
+	#[tokio::test]
+	async fn list_returns_only_this_subjects_sessions() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo.upsert("subject-a", &fixture("session-a")).await.expect("seed subject-a's session");
+		repo.upsert("subject-b", &fixture("session-b")).await.expect("seed subject-b's session");
+
+		let a_sessions = repo.list("subject-a").await.expect("list subject-a's sessions");
+		assert_eq!(a_sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["session-a"]);
+	}
+
+	#[tokio::test]
+	async fn get_returns_none_for_a_well_formed_id_owned_by_a_different_subject() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo.upsert("subject-a", &fixture("session-1")).await.expect("seed subject-a's session");
+
+		assert!(
+			repo.get("subject-b", "session-1").await.expect("query should not fail").is_none(),
+			"a foreign subject must not be able to read the row"
+		);
+		assert!(
+			repo.get("subject-a", "session-1").await.expect("query should not fail").is_some(),
+			"the owning subject must still be able to read it"
+		);
+	}
+
+	#[tokio::test]
+	async fn delete_cannot_remove_a_row_owned_by_another_subject() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo.upsert("subject-a", &fixture("session-1")).await.expect("seed subject-a's session");
+
+		let removed = repo.delete("subject-b", "session-1").await.expect("query should not fail");
+		assert!(!removed, "a foreign subject's delete must report nothing removed");
+		assert!(
+			repo.get("subject-a", "session-1").await.expect("query should not fail").is_some(),
+			"the row must survive a foreign delete attempt"
+		);
+	}
+
+	#[tokio::test]
+	async fn delete_many_skips_foreign_ids_and_reports_only_the_owned_count() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo.upsert("subject-a", &fixture("session-a")).await.expect("seed subject-a's session");
+		repo.upsert("subject-b", &fixture("session-b")).await.expect("seed subject-b's session");
+
+		let deleted = repo
+			.delete_many("subject-a", &["session-a".to_owned(), "session-b".to_owned()])
+			.await
+			.expect("query should not fail");
+
+		assert_eq!(deleted, 1, "only the id subject-a actually owns should count");
+		assert!(
+			repo.get("subject-b", "session-b").await.expect("query should not fail").is_some(),
+			"subject-b's session must survive"
+		);
+	}
+
+	#[tokio::test]
+	async fn upsert_refuses_to_move_an_existing_row_to_a_different_subject() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo.upsert("subject-a", &fixture("session-1")).await.expect("seed subject-a's session");
+
+		let hijack_attempt = repo.upsert("subject-b", &fixture("session-1")).await;
+		assert!(
+			matches!(hijack_attempt, Err(SessionRepoError::SubjectMismatch { .. })),
+			"an upsert against an id owned by another subject must fail, not silently move it: got {hijack_attempt:?}"
+		);
+
+		assert!(
+			repo.get("subject-a", "session-1").await.expect("query should not fail").is_some(),
+			"the row must still belong to its original owner"
+		);
+		assert!(
+			repo.get("subject-b", "session-1").await.expect("query should not fail").is_none(),
+			"the failed attempt must not have moved the row"
+		);
+	}
+
+	#[tokio::test]
+	async fn set_status_many_updates_only_the_ids_this_subject_owns() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		repo.upsert("subject-a", &fixture("session-a")).await.expect("seed subject-a's session");
+		repo.upsert("subject-b", &fixture("session-b")).await.expect("seed subject-b's session");
+
+		let updated = repo
+			.set_status_many(
+				"subject-a",
+				&["session-a".to_owned(), "session-b".to_owned()],
+				SessionStatus::Scheduled,
+				"2026-01-02T00:00:00Z",
+			)
+			.await
+			.expect("query should not fail");
+
+		assert_eq!(updated.len(), 1, "only the id subject-a actually owns should be reported as updated");
+		assert_eq!(updated[0].id, "session-a");
+
+		let foreign_after = repo
+			.get("subject-b", "session-b")
+			.await
+			.expect("query should not fail")
+			.expect("subject-b's session still exists");
+		assert!(
+			matches!(foreign_after.status, SessionStatus::Draft),
+			"a foreign id in the batch must not have its status changed"
+		);
 	}
 }
