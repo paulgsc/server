@@ -1,18 +1,18 @@
 use prost::Message;
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct ClientCountMessage {
 	#[prost(uint64, tag = "1")]
 	pub count: u64,
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct ErrorMessage {
 	#[prost(string, tag = "1")]
 	pub message: String,
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct SystemEventMessage {
 	#[prost(string, tag = "1")]
 	pub event_type: String,

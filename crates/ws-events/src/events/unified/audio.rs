@@ -1,6 +1,7 @@
+use num_traits::ToPrimitive;
 use prost::Message;
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct AudioChunkMessage {
 	/// Raw audio samples as bytes (float32 little-endian encoded)
 	#[prost(bytes = "vec", tag = "1")]
@@ -25,6 +26,7 @@ pub struct AudioChunkMessage {
 
 impl AudioChunkMessage {
 	/// Create from sample rate, channels, and f32 samples (converts to bytes)
+	#[must_use]
 	pub fn new(sample_rate: u32, channels: u32, samples: Vec<f32>) -> Self {
 		// Convert f32 samples to bytes
 		let mut bytes = Vec::with_capacity(samples.len() * 4);
@@ -42,8 +44,11 @@ impl AudioChunkMessage {
 	}
 
 	/// Convert raw bytes to f32 samples
+	///
+	/// # Errors
+	/// Returns an error when the byte length is invalid.
 	pub fn decode_samples(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-		if self.samples.len() % 4 != 0 {
+		if !self.samples.len().is_multiple_of(4) {
 			return Err("Invalid sample data: length not multiple of 4".into());
 		}
 
@@ -56,20 +61,23 @@ impl AudioChunkMessage {
 	}
 
 	/// Get total sample count
-	pub fn sample_count(&self) -> usize {
+	#[must_use]
+	pub const fn sample_count(&self) -> usize {
 		self.samples.len() / 4 // Each f32 is 4 bytes
 	}
 
-	/// Get duration in milliseconds (requires sample_rate)
+	/// Get duration in milliseconds (requires `sample_rate`)
+	#[must_use]
 	pub fn duration_ms(&self) -> Option<f64> {
 		let sample_rate = self.sample_rate?;
 		let channels = self.channels.unwrap_or(2) as usize;
 		let frame_count = self.sample_count() / channels;
-		Some((frame_count as f64 / sample_rate as f64) * 1000.0)
+		Some((frame_count.to_f64()? / f64::from(sample_rate)) * 1000.0)
 	}
 
 	/// Check if this chunk contains format information
-	pub fn has_format_info(&self) -> bool {
+	#[must_use]
+	pub const fn has_format_info(&self) -> bool {
 		self.sample_rate.is_some() && self.channels.is_some()
 	}
 }
@@ -88,7 +96,8 @@ pub struct SubtitleMessage {
 
 impl SubtitleMessage {
 	/// Create from text and timestamp
-	pub fn new(text: String, timestamp: u64) -> Self {
+	#[must_use]
+	pub const fn new(text: String, timestamp: u64) -> Self {
 		Self {
 			text,
 			timestamp,
@@ -97,7 +106,8 @@ impl SubtitleMessage {
 	}
 
 	/// Create with confidence score
-	pub fn with_confidence(text: String, timestamp: u64, confidence: f32) -> Self {
+	#[must_use]
+	pub const fn with_confidence(text: String, timestamp: u64, confidence: f32) -> Self {
 		Self {
 			text,
 			timestamp,

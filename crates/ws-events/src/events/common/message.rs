@@ -3,29 +3,21 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Result of processing a message
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProcessResult {
 	pub delivered: u64,
 	pub failed: u64,
 	pub duration: u64,
 }
 
-impl Default for ProcessResult {
-	fn default() -> Self {
-		Self {
-			delivered: 0,
-			failed: 0,
-			duration: 0,
-		}
-	}
-}
-
 impl ProcessResult {
-	pub fn success(delivered: u64, duration: u64) -> Self {
+	#[must_use]
+	pub const fn success(delivered: u64, duration: u64) -> Self {
 		Self { delivered, failed: 0, duration }
 	}
 
-	pub fn failure(failed: u64, duration: u64) -> Self {
+	#[must_use]
+	pub const fn failure(failed: u64, duration: u64) -> Self {
 		Self { delivered: 0, failed, duration }
 	}
 }
@@ -40,12 +32,13 @@ impl MessageId {
 	}
 
 	// Return the raw ID
-	pub fn as_u64(&self) -> u64 {
+	#[must_use]
+	pub const fn as_u64(&self) -> u64 {
 		self.0
 	}
 
 	// Parse from string (useful for deserialization)
-	pub fn from_str(s: &str) -> Option<Self> {
+	pub fn parse(s: &str) -> Option<Self> {
 		s.strip_prefix("msg-").and_then(|n| n.parse::<u64>().ok()).map(Self)
 	}
 }
