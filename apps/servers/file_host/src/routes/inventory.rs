@@ -26,6 +26,17 @@
 //! would require a fully built `AppState` (SQLite and NATS), which
 //! would make the cheapest invariant in the crate the most expensive one to
 //! run.
+//!
+//! # Why no route carries a subject
+//!
+//! None of the paths below look like `/subjects/:id/sessions`, and that is not
+//! an oversight this inventory should flag. Whose request this is gets
+//! resolved once, by the [`SubjectId`](crate::subject::SubjectId) extractor
+//! every subject-scoped handler takes — an extractor concern, not a routing
+//! one. Putting the subject in the path would mean every route in this list
+//! grows a segment the day auth lands and shrinks back the day it is
+//! refactored; putting it in the extractor means this file, and the surface it
+//! describes, never changes when that happens.
 
 use crate::API_V1_BASE_PATH;
 use serde::Serialize;

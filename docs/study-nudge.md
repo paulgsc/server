@@ -551,10 +551,11 @@ notice if it forgot.
 **One subject.** `SubjectId` is a singleton until auth lands. Every table the
 study policy reads carries a `subject_id` column as of #259, and every
 repository that reads or writes one — including `SessionRepository`, as of
-#260 — filters and writes it. What's still singleton is the *value*: nothing
-extracts a real `SubjectId` from a request yet, so every caller passes
-`SINGLETON_SUBJECT` explicitly (#261 replaces that at the route layer) and
-nothing has been exercised with two genuinely different subjects regardless.
+#260 — filters and writes it. What's still singleton is the *value*: every
+session route extracts its `SubjectId` via `SubjectId::from_request_parts`
+(#261), rather than a handler passing a raw constant, but that extractor still
+returns `SubjectId::singleton()` until real auth lands, so nothing has been
+exercised with two genuinely different subjects regardless.
 
 **The tag constant lives in three places.** `NUDGE_TAG` (`some-ui.study-nudge`)
 is hand-maintained in `file_host::nudge::payload`, in `public/sw.js`, and in
