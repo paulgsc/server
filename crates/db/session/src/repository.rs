@@ -178,13 +178,7 @@ impl SessionRepository {
 	///
 	/// Replaces `list(subject).iter().find(|s| matches!(s.status, ...))`, the
 	/// shape #262 (SLI1) characterised: that reads every row this subject
-	/// owns and searches it in Rust. This pushes the whole predicate into
-	/// SQL instead — a `LIMIT 1` lookup, selecting only `id` rather than the
-	/// three JSON columns `list` would parse per candidate — backed by
-	/// `idx_sessions_status` (`(subject_id, status, updated_at DESC)`,
-	/// added by #259). #262's characterisation test (in `nudge::waker`'s
-	/// test module) inverts to assert this bound once this method has a
-	/// caller.
+	/// owns and searches it in Rust.
 	///
 	/// Two ordering decisions, made deliberately rather than defaulted into:
 	///
@@ -196,38 +190,61 @@ impl SessionRepository {
 	///   the ranking is ("candidate ranking scans by status and breaks ties
 	///   on `updated_at`"). That is a real, if small, behaviour change from
 	///   what is live today.
-	/// - **A paused session outranks an untouched draft.** Within
-	///   `('scheduled', 'paused', 'draft')`, status is the primary sort key,
-	///   not just a tiebreak: `paused` first, then `scheduled`, then
-	///   `draft`. Resuming something this subject already started is more
+	/// - **A paused session outranks an untouched draft.** `paused` first,
+	///   then `scheduled`, then `draft`, ahead of recency rather than tied
+	///   with it. Resuming something this subject already started is more
 	///   relevant than surfacing a draft they never opened — even one
 	///   touched more recently, e.g. by an unrelated auto-save. `updated_at
 	///   DESC` remains the tiebreak within one status.
 	///
+	/// **Three bounded probes, not one sorted scan.** A single query with
+	/// `WHERE status IN (...) ORDER BY CASE status WHEN 'paused' THEN 0 ...
+	/// END, updated_at DESC LIMIT 1` was the first shape tried here, and
+	/// `LIMIT 1` hides why it is wrong: `idx_sessions_status`
+	/// (`(subject_id, status, updated_at DESC)`) can serve `WHERE subject_id
+	/// = ? AND status = ?` in already-sorted order for *one* status, but not
+	/// a `CASE`-based priority across three at once — `EXPLAIN QUERY PLAN`
+	/// on that shape reports `USE TEMP B-TREE FOR ORDER BY`, meaning every
+	/// paused, scheduled, and draft row this subject owns has to be read and
+	/// sorted before `LIMIT 1` can pick a winner. Returning one row is not
+	/// the same as reading one row; the read cost would still grow with how
+	/// many prepared sessions this subject has — narrower than #262's
+	/// original defect (scoped to three statuses, one subject, instead of
+	/// five statuses, every subject) but the same shape of unbounded.
+	///
+	/// So this issues up to three independent, single-status probes
+	/// instead — `WHERE subject_id = ? AND status = ? ORDER BY updated_at
+	/// DESC LIMIT 1`, one per status in priority order, returning on the
+	/// first hit. Each probe alone *is* served entirely by the index: an
+	/// equality on both leading columns leaves `updated_at DESC` already in
+	/// index order, so no sort step exists to show up in `EXPLAIN QUERY
+	/// PLAN`. The true bound is "at most three index seeks", independent of
+	/// how many sessions in any status this subject owns.
+	///
 	/// # Errors
 	/// Fails on any `sqlx` error.
 	pub async fn first_prepared(&self, subject_id: &str) -> Result<Option<String>, SessionRepoError> {
-		let id = sqlx::query_scalar!(
-			r#"
-			SELECT id as "id!"
-			FROM sessions
-			WHERE subject_id = ?
-			  AND status IN ('scheduled', 'paused', 'draft')
-			ORDER BY
-			    CASE status
-			        WHEN 'paused'    THEN 0
-			        WHEN 'scheduled' THEN 1
-			        WHEN 'draft'     THEN 2
-			    END,
-			    updated_at DESC
-			LIMIT 1
-			"#,
-			subject_id
-		)
-		.fetch_optional(&self.pool)
-		.await?;
+		for status in ["paused", "scheduled", "draft"] {
+			let id = sqlx::query_scalar!(
+				r#"
+				SELECT id as "id!"
+				FROM sessions
+				WHERE subject_id = ? AND status = ?
+				ORDER BY updated_at DESC
+				LIMIT 1
+				"#,
+				subject_id,
+				status
+			)
+			.fetch_optional(&self.pool)
+			.await?;
 
-		Ok(id)
+			if id.is_some() {
+				return Ok(id);
+			}
+		}
+
+		Ok(None)
 	}
 
 	/// One session, or `None` if there is no such id **owned by this subject**.
