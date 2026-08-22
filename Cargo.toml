@@ -12,6 +12,7 @@ members = [
 
   # crates (transitive deps of the apps above)
   "crates/cursorium",
+  "crates/db/activity",
   "crates/db/capture",
   "crates/db/mood_event",
   "crates/db/engagement",
@@ -75,6 +76,7 @@ ws-events = { path = "crates/ws-events" }
 cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
+activity_repo = { path = "crates/db/activity" }
 capture_repo = { path = "crates/db/capture" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }

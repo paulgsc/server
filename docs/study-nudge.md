@@ -230,6 +230,11 @@ The tables added by this feature:
 - `intervention_log` — what actually went out, and whether it reached a push
   service.
 - `sessions` — the server's copy of `SessionRecord`.
+- `activities` — the server's copy of `ActivityDefinition` (#269). Deliberately
+  the odd one out: every table above carries a `subject_id` as of #259, and
+  this one does not, because an activity is catalogue-wide — a fact about what
+  exists to play, not about who has played it. Per-subject state (played,
+  dismissed) is #258's table, not a column here.
 
 ### 2. Generate a VAPID keypair
 
