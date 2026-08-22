@@ -381,13 +381,18 @@ client would let the two diverge silently:
 
 **`sessions` has an owner now.** #259 added `subject_id`, backfilled to
 `SINGLETON_SUBJECT` for every row that existed before the migration, and
-rebuilt `idx_sessions_status` as `(subject_id, status, updated_at DESC)` since
-that scan is about to be scoped per subject. Deliberately incomplete on its
-own: `SessionRepository`'s queries still neither read nor write the column, so
-a write through `upsert` fails on the new `NOT NULL` constraint until #260
-(SUB2) threads a real subject through every method. That is fine — #259 and
-#260 land back to back in the milestone's order (#295, P1.1 then P2.1), and
-neither is a deployable increment by itself.
+rebuilt `idx_sessions_status` as `(subject_id, status, updated_at DESC)` for
+the per-subject scan #260 (SUB2) then added: every non-admin method on
+`SessionRepository` (`list`, `get`, `upsert`, `delete`, `delete_many`,
+`set_status_many`, `touched_between`) now takes a `subject_id` and is scoped
+by it — `get` returns `None` for a foreign id rather than the row (an id is
+not a capability), `delete`/`delete_many` treat a foreign id as a no-op, and
+`upsert` refuses outright, as `SessionRepoError::SubjectMismatch`, to move an
+existing row to a different subject. The route layer does not extract a real
+subject yet — `handlers/db/session.rs` passes `SINGLETON_SUBJECT` explicitly,
+same as every other unauthenticated caller — that thread-through is #261
+(SUB3), whose own acceptance criterion (`grep -rn "SINGLETON_SUBJECT"` outside
+`subject.rs` finds nothing) is what retires those call sites.
 
 ### Trust model, stated plainly
 
@@ -466,20 +471,23 @@ arithmetic says.
 **There is no caller to paginate it.** `GET /sessions` could leave `list()`
 unpaginated because the client was the one caller, and the client already
 paginates the result in memory. `nudge::waker::consider` broke that: it calls
-`SessionRepository::list()` once per due subject to find a prepared session,
-and nothing sits above the waker to page through what comes back — the tick
-fires, the pass runs, and whatever `list()` hands back is read in full. A
-query on this path that assumes some caller will bound it is assuming a
-caller that does not exist.
+`SessionRepository::list(subject_id)` once per due subject to find a prepared
+session, and nothing sits above the waker to page through what comes back —
+the tick fires, the pass runs, and whatever `list()` hands back is read in
+full. A query on this path that assumes some caller will bound it is assuming
+a caller that does not exist.
 
 So the invariant is stated the other way round: **a read reachable from the
 waker declares its own bound**, in the query itself (a `LIMIT`, an indexed
 `WHERE`, or a narrower question than "everything") rather than in a caller
-that isn't there to enforce one. `list()` does not yet — `#262` (SLI1) is the
+that isn't there to enforce one. `list()` narrows *which subject's rows* it
+can see (#260/SUB2 — a query can no longer return another subject's sessions
+at all) but still does not bound *how many* — `#262` (SLI1) is the
 measurement of that gap, a characterisation test in `nudge::waker`'s test
-module pinning down today's `O(BATCH × |sessions|)` cost, and `#263` (SLI2)
-is where the query itself changes. `#262` deliberately does not fix the read;
-see its own out-of-scope note.
+module pinning down today's `O(BATCH × sessions this subject owns)` cost, and
+`#263` (SLI2) is where the query itself changes to a purpose-built,
+`LIMIT 1` lookup. `#262` deliberately does not fix the read; see its own
+out-of-scope note.
 
 ### One policy, one language
 
@@ -537,10 +545,12 @@ that retires a class needs a migration, and there is no mechanism that would
 notice if it forgot.
 
 **One subject.** `SubjectId` is a singleton until auth lands. Every table the
-study policy reads carries a `subject_id` column as of #259 — `sessions` was
-the last holdout — but `SessionRepository` itself does not filter or write it
-yet (#260); everything else already does. Nothing has been exercised with two
-subjects regardless.
+study policy reads carries a `subject_id` column as of #259, and every
+repository that reads or writes one — including `SessionRepository`, as of
+#260 — filters and writes it. What's still singleton is the *value*: nothing
+extracts a real `SubjectId` from a request yet, so every caller passes
+`SINGLETON_SUBJECT` explicitly (#261 replaces that at the route layer) and
+nothing has been exercised with two genuinely different subjects regardless.
 
 **The tag constant lives in three places.** `NUDGE_TAG` (`some-ui.study-nudge`)
 is hand-maintained in `file_host::nudge::payload`, in `public/sw.js`, and in

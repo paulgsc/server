@@ -24,6 +24,7 @@
 //! Every mutating call returns the full record, because the client's
 //! repositories already do and its react-query cache depends on it.
 
+use crate::subject::SINGLETON_SUBJECT;
 use crate::{AppState, FileHostError};
 use axum::{
 	extract::{Path, State},
@@ -62,7 +63,12 @@ fn to_http(err: &session_repo::repository::SessionRepoError) -> FileHostError {
 #[axum::debug_handler]
 #[instrument(name = "list_sessions", skip_all, fields(otel.kind = "server"))]
 pub async fn list_sessions(State(state): State<AppState>) -> Result<Json<Vec<SessionRecord>>, FileHostError> {
-	repo(&state).list().await.map(Json).map_err(|err| to_http(&err))
+	// `SINGLETON_SUBJECT` rather than an extracted `SubjectId`: threading a
+	// real subject through the route layer is #261 (SUB3). This story only
+	// guarantees the repository *can* be scoped; #261's own acceptance
+	// criterion (`grep -rn "SINGLETON_SUBJECT"` outside `subject.rs` finds
+	// nothing) is what retires every reference like this one.
+	repo(&state).list(SINGLETON_SUBJECT).await.map(Json).map_err(|err| to_http(&err))
 }
 
 /// `GET /sessions/:id`
@@ -72,7 +78,12 @@ pub async fn list_sessions(State(state): State<AppState>) -> Result<Json<Vec<Ses
 #[axum::debug_handler]
 #[instrument(name = "get_session", skip_all, fields(otel.kind = "server"))]
 pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<SessionRecord>, FileHostError> {
-	repo(&state).get(&id).await.map_err(|err| to_http(&err))?.map(Json).ok_or(FileHostError::NotFound)
+	repo(&state)
+		.get(SINGLETON_SUBJECT, &id)
+		.await
+		.map_err(|err| to_http(&err))?
+		.map(Json)
+		.ok_or(FileHostError::NotFound)
 }
 
 /// `POST /sessions`
@@ -102,7 +113,7 @@ pub async fn create_session(State(state): State<AppState>, Json(input): Json<Cre
 		final_elapsed_ms: None,
 	};
 
-	repo(&state).upsert(&record).await.map_err(|err| to_http(&err))?;
+	repo(&state).upsert(SINGLETON_SUBJECT, &record).await.map_err(|err| to_http(&err))?;
 	Ok(Json(record))
 }
 
@@ -111,7 +122,7 @@ pub async fn create_session(State(state): State<AppState>, Json(input): Json<Cre
 #[instrument(name = "update_session", skip_all, fields(otel.kind = "server"))]
 pub async fn update_session(State(state): State<AppState>, Path(id): Path<String>, Json(patch): Json<UpdateSession>) -> Result<Json<SessionRecord>, FileHostError> {
 	let sessions = repo(&state);
-	let mut record = sessions.get(&id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
+	let mut record = sessions.get(SINGLETON_SUBJECT, &id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
 
 	// A patch is `Partial<...>`: absent means "leave it". The one exception is
 	// `layout`, where absent and explicit-null differ — see `deserialize_explicit_null`.
@@ -151,7 +162,7 @@ pub async fn update_session(State(state): State<AppState>, Path(id): Path<String
 	}
 
 	record.updated_at = Utc::now().to_rfc3339();
-	sessions.upsert(&record).await.map_err(|err| to_http(&err))?;
+	sessions.upsert(SINGLETON_SUBJECT, &record).await.map_err(|err| to_http(&err))?;
 	Ok(Json(record))
 }
 
@@ -159,7 +170,7 @@ pub async fn update_session(State(state): State<AppState>, Path(id): Path<String
 #[axum::debug_handler]
 #[instrument(name = "delete_session", skip_all, fields(otel.kind = "server"))]
 pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, FileHostError> {
-	let removed = repo(&state).delete(&id).await.map_err(|err| to_http(&err))?;
+	let removed = repo(&state).delete(SINGLETON_SUBJECT, &id).await.map_err(|err| to_http(&err))?;
 	Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
@@ -167,7 +178,7 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
 #[axum::debug_handler]
 #[instrument(name = "delete_sessions", skip_all, fields(otel.kind = "server"))]
 pub async fn delete_sessions(State(state): State<AppState>, Json(request): Json<RemoveManyRequest>) -> Result<Json<serde_json::Value>, FileHostError> {
-	let deleted = repo(&state).delete_many(&request.ids).await.map_err(|err| to_http(&err))?;
+	let deleted = repo(&state).delete_many(SINGLETON_SUBJECT, &request.ids).await.map_err(|err| to_http(&err))?;
 	Ok(Json(serde_json::json!({ "deletedCount": deleted })))
 }
 
@@ -176,7 +187,7 @@ pub async fn delete_sessions(State(state): State<AppState>, Json(request): Json<
 #[instrument(name = "set_session_status", skip_all, fields(otel.kind = "server"))]
 pub async fn set_status(State(state): State<AppState>, Json(request): Json<StatusManyRequest>) -> Result<Json<Vec<SessionRecord>>, FileHostError> {
 	repo(&state)
-		.set_status_many(&request.ids, request.status, &Utc::now().to_rfc3339())
+		.set_status_many(SINGLETON_SUBJECT, &request.ids, request.status, &Utc::now().to_rfc3339())
 		.await
 		.map(Json)
 		.map_err(|err| to_http(&err))
@@ -192,7 +203,7 @@ pub async fn set_status(State(state): State<AppState>, Json(request): Json<Statu
 #[instrument(name = "duplicate_session", skip_all, fields(otel.kind = "server"))]
 pub async fn duplicate_session(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<SessionRecord>, FileHostError> {
 	let sessions = repo(&state);
-	let source = sessions.get(&id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
+	let source = sessions.get(SINGLETON_SUBJECT, &id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
 	let now = Utc::now().to_rfc3339();
 
 	let copy = SessionRecord {
@@ -206,7 +217,7 @@ pub async fn duplicate_session(State(state): State<AppState>, Path(id): Path<Str
 		..source
 	};
 
-	sessions.upsert(&copy).await.map_err(|err| to_http(&err))?;
+	sessions.upsert(SINGLETON_SUBJECT, &copy).await.map_err(|err| to_http(&err))?;
 	Ok(Json(copy))
 }
 
