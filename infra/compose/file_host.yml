@@ -2,6 +2,10 @@ services:
   file-host:
     image: pgathondu/server:latest
     container_name: file-host-server
+    # Pass all variables from your .env file into the container, if present:
+    env_file:
+      - path: ${REPO_ROOT}/.env
+        required: false
     ports:
       - '3000:3000'
     environment:
@@ -13,18 +17,12 @@ services:
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
       - SQLX_OFFLINE=false
-      - CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
       - HMAC_KEY=${HMAC_KEY:-placeholder}
-      - GITHUB_API_TOKEN=${GITHUB_API_TOKEN:-placeholder}
-      - EMAIL_SERVICE_URL=${EMAIL_SERVICE_URL:-aulgondu@gmail.com}
-      - OBS_WEBSOCKET_PWD=${OBS_WEBSOCKET_PWD:-QVNJXLc0ipLSwohv}
-      - OBS_WEBSOCKET_IP=${OBS_WEBSOCKET_IP:-10.0.0.25}
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
       - /mnt/storage/users/dev/databases/hopium:/app/dbs
       - ${REPO_ROOT}/data:/app/data:rw
-      - ${REPO_ROOT}/client_secret_file.json:/app/secrets/client_secret_file.json:ro
       - ${REPO_ROOT}/config:/app/config:ro
       - ${REPO_ROOT}/logs:/app/logs:rw
     networks:

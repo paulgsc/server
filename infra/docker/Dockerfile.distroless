@@ -53,7 +53,7 @@ FROM gcr.io/distroless/cc:nonroot AS runtime
 WORKDIR /app
 
 # Create app directories
-RUN mkdir -p /app/data /app/secrets /app/config
+RUN mkdir -p /app/data /app/config
 
 # Copy the binary (owned by nonroot)
 COPY --from=builder --chown=nonroot:nonroot /app/target/release/file_host /usr/local/bin/file_host
@@ -69,7 +69,6 @@ COPY --from=builder /lib/x86_64-linux-gnu/libcrypto.so.3 /lib/x86_64-linux-gnu/
 # Environment variables
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
-ENV CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
 ENV DATA_DIR=/app/data
 
 # Healthcheck (exec form – no shell)

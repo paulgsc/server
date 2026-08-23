@@ -109,7 +109,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Create required runtime directories
-RUN mkdir -p /app/data /app/secrets /app/config \
+RUN mkdir -p /app/data /app/config \
     && chown -R nonroot:nonroot /app
 
 # Copy only the final binary from builder stage
@@ -125,7 +125,6 @@ USER nonroot:nonroot
 # Runtime configuration
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
-ENV CLIENT_SECRET_FILE=/app/secrets/client_secret_file.json
 ENV DATA_DIR=/app/data
 
 # Healthcheck endpoint
