@@ -70,8 +70,16 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations")
 /// function-valued property the same way it drops `undefined`, so the
 /// fixture never had one to transcribe. That is CAT4/#272's boundary, not a
 /// gap in this fixture.
+///
+/// `deny_unknown_fields`: if the client adds a fifth top-level property to
+/// `ActivityDefinition` and the fixture is regenerated, serde would
+/// otherwise silently drop it, and this test would keep passing despite
+/// nothing here representing the new data -- the exact "schema grew and
+/// nobody noticed" failure mode this parity test exists to catch. A new
+/// property has to be added here (and given a real assertion below) before
+/// the fixture can parse again, which is deliberate friction.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FixtureActivity {
 	id: String,
 	name: String,
