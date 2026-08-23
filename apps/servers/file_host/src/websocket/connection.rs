@@ -16,11 +16,13 @@ pub(crate) use handlers::{clear_connection, establish_connection, send_initial_h
 
 /// `client_type` label for [`instrument::record_created`]/[`instrument::record_removed`]
 /// and `ConnectionCleanup`'s own decrement in `websocket.rs` — the same
-/// `auth:`/`proxy:`/`direct:` prefix convention `client_id_from_request`
+/// `probe:`/`auth:`/`proxy:`/`direct:` prefix convention `client_id_from_request`
 /// writes, read back out. A free function rather than a method so
 /// `websocket.rs` can derive the label without going through the store.
 pub(crate) fn client_type_label(client_id: &ClientId) -> &'static str {
-	if client_id.as_str().starts_with("auth:") {
+	if client_id.as_str().starts_with("probe:") {
+		"probe"
+	} else if client_id.as_str().starts_with("auth:") {
 		"auth"
 	} else if client_id.as_str().starts_with("proxy:") {
 		"proxy"
@@ -33,6 +35,18 @@ pub(crate) fn client_type_label(client_id: &ClientId) -> &'static str {
 impl WebSocketFsm {
 	/// Generate a ClientId from request headers and socket address
 	pub fn client_id_from_request(&self, headers: &HeaderMap, addr: &SocketAddr) -> ClientId {
+		// 0. The blackbox WS liveness probe (infra/blackbox.yml's
+		// `websocket_blackbox_http` job) completes a real upgrade against
+		// `/ws` on every scrape and then hangs up without ever sending a
+		// frame — self-identified via this header so it lands in
+		// `client_type="probe"` rather than being counted as a device in
+		// WS CONNS. One fixed id rather than per-request uniqueness: it is
+		// monitoring infrastructure, not a client worth distinguishing
+		// instances of.
+		if headers.get("x-probe-source").is_some() {
+			return ClientId::new("probe:blackbox");
+		}
+
 		// Priority order:
 		// 1. X-Client-ID
 		if let Some(client_id) = headers.get("x-client-id").and_then(|v| v.to_str().ok()) {
@@ -205,5 +219,40 @@ impl WebSocketFsm {
 		}
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn addr() -> SocketAddr {
+		"127.0.0.1:9999".parse().expect("valid socket addr")
+	}
+
+	/// The blackbox WS liveness probe's self-identifying header must win
+	/// over every other branch, including `X-Client-ID` — a probe hitting
+	/// `/ws` should never be able to land in `client_type="auth"` just
+	/// because it also happens to carry a stray header.
+	#[test]
+	fn a_probe_header_is_tagged_probe_regardless_of_other_headers() {
+		let fsm = WebSocketFsm::new();
+		let mut headers = HeaderMap::new();
+		headers.insert("x-probe-source", "blackbox-exporter".parse().unwrap());
+		headers.insert("x-client-id", "someone".parse().unwrap());
+
+		let client_id = fsm.client_id_from_request(&headers, &addr());
+		assert!(client_id.as_str().starts_with("probe:"), "got {client_id:?}");
+		assert_eq!(client_type_label(&client_id), "probe");
+	}
+
+	#[test]
+	fn a_real_client_id_without_the_probe_header_is_tagged_auth() {
+		let fsm = WebSocketFsm::new();
+		let mut headers = HeaderMap::new();
+		headers.insert("x-client-id", "someone".parse().unwrap());
+
+		let client_id = fsm.client_id_from_request(&headers, &addr());
+		assert_eq!(client_type_label(&client_id), "auth");
 	}
 }

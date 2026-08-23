@@ -3,6 +3,7 @@ local utils = import 'lib/utils.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
 local health = import 'lib/health-panels.libsonnet';
 local clients = import 'lib/clients-panels.libsonnet';
+local nudge = import 'lib/nudge-panels.libsonnet';
 local abuse = import 'lib/abuse-panels.libsonnet';
 
 local dashboard = {
@@ -66,13 +67,16 @@ local dashboard = {
 
     // =============== CLIENTS (#214/#229) ===============
     // Is anybody there, and is anyone holding a socket for nothing. WS
-    // CONNS/LIVE/SUBSCRIBED are read as a triple — see
-    // clients-panels.libsonnet's header — so they sit adjacent rather than
-    // in separate rows the way HEALTH's independent conditions do.
-    clients.wsConns { gridPos: utils.gridPos(0, 18, 6, 4), id: 910 },
-    clients.live { gridPos: utils.gridPos(6, 18, 6, 4), id: 911 },
-    clients.subscribed { gridPos: utils.gridPos(12, 18, 6, 4), id: 912 },
-    clients.reqPerMin { gridPos: utils.gridPos(18, 18, 6, 4), id: 913 },
+    // CONNS/LIVE/SUBSCRIBED are read as a triple, and DEVICE CONNS/PROBE
+    // split WS CONNS a second way — see clients-panels.libsonnet's header —
+    // so all six sit adjacent rather than in separate rows the way HEALTH's
+    // independent conditions do.
+    clients.wsConns { gridPos: utils.gridPos(0, 18, 4, 4), id: 910 },
+    clients.deviceConns { gridPos: utils.gridPos(4, 18, 4, 4), id: 929 },
+    clients.probeConns { gridPos: utils.gridPos(8, 18, 4, 4), id: 930 },
+    clients.live { gridPos: utils.gridPos(12, 18, 4, 4), id: 911 },
+    clients.subscribed { gridPos: utils.gridPos(16, 18, 4, 4), id: 912 },
+    clients.reqPerMin { gridPos: utils.gridPos(20, 18, 4, 4), id: 913 },
 
     clients.churn { gridPos: utils.gridPos(0, 22, 12, 6), id: 914 },
     clients.closesByReason { gridPos: utils.gridPos(12, 22, 12, 6), id: 915 },
@@ -88,36 +92,43 @@ local dashboard = {
     clients.messageRate { gridPos: utils.gridPos(0, 40, 12, 6), id: 920 },
     clients.connectionErrors { gridPos: utils.gridPos(12, 40, 12, 6), id: 921 },
 
+    // =============== NUDGE ===============
+    // Is the engagement waker's tick (LOOPS, above) actually landing
+    // notifications, and if not, why not. See nudge-panels.libsonnet's own
+    // header for why this is a breakdown rather than a red/green invariant.
+    nudge.due { gridPos: utils.gridPos(0, 46, 6, 4), id: 931 },
+    nudge.outcomesByVerdict { gridPos: utils.gridPos(6, 46, 18, 4), id: 932 },
+
     // =============== ABUSE (#215/#232) ===============
     // "Are we abusing resources — do we close sockets, is the rate limiter
     // doing its job." Rebuilds `dashboards/parked/rate-limit.jsonnet`'s
     // "Proof of Failure (By Contradiction)" idea on premises that now exist
     // — see abuse-panels.libsonnet's own header.
-    abuse.rateLimited { gridPos: utils.gridPos(0, 46, 6, 4), id: 922 },
-    abuse.shed { gridPos: utils.gridPos(6, 46, 6, 4), id: 923 },
-    abuse.timedOut { gridPos: utils.gridPos(12, 46, 6, 4), id: 924 },
-    abuse.wsRefused { gridPos: utils.gridPos(18, 46, 6, 4), id: 925 },
+    abuse.rateLimited { gridPos: utils.gridPos(0, 50, 6, 4), id: 922 },
+    abuse.shed { gridPos: utils.gridPos(6, 50, 6, 4), id: 923 },
+    abuse.timedOut { gridPos: utils.gridPos(12, 50, 6, 4), id: 924 },
+    abuse.wsRefused { gridPos: utils.gridPos(18, 50, 6, 4), id: 925 },
 
-    abuse.refusalsByReason { gridPos: utils.gridPos(0, 50, 12, 6), id: 926 },
-    abuse.tokensAvailable { gridPos: utils.gridPos(12, 50, 12, 6), id: 927 },
+    abuse.refusalsByReason { gridPos: utils.gridPos(0, 54, 12, 6), id: 926 },
+    abuse.tokensAvailable { gridPos: utils.gridPos(12, 54, 12, 6), id: 927 },
 
-    abuse.invariant { gridPos: utils.gridPos(0, 56, 24, 4), id: 928 },
+    abuse.invariant { gridPos: utils.gridPos(0, 60, 24, 4), id: 928 },
 
     // =============== ROW 1: UPTIME SLA ===============
-    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 60, 6, 4) },
-    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 60, 6, 4) },
-    panels.tcpConnectivity { gridPos: utils.gridPos(12, 60, 6, 4) },
-    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 60, 6, 4) },
+    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 64, 6, 4) },
+    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 64, 6, 4) },
+    panels.tcpConnectivity { gridPos: utils.gridPos(12, 64, 6, 4) },
+    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 64, 6, 4) },
 
     // =============== ROW 2: UPTIME TRENDS & DIAGNOSTICS ===============
-    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 64, 12, 8) },
-    panels.probeDiagnostics { gridPos: utils.gridPos(12, 64, 12, 8) },
+    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 68, 12, 8) },
+    panels.probeDiagnostics { gridPos: utils.gridPos(12, 68, 12, 8) },
 
     // =============== ROW 3: APPLICATION METRICS ===============
     // The standalone liveness stat this row used to carry (#212/G3) is
     // superseded by the HEALTH row's UP panel above, which is the same
     // `up{job="file_host"}` query — no need for both.
-    panels.operationDuration { gridPos: utils.gridPos(0, 72, 24, 8) },
+    panels.operationDuration { gridPos: utils.gridPos(0, 76, 24, 8) },
   ]),
   refresh: '5s',
   schemaVersion: 38,

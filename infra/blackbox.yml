@@ -15,3 +15,12 @@ modules:
         Connection: Upgrade
         Sec-WebSocket-Version: '13'
         Sec-WebSocket-Key: 'x3JJHMbDL1EzLkh9GBhXDw=='
+        # Lets file_host's client_id_from_request tag this handshake
+        # client_type="probe" instead of "direct" — this prober completes a
+        # real WS upgrade against /ws and then hangs up immediately, and
+        # without this header the resulting connection was indistinguishable
+        # from an actual device until STALE_TIMEOUT (120s) reaped it. See
+        # apps/servers/file_host/src/websocket/connection.rs and
+        # infra/grafana/dashboards/lib/clients-panels.libsonnet's DEVICE
+        # CONNS / PROBE split.
+        X-Probe-Source: blackbox-exporter
