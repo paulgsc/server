@@ -114,7 +114,10 @@ pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) 
 		match consider(db, ws, nudge, &engagement, &gate.subject_id).await {
 			Ok(true) => intervened += 1,
 			Ok(false) => {}
-			Err(err) => error!(subject = %gate.subject_id, error = %err, "could not consider a due subject"),
+			Err(err) => {
+				error!(subject = %gate.subject_id, error = %err, "could not consider a due subject");
+				crate::metrics::waker::record_verdict("storage_error", "n/a");
+			}
 		}
 	}
 
@@ -148,6 +151,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 		Ok(prepared_session) => prepared_session,
 		Err(err) => {
 			error!(subject = %subject_id, error = %err, "could not read sessions; skipping this subject rather than guessing whether one is prepared");
+			crate::metrics::waker::record_verdict("storage_error", "n/a");
 			return Ok(false);
 		}
 	};
