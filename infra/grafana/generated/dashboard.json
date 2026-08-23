@@ -839,7 +839,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 18
       },
@@ -901,8 +901,132 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 4,
+        "x": 4,
+        "y": 18
+      },
+      "id": 929,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(ws_connections{state=\"connected\"}) - sum(ws_client_connections{client_type=\"probe\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "DEVICE CONNS",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "thresholds",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 18
+      },
+      "id": 930,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(ws_client_connections{client_type=\"probe\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "PROBE",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "thresholds",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
         "y": 18
       },
       "id": 911,
@@ -963,8 +1087,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 12,
+        "w": 4,
+        "x": 16,
         "y": 18
       },
       "id": 912,
@@ -1026,8 +1150,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
+        "w": 4,
+        "x": 20,
         "y": 18
       },
       "id": 913,
@@ -1497,7 +1621,7 @@
               }
             ]
           },
-          "unit": "reqps"
+          "unit": "none"
         },
         "overrides": []
       },
@@ -1506,6 +1630,147 @@
         "w": 6,
         "x": 0,
         "y": 46
+      },
+      "id": 931,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "nudge_waker_due_subjects",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "DUE",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sent / n/a"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "no_device_accepted / n/a"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 18,
+        "x": 6,
+        "y": 46
+      },
+      "id": 932,
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (verdict, reason) (rate(nudge_waker_verdicts_total[5m]))",
+          "legendFormat": "{{verdict}} / {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Nudge Outcomes by Verdict",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "thresholds",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 50
       },
       "id": 922,
       "options": {
@@ -1567,7 +1832,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 46
+        "y": 50
       },
       "id": 923,
       "options": {
@@ -1629,7 +1894,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 46
+        "y": 50
       },
       "id": 924,
       "options": {
@@ -1691,7 +1956,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 46
+        "y": 50
       },
       "id": 925,
       "options": {
@@ -1742,7 +2007,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 50
+        "y": 54
       },
       "id": 926,
       "options": {
@@ -1790,7 +2055,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 50
+        "y": 54
       },
       "id": 927,
       "options": {
@@ -1867,7 +2132,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 60
       },
       "id": 928,
       "options": {
@@ -1936,7 +2201,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 60
+        "y": 64
       },
       "id": 1,
       "options": {
@@ -2019,7 +2284,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 60
+        "y": 64
       },
       "id": 2,
       "options": {
@@ -2093,7 +2358,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 60
+        "y": 64
       },
       "id": 4,
       "options": {
@@ -2162,7 +2427,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 60
+        "y": 64
       },
       "id": 5,
       "options": {
@@ -2229,7 +2494,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 68
       },
       "id": 3,
       "options": {
@@ -2293,7 +2558,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 68
       },
       "id": 6,
       "options": {
@@ -2371,7 +2636,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 72
+        "y": 76
       },
       "id": 9,
       "options": {

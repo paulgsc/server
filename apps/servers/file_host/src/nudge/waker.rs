@@ -101,6 +101,7 @@ pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) 
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
+	crate::metrics::waker::record_due(due.len());
 
 	if due.is_empty() {
 		return Ok(0);
@@ -178,6 +179,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	let action = match engine.evaluate(&charge, now, last_intervened_at) {
 		Verdict::Intervene(action) => action,
 		Verdict::Wait { until } => {
+			crate::metrics::waker::record_verdict("wait", "n/a");
 			// Push the gate out so this subject stops being returned by `due`.
 			// Without it the waker would re-read the same row every pass.
 			let (levels, as_of) = charge.to_storage();
@@ -186,6 +188,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 		}
 		Verdict::Suppressed { reason, retry_at } => {
 			info!(subject = %subject_id, reason = reason.as_str(), "warranted but not admissible");
+			crate::metrics::waker::record_verdict("suppressed", reason.as_str());
 			let (levels, as_of) = charge.to_storage();
 			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry_at.to_rfc3339()).await?;
 			return Ok(false);
@@ -198,6 +201,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			// nothing to resume, review, or announce. A gap in the domain,
 			// worth saying so.
 			warn!(subject = %subject_id, "engagement is low but there is nothing to point them at");
+			crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();
 			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
@@ -216,6 +220,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 		.await?
 	else {
 		info!(subject = %subject_id, "another pass claimed this subject first");
+		crate::metrics::waker::record_verdict("claim_lost", "n/a");
 		return Ok(false);
 	};
 
@@ -225,12 +230,14 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	let accepted = actuate(db, nudge, &action, subject_id).await?;
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
+		crate::metrics::waker::record_verdict("no_device_accepted", "n/a");
 		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
 		return Ok(false);
 	}
 
 	engagement.mark_actuated(log_id, &Utc::now().to_rfc3339()).await?;
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
+	crate::metrics::waker::record_verdict("sent", "n/a");
 	Ok(true)
 }
 

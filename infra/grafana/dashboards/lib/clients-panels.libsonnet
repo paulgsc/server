@@ -7,11 +7,15 @@
 // WS CONNS / LIVE / SUBSCRIBED are meant to be read together, not each
 // against its own threshold — `3/3/3` is healthy, `3/3/0` is three sockets
 // pooling for nobody, `3/1/3` is two half-open connections not yet reaped.
-// All four stats therefore share one always-green baseline (`harden()`,
-// applied where this is imported into `dashboard.jsonnet`, is what turns a
-// genuinely absent series grey instead) rather than a red ceiling copied
-// from a deployment this one isn't — see #219 and #229's own note that a
-// threshold sized for a public service would never fire here.
+// DEVICE CONNS / PROBE split WS CONNS itself the same way, for the fourth
+// reading that triple can't express: `3/3/3` next to `PROBE: 5` means the
+// three real sockets are fine and the blackbox WS liveness probe accounts
+// for the rest of WS CONNS, not a mystery. All six stats therefore share
+// one always-green baseline (`harden()`, applied where this is imported
+// into `dashboard.jsonnet`, is what turns a genuinely absent series grey
+// instead) rather than a red ceiling copied from a deployment this one
+// isn't — see #219 and #229's own note that a threshold sized for a public
+// service would never fire here.
 local cachePanels = import 'cache/cache-panels.libsonnet';
 local panelDefaults = import 'panel-defaults.libsonnet';
 
@@ -61,6 +65,38 @@ local timeSeriesOptions = {
     title: 'WS CONNS',
     type: 'stat',
     targets: [{ expr: 'sum(ws_connections{state="connected"})', instant: true, refId: 'A' }],
+    fieldConfig: statFieldConfig('none'),
+    options: statOptions,
+  },
+
+  // DEVICE CONNS — WS CONNS with the blackbox WS liveness probe's own share
+  // subtracted. `infra/blackbox.yml`'s `websocket_blackbox_http` job
+  // completes a real upgrade against `/ws` on every 15s scrape and hangs up
+  // without sending a frame; the server counts that like any other
+  // connection until `STALE_TIMEOUT` (120s) reaps it, so up to ~8 can be
+  // stacked up with nobody on the other end. `connection.rs::client_id_from_request`
+  // tags that traffic `client_type="probe"` (via the header the blackbox
+  // module now sends) precisely so this number can answer what WS CONNS
+  // alone cannot: how many of those sockets are an actual device. Not a
+  // replacement for WS CONNS — that stays the honest raw total — this is
+  // the number to actually glance at.
+  deviceConns: {
+    title: 'DEVICE CONNS',
+    type: 'stat',
+    targets: [{ expr: 'sum(ws_connections{state="connected"}) - sum(ws_client_connections{client_type="probe"})', instant: true, refId: 'A' }],
+    fieldConfig: statFieldConfig('none'),
+    options: statOptions,
+  },
+
+  // PROBE — the blackbox WS liveness check's own share of WS CONNS, broken
+  // out rather than left to be mistaken for a mystery device. Same
+  // `ws_client_connections{client_type}` family `clientTypeDistribution`
+  // already reads below, surfaced here where the top-line count actually
+  // gets read.
+  probeConns: {
+    title: 'PROBE',
+    type: 'stat',
+    targets: [{ expr: 'sum(ws_client_connections{client_type="probe"})', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('none'),
     options: statOptions,
   },
