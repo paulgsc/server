@@ -8,14 +8,18 @@
 //! whoever plays it, so per-subject state (played, dismissed -- #258's table)
 //! is deliberately a different table, not a column here.
 //!
-//! Seeding the four literal activities (#270), the `toSceneProps`
-//! replacement (#272), and `GET /activities` (#271) are all out of scope for
-//! this crate as it stands today -- see #269's own out-of-scope note. What is
-//! here is the schema (`20260822000600_create_activities.up.sql`) and the
-//! model it round-trips through.
+//! The `toSceneProps` replacement (#272) and `GET /activities` (#271) are
+//! still out of scope for this crate -- see #269's own out-of-scope note.
+//! What is here is the schema (`20260822000600_create_activities.up.sql`),
+//! the model it round-trips through, the seed (#270,
+//! `20260823000700_seed_activities.up.sql`), and the parity test
+//! (`tests/catalog_parity.rs`) that fails when the seed and
+//! `paulgsc/some-ui@packages/activity-catalog/src/lib/catalog.ts` disagree.
 
+pub mod duration;
 pub mod model;
 
+pub use duration::derive_min_duration_ms;
 pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
 
 /// #269's acceptance criteria, made concrete against a real database rather
@@ -27,6 +31,11 @@ pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
 /// `cargo test` needs for `sqlx::query!` to compile is one file shared by
 /// every crate's tests in one `rust_ci` run, and a table only this test
 /// writes to needs its own.
+///
+/// `pool()` now also runs #270's seed migration, so every fresh database
+/// here already has `honeycomb`/`topik`/`interview`/`leetype` in it -- a
+/// test that inserts its own row must pick an id and registry_key that isn't
+/// one of those four (see `a_full_row_round_trips_through_insert_and_select`).
 #[cfg(test)]
 mod tests {
 	use super::model::{ActivityMaturity, LayoutTree};
@@ -52,6 +61,12 @@ mod tests {
 	/// `min_duration_ms` and `audio` -- comes back out with `layout_tree`
 	/// and `maturity` parsing to the same variant that went in, and every
 	/// other value equal to what was written.
+	///
+	/// Uses a synthetic id/registry_key rather than a real catalogued one
+	/// (e.g. `"honeycomb"`/`"hangul"`) on purpose: #270's seed migration now
+	/// runs as part of `MIGRATOR` in every test in this module, so a literal
+	/// real id here would collide with the seeded row on the `id` PRIMARY
+	/// KEY and fail for a reason this test isn't about.
 	#[tokio::test]
 	async fn a_full_row_round_trips_through_insert_and_select() {
 		let pool = pool().await;
@@ -63,11 +78,11 @@ mod tests {
 			    min_duration_ms, published_at, version, fields, default_config, audio
 			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
 			"#,
-			"honeycomb",
-			"Hangul Honeycomb",
-			"Type the falling Hangul characters before they escape the hive.",
+			"test-round-trip-row",
+			"Test Round Trip Row",
+			"A synthetic row, not one of the seeded catalogue entries.",
 			"hexagon",
-			"hangul",
+			"test-round-trip-registry-key",
 			"study",
 			"ready",
 			300_000_i64,
@@ -87,14 +102,14 @@ mod tests {
 			       min_duration_ms, published_at, version, fields, default_config, audio
 			FROM activities WHERE id = ?1
 			"#,
-			"honeycomb"
+			"test-round-trip-row"
 		)
 		.fetch_one(&pool)
 		.await
 		.expect("read the row back");
 
-		assert_eq!(row.id, "honeycomb");
-		assert_eq!(row.registry_key, "hangul");
+		assert_eq!(row.id, "test-round-trip-row");
+		assert_eq!(row.registry_key, "test-round-trip-registry-key");
 		assert_eq!(LayoutTree::parse(&row.layout_tree), Some(LayoutTree::Study));
 		assert_eq!(ActivityMaturity::parse(&row.maturity), Some(ActivityMaturity::Ready));
 		assert_eq!(row.min_duration_ms, Some(300_000));

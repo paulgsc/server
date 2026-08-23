@@ -236,6 +236,13 @@ The tables added by this feature:
   exists to play, not about who has played it. Per-subject state (played,
   dismissed) is #258's table, not a column here.
 
+  Seeded with the four activities `paulgsc/some-ui@packages/activity-catalog`
+  bundles (#270, `20260823000700_seed_activities.up.sql`), transcribed field
+  for field. The parity test guarding that transcription lives in
+  `crates/db/activity/tests/catalog_parity.rs`; its own module doc records
+  which of #270's three proposed mechanisms this took and why the other two
+  were deferred.
+
 ### 2. Generate a VAPID keypair
 
 ```sh

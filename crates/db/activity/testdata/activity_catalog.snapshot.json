@@ -1,0 +1,219 @@
+[
+  {
+    "id": "honeycomb",
+    "name": "Hangul Honeycomb",
+    "description": "Type the falling Hangul characters before they escape the hive.",
+    "icon": "hexagon",
+    "registryKey": "hangul",
+    "layoutTree": "study",
+    "fields": [
+      {
+        "kind": "select",
+        "key": "mode",
+        "label": "Mode",
+        "options": [
+          {
+            "value": "completion",
+            "label": "Completion (clear the board)"
+          },
+          {
+            "value": "endless",
+            "label": "Endless (survive as long as you can)"
+          },
+          {
+            "value": "vocabulary",
+            "label": "Vocabulary (master the word list)"
+          },
+          {
+            "value": "vocabulary-endless",
+            "label": "Vocabulary Endless (words, no end)"
+          }
+        ],
+        "defaultValue": "completion"
+      },
+      {
+        "kind": "select",
+        "key": "difficulty",
+        "label": "Difficulty",
+        "options": [
+          {
+            "value": "relaxed",
+            "label": "Relaxed - more time per letter"
+          },
+          {
+            "value": "standard",
+            "label": "Standard"
+          },
+          {
+            "value": "challenging",
+            "label": "Challenging - fast-paced"
+          }
+        ],
+        "defaultValue": "standard"
+      },
+      {
+        "kind": "duration",
+        "key": "durationMinutes",
+        "label": "Session length",
+        "minMinutes": 5,
+        "maxMinutes": 30,
+        "stepMinutes": 5,
+        "defaultMinutes": 10
+      }
+    ],
+    "audio": {
+      "channels": [
+        "effects"
+      ],
+      "blurb": "Uses game sound effects"
+    },
+    "defaultConfig": {
+      "mode": "completion",
+      "difficulty": "standard",
+      "durationMinutes": 10
+    }
+  },
+  {
+    "id": "topik",
+    "name": "TOPIK Study",
+    "description": "Work through Korean study material with a guided chat and quiz.",
+    "icon": "book-open",
+    "registryKey": "topik",
+    "layoutTree": "topik",
+    "fields": [
+      {
+        "kind": "select",
+        "key": "level",
+        "label": "Level",
+        "options": [
+          {
+            "value": "beginner",
+            "label": "Beginner"
+          },
+          {
+            "value": "intermediate",
+            "label": "Intermediate"
+          },
+          {
+            "value": "advanced",
+            "label": "Advanced"
+          }
+        ],
+        "defaultValue": "beginner"
+      },
+      {
+        "kind": "duration",
+        "key": "durationMinutes",
+        "label": "Session length",
+        "minMinutes": 10,
+        "maxMinutes": 45,
+        "stepMinutes": 5,
+        "defaultMinutes": 15
+      }
+    ],
+    "audio": {
+      "channels": [
+        "speech"
+      ],
+      "blurb": "Uses Korean pronunciation"
+    },
+    "maturity": "preview",
+    "defaultConfig": {
+      "level": "beginner",
+      "durationMinutes": 15
+    }
+  },
+  {
+    "id": "interview",
+    "name": "Interview Prep",
+    "description": "Practice answering mock interview questions on a timer.",
+    "icon": "mic",
+    "registryKey": "interview",
+    "layoutTree": "topik",
+    "fields": [
+      {
+        "kind": "select",
+        "key": "level",
+        "label": "Level",
+        "options": [
+          {
+            "value": "junior",
+            "label": "Junior"
+          },
+          {
+            "value": "mid",
+            "label": "Mid"
+          },
+          {
+            "value": "senior",
+            "label": "Senior"
+          }
+        ],
+        "defaultValue": "mid"
+      },
+      {
+        "kind": "select",
+        "key": "category",
+        "label": "Category",
+        "options": [
+          {
+            "value": "technical",
+            "label": "Technical"
+          },
+          {
+            "value": "behavioral",
+            "label": "Behavioral"
+          },
+          {
+            "value": "system-design",
+            "label": "System Design"
+          }
+        ],
+        "defaultValue": "technical"
+      },
+      {
+        "kind": "duration",
+        "key": "durationMinutes",
+        "label": "Session length",
+        "minMinutes": 10,
+        "maxMinutes": 45,
+        "stepMinutes": 5,
+        "defaultMinutes": 20
+      }
+    ],
+    "audio": {
+      "channels": [
+        "speech"
+      ],
+      "blurb": "Reads questions aloud"
+    },
+    "maturity": "early",
+    "defaultConfig": {
+      "level": "mid",
+      "category": "technical",
+      "durationMinutes": 20
+    }
+  },
+  {
+    "id": "leetype",
+    "name": "LeetType",
+    "description": "Prove one competency at a time by typing the smallest code that shows it.",
+    "icon": "keyboard",
+    "registryKey": "leetype",
+    "layoutTree": "study",
+    "fields": [
+      {
+        "kind": "duration",
+        "key": "durationMinutes",
+        "label": "Session length",
+        "minMinutes": 5,
+        "maxMinutes": 60,
+        "stepMinutes": 5,
+        "defaultMinutes": 10
+      }
+    ],
+    "defaultConfig": {
+      "durationMinutes": 10
+    }
+  }
+]
