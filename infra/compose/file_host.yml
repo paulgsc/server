@@ -2,9 +2,10 @@ services:
   file-host:
     image: pgathondu/server:latest
     container_name: file-host-server
-    # Pass all variables from your .env file into the container:
+    # Pass all variables from your .env file into the container, if present:
     env_file:
-      - ${REPO_ROOT}/.env
+      - path: ${REPO_ROOT}/.env
+        required: false
     ports:
       - '3000:3000'
     environment:
