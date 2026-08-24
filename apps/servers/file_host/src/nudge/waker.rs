@@ -243,13 +243,48 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			// — the next pass reads the row this one already wrote and
 			// reaches `Verdict::Intervene` directly, skipping this arm
 			// entirely.
-			let session_id = new_id();
-			let provisioned = provisioned_session(session_id.clone(), now);
-			if let Err(err) = sessions.upsert(subject_id, &provisioned).await {
+			//
+			// Race safety is a separate concern from crash safety, and
+			// needs its own guard: `prepared_session` above was read at
+			// the *top* of `consider`, and a concurrent waker pass or the
+			// subject's own `POST /sessions` call can create a prepared
+			// session in the window between that read and this write.
+			// Because the provisioned row's id is always freshly
+			// generated, an unconditional `upsert` would not collide with
+			// whatever won that race — it would just add a second, blank
+			// draft beside it. `provision_if_absent` closes the window
+			// atomically (one statement, checked against the same three
+			// statuses `first_prepared` treats as prepared) rather than
+			// trusting the read that already happened; see its own doc
+			// comment for the mechanism and the #313 review that caught
+			// this. The `first_prepared` re-read after it is what makes
+			// this correct either way: whichever side of the race
+			// actually landed is what gets used, not necessarily the row
+			// built here.
+			let provisioned = provisioned_session(new_id(), now);
+			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 				return Ok(false);
 			}
+			let session_id = match sessions.first_prepared(subject_id).await {
+				Ok(Some(id)) => id,
+				Ok(None) => {
+					// Unreachable in practice: `provision_if_absent` just
+					// proved a prepared session exists for this subject,
+					// either the one built above or a concurrent writer's.
+					// Guarded rather than trusted, per this codebase's
+					// refuse-rather-than-guess convention.
+					error!(subject = %subject_id, "provisioned a session but none is findable immediately after; skipping this pass");
+					crate::metrics::waker::record_verdict("storage_error", "n/a");
+					return Ok(false);
+				}
+				Err(err) => {
+					error!(subject = %subject_id, error = %err, "could not re-read the provisioned session; skipping this subject");
+					crate::metrics::waker::record_verdict("storage_error", "n/a");
+					return Ok(false);
+				}
+			};
 
 			// Neutral to engagement (delta 0.0, filed under Freshness): it
 			// is the opportunity a later `LessonReady`/`ResumeAbandoned`/
