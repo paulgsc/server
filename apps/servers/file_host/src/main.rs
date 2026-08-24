@@ -5,15 +5,15 @@
 // `-D warnings` despite being used by the library's other consumers.
 use anyhow::Result;
 use axum::{
-	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next, response::Response,
-	Router,
+	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next,
+	response::Response, Router,
 };
 use clap::Parser;
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::routes::{
-	db::{mood_events, sessions, tabs},
+	db::{activities, mood_events, sessions, tabs},
 	health::get_health,
 	metrics::get_metrics,
 	push::push,
@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
 		.merge(mood_events(&config))
 		.merge(tabs(&config))
 		.merge(sessions(&config))
+		.merge(activities(&config))
 		.merge(push(&config))
 		.merge(signals(&config))
 		.merge(post_now_playing())

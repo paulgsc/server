@@ -287,6 +287,19 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		versioned: true,
 		module: "sessions",
 	},
+	// ── activities ──────────────────────────────────────────────────────────
+	RouteDescriptor {
+		method: "GET",
+		path: "/activities",
+		versioned: true,
+		module: "activities",
+	},
+	RouteDescriptor {
+		method: "GET",
+		path: "/activities/:id",
+		versioned: true,
+		module: "activities",
+	},
 	// ── push ────────────────────────────────────────────────────────────────
 	RouteDescriptor {
 		method: "GET",
@@ -399,6 +412,7 @@ mod tests {
 		("mood_events", include_str!("db/hopium.rs"), true),
 		("tabs", include_str!("db/tab.rs"), true),
 		("sessions", include_str!("db/session.rs"), true),
+		("activities", include_str!("db/activities.rs"), true),
 		("push", include_str!("push.rs"), true),
 		("signals", include_str!("signals.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),

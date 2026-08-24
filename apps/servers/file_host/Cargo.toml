@@ -25,30 +25,35 @@ path = "src/bin/dump_routes.rs"
 
 [dependencies]
 # path crates
-mood_event  = { workspace = true }
-some-services  = { workspace = true }
-ws-connection  = { workspace = true }
-ws-conn-manager  = { workspace = true }
-some-transport  = { workspace = true , features = ["nats", "mpsc_utils"] }
+mood_event = { workspace = true }
+some-services = { workspace = true }
+ws-connection = { workspace = true }
+ws-conn-manager = { workspace = true }
+some-transport = { workspace = true, features = ["nats", "mpsc_utils"] }
 ws-events = { workspace = true, features = ["tabsched", "ws-events"] }
 
-axum = { workspace = true , features = ["ws"]}
+axum = { workspace = true, features = ["ws"] }
 anyhow = { workspace = true }
 bytes = { version = "1.10.1" }
 clap = { workspace = true }
 dotenvy = { workspace = true }
-garde = { version =  "0.22.0", features = ["full"] }
+garde = { version = "0.22.0", features = ["full"] }
 log = "0.4.14"
 lazy_static = { workspace = true }
 futures = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "uuid",
+  "time",
+] }
 regex = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tower = { workspace = true , features = ["limit", "load-shed"] }
+tower = { workspace = true, features = ["limit", "load-shed"] }
 tower-http = { workspace = true, features = ["fs", "limit"] }
 tokio-stream = "0.1.17"
 dashmap = "6.1.0"
@@ -64,11 +69,17 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "trace"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry", "tracing-log" ] }
+tracing-subscriber = { workspace = true, features = [
+  "env-filter",
+  "json",
+  "registry",
+  "tracing-log",
+] }
 tracing-opentelemetry = { workspace = true }
 metrics = { workspace = true }
 some-cache.workspace = true
 some-metrics.workspace = true
+activity_repo = { workspace = true }
 capture_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }
@@ -82,7 +93,11 @@ chrono-tz = "0.10"
 [dev-dependencies]
 # `test-util` gives the paused clock the sliding-window rate limiter tests use
 # to step over a sixty-second window without sleeping for it.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "test-util",
+] }
 metrics-util = { workspace = true }
 
 [lints]

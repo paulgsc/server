@@ -1519,6 +1519,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 name = "file_host"
 version = "0.0.0"
 dependencies = [
+ "activity_repo",
  "anyhow",
  "axum",
  "bytes",
