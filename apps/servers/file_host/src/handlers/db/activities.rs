@@ -45,6 +45,19 @@ fn etag_value(tag: &str) -> HeaderValue {
 	HeaderValue::from_str(&quoted).expect("an activities ETag is always valid header content")
 }
 
+/// The opaque-tag component of an entity-tag, with any leading weak
+/// indicator (`W/`) stripped.
+///
+/// `If-None-Match` is defined (RFC 9110 §8.8.3.2, §13.1.2) to always use
+/// *weak* comparison, which considers two entity-tags equal whenever their
+/// opaque-tags match regardless of either side's strength — so `W/"abc123"`
+/// must be treated as a hit against the strong tag `"abc123"` this module
+/// always emits. Stripping unconditionally on both sides implements that
+/// directly rather than special-casing which side might carry the prefix.
+fn opaque_tag(raw: &[u8]) -> &[u8] {
+	raw.strip_prefix(b"W/").unwrap_or(raw)
+}
+
 /// Whether `If-None-Match` names the `ETag` this response would carry.
 ///
 /// `If-None-Match` may list several comma-separated tags, or `*` to match
@@ -54,7 +67,8 @@ fn if_none_match_hits(headers: &HeaderMap, etag: &HeaderValue) -> bool {
 	let Some(raw) = headers.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()) else {
 		return false;
 	};
-	raw.split(',').map(str::trim).any(|candidate| candidate == "*" || candidate.as_bytes() == etag.as_bytes())
+	let etag = opaque_tag(etag.as_bytes());
+	raw.split(',').map(str::trim).any(|candidate| candidate == "*" || opaque_tag(candidate.as_bytes()) == etag)
 }
 
 fn not_modified(etag: HeaderValue) -> Response {
@@ -160,6 +174,17 @@ mod tests {
 		let etag = etag_value("abc123");
 		let headers = headers_with_if_none_match("\"someone-elses-tag\"");
 		assert!(!if_none_match_hits(&headers, &etag));
+	}
+
+	/// RFC 9110 §8.8.3.2 requires weak comparison for `If-None-Match`: a
+	/// weak-tagged candidate (`W/"..."`) must still hit against the strong
+	/// tag this module always emits, since weak comparison only requires the
+	/// opaque-tags to match, not the strength.
+	#[test]
+	fn if_none_match_hits_a_weak_validator_against_a_strong_tag() {
+		let etag = etag_value("abc123");
+		let headers = headers_with_if_none_match("W/\"abc123\"");
+		assert!(if_none_match_hits(&headers, &etag), "a weak validator naming the same opaque tag must still be a hit");
 	}
 
 	#[test]

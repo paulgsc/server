@@ -124,6 +124,34 @@ impl ActivityRepository {
 		Self { pool }
 	}
 
+	/// Refuses with [`ActivityRepoError::CatalogTooLarge`] if the table holds
+	/// more than [`CATALOG_CEILING`] rows, via a cheap `COUNT(*)` rather than
+	/// by reading the rows themselves.
+	///
+	/// Called by every method that would otherwise scan the whole table --
+	/// [`Self::list`] and [`Self::fingerprint`] both -- and deliberately
+	/// called *first* in each: a Codex review on this PR caught that the
+	/// original `fingerprint` read every row before `list`'s own ceiling
+	/// check ever ran, so an over-ceiling catalogue paid for an unbounded
+	/// scan on every `GET /activities` before the refusal it was always
+	/// going to end in. One shared check, run before either query, is what
+	/// makes "refused, not merely bounded" true of both.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error, or with
+	/// [`ActivityRepoError::CatalogTooLarge`] if the table has grown past the
+	/// ceiling.
+	async fn assert_within_ceiling(&self) -> Result<(), ActivityRepoError> {
+		let total = sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!: i64" FROM activities"#).fetch_one(&self.pool).await?;
+		if total > CATALOG_CEILING {
+			return Err(ActivityRepoError::CatalogTooLarge {
+				rows: total,
+				ceiling: CATALOG_CEILING,
+			});
+		}
+		Ok(())
+	}
+
 	/// The full catalogue, ordered by `id` for a stable response across
 	/// otherwise-identical requests.
 	///
@@ -137,13 +165,7 @@ impl ActivityRepository {
 	/// [`ActivityRepoError::CatalogTooLarge`] if the table has grown past the
 	/// ceiling.
 	pub async fn list(&self) -> Result<Vec<ActivityRecord>, ActivityRepoError> {
-		let total = sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!: i64" FROM activities"#).fetch_one(&self.pool).await?;
-		if total > CATALOG_CEILING {
-			return Err(ActivityRepoError::CatalogTooLarge {
-				rows: total,
-				ceiling: CATALOG_CEILING,
-			});
-		}
+		self.assert_within_ceiling().await?;
 
 		let rows = sqlx::query_as!(
 			ActivityRow,
@@ -197,9 +219,18 @@ impl ActivityRepository {
 	/// result independent of insertion order -- a `MAX(version)` alone would
 	/// miss a row being removed, which is still a real catalogue change.
 	///
+	/// Bounded by [`CATALOG_CEILING`] the same way [`Self::list`] is: an
+	/// over-ceiling catalogue is refused before this reads a single row, not
+	/// after paying for the full unbounded scan the hash would otherwise
+	/// require.
+	///
 	/// # Errors
-	/// Fails on any `sqlx` error.
+	/// Fails on any `sqlx` error, or with
+	/// [`ActivityRepoError::CatalogTooLarge`] if the table has grown past the
+	/// ceiling.
 	pub async fn fingerprint(&self) -> Result<String, ActivityRepoError> {
+		self.assert_within_ceiling().await?;
+
 		let rows = sqlx::query!(r#"SELECT id as "id!", version FROM activities ORDER BY id"#).fetch_all(&self.pool).await?;
 
 		let mut hasher = DefaultHasher::new();
@@ -300,14 +331,11 @@ mod tests {
 		assert_ne!(before, after, "removing a row must change the fingerprint even though no remaining version increased");
 	}
 
-	#[tokio::test]
-	async fn list_refuses_rather_than_truncates_once_the_catalogue_exceeds_the_ceiling() {
-		let pool = pool().await;
-
-		// Push the row count past `CATALOG_CEILING` directly -- the four
-		// seeded rows plus enough synthetic ones to cross the ceiling. One
-		// transaction rather than one round trip per row, since this needs
-		// hundreds of inserts just to set up the case.
+	/// Pushes the row count past [`CATALOG_CEILING`] directly -- the four
+	/// seeded rows plus enough synthetic ones to cross the ceiling. One
+	/// transaction rather than one round trip per row, since this needs
+	/// hundreds of inserts just to set up the case.
+	async fn seed_past_the_ceiling(pool: &SqlitePool) {
 		let mut tx = pool.begin().await.expect("open a transaction");
 		for n in 0..=CATALOG_CEILING {
 			// `write!` rather than `format!`: `clippy.toml` disallows `format!`
@@ -331,6 +359,12 @@ mod tests {
 			.expect("insert a synthetic row to cross the ceiling");
 		}
 		tx.commit().await.expect("commit the synthetic rows");
+	}
+
+	#[tokio::test]
+	async fn list_refuses_rather_than_truncates_once_the_catalogue_exceeds_the_ceiling() {
+		let pool = pool().await;
+		seed_past_the_ceiling(&pool).await;
 
 		let repo = ActivityRepository::new(pool);
 		let result = repo.list().await;
@@ -338,6 +372,26 @@ mod tests {
 		assert!(
 			matches!(result, Err(ActivityRepoError::CatalogTooLarge { .. })),
 			"a catalogue over the ceiling must be refused outright, not truncated: got {result:?}"
+		);
+	}
+
+	/// The Codex-caught bug this pins down: before this fix, `fingerprint`
+	/// had no ceiling check of its own and would read every row -- including
+	/// all the synthetic ones this test seeds -- before `list`'s separate
+	/// check ever got a chance to refuse. Refusing here, cheaply, is what
+	/// makes an over-ceiling `GET /activities` bounded work rather than an
+	/// unbounded scan followed by a refusal.
+	#[tokio::test]
+	async fn fingerprint_refuses_rather_than_scanning_once_the_catalogue_exceeds_the_ceiling() {
+		let pool = pool().await;
+		seed_past_the_ceiling(&pool).await;
+
+		let repo = ActivityRepository::new(pool);
+		let result = repo.fingerprint().await;
+
+		assert!(
+			matches!(result, Err(ActivityRepoError::CatalogTooLarge { .. })),
+			"a catalogue over the ceiling must refuse a fingerprint too, not scan every row first: got {result:?}"
 		);
 	}
 }
