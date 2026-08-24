@@ -47,7 +47,12 @@ pub struct StatusManyRequest {
 }
 
 /// `session-<uuid>`, mirroring the client's `generateId("session")`.
-fn new_id() -> String {
+///
+/// `pub(crate)` rather than private: `nudge::waker` (#279/RCM2) reuses this
+/// for the sessions it provisions, so ids stay indistinguishable between a
+/// session the client created and one the waker did — as `SessionRecord`
+/// itself already is, until `#283` (RCM6) adds `origin`.
+pub(crate) fn new_id() -> String {
 	format!("session-{}", uuid::Uuid::new_v4())
 }
 

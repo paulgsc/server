@@ -247,6 +247,78 @@ impl SessionRepository {
 		Ok(None)
 	}
 
+	/// Atomically ensure a prepared session exists for this subject, inserting
+	/// `record` only if none of `first_prepared`'s three "prepared" statuses
+	/// (`paused`, `scheduled`, `draft`) already has one.
+	///
+	/// Exists for exactly one caller: `nudge::waker::consider` (#279/RCM2)
+	/// provisioning a session when nothing is prepared. A plain
+	/// [`Self::first_prepared`] read followed by an unconditional
+	/// [`Self::upsert`] has a real window between the two — a concurrent
+	/// waker pass, or the subject's own `POST /sessions` call, can create a
+	/// prepared session in that gap, and because the provisioned row's id is
+	/// always freshly generated, `upsert`'s `ON CONFLICT` guard (which only
+	/// protects a *specific* id, not "does this subject already have one")
+	/// does nothing to stop a second, blank draft from landing beside the
+	/// one that won. A `chatgpt-codex-connector` review on #313 caught
+	/// exactly this. The `WHERE NOT EXISTS` below runs as one statement, so
+	/// it is `SQLite`'s own per-statement write serialization — not a
+	/// read-then-write in this crate — that decides which of two racing
+	/// calls actually lands.
+	///
+	/// Returns whether `record` is the one that got written. A caller that
+	/// only cares "does a prepared session exist for this subject now"
+	/// should ignore the return value and re-read with
+	/// [`Self::first_prepared`] instead — that answers correctly regardless
+	/// of which side of a race actually landed, where this return value only
+	/// tells you about `record` specifically.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
+	pub async fn provision_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<bool, SessionRepoError> {
+		let status = record.status.as_str();
+		let layout_mode = record.layout_mode.as_str();
+		#[allow(clippy::disallowed_methods)]
+		let (activities, scenes, layout) = (
+			serde_json::to_string(&record.activities)?,
+			serde_json::to_string(&record.scenes)?,
+			record.layout.as_ref().map(serde_json::to_string).transpose()?,
+		);
+
+		let result = sqlx::query!(
+			r#"
+			INSERT INTO sessions (
+			    id, subject_id, name, status, layout_mode, total_duration_ms,
+			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
+			    activities, scenes, layout
+			)
+			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			WHERE NOT EXISTS (
+			    SELECT 1 FROM sessions WHERE subject_id = ? AND status IN ('paused', 'scheduled', 'draft')
+			)
+			"#,
+			record.id,
+			subject_id,
+			record.name,
+			status,
+			layout_mode,
+			record.total_duration_ms,
+			record.created_at,
+			record.updated_at,
+			record.started_at,
+			record.completed_at,
+			record.final_elapsed_ms,
+			activities,
+			scenes,
+			layout,
+			subject_id,
+		)
+		.execute(&self.pool)
+		.await?;
+
+		Ok(result.rows_affected() > 0)
+	}
+
 	/// One session, or `None` if there is no such id **owned by this subject**.
 	///
 	/// An id belonging to another subject returns `None`, the same as an id
@@ -603,6 +675,42 @@ mod tests {
 			repo.get("subject-b", "session-b").await.expect("query should not fail").is_some(),
 			"subject-b's session must survive"
 		);
+	}
+
+	/// #313's review finding, closed: a plain `first_prepared` read followed
+	/// by an unconditional `upsert` has a window where a second caller can
+	/// land a second blank draft. This pins the atomic guard's core
+	/// property directly — a second call, once one prepared session exists,
+	/// must be a no-op rather than a second row.
+	#[tokio::test]
+	async fn provision_if_absent_only_writes_once_per_subject() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let first = repo.provision_if_absent("subject-a", &fixture("session-1")).await.expect("the first call should succeed");
+		assert!(first, "nothing was prepared yet, so the first call should have written the row");
+
+		let second = repo
+			.provision_if_absent("subject-a", &fixture("session-2"))
+			.await
+			.expect("the second call should succeed, as a no-op");
+		assert!(!second, "a prepared session already exists, so this call must not write a second one");
+
+		let sessions = repo.list("subject-a").await.expect("list subject-a's sessions");
+		assert_eq!(sessions.len(), 1, "provisioning must not create a second session once one is prepared");
+		assert_eq!(sessions[0].id, "session-1", "the row the first call wrote must be the one that survives");
+	}
+
+	#[tokio::test]
+	async fn provision_if_absent_is_scoped_per_subject_not_global() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let a = repo.provision_if_absent("subject-a", &fixture("session-a")).await.expect("provision for subject-a");
+		let b = repo.provision_if_absent("subject-b", &fixture("session-b")).await.expect("provision for subject-b");
+
+		assert!(a, "subject-a had nothing prepared and should get a session");
+		assert!(b, "subject-b had nothing prepared either — subject-a's row must not count against subject-b's check");
 	}
 
 	#[tokio::test]
