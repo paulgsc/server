@@ -409,6 +409,40 @@ same as every other unauthenticated caller — that thread-through is #261
 (SUB3), whose own acceptance criterion (`grep -rn "SINGLETON_SUBJECT"` outside
 `subject.rs` finds nothing) is what retires those call sites.
 
+### Activities
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/activities` | The full catalogue, bounded (`activity_repo::CATALOG_CEILING`) |
+| `GET` | `/activities/:id` | One activity, or `404` |
+
+Read-only. #271's own out-of-scope note is explicit: the catalogue is seeded
+and migrated, not written through this surface, so there is no `POST
+/activities`.
+
+No `SubjectId` scoping either, unlike Sessions above: an activity is
+catalogue-wide, not owned by whoever plays it — `activity_repo`'s own crate
+doc makes the same point about per-subject state (played, dismissed) living
+in a different table, not a column here.
+
+**`ETag`, and the one thing it has to agree with #273 about.** Both routes
+answer `If-None-Match` with `304` and no body. On `GET /activities` the tag
+is `ActivityRepository::fingerprint()` — a hash over every row's `(id,
+version)`, so a publish, an edit, or a removal all invalidate it, not just an
+increasing `version` somewhere in the set. On `GET /activities/:id` the tag
+is `id@version`, scoped to the one row that response actually returned,
+rather than the whole-catalogue fingerprint — an unrelated activity's edit
+should not invalidate a client's cached copy of this one. `fingerprint()` is
+also the value #273 (CAT5)'s `CurriculumUpdated` producer reads "the
+catalogue changed" from; that story calls this method directly rather than
+inventing a second notion of catalogue version.
+
+**The bound is a refusal, not a truncation.** `GET /activities` counts the
+table before querying it; over `CATALOG_CEILING` rows and the whole request
+is refused (`FileHostError::MaxRecordLimitExceeded`) rather than answered
+with a silently short prefix. The same bounded-or-refused-never-silently-partial
+invariant `#253` argues for elsewhere applies to this new surface too.
+
 ### Trust model, stated plainly
 
 These routes carry **no authentication** beyond the CORS origin allowlist.

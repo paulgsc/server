@@ -8,19 +8,27 @@
 //! whoever plays it, so per-subject state (played, dismissed -- #258's table)
 //! is deliberately a different table, not a column here.
 //!
-//! The `toSceneProps` replacement (#272) and `GET /activities` (#271) are
-//! still out of scope for this crate -- see #269's own out-of-scope note.
 //! What is here is the schema (`20260822000600_create_activities.up.sql`),
 //! the model it round-trips through, the seed (#270,
-//! `20260823000700_seed_activities.up.sql`), and the parity test
+//! `20260823000700_seed_activities.up.sql`), the parity test
 //! (`tests/catalog_parity.rs`) that fails when the seed and
-//! `paulgsc/some-ui@packages/activity-catalog/src/lib/catalog.ts` disagree.
+//! `paulgsc/some-ui@packages/activity-catalog/src/lib/catalog.ts` disagree,
+//! and now (#271) [`repository::ActivityRepository`] -- the query layer
+//! `GET /activities`/`GET /activities/:id` (`file_host::routes::db::activities`)
+//! are built on, including [`repository::ActivityRepository::fingerprint`],
+//! the one value both that route's `ETag` and #273's `CurriculumUpdated`
+//! producer derive "the catalogue changed" from.
+//!
+//! The `toSceneProps` replacement (#272) stays out of scope for this crate --
+//! see #269's own out-of-scope note.
 
 pub mod duration;
 pub mod model;
+pub mod repository;
 
 pub use duration::derive_min_duration_ms;
 pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
+pub use repository::{ActivityRepoError, ActivityRepository, CATALOG_CEILING};
 
 /// #269's acceptance criteria, made concrete against a real database rather
 /// than argued about in the abstract: the migration's columns, the UNIQUE
