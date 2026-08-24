@@ -22,20 +22,21 @@
 //! interventions land closer to their solved instant without changing which
 //! ones happen.
 
+use crate::handlers::db::session::new_id;
 use crate::nudge::constraints::StudyConstraints;
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
 use crate::websocket::WebSocketFsm;
 use crate::{AppState, NudgeContext};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use engagement_repo::EngagementRepository;
-use intervention::{Charge, Engine, Verdict};
+use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
-use session_repo::SessionRepository;
+use session_repo::{LayoutMode, SessionRecord, SessionRepository, SessionStatus};
 use sqlx::SqlitePool;
 use std::time::Duration;
-use study_domain::{StudyAction, StudyCalibration, StudySelector, StudyV1};
+use study_domain::{StudyAction, StudyCalibration, StudySelector, StudySignal, StudyV1};
 use tracing::{debug, error, info, warn};
 
 /// How many due subjects one pass will handle. A bound rather than a page: if
@@ -147,7 +148,13 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	// `SessionRepoError` doesn't convert to this function's `sqlx::Error`, and
 	// widening the signature is a bigger change than a rare read failure
 	// warrants.
-	let prepared_session = match SessionRepository::new(db.clone()).first_prepared(subject_id).await {
+	//
+	// The repository handle is hoisted to a local rather than constructed
+	// inline: the `NothingToSay` arm below (#279/RCM2) needs the same one
+	// to write a provisioned session, and it is a cheap handle over the
+	// shared pool, not a connection of its own.
+	let sessions = SessionRepository::new(db.clone());
+	let prepared_session = match sessions.first_prepared(subject_id).await {
 		Ok(prepared_session) => prepared_session,
 		Err(err) => {
 			error!(subject = %subject_id, error = %err, "could not read sessions; skipping this subject rather than guessing whether one is prepared");
@@ -198,18 +205,97 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
-			// Depleted, admissible, and no action fits. Plain absence — the
-			// one deficit with a sessionless answer — now gets `GetStarted`
-			// even with nothing prepared, so reaching this arm means the
-			// dominant deficit is Momentum, Mastery, or Freshness with
-			// nothing to resume, review, or announce. A gap in the domain,
-			// worth saying so.
-			warn!(subject = %subject_id, "engagement is low but there is nothing to point them at");
-			crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
-			let retry = now + chrono::Duration::hours(6);
-			let (levels, as_of) = charge.to_storage();
-			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
-			return Ok(false);
+			// Depleted and past refractory/eligibility — `evaluate` only
+			// reaches this arm once both have already passed — but nothing
+			// fits. Plain absence always has `GetStarted` (see
+			// `StudySelector::select`), so reaching here means the dominant
+			// deficit is Momentum, Mastery, or Freshness with nothing
+			// prepared to resume, review, or announce.
+			//
+			// #279 (RCM2)'s decision, written down per its acceptance
+			// criteria: provision a session here rather than widen the
+			// vocabulary. Two other shapes were weighed and rejected:
+			//
+			// - A fifth `StudyAction` variant (`ProposeSession`) breaks
+			//   `StudyAction::session_id()`'s totality — every existing
+			//   variant already carries a real id — and forces
+			//   `payload::topic_for`/`NudgePayload::for_action` to grow a
+			//   case for "the same message, before a session exists."
+			// - A new `Verdict` arm in `intervention` puts "the domain
+			//   wants something created" into the generic engine, which
+			//   `intervention`'s own docs are explicit about keeping free
+			//   of study vocabulary: "every user story adds a variant [to
+			//   `study_domain`]; none of them should touch `intervention`."
+			//
+			// So `intervention` and `StudySelector` both stay untouched:
+			// provisioning happens here, `prepared_session` becomes
+			// `Some`, and the *existing* selector maps the same dominant
+			// deficit to `ResumeAbandoned`/`SuggestReview`/`NewMaterial`
+			// exactly as it would for a session that already existed.
+			// RCM3 (#280) and RCM5 (#282) decide what actually goes in
+			// it; this one is deliberately empty until they land — see
+			// `provisioned_session`'s own doc comment.
+			//
+			// Crash safety without extra bookkeeping: the write below is
+			// a `Draft` row `SessionRepository::first_prepared` will find
+			// on any later pass. A crash between this write and `claim`
+			// below costs this pass's notification, not a second session
+			// — the next pass reads the row this one already wrote and
+			// reaches `Verdict::Intervene` directly, skipping this arm
+			// entirely.
+			let session_id = new_id();
+			let provisioned = provisioned_session(session_id.clone(), now);
+			if let Err(err) = sessions.upsert(subject_id, &provisioned).await {
+				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
+				crate::metrics::waker::record_verdict("storage_error", "n/a");
+				return Ok(false);
+			}
+
+			// Neutral to engagement (delta 0.0, filed under Freshness): it
+			// is the opportunity a later `LessonReady`/`ResumeAbandoned`/
+			// `SuggestReview`/`NewMaterial` needs to be sayable, not a
+			// sign of engagement itself. See `StudySignal::
+			// SessionProvisioned`'s own doc comment — this is the first
+			// thing in the codebase to actually apply it.
+			charge.apply::<StudyCalibration>(&StudySignal::SessionProvisioned { session_id: session_id.clone() }, now);
+
+			let deficits = charge.deficits::<StudyCalibration>(now);
+			let Some(reselected) = StudySelector {
+				prepared_session: Some(session_id),
+			}
+			.select(&deficits) else {
+				// Cannot happen by construction: reaching `NothingToSay`
+				// already proved the dominant deficit is not `Presence`,
+				// and `prepared_session` is now `Some`, so `select`'s
+				// `Some(_)` arm is exhaustive over the remaining three
+				// classes. Guarded rather than `.expect`ed anyway — a
+				// class added to `EngagementClass` without a matching
+				// `StudySelector` arm should cost one skipped pass for
+				// this subject, not a panicked waker.
+				error!(subject = %subject_id, "provisioned a session but the selector still found nothing to say; this should be unreachable");
+				crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
+				let retry = now + chrono::Duration::hours(6);
+				let (levels, as_of) = charge.to_storage();
+				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+				return Ok(false);
+			};
+
+			// The provisioned session is real and written, but the
+			// intervention itself still has to clear the same admission
+			// gate any other action would — quiet hours and consent do
+			// not stop applying just because this action came from
+			// provisioning rather than an existing session.
+			match engine.admissibility().admit(now, &reselected) {
+				Ok(()) => reselected,
+				Err(reason) => {
+					info!(subject = %subject_id, reason = reason.as_str(), "provisioned a session, but the intervention is not admissible yet");
+					crate::metrics::waker::record_verdict("suppressed", reason.as_str());
+					let retry = now + StudyCalibration::REFRACTORY.min(chrono::Duration::hours(1));
+					let (levels, as_of) = charge.to_storage();
+					engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+					return Ok(false);
+				}
+			}
 		}
 	};
 
@@ -243,6 +329,42 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	crate::metrics::waker::record_verdict("sent", "n/a");
 	Ok(true)
+}
+
+/// A minimal, valid session for a subject who has nothing prepared but is
+/// about to be intervened on. Not the recommender (`#280`, RCM3) and not the
+/// materialiser (`#282`, RCM5) — deliberately out of scope for #279, exactly
+/// as its issue body draws the line. This session has no activities and no
+/// scenes; it exists so `first_prepared` has a real row to find and
+/// `GET /sessions/:id` has a real one to answer, not so a person has
+/// something to actually do yet. RCM3 and RCM5 are what fill it in once they
+/// land; until then `name` is the only signal that this was proposed rather
+/// than authored — `#283` (RCM6) is what gives that signal a real field.
+fn provisioned_session(id: String, now: DateTime<Utc>) -> SessionRecord {
+	let stamp = now.to_rfc3339();
+	SessionRecord {
+		id,
+		name: "Suggested for you".to_owned(),
+		// Every session starts as a draft, provisioned ones included — see
+		// `handlers::db::session::create_session`'s identical reasoning: a
+		// session born anything but `Draft` could be offered before
+		// anyone, including the recommender that will fill this one in,
+		// had finished composing it.
+		status: SessionStatus::Draft,
+		activities: Vec::new(),
+		scenes: Vec::new(),
+		layout_mode: LayoutMode::Basic,
+		layout: None,
+		// Zero rather than computed from `scenes`: `scenes` is empty here
+		// by construction, and `total_duration_of(&[])` is zero anyway —
+		// see its own doc comment.
+		total_duration_ms: 0,
+		created_at: stamp.clone(),
+		updated_at: stamp,
+		started_at: None,
+		completed_at: None,
+		final_elapsed_ms: None,
+	}
 }
 
 /// Put an action on the wire, to every device that consented to its topic.
@@ -461,7 +583,13 @@ mod tests {
 
 		let verdict = engine.evaluate(&charge, far_future, None);
 		assert!(
-			matches!(verdict, Verdict::Suppressed { reason: Suppressed::NotConsented, .. }),
+			matches!(
+				verdict,
+				Verdict::Suppressed {
+					reason: Suppressed::NotConsented,
+					..
+				}
+			),
 			"got {verdict:?}, expected NotConsented suppression rather than NothingToSay"
 		);
 	}
@@ -598,6 +726,142 @@ mod tests {
 			 BATCH.min(DUE_SUBJECTS) = {expected} rows total, independent of \
 			 SESSIONS_PER_SUBJECT. If this now fails because the count is *higher*, something \
 			 reintroduced an unbounded read on this path."
+		);
+	}
+
+	/// #279 (RCM2)'s core acceptance criterion, end to end against a real
+	/// database: a subject who is due, has nothing prepared, and whose
+	/// dominant deficit is not `Presence` — `Verdict::NothingToSay`'s exact
+	/// precondition — gets a real, findable session instead of a `warn!` and
+	/// a six-hour retry.
+	///
+	/// Push subscriptions are deliberately not seeded. With none,
+	/// `StudyConstraints::admit` refuses on `NotConsented` before it ever
+	/// checks quiet hours (consent is the precondition checked first — see
+	/// `constraints::admit`), which keeps this test's outcome independent of
+	/// wall-clock time and lets it isolate the *provisioning* half of #279
+	/// without needing a working push transport to assert "sent".
+	#[test]
+	fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+		use metrics_util::CompositeKey;
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let subject_id = "subject-nothing-prepared";
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build a current-thread runtime");
+
+			rt.block_on(async {
+				let pool = SqlitePoolOptions::new()
+					.max_connections(1)
+					.connect("sqlite::memory:")
+					.await
+					.expect("open an in-memory sqlite database");
+				MIGRATOR.run(&pool).await.expect("run the workspace migration history");
+
+				let now = Utc::now();
+				let now_str = now.to_rfc3339();
+
+				// Presence full (level 100, weight 1.0 → shortfall 0);
+				// Momentum, Mastery, and Freshness all fully drained (level
+				// 0). Momentum's shortfall (0.7 * 100 = 70) beats every
+				// other class's, so Momentum is dominant — the "not
+				// Presence" precondition `NothingToSay` requires — while
+				// the weighted aggregate (100, Presence's contribution
+				// alone) sits under `StudyCalibration::THRESHOLD` (110), so
+				// this subject is due right now rather than waiting.
+				let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+				let engagement = EngagementRepository::new(pool.clone());
+				engagement
+					.save(subject_id, &levels, &now_str, &now_str)
+					.await
+					.expect("seed a due, nothing-prepared subject");
+
+				let ws = WebSocketFsm::new();
+				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
+				let nudge = NudgeContext {
+					clock: NudgeClock::resolve(Some("UTC")).0,
+					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					vapid,
+					enabled: true,
+					quiet_hours_start: 22,
+					quiet_hours_end: 8,
+					presence_freshness: std::time::Duration::from_secs(120),
+					base_url: "https://example.com".to_owned(),
+				};
+
+				let intervened = consider(&pool, &ws, &nudge, &engagement, subject_id)
+					.await
+					.expect("a pass over a freshly-seeded subject should not error");
+				assert!(
+					!intervened,
+					"no push subscription exists to consent to it, so this pass should be Suppressed rather than Sent"
+				);
+
+				// The core assertion: provisioning happened anyway.
+				let sessions = SessionRepository::new(pool.clone());
+				let provisioned_id = sessions
+					.first_prepared(subject_id)
+					.await
+					.expect("read back the provisioned session")
+					.expect("consider should have written a findable session even though admission later refused");
+
+				let record = sessions
+					.get(subject_id, &provisioned_id)
+					.await
+					.expect("read the provisioned record")
+					.expect("the id first_prepared returned should resolve to a real row");
+				assert_eq!(record.status, SessionStatus::Draft);
+				assert!(record.activities.is_empty(), "RCM3/RCM5 fill activities in; RCM2 only establishes that a session exists");
+
+				// Idempotency: a second pass — standing in for "the first
+				// pass crashed between provisioning and claiming, and the
+				// waker tried again" — must not create a second session.
+				let second_pass = consider(&pool, &ws, &nudge, &engagement, subject_id).await.expect("a second pass should not error");
+				assert!(!second_pass, "still nothing consented to receive it");
+				let all_sessions = sessions.list(subject_id).await.expect("list this subject's sessions");
+				assert_eq!(all_sessions.len(), 1, "provisioning must not run twice for the same subject");
+				let still_the_same = sessions.first_prepared(subject_id).await.expect("read back again").expect("still findable");
+				assert_eq!(
+					still_the_same, provisioned_id,
+					"the second pass should reuse the session the first pass wrote, not provision another"
+				);
+			});
+		});
+
+		let snapshot: Vec<(CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, DebugValue)> = snapshotter.snapshot().into_vec();
+		let find = |name: &str, label_value: &str| -> u64 {
+			snapshot
+				.iter()
+				.find_map(|(key, _, _, value)| {
+					let k = key.key();
+					let matches = k.name() == name && k.labels().any(|l| l.value() == label_value);
+					matches.then_some(match value {
+						DebugValue::Counter(n) => *n,
+						_ => 0,
+					})
+				})
+				.unwrap_or(0)
+		};
+
+		assert_eq!(
+			find("nudge_waker_verdicts_total", "nothing_to_say"),
+			0,
+			"the warn!-and-retry NothingToSay path is gone once provisioning handles it — reaching it here would mean the guard in `consider` regressed"
+		);
+		assert_eq!(
+			find("nudge_waker_verdicts_total", "suppressed"),
+			2,
+			"both passes should have reached admission and been refused on NotConsented, not stalled on NothingToSay"
 		);
 	}
 }

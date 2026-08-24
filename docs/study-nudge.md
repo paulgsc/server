@@ -91,20 +91,66 @@ action:
 
 Three of the four actions above need a prepared session — you cannot resume a
 session that was never started, review material that was never studied, or
-announce new material to someone who has seen none. Before the recommender
-exists (`#279`–`#284`), nothing is ever prepared, so those three stay silent
-exactly as the table implies: `StudySelector::select` returns `None` and the
-engine reaches `Verdict::NothingToSay`.
+announce new material to someone who has seen none. Before `#279` (RCM2),
+nothing was ever prepared for these three, so they stayed silent exactly as
+the table implies: `StudySelector::select` returned `None` and the engine
+reached `Verdict::NothingToSay`, logged with a `warn!` and retried six hours
+later, forever, for anyone whose dominant deficit was not `Presence`.
 
 Plain absence is different: it has an honest sessionless answer. When
 `prepared_session` is `None` and the dominant deficit is `Presence`, the
 selector returns `StudyAction::GetStarted` instead of staying silent — an
 invitation, deep-linking to the app base rather than a session that does not
 exist. This is a deliberately **interim** answer, not the recommender: it
-invites, it does not propose, and it does not provision anything (the
-mistake PR #251 made). `#279` starts replacing it with real proposals, and
-once `#285` lands, `GetStarted` either retires or becomes the documented
-fallback for an empty catalogue.
+invites, it does not propose. `#279` leaves it alone — see "Provisioning"
+below for why — and once `#285` lands, `GetStarted` either retires or
+becomes the documented fallback for an empty catalogue.
+
+### Provisioning: `NothingToSay` becomes an opportunity, not a dead end
+
+`#279` (RCM2) is what closes the gap the paragraph above describes, for the
+three deficits that are not `Presence`. When `nudge::waker::consider`
+reaches `Verdict::NothingToSay` — which, by the time it gets there, has
+already proven the subject is due, past refractory, and has a dominant
+deficit of `Momentum`, `Mastery`, or `Freshness` with nothing to resume,
+review, or announce — it writes a minimal `Draft` session (no activities, no
+scenes) for that subject on the spot, rather than logging a warning and
+waiting six hours to ask again.
+
+Three shapes for this were weighed, and the choice is recorded in
+`nudge::waker::consider`'s own doc comment on the `NothingToSay` arm, not
+just here:
+
+1. **A fifth `StudyAction` variant** (`ProposeSession`) — rejected: every
+   existing variant carries a real session id, and a variant that could not
+   would break `StudyAction::session_id()`'s totality.
+2. **A new `Verdict` arm in `intervention`** — rejected: it would put "the
+   domain wants something created" into the generic engine, which
+   `intervention`'s own module docs are explicit about keeping free of study
+   vocabulary.
+3. **Provisioning before selection, inside the waker** — chosen. A session
+   gets written, `prepared_session` becomes `Some`, and the *existing*
+   `StudySelector` maps the same dominant deficit to `ResumeAbandoned`,
+   `SuggestReview`, or `NewMaterial` exactly as it would for a session that
+   already existed. `intervention` and `study_domain` are both untouched.
+
+What goes *in* the provisioned session is deliberately not this story's
+problem: RCM3 (`#280`, the recommender) and RCM5 (`#282`, materialising
+catalogue rows into `activities[]`/`scenes[]`) are what fill it in. Until
+they land, a provisioned session is real and findable —
+`SessionRepository::first_prepared` returns it, `GET /sessions/:id`
+resolves it — but empty. `#283` (RCM6) is what will mark it `origin:
+system`; until then its `name` ("Suggested for you") is the only signal
+that it was proposed rather than authored.
+
+Crash safety costs nothing extra: the write is a `Draft` row
+`first_prepared` will find on any later pass, so a crash between
+provisioning and `EngagementRepository::claim` costs that pass's
+notification, not a second session — the next pass finds the row already
+written and reaches `Verdict::Intervene` directly, without provisioning
+again. The provisioned action still has to clear the same
+`StudyConstraints::admit` gate as any other — quiet hours and consent apply
+whether the action came from an existing session or one just created.
 
 ### First contact: how a subject enters the gate at all
 
