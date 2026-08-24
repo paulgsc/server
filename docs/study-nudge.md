@@ -241,7 +241,10 @@ The tables added by this feature:
   for field. The parity test guarding that transcription lives in
   `crates/db/activity/tests/catalog_parity.rs`; its own module doc records
   which of #270's three proposed mechanisms this took and why the other two
-  were deferred.
+  were deferred. What this table deliberately has no column for —
+  `toSceneProps` — and what a server-composed session writes instead, is
+  [its own decision below](#the-server-writes-data-the-client-writes-behaviour-272)
+  (#272).
 
 ### 2. Generate a VAPID keypair
 
@@ -517,6 +520,77 @@ would only have been a weaker restatement of the enums.
 The client keeps `decideNudge` for the GitHub Pages build, which has no backend
 at all — but that is a *fallback*, not a mirror, and `paulgsc/some-ui#924` is
 where the two are prevented from both firing.
+
+### The server writes data; the client writes behaviour (#272)
+
+Every `ActivityDefinition` (`packages/activity-catalog/src/lib/types.ts`,
+`paulgsc/some-ui`) carries `toSceneProps`, a closure mapping a friendly config
+onto a scene's `props`. There is no JSON encoding of a function, so a
+catalogue this server serves arrives without one — and a session this server
+*composes* (`#279`–`#285`) hits the same wall from the other side: it cannot
+write scene `props` it has no way to compute.
+
+Two ways of closing that gap were considered and are recorded here as
+**rejected**, so neither gets re-proposed:
+
+- **Ship the source and `eval` it.** Remote code execution as a product
+  feature. Not an option, for any reason.
+- **Ship a template language and interpret it here.** This server would need
+  a mini-interpreter, and the boundary the client's own catalogue already
+  draws would sit underneath it unenforced. `interview`'s entry is explicit
+  about why it passes an identifier rather than resolved content: *"importing
+  anything from `@some-ui/interview` for a value puts that package in this
+  app's eager bundle — undoing the lazy import the content registry exists
+  for."* A server-side renderer has no way to know that, and would happily
+  let someone violate it.
+
+**What this server actually writes** is `activities: [{ activityId, config
+}]` — already what the client's `SessionActivity`
+(`packages/activity-catalog/src/lib/to-scene-config/index.ts`) is — and
+nothing else. The client's existing `toSceneConfig`/`sequenceScenes` do the
+rest, the same way they already do for a Basic-composer session where the
+user made zero arrangement decisions: a server-composed session is not a new
+code path on the client, it is the existing one fed data from a different
+source. `paulgsc/some-ui#1036`'s ACT2 is where the closures move into a
+resolver keyed on `registryKey` instead of living on each definition, but
+that move is independent of this conclusion — the server was never going to
+call them either way.
+
+**The catalogue schema already honours this.** `ActivityRecord`
+(`crates/db/activity/src/model.rs`) has no `toSceneProps` field at all —
+`fields`, `default_config`, and `audio` are the only JSON-blob columns, and
+each is opaque *data* this crate persists without interpreting, never a
+column that only makes sense as executable code. Nothing about landing this
+story required a schema change.
+
+**The `scenes` consequence, faced honestly.** If the server does not write
+`props`, it cannot write playable `scenes` either — and `scenes` is `NOT
+NULL`. A session this server provisions therefore writes `scenes` as `'[]'`:
+a real, valid empty JSON array, not a guess dressed up as a placeholder and
+not the string `'null'`. That is a session state nothing before this story
+produced — `activities` non-empty, `scenes` empty — and it is deliberate, not
+an oversight: turning `activities` into playable `scenes` is the client's
+job, using the same `sequenceScenes` pipeline a Basic-composer session
+already runs, at whatever point the client chooses to materialise them
+(closing that loop is `paulgsc/some-ui#1038`'s PRO1, not this story).
+**RCM5 (#282)** is where a provisioned row actually gets written, and its own
+"the hard one" section already arrives at the same three options this
+paragraph does; #282 is expected to cite this decision rather than re-argue
+it. The combination consistent with the conclusion above is #282's option 1
+(`scenes: []`) for what the server writes, materialised later by #282's
+option 2 (the client computing real scenes and writing them back) rather
+than option 3's half-measure of structurally-complete scenes with empty
+`props` — a shape that would look valid and would not be.
+
+The round trip this implies — a catalogue row's `default_config` is
+sufficient, as-is, to become a `SessionActivity.config` the client's
+`toSceneConfig` accepts — is checked on both sides of the boundary:
+`crates/db/activity/tests/session_activity_shape.rs` here, asserting every
+seeded `default_config` is shaped like `ActivityConfigValues` (a flat object
+of strings and numbers, nothing nested); `paulgsc/some-ui`'s
+`packages/activity-catalog/src/lib/to-scene-config/session-activity-round-trip.test.ts`,
+asserting a `SessionActivity` built the same way survives an actual JSON
+round trip into a playable scene.
 
 ---
 
