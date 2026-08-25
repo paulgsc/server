@@ -199,6 +199,75 @@ story's — `recommend()` lands as a pure function with no caller yet, the
 same shape RCM4's `derive_min_duration_ms` already took before RCM5 needed
 it too.
 
+### Floor durations: `provision(activities)` and the client's own composer floor
+
+`#281` (RCM4) is what decides how long each of `recommend()`'s picks
+actually runs. The rule: a provisioned activity is scheduled at its
+**floor**, never its **default** — `defaultMinutes` is tuned for someone
+who already opened the composer and committed to an activity, and reusing
+it for someone who has committed to nothing yet is exactly the mistake this
+story exists to prevent.
+
+**Where the floor has to live.** #272 (CAT4) already decided this server
+never writes `scenes` — only `activities: [{ activityId, config }]`,
+materialised into playable scenes by the client's own `sequenceScenes`
+(`packages/activity-catalog/src/lib/to-scene-config`, `paulgsc/some-ui`).
+That pipeline reads `config.durationMinutes` when present and falls back to
+the catalogue's own `defaultConfig.durationMinutes` otherwise — so the
+floor has to be written into `config`, or the client's own fallback quietly
+reintroduces the default-duration bug this story exists to prevent.
+`activity_repo::provisioning::provisioned_config` is `default_config` with
+exactly that one key overridden; every other key (mode, difficulty, level,
+category, …) passes through unchanged, the one deliberate exception to
+#272's own "handed to the client verbatim" description of `default_config`.
+
+**The client's floor is not the activity's floor.** Every write path —
+Basic sequencing and the Advanced arrangement editor alike — is checked
+against `DEFAULT_SESSION_DURATION_POLICY.minActivityDurationMs`
+(`apps/www/src/lib/session-duration-policy/index.ts`, `paulgsc/some-ui`,
+5 minutes) by the client's `checkSessionDuration`. A proposal below it would
+be rejected by the client's own composer the moment someone opened it, so
+the effective floor `provisioned_config` applies is
+`max(activity_min, client_policy_min)`, never the activity's own minimum
+alone. `activity_repo::provisioning::CLIENT_MIN_ACTIVITY_DURATION_MS`/
+`CLIENT_MAX_TOTAL_DURATION_MS` transcribe that policy's two constants, and
+`tests/session_duration_policy_parity.rs` is what fails if the
+transcription and the client's real value ever diverge — a checked-in
+fixture (`testdata/session_duration_policy.snapshot.json`), exported by
+`paulgsc/some-ui`'s `scripts/dump-session-duration-policy.ts`, the same
+by-hand-copy discipline `tests/catalog_parity.rs` already runs on for
+`min_duration_ms` itself.
+
+**A `NULL` `min_duration_ms` is decided, not papered over.** #269 made the
+column nullable for "whichever activity is next to not need one" —
+`leetype` no longer is (some-ui#1130 gave it a real duration field before
+this story ever landed), but the column stays nullable and the case is
+still real. The decision: an activity with no derivable floor is **omitted
+from the proposal entirely**, not given a durationless block —
+`provisioned_config` returns `None`, `provision` filters it out, and
+`provisioning.rs`'s own doc comment names the reasoning (a block that
+cannot be timed is not a block that runs for zero minutes).
+
+**Verified against the client's real check, not a reimplementation of it.**
+`#281`'s own acceptance criterion asks for a proposed session to pass
+`checkSessionDuration`, "verified by a fixture consumed on the client side."
+`cargo run --bin dump-proposed-session` runs `recommend()` and `provision()`
+together against a literal transcription of the seeded catalogue and emits
+the resulting `activities` as JSON; copied by hand into `paulgsc/some-ui`'s
+`apps/www/src/lib/session-duration-policy/testdata/proposed-session.snapshot.json`,
+a client-side test there runs it through the real `sequenceScenes` and
+`checkSessionDuration` — the same pipeline a real device runs, not a second
+copy of the rule that could quietly drift from the first. `maxTotalDurationMs`
+(4 hours) is trivially true for two 5–10 minute blocks, but `provision()`
+enforces it directly rather than trusting that to stay true: neither
+`min_duration_ms` nor `recommend()`'s `k` has a ceiling, so it skips any
+activity — including one whose own floor already exceeds the cap outright —
+once including it would push the running total over
+`CLIENT_MAX_TOTAL_DURATION_MS`, a real Codex review finding on server#315.
+
+No caller yet, same as `recommend()` itself — RCM5 (`#282`) is what wires
+`provision()`'s output into `provisioned_session()`.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=

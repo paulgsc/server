@@ -11,10 +11,12 @@ homepage.workspace = true
 license.workspace = true
 edition.workspace = true
 
-# Declared explicitly because the second binary needs a name Cargo would not
-# derive from its filename. `dump-routes` emits the HTTP surface as JSON or,
-# with `--ts`, TypeScript, for the client repo's contract harness; see
-# `src/routes/inventory.rs` and `src/routes/ts_emitter.rs`.
+# Declared explicitly because the extra binaries need names Cargo would not
+# derive from their filenames. `dump-routes` emits the HTTP surface as JSON
+# or, with `--ts`, TypeScript, for the client repo's contract harness; see
+# `src/routes/inventory.rs` and `src/routes/ts_emitter.rs`. `dump-proposed-session`
+# emits a real RCM3+RCM4 provisioned session's `activities` for the client
+# repo's `checkSessionDuration` fixture; see `src/bin/dump_proposed_session.rs`.
 [[bin]]
 name = "file_host"
 path = "src/main.rs"
@@ -22,6 +24,10 @@ path = "src/main.rs"
 [[bin]]
 name = "dump-routes"
 path = "src/bin/dump_routes.rs"
+
+[[bin]]
+name = "dump-proposed-session"
+path = "src/bin/dump_proposed_session.rs"
 
 [dependencies]
 # path crates

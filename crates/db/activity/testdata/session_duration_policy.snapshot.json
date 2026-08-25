@@ -1,0 +1,4 @@
+{
+  "minActivityDurationMs": 300000,
+  "maxTotalDurationMs": 14400000
+}
