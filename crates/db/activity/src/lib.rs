@@ -22,17 +22,21 @@
 //! The `toSceneProps` replacement (#272) stays out of scope for this crate --
 //! see #269's own out-of-scope note.
 //!
-//! [`recommender::recommend`] (#280, RCM3) is the newest addition: the three
-//! ordered rules that turn this catalogue into a proposal. Wiring it into a
-//! provisioned session is RCM5's job (#282), not this crate's.
+//! [`recommender::recommend`] (#280, RCM3) turns this catalogue into a
+//! proposal; [`provisioning::provision`] (#281, RCM4) is what decides how
+//! long each proposed activity actually runs -- its floor, never its
+//! default. Wiring either into a provisioned session is RCM5's job (#282),
+//! not this crate's.
 
 pub mod duration;
 pub mod model;
+pub mod provisioning;
 pub mod recommender;
 pub mod repository;
 
 pub use duration::derive_min_duration_ms;
 pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
+pub use provisioning::{provision, ProvisionedActivity, CLIENT_MAX_TOTAL_DURATION_MS, CLIENT_MIN_ACTIVITY_DURATION_MS};
 pub use recommender::{recommend, ActivityHistory, ActivityOutcome, DEFAULT_RECOMMENDATION_COUNT};
 pub use repository::{ActivityRepoError, ActivityRepository, CATALOG_CEILING};
 
