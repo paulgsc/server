@@ -55,6 +55,16 @@
 //! cannot be timed is not a block that runs for zero minutes, it is a block
 //! that cannot be built at all today.
 //!
+//! **`maxTotalDurationMs` is enforced here, not just asserted in a test.**
+//! Nothing bounds `min_duration_ms` at the schema level, and `recommend`'s
+//! `k` is a caller-supplied parameter — so while today's four seeded
+//! activities and `DEFAULT_RECOMMENDATION_COUNT = 2` make the 4-hour cap
+//! trivially safe, neither fact is guaranteed to stay true. [`provision`]
+//! skips any activity whose inclusion would push the running total over
+//! [`CLIENT_MAX_TOTAL_DURATION_MS`] — including one whose own floor already
+//! exceeds it — rather than trusting every future caller to check the sum
+//! afterwards.
+//!
 //! No caller yet, same as [`crate::recommend`] before it: RCM5 (`#282`) is
 //! what wires this into `nudge::waker::provisioned_session`.
 
@@ -132,11 +142,34 @@ pub fn provisioned_config(activity: &ActivityRecord) -> Option<serde_json::Value
 /// An activity whose floor cannot be derived (the `NULL` case) is omitted
 /// outright -- see this module's doc comment for why silence, not a
 /// durationless block, is the right failure mode here.
+///
+/// Also enforces [`CLIENT_MAX_TOTAL_DURATION_MS`] itself, rather than
+/// trusting every caller to check it afterwards: today's `catalogue`/`k`
+/// (four seeded activities, `DEFAULT_RECOMMENDATION_COUNT = 2`) can never
+/// come close to 4 hours, but neither `min_duration_ms` nor `k` has a
+/// database- or type-level ceiling, and a proposal the client's own
+/// `checkSessionDuration` would reject is exactly the failure mode this
+/// story exists to prevent -- for the total, not just for one activity's
+/// floor. An activity is skipped, not the whole list refused, once running
+/// it would push the total over the cap -- including an activity whose own
+/// floor already exceeds it outright -- so a single oversized catalogue row
+/// costs that one proposal slot, not every proposal downstream of it.
+/// `recommend()`'s own ordering (best candidates first) means what survives
+/// is the best prefix that actually fits.
 #[must_use]
 pub fn provision(activities: &[ActivityRecord]) -> Vec<ProvisionedActivity> {
+	let mut total_ms: i64 = 0;
+
 	activities
 		.iter()
 		.filter_map(|activity| {
+			let floor_minutes = effective_floor_minutes(activity)?;
+			let duration_ms = floor_minutes * 60_000;
+			if total_ms.saturating_add(duration_ms) > CLIENT_MAX_TOTAL_DURATION_MS {
+				return None;
+			}
+			total_ms += duration_ms;
+
 			provisioned_config(activity).map(|config| ProvisionedActivity {
 				activity_id: activity.id.clone(),
 				config,
@@ -272,6 +305,44 @@ mod tests {
 			total_ms <= CLIENT_MAX_TOTAL_DURATION_MS,
 			"combined floor duration {total_ms}ms exceeds the {CLIENT_MAX_TOTAL_DURATION_MS}ms session cap"
 		);
+	}
+
+	/// The `chatgpt-codex-connector` review on this PR (server#315): neither
+	/// `min_duration_ms` nor `recommend()`'s `k` has a ceiling, so a future
+	/// catalogue row (or a larger `k`) could sum past
+	/// `CLIENT_MAX_TOTAL_DURATION_MS` and `provision` would have emitted every
+	/// activity anyway, handing the client a proposal its own
+	/// `checkSessionDuration` rejects. Fixed by skipping any activity whose
+	/// inclusion would push the running total over the cap.
+	#[test]
+	fn provision_never_emits_a_total_exceeding_the_session_cap() {
+		// Three hours each: two fit inside the 4-hour cap, a third does not.
+		let catalogue = vec![
+			activity("first", Some(3 * 60 * 60_000), json!({})),
+			activity("second", Some(3 * 60 * 60_000), json!({})),
+			activity("third", Some(3 * 60 * 60_000), json!({})),
+		];
+
+		let provisioned = provision(&catalogue);
+
+		let ids: Vec<&str> = provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
+		assert_eq!(ids, vec!["first"], "only the first fits once the second would push the running total to 6h");
+
+		let total_ms: i64 = provisioned.iter().map(|activity| activity.config["durationMinutes"].as_i64().unwrap() * 60_000).sum();
+		assert!(total_ms <= CLIENT_MAX_TOTAL_DURATION_MS);
+	}
+
+	/// A single catalogue row whose own floor already exceeds the cap can
+	/// never be included, however early it sorts -- but a smaller activity
+	/// after it in `recommend()`'s order still can be.
+	#[test]
+	fn an_activity_whose_own_floor_exceeds_the_session_cap_is_skipped_but_others_still_fit() {
+		let catalogue = vec![activity("too-long", Some(5 * 60 * 60_000), json!({})), activity("honeycomb", Some(300_000), json!({}))];
+
+		let provisioned = provision(&catalogue);
+
+		let ids: Vec<&str> = provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
+		assert_eq!(ids, vec!["honeycomb"], "the oversized activity is skipped outright; the one after it still fits");
 	}
 
 	/// `provision` filters, it does not reorder or otherwise editorialise --

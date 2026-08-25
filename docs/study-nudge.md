@@ -258,8 +258,12 @@ the resulting `activities` as JSON; copied by hand into `paulgsc/some-ui`'s
 a client-side test there runs it through the real `sequenceScenes` and
 `checkSessionDuration` — the same pipeline a real device runs, not a second
 copy of the rule that could quietly drift from the first. `maxTotalDurationMs`
-(4 hours) is asserted there too: trivially true for two 5–10 minute blocks,
-checked anyway so it stays true if `k` ever moves.
+(4 hours) is trivially true for two 5–10 minute blocks, but `provision()`
+enforces it directly rather than trusting that to stay true: neither
+`min_duration_ms` nor `recommend()`'s `k` has a ceiling, so it skips any
+activity — including one whose own floor already exceeds the cap outright —
+once including it would push the running total over
+`CLIENT_MAX_TOTAL_DURATION_MS`, a real Codex review finding on server#315.
 
 No caller yet, same as `recommend()` itself — RCM5 (`#282`) is what wires
 `provision()`'s output into `provisioned_session()`.
