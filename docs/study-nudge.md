@@ -152,6 +152,53 @@ again. The provisioned action still has to clear the same
 `StudyConstraints::admit` gate as any other — quiet hours and consent apply
 whether the action came from an existing session or one just created.
 
+### Recommendation: `recommend(subject, k)` and its three axes
+
+`#280` (RCM3) is what `#279` deferred: what actually goes into a provisioned
+session. `activity_repo::recommender::recommend` takes a subject, `k`, a
+bounded catalogue read (see `ActivityRepository::list`), whatever the caller
+knows of this subject's per-activity history (an empty slice until `#258`
+exists), an optional `last_session_at`, and a clock — and returns the `k`
+best activities, pure and deterministic over all of it: no I/O, no
+`rand::thread_rng`.
+
+Three axes, applied in order:
+
+1. **Newness dominates** (`WEIGHT_NEWNESS = 8.0`) — an activity this subject
+   has never played outranks everything else; one they have played counts as
+   new again only if its catalogue entry was published after their last
+   session. Until `#258` supplies real play history, every activity reads as
+   "never played," which is the correct cold-start default, not a
+   degenerate one.
+2. **Low engagement lifts, it never lowers** (`WEIGHT_ENGAGEMENT = 4.0`) — an
+   abandoned attempt or a poor score raises a candidate's rank rather than
+   sinking it: unfinished is worth finishing, unlearned is worth repeating.
+   The gap between the two weights means axis 2 can never outvote axis 1,
+   the same "no axis outvoted by the sum of those below it" discipline
+   `StudyCalibration` and the client's own `rankActivitiesWithScores`
+   already use.
+3. **Otherwise, a seeded shuffle** — Fisher-Yates over a `StdRng` seeded from
+   `(subject, day)`, so two candidates tied on both axes above — the common
+   case for a zero-history subject, where every candidate ties — still get a
+   stable order that changes daily rather than a slot machine.
+
+`maturity = Early` candidates are excluded outright before any of the above
+runs — a construction zone is a poor thing to propose unprompted, unlike a
+browsable menu where it can just rank low.
+
+This deliberately disagrees with the client's own `rankActivitiesWithScores`
+(`packages/activity-catalog/src/lib/rank.ts`, `paulgsc/some-ui`), which
+weights recency of *play* highest — correct for "what do I open right now"
+on a dashboard, wrong for "what should I do next" from someone who asked for
+nothing. Both sides carry a note pointing at the other, so neither gets
+"corrected" to match it.
+
+Wiring `recommend()`'s output into `provisioned_session()`'s
+`activities: Vec::new()` (`nudge/waker.rs`) is RCM5's job (`#282`), not this
+story's — `recommend()` lands as a pure function with no caller yet, the
+same shape RCM4's `derive_min_duration_ms` already took before RCM5 needed
+it too.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
