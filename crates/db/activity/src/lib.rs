@@ -21,13 +21,19 @@
 //!
 //! The `toSceneProps` replacement (#272) stays out of scope for this crate --
 //! see #269's own out-of-scope note.
+//!
+//! [`recommender::recommend`] (#280, RCM3) is the newest addition: the three
+//! ordered rules that turn this catalogue into a proposal. Wiring it into a
+//! provisioned session is RCM5's job (#282), not this crate's.
 
 pub mod duration;
 pub mod model;
+pub mod recommender;
 pub mod repository;
 
 pub use duration::derive_min_duration_ms;
 pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
+pub use recommender::{recommend, ActivityHistory, ActivityOutcome, DEFAULT_RECOMMENDATION_COUNT};
 pub use repository::{ActivityRepoError, ActivityRepository, CATALOG_CEILING};
 
 /// #269's acceptance criteria, made concrete against a real database rather
