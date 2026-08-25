@@ -111,18 +111,23 @@ pub fn recommend(
 	last_session_at: Option<DateTime<Utc>>,
 	now: DateTime<Utc>,
 ) -> Vec<ActivityRecord> {
-	let shuffle_rank = shuffle_ranks(subject, now.date_naive(), catalogue.len());
+	// Filtered *before* the shuffle is built, not after: Fisher-Yates over
+	// `0..len` consumes a different sequence of draws for every length, so
+	// building it over the raw catalogue would let an `Early` row being
+	// added or removed reshuffle every *other* candidate's tie-break rank,
+	// even though that row never appears in the output either way.
+	let eligible: Vec<&ActivityRecord> = catalogue.iter().filter(|activity| activity.maturity != ActivityMaturity::Early).collect();
+	let shuffle_rank = shuffle_ranks(subject, now.date_naive(), eligible.len());
 
-	let mut candidates: Vec<(usize, f64)> = catalogue
+	let mut candidates: Vec<(usize, f64)> = eligible
 		.iter()
 		.enumerate()
-		.filter(|(_, activity)| activity.maturity != ActivityMaturity::Early)
 		.map(|(index, activity)| (index, score(activity, history, last_session_at)))
 		.collect();
 
 	candidates.sort_by(|(a_index, a_score), (b_index, b_score)| b_score.total_cmp(a_score).then(shuffle_rank[*a_index].cmp(&shuffle_rank[*b_index])));
 
-	candidates.into_iter().take(k).map(|(index, _)| catalogue[index].clone()).collect()
+	candidates.into_iter().take(k).map(|(index, _)| eligible[index].clone()).collect()
 }
 
 fn score(activity: &ActivityRecord, history: &[ActivityHistory], last_session_at: Option<DateTime<Utc>>) -> f64 {
@@ -331,5 +336,28 @@ mod tests {
 			vec!["finished"],
 			"an early-maturity activity must never appear, however new or untouched it is"
 		);
+	}
+
+	/// The `chatgpt-codex-connector` review on this PR (server#314): the
+	/// shuffle used to be built over the raw catalogue length, so an
+	/// `Early` row appearing or disappearing changed that length and
+	/// reshuffled every *other* candidate's tie-break rank, even though the
+	/// `Early` row itself never appears in the output either way. Fixed by
+	/// building the shuffle over the already-filtered candidate set.
+	#[test]
+	fn an_early_row_appearing_or_disappearing_does_not_reorder_the_other_candidates() {
+		let without_early = vec![
+			activity("honeycomb", ActivityMaturity::Ready, "2026-08-01T00:00:00Z"),
+			activity("topik", ActivityMaturity::Ready, "2026-08-01T00:00:00Z"),
+			activity("interview", ActivityMaturity::Ready, "2026-08-01T00:00:00Z"),
+		];
+		let mut with_early = without_early.clone();
+		with_early.push(activity("under-construction", ActivityMaturity::Early, "2026-08-01T00:00:00Z"));
+		let now = Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap();
+
+		let before = recommend("subject-6", 3, &without_early, &[], None, now);
+		let after = recommend("subject-6", 3, &with_early, &[], None, now);
+
+		assert_eq!(ids(&before), ids(&after), "an Early row appearing or disappearing must not reorder the eligible candidates");
 	}
 }
