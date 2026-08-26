@@ -325,6 +325,13 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		versioned: true,
 		module: "push",
 	},
+	// ── presence ────────────────────────────────────────────────────────────
+	RouteDescriptor {
+		method: "POST",
+		path: "/presence/lease",
+		versioned: true,
+		module: "presence",
+	},
 	// ── signals ─────────────────────────────────────────────────────────────
 	RouteDescriptor {
 		method: "POST",
@@ -414,6 +421,7 @@ mod tests {
 		("sessions", include_str!("db/session.rs"), true),
 		("activities", include_str!("db/activities.rs"), true),
 		("push", include_str!("push.rs"), true),
+		("presence", include_str!("presence.rs"), true),
 		("signals", include_str!("signals.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),
 		("utterance", include_str!("utterance.rs"), true),

@@ -32,9 +32,13 @@ use message::spawn_process_incoming_messages;
 /// How long a connection's message-processing loop will let it sit without
 /// inbound activity before treating it as stale — see
 /// `message::handlers::process_incoming_messages`. Also the "freshness"
-/// window `connection_gauges`/`nudge::presence` use for `live`: the same
-/// question ("has anyone been heard from recently") answered the same way in
-/// both places, rather than two timeouts that could silently drift apart.
+/// window `connection_gauges` uses for `live`, read by the periodic gauge
+/// sweep for the CLIENTS dashboard row (#214/#227). `nudge::presence` no
+/// longer shares this window: presence moved to a client-written lease with
+/// its own TTL (`NUDGE_PRESENCE_LEASE_TTL_SECONDS`), because a WebSocket
+/// connection's staleness was never actually the same question as "does this
+/// subject have a fresh presence lease" — the old code sharing one constant
+/// for both was a coincidence of implementation, not a real invariant.
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(120);
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -57,26 +61,6 @@ impl WebSocketFsm {
 		AppState: FromRef<S>,
 	{
 		Router::new().route("/ws", get(websocket_handler))
-	}
-
-	/// How many connections are held, and how many of those are genuinely live.
-	///
-	/// Returns `(connected, live)`. A connection is live when its actor reports
-	/// it active, not stale, and last active within `freshness`. The nudge's
-	/// presence check needs that distinction: a pinned background tab holds its
-	/// socket open all day, and a half-open one holds a handle after the peer is
-	/// gone, so "the store has entries" is not "someone is there".
-	///
-	/// Exists so the nudge sender can ask about presence without reaching into
-	/// the connection store — see `nudge::presence` for the reasoning behind
-	/// treating the answer as an input rather than a veto. A thin wrapper over
-	/// [`Self::connection_gauges`], which also answers `subscribed` for #227's
-	/// dashboard row; kept as its own method so `nudge::presence`'s call site
-	/// doesn't have to know about — or pay for computing — a number it
-	/// doesn't use.
-	pub async fn live_connection_count(&self, freshness: Duration) -> (usize, usize) {
-		let snapshot = self.connection_gauges(freshness).await;
-		(snapshot.connected, snapshot.live)
 	}
 
 	/// `connected` / `live` / `subscribed` — see #227. Awaits every

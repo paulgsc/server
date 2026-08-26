@@ -12,7 +12,7 @@
 
 use crate::nudge::clock::{is_within_quiet_hours, NudgeClock};
 use crate::nudge::payload::topic_for;
-use crate::nudge::presence::Presence;
+use crate::nudge::presence::PresenceLeases;
 use chrono::{DateTime, Utc};
 use intervention::Admissibility;
 use push_repo::Topic;
@@ -56,7 +56,7 @@ pub struct StudyConstraints {
 	pub enabled: bool,
 	pub quiet_hours_start: u32,
 	pub quiet_hours_end: u32,
-	pub presence: Presence,
+	pub presence: PresenceLeases,
 	/// What this subject's devices actually agreed to receive.
 	pub consented_topics: Vec<Topic>,
 }
@@ -79,11 +79,12 @@ impl Admissibility<StudyV1> for StudyConstraints {
 			return Err(Suppressed::QuietHours);
 		}
 
-		// An input, not a veto that can run away: `Presence` only reports true
-		// for a connection that is active, unstale, and recently heard from —
-		// see `nudge::presence` for why a pinned background tab must not be
-		// able to silence this forever.
-		if self.presence.is_present() {
+		// An input, not a veto that can run away, and scoped to exactly the
+		// context this action is about: `action.session_id()` doubles as the
+		// lease's context key (`GetStarted` carries none, so it is never
+		// suppressible this way) — see `nudge::presence` for why a
+		// site-wide "present" bit was the wrong signal in the first place.
+		if self.presence.is_fresh_for(action.session_id(), at) {
 			return Err(Suppressed::Present);
 		}
 
@@ -95,10 +96,11 @@ impl Admissibility<StudyV1> for StudyConstraints {
 mod tests {
 	use super::{StudyConstraints, Suppressed};
 	use crate::nudge::clock::NudgeClock;
-	use crate::nudge::presence::Presence;
+	use crate::nudge::presence::PresenceLeases;
 	use chrono::{DateTime, Utc};
 	use intervention::Admissibility;
 	use push_repo::Topic;
+	use std::time::Duration;
 	use study_domain::StudyAction;
 
 	fn at(hour: u32) -> DateTime<Utc> {
@@ -111,7 +113,7 @@ mod tests {
 			enabled: true,
 			quiet_hours_start: 22,
 			quiet_hours_end: 8,
-			presence: Presence { connected: 0, live: 0 },
+			presence: PresenceLeases::empty(Duration::from_secs(75)),
 			consented_topics: topics,
 		}
 	}
@@ -150,15 +152,39 @@ mod tests {
 	}
 
 	#[test]
-	fn a_live_dashboard_suppresses_and_a_stale_socket_does_not() {
-		let mut live = constraints(vec![Topic::LessonReady]);
-		live.presence = Presence { connected: 1, live: 1 };
-		assert_eq!(live.admit(at(14), &lesson_ready()), Err(Suppressed::Present));
+	fn a_fresh_lease_on_the_matching_session_suppresses() {
+		let mut present = constraints(vec![Topic::LessonReady]);
+		present.presence = PresenceLeases::for_test(vec![("session-1", at(14))], Duration::from_secs(75));
+		assert_eq!(present.admit(at(14), &lesson_ready()), Err(Suppressed::Present));
+	}
 
-		// The forgotten second-monitor tab: a connection is held, none is fresh.
-		let mut zombie = constraints(vec![Topic::LessonReady]);
-		zombie.presence = Presence { connected: 3, live: 0 };
-		assert_eq!(zombie.admit(at(14), &lesson_ready()), Ok(()));
+	/// A stale lease — the forgotten second-monitor tab left open all day —
+	/// must not silence the nudge indefinitely.
+	#[test]
+	fn a_stale_lease_does_not_suppress() {
+		let mut stale = constraints(vec![Topic::LessonReady]);
+		stale.presence = PresenceLeases::for_test(vec![("session-1", at(0))], Duration::from_secs(75));
+		assert_eq!(stale.admit(at(14), &lesson_ready()), Ok(()));
+	}
+
+	/// The reason this is a lease keyed by context rather than a site-wide
+	/// bit: being fresh on some *other* session must not suppress a
+	/// notification about this one.
+	#[test]
+	fn a_fresh_lease_on_a_different_session_does_not_suppress() {
+		let mut elsewhere = constraints(vec![Topic::LessonReady]);
+		elsewhere.presence = PresenceLeases::for_test(vec![("session-other", at(14))], Duration::from_secs(75));
+		assert_eq!(elsewhere.admit(at(14), &lesson_ready()), Ok(()));
+	}
+
+	/// `GetStarted` carries no session id — there is no context for a lease
+	/// to match, so plain absence can never be suppressed by presence, no
+	/// matter what the subject has a fresh lease on.
+	#[test]
+	fn get_started_is_never_suppressed_by_presence() {
+		let mut present = constraints(vec![Topic::LessonReady, Topic::Coaching, Topic::NewMaterial]);
+		present.presence = PresenceLeases::for_test(vec![("session-1", at(14))], Duration::from_secs(75));
+		assert_eq!(present.admit(at(14), &StudyAction::GetStarted), Ok(()));
 	}
 
 	#[test]

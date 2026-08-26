@@ -16,6 +16,7 @@ members = [
   "crates/db/capture",
   "crates/db/mood_event",
   "crates/db/engagement",
+  "crates/db/presence",
   "crates/db/push",
   "crates/intervention",
   "crates/push_kit",
@@ -80,6 +81,7 @@ activity_repo = { path = "crates/db/activity" }
 capture_repo = { path = "crates/db/capture" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }
+presence_repo = { path = "crates/db/presence" }
 push_kit = { path = "crates/push_kit" }
 intervention = { path = "crates/intervention" }
 study_domain = { path = "crates/study_domain" }

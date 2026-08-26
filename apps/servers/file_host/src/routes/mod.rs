@@ -3,6 +3,7 @@ pub mod db;
 pub mod health;
 pub mod inventory;
 pub mod metrics;
+pub mod presence;
 pub mod push;
 pub mod readiness;
 pub mod signals;
