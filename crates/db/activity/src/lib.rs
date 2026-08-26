@@ -30,13 +30,15 @@
 
 pub mod duration;
 pub mod model;
+pub mod naming;
 pub mod provisioning;
 pub mod recommender;
 pub mod repository;
 
 pub use duration::derive_min_duration_ms;
 pub use model::{ActivityMaturity, ActivityRecord, LayoutTree};
-pub use provisioning::{provision, ProvisionedActivity, CLIENT_MAX_TOTAL_DURATION_MS, CLIENT_MIN_ACTIVITY_DURATION_MS};
+pub use naming::default_session_name;
+pub use provisioning::{provision, total_duration_ms, ProvisionedActivity, CLIENT_MAX_TOTAL_DURATION_MS, CLIENT_MIN_ACTIVITY_DURATION_MS};
 pub use recommender::{recommend, ActivityHistory, ActivityOutcome, DEFAULT_RECOMMENDATION_COUNT};
 pub use repository::{ActivityRepoError, ActivityRepository, CATALOG_CEILING};
 

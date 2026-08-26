@@ -66,7 +66,7 @@
 //! afterwards.
 //!
 //! No caller yet, same as [`crate::recommend`] before it: RCM5 (`#282`) is
-//! what wires this into `nudge::waker::provisioned_session`.
+//! what wires this into `nudge::waker::materialize_provisioned_session`.
 
 use serde::Serialize;
 
@@ -156,6 +156,38 @@ pub fn provisioned_config(activity: &ActivityRecord) -> Option<serde_json::Value
 /// costs that one proposal slot, not every proposal downstream of it.
 /// `recommend()`'s own ordering (best candidates first) means what survives
 /// is the best prefix that actually fits.
+/// The sum of every provisioned activity's `config.durationMinutes`, in ms —
+/// what `session_repo::SessionRecord::total_duration_ms` (#282, RCM5) is set
+/// to for a session this module built.
+///
+/// Not computed by round-tripping through `session_repo::total_duration_of`
+/// against a `scenes` array: RCM5's own `scenes` decision (see
+/// `docs/study-nudge.md`) is to write `scenes: []` for a provisioned
+/// session, and `total_duration_of(&[])` reads that as zero, which is wrong
+/// -- the session has real, timed blocks, they are simply not materialised
+/// into playable `scenes` yet. This function is the deliberate, documented
+/// exception: it sums [`ProvisionedActivity`] durations directly, and for
+/// exactly the shape this module ever produces (`layout_mode: basic`, every
+/// block sequenced back-to-back by the client's own `sequenceScenes`), that
+/// sum is provably the same number `total_duration_of` would compute once
+/// materialisation happens -- a basic session's furthest scene end **is**
+/// the sum of its durations, since nothing overlaps and nothing leaves a gap.
+///
+/// A missing or non-numeric `durationMinutes` contributes nothing rather
+/// than failing the computation, the same "malformed data costs a duration
+/// estimate, not the write" convention `session_repo::total_duration_of`
+/// already uses -- unreachable in practice, since every entry in
+/// `activities` came from [`provisioned_config`], which always sets this
+/// key, but guarded rather than trusted per this codebase's
+/// refuse-rather-than-guess-except-here convention for cross-boundary data.
+#[must_use]
+pub fn total_duration_ms(activities: &[ProvisionedActivity]) -> i64 {
+	activities
+		.iter()
+		.map(|activity| activity.config.get("durationMinutes").and_then(serde_json::Value::as_i64).unwrap_or(0) * 60_000)
+		.sum()
+}
+
 #[must_use]
 pub fn provision(activities: &[ActivityRecord]) -> Vec<ProvisionedActivity> {
 	let mut total_ms: i64 = 0;
@@ -180,7 +212,7 @@ pub fn provision(activities: &[ActivityRecord]) -> Vec<ProvisionedActivity> {
 
 #[cfg(test)]
 mod tests {
-	use super::{effective_floor_minutes, provision, provisioned_config, CLIENT_MAX_TOTAL_DURATION_MS, CLIENT_MIN_ACTIVITY_DURATION_MS};
+	use super::{effective_floor_minutes, provision, provisioned_config, total_duration_ms, CLIENT_MAX_TOTAL_DURATION_MS, CLIENT_MIN_ACTIVITY_DURATION_MS};
 	use crate::model::{ActivityMaturity, ActivityRecord, LayoutTree};
 	use serde_json::json;
 
@@ -343,6 +375,25 @@ mod tests {
 
 		let ids: Vec<&str> = provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
 		assert_eq!(ids, vec!["honeycomb"], "the oversized activity is skipped outright; the one after it still fits");
+	}
+
+	/// #282 (RCM5)'s own reason for existing: sums real minutes, not a count
+	/// of activities or a guess.
+	#[test]
+	fn total_duration_ms_sums_every_provisioned_blocks_duration() {
+		let catalogue = vec![
+			activity("honeycomb", Some(300_000), json!({"durationMinutes": 10})),
+			activity("topik", Some(600_000), json!({"durationMinutes": 15})),
+		];
+		let provisioned = provision(&catalogue);
+		// honeycomb floors to 5m, topik's own 10m minimum already beats the
+		// client's 5m floor -- see `each_seeded_activity_is_provisioned_at_its_floor_not_its_default`.
+		assert_eq!(total_duration_ms(&provisioned), (5 + 10) * 60_000);
+	}
+
+	#[test]
+	fn total_duration_ms_of_an_empty_list_is_zero() {
+		assert_eq!(total_duration_ms(&[]), 0);
 	}
 
 	/// `provision` filters, it does not reorder or otherwise editorialise --

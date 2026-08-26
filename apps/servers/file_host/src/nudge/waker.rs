@@ -27,6 +27,7 @@ use crate::nudge::constraints::StudyConstraints;
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
 use crate::{AppState, NudgeContext};
+use activity_repo::{default_session_name, provision, recommend, total_duration_ms, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT};
 use chrono::{DateTime, Utc};
 use engagement_repo::EngagementRepository;
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
@@ -34,6 +35,7 @@ use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{LayoutMode, SessionRecord, SessionRepository, SessionStatus};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use std::time::Duration;
 use study_domain::{StudyAction, StudyCalibration, StudySelector, StudySignal, StudyV1};
 use tracing::{debug, error, info, warn};
@@ -233,17 +235,19 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// `Some`, and the *existing* selector maps the same dominant
 			// deficit to `ResumeAbandoned`/`SuggestReview`/`NewMaterial`
 			// exactly as it would for a session that already existed.
-			// RCM3 (#280) and RCM5 (#282) decide what actually goes in
-			// it; this one is deliberately empty until they land — see
-			// `provisioned_session`'s own doc comment.
+			// RCM3 (#280), RCM4 (#281), and RCM5 (#282) are what actually
+			// fill it in — see `materialize_provisioned_session`'s own
+			// doc comment for what it writes and why.
 			//
 			// Crash safety without extra bookkeeping: the write below is
-			// a `Draft` row `SessionRepository::first_prepared` will find
-			// on any later pass. A crash between this write and `claim`
-			// below costs this pass's notification, not a second session
-			// — the next pass reads the row this one already wrote and
-			// reaches `Verdict::Intervene` directly, skipping this arm
-			// entirely.
+			// a `Scheduled` row `SessionRepository::first_prepared` will
+			// find on any later pass (RCM5's own choice — see
+			// `materialize_provisioned_session`'s doc comment for why
+			// `Scheduled` is now safe where RCM2 originally chose
+			// `Draft`). A crash between this write and `claim` below
+			// costs this pass's notification, not a second session — the
+			// next pass reads the row this one already wrote and reaches
+			// `Verdict::Intervene` directly, skipping this arm entirely.
 			//
 			// Race safety is a separate concern from crash safety, and
 			// needs its own guard: `prepared_session` above was read at
@@ -262,7 +266,15 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// this correct either way: whichever side of the race
 			// actually landed is what gets used, not necessarily the row
 			// built here.
-			let provisioned = provisioned_session(new_id(), now);
+			let catalogue = match ActivityRepository::new(db.clone()).list().await {
+				Ok(catalogue) => catalogue,
+				Err(err) => {
+					error!(subject = %subject_id, error = %err, "could not read the activity catalogue; skipping this subject rather than provisioning an empty session");
+					crate::metrics::waker::record_verdict("storage_error", "n/a");
+					return Ok(false);
+				}
+			};
+			let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
 			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
@@ -373,34 +385,84 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	Ok(true)
 }
 
-/// A minimal, valid session for a subject who has nothing prepared but is
-/// about to be intervened on. Not the recommender (`#280`, RCM3) and not the
-/// materialiser (`#282`, RCM5) — deliberately out of scope for #279, exactly
-/// as its issue body draws the line. This session has no activities and no
-/// scenes; it exists so `first_prepared` has a real row to find and
-/// `GET /sessions/:id` has a real one to answer, not so a person has
-/// something to actually do yet. RCM3 and RCM5 are what fill it in once they
-/// land; until then `name` is the only signal that this was proposed rather
-/// than authored — `#283` (RCM6) is what gives that signal a real field.
-fn provisioned_session(id: String, now: DateTime<Utc>) -> SessionRecord {
+/// A provisioned session, fully materialised — #282 (RCM5), the story that
+/// closes out what #279 (RCM2) deliberately left empty. `recommend()` (#280,
+/// RCM3) picks the activities; `provision()` (#281, RCM4) sets each one's
+/// floor duration; this function's own naming and duration logic
+/// (`activity_repo::naming`, `activity_repo::provisioning::total_duration_ms`)
+/// fill in everything else #282's issue table asks for.
+///
+/// **`status: Scheduled`, not `Draft`.** A deliberate change from what this
+/// function wrote before RCM3/RCM4/RCM5 existed to fill a session in. RCM2's
+/// original `Draft` choice defended itself on crash-safety grounds specific
+/// to a session with nothing in it yet — see `handlers::db::session::
+/// create_session`'s identical reasoning for why a session born anything but
+/// `Draft` could be offered before it was finished being composed. That
+/// concern does not apply here: `recommend()`, `provision()`, and this
+/// function's naming/duration all run synchronously inside one call, before
+/// the row is ever written, so there is no partially-composed state a crash
+/// could expose between "written" and "filled in." `Scheduled` is what
+/// #282's own table asks for, so `first_prepared` and `StudySelector` treat
+/// a provisioned session exactly like one a person scheduled themselves.
+///
+/// **`scenes: Vec::new()`.** #282's own "hard" decision — see
+/// `docs/study-nudge.md`'s "Materialising a session: the `scenes` decision"
+/// section for the full argument. In short: #272 already decided this
+/// server cannot compute a scene's `props` (the closure stays client-side),
+/// so the only honest options are an empty `scenes` array or a shape that
+/// merely *looks* complete. This writes `[]`. `total_duration_ms` is
+/// computed directly from the provisioned activities
+/// (`activity_repo::total_duration_ms`) rather than derived from `scenes` —
+/// `session_repo::total_duration_of(&[])` would read this session as
+/// zero-length, which is wrong; it has real, timed blocks, only not yet
+/// materialised into playable scenes. See `total_duration_ms`'s own doc
+/// comment for why the two numbers are provably equal for the `basic`
+/// layout this always produces.
+///
+/// **`layout: None`.** SQL `NULL`, not the JSON string `"null"` —
+/// `deserialize_explicit_null`/the double-`Option` treatment on
+/// `SessionRecord::layout` exists for exactly this distinction. Absent means
+/// the client's naive default layout applies, which is right for a proposal
+/// the server has no business asserting a layout for.
+///
+/// `name` is the only signal that this was proposed rather than authored,
+/// same as before RCM5 — `#283` (RCM6) is what gives that a real field
+/// (`origin: system`), deliberately kept separate so this diff stays
+/// readable on its own.
+///
+/// `pub` rather than crate-private: `dump-provisioned-session` (the bin
+/// this crate ships next to `dump-proposed-session`) calls this directly so
+/// the fixture it emits is the exact same code path `consider` runs in
+/// production, not a re-implementation of it — the same reason
+/// `dump_proposed_session.rs` calls `activity_repo::provision` rather than
+/// re-deriving its output.
+pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: &[ActivityRecord], now: DateTime<Utc>) -> SessionRecord {
 	let stamp = now.to_rfc3339();
+	let picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &[], None, now);
+	let provisioned = provision(&picks);
+
+	// `name` is built from whichever picks actually survived `provision` —
+	// a `min_duration_ms: NULL` activity, or one that would have pushed the
+	// session over `CLIENT_MAX_TOTAL_DURATION_MS`, has no business in the
+	// name of a session it is not in. `provision` preserves `recommend`'s
+	// order (see its own `provision_preserves_the_recommenders_order`
+	// test), so filtering `picks` down to the surviving ids, in `picks`'
+	// own order, reconstructs exactly what `provisioned` contains.
+	let provisioned_ids: HashSet<&str> = provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
+	let named: Vec<ActivityRecord> = picks.into_iter().filter(|activity| provisioned_ids.contains(activity.id.as_str())).collect();
+
 	SessionRecord {
 		id,
-		name: "Suggested for you".to_owned(),
-		// Every session starts as a draft, provisioned ones included — see
-		// `handlers::db::session::create_session`'s identical reasoning: a
-		// session born anything but `Draft` could be offered before
-		// anyone, including the recommender that will fill this one in,
-		// had finished composing it.
-		status: SessionStatus::Draft,
-		activities: Vec::new(),
+		name: default_session_name(&named),
+		status: SessionStatus::Scheduled,
+		activities: provisioned
+			.iter()
+			.map(|activity| serde_json::to_value(activity).unwrap_or(serde_json::Value::Null))
+			.collect(),
 		scenes: Vec::new(),
 		layout_mode: LayoutMode::Basic,
 		layout: None,
-		// Zero rather than computed from `scenes`: `scenes` is empty here
-		// by construction, and `total_duration_of(&[])` is zero anyway —
-		// see its own doc comment.
-		total_duration_ms: 0,
+		total_duration_ms: total_duration_ms(&provisioned),
 		created_at: stamp.clone(),
 		updated_at: stamp,
 		started_at: None,
@@ -774,7 +836,18 @@ mod tests {
 	/// database: a subject who is due, has nothing prepared, and whose
 	/// dominant deficit is not `Presence` — `Verdict::NothingToSay`'s exact
 	/// precondition — gets a real, findable session instead of a `warn!` and
-	/// a six-hour retry.
+	/// a six-hour retry. Extended by #282 (RCM5) to assert the session it
+	/// gets is fully materialised — real activities, a real name, a real
+	/// duration — not just the placeholder row #279 originally wrote.
+	///
+	/// Also #282's own `SessionProvisioned` acceptance criterion, satisfied
+	/// without any new production code: the `charge.apply::<StudyCalibration>
+	/// (&StudySignal::SessionProvisioned { .. })` call a few lines below this
+	/// arm's provisioning step was already unconditional as of #279, so it
+	/// fires for a materialised session exactly as it did for the placeholder
+	/// — `study_domain::signal`'s own `provisioning_is_an_opportunity_not_engagement`
+	/// test is what pins the signal's shape (`Freshness`, delta `0.0`); this
+	/// test is what pins that the call site is still reached.
 	///
 	/// Push subscriptions are deliberately not seeded. With none,
 	/// `StudyConstraints::admit` refuses on `NotConsented` before it ever
@@ -847,7 +920,15 @@ mod tests {
 					"no push subscription exists to consent to it, so this pass should be Suppressed rather than Sent"
 				);
 
-				// The core assertion: provisioning happened anyway.
+				// The core assertion: provisioning happened, and it is the
+				// real thing #280/#281/#282 build together, not just a
+				// placeholder row. Recomputed independently here — same
+				// catalogue, same subject, a fresh `Utc::now()` close
+				// enough behind `consider`'s own call that the day-based
+				// shuffle in `recommend` cannot have moved — rather than
+				// hard-coded, so this assertion does not silently go
+				// stale if the seeded catalogue or
+				// `DEFAULT_RECOMMENDATION_COUNT` ever changes.
 				let sessions = SessionRepository::new(pool.clone());
 				let provisioned_id = sessions
 					.first_prepared(subject_id)
@@ -860,8 +941,34 @@ mod tests {
 					.await
 					.expect("read the provisioned record")
 					.expect("the id first_prepared returned should resolve to a real row");
-				assert_eq!(record.status, SessionStatus::Draft);
-				assert!(record.activities.is_empty(), "RCM3/RCM5 fill activities in; RCM2 only establishes that a session exists");
+				assert_eq!(
+					record.status,
+					SessionStatus::Scheduled,
+					"RCM5's own choice — see materialize_provisioned_session's doc comment for why Draft's original crash-safety concern no longer applies"
+				);
+				assert!(
+					record.scenes.is_empty(),
+					"RCM5's own scenes decision — see docs/study-nudge.md's 'Materialising a session' section"
+				);
+
+				let catalogue = ActivityRepository::new(pool.clone()).list().await.unwrap();
+				let expected_picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, &catalogue, &[], None, Utc::now());
+				let expected_provisioned = provision(&expected_picks);
+				let expected_ids: HashSet<&str> = expected_provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
+				let expected_named: Vec<ActivityRecord> = expected_picks.into_iter().filter(|activity| expected_ids.contains(activity.id.as_str())).collect();
+
+				assert!(!record.activities.is_empty(), "the seeded catalogue always has at least one activity with a real duration");
+				assert_eq!(
+					record.name,
+					default_session_name(&expected_named),
+					"name must match what the same recommend()+provision() run would name it"
+				);
+				assert_eq!(
+					record.total_duration_ms,
+					total_duration_ms(&expected_provisioned),
+					"total_duration_ms must match the same run's summed floors"
+				);
+				assert!(record.total_duration_ms > 0, "a real provisioned session must have a nonzero duration");
 
 				// Idempotency: a second pass — standing in for "the first
 				// pass crashed between provisioning and claiming, and the
