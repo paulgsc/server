@@ -24,11 +24,14 @@ contactPoints:
         settings:
           title: '{{ template "default.title" . }}'
           text: '{{ template "default.message" . }}'
-        secureSettings:
           # See example.env's FILE_HOST_ALERT_SLACK_WEBHOOK_URL and
           # infra/compose/monitoring.yml's grafana service — Grafana
-          # substitutes $-prefixed names in secureSettings from its own
-          # process environment at provisioning time.
+          # substitutes $-prefixed names from its own process environment
+          # at provisioning time. This must live under `settings`, not
+          # `secureSettings`: file-based contact point provisioning
+          # (pkg/services/provisioning/alerting.ReceiverV1) has no
+          # secureSettings key, so anything placed there is silently
+          # dropped and Grafana sees no url at all.
           url: $FILE_HOST_ALERT_SLACK_WEBHOOK_URL
 
 policies:
