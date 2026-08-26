@@ -134,18 +134,18 @@ just here:
    `SuggestReview`, or `NewMaterial` exactly as it would for a session that
    already existed. `intervention` and `study_domain` are both untouched.
 
-What goes *in* the provisioned session is deliberately not this story's
-problem: RCM3 (`#280`, the recommender) and RCM5 (`#282`, materialising
-catalogue rows into `activities[]`/`scenes[]`) are what fill it in. Until
-they land, a provisioned session is real and findable —
-`SessionRepository::first_prepared` returns it, `GET /sessions/:id`
-resolves it — but empty. `#283` (RCM6) is what will mark it `origin:
-system`; until then its `name` ("Suggested for you") is the only signal
-that it was proposed rather than authored.
+What goes *in* the provisioned session was deliberately not this story's
+problem: RCM3 (`#280`, the recommender), RCM4 (`#281`, floor durations), and
+RCM5 (`#282`, materialising catalogue rows into a full `SessionRecord`) are
+what fill it in — see "Materialising a session" below for what RCM5
+actually landed. `#283` (RCM6) is still what will mark a provisioned
+session `origin: system`; until then its `name` — a real, transcribed name
+as of RCM5, no longer a placeholder — is the only signal that it was
+proposed rather than authored.
 
-Crash safety costs nothing extra: the write is a `Draft` row
-`first_prepared` will find on any later pass, so a crash between
-provisioning and `EngagementRepository::claim` costs that pass's
+Crash safety costs nothing extra: the write is a `Scheduled` row (RCM5's own
+choice, see below) `first_prepared` will find on any later pass, so a crash
+between provisioning and `EngagementRepository::claim` costs that pass's
 notification, not a second session — the next pass finds the row already
 written and reaches `Verdict::Intervene` directly, without provisioning
 again. The provisioned action still has to clear the same
@@ -265,8 +265,116 @@ activity — including one whose own floor already exceeds the cap outright —
 once including it would push the running total over
 `CLIENT_MAX_TOTAL_DURATION_MS`, a real Codex review finding on server#315.
 
-No caller yet, same as `recommend()` itself — RCM5 (`#282`) is what wires
-`provision()`'s output into `provisioned_session()`.
+`#282` (RCM5) is what wires `provision()`'s output into a real session — see
+the next section.
+
+### Materialising a session: `name`, `total_duration_ms`, and the `scenes` decision (#282, RCM5)
+
+`#282` closes out what `#279` (RCM2) deliberately left empty and `#280`/`#281`
+(RCM3/RCM4) built as pure functions with no caller: `nudge::waker::
+materialize_provisioned_session` calls `recommend()`, then `provision()`,
+then fills in everything else a real `sessions` row needs.
+
+**`status: Scheduled`, not `Draft`.** RCM2's original `Draft` choice was
+defended on crash-safety grounds specific to a session with nothing in it
+yet — a row born anything but `Draft` could be offered before the recommender
+that would fill it in had run. That concern is retired, not just satisfied:
+`recommend()`, `provision()`, and this story's naming/duration logic all run
+synchronously inside `materialize_provisioned_session`, before the row is
+ever written, so there is no partially-composed state a crash between
+"written" and "filled in" could expose. `Scheduled` is what `#282`'s own
+table asks for, and it changes nothing about how a provisioned session is
+found — `SessionRepository::first_prepared` and `provision_if_absent` both
+already treated `scheduled` as a prepared status alongside `paused`/`draft`.
+
+**`name`: `activity_repo::naming::default_session_name`.** Transcribed from
+`defaultSessionName` (`packages/activity-catalog/src/lib/summary.ts`,
+`paulgsc/some-ui`), the same discipline RCM4 established for the two
+duration constants: distinct activity names joined with `" + "`, a repeat
+labelled `"Name ×N"` rather than repeated, `"New session"` for an empty list.
+Built from whichever of `recommend()`'s picks actually survived `provision()`
+— an activity `provision()` omitted (a `NULL` floor, or one that would have
+crossed `CLIENT_MAX_TOTAL_DURATION_MS`) has no business in the name of a
+session it is not in.
+
+**`total_duration_ms`: `activity_repo::provisioning::total_duration_ms`, not
+`session_repo::total_duration_of(&scenes)`.** This is the one place RCM5
+deviates from the migration comment's own claim that this column is "derived
+from scenes." A provisioned session writes `scenes: []` (see below), and
+`total_duration_of(&[])` reads that as zero — wrong, since the session has
+real, timed blocks, only not yet materialised into playable scenes.
+`total_duration_ms` sums each provisioned activity's `config.durationMinutes`
+directly instead. The two numbers are provably the same for the `basic`
+layout this story always produces: the client's `sequenceScenes` places
+Basic-composer scenes back-to-back with no gaps and no overlap, so
+`totalDurationOfScenes`'s "furthest scene end" *is* the sum of durations for
+exactly this shape. See `total_duration_ms`'s own doc comment for the same
+argument made where the code actually lives.
+
+**The `scenes` decision.** `#272` already decided this server cannot
+compute a scene's `props` — the closure stays client-side — so `#282`'s own
+issue names three options and asks this story to pick one and defend it,
+not to assume its own hint (which pointed at `paulgsc/some-ui#1038`'s PRO1)
+was the final word. It wasn't: PRO1 (`some-ui#1052`) turned out, on actually
+reading it, to be entirely about an `origin: "user" | "system"` field —
+unrelated to scene materialisation — and none of the epic's five sub-issues
+(PRO1–PRO5) mention it either. That citation in `#282`'s issue body is
+stale; this section is the correction.
+
+**Decision: `scenes: []`.** The honest option — it satisfies the schema's
+`NOT NULL`, and it does not fake a `SceneConfig` shape (`ui[].panels.
+mainContent.props`, in particular) the server has no way to fill in
+correctly. The alternative the issue itself calls "the worst of both" —
+structurally complete scenes with empty `props` — was rejected for the
+reason the issue gives: it looks valid until someone opens it.
+
+**Consequences for existing client consumers, enumerated because `#282`'s
+acceptance criteria require it.** A grep of `paulgsc/some-ui` for `.scenes`
+usage turns up one load-bearing consumer and several unaffected ones:
+
+- **`components/player/live-player.tsx`** calls `configure(session.scenes)`
+  directly to start playback. This is the real consequence: a person who
+  hits "Start" (PRO3's own table) on a provisioned session before anything
+  populates `scenes` gets a player configured with zero scenes. Every other
+  consumer below is secondary to this one.
+- **`components/player/completion-summary.tsx`** reads `session.scenes` to
+  render a finished session's summary — only reachable after a session has
+  been played, by which point scenes must already be populated (see below),
+  so this consumer is unaffected as long as that holds.
+- **`components/composer/session-composer.tsx`** reads `existingSession.
+  scenes` only when `layoutMode === "advanced"`; a provisioned session is
+  always `basic`, so this path never runs for one. Editing a provisioned
+  session (PRO3) round-trips through `activities`, not `scenes`.
+- **`components/composer/arrangement-step.tsx`** and **`components/player/
+  use-live-layout-editor.ts`** both operate on an already-populated `scenes`
+  array (Advanced editing, and live in-session layout edits); neither is
+  reachable for a `basic`, not-yet-started provisioned session.
+
+**What this means for future client work, not built by this story.** The
+one load-bearing consumer needs `scenes` populated by the time a person hits
+Start, and the natural, cheap way to provide that is exactly `#282`'s
+Option 2: call the client's own `sequenceScenes(activities)` — the same
+pure function the Basic composer already calls for a person-authored
+session — before `configure()` runs, rather than trusting a `scenes` field
+that a provisioned row leaves empty. That is real, if small, client-side
+work, and **no currently-filed PRO-story covers it** — PRO3 (`some-ui#1054`)
+names Start's existing behaviour (`status → active`, `session-started`) but
+says nothing about materialising scenes first. This gap is worth a new
+client story before RCM7's "one un-started proposal" bookkeeping or anyone
+actually ships a Start button wired to a provisioned session; it is called
+out here rather than silently assumed away.
+
+**Verified by a fixture the client repo consumes, not a hand-copied type.**
+`cargo run --bin dump-provisioned-session` calls
+`materialize_provisioned_session` directly — the same function `nudge::
+waker::consider` calls in production — against the same fixed subject and
+seeded-catalogue transcription `dump-proposed-session` uses, and emits a
+full `SessionRecord` as JSON. Copied by hand into `paulgsc/some-ui`'s
+`apps/www/src/lib/tenant/testdata/provisioned-session.snapshot.json`, a
+client-side test there round-trips it through the real `SessionRecord` type
+and the real `sequenceScenes`/`defaultSessionName`/`totalDurationOfScenes`
+functions — the same "verified against the real thing, not a
+reimplementation" discipline `#281`'s own fixture already established.
 
 ### First contact: how a subject enters the gate at all
 

@@ -17,6 +17,9 @@ edition.workspace = true
 # `src/routes/inventory.rs` and `src/routes/ts_emitter.rs`. `dump-proposed-session`
 # emits a real RCM3+RCM4 provisioned session's `activities` for the client
 # repo's `checkSessionDuration` fixture; see `src/bin/dump_proposed_session.rs`.
+# `dump-provisioned-session` emits a full RCM5 provisioned `SessionRecord`
+# for the client repo's round-trip fixture; see
+# `src/bin/dump_provisioned_session.rs`.
 [[bin]]
 name = "file_host"
 path = "src/main.rs"
@@ -28,6 +31,10 @@ path = "src/bin/dump_routes.rs"
 [[bin]]
 name = "dump-proposed-session"
 path = "src/bin/dump_proposed_session.rs"
+
+[[bin]]
+name = "dump-provisioned-session"
+path = "src/bin/dump_provisioned_session.rs"
 
 [dependencies]
 # path crates
