@@ -47,6 +47,22 @@ local statOptions = {
   textMode: 'value',
 };
 
+local configErrorFieldConfig = {
+  defaults: {
+    unit: 'short',
+    color: { mode: 'thresholds' },
+    thresholds: {
+      mode: 'absolute',
+      steps: [
+        { color: 'green', value: null },
+        { color: 'red', value: 1 },
+      ],
+    },
+    noValue: 'no data',
+  },
+  overrides: [],
+};
+
 {
   // DUE — how many subjects the waker's last pass found past `eligible_at`.
   // Read next to the breakdown below, not against its own threshold: DUE
@@ -58,6 +74,24 @@ local statOptions = {
     type: 'stat',
     targets: [{ expr: 'nudge_waker_due_subjects', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('none'),
+    options: statOptions,
+  },
+
+  // Fixed-label operational configuration failures since this process
+  // started. The `up == 1` guard deliberately makes a dead scrape target
+  // no-data rather than synthesising a reassuring zero; HEALTH/UP owns that
+  // distinct fault. While file_host is live, vector(0) makes the absence of
+  // an error series the measured, healthy zero operators need to see.
+  configErrors: {
+    title: 'Nudge Config Errors',
+    description: 'Startup configuration faults since the current file_host process started.',
+    type: 'stat',
+    targets: [{
+      expr: '(sum(operation_errors_total{operation="nudge_config"}) or vector(0)) and on() (up{job="file_host"} == 1)',
+      instant: true,
+      refId: 'A',
+    }],
+    fieldConfig: configErrorFieldConfig,
     options: statOptions,
   },
 

@@ -6,7 +6,31 @@ use opentelemetry_sdk::{
 };
 use std::time::Duration;
 use thiserror::Error;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::{
+	layer::{Context, Layer, SubscriberExt},
+	registry::LookupSpan,
+	util::SubscriberInitExt,
+	EnvFilter,
+};
+
+/// Mirrors every emitted `tracing` error event into the existing Prometheus
+/// recorder. `target` is tracing call-site metadata (`&'static str`), not an
+/// event field, so the label set is bounded by code rather than log contents.
+/// The full event, including its free-form fields, still belongs in tracing.
+struct ErrorEventMetricsLayer;
+
+impl<S> Layer<S> for ErrorEventMetricsLayer
+where
+	S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+	fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+		let metadata = event.metadata();
+		if metadata.level() == &Level::ERROR {
+			metrics::counter!("tracing_events_total", "level" => "error", "target" => metadata.target()).increment(1);
+		}
+	}
+}
 
 #[derive(Error, Debug)]
 pub enum ObservabilityError {
@@ -63,6 +87,7 @@ impl OtelGuard {
 
 		tracing_subscriber::registry()
 			.with(env_filter)
+			.with(ErrorEventMetricsLayer)
 			.with(telemetry_layer)
 			.with(tracing_subscriber::fmt::layer().with_target(true))
 			.init();

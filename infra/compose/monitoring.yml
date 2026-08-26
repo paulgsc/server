@@ -134,6 +134,7 @@ services:
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - NUDGE_CONFIG_ALERT_SLACK_WEBHOOK_URL=${NUDGE_CONFIG_ALERT_SLACK_WEBHOOK_URL:-}
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       prometheus:

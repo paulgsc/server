@@ -216,4 +216,18 @@ local utils = import 'utils.libsonnet';
     title: '⚙️ Operation Duration (P95)',
     type: 'timeseries',
   },
+
+  tracingErrors: {
+    datasource: config.prometheusDataSource,
+    fieldConfig: utils.timeSeriesFieldConfig('ops', 0),
+    id: 10,
+    options: utils.timeSeriesOptions,
+    targets: [{
+      expr: 'sum by (target) (increase(tracing_events_total{level="error"}[5m]))',
+      legendFormat: '{{target}}',
+      refId: 'A',
+    }],
+    title: '🚨 Tracing Error Events by Target',
+    type: 'timeseries',
+  },
 }

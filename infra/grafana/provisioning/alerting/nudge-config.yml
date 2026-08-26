@@ -1,0 +1,91 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: nudge-config-operations
+    receivers:
+      - uid: nudge-config-slack
+        type: slack
+        settings:
+          title: '{{ template "default.title" . }}'
+          text: '{{ template "default.message" . }}'
+        secureSettings:
+          url: $NUDGE_CONFIG_ALERT_SLACK_WEBHOOK_URL
+
+policies:
+  - orgId: 1
+    receiver: nudge-config-operations
+    group_by:
+      - grafana_folder
+      - alertname
+    routes:
+      - receiver: nudge-config-operations
+        object_matchers:
+          - [alert_scope, '=', nudge_config]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 4h
+
+groups:
+  - orgId: 1
+    name: nudge-configuration
+    folder: file_host operations
+    interval: 1m
+    rules:
+      - uid: nudge-timezone-unparseable
+        title: Nudge timezone configuration is invalid
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: 'increase(operation_errors_total{operation="nudge_config", error_type="timezone_unparseable"}[15m])'
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: 'file_host rejected NUDGE_TIMEZONE as a non-IANA zone and fell back to UTC; quiet-hours and day-boundary calculations are shifted.'
+          summary: 'NUDGE_TIMEZONE is invalid'
+        labels:
+          alert_scope: nudge_config
+          severity: warning
+        isPaused: false
