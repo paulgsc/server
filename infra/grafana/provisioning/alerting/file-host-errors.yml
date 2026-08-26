@@ -63,6 +63,21 @@ groups:
           # every 5s (infra/prometheus/prometheus.yml), and this needs to
           # catch a single boot-time failure — the nudge timezone case is
           # exactly one such non-recurring event — before the window closes.
+          #
+          # Plain `increase(...[15m])` alone misses exactly that case: a
+          # target's series is born the instant its first ERROR fires, at
+          # value 1, with no earlier "0" sample for Prometheus to diff
+          # against — increase() needs 2+ samples to extrapolate a rate, so
+          # a series that appears once and never changes again reads as a
+          # flat, unchanging 1 forever, not an increase. The nudge-timezone
+          # counter is exactly this shape (build_nudge runs once at
+          # startup), so the naive query would silently never fire on the
+          # one fault it exists to catch. The `unless ... offset 15m` half
+          # below catches "this target's series didn't exist 15m ago" (a
+          # pure label-presence check, needs only the one current sample);
+          # the `increase()` half still handles a fresh error from a target
+          # that was already known, so a quiet target correctly stops
+          # firing ~15m after its last event either way.
           - refId: A
             relativeTimeRange:
               from: 900
@@ -73,7 +88,16 @@ groups:
                 type: prometheus
                 uid: prometheus
               editorMode: code
-              expr: 'sum by (target) (increase(tracing_events_total{level="error"}[15m]))'
+              expr: |
+                (
+                  sum by (target) (tracing_events_total{level="error"})
+                  unless
+                  sum by (target) (tracing_events_total{level="error"} offset 15m)
+                )
+                or
+                (
+                  sum by (target) (increase(tracing_events_total{level="error"}[15m]))
+                )
               instant: true
               intervalMs: 1000
               legendFormat: __auto
