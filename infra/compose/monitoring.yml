@@ -136,9 +136,10 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
       # Grafana treats an empty Slack webhook URL as Slack Web API mode and
       # then refuses to provision this contact point without a recipient.
-      # Keep a syntactically valid, deliberately unreachable webhook as the
-      # startup-safe default; operators override it with the real Slack URL.
-      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:-http://127.0.0.1:1/grafana-slack-webhook-not-configured}
+      # The fallback must also have Slack's incoming-webhook URL shape;
+      # otherwise Grafana classifies it as Slack Web API mode and still
+      # requires a recipient. These placeholder path segments cannot deliver.
+      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/NOT_CONFIGURED/NOT_CONFIGURED/NOT_CONFIGURED}
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       prometheus:
