@@ -26,7 +26,6 @@ use crate::handlers::db::session::new_id;
 use crate::nudge::constraints::StudyConstraints;
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
-use crate::websocket::WebSocketFsm;
 use crate::{AppState, NudgeContext};
 use chrono::{DateTime, Utc};
 use engagement_repo::EngagementRepository;
@@ -62,7 +61,6 @@ pub fn spawn(state: &AppState, interval: Duration) {
 	};
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
-	let ws = state.realtime.ws.clone();
 	crate::metrics::waker::record_interval(interval);
 
 	tokio::spawn(async move {
@@ -77,7 +75,7 @@ pub fn spawn(state: &AppState, interval: Duration) {
 					return;
 				}
 				_ = ticker.tick() => {
-					match run_once(&db, &ws, &nudge).await {
+					match run_once(&db, &nudge).await {
 						Ok(_) => crate::metrics::waker::record_successful_pass(),
 						Err(err) => error!(error = %err, "waker pass failed"),
 					}
@@ -89,16 +87,19 @@ pub fn spawn(state: &AppState, interval: Duration) {
 
 /// One pass. Public so a debug endpoint can force it without waiting.
 ///
-/// Takes the database pool, the websocket layer, and a proven-present
-/// `&NudgeContext` — the projection of `AppState` this pass actually reads —
-/// rather than `&AppState` itself. `spawn` is the only caller and it borrows
-/// these once per interval, not once per due subject, so the loop below
-/// passes the same three references through without re-deriving them.
+/// Takes the database pool and a proven-present `&NudgeContext` — the
+/// projection of `AppState` this pass actually reads — rather than
+/// `&AppState` itself. `spawn` is the only caller and it borrows these once
+/// per interval, not once per due subject, so the loop below passes the same
+/// two references through without re-deriving them. No `&WebSocketFsm`
+/// anymore: presence is a DB-backed lease now, not a WebSocket connection
+/// count, so the waker has no reason to know the WS layer exists at all —
+/// see `nudge::presence`.
 ///
 /// # Errors
 /// Any storage failure. Per-subject failures are logged and skipped rather than
 /// aborting the pass — one bad row must not stop everyone else's.
-pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) -> Result<usize, sqlx::Error> {
+pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<usize, sqlx::Error> {
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
@@ -112,7 +113,7 @@ pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) 
 	let mut intervened = 0;
 
 	for gate in due {
-		match consider(db, ws, nudge, &engagement, &gate.subject_id).await {
+		match consider(db, nudge, &engagement, &gate.subject_id).await {
 			Ok(true) => intervened += 1,
 			Ok(false) => {}
 			Err(err) => {
@@ -126,7 +127,7 @@ pub async fn run_once(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext) 
 }
 
 /// Evaluate one subject, and act if the engine says so.
-async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> Result<bool, sqlx::Error> {
+async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str) -> Result<bool, sqlx::Error> {
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;
@@ -177,7 +178,7 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 		enabled: nudge.enabled,
 		quiet_hours_start: nudge.quiet_hours_start,
 		quiet_hours_end: nudge.quiet_hours_end,
-		presence: presence::observe(ws, nudge.presence_freshness).await,
+		presence: presence::observe(db, subject_id, nudge.presence_lease_ttl).await,
 		consented_topics,
 	};
 
@@ -319,7 +320,13 @@ async fn consider(db: &SqlitePool, ws: &WebSocketFsm, nudge: &NudgeContext, enga
 			// intervention itself still has to clear the same admission
 			// gate any other action would — quiet hours and consent do
 			// not stop applying just because this action came from
-			// provisioning rather than an existing session.
+			// provisioning rather than an existing session. Presence is
+			// re-checked against `reselected`'s own context here too,
+			// automatically: `engine`'s constraints hold one fixed
+			// `PresenceLeases` snapshot fetched once at the top of
+			// `consider`, and `admit` asks it about whatever action it is
+			// given, so this call site needed no changes of its own to
+			// become context-aware alongside the one above.
 			match engine.admissibility().admit(now, &reselected) {
 				Ok(()) => reselected,
 				Err(reason) => {
@@ -576,7 +583,7 @@ mod tests {
 	use super::*;
 	use crate::nudge::clock::NudgeClock;
 	use crate::nudge::constraints::{StudyConstraints, Suppressed};
-	use crate::nudge::presence::Presence;
+	use crate::nudge::presence::PresenceLeases;
 	use chrono::{Duration, TimeZone as _};
 
 	fn t0() -> chrono::DateTime<Utc> {
@@ -611,7 +618,7 @@ mod tests {
 			enabled: true,
 			quiet_hours_start: 22,
 			quiet_hours_end: 8,
-			presence: Presence { connected: 0, live: 0 },
+			presence: PresenceLeases::empty(std::time::Duration::from_secs(75)),
 			consented_topics: Vec::new(),
 		};
 		let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(constraints, StudySelector { prepared_session: None });
@@ -725,7 +732,6 @@ mod tests {
 					}
 				}
 
-				let ws = WebSocketFsm::new();
 				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
 				let nudge = NudgeContext {
 					clock: NudgeClock::resolve(Some("UTC")).0,
@@ -734,11 +740,11 @@ mod tests {
 					enabled: true,
 					quiet_hours_start: 22,
 					quiet_hours_end: 8,
-					presence_freshness: std::time::Duration::from_secs(120),
+					presence_lease_ttl: std::time::Duration::from_secs(75),
 					base_url: "https://example.com".to_owned(),
 				};
 
-				run_once(&pool, &ws, &nudge)
+				run_once(&pool, &nudge)
 					.await
 					.expect("a pass over freshly-drafted sessions and unconsented subjects should not error");
 			});
@@ -821,7 +827,6 @@ mod tests {
 					.await
 					.expect("seed a due, nothing-prepared subject");
 
-				let ws = WebSocketFsm::new();
 				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
 				let nudge = NudgeContext {
 					clock: NudgeClock::resolve(Some("UTC")).0,
@@ -830,11 +835,11 @@ mod tests {
 					enabled: true,
 					quiet_hours_start: 22,
 					quiet_hours_end: 8,
-					presence_freshness: std::time::Duration::from_secs(120),
+					presence_lease_ttl: std::time::Duration::from_secs(75),
 					base_url: "https://example.com".to_owned(),
 				};
 
-				let intervened = consider(&pool, &ws, &nudge, &engagement, subject_id)
+				let intervened = consider(&pool, &nudge, &engagement, subject_id)
 					.await
 					.expect("a pass over a freshly-seeded subject should not error");
 				assert!(
@@ -861,7 +866,7 @@ mod tests {
 				// Idempotency: a second pass — standing in for "the first
 				// pass crashed between provisioning and claiming, and the
 				// waker tried again" — must not create a second session.
-				let second_pass = consider(&pool, &ws, &nudge, &engagement, subject_id).await.expect("a second pass should not error");
+				let second_pass = consider(&pool, &nudge, &engagement, subject_id).await.expect("a second pass should not error");
 				assert!(!second_pass, "still nothing consented to receive it");
 				let all_sessions = sessions.list(subject_id).await.expect("list this subject's sessions");
 				assert_eq!(all_sessions.len(), 1, "provisioning must not run twice for the same subject");

@@ -531,6 +531,21 @@ It is not, since `#278`, the only place a subject *begins* to exist:
 (`POST /push/subscriptions`) writes the initial gate row, seeded full, before
 any signal has ever arrived.
 
+### Presence
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/presence/lease` | `{ context_key }` — "I am looking at this, right now" |
+
+The client posts here on a visibility/route transition and again on a sparse
+renewal (roughly every 45s) while visible — not a poll loop. `context_key` is
+whatever `StudyAction::session_id()` would return for the thing being looked
+at, almost always a session id: `nudge::presence` matches leases against that
+same value, so a client and the waker agree on what a "context" is without
+either one importing the other's types. See
+[Presence is a lease, not a veto](#presence-is-a-lease-not-a-veto) for why this
+replaced a WebSocket connection count.
+
 ### Sessions
 
 One route per `SessionsRepository` method in
@@ -642,27 +657,62 @@ A `403` deliberately does **not** prune. It means *this server* signed with the
 wrong key, and pruning on it would delete every subscription over one bad
 environment variable.
 
-### Presence is an input, not a veto
+### Presence is a lease, not a veto
 
-The client checks `document.visibilityState` and knows whether its tab is
-*visible*. The server can only see whether a WebSocket is *connected* — and a
-pinned background tab holds its socket open all day.
+Presence used to be a WebSocket connection count, and that was wrong two
+independent ways, discovered together rather than one at a time:
 
-Treating connection as presence would suppress every nudge for exactly the
-person this feature was built for: someone who keeps the dashboard open on a
-second monitor and forgets about it. The failure mode is total silence that
-looks like a broken feature.
+1. **The client this feature is for never opened one.** `document.
+   visibilityState` — the signal the client actually has — was never wired to
+   the server at all, so the WS-connected check almost never fired for a real
+   user. Silence that looked like a working, quiet feature was actually a
+   feature whose main signal was structurally dead.
+2. **This deployment's own synthetic monitoring produced false positives.**
+   `infra/blackbox.yml`'s WS health-check prober completes a real upgrade
+   against `/ws` every 15 seconds and hangs up without sending a frame. The
+   old connection count did not — and structurally could not — tell that
+   apart from a person, so the app's own liveness probe could suppress a
+   real notification.
 
-So the signal is bounded twice:
+Both failures trace to the same root cause: a WebSocket connection answers "is
+a socket open," and presence needs to answer "is someone looking at *this*."
+Those are different questions, and no amount of freshness-window tuning on the
+first one produces the second — freshness filters on *recency*, and a
+brand-new probe connection is, by construction, always recent.
 
-1. A connection counts only if the actor reports it active, not stale, and last
-   active within `NUDGE_PRESENCE_FRESHNESS_SECONDS`. A zombie half-open socket
-   cannot silence the nudge indefinitely.
-2. Every tick logs what presence concluded, so a missing nudge is diagnosable.
+**The fix is a lease, not a better connection count.** The client writes
+`{ subject_id, context_key, observed_at }` (`POST /presence/lease`) on
+meaningful transitions — the tab becoming visible, the route changing — plus a
+sparse renewal (~45s) while visible. `nudge::presence::observe` reads every
+lease a subject holds once per `waker::consider` pass and hands the snapshot
+to `StudyConstraints::admit`, which asks a narrower question than the old
+design ever could: *is there a fresh lease on exactly the context this
+notification is about*, not *is this person on the site at all*.
+`context_key` is `StudyAction::session_id()` — every variant but
+`GetStarted` already carries one — so a lease on some other session can never
+suppress a notification about this one, and `GetStarted` (no session to point
+at) is never suppressible by presence at all.
 
-The stronger signal — the client reporting genuine visibility, which it already
-knows — is the escape hatch if that is not enough. It is a `some-ui` change and
-is deliberately not built speculatively.
+Freshness is derived lazily rather than maintained: `now - observed_at < ttl`
+(`NUDGE_PRESENCE_LEASE_TTL_SECONDS`, default 75s), computed at the moment
+`admit` asks. A lease six months stale reads exactly like no lease — there is
+no expiry job, and none is needed for correctness.
+
+The asymmetry is deliberate, not a compromise: uncertain or missing presence
+**sends**; only a fresh, context-matching lease **suppresses**. A storage
+failure while reading leases is treated as "no lease" rather than propagated,
+for the same reason a connection actor that could not answer used to count as
+absent — presence must never be able to fail *closed*. The failure mode this
+guards against is the same one that motivated the original design: someone
+who keeps the dashboard open and forgets about it must never have their
+notifications silenced forever by a signal that broke.
+
+The one invariant that keeps this from regrowing into a realtime subsystem:
+**presence must never cause work; it can only modify work that was already
+about to happen.** Nothing scans every subject's leases on a timer — the only
+read happens inside `waker::consider`'s existing per-subject admission check,
+at the moment a candidate notification already exists and is about to be
+sent.
 
 ### One intervention at a time, across restarts
 

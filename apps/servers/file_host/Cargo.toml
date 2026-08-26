@@ -89,6 +89,7 @@ activity_repo = { workspace = true }
 capture_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }
+presence_repo = { workspace = true }
 session_repo = { workspace = true }
 push_kit = { workspace = true, features = ["reqwest-transport"] }
 intervention = { workspace = true }

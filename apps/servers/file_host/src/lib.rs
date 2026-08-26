@@ -68,7 +68,7 @@ pub struct NudgeContext {
 	pub enabled: bool,
 	pub quiet_hours_start: u32,
 	pub quiet_hours_end: u32,
-	pub presence_freshness: std::time::Duration,
+	pub presence_lease_ttl: std::time::Duration,
 	pub base_url: String,
 }
 
@@ -173,7 +173,7 @@ impl AppState {
 			enabled: config.nudge_enabled,
 			quiet_hours_start: config.nudge_quiet_hours_start,
 			quiet_hours_end: config.nudge_quiet_hours_end,
-			presence_freshness: std::time::Duration::from_secs(config.nudge_presence_freshness_seconds),
+			presence_lease_ttl: std::time::Duration::from_secs(config.nudge_presence_lease_ttl_seconds),
 			base_url: config.app_base_url.clone(),
 		}))
 	}

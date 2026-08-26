@@ -209,9 +209,17 @@ pub struct Config {
 	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300")]
 	pub nudge_waker_seconds: u64,
 
-	/// How recently a WebSocket must have been active to count as presence.
-	#[arg(long, env = "NUDGE_PRESENCE_FRESHNESS_SECONDS", default_value = "120")]
-	pub nudge_presence_freshness_seconds: u64,
+	/// How long a client-written presence lease stays fresh before a due
+	/// subject's notification is sent as though nobody were looking.
+	///
+	/// Renamed from `NUDGE_PRESENCE_FRESHNESS_SECONDS` (default `120`) when
+	/// presence stopped being a WebSocket connection's staleness window and
+	/// became a lease TTL: same shape of question, a different mechanism
+	/// underneath, and a smaller default — a client renewing roughly every
+	/// 45s while visible only needs a TTL wide enough to absorb timer
+	/// throttling and scheduling jitter, not two minutes of slack.
+	#[arg(long, env = "NUDGE_PRESENCE_LEASE_TTL_SECONDS", default_value = "75")]
+	pub nudge_presence_lease_ttl_seconds: u64,
 
 	/// Base URL of the study app, used to build the notification's deep link.
 	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
