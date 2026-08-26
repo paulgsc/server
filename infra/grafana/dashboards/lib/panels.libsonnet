@@ -216,4 +216,30 @@ local utils = import 'utils.libsonnet';
     title: '⚙️ Operation Duration (P95)',
     type: 'timeseries',
   },
+
+  // Every ERROR-level tracing event, workspace-wide, broken down by the
+  // module (`target`) that logged it — the general counterpart to nudge's
+  // configErrors (nudge-panels.libsonnet). `ErrorEventMetricsLayer`
+  // (metrics/observability.rs) mirrors every ERROR event into
+  // `tracing_events_total` rather than requiring each call site to
+  // remember to record its own counter, so a fault in a WS handler, a REST
+  // route, or a background task nobody's gotten around to instrumenting
+  // yet still shows up here. Routine 4xx responses log at WARN
+  // (error.rs's `into_response`), not ERROR, so this reflects real
+  // operational faults rather than ordinary client traffic — see
+  // infra/grafana/provisioning/alerting/file-host-errors.yml, which alerts
+  // on exactly this series.
+  tracingErrors: {
+    datasource: config.prometheusDataSource,
+    fieldConfig: utils.timeSeriesFieldConfig('ops', 0),
+    id: 10,
+    options: utils.timeSeriesOptions,
+    targets: [{
+      expr: 'sum by (target) (increase(tracing_events_total{level="error"}[5m]))',
+      legendFormat: '{{target}}',
+      refId: 'A',
+    }],
+    title: '🚨 Tracing Error Events by Target',
+    type: 'timeseries',
+  },
 }

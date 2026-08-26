@@ -61,6 +61,34 @@ local statOptions = {
     options: statOptions,
   },
 
+  // Fixed-label operational configuration failures since this process
+  // started — the narrow signal the NUDGE_TIMEZONE incident asked for,
+  // kept on this row so an operator watching nudge specifically doesn't
+  // have to find it in the workspace-wide by-target breakdown
+  // (panels.libsonnet's tracingErrors, below the ABUSE row). `up == 1`
+  // guard: an absent scrape target is condition #1 (unreachable)'s job to
+  // report, not this panel's — see docs/dashboard-honesty.md.
+  configErrors: {
+    title: 'Nudge Config Errors',
+    description: 'Startup configuration faults (e.g. an unparseable NUDGE_TIMEZONE) since the current file_host process started.',
+    type: 'stat',
+    targets: [{
+      expr: '(sum(operation_errors_total{operation="nudge_config"}) or vector(0)) and on() (up{job="file_host"} == 1)',
+      instant: true,
+      refId: 'A',
+    }],
+    fieldConfig: {
+      defaults: {
+        unit: 'short',
+        color: { mode: 'thresholds' },
+        thresholds: { mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }] },
+        noValue: 'no data',
+      },
+      overrides: [],
+    },
+    options: statOptions,
+  },
+
   // Nudge outcomes by verdict/reason — every due subject's terminal branch
   // this pass, stacked. `sent` is the only outcome that put a notification
   // on the wire; everything else is a reason nothing went out, named rather

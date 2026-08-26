@@ -207,9 +207,20 @@ impl FileHostError {
 
 impl IntoResponse for FileHostError {
 	fn into_response(self) -> Response<Body> {
-		tracing::error!(error = ?self, "request failed");
-
 		let status = self.status_code();
+
+		// 5xx is this service's own fault and belongs in the ERROR-level
+		// signal `ErrorEventMetricsLayer` (metrics/observability.rs) mirrors
+		// into `tracing_events_total` for alerting; a 4xx is the client's
+		// request, not an operational fault — a mistyped token or a bad
+		// mime-type header shouldn't page anyone, so it stays at WARN and
+		// out of that metric.
+		if status.is_server_error() {
+			tracing::error!(error = ?self, "request failed");
+		} else {
+			tracing::warn!(error = ?self, "request rejected");
+		}
+
 		let code = self.code();
 		let message = self.message();
 		let is_unauthorized = matches!(&self, Self::Unauthorized);
