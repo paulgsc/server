@@ -11,6 +11,20 @@ pub struct PresenceLeaseRow {
 	pub observed_at: String,
 }
 
+/// How many distinct contexts one subject may hold a lease on at once.
+///
+/// A renewal rewrites the same row (see [`PresenceLeaseRepository::observe`]),
+/// but a *new* `context_key` is a new row, and this endpoint has no
+/// authentication beyond the CORS allowlist — the same trust model as every
+/// other route in this deployment, see `docs/study-nudge.md`. Without a cap,
+/// a subject's row count (and so `for_subject`'s read cost, paid once per
+/// `waker::consider` pass for that subject, forever) grows with how many
+/// distinct contexts they have *ever* visited rather than how many they
+/// plausibly hold open at once — a handful of tabs, not an unbounded
+/// lifetime history. Chosen generously above that realistic number rather
+/// than tuned tight.
+const MAX_LEASES_PER_SUBJECT: i64 = 16;
+
 pub struct PresenceLeaseRepository {
 	pool: SqlitePool,
 }
@@ -27,11 +41,16 @@ impl PresenceLeaseRepository {
 	/// An upsert rather than an insert: a client's sparse renewal heartbeat
 	/// rewrites the one row for `(subject_id, context_key)` in place, so a
 	/// subject who keeps a tab open all day still owns exactly one row per
-	/// context rather than a growing history nobody reads.
+	/// context rather than a growing history nobody reads. Followed, in the
+	/// same transaction, by trimming this subject down to
+	/// [`MAX_LEASES_PER_SUBJECT`] contexts (oldest `observed_at` first) —
+	/// see that constant's own doc comment for why a cap is needed at all.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
 	pub async fn observe(&self, subject_id: &str, context_key: &str, observed_at: &str) -> Result<(), sqlx::Error> {
+		let mut tx = self.pool.begin().await?;
+
 		sqlx::query!(
 			"INSERT INTO presence_leases (subject_id, context_key, observed_at)
 			 VALUES (?1, ?2, ?3)
@@ -40,8 +59,25 @@ impl PresenceLeaseRepository {
 			context_key,
 			observed_at
 		)
-		.execute(&self.pool)
+		.execute(&mut *tx)
 		.await?;
+
+		sqlx::query!(
+			"DELETE FROM presence_leases
+			 WHERE subject_id = ?1
+			   AND context_key NOT IN (
+			       SELECT context_key FROM presence_leases
+			       WHERE subject_id = ?1
+			       ORDER BY observed_at DESC
+			       LIMIT ?2
+			   )",
+			subject_id,
+			MAX_LEASES_PER_SUBJECT
+		)
+		.execute(&mut *tx)
+		.await?;
+
+		tx.commit().await?;
 
 		Ok(())
 	}
@@ -140,5 +176,35 @@ mod tests {
 
 		let leases = repo.for_subject("subject-1").await.expect("read subject-1's leases");
 		assert_eq!(leases.len(), 1, "subject-2's lease on the same context key must not appear here");
+	}
+
+	/// The bug an unbounded per-subject history would be: an unauthenticated
+	/// caller writes far more distinct contexts than anyone plausibly holds
+	/// open, and every one of them is retained and read back forever. This
+	/// proves the table stays capped and keeps the freshest contexts rather
+	/// than the oldest.
+	#[tokio::test]
+	async fn a_subject_is_capped_at_max_leases_keeping_the_freshest() {
+		use super::MAX_LEASES_PER_SUBJECT;
+
+		let repo = PresenceLeaseRepository::new(pool().await);
+		#[allow(clippy::cast_sign_loss)]
+		let flood = MAX_LEASES_PER_SUBJECT as usize * 2;
+		for i in 0..flood {
+			let context_key = format!("session-{i}");
+			let observed_at = format!("2026-08-26T12:{i:02}:00Z");
+			repo.observe("subject-1", &context_key, &observed_at).await.expect("write one more distinct context");
+		}
+
+		let leases = repo.for_subject("subject-1").await.expect("read leases");
+		#[allow(clippy::cast_sign_loss)]
+		let cap = MAX_LEASES_PER_SUBJECT as usize;
+		assert_eq!(leases.len(), cap, "row count must stay capped regardless of how many distinct contexts were ever written");
+
+		// The most recently observed contexts survive; the earliest ones,
+		// written before the flood pushed them out, do not.
+		let survivors: std::collections::BTreeSet<_> = leases.iter().map(|l| l.context_key.clone()).collect();
+		assert!(survivors.contains(&format!("session-{}", flood - 1)), "the most recent context must survive the trim");
+		assert!(!survivors.contains("session-0"), "the oldest context must be trimmed once the cap is exceeded");
 	}
 }
