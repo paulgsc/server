@@ -271,10 +271,47 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 				Err(err) => {
 					error!(subject = %subject_id, error = %err, "could not read the activity catalogue; skipping this subject rather than provisioning an empty session");
 					crate::metrics::waker::record_verdict("storage_error", "n/a");
+					// A real Codex review finding on server#322 (P2): unlike
+					// `first_prepared`'s per-subject read a few lines above,
+					// a catalogue read is global -- if it is failing, it
+					// fails identically for every subject reaching this arm
+					// in the same pass. Leaving `eligible_at` where it was
+					// (as the other `storage_error` branches in this
+					// function do, for a genuinely per-subject failure)
+					// would let `EngagementRepository::due`'s oldest-32
+					// query keep re-selecting exactly these subjects every
+					// subsequent pass, crowding the batch and starving
+					// subjects who need no catalogue read at all -- one
+					// with an existing prepared session, say. Advance the
+					// gate instead of leaving it stuck.
+					let retry = now + chrono::Duration::hours(1);
+					let (levels, as_of) = charge.to_storage();
+					engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
 					return Ok(false);
 				}
 			};
 			let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
+			if provisioned.activities.is_empty() {
+				// A real Codex review finding on server#322 (P2): every one
+				// of `recommend()`'s picks was dropped by `provision()` --
+				// a `NULL` floor on every eligible candidate, or a cap so
+				// tight nothing fits. Persisting this anyway would write a
+				// `Scheduled` row `first_prepared`/`provision_if_absent`
+				// then treats as "already prepared" forever: nothing in
+				// this codebase re-provisions once a prepared session
+				// exists, so the subject would be stuck pointing at a
+				// permanently empty session even after the catalogue is
+				// fixed. Retry later instead of writing a session with
+				// nothing in it -- a longer backoff than the storage-error
+				// case above, since a catalogue that produces nothing
+				// timeable needs a content fix, not a quick retry.
+				warn!(subject = %subject_id, "recommend()+provision() produced no timeable activities; not persisting an empty session");
+				crate::metrics::waker::record_verdict("nothing_to_provision", "n/a");
+				let retry = now + chrono::Duration::hours(6);
+				let (levels, as_of) = charge.to_storage();
+				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+				return Ok(false);
+			}
 			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
@@ -1010,5 +1047,144 @@ mod tests {
 			2,
 			"both passes should have reached admission and been refused on NotConsented, not stalled on NothingToSay"
 		);
+	}
+
+	/// A real Codex review finding on `server#322` (P2): if `recommend()` +
+	/// `provision()` produce nothing timeable — every eligible candidate has
+	/// a `NULL` `min_duration_ms` here — persisting an empty `Scheduled`
+	/// session would be a permanent trap. `first_prepared`/`provision_if_absent`
+	/// would treat it as "already prepared" forever, so nothing in this
+	/// codebase would ever provision this subject again, even after the
+	/// catalogue is fixed. Confirms both halves of the fix: nothing is
+	/// written, and the gate is pushed out rather than left where `due`
+	/// would immediately re-select this subject.
+	#[test]
+	fn an_empty_provisioned_session_is_never_persisted_and_the_gate_is_pushed_out() {
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-nothing-timeable";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			// Every seeded activity loses its floor -- `provision()` omits
+			// all of them (see `provisioning.rs`'s own NULL-floor case),
+			// regardless of which two `recommend()` would otherwise pick.
+			sqlx::query!("UPDATE activities SET min_duration_ms = NULL").execute(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 22,
+				quiet_hours_end: 8,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			assert!(!intervened, "nothing was provisioned, so there is nothing to send");
+
+			let sessions = SessionRepository::new(pool.clone());
+			assert_eq!(
+				sessions.first_prepared(subject_id).await.unwrap(),
+				None,
+				"an empty session must never be persisted as Scheduled — that would trap the subject permanently"
+			);
+
+			let still_due = engagement.due(&now_str, BATCH).await.unwrap();
+			assert!(
+				!still_due.iter().any(|gate| gate.subject_id == subject_id),
+				"the gate must be pushed out, not left at `now` — otherwise this subject would be re-selected and re-attempted every single pass"
+			);
+		});
+	}
+
+	/// A real Codex review finding on `server#322` (P2): `ActivityRepository::
+	/// list()` is a *global* read, unlike `first_prepared`'s per-subject one a
+	/// few lines above it in `consider`. A malformed catalogue row fails it
+	/// identically for every subject reaching this arm in the same pass — if
+	/// the gate were left where it was, `due`'s oldest-32 query would keep
+	/// re-selecting exactly those subjects every subsequent pass, starving
+	/// everyone else, including a subject with an existing prepared session
+	/// who needs no catalogue read at all.
+	#[test]
+	fn a_catalogue_read_failure_pushes_the_gate_out_rather_than_leaving_the_subject_stuck() {
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-broken-catalogue";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			// A row this schema did not write: `ActivityMaturity::parse`
+			// refuses "bogus", so `ActivityRepository::list()` returns
+			// `Err` for the whole catalogue, not just this row.
+			sqlx::query!(
+				r#"
+				INSERT INTO activities (
+				    id, name, description, icon, registry_key, layout_tree, maturity,
+				    min_duration_ms, published_at, version, fields, default_config, audio
+				) VALUES ('broken', 'n', 'd', 'i', 'broken-key', 'study', 'bogus', NULL, '2026-08-01T00:00:00Z', 1, '[]', '{}', NULL)
+				"#
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 22,
+				quiet_hours_end: 8,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			assert!(!intervened, "the catalogue is unreadable, so nothing can be provisioned or sent");
+
+			let sessions = SessionRepository::new(pool.clone());
+			assert_eq!(sessions.first_prepared(subject_id).await.unwrap(), None);
+
+			let still_due = engagement.due(&now_str, BATCH).await.unwrap();
+			assert!(
+				!still_due.iter().any(|gate| gate.subject_id == subject_id),
+				"a global catalogue failure must not leave this subject re-selected every pass, crowding out subjects that need no catalogue read at all"
+			);
+		});
 	}
 }
