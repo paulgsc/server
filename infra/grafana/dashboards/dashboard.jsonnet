@@ -96,8 +96,9 @@ local dashboard = {
     // Is the engagement waker's tick (LOOPS, above) actually landing
     // notifications, and if not, why not. See nudge-panels.libsonnet's own
     // header for why this is a breakdown rather than a red/green invariant.
-    nudge.due { gridPos: utils.gridPos(0, 46, 6, 4), id: 931 },
-    nudge.outcomesByVerdict { gridPos: utils.gridPos(6, 46, 18, 4), id: 932 },
+    nudge.due { gridPos: utils.gridPos(0, 46, 4, 4), id: 931 },
+    nudge.configErrors { gridPos: utils.gridPos(4, 46, 5, 4), id: 933 },
+    nudge.outcomesByVerdict { gridPos: utils.gridPos(9, 46, 15, 4), id: 932 },
 
     // =============== ABUSE (#215/#232) ===============
     // "Are we abusing resources — do we close sockets, is the rate limiter
@@ -128,7 +129,8 @@ local dashboard = {
     // The standalone liveness stat this row used to carry (#212/G3) is
     // superseded by the HEALTH row's UP panel above, which is the same
     // `up{job="file_host"}` query — no need for both.
-    panels.operationDuration { gridPos: utils.gridPos(0, 76, 24, 8) },
+    panels.operationDuration { gridPos: utils.gridPos(0, 76, 12, 8) },
+    panels.tracingErrors { gridPos: utils.gridPos(12, 76, 12, 8) },
   ]),
   refresh: '5s',
   schemaVersion: 38,

@@ -162,6 +162,7 @@ impl AppState {
 				tracing::warn!("NUDGE_TIMEZONE is unset; the day boundary and quiet hours will be evaluated in UTC");
 			}
 			nudge::clock::ZoneSource::Unparseable(name) => {
+				crate::metrics::instruments::record_error("nudge_config", "timezone_unparseable");
 				tracing::error!(zone = %name, "NUDGE_TIMEZONE is not an IANA zone name; falling back to UTC");
 			}
 		}

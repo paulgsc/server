@@ -6,7 +6,45 @@ use opentelemetry_sdk::{
 };
 use std::time::Duration;
 use thiserror::Error;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::{
+	layer::{Context, Layer, SubscriberExt},
+	registry::LookupSpan,
+	util::SubscriberInitExt,
+	EnvFilter,
+};
+
+/// Mirrors every `ERROR`-level `tracing` event, workspace-wide, into
+/// `tracing_events_total{target}` — the same generalization this repo
+/// already applies to `operation_errors_total` (metrics/instruments.rs), but
+/// keyed on tracing call-site metadata instead of a hand-picked operation
+/// name, so a fault in a module nobody's gotten around to instrumenting yet
+/// (a WS handler, a REST route, a background task) still produces a metric
+/// an alert can fire on.
+///
+/// `target` is `metadata.target()` — a `&'static str` fixed by the call
+/// site's module path, not event content — so the label set is bounded by
+/// the code that ships, never by what an event happens to log. This is the
+/// same cardinality discipline `operation_errors_total`'s callers already
+/// follow: labels are a small closed set of categories, never raw external
+/// strings. Only `ERROR` is mirrored; `WARN` (routine 4xx responses,
+/// `error.rs`'s `into_response` among them — see its own comment) is a
+/// normal outcome, not a fault, and mirroring it here would make this
+/// metric fire on ordinary client traffic instead of on the operational
+/// faults it exists to page on.
+struct ErrorEventMetricsLayer;
+
+impl<S> Layer<S> for ErrorEventMetricsLayer
+where
+	S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+	fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+		let metadata = event.metadata();
+		if metadata.level() == &Level::ERROR {
+			metrics::counter!("tracing_events_total", "level" => "error", "target" => metadata.target()).increment(1);
+		}
+	}
+}
 
 #[derive(Error, Debug)]
 pub enum ObservabilityError {
@@ -63,6 +101,7 @@ impl OtelGuard {
 
 		tracing_subscriber::registry()
 			.with(env_filter)
+			.with(ErrorEventMetricsLayer)
 			.with(telemetry_layer)
 			.with(tracing_subscriber::fmt::layer().with_target(true))
 			.init();
