@@ -134,7 +134,11 @@ services:
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
-      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:-}
+      # Grafana treats an empty Slack webhook URL as Slack Web API mode and
+      # then refuses to provision this contact point without a recipient.
+      # Keep a syntactically valid, deliberately unreachable webhook as the
+      # startup-safe default; operators override it with the real Slack URL.
+      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:-http://127.0.0.1:1/grafana-slack-webhook-not-configured}
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       prometheus:
