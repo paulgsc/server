@@ -145,6 +145,15 @@ jobs:
       - name: Validate docker compose config resolves
         run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
 
+      - name: Validate production rolling-stack config resolves
+        run: |
+          FILE_HOST_IMAGE=pgathondu/server:test \
+            REPO_ROOT=${{ github.workspace }} \
+            docker compose -f infra/deploy/file-host-stack.yml config --quiet
+
+      - name: Parse zero-downtime deploy script
+        run: bash -n scripts/deploy-file-host.sh
+
       - name: Check scrape inventory reconciles (#146)
         run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
 

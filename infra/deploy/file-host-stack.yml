@@ -1,0 +1,74 @@
+version: "3.9"
+
+# Production-only Swarm definition for the public server.  Dependencies are
+# intentionally not duplicated here: they run on the shared overlay network
+# and retain their own lifecycle. Deploy with scripts/deploy-file-host.sh.
+services:
+  file-host:
+    image: ${FILE_HOST_IMAGE:?set FILE_HOST_IMAGE to an immutable tag or digest}
+    environment:
+      RUST_LOG: ${RUST_LOG:-info,async_nats=warn}
+      RUST_BACKTRACE: "1"
+      TOKIO_WORKER_THREADS: ${TOKIO_WORKER_THREADS:-4}
+      POLARS_MAX_THREADS: ${POLARS_MAX_THREADS:-4}
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: sqlite:///app/dbs/hopium.db
+      SQLX_OFFLINE: "false"
+      HMAC_KEY: ${HMAC_KEY:-placeholder}
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - /mnt/storage/users/dev/databases/hopium:/app/dbs
+      - ${REPO_ROOT:-../..}/data:/app/data:rw
+      - ${REPO_ROOT:-../..}/config:/app/config:ro
+      - ${REPO_ROOT:-../..}/logs:/app/logs:rw
+    networks:
+      shared:
+        aliases: [file-host]
+    ports:
+      - target: 3000
+        published: 3000
+        protocol: tcp
+        mode: ingress
+    healthcheck:
+      test: [CMD, /usr/local/bin/file_host, --health-check]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    stop_grace_period: 2m
+    deploy:
+      mode: replicated
+      replicas: ${FILE_HOST_REPLICAS:-2}
+      endpoint_mode: vip
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+          pids: 200
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+        failure_action: rollback
+        monitor: 45s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+        monitor: 45s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 2m
+
+networks:
+  shared:
+    name: ${DEPLOY_NETWORK:-shared-dev-network}
+    external: true

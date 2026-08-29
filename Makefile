@@ -9,7 +9,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD)
 GIT_BRANCH := $(shell git branch --show-current)
 
 # Docker build targets
-.PHONY: build push pull run stop clean cleanup login help deploy
+.PHONY: build push pull run stop clean cleanup login help deploy rollout
 
 help: ## Show this help message
 	@echo "Available targets:"
@@ -45,6 +45,10 @@ push: ## Push the Docker image to Docker Hub
 deploy: login build push ## One command to rule them all - build and push
 	@echo "🚀 Deploy complete! Your server can now pull with:"
 	@echo "   docker pull $(DOCKER_REPO):$(TAG)"
+
+rollout: ## Zero-downtime production rollout (IMAGE=immutable-tag-or-digest)
+	@test -n "$(IMAGE)" || { echo "IMAGE is required" >&2; exit 64; }
+	@./scripts/deploy-file-host.sh "$(IMAGE)"
 
 pull: ## Pull the latest image from Docker Hub
 	@echo "Pulling latest image from Docker Hub..."
