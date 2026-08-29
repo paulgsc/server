@@ -201,11 +201,13 @@ async fn main() -> Result<()> {
 	let listener = TcpListener::bind("0.0.0.0:3000").await?;
 	tracing::debug!("listening on {}", listener.local_addr()?);
 
-	// Spawn signal handler task with proper shutdown coordination
+	// Spawn signal handler task with proper shutdown coordination. Docker and
+	// Swarm stop tasks with SIGTERM, not Ctrl+C; listening only for Ctrl+C
+	// made the orchestrator's drain window illusory because the process stayed
+	// alive until Docker sent SIGKILL.
 	let signal_shutdown_token = shutdown_token.clone();
 	tokio::spawn(async move {
-		tokio::signal::ctrl_c().await.ok();
-		tracing::info!("Received Ctrl+C, initiating shutdown...");
+		shutdown_signal().await;
 		signal_shutdown_token.cancel();
 	});
 
@@ -253,4 +255,32 @@ async fn main() -> Result<()> {
 
 	tracing::info!("Shutdown complete");
 	Ok(())
+}
+
+async fn shutdown_signal() {
+	#[cfg(unix)]
+	{
+		use tokio::signal::unix::{signal, SignalKind};
+
+		let mut terminate = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+		tokio::select! {
+			result = tokio::signal::ctrl_c() => {
+				if let Err(error) = result {
+					tracing::error!(%error, "failed to listen for Ctrl+C");
+				}
+				tracing::info!("Received Ctrl+C, initiating shutdown...");
+			}
+			_ = terminate.recv() => {
+				tracing::info!("Received SIGTERM, initiating shutdown...");
+			}
+		}
+	}
+
+	#[cfg(not(unix))]
+	{
+		if let Err(error) = tokio::signal::ctrl_c().await {
+			tracing::error!(%error, "failed to listen for Ctrl+C");
+		}
+		tracing::info!("Received Ctrl+C, initiating shutdown...");
+	}
 }

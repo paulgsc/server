@@ -53,6 +53,7 @@ See [Nix Development Environment](./nix/README.md) for details.
 
 ### Service Level Agreements
 * [WebSocket Service SLA](./apps/servers/file_host/docs/sla/WebsSocket_Service_SLA.md)
+* [Zero-downtime server deployments](./docs/zero-downtime-deployments.md)
 
 ---
 

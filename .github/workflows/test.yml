@@ -145,6 +145,24 @@ jobs:
       - name: Validate docker compose config resolves
         run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
 
+      # file-host's production rollout composes a subset of these same
+      # fragments plus a swarm-only overlay (see scripts/deploy-file-host.sh) —
+      # validate that merge resolves independently of the dev stack above.
+      - name: Validate file-host swarm rollout config resolves
+        run: |
+          FILE_HOST_IMAGE=pgathondu/server:test \
+            REPO_ROOT=${{ github.workspace }} \
+            docker compose \
+              --file infra/compose/base.yml \
+              --file infra/compose/redis.yml \
+              --file infra/compose/nats.yml \
+              --file infra/compose/file_host.yml \
+              --file infra/compose/file_host.swarm.yml \
+              config --quiet
+
+      - name: Parse zero-downtime deploy script
+        run: bash -n scripts/deploy-file-host.sh
+
       - name: Check scrape inventory reconciles (#146)
         run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
 

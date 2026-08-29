@@ -36,6 +36,10 @@ services:
     mem_limit: 4G
     cpus: 2.0
     pids_limit: 200
+    # Long enough for an upgraded WebSocket connection to drain during a
+    # rolling replacement; harmless for a plain `docker compose down` since
+    # the SIGTERM handler below exits as soon as its own cleanup finishes.
+    stop_grace_period: 2m
     deploy:
       resources:
         limits:
@@ -47,7 +51,7 @@ services:
           memory: 1G
     healthcheck:
       test: ['CMD', '/usr/local/bin/file_host', '--health-check']
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      interval: 10s
+      timeout: 5s
+      retries: 3
       start_period: 40s
