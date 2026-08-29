@@ -25,13 +25,18 @@ parallel `infra/deploy/` tree:
 
 * `infra/compose/base.yml`, `redis.yml`, `nats.yml`, `file_host.yml` — the
   same files `docker compose up` reads locally.
-* `infra/compose/file_host.swarm.yml` — a small overlay, layered on top of
-  the files above via `docker stack deploy`'s own multi-`--compose-file`
-  merging, that adds only what Swarm needs: replicas, `endpoint_mode: vip`,
-  `update_config`/`rollback_config` (start-first, automatic rollback), and
-  an overlay network declaration. It carries no image, environment, or
-  volume of its own — those stay defined exactly once, in `file_host.yml`,
-  so the two paths cannot drift apart.
+* `infra/compose/file_host.swarm.yml` — a small overlay that adds only what
+  Swarm needs: replicas, `endpoint_mode: vip`, `update_config`/
+  `rollback_config` (start-first, automatic rollback). It carries no image,
+  environment, volume, or network config of its own — those stay defined
+  exactly once, in `file_host.yml` and `base.yml`, so the two paths cannot
+  drift apart.
+
+`scripts/deploy-file-host.sh` merges these through `docker compose config`
+(the same command the `infra_ci` job already validates them with) and hands
+the fully-resolved result to `docker stack deploy`, rather than letting
+Swarm's own, older compose-file parser merge and interpret the source
+fragments — see "Why a render step" below for why that distinction matters.
 
 Only `redis` and `nats` ride along with `file-host` in this rollout — they
 are its actual `depends_on` graph. `orchestrator`, `ollama`, and the
@@ -46,26 +51,56 @@ directly — see the header comment in that file for why.
 
 ## Why the network changes
 
-`base.yml` declares `monitoring-network` as a local `bridge` network so
-`docker compose up` has zero prerequisites in dev. A Swarm service's VIP
-routing mesh requires an overlay-scoped network, so `file_host.swarm.yml`
-re-declares the same network `name:` with `driver: overlay`. Re-using the
-same name (rather than a stack-scoped one) is what keeps `redis` and `nats`
-reachable at the DNS names `file_host.yml` already expects.
+A Swarm service's VIP routing mesh requires an overlay-scoped network. A
+network can't be both a local `bridge` (what `docker compose up` used to
+create) and `overlay` under the same name on one host, so `base.yml` now
+declares `monitoring-network` as `overlay, attachable: true` unconditionally
+— for the dev stack too, not just the Swarm rollout. The practical effect:
+every environment needs `docker swarm init` run once before `docker compose
+up` can create this network. Nothing else about local dev changes — a
+single-node swarm with no services deployed to it costs nothing, and plain
+`docker compose up` still ignores every `deploy:` field except
+`resources`, exactly as before.
 
-The one sharp edge: a network name can't be both a local bridge and an
-overlay network on the same host at once. If `docker compose up` already
-created `shared-dev-network` as a bridge network, `docker stack deploy` will
-refuse to reconcile it — `scripts/deploy-file-host.sh` checks for and
-fails loudly on exactly that conflict before ever calling `docker stack
-deploy`, rather than surfacing Docker's own error several layers down.
+Upgrading an existing checkout: if `shared-dev-network` already exists as a
+`bridge` network from before this change, remove it once
+(`docker network rm shared-dev-network`, after stopping whatever is
+using it) so the next `docker compose up` can recreate it as `overlay`.
 
-`file_host.swarm.yml` also has to reset `container_name` (`!reset null`):
-Compose refuses to combine a fixed container name with `deploy.replicas >
-1`, since two replicas can't share one name. `infra/prometheus/*.yml` and
+`file_host.yml` also drops its `container_name`: Compose refuses to combine
+a fixed container name with `deploy.replicas > 1`, since two replicas can't
+share one name. `infra/prometheus/*.yml` and
 `scripts/check_scrape_inventory.py` target `file-host-server:3000` by that
-container name, so it's restored as a network alias on the same service
-instead — the existing scrape-inventory contract doesn't need to change.
+name, so it's declared as a network alias on the same service instead — one
+that resolves to the single container under plain `docker compose up` and
+to the VIP under the Swarm rollout, without the scrape-inventory contract
+needing to change. (An earlier draft restored `container_name` as an alias
+from inside `file_host.swarm.yml` using Compose's `!reset` merge tag — moved
+into `file_host.yml` directly instead, since `!reset`/`!override` are
+documented as unreliable across a multi-file merge, and, per the section
+below, this file's alias would go through `docker stack deploy`'s parser
+without the benefit of `docker compose`'s merge logic anyway.)
+
+## Why a render step
+
+`docker stack deploy` parses and merges its `--compose-file` arguments with
+its own, older loader, not `docker compose`'s — `docker/cli#2527`, asking
+Docker to unify the two, is still open. That loader isn't guaranteed to
+understand syntax `docker compose config` accepts fine — `file_host.yml`'s
+extended `env_file` mapping form (`path:`/`required:`), among other things —
+so handing Swarm the source fragments directly risks a parse failure in
+production that `infra_ci`'s `docker compose config --quiet` check, which
+uses the newer parser, would never catch.
+
+`scripts/deploy-file-host.sh` avoids the gap instead of hoping it doesn't
+matter: it renders the fragments through `docker compose config` first,
+which resolves `env_file` into a plain `environment:` map and expands every
+shorthand into its long form, then feeds *that* fully-resolved document —
+plain scalars, lists, and maps only, nothing Compose-Specification-only left
+for the older loader to trip on — to `docker stack deploy` in a single
+`--compose-file`. `infra_ci`'s config-resolution check validates this same
+render, so it now doubles as a check against exactly what the script
+deploys.
 
 ## Deploy
 
@@ -77,10 +112,13 @@ scripts/deploy-file-host.sh pgathondu/server:git-0123abcd
 # or: make rollout IMAGE=pgathondu/server:git-0123abcd
 ```
 
-The script rejects `latest`, checks that this node is an active Swarm
-manager, and checks that `shared-dev-network` isn't already a conflicting
-bridge network — then deploys and blocks until Swarm reports every replica
-converged, or exits non-zero on rollback or timeout.
+The script rejects `latest`/untagged images (checking the last path segment
+specifically, so a registry address's own `host:port` colon isn't mistaken
+for a tag separator) and checks that this node has Swarm manager control
+(`.Swarm.ControlAvailable`, not just `.Swarm.LocalNodeState` — a plain
+worker node reports `active` too, but can't run `docker stack deploy`) —
+then renders and deploys, blocking until Swarm reports every replica
+converged, or exiting non-zero on rollback or timeout.
 
 `stop_grace_period` is two minutes so an upgraded WebSocket connection gets
 a drain window. Clients still need reconnect logic: a WebSocket is pinned to
@@ -96,11 +134,10 @@ repo's own deployment policy and (b) turns its asynchronous update into a
 deterministic pass/fail result. Concretely, `scripts/deploy-file-host.sh`
 does two things a bare `docker stack deploy` doesn't:
 
-1. **Policy, not orchestration** — rejects `latest`/untagged images, and
-   fails before touching Swarm if the network is in a state `docker stack
-   deploy` would reject anyway. Neither is a Swarm capability; both are this
-   repo's own rules about what counts as a safe image reference and a sane
-   starting state.
+1. **Policy, not orchestration** — rejects `latest`/untagged images and
+   confirms this node can actually run `docker stack deploy` before trying.
+   Neither is a Swarm capability; both are this repo's own rules about what
+   counts as a safe image reference and a sane starting state.
 2. **A bounded, truthful exit code** — `docker stack deploy --detach=false`
    already blocks on Swarm's real update state machine and exits non-zero on
    a failed convergence or rollback (Swarm's default, `--detach=true`,

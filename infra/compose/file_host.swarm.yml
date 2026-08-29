@@ -3,12 +3,15 @@
 # This is NOT a standalone stack: it is layered on top of the same
 # fragments `docker-compose.yml` already includes for local dev — base.yml
 # (network/volumes), redis.yml and nats.yml (file-host's actual
-# dependencies), and file_host.yml itself — via `docker stack deploy`'s own
-# `--compose-file` merging. See scripts/deploy-file-host.sh, which is the
-# only supported way to apply this file. Do not `docker stack deploy` it
-# alone; file-host has no image/env/volumes of its own here because those
-# already live in file_host.yml and duplicating them would let the two
-# definitions drift.
+# dependencies), and file_host.yml itself. See scripts/deploy-file-host.sh,
+# which is the only supported way to apply this file. file-host has no
+# image/env/volumes/network-alias of its own here because those already
+# live in file_host.yml and base.yml; duplicating them would let the
+# definitions drift, and `docker stack deploy`'s own compose-file parser
+# does not track the current Compose Specification the way `docker compose`
+# does (docker/cli#2527 is still open), so this file also avoids anything
+# beyond plain, decades-stable compose-v3 fields — see
+# scripts/deploy-file-host.sh for how the two parsers' gap is bridged.
 #
 # Only file-host gets replica/rolling-update treatment. orchestrator,
 # ollama, monitoring and analytics are intentionally left out of this
@@ -16,34 +19,9 @@
 # they stay on the plain `docker compose up` path where Swarm never even
 # enters the picture, rather than riding along with default (single
 # replica, restart-on-failure) Swarm semantics for no benefit.
-#
-# `monitoring-network` must become an overlay network for the VIP-based
-# routing mesh a replicated Swarm service relies on; base.yml's local
-# bridge network (used by `docker compose up`) cannot carry it. Re-declaring
-# the same `name:` here means Swarm creates/reuses one network named
-# `shared-dev-network` instead of a stack-prefixed one, so redis and nats —
-# included in this same deploy for that reason alone — stay reachable at
-# their existing DNS names.
-networks:
-  monitoring-network:
-    name: shared-dev-network
-    driver: overlay
-    attachable: true
-
 services:
   file-host:
     image: ${FILE_HOST_IMAGE:?set FILE_HOST_IMAGE to an immutable tag or digest}
-    # A fixed container_name can't be shared by more than one replica; Compose
-    # itself refuses to resolve `deploy.replicas > 1` together with one.
-    # scripts/check_scrape_inventory.py and infra/prometheus/*.yml still
-    # target `file-host-server:3000` by that container_name, so it's restored
-    # here as a network alias — the VIP resolves the same DNS name plain
-    # `docker compose up` gives a single container, without touching the
-    # existing scrape-inventory contract.
-    container_name: !reset null
-    networks:
-      monitoring-network:
-        aliases: [file-host-server]
     deploy:
       mode: replicated
       replicas: ${FILE_HOST_REPLICAS:-2}

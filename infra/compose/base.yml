@@ -1,7 +1,16 @@
 networks:
+  # `overlay` (not `bridge`) because file-host's production rollout
+  # (infra/compose/file_host.swarm.yml) needs Swarm's VIP routing mesh, and a
+  # network can't be both a local bridge and an overlay under the same name
+  # on one host — see docs/zero-downtime-deployments.md. This means every
+  # environment, dev included, needs Swarm mode active once
+  # (`docker swarm init`) before `docker compose up` can create this
+  # network; a single-node swarm has no other effect on plain `docker
+  # compose up` usage.
   monitoring-network:
     name: shared-dev-network
-    driver: bridge
+    driver: overlay
+    attachable: true
 volumes:
   caddy_data:
     driver: local

@@ -145,9 +145,11 @@ jobs:
       - name: Validate docker compose config resolves
         run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
 
-      # file-host's production rollout composes a subset of these same
-      # fragments plus a swarm-only overlay (see scripts/deploy-file-host.sh) —
-      # validate that merge resolves independently of the dev stack above.
+      # scripts/deploy-file-host.sh runs this exact `config` render (source
+      # fragments plus a swarm-only overlay) and feeds its output to
+      # `docker stack deploy`, since that command's own compose-file parser
+      # doesn't track the current Compose Specification (docker/cli#2527 is
+      # still open) — validate here that the render itself still resolves.
       - name: Validate file-host swarm rollout config resolves
         run: |
           FILE_HOST_IMAGE=pgathondu/server:test \

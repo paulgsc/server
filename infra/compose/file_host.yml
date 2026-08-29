@@ -1,7 +1,6 @@
 services:
   file-host:
     image: pgathondu/server:latest
-    container_name: file-host-server
     # Pass all variables from your .env file into the container, if present:
     env_file:
       - path: ${REPO_ROOT}/.env
@@ -25,8 +24,16 @@ services:
       - ${REPO_ROOT}/data:/app/data:rw
       - ${REPO_ROOT}/config:/app/config:ro
       - ${REPO_ROOT}/logs:/app/logs:rw
+    # A fixed container_name can't be shared by more than one replica, so it
+    # isn't set here — infra/prometheus/*.yml and
+    # scripts/check_scrape_inventory.py still target `file-host-server:3000`
+    # by that name, so it lives on as a network alias instead. Under plain
+    # `docker compose up` this resolves to the one container exactly as
+    # container_name used to; under the Swarm rollout
+    # (file_host.swarm.yml) it resolves to the service's VIP.
     networks:
-      - monitoring-network
+      monitoring-network:
+        aliases: [file-host-server]
     restart: unless-stopped
     depends_on:
       redis:

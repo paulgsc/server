@@ -6,7 +6,6 @@ readonly COMPOSE_DIR="$ROOT/infra/compose"
 readonly STACK_NAME="${STACK_NAME:-file-host}"
 readonly SERVICE="${STACK_NAME}_file-host"
 readonly TIMEOUT_SECONDS="${DEPLOY_TIMEOUT_SECONDS:-300}"
-readonly NETWORK_NAME="shared-dev-network"
 
 # The production rollout is composed from the same fragment files
 # docker-compose.yml already uses for local dev: base.yml (network/volumes),
@@ -36,33 +35,42 @@ EOF
 
 [[ $# -eq 1 ]] || { usage >&2; exit 64; }
 IMAGE=$1
-if [[ "$IMAGE" == *:latest || "$IMAGE" != *@sha256:* && "$IMAGE" != *:* ]]; then
+
+# Check the tag/digest on the *last path segment* only: a registry address
+# can carry its own `host:port`, which also contains a colon but is not a
+# tag separator (e.g. registry.example:5000/team/file-host has no tag at
+# all, and would otherwise slip past a check that just looks for any `:`).
+image_ref=${IMAGE##*/}
+if [[ "$IMAGE" != *@sha256:* && ( "$image_ref" == *:latest || "$image_ref" != *:* ) ]]; then
 	echo "error: IMAGE must use an immutable non-latest tag or sha256 digest" >&2
 	exit 64
 fi
 
 command -v docker >/dev/null || { echo 'error: docker is required' >&2; exit 69; }
-[[ "$(docker info --format '{{.Swarm.LocalNodeState}}')" == active ]] || {
+# LocalNodeState is also "active" on a plain worker node, which cannot run
+# `docker stack deploy`. ControlAvailable is true only on a manager with
+# control access, which is what this actually requires.
+[[ "$(docker info --format '{{.Swarm.ControlAvailable}}')" == true ]] || {
 	echo 'error: this node is not an active Docker Swarm manager' >&2
 	exit 69
 }
 
-# file_host.swarm.yml declares this network as overlay so replicas get
-# VIP-based load balancing. If a plain `docker compose up` already created it
-# as a local bridge network on this host, Docker refuses to reconcile the two
-# under the same name — fail loudly here instead of letting `docker stack
-# deploy` produce that error deep in its own output.
-network_driver=$(docker network inspect --format '{{.Driver}}' "$NETWORK_NAME" 2>/dev/null || true)
-if [[ -n "$network_driver" && "$network_driver" != overlay ]]; then
-	echo "error: '$NETWORK_NAME' already exists with driver '$network_driver' (expected overlay)" >&2
-	echo "       This is almost always 'docker compose up' having created it as a local bridge" >&2
-	echo "       network. Remove it once nothing on the compose stack depends on it (docker" >&2
-	echo "       network rm $NETWORK_NAME), or move redis/nats off the plain compose stack before" >&2
-	echo "       deploying file-host under Swarm." >&2
-	exit 69
-fi
+# `docker stack deploy` parses Compose files with its own, older loader —
+# it does not track the current Compose Specification the way
+# `docker compose` does (docker/cli#2527 is still open at the time of
+# writing), so syntax this repo's fragments use (the extended `env_file`
+# mapping form, for one) is not guaranteed to parse there even though
+# `docker compose config` accepts it fine. Render through the modern parser
+# first and hand Swarm the fully-resolved, plain-field output instead of
+# the source fragments, so the legacy loader never has to understand
+# anything but basic scalars/lists/maps.
+rendered=$(mktemp "${TMPDIR:-/tmp}/file-host-stack.XXXXXX.yml")
+trap 'rm -f "$rendered"' EXIT
 
-export FILE_HOST_IMAGE="$IMAGE" REPO_ROOT="$ROOT"
+FILE_HOST_IMAGE="$IMAGE" REPO_ROOT="$ROOT" docker compose \
+	"${COMPOSE_FILES[@]/#/--file=}" \
+	config >"$rendered"
+
 echo "Deploying $IMAGE to $SERVICE (start-first, automatic rollback)..."
 
 # `docker stack deploy --detach=false` already blocks on Swarm's own update
@@ -77,7 +85,7 @@ set +e
 timeout "$TIMEOUT_SECONDS" docker stack deploy \
 	--detach=false \
 	--with-registry-auth --resolve-image changed --prune \
-	"${COMPOSE_FILES[@]/#/--compose-file=}" \
+	--compose-file "$rendered" \
 	"$STACK_NAME"
 status=$?
 set -e
