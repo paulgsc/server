@@ -1,23 +1,26 @@
 # Swarm-only overlay for `file-host`'s production rollout.
 #
-# This is NOT a standalone stack: it is layered on top of the same
-# fragments `docker-compose.yml` already includes for local dev — base.yml
-# (network/volumes), redis.yml and nats.yml (file-host's actual
-# dependencies), and file_host.yml itself. See scripts/deploy-file-host.sh,
-# which is the only supported way to apply this file. file-host has no
-# image/env/volumes/network-alias of its own here because those already
-# live in file_host.yml and base.yml; duplicating them would let the
-# definitions drift, and `docker stack deploy`'s own compose-file parser
-# does not track the current Compose Specification the way `docker compose`
-# does (docker/cli#2527 is still open), so this file also avoids anything
-# beyond plain, decades-stable compose-v3 fields — see
-# scripts/deploy-file-host.sh for how the two parsers' gap is bridged.
+# This is NOT a standalone stack: scripts/deploy-file-host.sh (the only
+# supported way to apply this file) layers it directly on top of root
+# docker-compose.yml — the same file `docker compose up` reads for local
+# dev, `include:` list and all — then narrows the merged result to
+# file-host's own service subgraph (file-host, redis, nats) by name. Root
+# docker-compose.yml stays the one place every compose fragment is
+# enumerated; nothing here or in the script re-lists fragment paths.
+# file-host has no image/env/volumes/network-alias of its own in this
+# overlay because those already live in file_host.yml and base.yml;
+# duplicating them would let the definitions drift, and `docker stack
+# deploy`'s own compose-file parser does not track the current Compose
+# Specification the way `docker compose` does (docker/cli#2527 is still
+# open), so this file also avoids anything beyond plain, decades-stable
+# compose-v3 fields — see scripts/deploy-file-host.sh for how the two
+# parsers' gap is bridged.
 #
 # Only file-host gets replica/rolling-update treatment. orchestrator,
 # ollama, monitoring and analytics are intentionally left out of this
-# rollout stack entirely — they're internal services with no uptime SLA, so
-# they stay on the plain `docker compose up` path where Swarm never even
-# enters the picture, rather than riding along with default (single
+# rollout's service subgraph — they're internal services with no uptime
+# SLA, so they stay on the plain `docker compose up` path where Swarm never
+# even enters the picture, rather than riding along with default (single
 # replica, restart-on-failure) Swarm semantics for no benefit.
 services:
   file-host:

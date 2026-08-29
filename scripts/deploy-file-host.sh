@@ -2,25 +2,18 @@
 set -Eeuo pipefail
 
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly COMPOSE_DIR="$ROOT/infra/compose"
 readonly STACK_NAME="${STACK_NAME:-file-host}"
 readonly SERVICE="${STACK_NAME}_file-host"
 readonly TIMEOUT_SECONDS="${DEPLOY_TIMEOUT_SECONDS:-300}"
 
-# The production rollout is composed from the same fragment files
-# docker-compose.yml already uses for local dev: base.yml (network/volumes),
-# file-host's two actual runtime dependencies (redis, nats), file_host.yml
-# itself, and a swarm-only overlay that adds replicas/rolling-update/VIP
-# semantics on top. This is deliberately a *subset* of the same harness, not
-# a parallel definition — orchestrator/ollama/monitoring/analytics have no
-# uptime SLA and stay on the plain `docker compose up` path untouched.
-readonly COMPOSE_FILES=(
-	"$COMPOSE_DIR/base.yml"
-	"$COMPOSE_DIR/redis.yml"
-	"$COMPOSE_DIR/nats.yml"
-	"$COMPOSE_DIR/file_host.yml"
-	"$COMPOSE_DIR/file_host.swarm.yml"
-)
+# root docker-compose.yml (via its own `include:`) stays the one place every
+# compose fragment is enumerated — this script does not keep a second list
+# of fragment paths to hand-sync with it. It renders straight from that file
+# plus the swarm-only overlay, then narrows the result to file-host's own
+# service subgraph by name. Keep this list in sync with
+# infra/compose/file_host.yml's `depends_on`, not with which fragment files
+# exist.
+readonly ROLLOUT_SERVICES=(file-host redis nats)
 
 usage() {
 	cat <<'EOF'
@@ -68,8 +61,9 @@ rendered=$(mktemp "${TMPDIR:-/tmp}/file-host-stack.XXXXXX.yml")
 trap 'rm -f "$rendered"' EXIT
 
 FILE_HOST_IMAGE="$IMAGE" REPO_ROOT="$ROOT" docker compose \
-	"${COMPOSE_FILES[@]/#/--file=}" \
-	config >"$rendered"
+	--file "$ROOT/docker-compose.yml" \
+	--file "$ROOT/infra/compose/file_host.swarm.yml" \
+	config "${ROLLOUT_SERVICES[@]}" >"$rendered"
 
 echo "Deploying $IMAGE to $SERVICE (start-first, automatic rollback)..."
 

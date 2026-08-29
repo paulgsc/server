@@ -155,12 +155,9 @@ jobs:
           FILE_HOST_IMAGE=pgathondu/server:test \
             REPO_ROOT=${{ github.workspace }} \
             docker compose \
-              --file infra/compose/base.yml \
-              --file infra/compose/redis.yml \
-              --file infra/compose/nats.yml \
-              --file infra/compose/file_host.yml \
+              --file docker-compose.yml \
               --file infra/compose/file_host.swarm.yml \
-              config --quiet
+              config file-host redis nats --quiet
 
       - name: Parse zero-downtime deploy script
         run: bash -n scripts/deploy-file-host.sh

@@ -19,34 +19,49 @@ same is not true of `file_host`'s long-lived WebSocket connections (see the
 `docker-compose.yml` includes a set of fragments under `infra/compose/` —
 `base.yml` for the shared network/volumes, then one file per service. That
 `include:` list is the single source of truth for every service's image,
-environment, volumes, and healthcheck. The production rollout reuses those
-exact fragments rather than re-declaring `file-host` from scratch in a
-parallel `infra/deploy/` tree:
+environment, volumes, and healthcheck, and it stays the *only* such list:
+the production rollout renders directly from `docker-compose.yml` itself,
+not from a second, hand-maintained enumeration of fragment paths that could
+drift out of sync with it.
 
-* `infra/compose/base.yml`, `redis.yml`, `nats.yml`, `file_host.yml` — the
-  same files `docker compose up` reads locally.
+```sh
+docker compose --file docker-compose.yml --file infra/compose/file_host.swarm.yml \
+  config file-host redis nats
+```
+
+* `docker-compose.yml` — unchanged, the same file `docker compose up` reads
+  locally, `include:` list and all.
 * `infra/compose/file_host.swarm.yml` — a small overlay that adds only what
   Swarm needs: replicas, `endpoint_mode: vip`, `update_config`/
   `rollback_config` (start-first, automatic rollback). It carries no image,
   environment, volume, or network config of its own — those stay defined
   exactly once, in `file_host.yml` and `base.yml`, so the two paths cannot
   drift apart.
+* `config file-host redis nats` — `docker compose config` accepts a list of
+  service names and narrows its output (services, and the networks/volumes
+  they actually use) to just those, still resolved from the full merged
+  project. `redis` and `nats` are named because they're file-host's actual
+  `depends_on` graph in `file_host.yml`; if that ever changes, this is the
+  one place to update it, and it names *services*, not files — adding,
+  splitting, or renaming a fragment under `infra/compose/` needs no
+  corresponding change here.
 
-`scripts/deploy-file-host.sh` merges these through `docker compose config`
-(the same command the `infra_ci` job already validates them with) and hands
-the fully-resolved result to `docker stack deploy`, rather than letting
-Swarm's own, older compose-file parser merge and interpret the source
-fragments — see "Why a render step" below for why that distinction matters.
+`scripts/deploy-file-host.sh` renders this filtered view through
+`docker compose config` (the same command the `infra_ci` job validates it
+with) and hands the fully-resolved result to `docker stack deploy`, rather
+than letting Swarm's own, older compose-file parser merge and interpret
+`docker-compose.yml` itself — see "Why a render step" below for why that
+distinction matters.
 
-Only `redis` and `nats` ride along with `file-host` in this rollout — they
-are its actual `depends_on` graph. `orchestrator`, `ollama`, and the
-monitoring/analytics fragments are deliberately left out: including them
-would buy nothing (Swarm's own defaults already behave like `restart:
-unless-stopped` for a single-replica service) while pulling unrelated
-services into file-host's blast radius.
+`orchestrator`, `ollama`, and the monitoring/analytics services are
+deliberately left out of the filtered set: including them would buy nothing
+(Swarm's own defaults already behave like `restart: unless-stopped` for a
+single-replica service) while pulling unrelated services into file-host's
+blast radius. They're still part of the one root manifest — just not part
+of this rollout's service subgraph.
 
 `scripts/deploy-file-host.sh` is the only supported entry point that
-composes these files. Do not `docker stack deploy` `file_host.swarm.yml`
+composes `file_host.swarm.yml` this way. Do not `docker stack deploy` it
 directly — see the header comment in that file for why.
 
 ## Why the network changes
@@ -88,13 +103,13 @@ its own, older loader, not `docker compose`'s — `docker/cli#2527`, asking
 Docker to unify the two, is still open. That loader isn't guaranteed to
 understand syntax `docker compose config` accepts fine — `file_host.yml`'s
 extended `env_file` mapping form (`path:`/`required:`), among other things —
-so handing Swarm the source fragments directly risks a parse failure in
+so handing Swarm `docker-compose.yml` directly risks a parse failure in
 production that `infra_ci`'s `docker compose config --quiet` check, which
 uses the newer parser, would never catch.
 
 `scripts/deploy-file-host.sh` avoids the gap instead of hoping it doesn't
-matter: it renders the fragments through `docker compose config` first,
-which resolves `env_file` into a plain `environment:` map and expands every
+matter: it renders through `docker compose config` first, which resolves
+`env_file` into a plain `environment:` map and expands every
 shorthand into its long form, then feeds *that* fully-resolved document —
 plain scalars, lists, and maps only, nothing Compose-Specification-only left
 for the older loader to trip on — to `docker stack deploy` in a single
