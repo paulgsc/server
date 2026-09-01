@@ -1,3 +1,8 @@
+---
+name: babysit
+description: Repo-specific cadence policy Claude Code consults before acting on PR check-ins or webhook events for a PR it drives — governs when it's safe to stand down active polling once a PR goes quiet and green. Consulted automatically during PR babysitting; not meant for direct/manual invocation.
+---
+
 # babysit
 
 Repo-specific cadence guidance for the PR-watch/babysit posture described in the parent
@@ -17,7 +22,10 @@ the last check-in:
 
 - CI is green on the current head, and the head commit hasn't changed since the last
   check-in,
-- no new review, review-thread, or PR-comment activity,
+- there are no unresolved review threads on the PR, and no new review, review-thread,
+  or PR-comment activity since the last check-in — an existing unresolved thread with
+  no new activity still blocks quiet-and-green; only a resolved thread stops counting
+  against it,
 - no merge conflict against the base branch,
 - Claude Approvals (where the repo runs it) is passing or not required.
 
