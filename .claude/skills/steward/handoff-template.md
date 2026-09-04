@@ -27,7 +27,13 @@ review rounds have happened since the PR opened** and whether `steward/SKILL.md`
 has already been hit — a findings tally alone doesn't reveal whether that came from two rounds
 or five, and a successor session needs the actual round count to know whether it's still free
 to auto-request another review or has to read the converging/escalating/unclear pattern first.
-"What just landed" only covers PRs that already merged — a successor session needs this section
+If `babysit/SKILL.md` is actively watching this PR, also record **both of its counters**: how
+many consecutive quiet-and-green check-ins have happened (toward its 3-cycle stand-down) and
+how many consecutive check-ins have passed with a review requested but unanswered (toward its
+2-check-in graceful timeout) — recording only that a check-in trigger exists loses both, and a
+successor can't safely reset them (adds idle polling) or guess them (risks standing down early
+or waiting past the timeout). "What just landed" only covers PRs that already merged — a
+successor session needs this section
 to find and resume an open drive-to-green loop without re-discovering where it left off.
 
 ## Review cycle — findings and tally
