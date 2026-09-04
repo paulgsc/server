@@ -62,9 +62,11 @@ never "sounds like good practice."
   (`git fetch origin main && git checkout -B <branch> origin/main`) before adding new
   commits — never stack new work on already-merged history. Fetch fresh; a stale local
   `origin/main` ref produces false alarms in both directions.
-- **Run `git diff --stat` before every commit, not only `git status`.** A `Bin ... -> ...
-  bytes` line on a file you expect to be text source is the tell for embedded-NUL or other
-  binary corruption that no lint, typecheck, or test will catch.
+- **Run `git diff --cached --stat` before every commit, not only `git status`.** Run it
+  after staging (`git add`) — plain `git diff --stat` only shows the unstaged worktree, so
+  it can miss binary corruption in content that's already staged and about to be committed.
+  A `Bin ... -> ... bytes` line on a file you expect to be text source is the tell for
+  embedded-NUL or other binary corruption that no lint, typecheck, or test will catch.
 
 ## Multi-session relay work
 
