@@ -39,9 +39,12 @@ feedback that's still true just because fixing it isn't this PR's job.
 
 A `check_suite.completed` webhook event can name a **stale** `head_sha` — this has happened
 repeatedly on this relay, sometimes minutes after the real fix commit was already pushed.
-Before treating any such event as a signal to merge: re-fetch the PR directly and compare the
-event's `head_sha` against the PR's actual current head; only the next event naming the true
-current head is safe to act on. Use `get_check_runs`, not the legacy commit-status API — this
+Before treating any such event as a signal to merge: re-fetch the PR directly
+(`pull_request_read`/`get_check_runs`) and compare against the PR's actual current head. Don't
+wait for a future webhook to confirm it — if the current head's own completion event already
+arrived before this stale one showed up, there may be no "next" event ever again, and waiting
+for one stalls a PR that's actually already green. The live check you just ran is the ground
+truth; act on what it shows. Use `get_check_runs`, not the legacy commit-status API — this
 repo's CI runs as GitHub Actions checks, and the legacy API can report `total_count: 0` while
 checks are actively running.
 
