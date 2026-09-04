@@ -36,6 +36,20 @@ genuinely out of scope for this PR: reply explaining why and where the real fix 
 follow-up issue, a named future story), and leave the thread **open** — don't resolve away
 feedback that's still true just because fixing it isn't this PR's job.
 
+## Cap the review-fix cycle — a diff has no upper bound on how many findings it can surface
+
+A fix's own diff is new surface area for the next review, and there is no a priori bound on
+how many rounds that can take — this canon's own landing PR hit real, escalating findings for
+seven straight rounds, each fix surfacing ground the previous rounds hadn't touched. "Treat
+every finding as real" (above) is still correct, but combined with an unconditional
+re-request-after-every-push idiom it has no natural stopping point, and every round costs real
+tokens. **After 5 review rounds since the PR was opened**, stop auto-requesting the next
+review and check in with the user instead: summarize the pattern (how many rounds, how many
+findings were real) and ask whether to keep going, merge as-is once CI/mergeable-state allow
+it, or pause for manual review. This gates the *automatic* continuation only — it never
+excuses dropping a still-open real finding just to stay under the cap, and it doesn't apply
+retroactively to rounds already spent; it only stops the *next* auto-triggered one.
+
 ## Verify "CI is green" against live state, not the webhook event that announced it
 
 A `check_suite.completed` webhook event can name a **stale** `head_sha` — this has happened
