@@ -16,7 +16,14 @@ For `cargo clippy` specifically: pass `--keep-going`, since cargo's default fail
 scheduling stops checking a second crate the moment the first one errors, silently
 truncating the finding list to whatever crate happened to fail first. Redirect output with
 `>`, never pipe through `| tail` — a pipeline reports the last command's exit code, not
-clippy's, so a piped run can look clean when it wasn't.
+clippy's, so a piped run can look clean when it wasn't. **Also pass `--all-targets`** —
+without it, cargo doesn't compile `#[cfg(test)]` code at all, so clippy never even sees test
+modules, let alone lints them (verified directly: `cargo clippy -p activity_repo --no-deps`
+compiles clean even with a real `.expect()` sitting in its own test module; adding
+`--all-targets` to the identical command surfaces 27 errors in that same crate, `.expect()`
+included). CI's own `lint.yml` clippy job never passes `--all-targets` either, so it is
+currently blind to every clippy issue in test code — this is the only place that discipline
+gets enforced at all.
 
 ## Cross-repo coupling with `paulgsc/some-ui`
 
@@ -47,8 +54,12 @@ never "sounds like good practice."
 - **No `sqlite3` CLI installed.** Use Python's built-in `sqlite3` module for manual
   inspection of a throwaway/migrated database instead.
 - **`.expect()` in test code is not covered by `clippy.toml`'s `allow-unwrap-in-tests`** —
-  that setting exempts `.unwrap()` only. Use `.unwrap()`, never `.expect()`, in test code, or
-  a plain `cargo check`/`cargo test` run will look clean while `cargo clippy` still fails.
+  that setting exempts `.unwrap()` only, and `.cargo/config.toml`'s trailing `-D warnings`
+  does promote the `-W clippy::expect_used` flag on that same list to a hard error (verified
+  directly against a real crate — see the `--all-targets` note in "Pre-commit verification"
+  above for why this only shows up with that flag). Use `.unwrap()`, never `.expect()`, in
+  test code — `cargo clippy --all-targets` is the only thing that will ever catch this here;
+  CI's own clippy job won't.
 - **A tool call can be denied by this environment's permission classifier independent of
   whether the action itself is valid.** Scheduling and cleanup calls in particular
   (`send_later`/`create_trigger`, `unsubscribe_pr_activity`, `delete_trigger`) have each been
