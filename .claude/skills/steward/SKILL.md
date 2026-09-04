@@ -53,9 +53,13 @@ checks are actively running.
 Standing authorization is scoped to the exact repo(s) it was granted for and must be restated
 in every handoff, not assumed to persist silently — a grant for this repo does not imply
 `paulgsc/some-ui`, or vice versa. When it applies here: confirm CI is green on the *current*
-head (per the freshness check above), confirm `mergeable_state: "clean"`, confirm no unresolved
-review thread represents an unaddressed *fixable* finding (a disclosed-and-replied-to deferred
-gap is fine to leave open), and confirm Claude Approvals is passing or not required for this
+head (per the freshness check above), confirm `mergeable_state: "clean"`, confirm bot-review
+coverage on the current head is actually confirmed if this repo's reviewer doesn't auto-review
+pushes (`babysit/SKILL.md`'s own criterion and graceful timeout apply here too — "no unresolved
+thread" is not the same as "reviewed," since a review requested but not yet answered creates no
+thread at all), confirm no unresolved review thread represents an unaddressed *fixable* finding
+(a disclosed-and-replied-to deferred gap is fine to leave open), and confirm Claude Approvals is
+passing or not required for this
 repo — then merge (squash, matching this repo's existing history) without pausing to ask again.
 After merging: verify the linked issue actually closed, not just that the PR shows merged, then
 unsubscribe from PR activity and cancel any standing check-in trigger for it.
