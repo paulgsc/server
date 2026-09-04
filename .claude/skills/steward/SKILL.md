@@ -65,9 +65,24 @@ The cap stops the automatic *seeking* of new findings, not the ability to confir
 the head you actually land on: after picking a bucket above and pushing whatever fix that
 implies, one closing review of that resulting head is still allowed. Auto-merge and
 `babysit/SKILL.md` both require confirmed coverage on the *exact* current head, so a capped PR
-could otherwise never legitimately merge at all. That closing review doesn't reopen the loop —
-read whatever it finds through the same three buckets above, it doesn't license another
-automatic round.
+could otherwise never legitimately merge at all.
+
+**That closing review's own outcome is final — by severity, not by requesting yet another
+review of whatever it finds** (an earlier version of this rule just said "one closing review,"
+which only pushed the same deadlock back one step: if that review itself found something,
+fixing it produced yet another uncovered head with no policy-compliant next move). Read the
+closing review's finding, if any, this way instead:
+
+- **Clean, or only trivial/low-risk** (documentation, phrasing, additive text, anything that
+  doesn't change real behavior or a load-bearing rule) — fix it directly and merge. A small fix
+  doesn't need its own re-review; this org's near-zero false-positive rate on bot findings is
+  the evidence that's safe, and re-review-forever is exactly the cost this cap exists to bound.
+- **Substantive** (changes real behavior, logic, or a load-bearing rule) — that's the signal to
+  stop automating entirely and hand off to the user for approval or manual merge, not push
+  another automatic round hoping it's the last one.
+
+Either branch terminates. There is no version of this rule where a capped PR waits on one more
+automatic review indefinitely.
 
 This gates the *automatic* continuation only — it never excuses dropping a still-open real
 finding just to stay under the cap, and it doesn't apply retroactively to rounds already spent;

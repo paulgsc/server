@@ -7,13 +7,23 @@ guard, unlike `paulgsc/some-ui`'s hook) — but `lint-staged` here only covers t
 JS/TS-adjacent files. It says nothing about the Rust workspace: nothing in the git hooks
 invokes `cargo` at all, in any environment. A clean, quiet commit is not evidence the Rust
 side compiles, passes clippy, or has an up-to-date `.sqlx/` cache — run
-`cargo check --workspace`, `cargo test --workspace`, **`cargo clippy --workspace` (see flags
-below — this is not optional; `cargo check` passing is not evidence `cargo clippy` will,
-verified directly: `cargo check -p enum-name-derive` succeeds while `cargo clippy -p
-enum-name-derive --keep-going --no-deps` reports real denied-lint errors in that crate's own
-non-test code)**, and `cargo sqlx prepare --workspace` yourself before every push, regardless
-of environment. `sqlx::query!`/`query_as!` verify SQL against a real database at compile
-time, so `DATABASE_URL` must point at a migrated throwaway database, not be unset.
+`cargo check --workspace`, `cargo test --workspace`, **`cargo clippy` on every package your
+diff actually touches or adds** (see flags below — this is not optional; `cargo check` passing
+is not evidence `cargo clippy` will, verified directly: `cargo check -p enum-name-derive`
+succeeds while `cargo clippy -p enum-name-derive --keep-going --no-deps` reports real
+denied-lint errors in that crate's own non-test code), and `cargo sqlx prepare --workspace`
+yourself before every push, regardless of environment. `sqlx::query!`/`query_as!` verify SQL
+against a real database at compile time, so `DATABASE_URL` must point at a migrated throwaway
+database, not be unset.
+
+**Don't run `cargo clippy --workspace` as a pass/fail gate** — this workspace already carries
+pre-existing clippy debt in crates a given push doesn't touch (`enum-name-derive` is a
+confirmed example: 5 real errors, unrelated to and unchanged by this PR's own diff), so a
+whole-workspace run can never pass clean regardless of what you changed. Scope the run to the
+packages your diff touches (`cargo clippy -p <pkg1> -p <pkg2> ...`), and if a workspace-wide
+run turns up a failure in a crate you didn't touch, confirm that with `git diff --stat
+origin/main -- <path>` before assuming it's yours to fix — an untouched crate's pre-existing
+failure is debt to note, not a blocker for your push.
 
 For `cargo clippy` specifically: pass `--keep-going`, since cargo's default fail-fast
 scheduling stops checking a second crate the moment the first one errors, silently
