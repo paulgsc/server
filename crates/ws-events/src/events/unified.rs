@@ -24,7 +24,10 @@ pub struct UnifiedEvent {
 }
 
 pub mod unified_event {
-	use super::*;
+	use super::{
+		AudioChunkMessage, ClientCountMessage, ErrorMessage, ObsCommandMessage, ObsStatusMessage, OrchestratorStateMessage, SubtitleMessage, SystemEventMessage,
+		TabMetaDataMessage, TickCommandMessage, UtteranceMessage,
+	};
 
 	#[derive(Clone, PartialEq, prost::Oneof)]
 	pub enum Event {
@@ -53,14 +56,14 @@ pub mod unified_event {
 	}
 }
 
-/// TryFrom<Event> for UnifiedEvent (fallible): transportable events -> Ok(UnifiedEvent), otherwise Err(String)
+/// `TryFrom`<Event> for `UnifiedEvent` (fallible): transportable events -> Ok(UnifiedEvent), otherwise Err(String)
 impl From<Event> for Option<UnifiedEvent> {
 	fn from(event: Event) -> Self {
 		match event {
-			Event::ObsStatus { status } => ObsStatusMessage::new(status).ok().map(|msg| UnifiedEvent {
+			Event::ObsStatus { status } => ObsStatusMessage::new(&status).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::ObsStatus(msg)),
 			}),
-			Event::ObsCmd { cmd } => ObsCommandMessage::new(uuid::Uuid::new_v4().to_string(), cmd).ok().map(|msg| UnifiedEvent {
+			Event::ObsCmd { cmd } => ObsCommandMessage::new(uuid::Uuid::new_v4().to_string(), &cmd).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::ObsCommand(msg)),
 			}),
 			Event::TabMetaData { data } => Some(UnifiedEvent {
@@ -72,10 +75,10 @@ impl From<Event> for Option<UnifiedEvent> {
 			Event::Error { message } => Some(UnifiedEvent {
 				event: Some(unified_event::Event::Error(ErrorMessage { message })),
 			}),
-			Event::Utterance { text, metadata } => UtteranceMessage::new(text, metadata).ok().map(|msg| UnifiedEvent {
+			Event::Utterance { text, metadata } => UtteranceMessage::new(text, &metadata).ok().map(|msg| UnifiedEvent {
 				event: Some(unified_event::Event::Utterance(msg)),
 			}),
-			Event::System(sys_event) => serde_json::to_vec(&sys_event).ok().map(|payload| {
+			Event::System(sys_event) => crate::events::to_json_vec(&sys_event).ok().map(|payload| {
 				let event_type = match &sys_event {
 					SystemEvent::ConnectionStateChanged { .. } => "ConnectionStateChanged",
 					SystemEvent::MessageProcessed { .. } => "MessageProcessed",
@@ -115,25 +118,27 @@ impl From<Event> for Option<UnifiedEvent> {
 	}
 }
 
-/// TryFrom implementation for conversation with error handling
+/// `TryFrom` implementation for conversation with error handling
 impl TryFrom<Event> for UnifiedEvent {
 	type Error = String;
 
 	fn try_from(event: Event) -> Result<Self, Self::Error> {
-		let event_type = event.get_type().map(|et| et.to_string()).unwrap_or("SystemEvent".to_string());
+		let event_type = event.get_type().map_or_else(|| "SystemEvent".to_string(), |et| et.to_string());
 
-		Option::<UnifiedEvent>::from(event).ok_or_else(|| format!("Event type '{}' cannot be converted to UnifiedEvent (should not be sent to nats)", event_type))
+		Option::<Self>::from(event).ok_or_else(|| owned_format!("Event type '{event_type}' cannot be converted to UnifiedEvent (should not be sent to nats)"))
 	}
 }
 
-/// Convert UnifiedEvent to Result<Event, String>
+/// Convert `UnifiedEvent` to Result<Event, String>
 impl From<UnifiedEvent> for Result<Event, String> {
 	fn from(unified: UnifiedEvent) -> Self {
 		match unified.event {
 			Some(unified_event::Event::ObsStatus(msg)) => msg.to_obs_event().map_err(|e| e.to_string()).map(|status| Event::ObsStatus { status }),
 			Some(unified_event::Event::ObsCommand(msg)) => msg.to_obs_command().map_err(|e| e.to_string()).map(|cmd| Event::ObsCmd { cmd }),
 			Some(unified_event::Event::TabMetaData(msg)) => Ok(Event::TabMetaData { data: msg.to_now_playing() }),
-			Some(unified_event::Event::ClientCount(msg)) => Ok(Event::ClientCount { count: msg.count as usize }),
+			Some(unified_event::Event::ClientCount(msg)) => Ok(Event::ClientCount {
+				count: usize::try_from(msg.count).unwrap_or(usize::MAX),
+			}),
 			Some(unified_event::Event::Error(msg)) => Ok(Event::Error { message: msg.message }),
 			Some(unified_event::Event::Utterance(msg)) => msg
 				.get_metadata()
@@ -141,12 +146,12 @@ impl From<UnifiedEvent> for Result<Event, String> {
 				.map(|metadata| Event::Utterance { text: msg.text.clone(), metadata }),
 			Some(unified_event::Event::SystemEvent(msg)) => serde_json::from_slice::<SystemEvent>(&msg.payload)
 				.map(Event::System)
-				.map_err(|e| format!("Failed to deserialize SystemEvent: {}", e)),
+				.map_err(|e| owned_format!("Failed to deserialize SystemEvent: {e}")),
 			Some(unified_event::Event::OrchestratorCommandData(msg)) => msg.to_tick_command().map(|(stream_id, command)| Event::OrchestratorCommandData { stream_id, command }),
 			Some(unified_event::Event::OrchestratorState(msg)) => msg.to_orchestrator_state().map(|(stream_id, state)| Event::OrchestratorState { stream_id, state }),
 			Some(unified_event::Event::AudioChunk(msg)) => {
 				// Decode bytes back to f32 samples
-				let samples = msg.decode_samples().map_err(|e| format!("Failed to decode audio samples: {}", e))?;
+				let samples = msg.decode_samples().map_err(|e| owned_format!("Failed to decode audio samples: {e}"))?;
 
 				Ok(Event::AudioChunk {
 					sample_rate: msg.sample_rate.unwrap_or(48000), // Default to 48kHz if not present
@@ -166,8 +171,9 @@ impl From<UnifiedEvent> for Result<Event, String> {
 }
 
 impl UnifiedEvent {
-	/// Get the EventType for this unified event
-	pub fn event_type(&self) -> Option<EventType> {
+	/// Get the `EventType` for this unified event
+	#[must_use]
+	pub const fn event_type(&self) -> Option<EventType> {
 		match &self.event {
 			Some(unified_event::Event::ObsStatus(_)) => Some(EventType::ObsStatus),
 			Some(unified_event::Event::ObsCommand(_)) => Some(EventType::ObsCommand),
@@ -185,11 +191,13 @@ impl UnifiedEvent {
 	}
 
 	/// Get the NATS subject for this event
+	#[must_use]
 	pub fn subject(&self) -> Option<String> {
 		self.event_type().map(|et| et.subject().to_string())
 	}
 
 	/// Get the connection-specific subject for this event
+	#[must_use]
 	pub fn connection_subject(&self, connection_id: &str) -> Option<String> {
 		self.event_type().map(|et| et.connection_subject(connection_id))
 	}
