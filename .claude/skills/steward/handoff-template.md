@@ -22,9 +22,13 @@ cross-repo story.
 
 For any PR not yet merged when this handoff is written: `owner/repo#number`, branch, current
 head SHA, CI status, whether review coverage is confirmed for that exact head, any unresolved
-thread and why, and whether a check-in trigger is scheduled for it. "What just landed" only
-covers PRs that already merged — a successor session needs this section to find and resume an
-open drive-to-green loop without re-discovering where it left off.
+thread and why, and whether a check-in trigger is scheduled for it. Also record **how many
+review rounds have happened since the PR opened** and whether `steward/SKILL.md`'s 5-round cap
+has already been hit — a findings tally alone doesn't reveal whether that came from two rounds
+or five, and a successor session needs the actual round count to know whether it's still free
+to auto-request another review or has to read the converging/escalating/unclear pattern first.
+"What just landed" only covers PRs that already merged — a successor session needs this section
+to find and resume an open drive-to-green loop without re-discovering where it left off.
 
 ## Review cycle — findings and tally
 

@@ -60,6 +60,15 @@ checking in, read what the pattern of rounds actually shows:
 
 Either way, summarize the pattern for the user (how many rounds, how many findings were real,
 which bucket above) and let them decide whether to keep going, merge as-is, or restructure.
+
+The cap stops the automatic *seeking* of new findings, not the ability to confirm coverage on
+the head you actually land on: after picking a bucket above and pushing whatever fix that
+implies, one closing review of that resulting head is still allowed. Auto-merge and
+`babysit/SKILL.md` both require confirmed coverage on the *exact* current head, so a capped PR
+could otherwise never legitimately merge at all. That closing review doesn't reopen the loop —
+read whatever it finds through the same three buckets above, it doesn't license another
+automatic round.
+
 This gates the *automatic* continuation only — it never excuses dropping a still-open real
 finding just to stay under the cap, and it doesn't apply retroactively to rounds already spent;
 it only stops the *next* auto-triggered one.
