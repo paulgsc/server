@@ -18,12 +18,22 @@ Name the PR(s) that merged since the last handoff, `owner/repo#number` and squas
 issue(s) they closed. If the story spans repos, name every PR — never "landed the PR" for a
 cross-repo story.
 
+## In-flight PR state, if anything is still open
+
+For any PR not yet merged when this handoff is written: `owner/repo#number`, branch, current
+head SHA, CI status, whether review coverage is confirmed for that exact head, any unresolved
+thread and why, and whether a check-in trigger is scheduled for it. "What just landed" only
+covers PRs that already merged — a successor session needs this section to find and resume an
+open drive-to-green loop without re-discovering where it left off.
+
 ## Review cycle — findings and tally
 
 For each bot/human review finding this session traced and fixed: what it was, why it was real
 (or why it wasn't, if genuinely noise), the fix, the commit SHA. Keep a running tally (real
-findings / total PRs reviewed) across the relay's history if prior handoffs kept one — it's the
-evidence base for "treat every bot finding as a bug report."
+findings / total findings reviewed, **not** PR count — a single PR can carry more than one
+finding, so a findings-per-PR ratio can exceed 100% and stops meaning anything) across the
+relay's history if prior handoffs kept one — it's the evidence base for "treat every bot
+finding as a bug report."
 
 ## Disclosed but deliberately not fixed
 
