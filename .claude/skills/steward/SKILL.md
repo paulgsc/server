@@ -57,38 +57,12 @@ repo — then merge (squash, matching this repo's existing history) without paus
 After merging: verify the linked issue actually closed, not just that the PR shows merged, then
 unsubscribe from PR activity and cancel any standing check-in trigger for it.
 
-## `cargo clippy`/`cargo sqlx prepare` are never hook-driven — verify them yourself, every time
-
-Nothing in this repo's git hooks invokes the Rust toolchain (`.husky/pre-commit` only runs
-`lint-staged`, which is JS/TS-scoped) — a clean, quiet commit says nothing about whether the
-Rust side actually compiles, passes clippy, or has a stale `.sqlx/` cache. Run
-`cargo check --workspace`, `cargo test --workspace`, and `cargo sqlx prepare --workspace`
-yourself before every push, regardless of environment. For `cargo clippy` specifically: pass
-`--keep-going`, since cargo's default fail-fast scheduling stops checking a second crate the
-moment the first one errors, silently truncating the finding list; redirect output with `>`,
-never pipe through `| tail`, since a pipeline reports the last command's exit code, not
-clippy's.
-
-## A tool-permission classifier can deny a call independent of GitHub-side state
-
-Scheduling and cleanup calls (`send_later`/`create_trigger`, `unsubscribe_pr_activity`,
-`delete_trigger`) have each been denied in some sessions and succeeded immediately in others on
-this relay — no call is reliably always-blocked or always-unblocked. Treat each denial as
-independent: retry at most once or twice, and if a closely related tool does functionally the
-same thing (e.g. `create_trigger` under `send_later`), try that once before concluding the
-capability is unavailable this session. If a blocked call actually matters — cleanup didn't
-happen, or there's no way left to get a future check-in scheduled on a PR that's still red —
-say so to the user rather than silently working around it or silently doing without.
-
-## Before every push: diff --stat, not just status; fresh fetch, not a stale local ref
-
-Run `git diff --stat` before committing, not only `git status` — a `Bin ... -> ... bytes` line
-on a file you expect to be text source is the tell for embedded-NUL or other binary corruption
-that no lint, typecheck, or test will catch. Always `git fetch origin main` fresh before
-trusting a local `origin/main` ref for a "does my branch already contain X" question — a stale
-ref produces false alarms in both directions. If the branch's previous PR already merged,
-restart it from the freshly fetched default branch before adding new commits; never stack new
-work on top of already-merged history.
+The `cargo clippy`/`cargo sqlx prepare` verification discipline, the tool-permission classifier
+idiom (a scheduling/cleanup call denied independent of GitHub-side state — retry once or twice,
+try a closely related tool once), and the git hygiene discipline (`diff --stat` before
+committing, fresh `fetch` before trusting a local ref, restart a branch whose predecessor PR
+already merged) apply here too — see the "Cold-start footguns" section of `CLAUDE.md`, which
+isn't PR-lifecycle-specific so it lives there instead of being duplicated in this file.
 
 ## Cross-repo PRs: name every one, every time
 
