@@ -43,12 +43,26 @@ how many rounds that can take — this canon's own landing PR hit real, escalati
 seven straight rounds, each fix surfacing ground the previous rounds hadn't touched. "Treat
 every finding as real" (above) is still correct, but combined with an unconditional
 re-request-after-every-push idiom it has no natural stopping point, and every round costs real
-tokens. **After 5 review rounds since the PR was opened**, stop auto-requesting the next
-review and check in with the user instead: summarize the pattern (how many rounds, how many
-findings were real) and ask whether to keep going, merge as-is once CI/mergeable-state allow
-it, or pause for manual review. This gates the *automatic* continuation only — it never
-excuses dropping a still-open real finding just to stay under the cap, and it doesn't apply
-retroactively to rounds already spent; it only stops the *next* auto-triggered one.
+tokens.
+
+**After 5 review rounds since the PR was opened**, stop auto-requesting the next review. Before
+checking in, read what the pattern of rounds actually shows:
+
+- **Converging** (later rounds smaller, more marginal, unrelated to each other) — accept the
+  residual and stop asking for more review. A PR doesn't need a zero-finding steady state to be
+  mergeable; note any outstanding nitpick on its own thread and proceed once the other merge
+  criteria hold.
+- **Escalating or clustering** (each fix reveals a structurally adjacent bug in the same area —
+  the way a single SHA-matching requirement kept cascading into every file that referenced it
+  here) — that's a smell that the underlying change, not any individual fix, may need a
+  structural rework or a narrower re-scoping. Don't keep auto-patching through it.
+- **Genuinely unclear which** — block for human input rather than guessing.
+
+Either way, summarize the pattern for the user (how many rounds, how many findings were real,
+which bucket above) and let them decide whether to keep going, merge as-is, or restructure.
+This gates the *automatic* continuation only — it never excuses dropping a still-open real
+finding just to stay under the cap, and it doesn't apply retroactively to rounds already spent;
+it only stops the *next* auto-triggered one.
 
 ## Verify "CI is green" against live state, not the webhook event that announced it
 
