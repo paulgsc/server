@@ -23,10 +23,13 @@ clippy's, so a piped run can look clean when it wasn't.
 This repo's generated route snapshot (`dump-routes`, `apps/servers/file_host/docs/route-inventory.md`)
 is consumed read-only by `paulgsc/some-ui` as `packages/contract-harness/routes.server.json`
 and `packages/server-routes/src/generated/routes.ts` — both are copies of an artifact this
-repo generates about itself, not files `some-ui` owns the content of. When a change here
-touches a route's request/response shape, regenerate and hand off the new snapshot rather
-than letting `some-ui` drift from what this repo actually serves; see that repo's own
-`CLAUDE.md` for how it consumes the snapshot.
+repo generates about itself, not files `some-ui` owns the content of. `RouteDescriptor` only
+carries method, path, the versioning flag, and module — it proves a route exists and where,
+nothing about its request/response shape. When a change here adds, removes, renames, or moves
+a route, regenerate and hand off the new snapshot so `some-ui`'s contract harness catches the
+diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
+route-snapshot diff as proof a payload change made it across — see that repo's own `CLAUDE.md`
+for how it consumes the snapshot.
 
 ## Cold-start footguns worth not re-discovering
 
