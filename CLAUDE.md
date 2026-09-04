@@ -7,10 +7,13 @@ guard, unlike `paulgsc/some-ui`'s hook) — but `lint-staged` here only covers t
 JS/TS-adjacent files. It says nothing about the Rust workspace: nothing in the git hooks
 invokes `cargo` at all, in any environment. A clean, quiet commit is not evidence the Rust
 side compiles, passes clippy, or has an up-to-date `.sqlx/` cache — run
-`cargo check --workspace`, `cargo test --workspace`, and `cargo sqlx prepare --workspace`
-yourself before every push, regardless of environment. `sqlx::query!`/`query_as!` verify
-SQL against a real database at compile time, so `DATABASE_URL` must point at a migrated
-throwaway database, not be unset.
+`cargo check --workspace`, `cargo test --workspace`, **`cargo clippy --workspace` (see flags
+below — this is not optional; `cargo check` passing is not evidence `cargo clippy` will,
+verified directly: `cargo check -p enum-name-derive` succeeds while `cargo clippy -p
+enum-name-derive --keep-going --no-deps` reports real denied-lint errors in that crate's own
+non-test code)**, and `cargo sqlx prepare --workspace` yourself before every push, regardless
+of environment. `sqlx::query!`/`query_as!` verify SQL against a real database at compile
+time, so `DATABASE_URL` must point at a migrated throwaway database, not be unset.
 
 For `cargo clippy` specifically: pass `--keep-going`, since cargo's default fail-fast
 scheduling stops checking a second crate the moment the first one errors, silently

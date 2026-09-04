@@ -84,9 +84,13 @@ in every handoff, not assumed to persist silently — a grant for this repo does
 `paulgsc/some-ui`, or vice versa. When it applies here: confirm CI is green on the *current*
 head (per the freshness check above), confirm `mergeable_state: "clean"`, confirm bot-review
 coverage on the current head is actually confirmed if this repo's reviewer doesn't auto-review
-pushes (`babysit/SKILL.md`'s own criterion and graceful timeout apply here too — "no unresolved
-thread" is not the same as "reviewed," since a review requested but not yet answered creates no
-thread at all), confirm no unresolved review thread represents an unaddressed *fixable* finding
+pushes — "no unresolved thread" is not the same as "reviewed," since a review requested but
+not yet answered creates no thread at all. **Unlike `babysit/SKILL.md`'s stand-down criteria,
+auto-merge does not get babysit's graceful timeout** — that timeout only licenses ending
+active polling while leaving the PR for a human to merge; it never licenses merging a push
+nobody has actually reviewed. If review coverage can't be confirmed, don't merge — fall back
+to babysit's normal watch (and its own eventual stand-down) instead. Also confirm no
+unresolved review thread represents an unaddressed *fixable* finding
 (a disclosed-and-replied-to deferred gap is fine to leave open), and confirm Claude Approvals is
 passing or not required for this
 repo — then merge (squash, matching this repo's existing history) without pausing to ask again.
