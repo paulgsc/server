@@ -22,10 +22,21 @@ the last check-in:
 
 - CI is green on the current head, and the head commit hasn't changed since the last
   check-in,
-- there are no unresolved review threads on the PR, and no new review, review-thread,
-  or PR-comment activity since the last check-in — an existing unresolved thread with
-  no new activity still blocks quiet-and-green; only a resolved thread stops counting
-  against it,
+- **bot-review coverage on the current head is confirmed, if this repo's reviewer doesn't
+  auto-review pushes** (see `steward/SKILL.md`'s re-request idiom) — a clean pass reads
+  like `Codex Review: Didn't find any major issues ... Reviewed commit: <sha>`, and that
+  `<sha>` must match the current head, not a prior one. A review requested but not yet
+  answered blocks quiet-and-green — "no new activity" isn't the same as "reviewed and
+  clean." But be graceful: the reviewer itself can be down or unreachable. If a requested
+  review gets no response across 2 consecutive check-ins, stop waiting on it specifically —
+  note once that review coverage on the current head is unconfirmed and let the rest of
+  this checklist decide, rather than polling forever on a response that may never come,
+- there are no unresolved review threads that represent an unaddressed **fixable** finding,
+  and no new review, review-thread, or PR-comment activity since the last check-in — an
+  existing unresolved thread with no new activity still blocks quiet-and-green, unless it's
+  a disclosed-and-replied-to deferred gap (`steward/SKILL.md`'s own "leave real-but-out-of-
+  scope findings open" rule) — that kind doesn't block stand-down once it's been replied to;
+  only a thread nobody has actually addressed does,
 - no merge conflict against the base branch,
 - Claude Approvals (where the repo runs it) is passing or not required.
 

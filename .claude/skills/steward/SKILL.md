@@ -1,0 +1,135 @@
+---
+name: steward
+description: Repo-specific PR-driving policy Claude Code consults before acting on CI, review, or merge events for a PR it opened or drives on the author's behalf — auto-merge mechanics, bot-review handling, and the re-review-request idiom this repo's bot reviewer needs. Takes precedence over generic PR-driving judgment; consulted automatically, not meant for direct/manual invocation. See babysit/SKILL.md for the separate polling-cadence policy — this file does not restate it.
+---
+
+# steward
+
+Mechanics for driving a PR to green in this repo, distilled from this org's own multi-session
+relay history — long-running stories that span many sessions, each one picking up from a
+self-contained handoff the previous session wrote (see `handoff-template.md` in this
+directory). Nothing here weakens a "never" rule the parent Claude Code instructions state
+(skip a real CI failure, disable or quarantine a test, rewrite someone else's branch history,
+widen a PR beyond what a finding needs) — it only nails down mechanics sessions on this relay
+have gotten wrong before, so the next one doesn't have to relearn them.
+
+## Re-request review after every push
+
+If this repo's PRs are reviewed by an automated bot (`chatgpt-codex-connector` is the connector
+confirmed on this repo's sibling, `paulgsc/some-ui` — check whether the same one is installed
+here), assume it only reviews a PR on open, ready-for-review, or an explicit mention by
+default — **not on every subsequent push, including a rebase**. A rebase changes the head SHA
+even when the diff content doesn't, and `babysit/SKILL.md`'s review-coverage check matches
+that exact SHA — skip the request on a rebase and the PR can never satisfy that check again,
+however many check-ins pass. After every push that changes the head SHA, leave a PR comment
+explicitly requesting review (`@codex review`, or this repo's equivalent mention) before
+waiting on anything else.
+
+## Treat every bot finding as a bug report until traced and disproven
+
+Across this org's relay history the false-positive rate on bot-reviewer findings has been at or
+near zero, repeatedly, across unrelated stories. Don't rubber-stamp a finding and don't wave one
+off as noise without tracing it against the actual code/data semantics involved. When a finding
+is real: fix it, reply on the *specific* review comment/thread (not a general PR comment)
+naming the fix and its commit SHA, then resolve that thread. When a finding is real but
+genuinely out of scope for this PR: reply explaining why and where the real fix is routed (a
+follow-up issue, a named future story), and leave the thread **open** — don't resolve away
+feedback that's still true just because fixing it isn't this PR's job.
+
+## Cap the review-fix cycle — a diff has no upper bound on how many findings it can surface
+
+A fix's own diff is new surface area for the next review, and there is no a priori bound on
+how many rounds that can take — this canon's own landing PR hit real, escalating findings for
+seven straight rounds, each fix surfacing ground the previous rounds hadn't touched. "Treat
+every finding as real" (above) is still correct, but combined with an unconditional
+re-request-after-every-push idiom it has no natural stopping point, and every round costs real
+tokens.
+
+**After 5 review rounds since the PR was opened**, stop auto-requesting the next review. Before
+checking in, read what the pattern of rounds actually shows:
+
+- **Converging** (later rounds smaller, more marginal, unrelated to each other) — accept the
+  residual and stop asking for more review. A PR doesn't need a zero-finding steady state to be
+  mergeable; note any outstanding nitpick on its own thread and proceed once the other merge
+  criteria hold.
+- **Escalating or clustering** (each fix reveals a structurally adjacent bug in the same area —
+  the way a single SHA-matching requirement kept cascading into every file that referenced it
+  here) — that's a smell that the underlying change, not any individual fix, may need a
+  structural rework or a narrower re-scoping. Don't keep auto-patching through it.
+- **Genuinely unclear which** — block for human input rather than guessing.
+
+Either way, summarize the pattern for the user (how many rounds, how many findings were real,
+which bucket above) and let them decide whether to keep going, merge as-is, or restructure.
+
+The cap stops the automatic *seeking* of new findings, not the ability to confirm coverage on
+the head you actually land on: after picking a bucket above and pushing whatever fix that
+implies, one closing review of that resulting head is still allowed. Auto-merge and
+`babysit/SKILL.md` both require confirmed coverage on the *exact* current head, so a capped PR
+could otherwise never legitimately merge at all.
+
+**That closing review's own outcome is final — by severity, not by requesting yet another
+review of whatever it finds** (an earlier version of this rule just said "one closing review,"
+which only pushed the same deadlock back one step: if that review itself found something,
+fixing it produced yet another uncovered head with no policy-compliant next move). Read the
+closing review's finding, if any, this way instead:
+
+- **Clean, or only trivial/low-risk** (documentation, phrasing, additive text, anything that
+  doesn't change real behavior or a load-bearing rule) — fix it directly and merge. A small fix
+  doesn't need its own re-review; this org's near-zero false-positive rate on bot findings is
+  the evidence that's safe, and re-review-forever is exactly the cost this cap exists to bound.
+- **Substantive** (changes real behavior, logic, or a load-bearing rule) — that's the signal to
+  stop automating entirely and hand off to the user for approval or manual merge, not push
+  another automatic round hoping it's the last one.
+
+Either branch terminates. There is no version of this rule where a capped PR waits on one more
+automatic review indefinitely.
+
+This gates the *automatic* continuation only — it never excuses dropping a still-open real
+finding just to stay under the cap, and it doesn't apply retroactively to rounds already spent;
+it only stops the *next* auto-triggered one.
+
+## Verify "CI is green" against live state, not the webhook event that announced it
+
+A `check_suite.completed` webhook event can name a **stale** `head_sha` — this has happened
+repeatedly on this relay, sometimes minutes after the real fix commit was already pushed.
+Before treating any such event as a signal to merge: re-fetch the PR directly
+(`pull_request_read`/`get_check_runs`) and compare against the PR's actual current head. Don't
+wait for a future webhook to confirm it — if the current head's own completion event already
+arrived before this stale one showed up, there may be no "next" event ever again, and waiting
+for one stalls a PR that's actually already green. The live check you just ran is the ground
+truth; act on what it shows. Use `get_check_runs`, not the legacy commit-status API — this
+repo's CI runs as GitHub Actions checks, and the legacy API can report `total_count: 0` while
+checks are actively running.
+
+## Auto-merge, when the user has standing-authorized it for this repo
+
+Standing authorization is scoped to the exact repo(s) it was granted for and must be restated
+in every handoff, not assumed to persist silently — a grant for this repo does not imply
+`paulgsc/some-ui`, or vice versa. When it applies here: confirm CI is green on the *current*
+head (per the freshness check above), confirm `mergeable_state: "clean"`, confirm bot-review
+coverage on the current head is actually confirmed if this repo's reviewer doesn't auto-review
+pushes — "no unresolved thread" is not the same as "reviewed," since a review requested but
+not yet answered creates no thread at all. **Unlike `babysit/SKILL.md`'s stand-down criteria,
+auto-merge does not get babysit's graceful timeout** — that timeout only licenses ending
+active polling while leaving the PR for a human to merge; it never licenses merging a push
+nobody has actually reviewed. If review coverage can't be confirmed, don't merge — fall back
+to babysit's normal watch (and its own eventual stand-down) instead. Also confirm no
+unresolved review thread represents an unaddressed *fixable* finding
+(a disclosed-and-replied-to deferred gap is fine to leave open), and confirm Claude Approvals is
+passing or not required for this
+repo — then merge (squash, matching this repo's existing history) without pausing to ask again.
+After merging: verify the linked issue actually closed, not just that the PR shows merged, then
+unsubscribe from PR activity and cancel any standing check-in trigger for it.
+
+The `cargo clippy`/`cargo sqlx prepare` verification discipline, the tool-permission classifier
+idiom (a scheduling/cleanup call denied independent of GitHub-side state — retry once or twice,
+try a closely related tool once), and the git hygiene discipline (`diff --stat` before
+committing, fresh `fetch` before trusting a local ref, restart a branch whose predecessor PR
+already merged) apply here too — see the "Cold-start footguns" section of `CLAUDE.md`, which
+isn't PR-lifecycle-specific so it lives there instead of being duplicated in this file.
+
+## Cross-repo PRs: name every one, every time
+
+When a story spans this repo and `paulgsc/some-ui`, never write "landed the PR" — name both,
+`owner/repo#number` each. A standing auto-merge (or any other standing) authorization for this
+repo does not extend to the sibling repo by implication; ask before assuming it does.
