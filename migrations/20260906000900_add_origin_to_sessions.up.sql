@@ -65,6 +65,42 @@
 -- was written, so the two would only read as equal strings on an exact
 -- nanosecond-level clock collision across two separate requests, not a
 -- realistic occurrence in any real deployment.
+--
+-- **A third real Codex finding on this PR: `status = 'scheduled'` alone
+-- misses every row the waker wrote before `#282` (RCM5) existed.** RCM2
+-- (`#313`) shipped the *first* version of this function, `provisioned_
+-- session` (renamed to `materialize_provisioned_session` and rewritten by
+-- RCM5 -- see `git show 9227d18:apps/servers/file_host/src/nudge/waker.rs`
+-- for the exact original), and it wrote a materially different shape:
+-- `status: Draft`, `name: "Suggested for you"`, `activities: []` (RCM3's
+-- `recommend()` didn't exist yet to fill it in), plus the same `scenes: []`,
+-- `layout: None`, `layout_mode: Basic`, `total_duration_ms: 0`, and
+-- `created_at == updated_at` the current version still writes. A deployment
+-- that has been running since RCM2 landed can hold real proposals in this
+-- exact legacy shape, untouched, and `status = 'scheduled'` alone silently
+-- excludes every one of them.
+--
+-- Simply widening `status = 'scheduled'` to `status IN ('scheduled',
+-- 'draft')` is wrong on its own -- `'draft'` is also `create_session`'s own
+-- initial status for a real person's fresh, still-empty session (the
+-- `session-user-empty-draft` case this migration's own tests already cover),
+-- and that row shares every other column value with the legacy waker shape
+-- too (`scenes: []`, `layout: NULL`, `layout_mode: 'basic'`, `created_at ==
+-- updated_at`). The one column that actually distinguishes them is `name`:
+-- `"Suggested for you"` is a literal only the legacy waker code ever wrote,
+-- and `create_session`'s `name` is a required, client-supplied field with no
+-- default, so a real person's draft coinciding with that exact string is not
+-- a case this backfill needs to guard against. `activities = '[]'` is
+-- checked alongside it for the same reason: RCM2's own version always wrote
+-- an empty `activities`, which a real composed session with that literal
+-- name would be an even less likely coincidence to also match.
+--
+-- So this is two disjoint cases, matching each waker version's own exact
+-- output: the current (post-RCM5) shape via `status = 'scheduled'` plus the
+-- original four conditions, or the legacy (RCM2-RCM4) shape via `status =
+-- 'draft' AND name = 'Suggested for you' AND activities = '[]'` plus the
+-- same shared conditions (`scenes = '[]'`, `layout IS NULL`, `layout_mode =
+-- 'basic'`, `created_at = updated_at`) both versions always wrote.
 CREATE TABLE sessions_new (
     id                TEXT    PRIMARY KEY,
     subject_id        TEXT    NOT NULL,
@@ -93,8 +129,12 @@ INSERT INTO sessions_new (
 SELECT
     id, subject_id, name, status,
     CASE
-        WHEN status = 'scheduled' AND scenes = '[]' AND layout IS NULL
-         AND layout_mode = 'basic' AND created_at = updated_at
+        WHEN scenes = '[]' AND layout IS NULL AND layout_mode = 'basic'
+         AND created_at = updated_at
+         AND (
+             status = 'scheduled'
+             OR (status = 'draft' AND name = 'Suggested for you' AND activities = '[]')
+         )
         THEN 'system'
         ELSE 'user'
     END,
