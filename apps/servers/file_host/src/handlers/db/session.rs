@@ -181,7 +181,19 @@ pub async fn update_session(
 
 	record.updated_at = Utc::now().to_rfc3339();
 	sessions.upsert(subject.as_str(), &record).await.map_err(|err| to_http(&err))?;
-	Ok(Json(record))
+
+	// `origin` is the one field `upsert` can silently refuse to apply — the
+	// `system → user` one-way guard — so returning the in-memory `record`
+	// directly could report a `system` a caller sent even though the row
+	// stayed `user` in the database. Re-reading after the write is what
+	// makes the response agree with what is actually persisted; a real
+	// Codex finding on this PR (`paulgsc/server#334`) caught exactly this.
+	sessions
+		.get(subject.as_str(), &record.id)
+		.await
+		.map_err(|err| to_http(&err))?
+		.map(Json)
+		.ok_or(FileHostError::NotFound)
 }
 
 /// `DELETE /sessions/:id`
