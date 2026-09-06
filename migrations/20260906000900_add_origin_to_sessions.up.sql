@@ -137,11 +137,36 @@
 -- from column values alone, with no audit log of what specifically changed
 -- and why -- and the story's own stated bias is to protect against a
 -- proposal reading as abandoned when nobody engaged with it, which this
--- clause exists for, not the rarer reverse. The same residual also widens
--- slightly for the already-accepted "empty draft manually pushed through
--- `PATCH`" case: it can now reach any status, not just `scheduled`, before
--- this backfill loses the ability to tell it apart from a real proposal --
--- still only reachable by bypassing the composer UI's normal flow entirely.
+-- clause exists for, not the rarer reverse.
+--
+-- The "empty draft manually pushed through `PATCH`" case named above is
+-- *not* a residual here, even though the lifecycle clauses accept any
+-- status: `activities != '[]'` (post-RCM5) and `name = 'Suggested for
+-- you'` (legacy) are what gate each one, and a real empty user draft
+-- matches neither -- `activities: []` fails the first, and a real person's
+-- required, client-supplied `name` coinciding with the legacy literal
+-- fails the second, the same coincidence already ruled out above. A real
+-- Codex review finding on this PR caught that the first version of this
+-- clause checked lifecycle evidence alone, which an empty user draft
+-- pushed straight to `active`/`paused`/`completed` could satisfy too --
+-- fixed by requiring one of these two content-based gates alongside it.
+--
+-- **`activities != '[]'` proves necessity, not sufficiency, and that is the
+-- honest remaining residual.** `an_empty_provisioned_session_is_never_
+-- persisted...` proves every real waker row has non-empty `activities` --
+-- it does not prove the converse, that non-empty `activities` implies the
+-- waker wrote it. A real person's own Basic session, composed with real
+-- activities through the normal client flow, is assumed to reach the
+-- server with `scenes` already populated too (`session-composer.tsx` reads
+-- `existingSession.scenes` only for the `advanced` editor, implying the
+-- Basic composer computes and sends real scenes at save time, the same
+-- normal-flow assumption every other case in this migration's comments
+-- already leans on) -- so it would fail this backfill's outer `scenes =
+-- '[]'` requirement regardless. The only way to reach `activities != '[]'`
+-- *and* `scenes = '[]'` as a real user session is to bypass that normal
+-- composer flow entirely and hand-craft the request directly -- the same
+-- precondition every other residual named in this file already requires,
+-- not a new category of risk this fix introduces.
 CREATE TABLE sessions_new (
     id                TEXT    PRIMARY KEY,
     subject_id        TEXT    NOT NULL,
@@ -186,10 +211,31 @@ SELECT
              -- require `created_at = updated_at`, since starting a session
              -- bumps `updated_at` exactly like an edit would and the two
              -- are not otherwise distinguishable from this row alone.
-             OR status IN ('active', 'paused', 'completed')
-             OR started_at IS NOT NULL
-             OR completed_at IS NOT NULL
-             OR final_elapsed_ms IS NOT NULL
+             --
+             -- Lifecycle evidence alone is not enough, though: an empty
+             -- real user draft (`create_session`'s own shape, activities:
+             -- []) can reach `active`/`paused`/`completed` too, by a direct
+             -- `PATCH`, without ever being edited into something non-empty
+             -- -- a real Codex finding on this PR. `activities != '[]'` is
+             -- what actually rules that out for the post-RCM5 shape,
+             -- provably rather than heuristically: `consider` (`nudge::
+             -- waker.rs`) checks `provisioned.activities.is_empty()` before
+             -- ever calling `provision_if_absent`, so a real waker-written
+             -- row can never have empty `activities` in the first place
+             -- (the `an_empty_provisioned_session_is_never_persisted...`
+             -- test pins exactly this). The legacy shape is the mirror
+             -- image -- its `activities` is *always* empty, so it is
+             -- matched by `name = 'Suggested for you'` instead, the same
+             -- literal-string signal the untouched-legacy-row branch above
+             -- already relies on.
+             OR (
+                 activities != '[]'
+                 AND (status IN ('active', 'paused', 'completed') OR started_at IS NOT NULL OR completed_at IS NOT NULL OR final_elapsed_ms IS NOT NULL)
+             )
+             OR (
+                 name = 'Suggested for you'
+                 AND (status IN ('active', 'paused', 'completed') OR started_at IS NOT NULL OR completed_at IS NOT NULL OR final_elapsed_ms IS NOT NULL)
+             )
          )
         THEN 'system'
         ELSE 'user'
