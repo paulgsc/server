@@ -101,6 +101,47 @@
 -- 'draft' AND name = 'Suggested for you' AND activities = '[]'` plus the
 -- same shared conditions (`scenes = '[]'`, `layout IS NULL`, `layout_mode =
 -- 'basic'`, `created_at = updated_at`) both versions always wrote.
+--
+-- **A fourth real Codex finding on this PR: requiring `status = 'scheduled'`
+-- (or `'draft'`) also excludes a provisioned session that was started,
+-- paused, or completed but never actually edited.** `session_abandonment_
+-- is_real`'s own design (`session_repo::model`) is explicit that a
+-- `system`-origin session which *was* opened stays `system` -- the
+-- abandonment check reads `started_at` directly, not a forced origin flip;
+-- "starting it is a real action, even if renaming it is not." A provisioned
+-- row a person merely pressed Start (or Pause, or Complete) on, without
+-- editing its content, should backfill exactly the same as an untouched one
+-- -- but a lifecycle transition changes `status` away from `scheduled`/
+-- `draft` and bumps `updated_at` identically to a real edit, so the
+-- conditions above alone misclassified it as `user`.
+--
+-- The two clauses above catch "definitely untouched." A third clause below
+-- catches "possibly moved through its lifecycle, but nothing here proves a
+-- *content* edit happened too": `status IN ('active', 'paused', 'completed')`
+-- or any of `started_at`/`completed_at`/`final_elapsed_ms` populated --
+-- every one of those is state only a lifecycle transition produces, and
+-- none of them is reachable by renaming or editing activities alone. This
+-- clause deliberately does not require `created_at = updated_at` (a
+-- lifecycle transition bumps it exactly like an edit would) or the fixed
+-- name/activities check (RCM5's own naming is dynamic, not the literal
+-- `"Suggested for you"` only the legacy shape has).
+--
+-- **The honest residual, one layer narrower than before:** this cannot
+-- distinguish "started, never edited" from "started, *and* activities were
+-- edited in a separate request" -- both leave the same lifecycle evidence,
+-- and there is no stored baseline of the waker's original `activities` to
+-- compare against. Editing an already-started proposal's activities is a
+-- narrower case than the plain rename/edit-while-still-scheduled case the
+-- first two clauses already catch correctly, and it is accepted for the
+-- same reason as every residual case named above: this backfill runs once,
+-- from column values alone, with no audit log of what specifically changed
+-- and why -- and the story's own stated bias is to protect against a
+-- proposal reading as abandoned when nobody engaged with it, which this
+-- clause exists for, not the rarer reverse. The same residual also widens
+-- slightly for the already-accepted "empty draft manually pushed through
+-- `PATCH`" case: it can now reach any status, not just `scheduled`, before
+-- this backfill loses the ability to tell it apart from a real proposal --
+-- still only reachable by bypassing the composer UI's normal flow entirely.
 CREATE TABLE sessions_new (
     id                TEXT    PRIMARY KEY,
     subject_id        TEXT    NOT NULL,
@@ -130,10 +171,25 @@ SELECT
     id, subject_id, name, status,
     CASE
         WHEN scenes = '[]' AND layout IS NULL AND layout_mode = 'basic'
-         AND created_at = updated_at
          AND (
-             status = 'scheduled'
-             OR (status = 'draft' AND name = 'Suggested for you' AND activities = '[]')
+             -- Still exactly as either waker version left it: nothing has
+             -- touched the row at all since creation.
+             (created_at = updated_at AND status = 'scheduled')
+             OR (created_at = updated_at AND status = 'draft' AND name = 'Suggested for you' AND activities = '[]')
+             -- Or it has moved through a lifecycle transition (Start/Pause/
+             -- Complete) since -- evidence of that is checkable directly
+             -- (status left 'scheduled'/'draft', or any of the three
+             -- lifecycle timestamps populated), and per
+             -- `session_abandonment_is_real`'s own design a started `system`
+             -- session must *stay* `system` -- the abandonment check reads
+             -- `started_at`, not a forced origin flip. This branch does not
+             -- require `created_at = updated_at`, since starting a session
+             -- bumps `updated_at` exactly like an edit would and the two
+             -- are not otherwise distinguishable from this row alone.
+             OR status IN ('active', 'paused', 'completed')
+             OR started_at IS NOT NULL
+             OR completed_at IS NOT NULL
+             OR final_elapsed_ms IS NOT NULL
          )
         THEN 'system'
         ELSE 'user'
