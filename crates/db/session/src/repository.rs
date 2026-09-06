@@ -1,4 +1,4 @@
-use crate::model::{LayoutMode, SessionRecord, SessionStatus};
+use crate::model::{LayoutMode, SessionOrigin, SessionRecord, SessionStatus};
 use sqlx::{FromRow, SqlitePool};
 
 /// The row as `SQLite` hands it back.
@@ -11,6 +11,7 @@ struct SessionRow {
 	id: String,
 	name: String,
 	status: String,
+	origin: String,
 	layout_mode: String,
 	total_duration_ms: i64,
 	created_at: String,
@@ -28,6 +29,10 @@ struct SessionRow {
 pub enum RowError {
 	/// `status` held something outside the five-value vocabulary.
 	UnknownStatus(String),
+	/// `origin` held something outside `"user"`/`"system"` — see
+	/// `SessionOrigin::parse`'s own doc comment for why this is refused
+	/// rather than read as `user`.
+	UnknownOrigin(String),
 	/// One of the JSON columns did not parse.
 	MalformedJson(&'static str, serde_json::Error),
 }
@@ -36,6 +41,7 @@ impl std::fmt::Display for RowError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::UnknownStatus(raw) => write!(f, "unknown session status: {raw}"),
+			Self::UnknownOrigin(raw) => write!(f, "unknown session origin: {raw}"),
 			Self::MalformedJson(column, err) => write!(f, "malformed JSON in `{column}`: {err}"),
 		}
 	}
@@ -53,6 +59,7 @@ impl TryFrom<SessionRow> for SessionRecord {
 	fn try_from(row: SessionRow) -> Result<Self, Self::Error> {
 		Ok(Self {
 			status: SessionStatus::parse(&row.status).ok_or_else(|| RowError::UnknownStatus(row.status.clone()))?,
+			origin: SessionOrigin::parse(&row.origin).ok_or_else(|| RowError::UnknownOrigin(row.origin.clone()))?,
 			layout_mode: LayoutMode::parse(&row.layout_mode),
 			activities: parse_json("activities", &row.activities)?,
 			scenes: parse_json("scenes", &row.scenes)?,
@@ -158,7 +165,7 @@ impl SessionRepository {
 			SessionRow,
 			r#"
 			SELECT
-			    id as "id!", name, status, layout_mode, total_duration_ms,
+			    id as "id!", name, status, origin, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
@@ -277,6 +284,7 @@ impl SessionRepository {
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
 	pub async fn provision_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<bool, SessionRepoError> {
 		let status = record.status.as_str();
+		let origin = record.origin.as_str();
 		let layout_mode = record.layout_mode.as_str();
 		#[allow(clippy::disallowed_methods)]
 		let (activities, scenes, layout) = (
@@ -288,11 +296,11 @@ impl SessionRepository {
 		let result = sqlx::query!(
 			r#"
 			INSERT INTO sessions (
-			    id, subject_id, name, status, layout_mode, total_duration_ms,
+			    id, subject_id, name, status, origin, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			)
-			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			WHERE NOT EXISTS (
 			    SELECT 1 FROM sessions WHERE subject_id = ? AND status IN ('paused', 'scheduled', 'draft')
 			)
@@ -301,6 +309,7 @@ impl SessionRepository {
 			subject_id,
 			record.name,
 			status,
+			origin,
 			layout_mode,
 			record.total_duration_ms,
 			record.created_at,
@@ -335,7 +344,7 @@ impl SessionRepository {
 			SessionRow,
 			r#"
 			SELECT
-			    id as "id!", name, status, layout_mode, total_duration_ms,
+			    id as "id!", name, status, origin, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
@@ -372,12 +381,27 @@ impl SessionRepository {
 	/// turns it into [`SessionRepoError::SubjectMismatch`] instead of letting
 	/// a caller read "zero rows changed" as "nothing to do."
 	///
+	/// **`origin` moves in one direction: `system → user`, never `user →
+	/// system`** (`#283`). Unlike `subject_id`, `origin` *is* in the `SET`
+	/// list — a legitimate promotion has to reach the stored row somehow —
+	/// but the value written is `CASE WHEN sessions.origin = 'user' THEN
+	/// 'user' ELSE excluded.origin END` rather than a bare `excluded.origin`:
+	/// once a row is `user`, no later write can move it back to `system`,
+	/// regardless of what `record.origin` says. A proposal a person edited
+	/// stays theirs even if some future caller re-sends the original
+	/// `system` value by mistake; there is deliberately no error for this
+	/// case (unlike [`SessionRepoError::SubjectMismatch`]) — silently
+	/// keeping the stronger claim is the same shape of policy as
+	/// `origin`'s own one-way promotion, not a caller mistake worth
+	/// surfacing.
+	///
 	/// # Errors
 	/// Fails on any `sqlx` error, if the record's JSON does not serialize, or
 	/// with [`SessionRepoError::SubjectMismatch`] if `id` already belongs to
 	/// another subject.
 	pub async fn upsert(&self, subject_id: &str, record: &SessionRecord) -> Result<(), SessionRepoError> {
 		let status = record.status.as_str();
+		let origin = record.origin.as_str();
 		let layout_mode = record.layout_mode.as_str();
 		// `serde_json::to_string` is on clippy.toml's disallowed list to keep
 		// eager serialization out of tracing calls. These three are the
@@ -393,14 +417,15 @@ impl SessionRepository {
 		let result = sqlx::query!(
 			r#"
 			INSERT INTO sessions (
-			    id, subject_id, name, status, layout_mode, total_duration_ms,
+			    id, subject_id, name, status, origin, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 			    name              = excluded.name,
 			    status            = excluded.status,
+			    origin            = CASE WHEN sessions.origin = 'user' THEN 'user' ELSE excluded.origin END,
 			    layout_mode       = excluded.layout_mode,
 			    total_duration_ms = excluded.total_duration_ms,
 			    updated_at        = excluded.updated_at,
@@ -416,6 +441,7 @@ impl SessionRepository {
 			subject_id,
 			record.name,
 			status,
+			origin,
 			layout_mode,
 			record.total_duration_ms,
 			record.created_at,
@@ -540,7 +566,7 @@ impl SessionRepository {
 			SessionRow,
 			r#"
 			SELECT
-			    id as "id!", name, status, layout_mode, total_duration_ms,
+			    id as "id!", name, status, origin, layout_mode, total_duration_ms,
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			FROM sessions
@@ -577,7 +603,7 @@ impl SessionRepository {
 #[cfg(test)]
 mod tests {
 	use super::{SessionRepoError, SessionRepository};
-	use crate::model::{LayoutMode, SessionRecord, SessionStatus};
+	use crate::model::{LayoutMode, SessionOrigin, SessionRecord, SessionStatus};
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqlitePool;
 
@@ -603,6 +629,7 @@ mod tests {
 			id: id.to_owned(),
 			name,
 			status: SessionStatus::Draft,
+			origin: SessionOrigin::User,
 			activities: Vec::new(),
 			scenes: Vec::new(),
 			layout_mode: LayoutMode::Basic,
@@ -732,6 +759,43 @@ mod tests {
 		assert!(
 			repo.get("subject-b", "session-1").await.expect("query should not fail").is_none(),
 			"the failed attempt must not have moved the row"
+		);
+	}
+
+	/// `#283`'s own acceptance criterion: `system → user` is a real
+	/// promotion, `user → system` is refused silently at the repository
+	/// layer regardless of what the caller sends.
+	#[tokio::test]
+	async fn upsert_allows_a_system_origin_to_become_user_but_never_the_reverse() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let system_record = SessionRecord {
+			origin: SessionOrigin::System,
+			..fixture("session-1")
+		};
+		repo.upsert("subject-a", &system_record).await.unwrap();
+
+		let promoted = SessionRecord {
+			origin: SessionOrigin::User,
+			..system_record.clone()
+		};
+		repo.upsert("subject-a", &promoted).await.unwrap();
+		let after_promotion = repo.get("subject-a", "session-1").await.unwrap().unwrap();
+		assert!(
+			matches!(after_promotion.origin, SessionOrigin::User),
+			"system → user must be a real transition, not silently ignored"
+		);
+
+		let demotion_attempt = SessionRecord {
+			origin: SessionOrigin::System,
+			..promoted
+		};
+		repo.upsert("subject-a", &demotion_attempt).await.unwrap();
+		let after_demotion_attempt = repo.get("subject-a", "session-1").await.unwrap().unwrap();
+		assert!(
+			matches!(after_demotion_attempt.origin, SessionOrigin::User),
+			"user → system must be refused at the repository layer, even though the write itself succeeds"
 		);
 	}
 

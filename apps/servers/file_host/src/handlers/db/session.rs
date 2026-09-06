@@ -32,7 +32,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use session_repo::{total_duration_of, CreateSession, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
+use session_repo::{total_duration_of, CreateSession, SessionOrigin, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
 use tracing::instrument;
 
 #[derive(Debug, Deserialize)]
@@ -50,8 +50,9 @@ pub struct StatusManyRequest {
 ///
 /// `pub(crate)` rather than private: `nudge::waker` (#279/RCM2) reuses this
 /// for the sessions it provisions, so ids stay indistinguishable between a
-/// session the client created and one the waker did — as `SessionRecord`
-/// itself already is, until `#283` (RCM6) adds `origin`.
+/// session the client created and one the waker did — `#283` (RCM6) is what
+/// makes that distinction real, through `SessionRecord::origin` rather than
+/// through the id.
 pub(crate) fn new_id() -> String {
 	format!("session-{}", uuid::Uuid::new_v4())
 }
@@ -99,6 +100,11 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 		// a session that could be born `scheduled` would be one the nudge could
 		// offer before anyone had finished composing it.
 		status: SessionStatus::Draft,
+		// A session created through this endpoint is always someone composing
+		// it themselves — the waker's own path (`nudge::waker::
+		// materialize_provisioned_session`) never calls `create_session`, it
+		// writes directly through `SessionRepository::provision_if_absent`.
+		origin: SessionOrigin::User,
 		// Computed here rather than trusted from the body: a client that
 		// forgets sends a zero, and the nudge then offers a "~1 min" session.
 		total_duration_ms: total_duration_of(&input.scenes),
@@ -136,6 +142,13 @@ pub async fn update_session(
 	}
 	if let Some(status) = patch.status {
 		record.status = status;
+	}
+	// The one-directional `system → user` rule is not trusted from this
+	// field alone — `SessionRepository::upsert` enforces it regardless of
+	// what is set here, so a `system` value sent against an already-`user`
+	// row is silently ignored at the write, not here.
+	if let Some(origin) = patch.origin {
+		record.origin = origin;
 	}
 	if let Some(activities) = patch.activities {
 		record.activities = activities;
@@ -204,6 +217,15 @@ pub async fn set_status(State(state): State<AppState>, subject: SubjectId, Json(
 /// copy is a `draft` with `startedAt`/`completedAt` cleared and `(copy)`
 /// appended. Carrying the timestamps over would make a fresh copy read as
 /// "studied today" and silence the nudge for a day nobody studied.
+///
+/// **`origin: user`, always** — a real, deliberate departure from the plain
+/// `..source` spread every other field uses. Pressing "duplicate" is an
+/// action nobody but a person can take (the waker's own path never calls
+/// this handler), so a duplicate of a `system` proposal is not a second
+/// proposal, it is something that person just did — the same class of
+/// judgment PRO1 (`paulgsc/some-ui#1052`) makes for renaming, only stronger:
+/// minting a whole new row is a clearer act of ownership than editing an
+/// existing one.
 #[axum::debug_handler]
 #[instrument(name = "duplicate_session", skip_all, fields(otel.kind = "server"))]
 pub async fn duplicate_session(State(state): State<AppState>, subject: SubjectId, Path(id): Path<String>) -> Result<Json<SessionRecord>, FileHostError> {
@@ -215,6 +237,7 @@ pub async fn duplicate_session(State(state): State<AppState>, subject: SubjectId
 		id: new_id(),
 		name: format!("{} (copy)", source.name),
 		status: SessionStatus::Draft,
+		origin: SessionOrigin::User,
 		started_at: None,
 		completed_at: None,
 		created_at: now.clone(),
