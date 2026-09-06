@@ -33,7 +33,7 @@ use engagement_repo::EngagementRepository;
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
-use session_repo::{LayoutMode, SessionRecord, SessionRepository, SessionStatus};
+use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -462,10 +462,11 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// the client's naive default layout applies, which is right for a proposal
 /// the server has no business asserting a layout for.
 ///
-/// `name` is the only signal that this was proposed rather than authored,
-/// same as before RCM5 — `#283` (RCM6) is what gives that a real field
-/// (`origin: system`), deliberately kept separate so this diff stays
-/// readable on its own.
+/// `origin: SessionOrigin::System` (`#283`, RCM6) is the real field, landed
+/// after RCM5 kept this diff readable on its own. Before it existed, `name`
+/// was the only signal that this was proposed rather than authored; now
+/// `Momentum` reads `origin` directly (see `session_repo::model::
+/// session_abandonment_is_real`) rather than inferring intent from a string.
 ///
 /// `pub` rather than crate-private: `dump-provisioned-session` (the bin
 /// this crate ships next to `dump-proposed-session`) calls this directly so
@@ -492,6 +493,7 @@ pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: 
 		id,
 		name: default_session_name(&named),
 		status: SessionStatus::Scheduled,
+		origin: SessionOrigin::System,
 		activities: provisioned
 			.iter()
 			.map(|activity| serde_json::to_value(activity).unwrap_or(serde_json::Value::Null))
@@ -816,6 +818,7 @@ mod tests {
 							name: id.clone(),
 							id,
 							status: SessionStatus::Draft,
+							origin: SessionOrigin::User,
 							activities: Vec::new(),
 							scenes: Vec::new(),
 							layout_mode: LayoutMode::Basic,

@@ -43,6 +43,51 @@ impl SessionStatus {
 	}
 }
 
+/// Whether a session was composed by a person or proposed by the waker
+/// (`nudge::waker::materialize_provisioned_session`, `#279`/`#282`).
+///
+/// `Momentum` reads this to decide whether a `paused` transition is a real
+/// abandonment (see [`session_abandonment_is_real`]): a proposal nobody
+/// opened was never abandoned, it was offered and not taken, and crediting
+/// that as abandonment would drain momentum for a person who has not
+/// actually studied. Two values, not an inferred boolean derived from
+/// `name`/`started_at` — see `SessionOrigin::parse`'s own doc comment for
+/// why an unrecognised value is refused rather than guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionOrigin {
+	User,
+	System,
+}
+
+impl SessionOrigin {
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::System => "system",
+		}
+	}
+
+	/// Parse the stored `TEXT`.
+	///
+	/// Argued exactly the way `SessionStatus::parse` is, not the way
+	/// `LayoutMode::parse` defaults: an unrecognised origin is refused, not
+	/// read as `User`. `SessionStatus::parse`'s own doc comment names the
+	/// reason — a row with an unknown value "is a row written by something
+	/// that is not this schema" — and reading an unknown origin as `User`
+	/// would quietly make a proposal look authored, which is the same class
+	/// of mistake #283 exists to rule out.
+	#[must_use]
+	pub fn parse(raw: &str) -> Option<Self> {
+		match raw {
+			"user" => Some(Self::User),
+			"system" => Some(Self::System),
+			_ => None,
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayoutMode {
@@ -95,6 +140,7 @@ pub struct SessionRecord {
 	pub id: String,
 	pub name: String,
 	pub status: SessionStatus,
+	pub origin: SessionOrigin,
 	/// Opaque to this crate; the client owns the shape.
 	pub activities: Vec<serde_json::Value>,
 	/// Opaque except for `start_time` and `duration`, which
@@ -141,6 +187,14 @@ pub struct UpdateSession {
 	pub name: Option<String>,
 	#[serde(default)]
 	pub status: Option<SessionStatus>,
+	/// Absent leaves the stored origin alone. Sending one is how a `system →
+	/// user` promotion (PRO1's "what counts as an edit" decision,
+	/// `paulgsc/some-ui#1052`) actually reaches the server — but the
+	/// direction is not trusted from this field alone:
+	/// [`crate::repository::SessionRepository::upsert`] enforces
+	/// `user → system` is never applied, regardless of what a caller sends.
+	#[serde(default)]
+	pub origin: Option<SessionOrigin>,
 	#[serde(default)]
 	pub activities: Option<Vec<serde_json::Value>>,
 	#[serde(default)]
@@ -158,6 +212,43 @@ pub struct UpdateSession {
 	pub completed_at: Option<String>,
 	#[serde(default)]
 	pub final_elapsed_ms: Option<i64>,
+}
+
+/// Whether a `paused` transition for this session is a real abandonment.
+///
+/// Mirrors the gate `signalForTransition`'s `paused → session-abandoned`
+/// mapping needs (`study-nudge/signals.ts`, `paulgsc/some-ui`, PRO1's own job
+/// to land client-side; `paulgsc/some-ui#1052`) and pins the same invariant
+/// server-side, per `#283`'s own acceptance criterion.
+///
+/// `false` in exactly one case: `origin` is [`SessionOrigin::System`] *and*
+/// `started_at` is `None`. That pair is precisely "a proposal nobody
+/// opened" — the person did not abandon anything, they were offered
+/// something and did not take it, and crediting that as abandonment would
+/// drain `Momentum` for someone who has never studied, inverting the entire
+/// point of the epic (`#257`).
+///
+/// A `system`-origin session that *was* opened (`started_at: Some`) is a
+/// real abandonment if paused thereafter — starting it is a real action,
+/// even if renaming it (PRO1's own "what counts as an edit" question) is
+/// not, so `origin` alone is not sufficient to suppress the signal; both
+/// conditions have to hold together.
+///
+/// No caller derives `StudySignal::SessionAbandoned` from an ordinary
+/// status transition yet — `SessionRepository::upsert`/`set_status_many`
+/// (the only server code paths that can drive a session's `status` today)
+/// write the column and nothing else; the only signal the waker itself
+/// emits is the hardcoded `StudySignal::SessionProvisioned` in
+/// `nudge::waker::consider`. Wiring engagement into an ordinary status PATCH
+/// is a real, currently-unfiled gap — the same kind #282 named for
+/// materialising `scenes` before Start — and this predicate is written now,
+/// pure and tested, so that whichever future story adds that wiring cannot
+/// get the origin check wrong or forget it, the same "pure function landed
+/// before its caller" discipline `recommend()`/`derive_min_duration_ms`
+/// already established.
+#[must_use]
+pub const fn session_abandonment_is_real(origin: SessionOrigin, started_at: Option<&String>) -> bool {
+	!(matches!(origin, SessionOrigin::System) && started_at.is_none())
 }
 
 /// `max(start_time + duration)` across scenes, mirroring `totalDurationOf` in
@@ -184,7 +275,7 @@ pub fn total_duration_of(scenes: &[serde_json::Value]) -> i64 {
 
 #[cfg(test)]
 mod tests {
-	use super::{total_duration_of, SessionRecord};
+	use super::{session_abandonment_is_real, total_duration_of, SessionOrigin, SessionRecord};
 	use serde_json::json;
 
 	#[test]
@@ -207,14 +298,14 @@ mod tests {
 	#[test]
 	fn an_absent_layout_is_distinguishable_from_an_explicit_null() {
 		let absent: SessionRecord = serde_json::from_value(json!({
-			"id": "session-1", "name": "n", "status": "draft", "activities": [], "scenes": [],
+			"id": "session-1", "name": "n", "status": "draft", "origin": "user", "activities": [], "scenes": [],
 			"layoutMode": "basic", "totalDurationMs": 0, "createdAt": "a", "updatedAt": "b"
 		}))
 		.unwrap();
 		assert!(absent.layout.is_none());
 
 		let explicit: SessionRecord = serde_json::from_value(json!({
-			"id": "session-1", "name": "n", "status": "draft", "activities": [], "scenes": [],
+			"id": "session-1", "name": "n", "status": "draft", "origin": "user", "activities": [], "scenes": [],
 			"layoutMode": "basic", "totalDurationMs": 0, "createdAt": "a", "updatedAt": "b",
 			"layout": null
 		}))
@@ -224,5 +315,41 @@ mod tests {
 		// And the distinction survives a round trip: absent stays absent.
 		let reserialized = serde_json::to_value(&absent).unwrap();
 		assert!(reserialized.get("layout").is_none());
+	}
+
+	/// `#283`'s own acceptance criterion cites `SessionStatus::parse`'s
+	/// precedent directly: this asserts the refusal, not a silent default.
+	#[test]
+	fn session_origin_parse_refuses_an_unrecognised_value_rather_than_defaulting_to_user() {
+		assert_eq!(SessionOrigin::parse("user"), Some(SessionOrigin::User));
+		assert_eq!(SessionOrigin::parse("system"), Some(SessionOrigin::System));
+		assert_eq!(
+			SessionOrigin::parse("proposed"),
+			None,
+			"an unrecognised origin must be refused, the same way SessionStatus::parse refuses an unknown status, \
+			 rather than quietly read as `user`"
+		);
+	}
+
+	#[test]
+	fn a_never_opened_system_session_is_not_a_real_abandonment() {
+		assert!(
+			!session_abandonment_is_real(SessionOrigin::System, None),
+			"a proposal nobody opened was never abandoned — it was offered and not taken"
+		);
+	}
+
+	#[test]
+	fn a_system_session_that_was_actually_opened_is_a_real_abandonment_if_paused() {
+		assert!(
+			session_abandonment_is_real(SessionOrigin::System, Some(&"2026-01-01T00:00:00Z".to_owned())),
+			"starting a proposed session is a real action, even if renaming it is not — origin alone must not suppress the signal once started_at is set"
+		);
+	}
+
+	#[test]
+	fn a_user_session_is_always_a_real_abandonment_regardless_of_started_at() {
+		assert!(session_abandonment_is_real(SessionOrigin::User, None));
+		assert!(session_abandonment_is_real(SessionOrigin::User, Some(&"2026-01-01T00:00:00Z".to_owned())));
 	}
 }

@@ -138,10 +138,9 @@ What goes *in* the provisioned session was deliberately not this story's
 problem: RCM3 (`#280`, the recommender), RCM4 (`#281`, floor durations), and
 RCM5 (`#282`, materialising catalogue rows into a full `SessionRecord`) are
 what fill it in — see "Materialising a session" below for what RCM5
-actually landed. `#283` (RCM6) is still what will mark a provisioned
-session `origin: system`; until then its `name` — a real, transcribed name
-as of RCM5, no longer a placeholder — is the only signal that it was
-proposed rather than authored.
+actually landed. `#283` (RCM6) is what marks a provisioned session `origin:
+system` — see "Origin: `user` vs `system`" below for what that field means
+and what reads it.
 
 Crash safety costs nothing extra: the write is a `Scheduled` row (RCM5's own
 choice, see below) `first_prepared` will find on any later pass, so a crash
@@ -375,6 +374,97 @@ client-side test there round-trips it through the real `SessionRecord` type
 and the real `sequenceScenes`/`defaultSessionName`/`totalDurationOfScenes`
 functions — the same "verified against the real thing, not a
 reimplementation" discipline `#281`'s own fixture already established.
+
+### Origin: `user` vs `system`, and the abandonment guard (#283, RCM6)
+
+`#283` closes the gap RCM5 left open on purpose: a provisioned session's
+`name` was the only signal that it was proposed rather than authored, and
+that signal was inferential — a person who accepts the default name without
+renaming it would read identically to a proposal nobody opened.
+`origin TEXT NOT NULL` (`"user"` | `"system"`) makes the distinction a real
+column instead: `"user"` for every session a person composed themselves
+(`POST /sessions`, and `POST /sessions/:id/duplicate` — duplicating is an
+action only a person takes, see `duplicate_session`'s own doc comment for
+why that overrides the plain `..source` spread every other field uses),
+`"system"` for exactly what `nudge::waker::materialize_provisioned_session`
+writes.
+
+**Why a column, not an inference.** Argued in full in `#283`'s own issue
+text: a person who accepts a proposal's default name and never renames it
+would be indistinguishable from a proposal nobody opened, under any
+name-based heuristic. Getting this backwards has a real cost — `Momentum`
+would credit a proposal nobody took as an *abandoned* session, draining
+engagement for someone who has not actually studied, which inverts the
+entire cold-start epic (`#257`) this story belongs to.
+
+**`SessionOrigin::parse` refuses an unrecognised value**, argued identically
+to `SessionStatus::parse` (`session_repo::model`): a row holding neither
+`"user"` nor `"system"` was written by something outside this schema, and
+reading it as `"user"` would quietly make a proposal look authored — the
+same class of mistake `SessionStatus::parse`'s own doc comment already
+names for status.
+
+**The transition is one-directional, enforced in `SessionRepository::
+upsert`, not at the handler.** `system → user` is a real promotion (a
+person edited or otherwise took ownership of a proposal — PRO1's own "what
+counts as an edit" decision, `paulgsc/some-ui#1052`, governs when the
+*client* decides to send this); `user → system` never applies, even if a
+caller sends it by mistake. The SQL itself carries the guard: `origin =
+CASE WHEN sessions.origin = 'user' THEN 'user' ELSE excluded.origin END` on
+the `ON CONFLICT` update, so once a row is `user` no write can move it back.
+There is deliberately no error for the rejected direction (unlike
+`SessionRepoError::SubjectMismatch`) — silently keeping the stronger claim
+is a policy outcome, not a caller mistake worth surfacing.
+
+**`session_abandonment_is_real(origin, started_at)`** (`session_repo::
+model`) is the pure predicate this story's acceptance criteria actually
+needed: `false` exactly when `origin` is `system` *and* `started_at` is
+`None` — a proposal nobody opened. A `system`-origin session that *was*
+started is a real abandonment if paused thereafter, same as any `user`
+session; starting it is a real action even though renaming it might not be.
+**No caller derives a `StudySignal` from an ordinary status transition
+yet** — `SessionRepository::upsert`/`set_status_many`, the only server code
+paths that can drive a session's `status` today, write the column and
+nothing else, and the only signal the waker itself emits is the hardcoded
+`StudySignal::SessionProvisioned` in `nudge::waker::consider`. Wiring
+engagement into an ordinary status `PATCH` is a real, currently-unfiled gap
+— the same kind RCM5 named for materialising `scenes` before Start — so
+this predicate is landed now, pure and tested, the same "function before
+its caller" discipline `recommend()`/`derive_min_duration_ms` already
+established, rather than left to whichever future story wires it in to get
+the origin check wrong or skip it.
+
+**A real, currently-unfiled rollout-window gap: an origin-unaware client
+cannot trigger the promotion at all.** `update_session` only moves `origin`
+from `system` to `user` when the patch includes an explicit `origin` field
+— the repository enforces the *direction*, but nothing server-side decides
+*when* to trigger it. Before PRO1 (`paulgsc/some-ui#1052`) ships, the live
+client never sends that field, so a person who renames or edits a
+`system`-provisioned session through today's client leaves its `origin`
+unchanged in the live database, even though the exact same edit would be
+correctly reclassified as `user` if it were still sitting in the table
+unedited when the backfill migration ran. A real Codex review finding on
+`paulgsc/server#334` caught this. The obvious-looking fix — auto-promote
+`origin` on any `PATCH` that changes something — was deliberately not
+taken: `update_session` is the same handler a plain status transition
+(Start/Pause/Complete) goes through, and PRO1's own acceptance criteria
+already name "starting a session without changing anything" as a
+deliberately ambiguous case, likely *not* an edit. Auto-promoting on every
+`PATCH` would flip an untouched proposal to `user` the instant someone
+merely pressed Start, defeating the abandonment guard for exactly the
+session it matters most for. Closing this gap needs PRO1's actual
+edit-vs-lifecycle-transition boundary, not a guess made here — until then,
+this is bounded and temporary: it costs a session getting `origin` wrong for
+existing rows edited between #283 landing and PRO1 shipping, not a
+permanently wrong invariant.
+
+**Payload-only, no route or contract regeneration needed.** `origin` is a
+new field on the existing `SessionRecord` JSON shape, not a new route —
+`docs/route-inventory.md`'s `RouteDescriptor` only proves a route exists
+and where (method, path, versioning, module), nothing about payload shape,
+so `dump-routes` has nothing to regenerate here. The client-side contract
+update this still needs (`paulgsc/some-ui`'s hand-written `SessionRecord`
+schema, #1042) is PRO1's own acceptance criterion, not this story's.
 
 ### First contact: how a subject enters the gate at all
 
