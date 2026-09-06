@@ -434,6 +434,30 @@ its caller" discipline `recommend()`/`derive_min_duration_ms` already
 established, rather than left to whichever future story wires it in to get
 the origin check wrong or skip it.
 
+**A real, currently-unfiled rollout-window gap: an origin-unaware client
+cannot trigger the promotion at all.** `update_session` only moves `origin`
+from `system` to `user` when the patch includes an explicit `origin` field
+— the repository enforces the *direction*, but nothing server-side decides
+*when* to trigger it. Before PRO1 (`paulgsc/some-ui#1052`) ships, the live
+client never sends that field, so a person who renames or edits a
+`system`-provisioned session through today's client leaves its `origin`
+unchanged in the live database, even though the exact same edit would be
+correctly reclassified as `user` if it were still sitting in the table
+unedited when the backfill migration ran. A real Codex review finding on
+`paulgsc/server#334` caught this. The obvious-looking fix — auto-promote
+`origin` on any `PATCH` that changes something — was deliberately not
+taken: `update_session` is the same handler a plain status transition
+(Start/Pause/Complete) goes through, and PRO1's own acceptance criteria
+already name "starting a session without changing anything" as a
+deliberately ambiguous case, likely *not* an edit. Auto-promoting on every
+`PATCH` would flip an untouched proposal to `user` the instant someone
+merely pressed Start, defeating the abandonment guard for exactly the
+session it matters most for. Closing this gap needs PRO1's actual
+edit-vs-lifecycle-transition boundary, not a guess made here — until then,
+this is bounded and temporary: it costs a session getting `origin` wrong for
+existing rows edited between #283 landing and PRO1 shipping, not a
+permanently wrong invariant.
+
 **Payload-only, no route or contract regeneration needed.** `origin` is a
 new field on the existing `SessionRecord` JSON shape, not a new route —
 `docs/route-inventory.md`'s `RouteDescriptor` only proves a route exists
