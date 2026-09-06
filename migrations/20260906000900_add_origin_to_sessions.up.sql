@@ -30,22 +30,41 @@
 -- `materialize_provisioned_session` (`nudge::waker.rs`) leaves behind and
 -- nothing has touched since: `status = 'scheduled'`, `scenes = '[]'`,
 -- `layout IS NULL`, `layout_mode = 'basic'` -- every one of those is a
--- literal `materialize_provisioned_session` always writes, together. A row
--- matching all four backfills `'system'`; every other row backfills
+-- literal `materialize_provisioned_session` always writes, together.
+--
+-- **Those four alone are not enough** -- a second real Codex finding on this
+-- PR caught that a proposal a person renamed, or whose `activities` they
+-- edited, without ever touching status/scenes/layout/layout_mode, would
+-- still match all four and stay `'system'` forever, contradicting PRO1's own
+-- "editing makes it theirs" rule (`paulgsc/some-ui#1052`) this backfill is
+-- supposed to honour retroactively. The fix adds a fifth condition:
+-- `created_at = updated_at`. `materialize_provisioned_session` writes both
+-- to the identical timestamp at creation, and `update_session`
+-- unconditionally advances `updated_at` on *every* `PATCH` regardless of
+-- which fields it actually touches -- so any edit at all, a rename included,
+-- pulls `updated_at` away from `created_at`. Combined with the other four,
+-- this is not just best-effort: `create_session` and `duplicate_session`
+-- both hardcode `status: Draft` and never let a caller set `scheduled`
+-- directly, so `materialize_provisioned_session` is the *only* write path in
+-- this codebase that can produce a row with `status = 'scheduled'` at the
+-- same instant as its own `created_at` -- any row matching all five was
+-- provably written by the waker and never touched since, given every
+-- server-side write path that exists today.
+--
+-- A row matching all five backfills `'system'`; every other row backfills
 -- `'user'`, which is correct not just for a genuinely person-composed row
 -- but *also* for a system-provisioned row that has since been started,
--- completed, or otherwise edited (any of those changes at least one of the
--- four columns) -- PRO1's own "editing makes it theirs" rule
--- (`paulgsc/some-ui#1052`), applied retroactively to whatever this backfill
--- cannot otherwise see.
+-- completed, renamed, or otherwise edited -- PRO1's own rule, applied
+-- retroactively to whatever this backfill cannot otherwise see.
 --
--- This is a best-effort reconstruction, not a certain one: a person could in
--- principle create an empty draft and `PATCH` its status straight to
--- `scheduled` without ever touching scenes or layout, producing a row this
--- backfill cannot distinguish from a real proposal. That residual case is
--- accepted rather than hidden -- there is no signal left in this schema that
--- would resolve it, and it is narrower than the alternative of silently
--- misclassifying every already-provisioned row this deployment holds today.
+-- The one residual gap the four-condition version left open -- a person
+-- creating an empty draft and `PATCH`ing its status straight to `scheduled`
+-- without touching scenes or layout -- is closed by the fifth condition in
+-- every practical case: `update_session` always computes `updated_at` from
+-- a fresh `Utc::now()` call made strictly after the row's own `created_at`
+-- was written, so the two would only read as equal strings on an exact
+-- nanosecond-level clock collision across two separate requests, not a
+-- realistic occurrence in any real deployment.
 CREATE TABLE sessions_new (
     id                TEXT    PRIMARY KEY,
     subject_id        TEXT    NOT NULL,
@@ -74,7 +93,8 @@ INSERT INTO sessions_new (
 SELECT
     id, subject_id, name, status,
     CASE
-        WHEN status = 'scheduled' AND scenes = '[]' AND layout IS NULL AND layout_mode = 'basic'
+        WHEN status = 'scheduled' AND scenes = '[]' AND layout IS NULL
+         AND layout_mode = 'basic' AND created_at = updated_at
         THEN 'system'
         ELSE 'user'
     END,
