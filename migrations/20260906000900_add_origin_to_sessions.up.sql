@@ -141,32 +141,46 @@
 --
 -- The "empty draft manually pushed through `PATCH`" case named above is
 -- *not* a residual here, even though the lifecycle clauses accept any
--- status: `activities != '[]'` (post-RCM5) and `name = 'Suggested for
+-- status: `total_duration_ms > 0` (post-RCM5) and `name = 'Suggested for
 -- you'` (legacy) are what gate each one, and a real empty user draft
--- matches neither -- `activities: []` fails the first, and a real person's
--- required, client-supplied `name` coinciding with the legacy literal
--- fails the second, the same coincidence already ruled out above. A real
--- Codex review finding on this PR caught that the first version of this
--- clause checked lifecycle evidence alone, which an empty user draft
--- pushed straight to `active`/`paused`/`completed` could satisfy too --
--- fixed by requiring one of these two content-based gates alongside it.
+-- matches neither -- an empty-`scenes` `create_session` call always yields
+-- `total_duration_ms: 0` (see below), and a real person's required,
+-- client-supplied `name` coinciding with the legacy literal fails the
+-- second, the same coincidence already ruled out above.
 --
--- **`activities != '[]'` proves necessity, not sufficiency, and that is the
--- honest remaining residual.** `an_empty_provisioned_session_is_never_
--- persisted...` proves every real waker row has non-empty `activities` --
--- it does not prove the converse, that non-empty `activities` implies the
--- waker wrote it. A real person's own Basic session, composed with real
--- activities through the normal client flow, is assumed to reach the
--- server with `scenes` already populated too (`session-composer.tsx` reads
--- `existingSession.scenes` only for the `advanced` editor, implying the
--- Basic composer computes and sends real scenes at save time, the same
--- normal-flow assumption every other case in this migration's comments
--- already leans on) -- so it would fail this backfill's outer `scenes =
--- '[]'` requirement regardless. The only way to reach `activities != '[]'`
--- *and* `scenes = '[]'` as a real user session is to bypass that normal
--- composer flow entirely and hand-craft the request directly -- the same
--- precondition every other residual named in this file already requires,
--- not a new category of risk this fix introduces.
+-- This gate went through two iterations, both real Codex findings on this
+-- PR. The first checked lifecycle evidence alone, which an empty user
+-- draft pushed straight to `active`/`paused`/`completed` could satisfy. The
+-- second checked `activities != '[]'` instead, reasoning that a real
+-- waker-written row can never have empty `activities` (`consider`,
+-- `nudge::waker.rs`, checks `provisioned.activities.is_empty()` before
+-- ever calling `provision_if_absent` -- `an_empty_provisioned_session_is_
+-- never_persisted...` pins exactly this) -- true, but only proof of
+-- necessity: `create_session` accepts `activities` and `scenes`
+-- independently and enforces no relationship between them, so a real
+-- person's own session with real activities but still-empty `scenes` is
+-- entirely legitimate through the public API, not a bypass, and would
+-- satisfy `activities != '[]'` too once started.
+--
+-- `total_duration_ms > 0` is what actually closes this, both necessary and
+-- sufficient: unlike `activities`, a client cannot supply it at creation
+-- at all. `CreateSession` has no such field; `create_session` always
+-- computes it as `total_duration_of(&input.scenes)`, which
+-- `total_duration_of`'s own implementation returns as exactly `0` for an
+-- empty `scenes` regardless of what `activities` holds. A real system
+-- row's `total_duration_ms` comes from `activity_repo::provisioning::
+-- total_duration_ms` instead -- summed from each provisioned activity's
+-- own real, positive floor duration, over a set the empty-activities guard
+-- already proves is never empty -- so it is provably positive, not just
+-- usually so. The only way a real user row could still reach
+-- `total_duration_ms > 0` with `scenes = '[]'` is an explicit `PATCH`
+-- setting `totalDurationMs` directly (`UpdateSession`'s own field,
+-- deliberately settable so "an explicit total wins over the derived one")
+-- bundled into the same edit as a lifecycle transition -- a narrower,
+-- more deliberate action than anything else this backfill already accepts
+-- as residual, and the last one accepted here for the same reason as
+-- every other: no audit log survives to tell a genuine edit from a
+-- lifecycle-only touch once both are compressed into the same row.
 CREATE TABLE sessions_new (
     id                TEXT    PRIMARY KEY,
     subject_id        TEXT    NOT NULL,
@@ -212,24 +226,16 @@ SELECT
              -- bumps `updated_at` exactly like an edit would and the two
              -- are not otherwise distinguishable from this row alone.
              --
-             -- Lifecycle evidence alone is not enough, though: an empty
-             -- real user draft (`create_session`'s own shape, activities:
-             -- []) can reach `active`/`paused`/`completed` too, by a direct
-             -- `PATCH`, without ever being edited into something non-empty
-             -- -- a real Codex finding on this PR. `activities != '[]'` is
-             -- what actually rules that out for the post-RCM5 shape,
-             -- provably rather than heuristically: `consider` (`nudge::
-             -- waker.rs`) checks `provisioned.activities.is_empty()` before
-             -- ever calling `provision_if_absent`, so a real waker-written
-             -- row can never have empty `activities` in the first place
-             -- (the `an_empty_provisioned_session_is_never_persisted...`
-             -- test pins exactly this). The legacy shape is the mirror
-             -- image -- its `activities` is *always* empty, so it is
-             -- matched by `name = 'Suggested for you'` instead, the same
-             -- literal-string signal the untouched-legacy-row branch above
-             -- already relies on.
+             -- Lifecycle evidence alone is not enough, though -- see this
+             -- file's own top-of-file comment for the two-iteration history
+             -- (an empty user draft pushed through a lifecycle transition,
+             -- then a real-activities-but-empty-scenes one) and why
+             -- `total_duration_ms > 0` is what actually closes both,
+             -- provably: `CreateSession` has no such field, so
+             -- `create_session` always computes it from `scenes` alone,
+             -- `0` whenever `scenes` is empty regardless of `activities`.
              OR (
-                 activities != '[]'
+                 total_duration_ms > 0
                  AND (status IN ('active', 'paused', 'completed') OR started_at IS NOT NULL OR completed_at IS NOT NULL OR final_elapsed_ms IS NOT NULL)
              )
              OR (
