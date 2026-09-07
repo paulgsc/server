@@ -11,3 +11,9 @@ pub use common::{OrchestratorConfigData, SceneConfigData, SceneId, ScenePayload,
 pub use unified::unified_event;
 pub use unified::UnifiedEvent;
 pub use unified::{AudioChunkMessage, ObsCommandMessage, ObsStatusMessage, SubtitleMessage};
+
+pub(crate) fn to_json_vec<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+	let mut bytes = Vec::new();
+	serde_json::to_writer(&mut bytes, value)?;
+	Ok(bytes)
+}

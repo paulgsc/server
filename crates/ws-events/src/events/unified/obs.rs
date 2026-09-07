@@ -2,7 +2,7 @@ use obs_websocket::{ObsCommand, ObsEvent};
 use prost::Message;
 use serde_json::Value;
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObsStatusMessage {
 	/// Timestamp when the event occurred
 	#[prost(int64, tag = "1")]
@@ -15,7 +15,7 @@ pub struct ObsStatusMessage {
 	pub metadata: Option<Vec<u8>>,
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObsCommandMessage {
 	/// Unique request ID for tracking responses
 	#[prost(string, tag = "1")]
@@ -29,9 +29,12 @@ pub struct ObsCommandMessage {
 }
 
 impl ObsStatusMessage {
-	/// Create a new status message from an ObsEvent
-	pub fn new(event: ObsEvent) -> Result<Self, serde_json::Error> {
-		let event_data = serde_json::to_vec(&event)?;
+	/// Create a new status message from an `ObsEvent`
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
+	pub fn new(event: &ObsEvent) -> Result<Self, serde_json::Error> {
+		let event_data = crate::events::to_json_vec(&event)?;
 		Ok(Self {
 			timestamp: chrono::Utc::now().timestamp(),
 			event_data,
@@ -40,17 +43,26 @@ impl ObsStatusMessage {
 	}
 
 	/// Add metadata to the event
-	pub fn with_metadata(mut self, metadata: Value) -> Result<Self, serde_json::Error> {
-		self.metadata = Some(serde_json::to_vec(&metadata)?);
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
+	pub fn with_metadata(mut self, metadata: &Value) -> Result<Self, serde_json::Error> {
+		self.metadata = Some(crate::events::to_json_vec(&metadata)?);
 		Ok(self)
 	}
 
-	/// Deserialize the event back to ObsEvent
+	/// Deserialize the event back to `ObsEvent`
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
 	pub fn to_obs_event(&self) -> Result<ObsEvent, serde_json::Error> {
 		serde_json::from_slice(&self.event_data)
 	}
 
 	/// Get the metadata as a Value
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
 	pub fn get_metadata(&self) -> Result<Option<Value>, serde_json::Error> {
 		match &self.metadata {
 			Some(data) => Ok(Some(serde_json::from_slice(data)?)),
@@ -60,9 +72,12 @@ impl ObsStatusMessage {
 }
 
 impl ObsCommandMessage {
-	/// Create a new command message from an ObsCommand
-	pub fn new(request_id: String, command: ObsCommand) -> Result<Self, serde_json::Error> {
-		let command_data = serde_json::to_vec(&command)?;
+	/// Create a new command message from an `ObsCommand`
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
+	pub fn new(request_id: String, command: &ObsCommand) -> Result<Self, serde_json::Error> {
+		let command_data = crate::events::to_json_vec(&command)?;
 		Ok(Self {
 			request_id,
 			command_data,
@@ -70,13 +85,17 @@ impl ObsCommandMessage {
 		})
 	}
 
-	/// Set the reply_to field
+	/// Set the `reply_to` field
+	#[must_use]
 	pub fn with_reply_to(mut self, reply_to: String) -> Self {
 		self.reply_to = Some(reply_to);
 		self
 	}
 
-	/// Deserialize the command back to ObsCommand
+	/// Deserialize the command back to `ObsCommand`
+	///
+	/// # Errors
+	/// Returns an error when JSON serialization or deserialization fails.
 	pub fn to_obs_command(&self) -> Result<ObsCommand, serde_json::Error> {
 		serde_json::from_slice(&self.command_data)
 	}

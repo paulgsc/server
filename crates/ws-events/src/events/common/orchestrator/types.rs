@@ -1,3 +1,4 @@
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 /// Time in milliseconds
@@ -15,17 +16,22 @@ pub type SceneId = String;
 pub struct Progress(f64);
 
 impl Progress {
+	#[must_use]
 	pub fn new(current: TimeMs, total: TimeMs) -> Self {
 		if total == 0 {
 			return Self(0.0);
 		}
-		Self((current as f64 / total as f64).clamp(0.0, 1.0))
+		let current = current.to_f64().unwrap_or_else(|| if current.is_negative() { f64::MIN } else { f64::MAX });
+		let total = total.to_f64().unwrap_or_else(|| if total.is_negative() { f64::MIN } else { f64::MAX });
+		Self((current / total).clamp(0.0, 1.0))
 	}
 
-	pub fn value(&self) -> f64 {
+	#[must_use]
+	pub const fn value(&self) -> f64 {
 		self.0
 	}
 
+	#[must_use]
 	pub fn percentage(&self) -> f64 {
 		self.0 * 100.0
 	}
@@ -53,7 +59,7 @@ impl Timecode {
 		let minutes = (ms % (3600 * 1000)) / (60 * 1000);
 		let seconds = (ms % (60 * 1000)) / 1000;
 		let milliseconds = ms % 1000;
-		Self(format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, milliseconds))
+		Self(owned_format!("{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"))
 	}
 
 	pub fn as_str(&self) -> &str {

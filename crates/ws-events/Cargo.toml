@@ -19,6 +19,7 @@ tabsched = []
 # Core dependencies (always included)
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+num-traits = "0.2"
 
 serde_json = { workspace = true }
 
