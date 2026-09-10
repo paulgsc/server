@@ -500,12 +500,26 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// would overwrite the person's own edit with a fresh recommendation.
 /// `update_session` advances `updated_at` unconditionally on every write
 /// (`upsert`'s own doc comment), so a person's edit — even an unpromoted one
-/// — always moves it away from `created_at`. `provision_or_refresh`'s own
-/// `ON CONFLICT` branch deliberately never touches `updated_at`, which is
-/// what makes `created_at == updated_at` survive any number of machine
-/// refreshes and still mean exactly one thing: nothing but the waker has
-/// ever written to this row. See that method's own doc comment
-/// ("What refreshing touches") for the SQL side of this argument.
+/// — always moves it away from `created_at`. `SessionRepository::
+/// refresh_if_untouched`'s own `UPDATE` deliberately never touches
+/// `updated_at` either, which is what makes `created_at == updated_at`
+/// survive any number of machine refreshes and still mean exactly one thing:
+/// nothing but the waker has ever written to this row.
+///
+/// **The checks below are an optimisation, not the safety boundary — a real
+/// `chatgpt-codex-connector` finding on `#335` caught an earlier version
+/// treating them as if they were.** `record` is read here, then `evaluate`,
+/// admission, a catalogue read, and `recommend()`/`provision()` all run
+/// before anything is written — a real window for a person's own
+/// `PATCH`/`DELETE` to land in. Re-deciding from a now-stale `record` and
+/// writing unconditionally would silently overwrite whatever changed in
+/// that window, or orphan a new row while `consider`'s already-selected
+/// `StudyAction` keeps pointing at the old id. So the actual enforcement
+/// lives one level down, in `refresh_if_untouched`'s own `WHERE` clause,
+/// which re-checks the identical predicate atomically at write time; see
+/// its own doc comment for the three ways the row can have changed and why
+/// each one safely no-ops instead. Everything here only decides whether
+/// it is worth doing the catalogue read and `recommend()` call at all.
 async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
 	let record = match sessions.get(subject_id, prepared).await {
 		Ok(Some(record)) => record,
@@ -515,15 +529,7 @@ async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, s
 			return;
 		}
 	};
-	if !(matches!(record.origin, SessionOrigin::System) && record.started_at.is_none()) {
-		return;
-	}
-	if record.created_at != record.updated_at {
-		// A person edited this proposal without it ever being promoted to
-		// `user` origin (the documented pre-PRO1 gap) -- refreshing would
-		// silently overwrite their own edit. Leave it alone; this is their
-		// session now in every way that matters here, whatever the column
-		// still says.
+	if !(matches!(record.origin, SessionOrigin::System) && record.started_at.is_none() && record.created_at == record.updated_at) {
 		return;
 	}
 
@@ -543,8 +549,13 @@ async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, s
 		warn!(subject = %subject_id, "recommend()+provision() currently produces nothing timeable; leaving the existing proposal as-is");
 		return;
 	}
-	if let Err(err) = sessions.provision_or_refresh(subject_id, &refreshed).await {
-		error!(subject = %subject_id, error = %err, "could not refresh the existing proposal; leaving it as-is");
+	match sessions.refresh_if_untouched(subject_id, prepared, &refreshed).await {
+		// `false` means the row changed state (edited, started, promoted,
+		// or deleted) in the window since `record` was read above — not an
+		// error, just nothing left to do; the row is already exactly as
+		// whatever touched it last left it.
+		Ok(_) => {}
+		Err(err) => error!(subject = %subject_id, error = %err, "could not refresh the existing proposal; leaving it as-is"),
 	}
 }
 

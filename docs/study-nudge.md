@@ -673,6 +673,43 @@ leaving an edited-but-unpromoted proposal exactly as the person left it —
 pinned by `an_edited_but_unpromoted_proposal_survives_a_refresh_pass_
 untouched` in `nudge::waker`'s test module.
 
+**A fourth real `chatgpt-codex-connector` finding on `#335`, P1, is about
+the gap between that check and the write it gates.** `refresh_stale_
+proposal` reads a row, decides — from that one read — whether refreshing
+is safe, and only then writes. Between the read and the write sits a full
+`engine.evaluate` call and an admission check: real time, and a real
+window for a person's own `PATCH` or `DELETE` to land in. A decision made
+from a read that may no longer be true is not a safety check, it is a
+race — the exact shape of bug the "reads before it writes" section above
+already names for `first_prepared`'s own staleness, now recurring one
+layer up.
+
+**`SessionRepository::refresh_if_untouched`** closes it the only way a
+read-then-decide gap can be closed: by not trusting the read at write
+time. It is a single `UPDATE ... WHERE id = ? AND subject_id = ? AND
+origin = 'system' AND started_at IS NULL AND created_at = updated_at`,
+scoped to the exact id `refresh_stale_proposal` already has, with
+deliberately **no insert fallback**. That last part is what makes it safe
+where `provision_or_refresh` would not be: if the row was edited, started,
+promoted, or deleted in the gap, the `WHERE` clause simply matches nothing
+and zero rows are affected — an outcome `refresh_stale_proposal` treats as
+"nothing to do," not an error. An insert fallback would have created a
+second, orphaned proposal under a brand-new id while the `StudyAction`
+`consider` already selected kept pointing at the old one, which is exactly
+why this method exists separately from `provision_or_refresh` rather than
+reusing it: that method's own `ON CONFLICT` refresh is safe for its one
+caller (a race there can only ever be against another concurrent waker
+pass's own fresh candidate, never a person's action — `create_session`/
+`duplicate_session` can never write `origin = 'system'` at all), which is
+not true of `refresh_stale_proposal`'s situation.
+
+The checks inside `refresh_stale_proposal` itself (origin, `started_at`,
+`created_at == updated_at`) are downgraded from a safety gate to a pure
+optimisation by this fix: they decide whether it is worth doing the
+catalogue read and `recommend()` call at all, and the atomic `UPDATE`'s
+own `WHERE` clause is the only thing that actually has to be right at the
+moment of the write.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
