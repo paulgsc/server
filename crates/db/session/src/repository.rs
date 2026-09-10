@@ -278,9 +278,29 @@ impl SessionRepository {
 	/// not just application-level care — the same reasoning `upsert`'s own
 	/// `SubjectMismatch` guard already applies to a different invariant.
 	/// `ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS
-	/// NULL` targets that index by name; `SQLite` requires an `ON CONFLICT`
-	/// target's `WHERE` clause to match a real partial index verbatim, so
-	/// this statement and that migration must always agree.
+	/// NULL AND status IN ('paused', 'scheduled', 'draft')` targets that
+	/// index by name; `SQLite` requires an `ON CONFLICT` target's `WHERE`
+	/// clause to match a real partial index verbatim, so this statement and
+	/// that migration must always agree.
+	///
+	/// **The `status IN (...)` clause is load-bearing, not redundant with
+	/// `started_at IS NULL`** — a real `chatgpt-codex-connector` finding on
+	/// `#335` caught its absence. `set_status_many` (`PATCH /sessions/status`)
+	/// writes only `status` and `updated_at`, so it can move a `system`,
+	/// never-started proposal straight to `active` or `completed` while
+	/// `started_at` stays `NULL` — a real, client-reachable path, not a
+	/// hypothetical. Without this clause, such a row would still satisfy the
+	/// conflict target forever (`first_prepared` can never surface it back
+	/// out, since `active`/`completed` aren't in its own tracked set),
+	/// permanently starving the subject of any future proposal and standing
+	/// as a live target this statement would silently overwrite. Restricting
+	/// the clause to the same three statuses `first_prepared` already tracks
+	/// closes both: such a row falls out of the conflict target (a fresh
+	/// proposal inserts alongside it instead of overwriting it) exactly as it
+	/// already falls out of `idx_sessions_one_unstarted_system_proposal`'s
+	/// own predicate. See that migration's own comment for the matching
+	/// argument on the index side, and `docs/study-nudge.md`'s "Never stack
+	/// proposals" section for the full account.
 	///
 	/// **One statement, not read-then-write.** The same race `provision_if_
 	/// absent`'s own doc comment named (a `chatgpt-codex-connector` review on
@@ -376,7 +396,7 @@ impl SessionRepository {
 			      AND status IN ('paused', 'scheduled', 'draft')
 			      AND (origin != 'system' OR started_at IS NOT NULL)
 			)
-			ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS NULL
+			ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS NULL AND status IN ('paused', 'scheduled', 'draft')
 			DO UPDATE SET
 			    name              = excluded.name,
 			    activities        = excluded.activities,
@@ -1038,6 +1058,51 @@ mod tests {
 		let started_after = sessions.iter().find(|s| s.id == "session-started").unwrap();
 		assert_eq!(started_after.name, "already opened", "a started system session must never be refreshed");
 		assert_eq!(started_after.started_at.as_deref(), Some("2026-01-01T12:00:00Z"));
+	}
+
+	/// A fifth real `chatgpt-codex-connector` finding on `#335`, P1:
+	/// `set_status_many` (`PATCH /sessions/status`) writes only `status` and
+	/// `updated_at`, so it can move a `system`-origin, never-started proposal
+	/// straight to `active` or `completed` while `started_at` stays `NULL` --
+	/// a real, client-reachable path. Without `status IN (...)` in the
+	/// conflict target, such a row would permanently occupy this subject's
+	/// one slot (`first_prepared` can never surface it back out, since
+	/// `active`/`completed` aren't in its own tracked set) and stand as a
+	/// live target this statement would silently overwrite. This pins both
+	/// halves of the fix: a fresh proposal is not blocked by such a row, and
+	/// that row's own content survives completely untouched.
+	#[tokio::test]
+	async fn provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_anomaly() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		// The anomaly itself: origin still `system`, `started_at` still
+		// `NULL`, but `status` moved to `active` -- exactly what
+		// `set_status_many` alone can produce, bypassing the lifecycle
+		// fields a real `Start` action would also set.
+		let anomaly = SessionRecord {
+			status: SessionStatus::Active,
+			updated_at: "2026-01-01T00:05:00Z".to_owned(),
+			..system_proposal_fixture("session-anomaly", "orphaned by set_status_many", 300_000, "2026-01-01T00:00:00Z")
+		};
+		repo.upsert("subject-a", &anomaly).await.unwrap();
+
+		let fresh = system_proposal_fixture("session-fresh", "a brand new proposal", 600_000, "2026-01-02T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &fresh).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(
+			sessions.len(),
+			2,
+			"the anomaly and the new proposal must coexist, not collapse into one -- the subject must not be starved of future proposals"
+		);
+
+		let anomaly_after = sessions.iter().find(|s| s.id == "session-anomaly").unwrap();
+		assert_eq!(
+			anomaly_after.name, "orphaned by set_status_many",
+			"an active/completed row must never be silently overwritten by a refresh"
+		);
+		assert!(matches!(anomaly_after.status, SessionStatus::Active));
 	}
 
 	/// A real `chatgpt-codex-connector` finding on `#335`: the partial index

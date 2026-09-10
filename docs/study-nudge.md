@@ -710,6 +710,53 @@ catalogue read and `recommend()` call at all, and the atomic `UPDATE`'s
 own `WHERE` clause is the only thing that actually has to be right at the
 moment of the write.
 
+**A fifth and sixth real `chatgpt-codex-connector` finding on `#335`, both
+P1, both from the same root cause: `origin = 'system' AND started_at IS
+NULL` is not the same predicate as "un-started," because a status change
+can reach a `system` proposal without ever touching `started_at` at all.**
+`SessionRepository::set_status_many` (`PATCH /sessions/status`) writes only
+`status` and `updated_at` — a real, client-reachable path
+(`updateStatusMany`, `paulgsc/some-ui`), not a hypothetical. It can move a
+never-started `system` proposal straight to `active` or `completed` while
+`started_at` stays `NULL`.
+
+Two real consequences followed from that one gap, both in code this story
+itself added:
+
+- **Starvation, plus silent corruption, live.** Such a row still satisfied
+  `idx_sessions_one_unstarted_system_proposal`'s predicate, so it
+  permanently occupied the subject's one slot — `first_prepared` can never
+  surface `active`/`completed` rows back out, since neither status is in
+  its own tracked set, so no future proposal could ever be provisioned for
+  that subject again. Worse, the row remained a live `ON CONFLICT` target:
+  `provision_or_refresh`'s `DO UPDATE` branch (unlike `refresh_if_untouched`)
+  has no `created_at == updated_at` guard, so the next `NothingToSay` pass
+  would have silently overwritten the name, activities, and duration of a
+  session that might be actively in progress or already finished.
+- **Wrongful deletion, once.** The migration's own defensive dedup pass used
+  the same broad predicate, so on a live database already holding such rows
+  (from real use, not a bug in this migration) it would have deleted every
+  `active`/`completed` row but the most recently touched one per subject —
+  real history, not ignored proposals, and irreversibly, since the down
+  migration only drops the index.
+
+**The fix scopes both to the same three statuses `first_prepared` already
+treats as "prepared"**: `idx_sessions_one_unstarted_system_proposal`'s own
+predicate, `provision_or_refresh`'s `ON CONFLICT` target, and the
+migration's dedup `DELETE` all gained `AND status IN ('paused', 'scheduled',
+'draft')`. An `active`/`completed` row reached through the `set_status_many`
+anomaly now falls out of all three: it no longer counts toward the "at most
+one" invariant (a fresh proposal can be provisioned alongside it), it is
+never a conflict target (nothing ever overwrites it), and it survives the
+migration's dedup untouched regardless of how many other such rows exist
+for the same subject. Verified against a real scratch database seeded with
+exactly this scenario (two genuine duplicate ignored proposals alongside
+two real `active`/`completed` history rows sharing a subject) before
+trusting the migration's own SQL — the duplicates collapsed to one, the
+history rows both survived — and pinned in code by
+`provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_
+anomaly` in `crates/db/session/src/repository.rs`'s test module.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
