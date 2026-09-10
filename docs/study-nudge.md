@@ -549,35 +549,70 @@ and the issue's own recommendation is what shipped:**
    gives that for free.
 
 **`SessionRepository::provision_or_refresh`** (`crates/db/session/src/
-repository.rs`) is the mechanism: one `INSERT ... ON CONFLICT (subject_id)
-WHERE origin = 'system' AND started_at IS NULL DO UPDATE SET name =
-excluded.name, activities = excluded.activities, total_duration_ms =
-excluded.total_duration_ms, updated_at = excluded.updated_at` statement,
-replacing what RCM2 (`#279`) originally called `provision_if_absent` (an
-`INSERT ... WHERE NOT EXISTS` guarded on the same three-status list
-`first_prepared` uses). `id` and `created_at` are deliberately absent from
-the `DO UPDATE SET` list — preserving `id` is the whole point, and
-`created_at` follows `upsert`'s own precedent of never letting a write move
-it. Every other column is left alone too: the conflicting row, by
-construction of the predicate it matched, already holds the only values
-`materialize_provisioned_session` ever writes for them.
+repository.rs`) is the mechanism: one `INSERT ... SELECT ... WHERE NOT
+EXISTS (...) ON CONFLICT (subject_id) WHERE origin = 'system' AND
+started_at IS NULL DO UPDATE SET name = excluded.name, activities =
+excluded.activities, total_duration_ms = excluded.total_duration_ms,
+updated_at = excluded.updated_at` statement, replacing what RCM2 (`#279`)
+originally called `provision_if_absent`. `id` and `created_at` are
+deliberately absent from the `DO UPDATE SET` list — preserving `id` is the
+whole point, and `created_at` follows `upsert`'s own precedent of never
+letting a write move it. Every other column is left alone too: the
+conflicting row, by construction of the predicate it matched, already holds
+the only values `materialize_provisioned_session` ever writes for them.
 
-**Bounded per #253.** The statement above is a single equality probe
-against a partial index, not a scan — the same "a read/write reachable from
-the waker declares its own bound" discipline `first_prepared`'s three
-single-status probes already established for the neighbouring query. There
-is no separate read-then-decide step: SQLite's own conflict resolution
-*is* the check, so there is nothing here for a concurrent caller to race
-against either — the same one-statement argument `provision_if_absent`'s
-own doc comment made for the race a `chatgpt-codex-connector` review caught
-on `#313`, carried over to the new predicate.
+**Two guards, not one, because they protect against two different races.**
+A first version of this statement carried only the `ON CONFLICT` — a real
+`chatgpt-codex-connector` finding on `#335` caught that this drops
+`provision_if_absent`'s own `WHERE NOT EXISTS (... status IN ('paused',
+'scheduled', 'draft'))` guard entirely, and that guard was protecting
+against a *different* race than the partial index does. The partial index
+stops a second `system` proposal from ever coexisting with an un-started
+one; it says nothing about a **foreign** prepared session — a real
+person's own `paused`/`scheduled`/`draft` row — landing in the window
+`provision_if_absent`'s own doc comment already named (#313): a concurrent
+waker pass, or the subject's own `POST /sessions` call, between
+`consider`'s `first_prepared` read and this write. Without the `WHERE NOT
+EXISTS` restored, that race would insert a system proposal *alongside* the
+person's fresh draft, and `first_prepared`'s status priority would then
+surface the wrong one. The restored subquery excludes rows already matching
+the partial index's own predicate, so the two guards agree on which row is
+"foreign" rather than fighting over the same one — a pre-existing
+`system`/un-started proposal is not foreign, it is exactly the row the `ON
+CONFLICT` branch is allowed to refresh.
 
-**A subject with a stale proposal who is otherwise not due does not
-silently churn.** Refreshing only ever happens inside `nudge::waker::
-consider`'s `Verdict::NothingToSay` arm — the same place provisioning
-always happened — which is only reached once the engine has already decided
-to intervene. Refreshing is provisioning; it happens when the engine wants
-to say something, never on a timer.
+**Bounded per #253.** Both guards are index-backed: the `NOT EXISTS`
+subquery is served by `idx_sessions_status`, and the `ON CONFLICT` target
+is the new partial index — an equality probe each, not a scan, the same "a
+read/write reachable from the waker declares its own bound" discipline
+`first_prepared`'s three single-status probes already established for the
+neighbouring query.
+
+**Refreshing has to happen before the engine ever runs, not only inside
+`Verdict::NothingToSay`.** The first version of this story gated refreshing
+entirely on that arm, reasoning that provisioning always had. A second real
+`chatgpt-codex-connector` finding on `#335` caught why that never actually
+fires for the scenario the whole story exists for: once an ignored
+proposal exists at all, `first_prepared` (read at the top of `consider`)
+already resolves to it, and `StudySelector::select` maps straight to an
+intervention — `NothingToSay` cannot occur again while that row exists, so
+gating the refresh on reaching it would leave every subsequent day's pass
+pointing at whatever `recommend()` produced the day the proposal was first
+written, silently defeating the whole point of choosing "refresh in place"
+over "point at it again." `nudge::waker::refresh_stale_proposal` is the
+fix: called right after `first_prepared` resolves, on every pass, checking
+whether what's prepared is an un-started `system` proposal and refreshing
+it in place if so — before the engine or selector ever run. It is
+best-effort rather than fatal (a failure leaves the existing, unrefreshed
+proposal in place rather than failing the pass), unlike `NothingToSay`'s
+own provisioning, where a failure means genuinely nothing to offer.
+Bounded the same way: one indexed lookup by id to decide whether to
+refresh, not a scan.
+
+**Refreshing is still not "on a timer."** It only ever runs from inside
+`consider`, which only ever runs for a subject the engagement arithmetic
+already marked due — so a subject who is not due gets no refresh, exactly
+as before; what changed is only *which* due-subject pass can trigger it.
 
 ### First contact: how a subject enters the gate at all
 

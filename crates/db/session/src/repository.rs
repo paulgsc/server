@@ -293,6 +293,23 @@ impl SessionRepository {
 	/// not a scan — the same discipline `first_prepared`'s three single-status
 	/// probes already established for the neighbouring query.
 	///
+	/// **The `WHERE NOT EXISTS` guard is still needed alongside the partial
+	/// index — the two protect against different races.** The partial index
+	/// stops a second *system* proposal from ever coexisting with an
+	/// un-started one; it says nothing about a **foreign** prepared session —
+	/// a real person's own `paused`/`scheduled`/`draft` row — landing in the
+	/// window between `consider`'s `first_prepared` read (which found
+	/// nothing) and this write. Without this guard, that race would insert a
+	/// system proposal *alongside* the person's own fresh draft, and
+	/// `first_prepared`'s status priority would then surface the system
+	/// proposal over it — exactly the race `provision_if_absent`'s own
+	/// `WHERE NOT EXISTS` used to close, and a real `chatgpt-codex-connector`
+	/// finding on `#335` caught its absence here. The subquery excludes rows
+	/// that already match the partial index's own predicate — a pre-existing
+	/// `system`/un-started proposal is not "foreign," it is exactly the row
+	/// this statement is allowed to refresh via the `ON CONFLICT` branch —
+	/// so the two clauses agree rather than fight over the same row.
+	///
 	/// **What refreshing touches.** Only `name`, `activities`,
 	/// `total_duration_ms`, and `updated_at` — exactly the fields that can
 	/// differ between two `materialize_provisioned_session` calls for the
@@ -329,7 +346,13 @@ impl SessionRepository {
 			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
 			    activities, scenes, layout
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			WHERE NOT EXISTS (
+			    SELECT 1 FROM sessions
+			    WHERE subject_id = ?
+			      AND status IN ('paused', 'scheduled', 'draft')
+			      AND (origin != 'system' OR started_at IS NOT NULL)
+			)
 			ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS NULL
 			DO UPDATE SET
 			    name              = excluded.name,
@@ -352,6 +375,7 @@ impl SessionRepository {
 			activities,
 			scenes,
 			layout,
+			subject_id,
 		)
 		.execute(&self.pool)
 		.await?;
@@ -832,43 +856,86 @@ mod tests {
 		assert_eq!(started_after.started_at.as_deref(), Some("2026-01-01T12:00:00Z"));
 	}
 
-	/// #284's other named edge: "a system session promoted to user by editing
-	/// falls out of this rule automatically." Once `upsert`'s one-way
-	/// `system → user` guard has promoted a row, it no longer matches
-	/// `origin = 'system'` and must not block — or be overwritten by — a
-	/// fresh proposal either. This is exactly the "interaction between two
-	/// stories" (#283/RCM6 and #284/RCM7) the issue itself calls out as
-	/// worth testing.
+	/// A real `chatgpt-codex-connector` finding on `#335`: the partial index
+	/// alone only stops a second *system* proposal from coexisting with an
+	/// un-started one — it says nothing about a **foreign** prepared session
+	/// (a real person's own `paused`/`scheduled`/`draft` row) landing beside
+	/// a freshly-provisioned system proposal. Without the `WHERE NOT EXISTS`
+	/// guard restored alongside the `ON CONFLICT`, a concurrent `POST
+	/// /sessions` in the race window `provision_if_absent`'s own doc comment
+	/// already named (#313) would let a system proposal land next to it, and
+	/// `first_prepared`'s status priority would then surface the *wrong*
+	/// session. This pins the restored guard directly: a foreign draft
+	/// already sitting there must block the write outright, not just avoid
+	/// colliding with it.
 	#[tokio::test]
-	async fn provision_or_refresh_never_touches_a_system_session_promoted_to_user() {
+	async fn provision_or_refresh_is_blocked_by_a_foreign_prepared_session() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo.upsert("subject-a", &fixture("session-user-draft")).await.unwrap();
+
+		let candidate = system_proposal_fixture("session-system", "a proposal", 300_000, "2026-01-01T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &candidate).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(
+			sessions.len(),
+			1,
+			"a foreign prepared session must block provisioning outright, not merely avoid overwriting it"
+		);
+		assert_eq!(sessions[0].id, "session-user-draft", "the person's own draft must be the only row, untouched");
+	}
+
+	/// #284's other named edge, corrected after the finding above: "a system
+	/// session promoted to user by editing falls out of this rule
+	/// automatically" is true of the **uniqueness** invariant (the partial
+	/// index no longer covers a `user`-origin row at all), not of the
+	/// foreign-prepared-session guard, which tracks *status*, not origin —
+	/// and correctly so: while a promoted session still sits in a prepared
+	/// status, `first_prepared` already surfaces it and `consider` never
+	/// reaches `provision_or_refresh` in the first place (the previous test
+	/// pins that this method independently refuses to race past it either).
+	/// Once the promoted session leaves every prepared status — here,
+	/// completed, the same as any real finished session — it stops being
+	/// foreign to this guard too, and a fresh proposal is free to land.
+	#[tokio::test]
+	async fn provision_or_refresh_is_not_blocked_by_a_promoted_session_that_is_no_longer_prepared() {
 		let pool = pool().await;
 		let repo = SessionRepository::new(pool);
 
 		let proposal = system_proposal_fixture("session-edited", "Suggested for you", 300_000, "2026-01-01T00:00:00Z");
 		repo.upsert("subject-a", &proposal).await.unwrap();
 
-		// A person renames it — PRO1's own "what counts as an edit" promotes
-		// origin to `user`, exactly as `update_session` would send it.
-		let renamed = SessionRecord {
+		// A person renames it (PRO1's "what counts as an edit" promotes
+		// origin to `user`, exactly as `update_session` would send it), then
+		// finishes it — completed is no longer a "prepared" status at all.
+		let completed = SessionRecord {
 			name: "My own session".to_owned(),
 			origin: SessionOrigin::User,
-			updated_at: "2026-01-02T00:00:00Z".to_owned(),
+			status: SessionStatus::Completed,
+			started_at: Some("2026-01-02T00:00:00Z".to_owned()),
+			completed_at: Some("2026-01-02T00:30:00Z".to_owned()),
+			updated_at: "2026-01-02T00:30:00Z".to_owned(),
 			..proposal
 		};
-		repo.upsert("subject-a", &renamed).await.unwrap();
+		repo.upsert("subject-a", &completed).await.unwrap();
 
 		let fresh = system_proposal_fixture("session-fresh", "a brand new proposal", 600_000, "2026-01-03T00:00:00Z");
 		repo.provision_or_refresh("subject-a", &fresh).await.unwrap();
 
 		let sessions = repo.list("subject-a").await.unwrap();
-		assert_eq!(sessions.len(), 2, "the promoted session and the new proposal must coexist, not collapse into one");
+		assert_eq!(sessions.len(), 2, "the completed, promoted session and the new proposal must coexist, not block each other");
 
 		let promoted_after = sessions.iter().find(|s| s.id == "session-edited").unwrap();
 		assert_eq!(
 			promoted_after.name, "My own session",
-			"a session a person took ownership of must never be refreshed by the waker"
+			"a session a person took ownership of and finished must never be touched by the waker"
 		);
 		assert!(matches!(promoted_after.origin, SessionOrigin::User));
+
+		let fresh_after = sessions.iter().find(|s| s.id == "session-fresh").unwrap();
+		assert_eq!(fresh_after.name, "a brand new proposal");
 	}
 
 	#[tokio::test]
