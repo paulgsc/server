@@ -175,21 +175,6 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// now asserts.
 	crate::metrics::waker::record_session_rows_read(usize::from(prepared_session.is_some()));
 
-	// #284 (RCM7): if what's prepared is an un-started `system` proposal,
-	// its content may be stale — refresh it before it is used to decide
-	// what to say. This has to happen *here*, before the engine ever runs,
-	// not only inside the `NothingToSay` arm below: a real `chatgpt-codex-
-	// connector` finding on `#335` established that once such a proposal
-	// exists, `first_prepared` (just above) already resolves to it and
-	// `StudySelector::select` maps straight to an intervention — `Verdict::
-	// NothingToSay` cannot fire again while that row exists, so a refresh
-	// gated on reaching that arm would never run on an ordinary day someone
-	// keeps ignoring the same stale proposal. See `refresh_stale_proposal`'s
-	// own doc comment for why this is best-effort rather than fatal.
-	if let Some(id) = &prepared_session {
-		refresh_stale_proposal(db, &sessions, subject_id, id, now).await;
-	}
-
 	let constraints = StudyConstraints {
 		clock: nudge.clock.clone(),
 		enabled: nudge.enabled,
@@ -206,7 +191,29 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		.and_then(|raw| crate::nudge::clock::parse_timestamp(raw.as_str()));
 
 	let action = match engine.evaluate(&charge, now, last_intervened_at) {
-		Verdict::Intervene(action) => action,
+		Verdict::Intervene(action) => {
+			// #284 (RCM7): if what's about to be pointed at is an un-started
+			// `system` proposal, its content may be stale — refresh it here,
+			// now that `evaluate` has already confirmed admission (including
+			// presence). A real `chatgpt-codex-connector` finding on `#335`
+			// caught an earlier version of this refresh running *before*
+			// admission was checked at all: it could rewrite a proposal's
+			// name/activities/duration while the subject was actively
+			// viewing that exact session, only for admission to then
+			// suppress the notification on `Present` anyway — mutating a
+			// session out from under someone looking at it for a
+			// notification that was never going to send. Gating on
+			// `Verdict::Intervene` means this only ever runs immediately
+			// before an intervention that will actually go out, matching
+			// `first_prepared`'s own read at the top of this function to
+			// whatever the engine actually decided to do with it. See
+			// `refresh_stale_proposal`'s own doc comment for why this is
+			// best-effort rather than fatal.
+			if let Some(session_id) = action.session_id() {
+				refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
+			}
+			action
+		}
 		Verdict::Wait { until } => {
 			crate::metrics::waker::record_verdict("wait", "n/a");
 			// Push the gate out so this subject stops being returned by `due`.
@@ -444,11 +451,24 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	Ok(true)
 }
 
-/// #284 (RCM7): before `consider` decides what to say, refresh `prepared`'s
-/// content in place if it is an un-started `system` proposal — same id,
-/// freshly recommended contents — so an ordinary pass over someone who keeps
-/// ignoring the same proposal does not keep pointing at whatever `recommend()`
-/// produced the day it was first written.
+/// #284 (RCM7): refresh `prepared`'s content in place if it is an un-started
+/// `system` proposal — same id, freshly recommended contents — so an
+/// ordinary pass over someone who keeps ignoring the same proposal does not
+/// keep pointing at whatever `recommend()` produced the day it was first
+/// written.
+///
+/// **Called only once `consider` has already decided to intervene using
+/// `prepared`**, from the `Verdict::Intervene` arm of `engine.evaluate` — not
+/// from the moment `first_prepared` resolves. A real `chatgpt-codex-
+/// connector` finding on `#335` caught an earlier version that ran this
+/// before admission was ever checked: it could rewrite a proposal's content
+/// while the subject held a fresh presence lease on that exact session —
+/// actively viewing it — only for `evaluate`'s own `admit` call to then
+/// suppress the notification on `Present` anyway, mutating a session out
+/// from under someone looking at it for nothing. `evaluate` already calls
+/// `Admissibility::admit` internally before ever returning `Intervene`, so
+/// gating this call on that verdict is sufficient — no separate presence
+/// check is needed here.
 ///
 /// **Best-effort, not fatal.** Unlike `Verdict::NothingToSay`'s own
 /// provisioning (where a catalogue-read failure or an empty candidate set
@@ -459,12 +479,13 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// failing `consider` or advancing any gate: the person still gets notified
 /// about *something* real, only not this pass's freshest recommendation.
 ///
-/// **Reads before it writes.** `prepared` is `first_prepared`'s winner,
-/// which — because `first_prepared`'s own priority order is `paused`,
-/// then `scheduled`, then `draft` — is not always the `system`/un-started
-/// proposal even when one exists (a person's own `paused` session outranks
-/// it). A single indexed lookup by id decides whether this is the row to
-/// refresh at all; nothing here assumes `prepared` already is it.
+/// **Reads before it writes.** `prepared` is the id `evaluate` is about to
+/// act on — which, because `first_prepared`'s own priority order is
+/// `paused`, then `scheduled`, then `draft`, is not always the `system`/
+/// un-started proposal even when one exists (a person's own `paused`
+/// session outranks it). A single indexed lookup by id decides whether this
+/// is the row to refresh at all; nothing here assumes `prepared` already is
+/// it.
 async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
 	let record = match sessions.get(subject_id, prepared).await {
 		Ok(Some(record)) => record,
@@ -1240,7 +1261,8 @@ mod tests {
 	/// first written.
 	#[test]
 	fn an_ordinary_second_pass_over_an_ignored_proposal_refreshes_its_content_not_just_its_existence() {
-		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
 		use sqlx::sqlite::SqlitePoolOptions;
 
 		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
@@ -1261,14 +1283,45 @@ mod tests {
 			let engagement = EngagementRepository::new(pool.clone());
 			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
 
+			// Consented on every topic, so the second pass's `ResumeAbandoned`
+			// (Momentum's dominant-deficit action) clears `admit`'s consent
+			// check and actually reaches `Verdict::Intervene` — the whole
+			// point of this test is to exercise the refresh gated on that
+			// verdict, not on `NotConsented`/`Suppressed` short-circuiting
+			// before it. Keys are inert placeholders: `admit` only reads the
+			// topic list, and the refresh under test happens before `actuate`
+			// ever tries to encrypt or send anything.
+			PushSubscriptionRepository::new(pool.clone())
+				.upsert(
+					&PushSubscription {
+						endpoint: "https://push.example.com/ignoring-proposal".to_owned(),
+						keys: SubscriptionKeys {
+							p256dh: "p256dh".to_owned(),
+							auth: "auth".to_owned(),
+						},
+					},
+					&Consent {
+						subject_id: subject_id.to_owned(),
+						topics: Topic::ALL.to_vec(),
+						consented_at: now_str.clone(),
+					},
+					&now_str,
+				)
+				.await
+				.unwrap();
+
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
 				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
 				vapid,
 				enabled: true,
-				quiet_hours_start: 22,
-				quiet_hours_end: 8,
+				// Disabled outright (start == end never matches, per
+				// `is_within_quiet_hours`) rather than a fixed window: this
+				// test must reach `Verdict::Intervene` regardless of the
+				// wall-clock hour it happens to run at.
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
 			};
@@ -1291,6 +1344,13 @@ mod tests {
 			// a real REFRACTORY-later pass would find them); Momentum stays
 			// dominant. `first_prepared` now finds the existing proposal, so
 			// this pass takes the *ordinary* Intervene path, not NothingToSay.
+			// The refresh under test happens inside that arm, before the
+			// claim/actuate steps that follow it — this call's own `bool`
+			// return isn't asserted, since the placeholder subscription keys
+			// above are not valid EC public keys and `Sender::prepare` fails
+			// encryption locally (no network involved), the same way any
+			// other real encryption failure would; what matters here is that
+			// the refresh already ran by that point regardless.
 			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
 			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
 
@@ -1305,6 +1365,132 @@ mod tests {
 				second_record.total_duration_ms
 			);
 		});
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`: an earlier version
+	/// of the refresh ran before `evaluate` ever checked admission, so it
+	/// could rewrite a proposal's content while the subject held a fresh
+	/// presence lease on that exact session — actively viewing it — only for
+	/// `evaluate` to then suppress the notification on `Present` anyway.
+	/// This pins the fix directly: with a fresh lease in place, the pass
+	/// must be `Suppressed::Present` (not silently something else) *and*
+	/// the proposal's content must be completely untouched, proving the
+	/// refresh call gated on `Verdict::Intervene` correctly never runs.
+	#[test]
+	fn a_fresh_presence_lease_on_the_proposal_suppresses_admission_and_leaves_its_content_untouched() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+		use metrics_util::CompositeKey;
+		use presence_repo::PresenceLeaseRepository;
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-viewing-proposal";
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+			rt.block_on(async {
+				let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+				MIGRATOR.run(&pool).await.unwrap();
+
+				let now = Utc::now();
+				let now_str = now.to_rfc3339();
+				let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+				let engagement = EngagementRepository::new(pool.clone());
+				engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+				PushSubscriptionRepository::new(pool.clone())
+					.upsert(
+						&PushSubscription {
+							endpoint: "https://push.example.com/viewing-proposal".to_owned(),
+							keys: SubscriptionKeys {
+								p256dh: "p256dh".to_owned(),
+								auth: "auth".to_owned(),
+							},
+						},
+						&Consent {
+							subject_id: subject_id.to_owned(),
+							topics: Topic::ALL.to_vec(),
+							consented_at: now_str.clone(),
+						},
+						&now_str,
+					)
+					.await
+					.unwrap();
+
+				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+				let nudge = NudgeContext {
+					clock: NudgeClock::resolve(Some("UTC")).0,
+					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					vapid,
+					enabled: true,
+					quiet_hours_start: 0,
+					quiet_hours_end: 0,
+					presence_lease_ttl: std::time::Duration::from_secs(75),
+					base_url: "https://example.com".to_owned(),
+				};
+
+				// First pass: provisions the proposal.
+				consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+				let sessions = SessionRepository::new(pool.clone());
+				let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+				let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+
+				// The catalogue changes, exactly as the sibling test does --
+				// if the refresh incorrectly ran anyway, this is what would
+				// prove it by changing `total_duration_ms`.
+				sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+				// The subject is actively looking at exactly this proposal
+				// right now -- a fresh presence lease on its own id, the same
+				// `context_key` `StudyAction::session_id()` would report.
+				PresenceLeaseRepository::new(pool.clone()).observe(subject_id, &first_id, &now_str).await.unwrap();
+
+				engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+				let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+				assert!(!intervened, "a subject actively viewing the proposal must not be notified about it");
+
+				let all = sessions.list(subject_id).await.unwrap();
+				assert_eq!(all.len(), 1, "presence suppression must not itself cause a second session to appear");
+
+				let second_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+				assert_eq!(
+					second_record.name, first_record.name,
+					"content must be completely untouched while the proposal is being viewed"
+				);
+				assert_eq!(
+					second_record.total_duration_ms, first_record.total_duration_ms,
+					"a fresh presence lease must prevent the refresh from running at all, not merely prevent the notification"
+				);
+			});
+		});
+
+		let snapshot: Vec<(CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, DebugValue)> = snapshotter.snapshot().into_vec();
+		let find = |name: &str, label_value: &str| -> u64 {
+			snapshot
+				.iter()
+				.find_map(|(key, _, _, value)| {
+					let k = key.key();
+					let matches = k.name() == name && k.labels().any(|l| l.value() == label_value);
+					matches.then_some(match value {
+						DebugValue::Counter(n) => *n,
+						_ => 0,
+					})
+				})
+				.unwrap_or(0)
+		};
+		assert_eq!(
+			find("nudge_waker_verdicts_total", "present"),
+			1,
+			"the second pass must be suppressed specifically on Present, not some other reason that would also leave content untouched"
+		);
 	}
 
 	/// A real Codex review finding on `server#322` (P2): if `recommend()` +

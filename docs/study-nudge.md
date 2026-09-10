@@ -588,31 +588,50 @@ read/write reachable from the waker declares its own bound" discipline
 `first_prepared`'s three single-status probes already established for the
 neighbouring query.
 
-**Refreshing has to happen before the engine ever runs, not only inside
-`Verdict::NothingToSay`.** The first version of this story gated refreshing
-entirely on that arm, reasoning that provisioning always had. A second real
-`chatgpt-codex-connector` finding on `#335` caught why that never actually
-fires for the scenario the whole story exists for: once an ignored
-proposal exists at all, `first_prepared` (read at the top of `consider`)
-already resolves to it, and `StudySelector::select` maps straight to an
-intervention — `NothingToSay` cannot occur again while that row exists, so
-gating the refresh on reaching it would leave every subsequent day's pass
-pointing at whatever `recommend()` produced the day the proposal was first
-written, silently defeating the whole point of choosing "refresh in place"
-over "point at it again." `nudge::waker::refresh_stale_proposal` is the
-fix: called right after `first_prepared` resolves, on every pass, checking
-whether what's prepared is an un-started `system` proposal and refreshing
-it in place if so — before the engine or selector ever run. It is
-best-effort rather than fatal (a failure leaves the existing, unrefreshed
-proposal in place rather than failing the pass), unlike `NothingToSay`'s
-own provisioning, where a failure means genuinely nothing to offer.
-Bounded the same way: one indexed lookup by id to decide whether to
-refresh, not a scan.
+**Refreshing has to happen somewhere other than `Verdict::NothingToSay`,
+and not before admission is checked either — two real `chatgpt-codex-
+connector` findings on `#335`, in sequence.** The first version of this
+story gated refreshing entirely on that arm, reasoning that provisioning
+always had. That never actually fires for the scenario the whole story
+exists for: once an ignored proposal exists at all, `first_prepared` (read
+at the top of `consider`) already resolves to it, and `StudySelector::
+select` maps straight to an intervention — `NothingToSay` cannot occur
+again while that row exists, so gating the refresh on reaching it would
+leave every subsequent day's pass pointing at whatever `recommend()`
+produced the day the proposal was first written, silently defeating the
+whole point of choosing "refresh in place" over "point at it again."
+
+The fix moved the refresh call earlier — right after `first_prepared`
+resolves, before the engine ever runs — and that was itself wrong in a
+different way: it could rewrite a proposal's `name`/`activities`/
+`total_duration_ms` while the subject held a fresh presence lease on that
+exact session, actively viewing it, only for `evaluate`'s own `admit` call
+to suppress the notification on `Present` anyway. Mutating a session out
+from under someone looking at it, for a notification that was never going
+to send, is exactly the write race #284's own "refresh in place" choice
+was supposed to avoid causing, not invite.
+
+**`nudge::waker::refresh_stale_proposal`'s call site is the resolution to
+both**: inside the `Verdict::Intervene(action)` arm of `engine.evaluate`,
+not before it and not only inside `NothingToSay`. `evaluate` already calls
+`Admissibility::admit` internally before ever returning `Intervene` (see
+`intervention::Engine::evaluate`'s own implementation), so gating on that
+verdict is sufficient by construction — no separate presence check is
+needed at the call site, and refreshing is skipped automatically whenever
+`Wait`, `Suppressed` (quiet hours, no consent, or presence), or
+`NothingToSay` is what `evaluate` actually decided. It is best-effort
+rather than fatal (a failure leaves the existing, unrefreshed proposal in
+place rather than failing the pass), unlike `NothingToSay`'s own
+provisioning, where a failure means genuinely nothing to offer. Bounded the
+same way: one indexed lookup by id to decide whether to refresh, not a
+scan.
 
 **Refreshing is still not "on a timer."** It only ever runs from inside
-`consider`, which only ever runs for a subject the engagement arithmetic
-already marked due — so a subject who is not due gets no refresh, exactly
-as before; what changed is only *which* due-subject pass can trigger it.
+`consider`, for a subject the engagement arithmetic already marked due,
+immediately before an intervention that is actually about to go out — so a
+subject who is not due, not admissible, or currently viewing the proposal
+gets no refresh, exactly as before; what changed is only *which*
+already-due, already-admissible pass can trigger it.
 
 ### First contact: how a subject enters the gate at all
 
