@@ -257,14 +257,21 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Because the provisioned row's id is always freshly
 			// generated, an unconditional `upsert` would not collide with
 			// whatever won that race — it would just add a second, blank
-			// draft beside it. `provision_if_absent` closes the window
-			// atomically (one statement, checked against the same three
-			// statuses `first_prepared` treats as prepared) rather than
-			// trusting the read that already happened; see its own doc
-			// comment for the mechanism and the #313 review that caught
-			// this. The `first_prepared` re-read after it is what makes
-			// this correct either way: whichever side of the race
-			// actually landed is what gets used, not necessarily the row
+			// draft beside it. `provision_or_refresh` closes the window
+			// atomically (one statement, targeting #284's own partial
+			// unique index — `origin = 'system' AND started_at IS NULL`,
+			// not the three statuses `first_prepared` treats as prepared)
+			// rather than trusting the read that already happened; see its
+			// own doc comment for the mechanism and the #313 review that
+			// caught the original race. #284 (RCM7) is also what turns a
+			// race-losing write into a *refresh* rather than a no-op: the
+			// losing side's freshly recommended content still wins, in
+			// place, over whatever stale proposal the subject has been
+			// ignoring — see `docs/study-nudge.md`'s "Never stack
+			// proposals" section. The `first_prepared` re-read after it is
+			// what makes this correct either way: whichever side of the
+			// race actually landed (or whichever call's content the
+			// refresh applied) is what gets used, not necessarily the row
 			// built here.
 			let catalogue = match ActivityRepository::new(db.clone()).list().await {
 				Ok(catalogue) => catalogue,
@@ -312,7 +319,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
 				return Ok(false);
 			}
-			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
+			if let Err(err) = sessions.provision_or_refresh(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 				return Ok(false);
@@ -320,7 +327,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			let session_id = match sessions.first_prepared(subject_id).await {
 				Ok(Some(id)) => id,
 				Ok(None) => {
-					// Unreachable in practice: `provision_if_absent` just
+					// Unreachable in practice: `provision_or_refresh` just
 					// proved a prepared session exists for this subject,
 					// either the one built above or a concurrent writer's.
 					// Guarded rather than trusted, per this codebase's
@@ -1052,10 +1059,108 @@ mod tests {
 		);
 	}
 
+	/// #284 (RCM7)'s named "interaction between two stories" — RCM6's
+	/// `origin`/`started_at` and RCM7's own "at most one" rule — run through
+	/// `consider` end to end, not just `SessionRepository` directly. A
+	/// provisioned session the subject actually **started** stops matching
+	/// `first_prepared`'s three "prepared" statuses (`paused`, `scheduled`,
+	/// `draft` — `active` is deliberately not one of them) the moment it goes
+	/// `active`, so a subject who is somehow re-selected as due while still
+	/// mid-session reaches `Verdict::NothingToSay` a second time even though
+	/// their first proposal is far from abandoned. This pins that the second
+	/// pass does the right thing anyway: `provision_or_refresh`'s partial
+	/// index no longer covers the started row (`started_at` is no longer
+	/// `NULL`), so a second, independent proposal is provisioned rather than
+	/// the started session being silently refreshed out from under whoever
+	/// is mid-session on it — the exact corruption #284's own issue text
+	/// calls out as the one thing this rule must never do.
+	#[test]
+	fn a_started_provisioned_session_does_not_block_or_get_clobbered_by_a_second_provisioning_pass() {
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use session_repo::SessionRecord;
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-mid-session";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 22,
+				quiet_hours_end: 8,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: nothing prepared, provisions a real session.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+
+			// The subject actually opens it: status -> active, started_at set.
+			// This is exactly what `update_session` does on a real `Start`
+			// PATCH — origin stays `system`, only the lifecycle fields move.
+			let mut started = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			started.status = session_repo::SessionStatus::Active;
+			started.started_at = Some(now_str.clone());
+			sessions.upsert(subject_id, &started).await.unwrap();
+
+			// Re-arm the gate as if this subject drifted due again while
+			// still mid-session (an independent deficit crossing threshold,
+			// say) -- `due` only needs `eligible_at <= now`, and the charge
+			// levels above still keep Momentum dominant over Presence.
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			// Second pass: `first_prepared` no longer finds the started
+			// session (`active` isn't a "prepared" status), so this must
+			// reach `NothingToSay` again and provision independently rather
+			// than erroring or silently refreshing the started row.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+
+			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
+			assert_eq!(all.len(), 2, "the started session and a fresh proposal must coexist, not collapse into one");
+
+			let started_after = all.iter().find(|s| s.id == first_id).unwrap();
+			assert!(
+				matches!(started_after.status, session_repo::SessionStatus::Active),
+				"a started system session must never be refreshed back to Scheduled"
+			);
+			assert_eq!(
+				started_after.started_at.as_deref(),
+				Some(now_str.as_str()),
+				"a started system session's started_at must never be touched by a later provisioning pass"
+			);
+
+			let second_prepared = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+			assert_ne!(
+				second_prepared, first_id,
+				"the second pass must provision a genuinely new session, not point back at the started one"
+			);
+		});
+	}
+
 	/// A real Codex review finding on `server#322` (P2): if `recommend()` +
 	/// `provision()` produce nothing timeable — every eligible candidate has
 	/// a `NULL` `min_duration_ms` here — persisting an empty `Scheduled`
-	/// session would be a permanent trap. `first_prepared`/`provision_if_absent`
+	/// session would be a permanent trap. `first_prepared`/`provision_or_refresh`
 	/// would treat it as "already prepared" forever, so nothing in this
 	/// codebase would ever provision this subject again, even after the
 	/// catalogue is fixed. Confirms both halves of the fix: nothing is
