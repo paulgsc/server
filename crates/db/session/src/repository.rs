@@ -359,15 +359,26 @@ impl SessionRepository {
 	/// `NULL`, `NULL`, `NULL`, `NULL`), so there is nothing for a refresh to
 	/// change there.
 	///
-	/// **This method does not itself decide whether refreshing is safe.**
-	/// Whether the conflicting row is safe to overwrite (i.e., whether
-	/// `created_at == updated_at` on it right now) is the caller's decision
-	/// — `refresh_stale_proposal` reads the row first and checks exactly
-	/// that before ever calling this — because the caller already has to
-	/// read the row to decide whether it is a `system`/un-started proposal
-	/// at all, and duplicating that check into a `CASE` expression per
-	/// column here would only make the two places that decision lives
-	/// disagree eventually, not agree more often.
+	/// **The `DO UPDATE ... WHERE sessions.created_at = sessions.updated_at`
+	/// clause is this method's own safety net, not merely a restatement of a
+	/// check some caller already made — a sixth real `chatgpt-codex-connector`
+	/// finding on `#335` caught its absence.** The `NothingToSay` arm's own
+	/// call site has no fresh read of the conflicting row to check against:
+	/// it discovers a conflict only through this very statement, against
+	/// whatever row a *different* concurrent waker pass inserted after this
+	/// pass's own `first_prepared` read already returned nothing. A person
+	/// can edit that other pass's freshly-inserted proposal (still `system`,
+	/// `updated_at` moved, the same pre-PRO1 gap `refresh_if_untouched` was
+	/// built for) in the window before this delayed pass's write lands, and
+	/// an unconditional `DO UPDATE` would silently overwrite it — exactly
+	/// the same class of race `refresh_if_untouched` closes for its own
+	/// caller, recurring here because that fix only ever touched
+	/// `refresh_stale_proposal`'s call site, not this one. `SQLite`'s own
+	/// `DO UPDATE ... WHERE` re-checks the condition atomically, in the same
+	/// statement as the conflict resolution itself: when it fails, the row
+	/// is left completely untouched and nothing is inserted either — verified
+	/// directly, not just read from the documentation, since this repo has no
+	/// existing use of this `SQLite` upsert clause to point to as precedent.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
@@ -401,6 +412,7 @@ impl SessionRepository {
 			    name              = excluded.name,
 			    activities        = excluded.activities,
 			    total_duration_ms = excluded.total_duration_ms
+			WHERE sessions.created_at = sessions.updated_at
 			"#,
 			record.id,
 			subject_id,
@@ -1103,6 +1115,50 @@ mod tests {
 			"an active/completed row must never be silently overwritten by a refresh"
 		);
 		assert!(matches!(anomaly_after.status, SessionStatus::Active));
+	}
+
+	/// A sixth real `chatgpt-codex-connector` finding on `#335`, P1: the
+	/// `NothingToSay` arm's own call site has no fresh read of the
+	/// conflicting row to check against -- it discovers a conflict only
+	/// through this statement, against whatever another concurrent waker
+	/// pass already inserted after this pass's own `first_prepared` read
+	/// found nothing. Simulates that interleaving directly: an insert (the
+	/// other pass), a person's edit landing on it (still `system`, no
+	/// `origin` field, exactly the pre-PRO1 gap), then a second,
+	/// independent `provision_or_refresh` call (the delayed pass) -- which
+	/// must leave the edit completely untouched rather than overwriting it,
+	/// the same guarantee `refresh_if_untouched` already gives its own
+	/// caller.
+	#[tokio::test]
+	async fn provision_or_refresh_never_overwrites_a_conflicting_row_a_person_edited_since_it_was_inserted() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		// The first (concurrent) pass's insert.
+		let first_pass = system_proposal_fixture("session-1", "first pass's proposal", 300_000, "2026-01-01T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &first_pass).await.unwrap();
+
+		// The person edits it before the second pass's write lands --
+		// `origin` stays `system` (today's client never sends it), only
+		// `updated_at` moves, exactly as `update_session` always does.
+		let edited = SessionRecord {
+			name: "person's own rename".to_owned(),
+			updated_at: "2026-01-01T00:05:00Z".to_owned(),
+			..first_pass
+		};
+		repo.upsert("subject-a", &edited).await.unwrap();
+
+		// The second (delayed) pass's own conflicting write.
+		let second_pass = system_proposal_fixture("session-2", "second pass's proposal", 999_000, "2026-01-02T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &second_pass).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(sessions.len(), 1, "the two racing passes must still collapse to one row, not two");
+		assert_eq!(sessions[0].id, "session-1", "the first pass's id must survive -- it is the row that actually exists");
+		assert_eq!(
+			sessions[0].name, "person's own rename",
+			"the person's edit must survive a second pass's conflicting write completely untouched"
+		);
 	}
 
 	/// A real `chatgpt-codex-connector` finding on `#335`: the partial index

@@ -757,6 +757,32 @@ history rows both survived — and pinned in code by
 `provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_
 anomaly` in `crates/db/session/src/repository.rs`'s test module.
 
+**A closing-review finding on `#335`, P1, turned up one more instance of
+the exact race `refresh_if_untouched` already closes — in a different
+call site.** `refresh_if_untouched` protects `refresh_stale_proposal`'s
+own write; `provision_or_refresh`'s `ON CONFLICT` branch (the
+`NothingToSay` arm's write) had no equivalent guard. Its call site has no
+fresh read of the conflicting row to check against — it discovers a
+conflict only through the statement itself, against whatever a
+*different* concurrent waker pass already inserted after this pass's own
+`first_prepared` read found nothing. A person can edit that other pass's
+freshly-inserted proposal (still `system`, `updated_at` moved, the same
+pre-PRO1 gap) in the window before this delayed pass's write lands, and
+the unconditional `DO UPDATE` would have silently overwritten it.
+
+The fix stays inside the one `INSERT ... ON CONFLICT` statement:
+`DO UPDATE SET ... WHERE sessions.created_at = sessions.updated_at`.
+`SQLite` re-checks that condition atomically, in the same statement as
+the conflict resolution itself — when it fails, the row is left
+completely untouched and nothing is inserted either, verified directly
+against a real database rather than trusted from documentation, since
+this codebase had no prior use of this particular `SQLite` upsert clause
+to point to as precedent. `provision_or_refresh_never_overwrites_a_
+conflicting_row_a_person_edited_since_it_was_inserted` reproduces the full
+three-step interleaving directly: one pass's insert, a person's edit
+landing on it, then a second pass's own conflicting write — and asserts
+the edit survives untouched.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
