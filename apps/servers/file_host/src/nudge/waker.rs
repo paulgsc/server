@@ -486,6 +486,26 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// session outranks it). A single indexed lookup by id decides whether this
 /// is the row to refresh at all; nothing here assumes `prepared` already is
 /// it.
+///
+/// **`created_at == updated_at` is the second gate, and it is load-bearing —
+/// a real `chatgpt-codex-connector` finding on `#335`.** `origin = 'system'`
+/// alone is not proof nobody has touched this row: `docs/study-nudge.md`'s
+/// own "Origin" section already documents that, before `paulgsc/some-ui`
+/// PRO1 ships, the live client never sends an `origin` field on an edit, so
+/// `update_session` never promotes it — a person can rename this exact
+/// proposal, or replace its activities, and it still reads as `system` and
+/// `started_at IS NULL` afterwards. Before this refresh existed, that gap's
+/// only cost was a `Momentum` misclassification if the row was later
+/// abandoned; refreshing turns the same gap into silent data loss, since it
+/// would overwrite the person's own edit with a fresh recommendation.
+/// `update_session` advances `updated_at` unconditionally on every write
+/// (`upsert`'s own doc comment), so a person's edit — even an unpromoted one
+/// — always moves it away from `created_at`. `provision_or_refresh`'s own
+/// `ON CONFLICT` branch deliberately never touches `updated_at`, which is
+/// what makes `created_at == updated_at` survive any number of machine
+/// refreshes and still mean exactly one thing: nothing but the waker has
+/// ever written to this row. See that method's own doc comment
+/// ("What refreshing touches") for the SQL side of this argument.
 async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
 	let record = match sessions.get(subject_id, prepared).await {
 		Ok(Some(record)) => record,
@@ -496,6 +516,14 @@ async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, s
 		}
 	};
 	if !(matches!(record.origin, SessionOrigin::System) && record.started_at.is_none()) {
+		return;
+	}
+	if record.created_at != record.updated_at {
+		// A person edited this proposal without it ever being promoted to
+		// `user` origin (the documented pre-PRO1 gap) -- refreshing would
+		// silently overwrite their own edit. Leave it alone; this is their
+		// session now in every way that matters here, whatever the column
+		// still says.
 		return;
 	}
 
@@ -1491,6 +1519,119 @@ mod tests {
 			1,
 			"the second pass must be suppressed specifically on Present, not some other reason that would also leave content untouched"
 		);
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`, P1: before PRO1
+	/// (`paulgsc/some-ui#1052`) ships, the live client never sends an
+	/// `origin` field on an edit, so a person renaming or re-composing this
+	/// exact proposal through today's client leaves it reading as `origin =
+	/// 'system' AND started_at IS NULL` — indistinguishable from an
+	/// untouched one by those two columns alone. Before this story, that gap
+	/// only cost a `Momentum` misclassification if the row was later
+	/// abandoned; a refresh mechanism turns the same gap into silent data
+	/// loss, since it would overwrite the person's own edit with a fresh
+	/// recommendation. This pins the fix: `created_at != updated_at` (which
+	/// a real edit always produces, since `update_session` advances
+	/// `updated_at` unconditionally even without an `origin` field) must
+	/// stop the refresh outright, leaving the person's edited content
+	/// completely untouched.
+	#[test]
+	fn an_edited_but_unpromoted_proposal_survives_a_refresh_pass_untouched() {
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use session_repo::SessionRecord;
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-edited-proposal";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			PushSubscriptionRepository::new(pool.clone())
+				.upsert(
+					&PushSubscription {
+						endpoint: "https://push.example.com/edited-proposal".to_owned(),
+						keys: SubscriptionKeys {
+							p256dh: "p256dh".to_owned(),
+							auth: "auth".to_owned(),
+						},
+					},
+					&Consent {
+						subject_id: subject_id.to_owned(),
+						topics: Topic::ALL.to_vec(),
+						consented_at: now_str.clone(),
+					},
+					&now_str,
+				)
+				.await
+				.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: provisions the proposal.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+
+			// The person renames it (and only renames it) through today's
+			// client -- an `UpdateSession` PATCH with no `origin` field,
+			// exactly as `update_session` receives one before PRO1 ships.
+			// `origin` stays `system` and `started_at` stays `None`; only
+			// `updated_at` moves, since `update_session` advances it on
+			// every write regardless of which fields changed.
+			let mut edited = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			edited.name = "My own renamed session".to_owned();
+			edited.updated_at = (now + Duration::minutes(1)).to_rfc3339();
+			sessions.upsert(subject_id, &edited).await.unwrap();
+			assert!(
+				matches!(edited.origin, session_repo::SessionOrigin::System),
+				"sanity: the live client does not promote origin on this PATCH"
+			);
+
+			// The catalogue changes, exactly as the sibling tests do -- if
+			// the refresh incorrectly ran anyway, this is what would prove
+			// it by changing total_duration_ms and clobbering the rename.
+			sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+
+			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
+			assert_eq!(all.len(), 1, "an edited-but-unpromoted proposal must not be duplicated either");
+
+			let after = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			assert_eq!(
+				after.name, "My own renamed session",
+				"the person's own edit must survive a refresh pass completely untouched"
+			);
+			assert_eq!(
+				after.total_duration_ms, edited.total_duration_ms,
+				"an unpromoted-but-edited proposal's duration must not be silently recomputed either"
+			);
+		});
 	}
 
 	/// A real Codex review finding on `server#322` (P2): if `recommend()` +

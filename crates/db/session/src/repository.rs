@@ -310,21 +310,44 @@ impl SessionRepository {
 	/// this statement is allowed to refresh via the `ON CONFLICT` branch —
 	/// so the two clauses agree rather than fight over the same row.
 	///
-	/// **What refreshing touches.** Only `name`, `activities`,
-	/// `total_duration_ms`, and `updated_at` — exactly the fields that can
-	/// differ between two `materialize_provisioned_session` calls for the
-	/// same subject on different days (a new `recommend()` shuffle, fresh
-	/// catalogue state). `id` and `created_at` are deliberately absent from
-	/// the `DO UPDATE SET` list: preserving `id` is the whole point (a
-	/// notification issued before a refresh still has to resolve afterwards),
-	/// and `created_at` follows `upsert`'s own precedent of never letting a
-	/// write move it. `status`/`origin`/`layout_mode`/`scenes`/`layout`/
-	/// `started_at`/`completed_at`/`final_elapsed_ms` are left untouched too
-	/// — the conflicting row, by construction of the partial index predicate
-	/// it matched, already holds the only values `materialize_provisioned_
+	/// **What refreshing touches — `name`, `activities`, and
+	/// `total_duration_ms`. Deliberately not `updated_at`.** Every other
+	/// write path in this codebase (`upsert`, and therefore every real
+	/// `PATCH /sessions/:id`) advances `updated_at` unconditionally, so it
+	/// already means exactly what `20260805000300_create_sessions.up.sql`'s
+	/// own column comment says — "editing only" — for every row except this
+	/// one write path. A machine refresh is not a person editing anything,
+	/// so it must not be able to produce the same signal a real edit does:
+	/// see `refresh_stale_proposal`'s own doc comment (`nudge/waker.rs`) for
+	/// why `created_at == updated_at` staying true across any number of
+	/// refreshes is exactly the property that lets it tell "only ever
+	/// touched by the waker" apart from "a person edited this," which is
+	/// otherwise unrecoverable before PRO1 ships `origin` promotion into the
+	/// live client's edit path at all (a real `chatgpt-codex-connector`
+	/// finding on `#335` — see that section of `docs/study-nudge.md` for the
+	/// full argument for why this matters here specifically). `id` and
+	/// `created_at` are absent from the `DO UPDATE SET` list for the reasons
+	/// already established elsewhere: preserving `id` is the whole point of
+	/// "refresh in place" (a notification issued before a refresh still has
+	/// to resolve afterwards), and `created_at` follows `upsert`'s own
+	/// precedent of never letting a write move it.
+	/// `status`/`origin`/`layout_mode`/`scenes`/`layout`/`started_at`/
+	/// `completed_at`/`final_elapsed_ms` are left untouched too — the
+	/// conflicting row, by construction of the partial index predicate it
+	/// matched, already holds the only values `materialize_provisioned_
 	/// session` ever writes for them (`scheduled`, `system`, `basic`, `[]`,
 	/// `NULL`, `NULL`, `NULL`, `NULL`), so there is nothing for a refresh to
 	/// change there.
+	///
+	/// **This method does not itself decide whether refreshing is safe.**
+	/// Whether the conflicting row is safe to overwrite (i.e., whether
+	/// `created_at == updated_at` on it right now) is the caller's decision
+	/// — `refresh_stale_proposal` reads the row first and checks exactly
+	/// that before ever calling this — because the caller already has to
+	/// read the row to decide whether it is a `system`/un-started proposal
+	/// at all, and duplicating that check into a `CASE` expression per
+	/// column here would only make the two places that decision lives
+	/// disagree eventually, not agree more often.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
@@ -357,8 +380,7 @@ impl SessionRepository {
 			DO UPDATE SET
 			    name              = excluded.name,
 			    activities        = excluded.activities,
-			    total_duration_ms = excluded.total_duration_ms,
-			    updated_at        = excluded.updated_at
+			    total_duration_ms = excluded.total_duration_ms
 			"#,
 			record.id,
 			subject_id,
@@ -822,10 +844,15 @@ mod tests {
 			"the content must be the last call's, not the first's stale one — this is the refresh, not a no-op"
 		);
 		assert_eq!(survivor.total_duration_ms, 240_000);
-		assert_eq!(survivor.updated_at, "2026-01-05T00:00:00Z");
 		assert_eq!(
 			survivor.created_at, "2026-01-01T00:00:00Z",
 			"created_at follows upsert's own precedent: a refresh never moves it"
+		);
+		assert_eq!(
+			survivor.updated_at, "2026-01-01T00:00:00Z",
+			"a machine refresh must not touch updated_at either -- a real chatgpt-codex-connector finding on #335 established that \
+			 created_at == updated_at surviving every refresh is what lets refresh_stale_proposal tell 'only ever touched by the \
+			 waker' apart from 'a person edited this,' which matters because origin alone cannot, before PRO1 ships"
 		);
 	}
 

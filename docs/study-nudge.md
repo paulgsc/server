@@ -458,6 +458,14 @@ this is bounded and temporary: it costs a session getting `origin` wrong for
 existing rows edited between #283 landing and PRO1 shipping, not a
 permanently wrong invariant.
 
+**#284 (RCM7) raised this gap's stakes from a misclassification to data
+loss, and had to grow its own, narrower defence.** A `Momentum` accounting
+error is silent and recoverable; overwriting a person's own edit with a
+machine-generated recommendation is neither. See "Never stack proposals"
+below for `refresh_stale_proposal`'s `created_at == updated_at` check —
+it does not close this gap (only PRO1 can), but it does stop RCM7's own
+refresh mechanism from acting on a row this gap has already misclassified.
+
 **Payload-only, no route or contract regeneration needed.** `origin` is a
 new field on the existing `SessionRecord` JSON shape, not a new route —
 `docs/route-inventory.md`'s `RouteDescriptor` only proves a route exists
@@ -632,6 +640,38 @@ immediately before an intervention that is actually about to go out — so a
 subject who is not due, not admissible, or currently viewing the proposal
 gets no refresh, exactly as before; what changed is only *which*
 already-due, already-admissible pass can trigger it.
+
+**A third real `chatgpt-codex-connector` finding on `#335`, P1, is the
+sharpest: `origin = 'system'` is not proof nobody has touched this row.**
+The "Origin" section above already documents a real, bounded,
+pre-`some-ui`-PRO1 gap — the live client never sends an `origin` field on
+an edit, so `update_session` never promotes an edited proposal to `user`.
+Before this story, that gap's only cost was a `Momentum` misclassification
+if the row was later abandoned. A refresh mechanism turns the exact same
+gap into something worse: silent data loss. A person who renames this
+proposal, or replaces its activities, through today's client leaves it
+reading as `origin = 'system' AND started_at IS NULL` — indistinguishable
+from a genuinely untouched one by those two columns alone — so without a
+further check, the next eligible pass would overwrite their own edit with
+a fresh recommendation.
+
+The fix reuses the same signal `20260906000900_add_origin_to_sessions.
+up.sql`'s own backfill already relied on for an identical problem:
+`created_at == updated_at`. `update_session` advances `updated_at`
+unconditionally on every write, with or without an `origin` field, so any
+real edit — promoted or not — moves it away from `created_at`. The one
+thing that had to change to make this reusable *live*, not just for a
+one-time backfill: `provision_or_refresh`'s own `ON CONFLICT` branch
+deliberately does not touch `updated_at` (see that method's own "What
+refreshing touches" doc comment) — if a machine refresh bumped it the way
+an early version of this fix did, `created_at == updated_at` would break
+after the row's very first refresh, for a proposal nobody had ever
+touched, defeating the check for the case it exists to protect. With that
+in place, `refresh_stale_proposal` gates on it directly:
+`record.created_at != record.updated_at` stops the refresh outright,
+leaving an edited-but-unpromoted proposal exactly as the person left it —
+pinned by `an_edited_but_unpromoted_proposal_survives_a_refresh_pass_
+untouched` in `nudge::waker`'s test module.
 
 ### First contact: how a subject enters the gate at all
 
