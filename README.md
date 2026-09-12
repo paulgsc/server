@@ -3,8 +3,8 @@
 ## Overview
 
 A multi-crate Rust workspace built around `file_host`, an Axum service backed
-by SQLx repositories, a Redis/NATS JetStream pipeline, and WebSocket
-transport. It's the backend evidence behind
+by SQLx repositories, an independent Redis caching layer and NATS JetStream
+job pipeline, and WebSocket transport. It's the backend evidence behind
 [`paulgsc/some-ui`](https://github.com/paulgsc/some-ui)'s résumé claims — the
 table below maps each claimed area to where it actually lives in the tree, so
 a claim can be checked against code rather than taken on faith.
@@ -66,7 +66,7 @@ crates/
 docs/        Design notes, fault taxonomy, dashboard conventions, SLAs
 infra/       Compose files, Grafana dashboards, Prometheus, NATS config
 migrations/  SQLx migrations
-nix/         Reproducible dev shells (default / rust / ci)
+nix/         Reproducible dev shells (default / rust / ci / whisper / llm)
 scripts/     Metric-contract and scrape-inventory checks
 ```
 
@@ -139,8 +139,9 @@ The generated HTTP route inventory that [`paulgsc/some-ui`](https://github.com/p
 contract harness consumes:
 
 ```bash
-DATABASE_URL="sqlite://$PWD/dev.db" make routes  # regenerate routes.server.{json,ts}
-make routes-check                                # assert the inventory still matches the routers
+export DATABASE_URL="sqlite://$PWD/dev.db"
+make routes        # regenerate routes.server.{json,ts}
+make routes-check  # assert the inventory still matches the routers (also needs DATABASE_URL: it builds the crate to run the test)
 ```
 
 Local dependencies (Redis, NATS, Prometheus/Grafana, `file_host`,
