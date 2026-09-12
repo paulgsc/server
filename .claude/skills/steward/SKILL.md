@@ -45,7 +45,7 @@ every finding as real" (above) is still correct, but combined with an unconditio
 re-request-after-every-push idiom it has no natural stopping point, and every round costs real
 tokens.
 
-**After 5 review rounds since the PR was opened**, stop auto-requesting the next review. Before
+**After 3 review rounds since the PR was opened**, stop auto-requesting the next review. Before
 checking in, read what the pattern of rounds actually shows:
 
 - **Converging** (later rounds smaller, more marginal, unrelated to each other) — accept the
