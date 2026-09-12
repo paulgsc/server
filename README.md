@@ -14,7 +14,7 @@ a claim can be checked against code rather than taken on faith.
 | **HTTP API** | Axum routes with a generated, tested route inventory — a compile-time check parses the route registrations in source and fails on anything undeclared, stale, or duplicated (deliberately source-level, not a live-router probe, since that would need a fully booted SQLite/NATS `AppState`) | [`apps/servers/file_host/src/routes`](./apps/servers/file_host/src/routes), [route inventory](./apps/servers/file_host/docs/route-inventory.md) |
 | **SQLx repositories** | Typed repositories with compile-time-checked queries and paired migrations, one crate per domain (activity, capture, engagement, mood event, presence, push, session) | [`crates/db`](./crates/db), [`migrations`](./migrations) |
 | **Redis caching** | A dedup/cache layer fronting read-heavy lookups, independent of the NATS job pipeline below | [`crates/some-cache`](./crates/some-cache), [`apps/servers/file_host/src/cache.rs`](./apps/servers/file_host/src/cache.rs) |
-| **NATS JetStream jobs** | Async pipeline jobs (e.g. tab-capture processing) published from Axum handlers, with explicit ack/nak/redelivery semantics on retryable failures | [`crates/some-transport`](./crates/some-transport), [`crates/push_kit`](./crates/push_kit) |
+| **NATS JetStream publishing** | Axum handlers publish job envelopes (e.g. tab-capture processing) to JetStream, and `some-transport` provides reusable ack/nak/redelivery primitives (`AckHandle`) for a consumer to use — no in-repo consumer instantiates them yet, per `infra/prometheus/inventory.yml`'s own note that the `tabsched-pipeline` worker "has no compose file or crate in this repo yet" | [`crates/some-transport`](./crates/some-transport) |
 | **WebSockets** | Restart-aware connections with heartbeat/staleness detection and broadcast isolation; shutdown disconnects every tracked connection and gives cleanup a fixed grace window (individual removals aren't themselves timeout-bounded) | [`apps/servers/file_host/src/websocket`](./apps/servers/file_host/src/websocket), [`crates/ws-connection`](./crates/ws-connection), [`crates/ws-conn-manager`](./crates/ws-conn-manager) |
 | **Overload controls** | Token-bucket rate limiting, load shedding, and timeouts, with rejection tracked as a first-class fault condition rather than inferred from resource pressure | [`apps/servers/file_host/src/rate_limiter`](./apps/servers/file_host/src/rate_limiter), [fault conditions](./docs/fault-conditions.md) |
 | **Observability** | Prometheus metrics and dashboards that render missing data as *unknown*, never as healthy by default | [`apps/servers/file_host/src/metrics`](./apps/servers/file_host/src/metrics), [dashboard honesty](./docs/dashboard-honesty.md) |
@@ -78,11 +78,19 @@ duplicate of it.
 
 ## Requirements
 * Rust (latest stable) and Cargo
+* [`sqlx-cli`](https://crates.io/crates/sqlx-cli) (`cargo install sqlx-cli
+  --version 0.7.4 --locked --no-default-features --features sqlite`, matching
+  the version CI installs) — needed to create/migrate the database and run
+  `cargo sqlx prepare`
 * SQLite — every `crates/db/*` repository builds with SQLx's `sqlite`
   feature only; migrations live under [`migrations/`](./migrations)
-* A running Redis instance and NATS server with JetStream enabled —
-  `file_host` connects to both at startup (`AppState::build`) and won't
-  come up without them (see [`infra/compose`](./infra/compose))
+* A NATS server with JetStream enabled — `file_host` opens a real
+  connection to it at startup (`AppState::build`) and won't come up if it's
+  unreachable
+* A running Redis instance — `AppState::build` only validates the URL at
+  startup (`redis::Client::open` doesn't connect), so the process *starts*
+  without Redis but reports it unhealthy via `/ready` and fails at first use
+  (see [`infra/compose`](./infra/compose) for both services)
 
 Nix covers the Rust/SQLx/SQLite toolchain above, not the Redis/NATS
 services — those still need to be running separately:
