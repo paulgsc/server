@@ -4,8 +4,10 @@
 
 A multi-crate Rust workspace built around `file_host`, an Axum service backed
 by SQLx repositories, a Redis/NATS JetStream pipeline, and WebSocket
-transport. The table below maps each area to where it actually lives in the
-tree, so a claim can be checked against code rather than taken on faith.
+transport. It's the backend evidence behind
+[`paulgsc/some-ui`](https://github.com/paulgsc/some-ui)'s résumé claims — the
+table below maps each claimed area to where it actually lives in the tree, so
+a claim can be checked against code rather than taken on faith.
 
 | Area | What's implemented | Where |
 | --- | --- | --- |
@@ -28,40 +30,104 @@ the standing caveat on trusting any of it blindly.
 
 ---
 
+## Repository map
+
+```text
+apps/
+├── servers/file_host/  Axum HTTP + WebSocket backend: routes, rate limiting,
+│                       metrics, nudge scheduling, streaming
+├── orchestrator/       Supervises per-stream orchestrators over the
+│                       NATS-backed transport
+└── some-obs/           OBS WebSocket automation service
+
+crates/
+├── db/                 One SQLx repository crate per domain (activity,
+│                       capture, engagement, mood_event, presence, push,
+│                       session)
+├── ws-connection/, ws-conn-manager/, ws-events/
+│                       WebSocket connection lifecycle and event types
+├── some-cache/, some-transport/, some-metrics/, some-services/
+│                       Shared caching, NATS transport, metrics, and service
+│                       abstractions
+├── push_kit/           Web Push (VAPID) actuation
+├── intervention/, study_domain/
+│                       Domain logic for when and what the system intervenes on
+└── sdk/, cursorium/, file_reader/, obs-websocket/,
+    enum-name-derive/, gsheet_derive/
+                        Supporting libraries and derive macros
+
+docs/        Design notes, fault taxonomy, dashboard conventions, SLAs
+infra/       Compose files, Grafana dashboards, Prometheus, NATS config
+migrations/  SQLx migrations
+nix/         Reproducible dev shells (default / rust / ci)
+scripts/     Metric-contract and scrape-inventory checks
+```
+
+`Cargo.toml`'s `[workspace] members` list is the source of truth for exact
+crate membership; the grouping above is a map to orient from, not a
+duplicate of it.
+
+---
+
 ## Requirements
-* Rust (latest stable)
-* Cargo
-* Some database (postgres, mysql, sqlite — or imagination)
+* Rust (latest stable) and Cargo
+* SQLite — every `crates/db/*` repository builds with SQLx's `sqlite`
+  feature only; migrations live under [`migrations/`](./migrations)
+* Redis and NATS JetStream for the caching/messaging pipeline (see
+  [`infra/compose`](./infra/compose))
 
 **OR** just use Nix:
 ```bash
-nix develop  # Everything you need, deterministically
+nix develop  # default shell: Rust + dev tools + Whisper + audio libs
 ```
 
-See [Nix Development Environment](./nix/README.md) for details.
+Three shells are available (`default`, `rust`, `ci`) — see
+[Nix Development Environment](./nix/README.md) for details.
+
+---
+
+## Development
+
+The workflows CI actually runs, scoped to whatever package you're touching:
+
+```bash
+cargo check --workspace
+cargo test --workspace
+cargo clippy -p <changed-package> --all-targets --keep-going --no-deps
+DATABASE_URL="sqlite://$PWD/dev.db" cargo sqlx prepare --workspace
+```
+
+The generated HTTP route inventory that [`paulgsc/some-ui`](https://github.com/paulgsc/some-ui)'s
+contract harness consumes:
+
+```bash
+DATABASE_URL="sqlite://$PWD/dev.db" make routes  # regenerate routes.server.{json,ts}
+make routes-check                                # assert the inventory still matches the routers
+```
+
+Local dependencies (Redis, NATS, Prometheus/Grafana, `file_host`,
+`orchestrator`) are composed via [`docker-compose.yml`](./docker-compose.yml)
+and [`infra/compose`](./infra/compose).
 
 ---
 
 ## Documentation
 
-### Development Environment
-* [**Nix Setup & Modules**](./nix/README.md) – Reproducible dev env, ML model management, no cron jobs
+### Development environment
+* [Nix setup & shells](./nix/README.md)
+* [WSL / PowerShell cheat sheet](./docs/WSL-CHEATSHEET.md)
+* [Redis & RedisInsight setup](./docs/REDIS_INSIGHT_SETUP.md)
 
-### System Architecture
-![System Design](./docs/system_design.png)
-* [System Design Documentation](./docs/system_design)
-* [Mermaid Diagram Source](./docs/system-architecture.mermaid)
-* [⚠️ Important Warnings](./docs/WARNING.md)
-
----
-
-### Service Level Agreements
+### Backend design
+* [Route inventory](./apps/servers/file_host/docs/route-inventory.md) – the generated, tested HTTP surface
+* [Fault conditions](./docs/fault-conditions.md) – the six fault states and how each is observed
+* [Dashboard honesty](./docs/dashboard-honesty.md) – why missing data must never render as healthy
 * [WebSocket Service SLA](./apps/servers/file_host/docs/sla/WebsSocket_Service_SLA.md)
+* [Study nudge design](./docs/study-nudge.md)
+* [Google Sheets ingestion pipeline](./docs/system_design/gsheets_webhook/README.md)
 
----
-
-### API Documentation
-* [Google Sheets API Design](./apps/servers/file_host/docs/api/gsheet_api_design.md)
-
-### Models Use Documentation
+### Models
 * [Whisper Model Optimization Guide](./docs/models/whisper-optimization.md)
+
+### Caveats
+* [⚠️ Important Warnings](./docs/WARNING.md)
