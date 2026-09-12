@@ -80,28 +80,46 @@ duplicate of it.
 * Rust (latest stable) and Cargo
 * SQLite — every `crates/db/*` repository builds with SQLx's `sqlite`
   feature only; migrations live under [`migrations/`](./migrations)
-* Redis and NATS JetStream for the caching/messaging pipeline (see
-  [`infra/compose`](./infra/compose))
+* A running Redis instance and NATS server with JetStream enabled —
+  `file_host` connects to both at startup (`AppState::build`) and won't
+  come up without them (see [`infra/compose`](./infra/compose))
 
-**OR** just use Nix:
+Nix covers the Rust/SQLx/SQLite toolchain above, not the Redis/NATS
+services — those still need to be running separately:
 ```bash
 nix develop  # default shell: Rust + dev tools + Whisper + audio libs
 ```
 
-Three shells are available (`default`, `rust`, `ci`) — see
-[Nix Development Environment](./nix/README.md) for details.
+[`flake.nix`](./flake.nix) defines five shells — `default`, `rust`, `ci`,
+`whisper`, and `llm` — see [Nix Development Environment](./nix/README.md)
+for the first three.
 
 ---
 
 ## Development
 
-The workflows CI actually runs, scoped to whatever package you're touching:
+What [`.github/workflows/test.yml`](./.github/workflows/test.yml) runs on a
+clean checkout — order matters, since `sqlx::query!` checks SQL against a
+real schema at compile time, so the database has to exist and be migrated
+before `prepare`/`check`/`test` will build at all:
 
 ```bash
+export DATABASE_URL="sqlite://$PWD/dev.db"
+sqlx database create
+sqlx migrate run --source migrations
+cargo sqlx prepare --workspace
 cargo check --workspace
 cargo test --workspace
+```
+
+Clippy isn't part of that workflow. `.github/workflows/lint.yml` runs
+`cargo clippy --workspace -- -D warnings --no-deps` but is currently paused
+(scoped to a `foo` branch, not `main`). As a local check before pushing,
+this repo's own `CLAUDE.md` recommends scoping it to whatever package
+you're touching, with flags `lint.yml` doesn't pass:
+
+```bash
 cargo clippy -p <changed-package> --all-targets --keep-going --no-deps
-DATABASE_URL="sqlite://$PWD/dev.db" cargo sqlx prepare --workspace
 ```
 
 The generated HTTP route inventory that [`paulgsc/some-ui`](https://github.com/paulgsc/some-ui)'s
