@@ -191,7 +191,29 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		.and_then(|raw| crate::nudge::clock::parse_timestamp(raw.as_str()));
 
 	let action = match engine.evaluate(&charge, now, last_intervened_at) {
-		Verdict::Intervene(action) => action,
+		Verdict::Intervene(action) => {
+			// #284 (RCM7): if what's about to be pointed at is an un-started
+			// `system` proposal, its content may be stale — refresh it here,
+			// now that `evaluate` has already confirmed admission (including
+			// presence). A real `chatgpt-codex-connector` finding on `#335`
+			// caught an earlier version of this refresh running *before*
+			// admission was checked at all: it could rewrite a proposal's
+			// name/activities/duration while the subject was actively
+			// viewing that exact session, only for admission to then
+			// suppress the notification on `Present` anyway — mutating a
+			// session out from under someone looking at it for a
+			// notification that was never going to send. Gating on
+			// `Verdict::Intervene` means this only ever runs immediately
+			// before an intervention that will actually go out, matching
+			// `first_prepared`'s own read at the top of this function to
+			// whatever the engine actually decided to do with it. See
+			// `refresh_stale_proposal`'s own doc comment for why this is
+			// best-effort rather than fatal.
+			if let Some(session_id) = action.session_id() {
+				refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
+			}
+			action
+		}
 		Verdict::Wait { until } => {
 			crate::metrics::waker::record_verdict("wait", "n/a");
 			// Push the gate out so this subject stops being returned by `due`.
@@ -257,14 +279,21 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Because the provisioned row's id is always freshly
 			// generated, an unconditional `upsert` would not collide with
 			// whatever won that race — it would just add a second, blank
-			// draft beside it. `provision_if_absent` closes the window
-			// atomically (one statement, checked against the same three
-			// statuses `first_prepared` treats as prepared) rather than
-			// trusting the read that already happened; see its own doc
-			// comment for the mechanism and the #313 review that caught
-			// this. The `first_prepared` re-read after it is what makes
-			// this correct either way: whichever side of the race
-			// actually landed is what gets used, not necessarily the row
+			// draft beside it. `provision_or_refresh` closes the window
+			// atomically (one statement, targeting #284's own partial
+			// unique index — `origin = 'system' AND started_at IS NULL`,
+			// not the three statuses `first_prepared` treats as prepared)
+			// rather than trusting the read that already happened; see its
+			// own doc comment for the mechanism and the #313 review that
+			// caught the original race. #284 (RCM7) is also what turns a
+			// race-losing write into a *refresh* rather than a no-op: the
+			// losing side's freshly recommended content still wins, in
+			// place, over whatever stale proposal the subject has been
+			// ignoring — see `docs/study-nudge.md`'s "Never stack
+			// proposals" section. The `first_prepared` re-read after it is
+			// what makes this correct either way: whichever side of the
+			// race actually landed (or whichever call's content the
+			// refresh applied) is what gets used, not necessarily the row
 			// built here.
 			let catalogue = match ActivityRepository::new(db.clone()).list().await {
 				Ok(catalogue) => catalogue,
@@ -312,7 +341,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
 				return Ok(false);
 			}
-			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
+			if let Err(err) = sessions.provision_or_refresh(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 				return Ok(false);
@@ -320,7 +349,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			let session_id = match sessions.first_prepared(subject_id).await {
 				Ok(Some(id)) => id,
 				Ok(None) => {
-					// Unreachable in practice: `provision_if_absent` just
+					// Unreachable in practice: `provision_or_refresh` just
 					// proved a prepared session exists for this subject,
 					// either the one built above or a concurrent writer's.
 					// Guarded rather than trusted, per this codebase's
@@ -420,6 +449,114 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	crate::metrics::waker::record_verdict("sent", "n/a");
 	Ok(true)
+}
+
+/// #284 (RCM7): refresh `prepared`'s content in place if it is an un-started
+/// `system` proposal — same id, freshly recommended contents — so an
+/// ordinary pass over someone who keeps ignoring the same proposal does not
+/// keep pointing at whatever `recommend()` produced the day it was first
+/// written.
+///
+/// **Called only once `consider` has already decided to intervene using
+/// `prepared`**, from the `Verdict::Intervene` arm of `engine.evaluate` — not
+/// from the moment `first_prepared` resolves. A real `chatgpt-codex-
+/// connector` finding on `#335` caught an earlier version that ran this
+/// before admission was ever checked: it could rewrite a proposal's content
+/// while the subject held a fresh presence lease on that exact session —
+/// actively viewing it — only for `evaluate`'s own `admit` call to then
+/// suppress the notification on `Present` anyway, mutating a session out
+/// from under someone looking at it for nothing. `evaluate` already calls
+/// `Admissibility::admit` internally before ever returning `Intervene`, so
+/// gating this call on that verdict is sufficient — no separate presence
+/// check is needed here.
+///
+/// **Best-effort, not fatal.** Unlike `Verdict::NothingToSay`'s own
+/// provisioning (where a catalogue-read failure or an empty candidate set
+/// means genuinely nothing to offer this pass, so the whole pass backs off),
+/// a failure here still has a session to fall back to — the existing,
+/// unrefreshed proposal `prepared` already names. So every failure path
+/// below just logs and leaves that proposal exactly as it was, rather than
+/// failing `consider` or advancing any gate: the person still gets notified
+/// about *something* real, only not this pass's freshest recommendation.
+///
+/// **Reads before it writes.** `prepared` is the id `evaluate` is about to
+/// act on — which, because `first_prepared`'s own priority order is
+/// `paused`, then `scheduled`, then `draft`, is not always the `system`/
+/// un-started proposal even when one exists (a person's own `paused`
+/// session outranks it). A single indexed lookup by id decides whether this
+/// is the row to refresh at all; nothing here assumes `prepared` already is
+/// it.
+///
+/// **`created_at == updated_at` is the second gate, and it is load-bearing —
+/// a real `chatgpt-codex-connector` finding on `#335`.** `origin = 'system'`
+/// alone is not proof nobody has touched this row: `docs/study-nudge.md`'s
+/// own "Origin" section already documents that, before `paulgsc/some-ui`
+/// PRO1 ships, the live client never sends an `origin` field on an edit, so
+/// `update_session` never promotes it — a person can rename this exact
+/// proposal, or replace its activities, and it still reads as `system` and
+/// `started_at IS NULL` afterwards. Before this refresh existed, that gap's
+/// only cost was a `Momentum` misclassification if the row was later
+/// abandoned; refreshing turns the same gap into silent data loss, since it
+/// would overwrite the person's own edit with a fresh recommendation.
+/// `update_session` advances `updated_at` unconditionally on every write
+/// (`upsert`'s own doc comment), so a person's edit — even an unpromoted one
+/// — always moves it away from `created_at`. `SessionRepository::
+/// refresh_if_untouched`'s own `UPDATE` deliberately never touches
+/// `updated_at` either, which is what makes `created_at == updated_at`
+/// survive any number of machine refreshes and still mean exactly one thing:
+/// nothing but the waker has ever written to this row.
+///
+/// **The checks below are an optimisation, not the safety boundary — a real
+/// `chatgpt-codex-connector` finding on `#335` caught an earlier version
+/// treating them as if they were.** `record` is read here, then `evaluate`,
+/// admission, a catalogue read, and `recommend()`/`provision()` all run
+/// before anything is written — a real window for a person's own
+/// `PATCH`/`DELETE` to land in. Re-deciding from a now-stale `record` and
+/// writing unconditionally would silently overwrite whatever changed in
+/// that window, or orphan a new row while `consider`'s already-selected
+/// `StudyAction` keeps pointing at the old id. So the actual enforcement
+/// lives one level down, in `refresh_if_untouched`'s own `WHERE` clause,
+/// which re-checks the identical predicate atomically at write time; see
+/// its own doc comment for the three ways the row can have changed and why
+/// each one safely no-ops instead. Everything here only decides whether
+/// it is worth doing the catalogue read and `recommend()` call at all.
+async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
+	let record = match sessions.get(subject_id, prepared).await {
+		Ok(Some(record)) => record,
+		Ok(None) => return,
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not read the prepared session; leaving it as-is rather than guessing whether it needs refreshing");
+			return;
+		}
+	};
+	if !(matches!(record.origin, SessionOrigin::System) && record.started_at.is_none() && record.created_at == record.updated_at) {
+		return;
+	}
+
+	let catalogue = match ActivityRepository::new(db.clone()).list().await {
+		Ok(catalogue) => catalogue,
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not read the activity catalogue; leaving the existing proposal stale rather than failing this pass");
+			return;
+		}
+	};
+	let refreshed = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
+	if refreshed.activities.is_empty() {
+		// Same trap #322 (P2) named for the original provisioning path: a
+		// catalogue with nothing currently timeable must not clobber a real
+		// proposal with an empty one. Leaving the stale row in place is
+		// strictly better than that — it is still a real, playable session.
+		warn!(subject = %subject_id, "recommend()+provision() currently produces nothing timeable; leaving the existing proposal as-is");
+		return;
+	}
+	match sessions.refresh_if_untouched(subject_id, prepared, &refreshed).await {
+		// `false` means the row changed state (edited, started, promoted,
+		// or deleted) in the window since `record` was read above — not an
+		// error, just nothing left to do; the row is already exactly as
+		// whatever touched it last left it.
+		Ok(_) => {}
+		Err(err) => error!(subject = %subject_id, error = %err, "could not refresh the existing proposal; leaving it as-is"),
+	}
 }
 
 /// A provisioned session, fully materialised — #282 (RCM5), the story that
@@ -1052,10 +1189,466 @@ mod tests {
 		);
 	}
 
+	/// #284 (RCM7)'s named "interaction between two stories" — RCM6's
+	/// `origin`/`started_at` and RCM7's own "at most one" rule — run through
+	/// `consider` end to end, not just `SessionRepository` directly. A
+	/// provisioned session the subject actually **started** stops matching
+	/// `first_prepared`'s three "prepared" statuses (`paused`, `scheduled`,
+	/// `draft` — `active` is deliberately not one of them) the moment it goes
+	/// `active`, so a subject who is somehow re-selected as due while still
+	/// mid-session reaches `Verdict::NothingToSay` a second time even though
+	/// their first proposal is far from abandoned. This pins that the second
+	/// pass does the right thing anyway: `provision_or_refresh`'s partial
+	/// index no longer covers the started row (`started_at` is no longer
+	/// `NULL`), so a second, independent proposal is provisioned rather than
+	/// the started session being silently refreshed out from under whoever
+	/// is mid-session on it — the exact corruption #284's own issue text
+	/// calls out as the one thing this rule must never do.
+	#[test]
+	fn a_started_provisioned_session_does_not_block_or_get_clobbered_by_a_second_provisioning_pass() {
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+		use session_repo::SessionRecord;
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-mid-session";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 22,
+				quiet_hours_end: 8,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: nothing prepared, provisions a real session.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+
+			// The subject actually opens it: status -> active, started_at set.
+			// This is exactly what `update_session` does on a real `Start`
+			// PATCH — origin stays `system`, only the lifecycle fields move.
+			let mut started = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			started.status = session_repo::SessionStatus::Active;
+			started.started_at = Some(now_str.clone());
+			sessions.upsert(subject_id, &started).await.unwrap();
+
+			// Re-arm the gate as if this subject drifted due again while
+			// still mid-session (an independent deficit crossing threshold,
+			// say) -- `due` only needs `eligible_at <= now`, and the charge
+			// levels above still keep Momentum dominant over Presence.
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			// Second pass: `first_prepared` no longer finds the started
+			// session (`active` isn't a "prepared" status), so this must
+			// reach `NothingToSay` again and provision independently rather
+			// than erroring or silently refreshing the started row.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+
+			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
+			assert_eq!(all.len(), 2, "the started session and a fresh proposal must coexist, not collapse into one");
+
+			let started_after = all.iter().find(|s| s.id == first_id).unwrap();
+			assert!(
+				matches!(started_after.status, session_repo::SessionStatus::Active),
+				"a started system session must never be refreshed back to Scheduled"
+			);
+			assert_eq!(
+				started_after.started_at.as_deref(),
+				Some(now_str.as_str()),
+				"a started system session's started_at must never be touched by a later provisioning pass"
+			);
+
+			let second_prepared = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+			assert_ne!(
+				second_prepared, first_id,
+				"the second pass must provision a genuinely new session, not point back at the started one"
+			);
+		});
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`: once an ignored
+	/// proposal exists, `first_prepared` resolves to it on every later pass,
+	/// so `Verdict::NothingToSay` — and therefore `provision_or_refresh` —
+	/// is never reached again. Refreshing had to move to a path reached
+	/// whenever such a proposal already exists, not only the one reached
+	/// when nothing is prepared at all. This pins that the *ordinary* path
+	/// (a `paused`/`scheduled` proposal already found, an intervention sent)
+	/// actually refreshes stale content, not just that it avoids stacking a
+	/// duplicate — `id` stays put, but the content a second day's pass sees
+	/// must reflect that day's catalogue, not the day the proposal was
+	/// first written.
+	#[test]
+	fn an_ordinary_second_pass_over_an_ignored_proposal_refreshes_its_content_not_just_its_existence() {
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-ignoring-proposal";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			// Consented on every topic, so the second pass's `ResumeAbandoned`
+			// (Momentum's dominant-deficit action) clears `admit`'s consent
+			// check and actually reaches `Verdict::Intervene` — the whole
+			// point of this test is to exercise the refresh gated on that
+			// verdict, not on `NotConsented`/`Suppressed` short-circuiting
+			// before it. Keys are inert placeholders: `admit` only reads the
+			// topic list, and the refresh under test happens before `actuate`
+			// ever tries to encrypt or send anything.
+			PushSubscriptionRepository::new(pool.clone())
+				.upsert(
+					&PushSubscription {
+						endpoint: "https://push.example.com/ignoring-proposal".to_owned(),
+						keys: SubscriptionKeys {
+							p256dh: "p256dh".to_owned(),
+							auth: "auth".to_owned(),
+						},
+					},
+					&Consent {
+						subject_id: subject_id.to_owned(),
+						topics: Topic::ALL.to_vec(),
+						consented_at: now_str.clone(),
+					},
+					&now_str,
+				)
+				.await
+				.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				// Disabled outright (start == end never matches, per
+				// `is_within_quiet_hours`) rather than a fixed window: this
+				// test must reach `Verdict::Intervene` regardless of the
+				// wall-clock hour it happens to run at.
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: nothing prepared, provisions a real proposal.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+			let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			let first_duration = first_record.total_duration_ms;
+			assert!(first_duration > 0);
+
+			// The catalogue changes before the subject is reconsidered — every
+			// activity's floor duration grows, so any refreshed proposal's
+			// total must strictly increase, regardless of which activities
+			// `recommend()` happens to pick.
+			sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+			// The subject ignored it and is due again (re-armed the same way
+			// a real REFRACTORY-later pass would find them); Momentum stays
+			// dominant. `first_prepared` now finds the existing proposal, so
+			// this pass takes the *ordinary* Intervene path, not NothingToSay.
+			// The refresh under test happens inside that arm, before the
+			// claim/actuate steps that follow it — this call's own `bool`
+			// return isn't asserted, since the placeholder subscription keys
+			// above are not valid EC public keys and `Sender::prepare` fails
+			// encryption locally (no network involved), the same way any
+			// other real encryption failure would; what matters here is that
+			// the refresh already ran by that point regardless.
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+
+			let all = sessions.list(subject_id).await.unwrap();
+			assert_eq!(all.len(), 1, "an ordinary ignored-proposal pass must refresh in place, not add a second session");
+
+			let second_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			assert_eq!(second_record.id, first_id, "the id must stay stable across the refresh");
+			assert!(
+				second_record.total_duration_ms > first_duration,
+				"the content must reflect the catalogue at refresh time ({}), not the day the proposal was first written ({first_duration})",
+				second_record.total_duration_ms
+			);
+		});
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`: an earlier version
+	/// of the refresh ran before `evaluate` ever checked admission, so it
+	/// could rewrite a proposal's content while the subject held a fresh
+	/// presence lease on that exact session — actively viewing it — only for
+	/// `evaluate` to then suppress the notification on `Present` anyway.
+	/// This pins the fix directly: with a fresh lease in place, the pass
+	/// must be `Suppressed::Present` (not silently something else) *and*
+	/// the proposal's content must be completely untouched, proving the
+	/// refresh call gated on `Verdict::Intervene` correctly never runs.
+	#[test]
+	fn a_fresh_presence_lease_on_the_proposal_suppresses_admission_and_leaves_its_content_untouched() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+		use metrics_util::CompositeKey;
+		use presence_repo::PresenceLeaseRepository;
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-viewing-proposal";
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+			rt.block_on(async {
+				let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+				MIGRATOR.run(&pool).await.unwrap();
+
+				let now = Utc::now();
+				let now_str = now.to_rfc3339();
+				let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+				let engagement = EngagementRepository::new(pool.clone());
+				engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+				PushSubscriptionRepository::new(pool.clone())
+					.upsert(
+						&PushSubscription {
+							endpoint: "https://push.example.com/viewing-proposal".to_owned(),
+							keys: SubscriptionKeys {
+								p256dh: "p256dh".to_owned(),
+								auth: "auth".to_owned(),
+							},
+						},
+						&Consent {
+							subject_id: subject_id.to_owned(),
+							topics: Topic::ALL.to_vec(),
+							consented_at: now_str.clone(),
+						},
+						&now_str,
+					)
+					.await
+					.unwrap();
+
+				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+				let nudge = NudgeContext {
+					clock: NudgeClock::resolve(Some("UTC")).0,
+					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					vapid,
+					enabled: true,
+					quiet_hours_start: 0,
+					quiet_hours_end: 0,
+					presence_lease_ttl: std::time::Duration::from_secs(75),
+					base_url: "https://example.com".to_owned(),
+				};
+
+				// First pass: provisions the proposal.
+				consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+				let sessions = SessionRepository::new(pool.clone());
+				let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+				let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+
+				// The catalogue changes, exactly as the sibling test does --
+				// if the refresh incorrectly ran anyway, this is what would
+				// prove it by changing `total_duration_ms`.
+				sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+				// The subject is actively looking at exactly this proposal
+				// right now -- a fresh presence lease on its own id, the same
+				// `context_key` `StudyAction::session_id()` would report.
+				PresenceLeaseRepository::new(pool.clone()).observe(subject_id, &first_id, &now_str).await.unwrap();
+
+				engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+				let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+				assert!(!intervened, "a subject actively viewing the proposal must not be notified about it");
+
+				let all = sessions.list(subject_id).await.unwrap();
+				assert_eq!(all.len(), 1, "presence suppression must not itself cause a second session to appear");
+
+				let second_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+				assert_eq!(
+					second_record.name, first_record.name,
+					"content must be completely untouched while the proposal is being viewed"
+				);
+				assert_eq!(
+					second_record.total_duration_ms, first_record.total_duration_ms,
+					"a fresh presence lease must prevent the refresh from running at all, not merely prevent the notification"
+				);
+			});
+		});
+
+		let snapshot: Vec<(CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, DebugValue)> = snapshotter.snapshot().into_vec();
+		let find = |name: &str, label_value: &str| -> u64 {
+			snapshot
+				.iter()
+				.find_map(|(key, _, _, value)| {
+					let k = key.key();
+					let matches = k.name() == name && k.labels().any(|l| l.value() == label_value);
+					matches.then_some(match value {
+						DebugValue::Counter(n) => *n,
+						_ => 0,
+					})
+				})
+				.unwrap_or(0)
+		};
+		assert_eq!(
+			find("nudge_waker_verdicts_total", "present"),
+			1,
+			"the second pass must be suppressed specifically on Present, not some other reason that would also leave content untouched"
+		);
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`, P1: before PRO1
+	/// (`paulgsc/some-ui#1052`) ships, the live client never sends an
+	/// `origin` field on an edit, so a person renaming or re-composing this
+	/// exact proposal through today's client leaves it reading as `origin =
+	/// 'system' AND started_at IS NULL` — indistinguishable from an
+	/// untouched one by those two columns alone. Before this story, that gap
+	/// only cost a `Momentum` misclassification if the row was later
+	/// abandoned; a refresh mechanism turns the same gap into silent data
+	/// loss, since it would overwrite the person's own edit with a fresh
+	/// recommendation. This pins the fix: `created_at != updated_at` (which
+	/// a real edit always produces, since `update_session` advances
+	/// `updated_at` unconditionally even without an `origin` field) must
+	/// stop the refresh outright, leaving the person's edited content
+	/// completely untouched.
+	#[test]
+	fn an_edited_but_unpromoted_proposal_survives_a_refresh_pass_untouched() {
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use session_repo::SessionRecord;
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-edited-proposal";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			PushSubscriptionRepository::new(pool.clone())
+				.upsert(
+					&PushSubscription {
+						endpoint: "https://push.example.com/edited-proposal".to_owned(),
+						keys: SubscriptionKeys {
+							p256dh: "p256dh".to_owned(),
+							auth: "auth".to_owned(),
+						},
+					},
+					&Consent {
+						subject_id: subject_id.to_owned(),
+						topics: Topic::ALL.to_vec(),
+						consented_at: now_str.clone(),
+					},
+					&now_str,
+				)
+				.await
+				.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: provisions the proposal.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+
+			// The person renames it (and only renames it) through today's
+			// client -- an `UpdateSession` PATCH with no `origin` field,
+			// exactly as `update_session` receives one before PRO1 ships.
+			// `origin` stays `system` and `started_at` stays `None`; only
+			// `updated_at` moves, since `update_session` advances it on
+			// every write regardless of which fields changed.
+			let mut edited = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			edited.name = "My own renamed session".to_owned();
+			edited.updated_at = (now + Duration::minutes(1)).to_rfc3339();
+			sessions.upsert(subject_id, &edited).await.unwrap();
+			assert!(
+				matches!(edited.origin, session_repo::SessionOrigin::System),
+				"sanity: the live client does not promote origin on this PATCH"
+			);
+
+			// The catalogue changes, exactly as the sibling tests do -- if
+			// the refresh incorrectly ran anyway, this is what would prove
+			// it by changing total_duration_ms and clobbering the rename.
+			sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+
+			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
+			assert_eq!(all.len(), 1, "an edited-but-unpromoted proposal must not be duplicated either");
+
+			let after = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			assert_eq!(
+				after.name, "My own renamed session",
+				"the person's own edit must survive a refresh pass completely untouched"
+			);
+			assert_eq!(
+				after.total_duration_ms, edited.total_duration_ms,
+				"an unpromoted-but-edited proposal's duration must not be silently recomputed either"
+			);
+		});
+	}
+
 	/// A real Codex review finding on `server#322` (P2): if `recommend()` +
 	/// `provision()` produce nothing timeable — every eligible candidate has
 	/// a `NULL` `min_duration_ms` here — persisting an empty `Scheduled`
-	/// session would be a permanent trap. `first_prepared`/`provision_if_absent`
+	/// session would be a permanent trap. `first_prepared`/`provision_or_refresh`
 	/// would treat it as "already prepared" forever, so nothing in this
 	/// codebase would ever provision this subject again, even after the
 	/// catalogue is fixed. Confirms both halves of the fix: nothing is

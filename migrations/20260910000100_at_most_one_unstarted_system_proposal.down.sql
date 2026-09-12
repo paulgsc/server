@@ -1,0 +1,1 @@
+DROP INDEX idx_sessions_one_unstarted_system_proposal;

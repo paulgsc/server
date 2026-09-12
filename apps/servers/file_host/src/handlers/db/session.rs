@@ -103,7 +103,7 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 		// A session created through this endpoint is always someone composing
 		// it themselves — the waker's own path (`nudge::waker::
 		// materialize_provisioned_session`) never calls `create_session`, it
-		// writes directly through `SessionRepository::provision_if_absent`.
+		// writes directly through `SessionRepository::provision_or_refresh`.
 		origin: SessionOrigin::User,
 		// Computed here rather than trusted from the body: a client that
 		// forgets sends a zero, and the nudge then offers a "~1 min" session.

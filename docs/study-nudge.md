@@ -283,8 +283,8 @@ synchronously inside `materialize_provisioned_session`, before the row is
 ever written, so there is no partially-composed state a crash between
 "written" and "filled in" could expose. `Scheduled` is what `#282`'s own
 table asks for, and it changes nothing about how a provisioned session is
-found — `SessionRepository::first_prepared` and `provision_if_absent` both
-already treated `scheduled` as a prepared status alongside `paused`/`draft`.
+found — `SessionRepository::first_prepared` already treated `scheduled` as a
+prepared status alongside `paused`/`draft`.
 
 **`name`: `activity_repo::naming::default_session_name`.** Transcribed from
 `defaultSessionName` (`packages/activity-catalog/src/lib/summary.ts`,
@@ -458,6 +458,14 @@ this is bounded and temporary: it costs a session getting `origin` wrong for
 existing rows edited between #283 landing and PRO1 shipping, not a
 permanently wrong invariant.
 
+**#284 (RCM7) raised this gap's stakes from a misclassification to data
+loss, and had to grow its own, narrower defence.** A `Momentum` accounting
+error is silent and recoverable; overwriting a person's own edit with a
+machine-generated recommendation is neither. See "Never stack proposals"
+below for `refresh_stale_proposal`'s `created_at == updated_at` check —
+it does not close this gap (only PRO1 can), but it does stop RCM7's own
+refresh mechanism from acting on a row this gap has already misclassified.
+
 **Payload-only, no route or contract regeneration needed.** `origin` is a
 new field on the existing `SessionRecord` JSON shape, not a new route —
 `docs/route-inventory.md`'s `RouteDescriptor` only proves a route exists
@@ -465,6 +473,315 @@ and where (method, path, versioning, module), nothing about payload shape,
 so `dump-routes` has nothing to regenerate here. The client-side contract
 update this still needs (`paulgsc/some-ui`'s hand-written `SessionRecord`
 schema, #1042) is PRO1's own acceptance criterion, not this story's.
+
+### Never stack proposals: at most one un-started system session (#284, RCM7)
+
+`REFRACTORY` is 20 hours and `recharge_on_intervention` gives `Presence` back
+30 per nudge, so a persistently disengaged subject becomes eligible again
+roughly daily. Without a guard, a fortnight of ignored notifications would
+produce fourteen provisioned sessions — each one a row the client lists,
+each dragging the person's session list toward uselessness, and the
+compounding part: `first_prepared` (#263) would keep finding *one* of them,
+so the system keeps happily concluding it has something to point at while
+the actual number of things the person wants to do is one.
+
+**The rule:** before provisioning, if the subject already has an `origin =
+'system' AND started_at IS NULL` session, do not create another.
+
+**Why the predicate is `origin`/`started_at`, not `first_prepared`'s status
+list.** `nudge::waker::consider` already read `SessionRepository::
+first_prepared` before this story, and that query's three "prepared"
+statuses (`paused`, `scheduled`, `draft`) happen to overlap with what a
+never-touched system proposal looks like — which is why, in the common
+case, a second row was never actually observed stacking even before this
+story landed. That overlap is coincidental, not principled, and it breaks in
+two places `#283` (RCM6) already named as the ones this rule must get right:
+
+- **A `system` session the person *started* is history now, not a
+  proposal.** The moment it goes `active`, it stops matching any of
+  `first_prepared`'s three statuses too — `active` was never one of them —
+  so relying on that list would let the waker reach `NothingToSay` again for
+  a subject who is, right now, mid-session on their first proposal. `origin
+  = 'system' AND started_at IS NULL` gets this right by construction:
+  `started_at` moves to `Some` the instant a person presses Start and
+  `UpdateSession` has no field that ever clears it back to `None`, so a
+  started row is permanently excluded from this rule, whatever its `status`
+  does afterward (`paused`, `completed`, or back to being re-opened).
+- **A `system` session promoted to `user` by editing (RCM6's one-way
+  `upsert` guard) falls out of this rule automatically.** Once `origin`
+  flips, the row permanently stops matching `origin = 'system'` — RCM6's own
+  guard already makes `user → system` unreachable, so there is no path back
+  in. A person who renamed or edited their proposal without starting it must
+  not have it silently refreshed out from under them the next time the
+  waker runs; this predicate never even looks at that row again.
+
+Both edges are asserted directly, at two layers: `SessionRepository`'s own
+`provision_or_refresh_never_touches_a_started_system_session` /
+`_never_touches_a_system_session_promoted_to_user` tests
+(`crates/db/session/src/repository.rs`), and — because this is exactly the
+"interaction between two stories" #284's own issue text calls out as worth
+testing — `nudge::waker`'s
+`a_started_provisioned_session_does_not_block_or_get_clobbered_by_a_second_provisioning_pass`,
+which drives the same scenario through `consider` end to end rather than
+the repository method in isolation.
+
+**Enforced as a real constraint, not just application-level care.**
+`idx_sessions_one_unstarted_system_proposal`
+(`migrations/20260910000100_at_most_one_unstarted_system_proposal.up.sql`)
+is a partial unique index — `ON sessions (subject_id) WHERE origin =
+'system' AND started_at IS NULL` — so the invariant holds even against a
+write path this story did not anticipate, the same defence in depth
+`upsert`'s own `SubjectMismatch` guard already gives a different invariant.
+The migration also runs a one-time, `updated_at`-ordered dedup delete before
+creating the index, for the same reason `20260906000900_add_origin_to_
+sessions.up.sql` was this careful about a live deployment: `CREATE UNIQUE
+INDEX` fails outright if any subject already violates it, and this should
+not be the migration that discovers a violation rather than the one
+introducing the rule.
+
+**Three strategies were weighed for what happens to the existing proposal,
+and the issue's own recommendation is what shipped:**
+
+1. **Point at it again.** Cheapest — do nothing, `first_prepared` keeps
+   finding the old row. Rejected: it stales. Five days on, the "new
+   material" `recommend()` picked it for is not new any more, and the
+   durations reflect a different day's seeded shuffle.
+2. **Replace it.** Delete or supersede, then provision fresh. Rejected:
+   deleting a row the person may have glanced at, or opened in a tab, is a
+   small dishonesty, and `#285` (RCM8)'s own acceptance depends on an old
+   notification's deep link still resolving — a new id would break exactly
+   that.
+3. **Refresh in place.** Same id, new contents. **Chosen** — the deep-link
+   stability argument is the deciding one: `#285` needs a notification
+   issued before a refresh to still resolve afterward, and only this option
+   gives that for free.
+
+**`SessionRepository::provision_or_refresh`** (`crates/db/session/src/
+repository.rs`) is the mechanism: one `INSERT ... SELECT ... WHERE NOT
+EXISTS (...) ON CONFLICT (subject_id) WHERE origin = 'system' AND
+started_at IS NULL DO UPDATE SET name = excluded.name, activities =
+excluded.activities, total_duration_ms = excluded.total_duration_ms,
+updated_at = excluded.updated_at` statement, replacing what RCM2 (`#279`)
+originally called `provision_if_absent`. `id` and `created_at` are
+deliberately absent from the `DO UPDATE SET` list — preserving `id` is the
+whole point, and `created_at` follows `upsert`'s own precedent of never
+letting a write move it. Every other column is left alone too: the
+conflicting row, by construction of the predicate it matched, already holds
+the only values `materialize_provisioned_session` ever writes for them.
+
+**Two guards, not one, because they protect against two different races.**
+A first version of this statement carried only the `ON CONFLICT` — a real
+`chatgpt-codex-connector` finding on `#335` caught that this drops
+`provision_if_absent`'s own `WHERE NOT EXISTS (... status IN ('paused',
+'scheduled', 'draft'))` guard entirely, and that guard was protecting
+against a *different* race than the partial index does. The partial index
+stops a second `system` proposal from ever coexisting with an un-started
+one; it says nothing about a **foreign** prepared session — a real
+person's own `paused`/`scheduled`/`draft` row — landing in the window
+`provision_if_absent`'s own doc comment already named (#313): a concurrent
+waker pass, or the subject's own `POST /sessions` call, between
+`consider`'s `first_prepared` read and this write. Without the `WHERE NOT
+EXISTS` restored, that race would insert a system proposal *alongside* the
+person's fresh draft, and `first_prepared`'s status priority would then
+surface the wrong one. The restored subquery excludes rows already matching
+the partial index's own predicate, so the two guards agree on which row is
+"foreign" rather than fighting over the same one — a pre-existing
+`system`/un-started proposal is not foreign, it is exactly the row the `ON
+CONFLICT` branch is allowed to refresh.
+
+**Bounded per #253.** Both guards are index-backed: the `NOT EXISTS`
+subquery is served by `idx_sessions_status`, and the `ON CONFLICT` target
+is the new partial index — an equality probe each, not a scan, the same "a
+read/write reachable from the waker declares its own bound" discipline
+`first_prepared`'s three single-status probes already established for the
+neighbouring query.
+
+**Refreshing has to happen somewhere other than `Verdict::NothingToSay`,
+and not before admission is checked either — two real `chatgpt-codex-
+connector` findings on `#335`, in sequence.** The first version of this
+story gated refreshing entirely on that arm, reasoning that provisioning
+always had. That never actually fires for the scenario the whole story
+exists for: once an ignored proposal exists at all, `first_prepared` (read
+at the top of `consider`) already resolves to it, and `StudySelector::
+select` maps straight to an intervention — `NothingToSay` cannot occur
+again while that row exists, so gating the refresh on reaching it would
+leave every subsequent day's pass pointing at whatever `recommend()`
+produced the day the proposal was first written, silently defeating the
+whole point of choosing "refresh in place" over "point at it again."
+
+The fix moved the refresh call earlier — right after `first_prepared`
+resolves, before the engine ever runs — and that was itself wrong in a
+different way: it could rewrite a proposal's `name`/`activities`/
+`total_duration_ms` while the subject held a fresh presence lease on that
+exact session, actively viewing it, only for `evaluate`'s own `admit` call
+to suppress the notification on `Present` anyway. Mutating a session out
+from under someone looking at it, for a notification that was never going
+to send, is exactly the write race #284's own "refresh in place" choice
+was supposed to avoid causing, not invite.
+
+**`nudge::waker::refresh_stale_proposal`'s call site is the resolution to
+both**: inside the `Verdict::Intervene(action)` arm of `engine.evaluate`,
+not before it and not only inside `NothingToSay`. `evaluate` already calls
+`Admissibility::admit` internally before ever returning `Intervene` (see
+`intervention::Engine::evaluate`'s own implementation), so gating on that
+verdict is sufficient by construction — no separate presence check is
+needed at the call site, and refreshing is skipped automatically whenever
+`Wait`, `Suppressed` (quiet hours, no consent, or presence), or
+`NothingToSay` is what `evaluate` actually decided. It is best-effort
+rather than fatal (a failure leaves the existing, unrefreshed proposal in
+place rather than failing the pass), unlike `NothingToSay`'s own
+provisioning, where a failure means genuinely nothing to offer. Bounded the
+same way: one indexed lookup by id to decide whether to refresh, not a
+scan.
+
+**Refreshing is still not "on a timer."** It only ever runs from inside
+`consider`, for a subject the engagement arithmetic already marked due,
+immediately before an intervention that is actually about to go out — so a
+subject who is not due, not admissible, or currently viewing the proposal
+gets no refresh, exactly as before; what changed is only *which*
+already-due, already-admissible pass can trigger it.
+
+**A third real `chatgpt-codex-connector` finding on `#335`, P1, is the
+sharpest: `origin = 'system'` is not proof nobody has touched this row.**
+The "Origin" section above already documents a real, bounded,
+pre-`some-ui`-PRO1 gap — the live client never sends an `origin` field on
+an edit, so `update_session` never promotes an edited proposal to `user`.
+Before this story, that gap's only cost was a `Momentum` misclassification
+if the row was later abandoned. A refresh mechanism turns the exact same
+gap into something worse: silent data loss. A person who renames this
+proposal, or replaces its activities, through today's client leaves it
+reading as `origin = 'system' AND started_at IS NULL` — indistinguishable
+from a genuinely untouched one by those two columns alone — so without a
+further check, the next eligible pass would overwrite their own edit with
+a fresh recommendation.
+
+The fix reuses the same signal `20260906000900_add_origin_to_sessions.
+up.sql`'s own backfill already relied on for an identical problem:
+`created_at == updated_at`. `update_session` advances `updated_at`
+unconditionally on every write, with or without an `origin` field, so any
+real edit — promoted or not — moves it away from `created_at`. The one
+thing that had to change to make this reusable *live*, not just for a
+one-time backfill: `provision_or_refresh`'s own `ON CONFLICT` branch
+deliberately does not touch `updated_at` (see that method's own "What
+refreshing touches" doc comment) — if a machine refresh bumped it the way
+an early version of this fix did, `created_at == updated_at` would break
+after the row's very first refresh, for a proposal nobody had ever
+touched, defeating the check for the case it exists to protect. With that
+in place, `refresh_stale_proposal` gates on it directly:
+`record.created_at != record.updated_at` stops the refresh outright,
+leaving an edited-but-unpromoted proposal exactly as the person left it —
+pinned by `an_edited_but_unpromoted_proposal_survives_a_refresh_pass_
+untouched` in `nudge::waker`'s test module.
+
+**A fourth real `chatgpt-codex-connector` finding on `#335`, P1, is about
+the gap between that check and the write it gates.** `refresh_stale_
+proposal` reads a row, decides — from that one read — whether refreshing
+is safe, and only then writes. Between the read and the write sits a full
+`engine.evaluate` call and an admission check: real time, and a real
+window for a person's own `PATCH` or `DELETE` to land in. A decision made
+from a read that may no longer be true is not a safety check, it is a
+race — the exact shape of bug the "reads before it writes" section above
+already names for `first_prepared`'s own staleness, now recurring one
+layer up.
+
+**`SessionRepository::refresh_if_untouched`** closes it the only way a
+read-then-decide gap can be closed: by not trusting the read at write
+time. It is a single `UPDATE ... WHERE id = ? AND subject_id = ? AND
+origin = 'system' AND started_at IS NULL AND created_at = updated_at`,
+scoped to the exact id `refresh_stale_proposal` already has, with
+deliberately **no insert fallback**. That last part is what makes it safe
+where `provision_or_refresh` would not be: if the row was edited, started,
+promoted, or deleted in the gap, the `WHERE` clause simply matches nothing
+and zero rows are affected — an outcome `refresh_stale_proposal` treats as
+"nothing to do," not an error. An insert fallback would have created a
+second, orphaned proposal under a brand-new id while the `StudyAction`
+`consider` already selected kept pointing at the old one, which is exactly
+why this method exists separately from `provision_or_refresh` rather than
+reusing it: that method's own `ON CONFLICT` refresh is safe for its one
+caller (a race there can only ever be against another concurrent waker
+pass's own fresh candidate, never a person's action — `create_session`/
+`duplicate_session` can never write `origin = 'system'` at all), which is
+not true of `refresh_stale_proposal`'s situation.
+
+The checks inside `refresh_stale_proposal` itself (origin, `started_at`,
+`created_at == updated_at`) are downgraded from a safety gate to a pure
+optimisation by this fix: they decide whether it is worth doing the
+catalogue read and `recommend()` call at all, and the atomic `UPDATE`'s
+own `WHERE` clause is the only thing that actually has to be right at the
+moment of the write.
+
+**A fifth and sixth real `chatgpt-codex-connector` finding on `#335`, both
+P1, both from the same root cause: `origin = 'system' AND started_at IS
+NULL` is not the same predicate as "un-started," because a status change
+can reach a `system` proposal without ever touching `started_at` at all.**
+`SessionRepository::set_status_many` (`PATCH /sessions/status`) writes only
+`status` and `updated_at` — a real, client-reachable path
+(`updateStatusMany`, `paulgsc/some-ui`), not a hypothetical. It can move a
+never-started `system` proposal straight to `active` or `completed` while
+`started_at` stays `NULL`.
+
+Two real consequences followed from that one gap, both in code this story
+itself added:
+
+- **Starvation, plus silent corruption, live.** Such a row still satisfied
+  `idx_sessions_one_unstarted_system_proposal`'s predicate, so it
+  permanently occupied the subject's one slot — `first_prepared` can never
+  surface `active`/`completed` rows back out, since neither status is in
+  its own tracked set, so no future proposal could ever be provisioned for
+  that subject again. Worse, the row remained a live `ON CONFLICT` target:
+  `provision_or_refresh`'s `DO UPDATE` branch (unlike `refresh_if_untouched`)
+  has no `created_at == updated_at` guard, so the next `NothingToSay` pass
+  would have silently overwritten the name, activities, and duration of a
+  session that might be actively in progress or already finished.
+- **Wrongful deletion, once.** The migration's own defensive dedup pass used
+  the same broad predicate, so on a live database already holding such rows
+  (from real use, not a bug in this migration) it would have deleted every
+  `active`/`completed` row but the most recently touched one per subject —
+  real history, not ignored proposals, and irreversibly, since the down
+  migration only drops the index.
+
+**The fix scopes both to the same three statuses `first_prepared` already
+treats as "prepared"**: `idx_sessions_one_unstarted_system_proposal`'s own
+predicate, `provision_or_refresh`'s `ON CONFLICT` target, and the
+migration's dedup `DELETE` all gained `AND status IN ('paused', 'scheduled',
+'draft')`. An `active`/`completed` row reached through the `set_status_many`
+anomaly now falls out of all three: it no longer counts toward the "at most
+one" invariant (a fresh proposal can be provisioned alongside it), it is
+never a conflict target (nothing ever overwrites it), and it survives the
+migration's dedup untouched regardless of how many other such rows exist
+for the same subject. Verified against a real scratch database seeded with
+exactly this scenario (two genuine duplicate ignored proposals alongside
+two real `active`/`completed` history rows sharing a subject) before
+trusting the migration's own SQL — the duplicates collapsed to one, the
+history rows both survived — and pinned in code by
+`provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_
+anomaly` in `crates/db/session/src/repository.rs`'s test module.
+
+**A closing-review finding on `#335`, P1, turned up one more instance of
+the exact race `refresh_if_untouched` already closes — in a different
+call site.** `refresh_if_untouched` protects `refresh_stale_proposal`'s
+own write; `provision_or_refresh`'s `ON CONFLICT` branch (the
+`NothingToSay` arm's write) had no equivalent guard. Its call site has no
+fresh read of the conflicting row to check against — it discovers a
+conflict only through the statement itself, against whatever a
+*different* concurrent waker pass already inserted after this pass's own
+`first_prepared` read found nothing. A person can edit that other pass's
+freshly-inserted proposal (still `system`, `updated_at` moved, the same
+pre-PRO1 gap) in the window before this delayed pass's write lands, and
+the unconditional `DO UPDATE` would have silently overwritten it.
+
+The fix stays inside the one `INSERT ... ON CONFLICT` statement:
+`DO UPDATE SET ... WHERE sessions.created_at = sessions.updated_at`.
+`SQLite` re-checks that condition atomically, in the same statement as
+the conflict resolution itself — when it fails, the row is left
+completely untouched and nothing is inserted either, verified directly
+against a real database rather than trusted from documentation, since
+this codebase had no prior use of this particular `SQLite` upsert clause
+to point to as precedent. `provision_or_refresh_never_overwrites_a_
+conflicting_row_a_person_edited_since_it_was_inserted` reproduces the full
+three-step interleaving directly: one pass's insert, a person's edit
+landing on it, then a second pass's own conflicting write — and asserts
+the edit survives untouched.
 
 ### First contact: how a subject enters the gate at all
 
