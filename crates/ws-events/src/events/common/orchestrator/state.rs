@@ -11,6 +11,7 @@ pub struct ActiveLifetime {
 
 impl ActiveLifetime {
 	/// Get scene name if this is a scene lifetime
+	#[must_use]
 	pub fn scene_name(&self) -> Option<&str> {
 		match &self.kind {
 			LifetimeKind::Scene(scene) => Some(&scene.scene_name),
@@ -47,13 +48,15 @@ pub enum OrchestratorMode {
 
 impl OrchestratorMode {
 	/// Returns true if this mode is terminal (requires cleanup)
-	pub fn is_terminal(&self) -> bool {
-		matches!(self, OrchestratorMode::Finished | OrchestratorMode::Stopped | OrchestratorMode::Error)
+	#[must_use]
+	pub const fn is_terminal(&self) -> bool {
+		matches!(self, Self::Finished | Self::Stopped | Self::Error)
 	}
 
 	/// Returns true if this mode allows playback operations
-	pub fn is_active(&self) -> bool {
-		matches!(self, OrchestratorMode::Idle | OrchestratorMode::Running | OrchestratorMode::Paused)
+	#[must_use]
+	pub const fn is_active(&self) -> bool {
+		matches!(self, Self::Idle | Self::Running | Self::Paused)
 	}
 }
 
@@ -79,6 +82,7 @@ pub struct OrchestratorState {
 }
 
 impl OrchestratorState {
+	#[must_use]
 	pub fn new(total_duration: TimeMs) -> Self {
 		Self {
 			mode: OrchestratorMode::Unconfigured,
@@ -93,25 +97,30 @@ impl OrchestratorState {
 	}
 
 	/// Returns true if the orchestrator is in a terminal state
-	pub fn is_terminal(&self) -> bool {
+	#[must_use]
+	pub const fn is_terminal(&self) -> bool {
 		self.mode.is_terminal()
 	}
 
 	/// Returns true if playback has completed (time reached end)
-	pub fn is_complete(&self) -> bool {
+	#[must_use]
+	pub const fn is_complete(&self) -> bool {
 		self.current_time >= self.total_duration
 	}
 
 	/// Returns true if currently playing
+	#[must_use]
 	pub fn is_running(&self) -> bool {
 		self.mode == OrchestratorMode::Running
 	}
 
 	/// Returns true if paused
+	#[must_use]
 	pub fn is_paused(&self) -> bool {
 		self.mode == OrchestratorMode::Paused
 	}
 
+	#[must_use]
 	pub fn current_timecode(&self) -> Timecode {
 		Timecode::from_ms(self.current_time)
 	}
