@@ -254,35 +254,135 @@ impl SessionRepository {
 		Ok(None)
 	}
 
-	/// Atomically ensure a prepared session exists for this subject, inserting
-	/// `record` only if none of `first_prepared`'s three "prepared" statuses
-	/// (`paused`, `scheduled`, `draft`) already has one.
+	/// Atomically ensure this subject has at most one un-started `system`
+	/// proposal, either inserting `record` fresh or refreshing an existing
+	/// one in place — #284 (RCM7)'s own chosen strategy, argued in full in
+	/// `docs/study-nudge.md`'s "Never stack proposals" section.
 	///
-	/// Exists for exactly one caller: `nudge::waker::consider` (#279/RCM2)
-	/// provisioning a session when nothing is prepared. A plain
-	/// [`Self::first_prepared`] read followed by an unconditional
-	/// [`Self::upsert`] has a real window between the two — a concurrent
-	/// waker pass, or the subject's own `POST /sessions` call, can create a
-	/// prepared session in that gap, and because the provisioned row's id is
-	/// always freshly generated, `upsert`'s `ON CONFLICT` guard (which only
-	/// protects a *specific* id, not "does this subject already have one")
-	/// does nothing to stop a second, blank draft from landing beside the
-	/// one that won. A `chatgpt-codex-connector` review on #313 caught
-	/// exactly this. The `WHERE NOT EXISTS` below runs as one statement, so
-	/// it is `SQLite`'s own per-statement write serialization — not a
-	/// read-then-write in this crate — that decides which of two racing
-	/// calls actually lands.
+	/// **The predicate is `origin = 'system' AND started_at IS NULL`, not
+	/// "anything prepared".** This deliberately replaces the coarser
+	/// `provision_if_absent` guard RCM2 (#279) originally wrote (`status IN
+	/// ('paused', 'scheduled', 'draft')`, any origin) — that predicate
+	/// predates `origin` (#283/RCM6) existing at all, and #284's own issue
+	/// text is explicit about why it is not enough: a `system` session the
+	/// person *did* start is history now, not a proposal, and must never be
+	/// touched by this rule; a `system` session promoted to `user` by editing
+	/// falls out of the rule automatically. Both fall out for free once the
+	/// predicate is this one, because both cases make the row stop matching
+	/// it — a started row fails `started_at IS NULL` forever (`UpdateSession`
+	/// has no way to clear `started_at` back to `None`), and a promoted row
+	/// fails `origin = 'system'` forever (`upsert`'s own one-way guard).
 	///
-	/// Returns whether `record` is the one that got written. A caller that
-	/// only cares "does a prepared session exist for this subject now"
-	/// should ignore the return value and re-read with
-	/// [`Self::first_prepared`] instead — that answers correctly regardless
-	/// of which side of a race actually landed, where this return value only
-	/// tells you about `record` specifically.
+	/// **Enforced as a real constraint**, `idx_sessions_one_unstarted_system_
+	/// proposal` (`20260910000100_at_most_one_unstarted_system_proposal.up.sql`),
+	/// not just application-level care — the same reasoning `upsert`'s own
+	/// `SubjectMismatch` guard already applies to a different invariant.
+	/// `ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS
+	/// NULL AND status IN ('paused', 'scheduled', 'draft')` targets that
+	/// index by name; `SQLite` requires an `ON CONFLICT` target's `WHERE`
+	/// clause to match a real partial index verbatim, so this statement and
+	/// that migration must always agree.
+	///
+	/// **The `status IN (...)` clause is load-bearing, not redundant with
+	/// `started_at IS NULL`** — a real `chatgpt-codex-connector` finding on
+	/// `#335` caught its absence. `set_status_many` (`PATCH /sessions/status`)
+	/// writes only `status` and `updated_at`, so it can move a `system`,
+	/// never-started proposal straight to `active` or `completed` while
+	/// `started_at` stays `NULL` — a real, client-reachable path, not a
+	/// hypothetical. Without this clause, such a row would still satisfy the
+	/// conflict target forever (`first_prepared` can never surface it back
+	/// out, since `active`/`completed` aren't in its own tracked set),
+	/// permanently starving the subject of any future proposal and standing
+	/// as a live target this statement would silently overwrite. Restricting
+	/// the clause to the same three statuses `first_prepared` already tracks
+	/// closes both: such a row falls out of the conflict target (a fresh
+	/// proposal inserts alongside it instead of overwriting it) exactly as it
+	/// already falls out of `idx_sessions_one_unstarted_system_proposal`'s
+	/// own predicate. See that migration's own comment for the matching
+	/// argument on the index side, and `docs/study-nudge.md`'s "Never stack
+	/// proposals" section for the full account.
+	///
+	/// **One statement, not read-then-write.** The same race `provision_if_
+	/// absent`'s own doc comment named (a `chatgpt-codex-connector` review on
+	/// #313: a concurrent waker pass, or the subject's own `POST /sessions`
+	/// call, landing a competing row in the window between a read and a
+	/// write) is closed the same way here — `SQLite`'s own per-statement
+	/// write serialization decides which of two racing calls actually
+	/// lands, and the loser's content becomes the `DO UPDATE`, not a second
+	/// row. Bounded per #253: an equality probe against a partial index,
+	/// not a scan — the same discipline `first_prepared`'s three single-status
+	/// probes already established for the neighbouring query.
+	///
+	/// **The `WHERE NOT EXISTS` guard is still needed alongside the partial
+	/// index — the two protect against different races.** The partial index
+	/// stops a second *system* proposal from ever coexisting with an
+	/// un-started one; it says nothing about a **foreign** prepared session —
+	/// a real person's own `paused`/`scheduled`/`draft` row — landing in the
+	/// window between `consider`'s `first_prepared` read (which found
+	/// nothing) and this write. Without this guard, that race would insert a
+	/// system proposal *alongside* the person's own fresh draft, and
+	/// `first_prepared`'s status priority would then surface the system
+	/// proposal over it — exactly the race `provision_if_absent`'s own
+	/// `WHERE NOT EXISTS` used to close, and a real `chatgpt-codex-connector`
+	/// finding on `#335` caught its absence here. The subquery excludes rows
+	/// that already match the partial index's own predicate — a pre-existing
+	/// `system`/un-started proposal is not "foreign," it is exactly the row
+	/// this statement is allowed to refresh via the `ON CONFLICT` branch —
+	/// so the two clauses agree rather than fight over the same row.
+	///
+	/// **What refreshing touches — `name`, `activities`, and
+	/// `total_duration_ms`. Deliberately not `updated_at`.** Every other
+	/// write path in this codebase (`upsert`, and therefore every real
+	/// `PATCH /sessions/:id`) advances `updated_at` unconditionally, so it
+	/// already means exactly what `20260805000300_create_sessions.up.sql`'s
+	/// own column comment says — "editing only" — for every row except this
+	/// one write path. A machine refresh is not a person editing anything,
+	/// so it must not be able to produce the same signal a real edit does:
+	/// see `refresh_stale_proposal`'s own doc comment (`nudge/waker.rs`) for
+	/// why `created_at == updated_at` staying true across any number of
+	/// refreshes is exactly the property that lets it tell "only ever
+	/// touched by the waker" apart from "a person edited this," which is
+	/// otherwise unrecoverable before PRO1 ships `origin` promotion into the
+	/// live client's edit path at all (a real `chatgpt-codex-connector`
+	/// finding on `#335` — see that section of `docs/study-nudge.md` for the
+	/// full argument for why this matters here specifically). `id` and
+	/// `created_at` are absent from the `DO UPDATE SET` list for the reasons
+	/// already established elsewhere: preserving `id` is the whole point of
+	/// "refresh in place" (a notification issued before a refresh still has
+	/// to resolve afterwards), and `created_at` follows `upsert`'s own
+	/// precedent of never letting a write move it.
+	/// `status`/`origin`/`layout_mode`/`scenes`/`layout`/`started_at`/
+	/// `completed_at`/`final_elapsed_ms` are left untouched too — the
+	/// conflicting row, by construction of the partial index predicate it
+	/// matched, already holds the only values `materialize_provisioned_
+	/// session` ever writes for them (`scheduled`, `system`, `basic`, `[]`,
+	/// `NULL`, `NULL`, `NULL`, `NULL`), so there is nothing for a refresh to
+	/// change there.
+	///
+	/// **The `DO UPDATE ... WHERE sessions.created_at = sessions.updated_at`
+	/// clause is this method's own safety net, not merely a restatement of a
+	/// check some caller already made — a sixth real `chatgpt-codex-connector`
+	/// finding on `#335` caught its absence.** The `NothingToSay` arm's own
+	/// call site has no fresh read of the conflicting row to check against:
+	/// it discovers a conflict only through this very statement, against
+	/// whatever row a *different* concurrent waker pass inserted after this
+	/// pass's own `first_prepared` read already returned nothing. A person
+	/// can edit that other pass's freshly-inserted proposal (still `system`,
+	/// `updated_at` moved, the same pre-PRO1 gap `refresh_if_untouched` was
+	/// built for) in the window before this delayed pass's write lands, and
+	/// an unconditional `DO UPDATE` would silently overwrite it — exactly
+	/// the same class of race `refresh_if_untouched` closes for its own
+	/// caller, recurring here because that fix only ever touched
+	/// `refresh_stale_proposal`'s call site, not this one. `SQLite`'s own
+	/// `DO UPDATE ... WHERE` re-checks the condition atomically, in the same
+	/// statement as the conflict resolution itself: when it fails, the row
+	/// is left completely untouched and nothing is inserted either — verified
+	/// directly, not just read from the documentation, since this repo has no
+	/// existing use of this `SQLite` upsert clause to point to as precedent.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
-	pub async fn provision_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<bool, SessionRepoError> {
+	pub async fn provision_or_refresh(&self, subject_id: &str, record: &SessionRecord) -> Result<(), SessionRepoError> {
 		let status = record.status.as_str();
 		let origin = record.origin.as_str();
 		let layout_mode = record.layout_mode.as_str();
@@ -293,7 +393,7 @@ impl SessionRepository {
 			record.layout.as_ref().map(serde_json::to_string).transpose()?,
 		);
 
-		let result = sqlx::query!(
+		sqlx::query!(
 			r#"
 			INSERT INTO sessions (
 			    id, subject_id, name, status, origin, layout_mode, total_duration_ms,
@@ -302,8 +402,17 @@ impl SessionRepository {
 			)
 			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			WHERE NOT EXISTS (
-			    SELECT 1 FROM sessions WHERE subject_id = ? AND status IN ('paused', 'scheduled', 'draft')
+			    SELECT 1 FROM sessions
+			    WHERE subject_id = ?
+			      AND status IN ('paused', 'scheduled', 'draft')
+			      AND (origin != 'system' OR started_at IS NOT NULL)
 			)
+			ON CONFLICT (subject_id) WHERE origin = 'system' AND started_at IS NULL AND status IN ('paused', 'scheduled', 'draft')
+			DO UPDATE SET
+			    name              = excluded.name,
+			    activities        = excluded.activities,
+			    total_duration_ms = excluded.total_duration_ms
+			WHERE sessions.created_at = sessions.updated_at
 			"#,
 			record.id,
 			subject_id,
@@ -320,6 +429,83 @@ impl SessionRepository {
 			activities,
 			scenes,
 			layout,
+			subject_id,
+		)
+		.execute(&self.pool)
+		.await?;
+
+		Ok(())
+	}
+
+	/// Refresh exactly one already-identified un-started `system` proposal's
+	/// content in place — `name`, `activities`, `total_duration_ms` — but
+	/// only if it is, at the instant of this write, still in the same
+	/// untouched state the caller last observed. No insert fallback: this is
+	/// not "provision or refresh," it is "refresh this one row, or do
+	/// nothing."
+	///
+	/// **Why this exists alongside [`Self::provision_or_refresh`].** That
+	/// method's own `ON CONFLICT` refresh is safe for its one caller
+	/// (`nudge::waker::consider`'s `NothingToSay` arm) because a row it could
+	/// race against is, by construction, always another concurrent waker
+	/// pass's own fresh candidate — `create_session`/`duplicate_session` can
+	/// never write `origin = 'system'` at all, so a person's own action can
+	/// never be the thing on the other side of *that* race. `nudge::waker::
+	/// refresh_stale_proposal`'s situation is different: it reads a specific,
+	/// already-existing row well before this write — across a full
+	/// `engine.evaluate` call and an admission check — and a real
+	/// `chatgpt-codex-connector` finding on `#335` caught that a person's own
+	/// `PATCH`/`DELETE` landing in that gap is entirely possible. `read, then
+	/// decide, then write` has a window no amount of care in the reading half
+	/// can close; only re-checking the same predicate atomically, in the
+	/// same statement as the write, actually closes it.
+	///
+	/// **The `WHERE` clause is the entire safety argument, not the read that
+	/// preceded this call.** It re-verifies `origin = 'system' AND started_at
+	/// IS NULL AND created_at = updated_at` at the moment of the write,
+	/// scoped to the one `id` the caller already knows. Three ways the row
+	/// could have changed since the caller's own read, and what each one
+	/// does here:
+	/// - **Edited** (a rename, even one that never sends `origin` — the
+	///   documented pre-PRO1 gap): `updated_at` moved away from `created_at`,
+	///   the `WHERE` clause no longer matches, zero rows are affected, the
+	///   edit survives untouched.
+	/// - **Started, or promoted to `user`**: `started_at` is no longer `NULL`
+	///   or `origin` is no longer `'system'`; same outcome, zero rows
+	///   affected.
+	/// - **Deleted**: the `id` no longer exists at all; same outcome.
+	///
+	/// In every case, returning `false` rather than falling back to an insert
+	/// is what makes this safe where `provision_or_refresh` would not be:
+	/// inserting here would create a second, orphaned system proposal under
+	/// a brand-new id while whatever `StudyAction` `consider` already
+	/// selected keeps pointing at the *old* one — exactly the failure mode
+	/// the finding named. The caller (`refresh_stale_proposal`) treats
+	/// `false` as "nothing to do," the same as any other outcome that leaves
+	/// the existing row exactly as it was.
+	///
+	/// Bounded per #253: one indexed lookup by primary key, not a scan.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error, or if `activities` does not serialize.
+	pub async fn refresh_if_untouched(&self, subject_id: &str, existing_id: &str, candidate: &SessionRecord) -> Result<bool, SessionRepoError> {
+		#[allow(clippy::disallowed_methods)]
+		let activities = serde_json::to_string(&candidate.activities)?;
+
+		let result = sqlx::query!(
+			r#"
+			UPDATE sessions
+			SET name = ?, activities = ?, total_duration_ms = ?
+			WHERE id = ?
+			  AND subject_id = ?
+			  AND origin = 'system'
+			  AND started_at IS NULL
+			  AND created_at = updated_at
+			"#,
+			candidate.name,
+			activities,
+			candidate.total_duration_ms,
+			existing_id,
 			subject_id,
 		)
 		.execute(&self.pool)
@@ -704,40 +890,379 @@ mod tests {
 		);
 	}
 
-	/// #313's review finding, closed: a plain `first_prepared` read followed
-	/// by an unconditional `upsert` has a window where a second caller can
-	/// land a second blank draft. This pins the atomic guard's core
-	/// property directly — a second call, once one prepared session exists,
-	/// must be a no-op rather than a second row.
+	/// A `materialize_provisioned_session`-shaped fixture: `system`-origin,
+	/// `Scheduled`, never started — exactly the row `provision_or_refresh`'s
+	/// partial-index predicate (`origin = 'system' AND started_at IS NULL`)
+	/// targets, unlike plain `fixture` (`user`-origin, `Draft`).
+	fn system_proposal_fixture(id: &str, name: &str, total_duration_ms: i64, stamp: &str) -> SessionRecord {
+		SessionRecord {
+			name: name.to_owned(),
+			status: SessionStatus::Scheduled,
+			origin: SessionOrigin::System,
+			total_duration_ms,
+			created_at: stamp.to_owned(),
+			updated_at: stamp.to_owned(),
+			..fixture(id)
+		}
+	}
+
+	/// #284 (RCM7)'s core acceptance criterion: "runs five consecutive
+	/// eligible passes and counts one." Each call below stands in for one
+	/// waker pass over a subject who keeps ignoring the same proposal — a
+	/// fresh id and fresh content every time, exactly like five different
+	/// `materialize_provisioned_session` outputs on five different days.
+	///
+	/// Two things have to both be true, not just "no duplicate row": the
+	/// *id* the first call wrote must be the one still live (RCM8's deep
+	/// links depend on it), and the *content* must be the *last* call's, not
+	/// the first's — proving this is a refresh, not a silent no-op that
+	/// would leave a five-day-stale proposal exactly as #284's own issue
+	/// text warns against.
 	#[tokio::test]
-	async fn provision_if_absent_only_writes_once_per_subject() {
+	async fn provision_or_refresh_collapses_five_consecutive_calls_into_one_row_with_the_first_id_and_the_last_content() {
 		let pool = pool().await;
 		let repo = SessionRepository::new(pool);
 
-		let first = repo.provision_if_absent("subject-a", &fixture("session-1")).await.expect("the first call should succeed");
-		assert!(first, "nothing was prepared yet, so the first call should have written the row");
+		// One tuple per simulated day: (id, name, total_duration_ms, stamp) —
+		// spelled out rather than built with `format!` (disallowed by
+		// `clippy.toml` — eager allocation ahead of what would otherwise be a
+		// tracing call), matching every other fixture in this module, which
+		// only ever takes static ids.
+		let passes = [
+			("session-day-0", "proposal for day 0", 0_i64, "2026-01-01T00:00:00Z"),
+			("session-day-1", "proposal for day 1", 60_000, "2026-01-02T00:00:00Z"),
+			("session-day-2", "proposal for day 2", 120_000, "2026-01-03T00:00:00Z"),
+			("session-day-3", "proposal for day 3", 180_000, "2026-01-04T00:00:00Z"),
+			("session-day-4", "proposal for day 4", 240_000, "2026-01-05T00:00:00Z"),
+		];
+		for (id, name, total_duration_ms, stamp) in passes {
+			let candidate = system_proposal_fixture(id, name, total_duration_ms, stamp);
+			repo.provision_or_refresh("subject-a", &candidate).await.unwrap();
+		}
 
-		let second = repo
-			.provision_if_absent("subject-a", &fixture("session-2"))
-			.await
-			.expect("the second call should succeed, as a no-op");
-		assert!(!second, "a prepared session already exists, so this call must not write a second one");
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(sessions.len(), 1, "five eligible passes over an ignored proposal must collapse to one row, not stack");
 
-		let sessions = repo.list("subject-a").await.expect("list subject-a's sessions");
-		assert_eq!(sessions.len(), 1, "provisioning must not create a second session once one is prepared");
-		assert_eq!(sessions[0].id, "session-1", "the row the first call wrote must be the one that survives");
+		let survivor = &sessions[0];
+		assert_eq!(
+			survivor.id, "session-day-0",
+			"the first call's id must still be live, so an old notification's deep link keeps resolving"
+		);
+		assert_eq!(
+			survivor.name, "proposal for day 4",
+			"the content must be the last call's, not the first's stale one — this is the refresh, not a no-op"
+		);
+		assert_eq!(survivor.total_duration_ms, 240_000);
+		assert_eq!(
+			survivor.created_at, "2026-01-01T00:00:00Z",
+			"created_at follows upsert's own precedent: a refresh never moves it"
+		);
+		assert_eq!(
+			survivor.updated_at, "2026-01-01T00:00:00Z",
+			"a machine refresh must not touch updated_at either -- a real chatgpt-codex-connector finding on #335 established that \
+			 created_at == updated_at surviving every refresh is what lets refresh_stale_proposal tell 'only ever touched by the \
+			 waker' apart from 'a person edited this,' which matters because origin alone cannot, before PRO1 ships"
+		);
+	}
+
+	/// A fourth real `chatgpt-codex-connector` finding on `#335`, P1:
+	/// `refresh_stale_proposal` reads a row, decides it is safe to refresh,
+	/// then writes — a real window for a concurrent `PATCH`/`DELETE` to land
+	/// in between. `refresh_if_untouched` closes it by re-checking the
+	/// identical predicate atomically, in the same statement as the write,
+	/// rather than trusting a decision made from an now-possibly-stale read.
+	/// This pins the base case: the row is exactly as last read, so the
+	/// refresh applies and reports `true`.
+	#[tokio::test]
+	async fn refresh_if_untouched_applies_when_the_row_is_still_untouched() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let original = system_proposal_fixture("session-1", "original", 100, "2026-01-01T00:00:00Z");
+		repo.upsert("subject-a", &original).await.unwrap();
+
+		let candidate = system_proposal_fixture("session-fresh-candidate", "refreshed", 999, "2026-01-02T00:00:00Z");
+		let applied = repo.refresh_if_untouched("subject-a", "session-1", &candidate).await.unwrap();
+		assert!(applied, "an untouched row must be refreshed");
+
+		let after = repo.get("subject-a", "session-1").await.unwrap().unwrap();
+		assert_eq!(after.name, "refreshed");
+		assert_eq!(after.total_duration_ms, 999);
+		assert_eq!(after.created_at, "2026-01-01T00:00:00Z", "refresh_if_untouched must not move created_at either");
+		assert_eq!(after.updated_at, "2026-01-01T00:00:00Z", "refresh_if_untouched must not move updated_at either");
+	}
+
+	/// The race itself: simulates a person's `PATCH` landing in the gap
+	/// between `refresh_stale_proposal`'s own read and this write — the
+	/// exact scenario the finding named — by editing the row (which bumps
+	/// `updated_at`, exactly as `update_session` always does) *after* the
+	/// caller would have read it but *before* the refresh statement runs.
+	/// The atomic `WHERE` clause must catch this even though nothing in
+	/// this test re-reads the row first, proving the safety does not depend
+	/// on the caller's own read being fresh.
+	#[tokio::test]
+	async fn refresh_if_untouched_no_ops_when_a_concurrent_edit_landed_first() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let original = system_proposal_fixture("session-1", "original", 100, "2026-01-01T00:00:00Z");
+		repo.upsert("subject-a", &original).await.unwrap();
+
+		// The concurrent edit: same row, renamed, updated_at bumped -- the
+		// live client never sends `origin`, so it stays `system`.
+		let edited = SessionRecord {
+			name: "person's own rename".to_owned(),
+			updated_at: "2026-01-01T00:05:00Z".to_owned(),
+			..original
+		};
+		repo.upsert("subject-a", &edited).await.unwrap();
+
+		let candidate = system_proposal_fixture("session-fresh-candidate", "would-be refresh", 999, "2026-01-02T00:00:00Z");
+		let applied = repo.refresh_if_untouched("subject-a", "session-1", &candidate).await.unwrap();
+		assert!(
+			!applied,
+			"a concurrently edited row must not be refreshed, even though the caller's own earlier read could not have known that"
+		);
+
+		let after = repo.get("subject-a", "session-1").await.unwrap().unwrap();
+		assert_eq!(after.name, "person's own rename", "the concurrent edit must survive completely untouched");
+	}
+
+	/// The other half of the same finding: a concurrent `DELETE` (or a
+	/// promotion/start that moved the row out of the predicate entirely)
+	/// must also no-op rather than fall back to inserting a new row under a
+	/// different id -- `refresh_if_untouched` has no insert path at all, so
+	/// there is nothing for it to fall back to.
+	#[tokio::test]
+	async fn refresh_if_untouched_no_ops_when_the_row_no_longer_exists() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let candidate = system_proposal_fixture("session-fresh-candidate", "would-be refresh", 999, "2026-01-02T00:00:00Z");
+		let applied = repo.refresh_if_untouched("subject-a", "session-deleted", &candidate).await.unwrap();
+		assert!(!applied, "refreshing an id that no longer exists must no-op, not insert a new row under a different id");
+
+		assert_eq!(repo.list("subject-a").await.unwrap().len(), 0, "no orphaned row must appear");
+	}
+
+	/// #284's named edge: "a system session the person did start is history
+	/// now, not a proposal — this rule must never touch it." A started
+	/// system session no longer matches `started_at IS NULL`, so it must not
+	/// block — or be overwritten by — a brand new proposal.
+	#[tokio::test]
+	async fn provision_or_refresh_never_touches_a_started_system_session() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let started = SessionRecord {
+			started_at: Some("2026-01-01T12:00:00Z".to_owned()),
+			status: SessionStatus::Active,
+			..system_proposal_fixture("session-started", "already opened", 300_000, "2026-01-01T00:00:00Z")
+		};
+		repo.upsert("subject-a", &started).await.unwrap();
+
+		let fresh = system_proposal_fixture("session-fresh", "a brand new proposal", 600_000, "2026-01-02T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &fresh).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(sessions.len(), 2, "the started session and the new proposal must coexist, not collapse into one");
+
+		let started_after = sessions.iter().find(|s| s.id == "session-started").unwrap();
+		assert_eq!(started_after.name, "already opened", "a started system session must never be refreshed");
+		assert_eq!(started_after.started_at.as_deref(), Some("2026-01-01T12:00:00Z"));
+	}
+
+	/// A fifth real `chatgpt-codex-connector` finding on `#335`, P1:
+	/// `set_status_many` (`PATCH /sessions/status`) writes only `status` and
+	/// `updated_at`, so it can move a `system`-origin, never-started proposal
+	/// straight to `active` or `completed` while `started_at` stays `NULL` --
+	/// a real, client-reachable path. Without `status IN (...)` in the
+	/// conflict target, such a row would permanently occupy this subject's
+	/// one slot (`first_prepared` can never surface it back out, since
+	/// `active`/`completed` aren't in its own tracked set) and stand as a
+	/// live target this statement would silently overwrite. This pins both
+	/// halves of the fix: a fresh proposal is not blocked by such a row, and
+	/// that row's own content survives completely untouched.
+	#[tokio::test]
+	async fn provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_anomaly() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		// The anomaly itself: origin still `system`, `started_at` still
+		// `NULL`, but `status` moved to `active` -- exactly what
+		// `set_status_many` alone can produce, bypassing the lifecycle
+		// fields a real `Start` action would also set.
+		let anomaly = SessionRecord {
+			status: SessionStatus::Active,
+			updated_at: "2026-01-01T00:05:00Z".to_owned(),
+			..system_proposal_fixture("session-anomaly", "orphaned by set_status_many", 300_000, "2026-01-01T00:00:00Z")
+		};
+		repo.upsert("subject-a", &anomaly).await.unwrap();
+
+		let fresh = system_proposal_fixture("session-fresh", "a brand new proposal", 600_000, "2026-01-02T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &fresh).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(
+			sessions.len(),
+			2,
+			"the anomaly and the new proposal must coexist, not collapse into one -- the subject must not be starved of future proposals"
+		);
+
+		let anomaly_after = sessions.iter().find(|s| s.id == "session-anomaly").unwrap();
+		assert_eq!(
+			anomaly_after.name, "orphaned by set_status_many",
+			"an active/completed row must never be silently overwritten by a refresh"
+		);
+		assert!(matches!(anomaly_after.status, SessionStatus::Active));
+	}
+
+	/// A sixth real `chatgpt-codex-connector` finding on `#335`, P1: the
+	/// `NothingToSay` arm's own call site has no fresh read of the
+	/// conflicting row to check against -- it discovers a conflict only
+	/// through this statement, against whatever another concurrent waker
+	/// pass already inserted after this pass's own `first_prepared` read
+	/// found nothing. Simulates that interleaving directly: an insert (the
+	/// other pass), a person's edit landing on it (still `system`, no
+	/// `origin` field, exactly the pre-PRO1 gap), then a second,
+	/// independent `provision_or_refresh` call (the delayed pass) -- which
+	/// must leave the edit completely untouched rather than overwriting it,
+	/// the same guarantee `refresh_if_untouched` already gives its own
+	/// caller.
+	#[tokio::test]
+	async fn provision_or_refresh_never_overwrites_a_conflicting_row_a_person_edited_since_it_was_inserted() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		// The first (concurrent) pass's insert.
+		let first_pass = system_proposal_fixture("session-1", "first pass's proposal", 300_000, "2026-01-01T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &first_pass).await.unwrap();
+
+		// The person edits it before the second pass's write lands --
+		// `origin` stays `system` (today's client never sends it), only
+		// `updated_at` moves, exactly as `update_session` always does.
+		let edited = SessionRecord {
+			name: "person's own rename".to_owned(),
+			updated_at: "2026-01-01T00:05:00Z".to_owned(),
+			..first_pass
+		};
+		repo.upsert("subject-a", &edited).await.unwrap();
+
+		// The second (delayed) pass's own conflicting write.
+		let second_pass = system_proposal_fixture("session-2", "second pass's proposal", 999_000, "2026-01-02T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &second_pass).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(sessions.len(), 1, "the two racing passes must still collapse to one row, not two");
+		assert_eq!(sessions[0].id, "session-1", "the first pass's id must survive -- it is the row that actually exists");
+		assert_eq!(
+			sessions[0].name, "person's own rename",
+			"the person's edit must survive a second pass's conflicting write completely untouched"
+		);
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`: the partial index
+	/// alone only stops a second *system* proposal from coexisting with an
+	/// un-started one — it says nothing about a **foreign** prepared session
+	/// (a real person's own `paused`/`scheduled`/`draft` row) landing beside
+	/// a freshly-provisioned system proposal. Without the `WHERE NOT EXISTS`
+	/// guard restored alongside the `ON CONFLICT`, a concurrent `POST
+	/// /sessions` in the race window `provision_if_absent`'s own doc comment
+	/// already named (#313) would let a system proposal land next to it, and
+	/// `first_prepared`'s status priority would then surface the *wrong*
+	/// session. This pins the restored guard directly: a foreign draft
+	/// already sitting there must block the write outright, not just avoid
+	/// colliding with it.
+	#[tokio::test]
+	async fn provision_or_refresh_is_blocked_by_a_foreign_prepared_session() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		repo.upsert("subject-a", &fixture("session-user-draft")).await.unwrap();
+
+		let candidate = system_proposal_fixture("session-system", "a proposal", 300_000, "2026-01-01T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &candidate).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(
+			sessions.len(),
+			1,
+			"a foreign prepared session must block provisioning outright, not merely avoid overwriting it"
+		);
+		assert_eq!(sessions[0].id, "session-user-draft", "the person's own draft must be the only row, untouched");
+	}
+
+	/// #284's other named edge, corrected after the finding above: "a system
+	/// session promoted to user by editing falls out of this rule
+	/// automatically" is true of the **uniqueness** invariant (the partial
+	/// index no longer covers a `user`-origin row at all), not of the
+	/// foreign-prepared-session guard, which tracks *status*, not origin —
+	/// and correctly so: while a promoted session still sits in a prepared
+	/// status, `first_prepared` already surfaces it and `consider` never
+	/// reaches `provision_or_refresh` in the first place (the previous test
+	/// pins that this method independently refuses to race past it either).
+	/// Once the promoted session leaves every prepared status — here,
+	/// completed, the same as any real finished session — it stops being
+	/// foreign to this guard too, and a fresh proposal is free to land.
+	#[tokio::test]
+	async fn provision_or_refresh_is_not_blocked_by_a_promoted_session_that_is_no_longer_prepared() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+
+		let proposal = system_proposal_fixture("session-edited", "Suggested for you", 300_000, "2026-01-01T00:00:00Z");
+		repo.upsert("subject-a", &proposal).await.unwrap();
+
+		// A person renames it (PRO1's "what counts as an edit" promotes
+		// origin to `user`, exactly as `update_session` would send it), then
+		// finishes it — completed is no longer a "prepared" status at all.
+		let completed = SessionRecord {
+			name: "My own session".to_owned(),
+			origin: SessionOrigin::User,
+			status: SessionStatus::Completed,
+			started_at: Some("2026-01-02T00:00:00Z".to_owned()),
+			completed_at: Some("2026-01-02T00:30:00Z".to_owned()),
+			updated_at: "2026-01-02T00:30:00Z".to_owned(),
+			..proposal
+		};
+		repo.upsert("subject-a", &completed).await.unwrap();
+
+		let fresh = system_proposal_fixture("session-fresh", "a brand new proposal", 600_000, "2026-01-03T00:00:00Z");
+		repo.provision_or_refresh("subject-a", &fresh).await.unwrap();
+
+		let sessions = repo.list("subject-a").await.unwrap();
+		assert_eq!(sessions.len(), 2, "the completed, promoted session and the new proposal must coexist, not block each other");
+
+		let promoted_after = sessions.iter().find(|s| s.id == "session-edited").unwrap();
+		assert_eq!(
+			promoted_after.name, "My own session",
+			"a session a person took ownership of and finished must never be touched by the waker"
+		);
+		assert!(matches!(promoted_after.origin, SessionOrigin::User));
+
+		let fresh_after = sessions.iter().find(|s| s.id == "session-fresh").unwrap();
+		assert_eq!(fresh_after.name, "a brand new proposal");
 	}
 
 	#[tokio::test]
-	async fn provision_if_absent_is_scoped_per_subject_not_global() {
+	async fn provision_or_refresh_is_scoped_per_subject_not_global() {
 		let pool = pool().await;
 		let repo = SessionRepository::new(pool);
 
-		let a = repo.provision_if_absent("subject-a", &fixture("session-a")).await.expect("provision for subject-a");
-		let b = repo.provision_if_absent("subject-b", &fixture("session-b")).await.expect("provision for subject-b");
+		repo
+			.provision_or_refresh("subject-a", &system_proposal_fixture("session-a", "a", 0, "2026-01-01T00:00:00Z"))
+			.await
+			.unwrap();
+		repo
+			.provision_or_refresh("subject-b", &system_proposal_fixture("session-b", "b", 0, "2026-01-01T00:00:00Z"))
+			.await
+			.unwrap();
 
-		assert!(a, "subject-a had nothing prepared and should get a session");
-		assert!(b, "subject-b had nothing prepared either — subject-a's row must not count against subject-b's check");
+		assert_eq!(repo.list("subject-a").await.unwrap().len(), 1);
+		assert_eq!(
+			repo.list("subject-b").await.unwrap().len(),
+			1,
+			"subject-a's proposal must not count against subject-b's check"
+		);
 	}
 
 	#[tokio::test]
