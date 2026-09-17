@@ -191,29 +191,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		.and_then(|raw| crate::nudge::clock::parse_timestamp(raw.as_str()));
 
 	let action = match engine.evaluate(&charge, now, last_intervened_at) {
-		Verdict::Intervene(action) => {
-			// #284 (RCM7): if what's about to be pointed at is an un-started
-			// `system` proposal, its content may be stale — refresh it here,
-			// now that `evaluate` has already confirmed admission (including
-			// presence). A real `chatgpt-codex-connector` finding on `#335`
-			// caught an earlier version of this refresh running *before*
-			// admission was checked at all: it could rewrite a proposal's
-			// name/activities/duration while the subject was actively
-			// viewing that exact session, only for admission to then
-			// suppress the notification on `Present` anyway — mutating a
-			// session out from under someone looking at it for a
-			// notification that was never going to send. Gating on
-			// `Verdict::Intervene` means this only ever runs immediately
-			// before an intervention that will actually go out, matching
-			// `first_prepared`'s own read at the top of this function to
-			// whatever the engine actually decided to do with it. See
-			// `refresh_stale_proposal`'s own doc comment for why this is
-			// best-effort rather than fatal.
-			if let Some(session_id) = action.session_id() {
-				refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
-			}
-			action
-		}
+		Verdict::Intervene(action) => action,
 		Verdict::Wait { until } => {
 			crate::metrics::waker::record_verdict("wait", "n/a");
 			// Push the gate out so this subject stops being returned by `due`.
@@ -437,6 +415,25 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	let (levels, as_of) = charge.to_storage();
 	engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &next_eligible.to_rfc3339()).await?;
 
+	// #284 (RCM7): refresh only after winning the claim above, not merely on
+	// `Verdict::Intervene` — a real `chatgpt-codex-connector` finding on
+	// `#335` caught the earlier ordering, where a concurrent pass over the
+	// same subject that ultimately *loses* the claim below still ran this
+	// refresh beforehand. Because a machine refresh deliberately never moves
+	// `updated_at` (`refresh_if_untouched`'s own doc comment), that losing
+	// pass's write still lands as "untouched" even after the winning pass
+	// has already claimed, saved, and — by the time the losing pass's own
+	// catalogue read and write finish — actuated: the recipient can open the
+	// proposal the winner just sent while the loser is still silently
+	// rewriting it underneath them, for a notification the loser never
+	// sends. Only the pass that actually holds `log_id` reaches here, so at
+	// most one pass per intervention ever performs this write, immediately
+	// before the one send it corresponds to — not one per pass that merely
+	// evaluated to `Intervene`.
+	if let Some(session_id) = action.session_id() {
+		refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
+	}
+
 	let accepted = actuate(db, nudge, &action, subject_id).await?;
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
@@ -457,18 +454,26 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// keep pointing at whatever `recommend()` produced the day it was first
 /// written.
 ///
-/// **Called only once `consider` has already decided to intervene using
-/// `prepared`**, from the `Verdict::Intervene` arm of `engine.evaluate` — not
-/// from the moment `first_prepared` resolves. A real `chatgpt-codex-
-/// connector` finding on `#335` caught an earlier version that ran this
-/// before admission was ever checked: it could rewrite a proposal's content
-/// while the subject held a fresh presence lease on that exact session —
-/// actively viewing it — only for `evaluate`'s own `admit` call to then
-/// suppress the notification on `Present` anyway, mutating a session out
-/// from under someone looking at it for nothing. `evaluate` already calls
-/// `Admissibility::admit` internally before ever returning `Intervene`, so
-/// gating this call on that verdict is sufficient — no separate presence
-/// check is needed here.
+/// **Called only after `consider` has already won the claim on the
+/// intervention it is about to send** — not from the moment `first_prepared`
+/// resolves, and not merely on `Verdict::Intervene` either. Both were real
+/// `chatgpt-codex-connector` findings on `#335`. The first caught an earlier
+/// version that ran this before admission was ever checked: it could rewrite
+/// a proposal's content while the subject held a fresh presence lease on
+/// that exact session — actively viewing it — only for `evaluate`'s own
+/// `admit` call to then suppress the notification on `Present` anyway,
+/// mutating a session out from under someone looking at it for nothing.
+/// Moving the call to gate on `Verdict::Intervene` fixed that, but not a
+/// second race one level up: two concurrent passes over the same subject can
+/// both reach `Intervene`, and gating on that verdict alone meant *both* ran
+/// this refresh — including the one that goes on to lose the claim below
+/// and therefore never sends anything. Because a machine refresh
+/// deliberately never moves `updated_at`, the loser's write still lands as
+/// "untouched" after the winner has already claimed and sent, letting the
+/// loser silently rewrite the exact session the recipient just opened from
+/// the winner's notification. Gating on a successfully claimed `log_id`
+/// instead closes that: at most one pass per intervention ever reaches this
+/// call, and it is always the one that goes on to actuate.
 ///
 /// **Best-effort, not fatal.** Unlike `Verdict::NothingToSay`'s own
 /// provisioning (where a catalogue-read failure or an empty candidate set
@@ -1383,10 +1388,10 @@ mod tests {
 			// a real REFRACTORY-later pass would find them); Momentum stays
 			// dominant. `first_prepared` now finds the existing proposal, so
 			// this pass takes the *ordinary* Intervene path, not NothingToSay.
-			// The refresh under test happens inside that arm, before the
-			// claim/actuate steps that follow it — this call's own `bool`
-			// return isn't asserted, since the placeholder subscription keys
-			// above are not valid EC public keys and `Sender::prepare` fails
+			// The refresh under test happens after this pass wins the claim,
+			// just before `actuate` — this call's own `bool` return isn't
+			// asserted, since the placeholder subscription keys above are
+			// not valid EC public keys and `Sender::prepare` fails
 			// encryption locally (no network involved), the same way any
 			// other real encryption failure would; what matters here is that
 			// the refresh already ran by that point regardless.
@@ -1413,8 +1418,9 @@ mod tests {
 	/// `evaluate` to then suppress the notification on `Present` anyway.
 	/// This pins the fix directly: with a fresh lease in place, the pass
 	/// must be `Suppressed::Present` (not silently something else) *and*
-	/// the proposal's content must be completely untouched, proving the
-	/// refresh call gated on `Verdict::Intervene` correctly never runs.
+	/// the proposal's content must be completely untouched, proving that a
+	/// verdict short of `Intervene` — which never reaches the claim the
+	/// refresh is now gated on either — correctly never runs it.
 	#[test]
 	fn a_fresh_presence_lease_on_the_proposal_suppresses_admission_and_leaves_its_content_untouched() {
 		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
@@ -1530,6 +1536,103 @@ mod tests {
 			1,
 			"the second pass must be suppressed specifically on Present, not some other reason that would also leave content untouched"
 		);
+	}
+
+	/// A real `chatgpt-codex-connector` finding on `#335`'s closing review:
+	/// an earlier version of the fix still gated the refresh on
+	/// `Verdict::Intervene` alone, so a pass that reaches `Intervene` but
+	/// then *loses* the claim below — a concurrent pass over the same
+	/// subject claimed it first — still performed the write, racing against
+	/// the winning pass's own already-sent notification. This pins the fix:
+	/// refresh must be gated on actually winning the claim, not merely on
+	/// the verdict. Simulated here by advancing `eligible_at` into the
+	/// future before the pass under test runs, exactly as a concurrent
+	/// winner's own `claim` call would have — `evaluate` itself never reads
+	/// `eligible_at`, only `EngagementRepository::claim`'s own `WHERE
+	/// eligible_at <= now` does, so the pass under test still reaches
+	/// `Verdict::Intervene` exactly as the ordinary sibling test does, and
+	/// only differs at the claim step.
+	#[test]
+	fn a_pass_that_loses_the_claim_never_refreshes_the_proposal_it_was_about_to_send() {
+		use push_kit::{PushSubscription, ReqwestTransport, Sender, SubscriptionKeys, VapidIdentity};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const VAPID_PRIVATE: &str = "IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY";
+		const VAPID_PUBLIC: &str = "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-losing-the-claim";
+
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let levels: Vec<(u16, f64)> = vec![(1, 100.0), (2, 0.0), (3, 0.0), (4, 0.0)];
+			let engagement = EngagementRepository::new(pool.clone());
+			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
+
+			PushSubscriptionRepository::new(pool.clone())
+				.upsert(
+					&PushSubscription {
+						endpoint: "https://push.example.com/losing-the-claim".to_owned(),
+						keys: SubscriptionKeys {
+							p256dh: "p256dh".to_owned(),
+							auth: "auth".to_owned(),
+						},
+					},
+					&Consent {
+						subject_id: subject_id.to_owned(),
+						topics: Topic::ALL.to_vec(),
+						consented_at: now_str.clone(),
+					},
+					&now_str,
+				)
+				.await
+				.unwrap();
+
+			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
+			let nudge = NudgeContext {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				vapid,
+				enabled: true,
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
+				presence_lease_ttl: std::time::Duration::from_secs(75),
+				base_url: "https://example.com".to_owned(),
+			};
+
+			// First pass: provisions a real proposal, exactly as the sibling
+			// tests do.
+			consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			let sessions = SessionRepository::new(pool.clone());
+			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
+			let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+
+			// The catalogue changes -- if the refresh incorrectly ran despite
+			// losing the claim below, this is what would prove it.
+			sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
+
+			// Simulate a concurrent winning pass: it already advanced
+			// `eligible_at` into the future via its own `claim` call,
+			// moments before this pass's own claim attempt.
+			let future = now + Duration::hours(1);
+			engagement.save(subject_id, &levels, &now_str, &future.to_rfc3339()).await.unwrap();
+
+			let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
+			assert!(!intervened, "a pass that loses the claim must not report having intervened");
+
+			let after = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
+			assert_eq!(
+				after.total_duration_ms, first_record.total_duration_ms,
+				"a pass that loses the claim must never have refreshed the proposal it was about to send -- only the winning pass may"
+			);
+		});
 	}
 
 	/// A real `chatgpt-codex-connector` finding on `#335`, P1: before PRO1

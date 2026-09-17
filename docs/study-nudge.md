@@ -783,6 +783,41 @@ three-step interleaving directly: one pass's insert, a person's edit
 landing on it, then a second pass's own conflicting write — and asserts
 the edit survives untouched.
 
+**An eighth real `chatgpt-codex-connector` finding, on the second closing
+review, is a race between two concurrent passes over the same subject —
+not between a pass and a person.** Gating the refresh on `Verdict::
+Intervene` (above) is necessary but was not sufficient: two `file_host`
+instances can both read no presence for the same due subject and both
+reach `Intervene`, and both had reached the refresh call under the
+previous fix, since neither had lost anything yet at that point in
+`consider` — the claim happens later, right before `actuate`. One pass
+wins the claim and sends; the recipient can open that exact proposal
+immediately. The other pass is still mid-flight — reading the session,
+reading the catalogue, `materialize_provisioned_session`-ing — and its
+own write, when it finally lands, still succeeds: `refresh_if_untouched`'s
+guard is `created_at == updated_at`, which a machine refresh deliberately
+never disturbs (that is what makes it survive *any* number of machine
+refreshes), so the winner's own already-applied refresh does not stop the
+loser's from landing too. The loser then reaches the claim, loses it
+(`another pass claimed this subject first`), and sends nothing — but its
+write already happened, silently rewriting the session out from under
+someone who just opened it from the winner's notification, for an
+intervention that was never sent.
+
+The fix moves the call once more: from the `Verdict::Intervene` arm to
+immediately after this pass's own successful claim, right before
+`actuate`. A pass that loses the claim now returns before ever reaching
+the refresh call, so the write this race depends on never happens on the
+losing side at all — at most one pass per intervention ever refreshes,
+and it is always the one that goes on to send. `a_pass_that_loses_the_
+claim_never_refreshes_the_proposal_it_was_about_to_send` in `nudge::
+waker`'s test module simulates the interleaving directly: it advances
+`eligible_at` into the future between the two passes — exactly what the
+winner's own claim would have done — so the pass under test still reaches
+`Intervene` (`evaluate` never reads `eligible_at`) but then loses the
+claim, and asserts the proposal's content is completely untouched
+afterward.
+
 ### First contact: how a subject enters the gate at all
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
