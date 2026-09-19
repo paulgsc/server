@@ -17,7 +17,12 @@ clients:
 scrape_configs:
   - job_name: docker
     docker_sd_configs:
-      - host: unix:///var/run/docker.sock
+      # Talks to docker-socket-proxy (infra/compose/loki.yml), not the raw
+      # daemon socket directly — a read-only bind mount of the socket file
+      # doesn't restrict which Docker API calls go over it, so this
+      # binary's own trust boundary shouldn't be "full API, minus what the
+      # filesystem permission bit blocks."
+      - host: tcp://docker-socket-proxy:2375
         refresh_interval: 15s
     relabel_configs:
       # Docker's container name comes prefixed with a leading slash (a

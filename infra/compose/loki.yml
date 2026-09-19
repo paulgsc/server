@@ -14,8 +14,13 @@ services:
     restart: unless-stopped
     networks:
       - monitoring-network
-    ports:
-      - '3100:3100'
+    # No host port: loki-config.yml sets auth_enabled: false, meaning
+    # anything that can reach this port can read every container's logs.
+    # Grafana (the datasource) and Prometheus (the loki scrape job) both
+    # reach it as `loki:3100` over monitoring-network already — publishing
+    # it to the host would expose an unauthenticated log API to the whole
+    # LAN (or further) for no actual need; Explore in Grafana's own
+    # already-published UI is how a human queries it.
     volumes:
       - ${REPO_ROOT}/infra/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki_data:/loki
@@ -36,6 +41,39 @@ services:
       timeout: 10s
       retries: 3
 
+  # A read-only bind mount of the Docker socket only stops the mount point
+  # itself from being replaced — it does nothing to restrict which Docker
+  # API calls go over it. Anything with access to the raw socket has the
+  # same practical control over the host as root, so a bug or supply-chain
+  # compromise in promtail's own `latest`-tag image would too. This proxy
+  # is the one thing in this compose stack that touches the real socket;
+  # everything it allows through is opt-in below, and it isn't published
+  # to the host — only promtail, over monitoring-network, reaches it.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    networks:
+      - monitoring-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Everything else (POST, EXEC, IMAGES, VOLUMES, NETWORKS, ...)
+      # defaults off. CONTAINERS covers both what promtail's
+      # docker_sd_configs needs for discovery (list/inspect) and log
+      # streaming (GET /containers/{id}/logs) — both are GET endpoints
+      # under the same /containers prefix.
+      - CONTAINERS=1
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20
+
   promtail:
     image: grafana/promtail:latest
     container_name: promtail
@@ -45,15 +83,13 @@ services:
     volumes:
       - ${REPO_ROOT}/infra/loki/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
       - promtail_positions:/promtail-data
-      # Read-only: promtail talks to dockerd's API to discover containers
-      # and stream their logs — it never touches the daemon's storage
-      # directly, so this is the only access it needs.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     command:
       - '-config.file=/etc/promtail/promtail-config.yml'
     depends_on:
       loki:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     mem_limit: 256M
     cpus: 0.25
     pids_limit: 20
