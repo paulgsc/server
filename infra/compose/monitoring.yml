@@ -323,7 +323,13 @@ services:
       - textfile_collector:/textfile-collector:rw
       - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
       - ${CARGO_HOME_PATH:-/root/.cargo}:/mnt/cargo:ro
-      - ${REPO_ROOT}/target:/mnt/workspace-target:ro
+      # Mounts the repo root, not `${REPO_ROOT}/target` directly — Docker's
+      # short-form bind syntax creates a missing host-side path, root-owned
+      # under rootful Docker, and target/ is routinely absent (a fresh
+      # checkout, a `cargo clean`) in exactly the way `${REPO_ROOT}` itself
+      # never is. Mounting the parent that's guaranteed to exist and having
+      # the script look at its target/ child avoids ever creating anything.
+      - ${REPO_ROOT}:/mnt/workspace:ro
       - /var/lib/docker:/mnt/docker:ro
     command: ['bash', '-c', 'while true; do bash /usr/local/bin/disk-usage-textfile.sh; sleep "${DISK_USAGE_SCAN_INTERVAL:-300}"; done']
     mem_limit: 128M

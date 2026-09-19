@@ -19,19 +19,43 @@ OUTPUT_DIR="${TEXTFILE_COLLECTOR_DIR:-/textfile-collector}"
 OUTPUT_FILE="$OUTPUT_DIR/disk_usage.prom"
 TMP_FILE="$OUTPUT_DIR/.disk_usage.prom.tmp.$$"
 
+# Covers every early-exit path, not just the happy one — after a successful
+# `mv` below this is already gone and `rm -f` is a no-op, but a `du` failure
+# (see dir_size_bytes) used to abort mid-script under `set -e` and leave
+# this behind forever.
+trap 'rm -f "$TMP_FILE"' EXIT
+
 # name:path pairs — bind-mounted read-only by the disk-usage-exporter
 # service in infra/compose/monitoring.yml.
 TARGETS=(
 	"cargo_registry:/mnt/cargo/registry"
 	"cargo_git:/mnt/cargo/git"
-	"cargo_target:/mnt/workspace-target"
+	"cargo_target:/mnt/workspace/target"
 	"docker_data_root:/mnt/docker"
 )
 
 dir_size_bytes() {
 	local path="$1"
 	if [ -d "$path" ]; then
-		du -sb "$path" 2>/dev/null | awk '{print $1}'
+		# `-B1` (block-size 1, no `--apparent-size`), not `-b` — `-b` is GNU
+		# du's shorthand for `--apparent-size --block-size=1`, which reports
+		# a sparse file's logical length rather than the disk blocks it
+		# actually occupies. A disk-usage panel should track the same
+		# "space consumed" a filesystem would run out of, not a number that
+		# can overstate it.
+		#
+		# `|| echo 0` rather than letting `du`'s exit code propagate: `du`
+		# can observe a file vanish mid-traversal (Docker actively writing
+		# to docker_data_root is the realistic case here) and exit nonzero
+		# despite printing a usable total. Under `set -e`+pipefail that
+		# would abort the whole script before the atomic rename below,
+		# freezing every target's value — including the three that scanned
+		# fine — at whatever the last successful pass produced. Degrading
+		# just the one glitchy target to 0 for this pass is a smaller,
+		# self-correcting cost next interval; the hostDirUsageStaleness
+		# panel exists for the case where the whole script is actually dead,
+		# not for one transient per-target miss.
+		du -s -B1 "$path" 2>/dev/null | awk '{print $1}' || echo 0
 	else
 		echo 0
 	fi
@@ -41,7 +65,7 @@ dir_size_bytes() {
 # filesystem is atomic, so node_exporter's textfile collector never reads a
 # half-written scrape.
 {
-	echo "# HELP hostdir_usage_bytes Bytes used by a tracked host directory (du -sb), refreshed periodically by scripts/disk-usage-textfile.sh."
+	echo "# HELP hostdir_usage_bytes Bytes used by a tracked host directory (du -s -B1), refreshed periodically by scripts/disk-usage-textfile.sh."
 	echo "# TYPE hostdir_usage_bytes gauge"
 	for entry in "${TARGETS[@]}"; do
 		name="${entry%%:*}"
