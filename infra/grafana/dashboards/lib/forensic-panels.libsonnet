@@ -41,13 +41,21 @@
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
+        // Both sides use `> bool`/`< bool` — a bare comparison *filters out*
+        // non-matching series instead of returning 0, so on a healthy
+        // system (the common case) this used to go empty forever instead
+        // of resolving to 0/"System Healthy". Same reasoning as LOOPS in
+        // health-panels.libsonnet. Multiplying the two bool results (not
+        // `and`, which does label-set matching rather than logical AND)
+        // is correct here since both sides already carry identical
+        // job/instance labels from the same single node_exporter target.
         expr: |||
           (
-            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > 3
+            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > bool 3
           )
-          and
+          *
           (
-            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < 30
+            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < bool 30
           )
         |||,
         instant: true,
@@ -146,7 +154,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              rate(namedprocess_namegroup_cpu_seconds_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_cpu_seconds_total{groupname!="", groupname=~"$process_group"}[1m])
             ) * 100
           )
         |||,
@@ -199,7 +207,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!=""}
+              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -248,8 +256,8 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              rate(namedprocess_namegroup_read_bytes_total{groupname!=""}[1m]) +
-              rate(namedprocess_namegroup_write_bytes_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_read_bytes_total{groupname!="", groupname=~"$process_group"}[1m]) +
+              rate(namedprocess_namegroup_write_bytes_total{groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -398,11 +406,11 @@
         expr: |||
           topk(8,
             sum by (name) (
-              rate(container_cpu_usage_seconds_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_cpu_usage_seconds_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -439,12 +447,12 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
-            container_memory_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_memory_usage_bytes{name!="", name=~"$container"}
             /
-            container_spec_memory_limit_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_spec_memory_limit_bytes{name!="", name=~"$container"}
           ) * 100
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -470,12 +478,12 @@
         expr: |||
           topk(6,
             sum by (name) (
-              rate(container_fs_reads_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m]) +
-              rate(container_fs_writes_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_fs_reads_bytes_total{name!="", name=~"$container"}[1m]) +
+              rate(container_fs_writes_bytes_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -511,7 +519,7 @@
         expr: |||
           topk(6,
             sum by (groupname) (
-              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!=""}[1m])
+              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -558,7 +566,7 @@
         expr: |||
           topk(8,
             sum by (groupname) (
-              rate(namedprocess_namegroup_major_page_faults_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_major_page_faults_total{groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -607,7 +615,7 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              namedprocess_namegroup_num_threads{groupname!=""}
+              namedprocess_namegroup_num_threads{groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -649,7 +657,7 @@
         expr: |||
           topk(10,
             max by (groupname) (
-              namedprocess_namegroup_worst_fd_ratio{groupname!=""}
+              namedprocess_namegroup_worst_fd_ratio{groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -792,7 +800,7 @@
         expr: |||
           container_processes{
             name!="",
-            container_label_com_docker_compose_service!=""
+            name=~"$container"
           }
         |||,
         format: 'table',
@@ -813,9 +821,15 @@
             instance: true,
             id: true,
             image: true,
+            // Whitelisted on cadvisor (infra/compose/monitoring.yml's
+            // --whitelisted_container_labels) but never set on a
+            // docker-compose stack — always empty, so hide rather than
+            // show a junk column.
+            container_label_io_kubernetes_container_name: true,
+            container_label_io_kubernetes_pod_name: true,
           },
           renameByName: {
-            container_label_com_docker_compose_service: 'Container Name',
+            name: 'Container Name',
             Value: 'Process Count',
           },
         },
@@ -850,8 +864,8 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(10,
-            sum by (container_label_com_docker_compose_service) (
-              container_fs_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            sum by (name) (
+              container_fs_usage_bytes{name!="", name=~"$container"}
             )
           )
         |||,
@@ -867,7 +881,7 @@
         id: 'organize',
         options: {
           excludeByName: { Time: true, __name__: true, job: true, instance: true },
-          renameByName: { container_label_com_docker_compose_service: 'Container Name', Value: 'Disk Usage' },
+          renameByName: { name: 'Container Name', Value: 'Disk Usage' },
         },
       },
     ],
