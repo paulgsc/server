@@ -105,6 +105,11 @@ services:
     hoist_set: false
     scrape:
       reason: init container — builds the dashboards and exits, nothing to scrape
+  - service: disk-usage-exporter
+    container_name: disk-usage-exporter
+    hoist_set: false
+    scrape:
+      reason: writes hostdir_usage_bytes to node_exporter's textfile collector rather than exposing its own /metrics endpoint — the node job re-exposes it
 
   # ── operator tooling, not part of M5's sizing surface ───────────────────
   - service: redisinsight

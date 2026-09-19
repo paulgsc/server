@@ -192,8 +192,13 @@ services:
     restart: unless-stopped
     command:
       - '--path.rootfs=/host'
+      # Re-exposes whatever disk-usage-exporter (below) writes to the
+      # shared textfile_collector volume as ordinary scraped metrics —
+      # host-directory sizes cadvisor's per-container view can't see.
+      - '--collector.textfile.directory=/textfile-collector'
     volumes:
       - '/:/host:ro,rslave'
+      - textfile_collector:/textfile-collector:ro
     mem_limit: 128M
     cpus: 0.25
     pids_limit: 20
@@ -291,3 +296,42 @@ services:
           cpus: '0.5'
           memory: 512M
           pids: 30
+  # Answers "who's eating the disk that cadvisor and node_exporter's mount
+  # panels can only show the aggregate of" — cargo's registry/git caches and
+  # the workspace target/ dir are host paths no container's own
+  # container_fs_usage_bytes covers, and Docker's data-root has build cache
+  # and dangling images/volumes no *running* container's usage reflects
+  # either. Runs scripts/disk-usage-textfile.sh on a loop and writes into
+  # the textfile_collector volume node_exporter re-exposes above.
+  #
+  # Override CARGO_HOME_PATH in .env with your host's real cargo home (e.g.
+  # /home/youruser/.cargo) — the fallback below almost certainly isn't it.
+  # A literal default rather than a required var (unlike a first instinct
+  # you might have here) because `docker compose config` — CI's own
+  # structural validation in .github/workflows/test.yml, which sets only
+  # REPO_ROOT — needs to resolve without a real host path to point at; an
+  # unmatched default just makes disk-usage-textfile.sh report 0 for cargo
+  # usage until this is set for real, same as any other missing bind-mount
+  # source the script already tolerates.
+  disk-usage-exporter:
+    image: debian:12-slim
+    container_name: disk-usage-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring-network
+    volumes:
+      - textfile_collector:/textfile-collector:rw
+      - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
+      - ${CARGO_HOME_PATH:-/root/.cargo}:/mnt/cargo:ro
+      - ${REPO_ROOT}/target:/mnt/workspace-target:ro
+      - /var/lib/docker:/mnt/docker:ro
+    command: ['bash', '-c', 'while true; do bash /usr/local/bin/disk-usage-textfile.sh; sleep "${DISK_USAGE_SCAN_INTERVAL:-300}"; done']
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20

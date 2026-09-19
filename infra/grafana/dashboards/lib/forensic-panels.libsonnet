@@ -823,4 +823,135 @@
     ],
     type: 'table',
   },
+
+  // ========== DISK SPACE CULPRITS ==========
+  // The CPU/Memory/IO trio above never had a disk-space sibling — the
+  // sys-dashboard's disk panels show *which mount* is filling, never
+  // *which container*. container_fs_usage_bytes is cadvisor's own
+  // writable-layer size, same job as containerIoBandwidth above.
+  topDiskSpaceOffenders:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
+      overrides: [
+        {
+          matcher: { id: 'byName', options: 'Container Name' },
+          properties: [{ id: 'custom.width', value: 300 }],
+        },
+      ],
+    },
+    options: {
+      frameIndex: 0,
+      showHeader: true,
+      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
+    },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        expr: |||
+          topk(10,
+            sum by (container_label_com_docker_compose_service) (
+              container_fs_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            )
+          )
+        |||,
+        format: 'table',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: '🗄️ TOP DISK SPACE OFFENDERS (containers)',
+    description: 'Writable-layer disk usage per container — cadvisor container_fs_usage_bytes',
+    transformations: [
+      {
+        id: 'organize',
+        options: {
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { container_label_com_docker_compose_service: 'Container Name', Value: 'Disk Usage' },
+        },
+      },
+    ],
+    type: 'table',
+  },
+
+  // Cargo's registry/git caches and the workspace target/ dir don't live in
+  // any container cadvisor can see — they're host paths a periodic `du`
+  // (scripts/disk-usage-textfile.sh, run by the disk-usage-exporter sidecar
+  // in infra/compose/monitoring.yml) feeds into node_exporter's textfile
+  // collector as hostdir_usage_bytes. docker_data_root is the same idea for
+  // the parts of Docker's storage (build cache, dangling images, unused
+  // volumes) that no *running* container's own usage would ever show.
+  hostDirDiskUsage:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
+      overrides: [
+        {
+          matcher: { id: 'byName', options: 'Target' },
+          properties: [{ id: 'custom.width', value: 220 }],
+        },
+      ],
+    },
+    options: {
+      frameIndex: 0,
+      showHeader: true,
+      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
+    },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        expr: 'hostdir_usage_bytes',
+        format: 'table',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: '🦀 CARGO / DOCKER HOST DIRECTORY USAGE',
+    description: "du -sb over the cargo registry/git caches, the workspace target/ dir, and Docker's data-root — see scripts/disk-usage-textfile.sh",
+    transformations: [
+      {
+        id: 'organize',
+        options: {
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { target: 'Target', Value: 'Disk Usage' },
+        },
+      },
+    ],
+    type: 'table',
+  },
+
+  // Distinguishes "the sidecar is fine, cargo just isn't that big" from
+  // "the sidecar died three days ago" — a stat panel can't tell staleness
+  // from a gauge value alone, so this measures the scan's own age directly
+  // rather than trusting hostdir_usage_bytes to look wrong when it's stuck.
+  hostDirUsageStaleness:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: {
+        unit: 's',
+        color: { mode: 'thresholds' },
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'yellow', value: 900 },
+            { color: 'red', value: 1800 },
+          ],
+        },
+      },
+      overrides: [],
+    },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value_and_name' },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        expr: 'time() - hostdir_usage_last_run_timestamp_seconds',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: 'Disk Usage Scan Age',
+    description: 'Seconds since disk-usage-exporter last refreshed hostdir_usage_bytes — red means the sidecar stopped, not that disk usage stopped',
+    type: 'stat',
+  },
 }
