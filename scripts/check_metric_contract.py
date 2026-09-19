@@ -131,6 +131,14 @@ PROMQL_RESERVED = {
 	"sort_by_label", "sort_by_label_desc", "clamp", "clamp_max", "clamp_min", "sgn", "pi", "deg", "rad",
 	"histogram_quantile", "label_values",
 	"bool", "and", "or", "unless", "offset", "ignoring", "on",
+	# LogQL pipeline-stage keyword, not PromQL — appears in the one
+	# Loki-datasourced panel this repo has (dashboard.jsonnet's
+	# fileHostLogs, `{compose_service="file-host"} | json`). This script's
+	# extraction regexes are PromQL-shaped and don't know a target's
+	# datasource type, so a LogQL keyword left out of this set reads as an
+	# orphaned metric query instead of what it actually is. Add others here
+	# (logfmt, unwrap, line_format, ...) only once a panel actually uses them.
+	"json",
 }
 
 

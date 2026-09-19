@@ -1,0 +1,37 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  # A named volume (infra/compose/loki.yml), not the container's own
+  # ephemeral filesystem — losing this on every restart would mean
+  # re-ingesting each container's full retained log history into Loki
+  # every time promtail restarts, the same "quietly accumulates" failure
+  # mode loki-config.yml's own retention_period comment is about, just via
+  # duplicate ingestion instead of unbounded retention.
+  filename: /promtail-data/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # Docker's container name comes prefixed with a leading slash (a
+      # holdover from Docker's own multi-name era) — stripped here so it
+      # reads the same as the container_name: fields in this repo's own
+      # compose files.
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+      # Unlike cadvisor (see infra/compose/monitoring.yml's own comment on
+      # --whitelisted_container_labels), promtail's Docker service
+      # discovery reads labels straight from the Docker API — there's no
+      # allow-list to fight here, this label is simply always present.
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'compose_service'

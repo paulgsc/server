@@ -21,3 +21,7 @@ volumes:
     driver: local
   pipeline_prompts_dump:
     driver: local
+  loki_data:
+    driver: local
+  promtail_positions:
+    driver: local

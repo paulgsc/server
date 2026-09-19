@@ -242,4 +242,34 @@ local utils = import 'utils.libsonnet';
     title: '🚨 Tracing Error Events by Target',
     type: 'timeseries',
   },
+
+  // The prose behind tracingErrors' counts — that panel answers *how many*
+  // and *from which module*, never the message itself. Loki ingests the
+  // same JSON-formatted stdout this crate already writes
+  // (metrics/observability.rs's fmt layer), shipped by promtail via the
+  // Docker API (infra/loki/promtail-config.yml) — `compose_service` is the
+  // label promtail's own Docker service discovery attaches, unrelated to
+  // cadvisor's own container-label whitelisting trouble elsewhere in this
+  // repo (different subsystem, no allow-list to fight here).
+  fileHostLogs: {
+    datasource: config.lokiDataSource,
+    id: 11,
+    targets: [{
+      datasource: config.lokiDataSource,
+      expr: '{compose_service="file-host"} | json',
+      refId: 'A',
+    }],
+    title: '📜 file_host Logs',
+    type: 'logs',
+    options: {
+      showTime: true,
+      showLabels: false,
+      showCommonLabels: false,
+      wrapLogMessage: true,
+      prettifyLogMessage: false,
+      enableLogDetails: true,
+      dedupStrategy: 'none',
+      sortOrder: 'Descending',
+    },
+  },
 }

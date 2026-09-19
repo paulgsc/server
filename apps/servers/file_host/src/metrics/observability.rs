@@ -103,7 +103,11 @@ impl OtelGuard {
 			.with(env_filter)
 			.with(ErrorEventMetricsLayer)
 			.with(telemetry_layer)
-			.with(tracing_subscriber::fmt::layer().with_target(true))
+			// JSON, not the default human-readable formatter — Loki's LogQL
+			// can then filter/extract on `level`/`target`/fields directly
+			// instead of regexing plain-text lines. The `json` feature is
+			// already enabled in Cargo.toml.
+			.with(tracing_subscriber::fmt::layer().with_target(true).json())
 			.init();
 
 		tracing::info!(

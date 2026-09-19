@@ -42,6 +42,14 @@ scrape_configs:
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
+  # Loki's own ingestion/compaction health — the same "is the observability
+  # tool itself observable" reasoning already applied to disk-usage-exporter.
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+  - job_name: 'promtail'
+    static_configs:
+      - targets: ['promtail:9080']
   # Blackbox Exporter - TCP probe
   - job_name: 'websocket_blackbox_tcp'
     metrics_path: /probe
