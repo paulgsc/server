@@ -45,6 +45,14 @@
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
+        // Both sides use `> bool`/`< bool` — a bare comparison *filters out*
+        // non-matching series instead of returning 0, so on a healthy
+        // system (the common case) this used to go empty forever instead
+        // of resolving to 0/"System Healthy". Same reasoning as LOOPS in
+        // health-panels.libsonnet. Multiplying the two bool results (not
+        // `and`, which does label-set matching rather than logical AND)
+        // is correct here since both sides already carry identical
+        // job/instance labels from the same single node_exporter target.
         expr: |||
           (
             (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > bool 3
@@ -819,6 +827,12 @@
             instance: true,
             id: true,
             image: true,
+            // Whitelisted on cadvisor (infra/compose/monitoring.yml's
+            // --whitelisted_container_labels) but never set on a
+            // docker-compose stack — always empty, so hide rather than
+            // show a junk column.
+            container_label_io_kubernetes_container_name: true,
+            container_label_io_kubernetes_pod_name: true,
           },
           renameByName: {
             name: 'Container Name',
@@ -856,8 +870,8 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           topk(10,
-            sum by (container_label_com_docker_compose_service) (
-              container_fs_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            sum by (name) (
+              container_fs_usage_bytes{name!="", name=~"$container"}
             )
           )
         |||,
@@ -873,7 +887,7 @@
         id: 'organize',
         options: {
           excludeByName: { Time: true, __name__: true, job: true, instance: true },
-          renameByName: { container_label_com_docker_compose_service: 'Container Name', Value: 'Disk Usage' },
+          renameByName: { name: 'Container Name', Value: 'Disk Usage' },
         },
       },
     ],
