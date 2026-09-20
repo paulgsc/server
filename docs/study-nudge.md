@@ -605,7 +605,7 @@ surface the wrong one. The restored subquery excludes rows already matching
 the partial index's own predicate, so the two guards agree on which row is
 "foreign" rather than fighting over the same one — a pre-existing
 `system`/un-started proposal is not foreign, it is exactly the row the `ON
-CONFLICT` branch is allowed to refresh.
+CONFLICT` branch exists to yield to, leaving it untouched (`#345`).
 
 **Bounded per #253.** Both guards are index-backed: the `NOT EXISTS`
 subquery is served by `idx_sessions_status`, and the `ON CONFLICT` target
