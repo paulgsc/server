@@ -892,9 +892,11 @@
   // any container cadvisor can see — they're host paths a periodic `du`
   // (scripts/disk-usage-textfile.sh, run by the disk-usage-exporter sidecar
   // in infra/compose/monitoring.yml) feeds into node_exporter's textfile
-  // collector as hostdir_usage_bytes. docker_data_root is the same idea for
-  // the parts of Docker's storage (build cache, dangling images, unused
-  // volumes) that no *running* container's own usage would ever show.
+  // collector as hostdir_usage_bytes. Doesn't cover Docker's own data-root
+  // (build cache, dangling images/volumes) — see that script's own header
+  // comment for why measuring it safely needs a scoped Docker API call
+  // rather than raw filesystem access to a tree holding every other
+  // container's secrets.
   hostDirDiskUsage:: {
     datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
@@ -920,8 +922,8 @@
         refId: 'A',
       },
     ],
-    title: '🦀 CARGO / DOCKER HOST DIRECTORY USAGE',
-    description: "du -sb over the cargo registry/git caches, the workspace target/ dir, and Docker's data-root — see scripts/disk-usage-textfile.sh",
+    title: '🦀 CARGO HOST DIRECTORY USAGE',
+    description: 'du -s -B1 over the cargo registry/git caches and the workspace target/ dir — see scripts/disk-usage-textfile.sh',
     transformations: [
       {
         id: 'organize',

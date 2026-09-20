@@ -1622,7 +1622,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "du -sb over the cargo registry/git caches, the workspace target/ dir, and Docker's data-root — see scripts/disk-usage-textfile.sh",
+      "description": "du -s -B1 over the cargo registry/git caches and the workspace target/ dir — see scripts/disk-usage-textfile.sh",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -1675,7 +1675,7 @@
           "refId": "A"
         }
       ],
-      "title": "🦀 CARGO / DOCKER HOST DIRECTORY USAGE",
+      "title": "🦀 CARGO HOST DIRECTORY USAGE",
       "transformations": [
         {
           "id": "organize",

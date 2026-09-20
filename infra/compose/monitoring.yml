@@ -297,12 +297,26 @@ services:
           memory: 512M
           pids: 30
   # Answers "who's eating the disk that cadvisor and node_exporter's mount
-  # panels can only show the aggregate of" — cargo's registry/git caches and
-  # the workspace target/ dir are host paths no container's own
-  # container_fs_usage_bytes covers, and Docker's data-root has build cache
-  # and dangling images/volumes no *running* container's usage reflects
-  # either. Runs scripts/disk-usage-textfile.sh on a loop and writes into
-  # the textfile_collector volume node_exporter re-exposes above.
+  # panels can only show the aggregate of" for the two things a *running*
+  # container's own container_fs_usage_bytes can't see: cargo's
+  # registry/git caches and the workspace target/ dir, both host paths.
+  # Runs scripts/disk-usage-textfile.sh on a loop and writes into the
+  # textfile_collector volume node_exporter re-exposes above.
+  #
+  # Deliberately does NOT also track Docker's own data-root total (build
+  # cache, dangling images/volumes) the way the first version of this
+  # sidecar did — getting that number via `du` needs read access to
+  # /var/lib/docker's full tree, which holds every *other* container's
+  # config.v2.json (their complete `environment:` blocks — Grafana's admin
+  # password, this repo's HMAC/VAPID keys, anything any service was ever
+  # given) and every named volume's raw on-disk data. `:ro` only blocks
+  # writes; a root process in this sidecar could still read all of it. The
+  # per-container disk-usage table (forensic-panels.libsonnet's
+  # topDiskSpaceOffenders, cadvisor-backed) covers *running* containers
+  # already; getting the aggregate Docker-wide number safely needs
+  # docker-socket-proxy's /system/df equivalent (as infra/compose/loki.yml
+  # uses for promtail), not raw filesystem access — a real gap, tracked
+  # rather than shipped via an over-broad mount.
   #
   # Override CARGO_HOME_PATH in .env with your host's real cargo home (e.g.
   # /home/youruser/.cargo) — the fallback below almost certainly isn't it.
@@ -323,7 +337,25 @@ services:
       - textfile_collector:/textfile-collector:rw
       - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
       - ${REPO_ROOT}/scripts/disk-usage-loop.sh:/usr/local/bin/disk-usage-loop.sh:ro
-      - ${CARGO_HOME_PATH:-/root/.cargo}:/mnt/cargo:ro
+      # registry/ and git/ specifically, not the whole cargo home — a real
+      # ~/.cargo can hold credentials.toml (crates.io/private-registry auth
+      # tokens), which this general-purpose sidecar on the shared network
+      # has no business reading. Same create_host_path: false reasoning as
+      # target/ below applies to both: a genuinely-missing cache directory
+      # (cargo never run yet) fails this one isolated container loudly
+      # rather than getting silently created with the wrong owner.
+      - type: bind
+        source: ${CARGO_HOME_PATH:-/root/.cargo}/registry
+        target: /mnt/cargo/registry
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CARGO_HOME_PATH:-/root/.cargo}/git
+        target: /mnt/cargo/git
+        read_only: true
+        bind:
+          create_host_path: false
       # Long-form, not the short `${REPO_ROOT}/target:/mnt/workspace-target:ro`
       # this used to be: that form's own missing-host-path auto-create
       # (root-owned, under rootful Docker) was real, but mounting the whole
@@ -343,7 +375,6 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - /var/lib/docker:/mnt/docker:ro
     environment:
       # Passed to the container itself, not just interpolated into the
       # sleep below — so disk-usage-textfile.sh can read the same value
