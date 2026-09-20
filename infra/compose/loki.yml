@@ -46,23 +46,34 @@ services:
   # API calls go over it. Anything with access to the raw socket has the
   # same practical control over the host as root, so a bug or supply-chain
   # compromise in promtail's own `latest`-tag image would too. This proxy
-  # is the one thing in this compose stack that touches the real socket;
-  # everything it allows through is opt-in below, and it isn't published
-  # to the host — only promtail, over monitoring-network, reaches it.
+  # is the one thing in this compose stack that touches the real socket.
+  #
+  # CONTAINERS=1 is coarser than "discovery and logs": it's the whole GET
+  # /containers/* prefix, which also covers /containers/{id}/json (full
+  # inspect output, including any secrets passed via that container's own
+  # `environment:` block) and /containers/{id}/archive (arbitrary file
+  # reads from inside a container's filesystem view — a real risk here
+  # specifically, since node_exporter and cadvisor both bind-mount the
+  # host root read-only, and archive would expose that same host
+  # filesystem through the API regardless of what's actually running
+  # inside either of them). tecnativa/docker-socket-proxy has no finer
+  # "logs only" grant than this, so the actual mitigation is network
+  # isolation, not the permission flag: docker-proxy-network
+  # (infra/compose/base.yml) is joined only by this service and promtail,
+  # not shared-dev-network — every other workload in this stack (which
+  # doesn't get a say in whether it's ever compromised) has no route to
+  # this proxy at all, whatever CONTAINERS=1 would otherwise let it ask for.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: docker-socket-proxy
     restart: unless-stopped
     networks:
-      - monitoring-network
+      - docker-proxy-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       # Everything else (POST, EXEC, IMAGES, VOLUMES, NETWORKS, ...)
-      # defaults off. CONTAINERS covers both what promtail's
-      # docker_sd_configs needs for discovery (list/inspect) and log
-      # streaming (GET /containers/{id}/logs) — both are GET endpoints
-      # under the same /containers prefix.
+      # defaults off.
       - CONTAINERS=1
     mem_limit: 128M
     cpus: 0.25
@@ -79,7 +90,11 @@ services:
     container_name: promtail
     restart: unless-stopped
     networks:
+      # loki (below) lives on monitoring-network; docker-socket-proxy
+      # (above) deliberately doesn't — promtail is the one service that
+      # needs both.
       - monitoring-network
+      - docker-proxy-network
     volumes:
       - ${REPO_ROOT}/infra/loki/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
       - promtail_positions:/promtail-data
