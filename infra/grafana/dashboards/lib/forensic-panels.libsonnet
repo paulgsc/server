@@ -971,8 +971,8 @@
         // perfectly healthy sidecar read as stopped between every scan.
         //
         // A sidecar that never completes even one scan (never created at
-        // all — e.g. a bind-mount source genuinely missing, monitoring.yml's
-        // own comments on registry/target's create_host_path: false) emits
+        // all — e.g. target/ genuinely missing, monitoring.yml's own
+        // comments on that mount's create_host_path: false) emits
         // neither metric this expression reads, so it evaluates over an
         // empty vector: grey "no data" (panelDefaults.harden, applied to
         // every stat panel on this dashboard), not red. That's this
