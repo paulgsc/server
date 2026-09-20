@@ -340,22 +340,34 @@ services:
       # registry/ and git/ specifically, not the whole cargo home — a real
       # ~/.cargo can hold credentials.toml (crates.io/private-registry auth
       # tokens), which this general-purpose sidecar on the shared network
-      # has no business reading. Same create_host_path: false reasoning as
-      # target/ below applies to both: a genuinely-missing cache directory
-      # (cargo never run yet) fails this one isolated container loudly
-      # rather than getting silently created with the wrong owner.
+      # has no business reading.
+      #
+      # create_host_path: false on registry/ but deliberately NOT on git/,
+      # asymmetric on purpose: registry/ is created by cargo's very first
+      # build/check, ever, on any project — a missing registry/ genuinely
+      # means "cargo has literally never run here," worth failing loudly
+      # on. git/ is only created when a dependency is git-sourced,
+      # and — verified directly against this workspace's own Cargo.lock —
+      # there are zero `git+` entries, so git/ commonly does not exist even
+      # on a fully-set-up machine that's built this repo many times.
+      # create_host_path: false would make that the normal case, not an
+      # edge case, and (unlike a container that already exists and merely
+      # exits) a bind-mount failure at *creation* time means Compose never
+      # creates the container at all — restart: unless-stopped has nothing
+      # to retry, so this sidecar would need a manual recreate to ever
+      # start. Letting Docker auto-create git/ (default behavior, root-
+      # owned) is the safer default here: it's read-only from this
+      # container's own side regardless, and the only cost is a future
+      # `cargo build` that adds a *first* git dependency needing one manual
+      # `chown` if that ever happens — far cheaper than this sidecar not
+      # coming up at all on a totally ordinary setup.
       - type: bind
         source: ${CARGO_HOME_PATH:-/root/.cargo}/registry
         target: /mnt/cargo/registry
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: ${CARGO_HOME_PATH:-/root/.cargo}/git
-        target: /mnt/cargo/git
-        read_only: true
-        bind:
-          create_host_path: false
+      - ${CARGO_HOME_PATH:-/root/.cargo}/git:/mnt/cargo/git:ro
       # Long-form, not the short `${REPO_ROOT}/target:/mnt/workspace-target:ro`
       # this used to be: that form's own missing-host-path auto-create
       # (root-owned, under rootful Docker) was real, but mounting the whole
@@ -364,11 +376,20 @@ services:
       # ... sitting right there), and this is a general-purpose Debian
       # sidecar on the shared network that only ever needed target/.
       # `create_host_path: false` makes a genuinely-missing target/ (a fresh
-      # checkout, a `cargo clean`) a loud container-start failure instead of
-      # a silent root-owned directory blocking a later non-root `cargo
-      # build` — this sidecar has nothing else depending on it, so that
-      # failure stays isolated, and `restart: unless-stopped` picks it back
-      # up the moment `cargo build` actually creates target/.
+      # checkout that hasn't built even once) a loud container-*creation*
+      # failure instead of a silent root-owned directory blocking a later
+      # non-root `cargo build`.
+      #
+      # Known, accepted limitation, not fixed here: `cargo clean` deletes
+      # and cargo build recreates target/ as a *new* inode at the same
+      # path — Linux bind mounts follow the inode, not the path, so this
+      # container's mount keeps pointing at the deleted directory until
+      # the container itself is recreated (`docker compose up
+      # --force-recreate disk-usage-exporter`), and nothing running inside
+      # the container can detect or fix that from in here: it only ever
+      # sees whatever's mounted, never the host's current filesystem
+      # state. cargo_target reads stale (not wrong-crashing, just stale)
+      # across a `cargo clean` until that manual recreate.
       - type: bind
         source: ${REPO_ROOT}/target
         target: /mnt/workspace-target
