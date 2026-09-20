@@ -516,7 +516,7 @@ two places `#283` (RCM6) already named as the ones this rule must get right:
   waker runs; this predicate never even looks at that row again.
 
 Both edges are asserted directly, at two layers: `SessionRepository`'s own
-`provision_or_refresh_never_touches_a_started_system_session` /
+`provision_if_absent_never_touches_a_started_system_session` /
 `_never_touches_a_system_session_promoted_to_user` tests
 (`crates/db/session/src/repository.rs`), and — because this is exactly the
 "interaction between two stories" #284's own issue text calls out as worth
@@ -556,18 +556,36 @@ and the issue's own recommendation is what shipped:**
    issued before a refresh to still resolve afterward, and only this option
    gives that for free.
 
-**`SessionRepository::provision_or_refresh`** (`crates/db/session/src/
+**`SessionRepository::provision_if_absent`** (`crates/db/session/src/
 repository.rs`) is the mechanism: one `INSERT ... SELECT ... WHERE NOT
 EXISTS (...) ON CONFLICT (subject_id) WHERE origin = 'system' AND
-started_at IS NULL DO UPDATE SET name = excluded.name, activities =
-excluded.activities, total_duration_ms = excluded.total_duration_ms,
-updated_at = excluded.updated_at` statement, replacing what RCM2 (`#279`)
-originally called `provision_if_absent`. `id` and `created_at` are
-deliberately absent from the `DO UPDATE SET` list — preserving `id` is the
-whole point, and `created_at` follows `upsert`'s own precedent of never
-letting a write move it. Every other column is left alone too: the
-conflicting row, by construction of the predicate it matched, already holds
-the only values `materialize_provisioned_session` ever writes for them.
+started_at IS NULL AND status IN ('paused', 'scheduled', 'draft') DO
+NOTHING` statement.
+
+**That conflict branch used to be a `DO UPDATE`, and `#345` made it a
+no-op.** Between `#284` and `#345` it rewrote `name`, `activities` and
+`total_duration_ms`, guarded by `created_at = updated_at`. A real
+`chatgpt-codex-connector` finding on `#342` showed that guard cannot hold
+the line it was given, precisely *because* a machine write never moves
+`updated_at`: two concurrent passes both reach the statement, the winner
+inserts and goes on to claim and send a notification pointing at its row,
+and the loser's delayed `DO UPDATE` still satisfies the guard and rewrites
+that row afterwards — for a notification it never sends, since it loses the
+claim moments later. The same post-send mutation race `#335`'s round 7
+closed for `refresh_stale_proposal`, on the one write path that cannot be
+claim-gated, because it necessarily runs before there is an action to claim.
+
+Nothing is lost by refusing. This method is only called when
+`first_prepared` returned `None`, and the conflict target is a strict
+subset of what `first_prepared` searches — so a conflicting row can never
+be the stale ignored proposal `#284` wanted refreshed (that one is found at
+the top of `consider` and refreshed post-claim), only another concurrent
+pass's brand-new one. `recommend` being deterministic per `(subject, day)`
+means the two passes' content is usually identical anyway, and the cases
+where it differs — the catalogue changed, or they straddle UTC midnight —
+are exactly the cases where rewriting does harm. After `#345` there is
+exactly one path that rewrites a proposal's content, `refresh_if_untouched`,
+and it runs only after its pass has won the claim.
 
 **Two guards, not one, because they protect against two different races.**
 A first version of this statement carried only the `ON CONFLICT` — a real
@@ -587,7 +605,7 @@ surface the wrong one. The restored subquery excludes rows already matching
 the partial index's own predicate, so the two guards agree on which row is
 "foreign" rather than fighting over the same one — a pre-existing
 `system`/un-started proposal is not foreign, it is exactly the row the `ON
-CONFLICT` branch is allowed to refresh.
+CONFLICT` branch exists to yield to, leaving it untouched (`#345`).
 
 **Bounded per #253.** Both guards are index-backed: the `NOT EXISTS`
 subquery is served by `idx_sessions_status`, and the `ON CONFLICT` target
@@ -661,12 +679,13 @@ up.sql`'s own backfill already relied on for an identical problem:
 unconditionally on every write, with or without an `origin` field, so any
 real edit — promoted or not — moves it away from `created_at`. The one
 thing that had to change to make this reusable *live*, not just for a
-one-time backfill: `provision_or_refresh`'s own `ON CONFLICT` branch
-deliberately does not touch `updated_at` (see that method's own "What
-refreshing touches" doc comment) — if a machine refresh bumped it the way
-an early version of this fix did, `created_at == updated_at` would break
-after the row's very first refresh, for a proposal nobody had ever
-touched, defeating the check for the case it exists to protect. With that
+one-time backfill: no machine write touches `updated_at` at all —
+`provision_if_absent` no longer updates anything on conflict (`#345`), and
+`refresh_if_untouched` deliberately leaves both stamps alone. If a machine
+refresh bumped `updated_at` the way an early version of this fix did,
+`created_at == updated_at` would break after the row's very first refresh,
+for a proposal nobody had ever touched, defeating the check for the case it
+exists to protect. With that
 in place, `refresh_stale_proposal` gates on it directly:
 `record.created_at != record.updated_at` stops the refresh outright,
 leaving an edited-but-unpromoted proposal exactly as the person left it —
@@ -690,18 +709,21 @@ time. It is a single `UPDATE ... WHERE id = ? AND subject_id = ? AND
 origin = 'system' AND started_at IS NULL AND created_at = updated_at`,
 scoped to the exact id `refresh_stale_proposal` already has, with
 deliberately **no insert fallback**. That last part is what makes it safe
-where `provision_or_refresh` would not be: if the row was edited, started,
+where `provision_if_absent` would not be: if the row was edited, started,
 promoted, or deleted in the gap, the `WHERE` clause simply matches nothing
 and zero rows are affected — an outcome `refresh_stale_proposal` treats as
 "nothing to do," not an error. An insert fallback would have created a
 second, orphaned proposal under a brand-new id while the `StudyAction`
 `consider` already selected kept pointing at the old one, which is exactly
-why this method exists separately from `provision_or_refresh` rather than
-reusing it: that method's own `ON CONFLICT` refresh is safe for its one
-caller (a race there can only ever be against another concurrent waker
-pass's own fresh candidate, never a person's action — `create_session`/
-`duplicate_session` can never write `origin = 'system'` at all), which is
-not true of `refresh_stale_proposal`'s situation.
+why this method exists separately from `provision_if_absent` rather than
+reusing it. Since `#345` that method does not refresh at all — its
+`ON CONFLICT` branch is `DO NOTHING`, because it runs before its pass can
+hold a claim and so must never rewrite a row another pass may already have
+sent a notification about. `refresh_if_untouched` is the one remaining
+path that rewrites a proposal's content, and it is safe precisely because
+`refresh_stale_proposal` calls it *after* winning that claim; its own
+hazard is the read-then-write window above, which the `WHERE` clause
+closes.
 
 The checks inside `refresh_stale_proposal` itself (origin, `started_at`,
 `created_at == updated_at`) are downgraded from a safety gate to a pure
@@ -728,11 +750,13 @@ itself added:
   permanently occupied the subject's one slot — `first_prepared` can never
   surface `active`/`completed` rows back out, since neither status is in
   its own tracked set, so no future proposal could ever be provisioned for
-  that subject again. Worse, the row remained a live `ON CONFLICT` target:
-  `provision_or_refresh`'s `DO UPDATE` branch (unlike `refresh_if_untouched`)
-  has no `created_at == updated_at` guard, so the next `NothingToSay` pass
-  would have silently overwritten the name, activities, and duration of a
-  session that might be actively in progress or already finished.
+  that subject again. Worse, the row remained a live `ON CONFLICT` target,
+  and at the time that branch was still a `DO UPDATE`, so the next
+  provisioning pass would have silently overwritten the name, activities,
+  and duration of a session that might be actively in progress or already
+  finished. (`#345` has since made that branch a no-op outright, which
+  removes the overwrite half of this independently — but the scoped
+  predicate is still what keeps such a row from occupying the slot.)
 - **Wrongful deletion, once.** The migration's own defensive dedup pass used
   the same broad predicate, so on a live database already holding such rows
   (from real use, not a bug in this migration) it would have deleted every
@@ -742,7 +766,7 @@ itself added:
 
 **The fix scopes both to the same three statuses `first_prepared` already
 treats as "prepared"**: `idx_sessions_one_unstarted_system_proposal`'s own
-predicate, `provision_or_refresh`'s `ON CONFLICT` target, and the
+predicate, `provision_if_absent`'s `ON CONFLICT` target, and the
 migration's dedup `DELETE` all gained `AND status IN ('paused', 'scheduled',
 'draft')`. An `active`/`completed` row reached through the `set_status_many`
 anomaly now falls out of all three: it no longer counts toward the "at most
@@ -754,13 +778,13 @@ exactly this scenario (two genuine duplicate ignored proposals alongside
 two real `active`/`completed` history rows sharing a subject) before
 trusting the migration's own SQL — the duplicates collapsed to one, the
 history rows both survived — and pinned in code by
-`provision_or_refresh_never_touches_or_is_blocked_by_a_set_status_many_
+`provision_if_absent_never_touches_or_is_blocked_by_a_set_status_many_
 anomaly` in `crates/db/session/src/repository.rs`'s test module.
 
 **A closing-review finding on `#335`, P1, turned up one more instance of
 the exact race `refresh_if_untouched` already closes — in a different
 call site.** `refresh_if_untouched` protects `refresh_stale_proposal`'s
-own write; `provision_or_refresh`'s `ON CONFLICT` branch (the
+own write; `provision_if_absent`'s `ON CONFLICT` branch (the
 `NothingToSay` arm's write) had no equivalent guard. Its call site has no
 fresh read of the conflicting row to check against — it discovers a
 conflict only through the statement itself, against whatever a
@@ -777,11 +801,20 @@ the conflict resolution itself — when it fails, the row is left
 completely untouched and nothing is inserted either, verified directly
 against a real database rather than trusted from documentation, since
 this codebase had no prior use of this particular `SQLite` upsert clause
-to point to as precedent. `provision_or_refresh_never_overwrites_a_
+to point to as precedent. `provision_if_absent_never_overwrites_a_
 conflicting_row_a_person_edited_since_it_was_inserted` reproduces the full
 three-step interleaving directly: one pass's insert, a person's edit
 landing on it, then a second pass's own conflicting write — and asserts
 the edit survives untouched.
+
+**`#345` has since superseded that fix with a stronger one.** The guarded
+`DO UPDATE` above closed the person-edits-it case but not the one
+`#342`'s review found: a machine write never moves `updated_at`, so a
+*racing pass's* delayed write still satisfied `created_at = updated_at`
+and could rewrite a row the winner had already sent a notification about.
+The branch is now `DO NOTHING` outright, which closes both, and the test
+named above still passes — its property is now structural rather than
+conditional. See "Never stack proposals" above for the full argument.
 
 **An eighth real `chatgpt-codex-connector` finding, on the second closing
 review, is a race between two concurrent passes over the same subject —
