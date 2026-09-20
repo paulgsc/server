@@ -78,6 +78,13 @@ pub fn record_session_rows_read(count: usize) {
 /// is a sentence an alert rule can be written against without depending on a
 /// label value, and which `docs/study-nudge.md` says in exactly those words.
 ///
+/// Exempted in `scripts/check_metric_contract.py`'s `EXEMPT_EMITTED` rather
+/// than given a Grafana panel, with the reason written out there: its healthy
+/// value is zero forever, and a panel whose healthy state is a flat line at
+/// zero is the "detector that always reports fine" that check exists to
+/// prevent. The conditions behind it are already on the NUDGE row's outcomes
+/// breakdown by label; what this name adds is something to alert on.
+///
 /// Not incremented for a `Wait`, a `Suppressed`, or any pass where an
 /// invitation still went out: a subject who got `GetStarted` because the
 /// catalogue was empty was told *something*, and the failed proposal behind
