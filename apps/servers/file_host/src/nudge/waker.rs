@@ -1273,7 +1273,11 @@ mod tests {
 				);
 
 				let catalogue = ActivityRepository::new(pool.clone()).list().await.unwrap();
-				let expected_picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, &catalogue, &[], None, Utc::now());
+				// Same `(subject, day)` shuffle hazard the sibling acceptance
+				// test's helper documents, and the same fix: seed from the
+				// instant the waker recorded, not from a fresh clock read.
+				let provisioned_at = crate::nudge::clock::parse_timestamp(&record.created_at).unwrap();
+				let expected_picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, &catalogue, &[], None, provisioned_at);
 				let expected_provisioned = provision(&expected_picks);
 				let expected_ids: HashSet<&str> = expected_provisioned.iter().map(|activity| activity.activity_id.as_str()).collect();
 				let expected_named: Vec<ActivityRecord> = expected_picks.into_iter().filter(|activity| expected_ids.contains(activity.id.as_str())).collect();
@@ -2241,7 +2245,18 @@ mod tests {
 	fn assert_composed_by_rcm3_at_rcm4_floors(subject_id: &str, record: &SessionRecord, catalogue: &[ActivityRecord]) {
 		use activity_repo::CLIENT_MIN_ACTIVITY_DURATION_MS;
 
-		let expected = provision(&recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &[], None, Utc::now()));
+		// Seeded with the instant the waker itself used, recovered from the
+		// row it wrote, rather than a fresh `Utc::now()`. A real
+		// `chatgpt-codex-connector` finding on `#342`: `recommend`'s third
+		// axis is a deterministic shuffle keyed by `(subject, day)`
+		// (`shuffle_ranks` hashes a `NaiveDate`), so a pass that provisions
+		// just before UTC midnight and an assertion that recomputes just
+		// after would disagree about the expected order for a run that
+		// behaved perfectly. `materialize_provisioned_session` writes
+		// `created_at` from the very `now` it passes to `recommend`, so
+		// reading it back makes this exact instead of almost always right.
+		let provisioned_at = crate::nudge::clock::parse_timestamp(&record.created_at).unwrap();
+		let expected = provision(&recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &[], None, provisioned_at));
 		assert!(!expected.is_empty(), "the seeded catalogue always has at least one timeable activity");
 		assert_eq!(
 			record.activities,
