@@ -257,22 +257,24 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Because the provisioned row's id is always freshly
 			// generated, an unconditional `upsert` would not collide with
 			// whatever won that race — it would just add a second, blank
-			// draft beside it. `provision_or_refresh` closes the window
+			// draft beside it. `provision_if_absent` closes the window
 			// atomically (one statement, targeting #284's own partial
 			// unique index — `origin = 'system' AND started_at IS NULL`,
 			// not the three statuses `first_prepared` treats as prepared)
 			// rather than trusting the read that already happened; see its
 			// own doc comment for the mechanism and the #313 review that
-			// caught the original race. #284 (RCM7) is also what turns a
-			// race-losing write into a *refresh* rather than a no-op: the
-			// losing side's freshly recommended content still wins, in
-			// place, over whatever stale proposal the subject has been
-			// ignoring — see `docs/study-nudge.md`'s "Never stack
-			// proposals" section. The `first_prepared` re-read after it is
+			// caught the original race. A race-losing write is a no-op
+			// rather than a refresh (#345): the row it would have
+			// rewritten is, by construction, another concurrent pass's
+			// brand-new proposal — never the stale one #284 wanted
+			// refreshed, since that row would have been found by
+			// `first_prepared` at the top of this function — and the
+			// winner may already have claimed and sent a notification
+			// pointing at it. Staleness is `refresh_stale_proposal`'s job,
+			// after a claim is won. The `first_prepared` re-read below is
 			// what makes this correct either way: whichever side of the
-			// race actually landed (or whichever call's content the
-			// refresh applied) is what gets used, not necessarily the row
-			// built here.
+			// race actually landed is what gets used, not necessarily the
+			// row built here.
 			let catalogue = match ActivityRepository::new(db.clone()).list().await {
 				Ok(catalogue) => catalogue,
 				Err(err) => {
@@ -319,7 +321,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
 				return Ok(false);
 			}
-			if let Err(err) = sessions.provision_or_refresh(subject_id, &provisioned).await {
+			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
 				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 				return Ok(false);
@@ -327,7 +329,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			let session_id = match sessions.first_prepared(subject_id).await {
 				Ok(Some(id)) => id,
 				Ok(None) => {
-					// Unreachable in practice: `provision_or_refresh` just
+					// Unreachable in practice: `provision_if_absent` just
 					// proved a prepared session exists for this subject,
 					// either the one built above or a concurrent writer's.
 					// Guarded rather than trusted, per this codebase's
@@ -1203,7 +1205,7 @@ mod tests {
 	/// `active`, so a subject who is somehow re-selected as due while still
 	/// mid-session reaches `Verdict::NothingToSay` a second time even though
 	/// their first proposal is far from abandoned. This pins that the second
-	/// pass does the right thing anyway: `provision_or_refresh`'s partial
+	/// pass does the right thing anyway: `provision_if_absent`'s partial
 	/// index no longer covers the started row (`started_at` is no longer
 	/// `NULL`), so a second, independent proposal is provisioned rather than
 	/// the started session being silently refreshed out from under whoever
@@ -1294,7 +1296,7 @@ mod tests {
 
 	/// A real `chatgpt-codex-connector` finding on `#335`: once an ignored
 	/// proposal exists, `first_prepared` resolves to it on every later pass,
-	/// so `Verdict::NothingToSay` — and therefore `provision_or_refresh` —
+	/// so `Verdict::NothingToSay` — and therefore `provision_if_absent` —
 	/// is never reached again. Refreshing had to move to a path reached
 	/// whenever such a proposal already exists, not only the one reached
 	/// when nothing is prepared at all. This pins that the *ordinary* path
@@ -1751,7 +1753,7 @@ mod tests {
 	/// A real Codex review finding on `server#322` (P2): if `recommend()` +
 	/// `provision()` produce nothing timeable — every eligible candidate has
 	/// a `NULL` `min_duration_ms` here — persisting an empty `Scheduled`
-	/// session would be a permanent trap. `first_prepared`/`provision_or_refresh`
+	/// session would be a permanent trap. `first_prepared`/`provision_if_absent`
 	/// would treat it as "already prepared" forever, so nothing in this
 	/// codebase would ever provision this subject again, even after the
 	/// catalogue is fixed. Confirms both halves of the fix: nothing is
