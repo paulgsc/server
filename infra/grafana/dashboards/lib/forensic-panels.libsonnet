@@ -942,14 +942,15 @@
     datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
       defaults: {
-        unit: 's',
+        unit: 'none',
+        decimals: 1,
         color: { mode: 'thresholds' },
         thresholds: {
           mode: 'absolute',
           steps: [
             { color: 'green', value: null },
-            { color: 'yellow', value: 900 },
-            { color: 'red', value: 1800 },
+            { color: 'yellow', value: 3 },
+            { color: 'red', value: 6 },
           ],
         },
       },
@@ -959,13 +960,20 @@
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
-        expr: 'time() - hostdir_usage_last_run_timestamp_seconds',
+        // A multiple of the *configured* scan interval
+        // (hostdir_usage_scan_interval_seconds, emitted by the same
+        // script off DISK_USAGE_SCAN_INTERVAL) rather than raw seconds
+        // against a threshold hardcoded to one assumed interval — an
+        // operator raising that interval to reduce du's traversal cost
+        // against a large Docker data-root would otherwise make a
+        // perfectly healthy sidecar read as stopped between every scan.
+        expr: '(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds',
         instant: true,
         refId: 'A',
       },
     ],
-    title: 'Disk Usage Scan Age',
-    description: 'Seconds since disk-usage-exporter last refreshed hostdir_usage_bytes — red means the sidecar stopped, not that disk usage stopped',
+    title: 'Disk Usage Scan Age (× configured interval)',
+    description: 'How many scan intervals old the last successful pass is — red means the sidecar stopped, not that disk usage stopped, and stays meaningful regardless of DISK_USAGE_SCAN_INTERVAL',
     type: 'stat',
   },
 }

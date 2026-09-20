@@ -79,6 +79,15 @@ dir_size_bytes() {
 	echo "# HELP hostdir_usage_last_run_timestamp_seconds Unix time this script last completed a full pass."
 	echo "# TYPE hostdir_usage_last_run_timestamp_seconds gauge"
 	echo "hostdir_usage_last_run_timestamp_seconds $(date +%s)"
+	# Read from the same env var the compose service's own sleep loop
+	# uses (infra/compose/monitoring.yml), not hardcoded here too — so
+	# hostDirUsageStaleness can judge staleness relative to whatever
+	# interval is actually configured instead of a threshold hardcoded
+	# against this default, which an operator raising the interval to
+	# reduce du's traversal cost would silently invalidate.
+	echo "# HELP hostdir_usage_scan_interval_seconds The configured interval between scans (DISK_USAGE_SCAN_INTERVAL)."
+	echo "# TYPE hostdir_usage_scan_interval_seconds gauge"
+	echo "hostdir_usage_scan_interval_seconds ${DISK_USAGE_SCAN_INTERVAL:-300}"
 } >"$TMP_FILE"
 
 mv "$TMP_FILE" "$OUTPUT_FILE"

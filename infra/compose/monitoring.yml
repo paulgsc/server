@@ -322,6 +322,7 @@ services:
     volumes:
       - textfile_collector:/textfile-collector:rw
       - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
+      - ${REPO_ROOT}/scripts/disk-usage-loop.sh:/usr/local/bin/disk-usage-loop.sh:ro
       - ${CARGO_HOME_PATH:-/root/.cargo}:/mnt/cargo:ro
       # Mounts the repo root, not `${REPO_ROOT}/target` directly — Docker's
       # short-form bind syntax creates a missing host-side path, root-owned
@@ -331,7 +332,23 @@ services:
       # the script look at its target/ child avoids ever creating anything.
       - ${REPO_ROOT}:/mnt/workspace:ro
       - /var/lib/docker:/mnt/docker:ro
-    command: ['bash', '-c', 'while true; do bash /usr/local/bin/disk-usage-textfile.sh; sleep "${DISK_USAGE_SCAN_INTERVAL:-300}"; done']
+    environment:
+      # Passed to the container itself, not just interpolated into the
+      # sleep below — so disk-usage-textfile.sh can read the same value
+      # and emit it as hostdir_usage_scan_interval_seconds, letting
+      # hostDirUsageStaleness (forensic-panels.libsonnet) judge staleness
+      # relative to whatever interval is actually configured instead of
+      # against a threshold hardcoded to this 300s default.
+      - DISK_USAGE_SCAN_INTERVAL=${DISK_USAGE_SCAN_INTERVAL:-300}
+    # scripts/disk-usage-loop.sh, not an inline shell string here — see
+    # its own header comment for why: Compose's variable interpolation
+    # runs over this YAML file's text before the container ever starts,
+    # which fights a bare $DISK_USAGE_SCAN_INTERVAL written directly in a
+    # `command:` string (verified directly: it resolved against this
+    # file's own invoking shell instead of the environment: value above,
+    # producing an empty `sleep ""`). A bind-mounted script's contents
+    # aren't part of that interpolation pass at all.
+    command: ['bash', '/usr/local/bin/disk-usage-loop.sh']
     mem_limit: 128M
     cpus: 0.25
     pids_limit: 20
