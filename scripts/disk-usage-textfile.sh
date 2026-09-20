@@ -30,7 +30,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 TARGETS=(
 	"cargo_registry:/mnt/cargo/registry"
 	"cargo_git:/mnt/cargo/git"
-	"cargo_target:/mnt/workspace/target"
+	"cargo_target:/mnt/workspace-target"
 	"docker_data_root:/mnt/docker"
 )
 

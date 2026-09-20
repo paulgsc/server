@@ -324,13 +324,25 @@ services:
       - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
       - ${REPO_ROOT}/scripts/disk-usage-loop.sh:/usr/local/bin/disk-usage-loop.sh:ro
       - ${CARGO_HOME_PATH:-/root/.cargo}:/mnt/cargo:ro
-      # Mounts the repo root, not `${REPO_ROOT}/target` directly — Docker's
-      # short-form bind syntax creates a missing host-side path, root-owned
-      # under rootful Docker, and target/ is routinely absent (a fresh
-      # checkout, a `cargo clean`) in exactly the way `${REPO_ROOT}` itself
-      # never is. Mounting the parent that's guaranteed to exist and having
-      # the script look at its target/ child avoids ever creating anything.
-      - ${REPO_ROOT}:/mnt/workspace:ro
+      # Long-form, not the short `${REPO_ROOT}/target:/mnt/workspace-target:ro`
+      # this used to be: that form's own missing-host-path auto-create
+      # (root-owned, under rootful Docker) was real, but mounting the whole
+      # repo root to dodge it was worse — `${REPO_ROOT}` is exactly where a
+      # real `.env` lives (example.env documents VAPID_PRIVATE_KEY, HMAC_KEY,
+      # ... sitting right there), and this is a general-purpose Debian
+      # sidecar on the shared network that only ever needed target/.
+      # `create_host_path: false` makes a genuinely-missing target/ (a fresh
+      # checkout, a `cargo clean`) a loud container-start failure instead of
+      # a silent root-owned directory blocking a later non-root `cargo
+      # build` — this sidecar has nothing else depending on it, so that
+      # failure stays isolated, and `restart: unless-stopped` picks it back
+      # up the moment `cargo build` actually creates target/.
+      - type: bind
+        source: ${REPO_ROOT}/target
+        target: /mnt/workspace-target
+        read_only: true
+        bind:
+          create_host_path: false
       - /var/lib/docker:/mnt/docker:ro
     environment:
       # Passed to the container itself, not just interpolated into the
