@@ -4,10 +4,14 @@
 # collector — see infra/grafana/dashboards/lib/forensic-panels.libsonnet's
 # hostDirDiskUsage panel. cadvisor's container_fs_usage_bytes only sees a
 # *running* container's own writable layer: it never sees the cargo
-# registry/git caches or the workspace target/ dir on the host, and never
-# the parts of Docker's own data-root (build cache, dangling images, unused
-# volumes) that no running container's own usage would show either. This
+# registry/git caches or the workspace target/ dir, both host paths. This
 # script closes that gap with a plain `du`.
+#
+# Deliberately doesn't also track Docker's own data-root — see
+# infra/compose/monitoring.yml's disk-usage-exporter comment for why that
+# needs a scoped Docker API call (docker-socket-proxy's /system/df
+# equivalent), not raw filesystem access to a tree that holds every other
+# container's full environment and every named volume's raw data.
 #
 # Run by the disk-usage-exporter sidecar in infra/compose/monitoring.yml, on
 # a loop — this script itself is single-shot and idempotent, so it's also
@@ -31,7 +35,6 @@ TARGETS=(
 	"cargo_registry:/mnt/cargo/registry"
 	"cargo_git:/mnt/cargo/git"
 	"cargo_target:/mnt/workspace-target"
-	"docker_data_root:/mnt/docker"
 )
 
 dir_size_bytes() {
@@ -47,8 +50,9 @@ dir_size_bytes() {
 		#
 		# The `||` guards the *assignment*, not a bare pipeline followed by
 		# its own `echo 0` — `du` can observe a file vanish mid-traversal
-		# (Docker actively writing to docker_data_root is the realistic
-		# case here) and exit nonzero under pipefail despite awk already
+		# (a concurrent `cargo build`/`cargo clean` touching these same
+		# directories is the realistic case here) and exit nonzero under
+		# pipefail despite awk already
 		# having printed a usable total; a fallback appended as a separate
 		# statement would land *after* that already-emitted line instead of
 		# replacing it, producing two lines for one metric and corrupting
