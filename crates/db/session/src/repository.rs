@@ -309,6 +309,17 @@ impl SessionRepository {
 	/// argument on the index side, and `docs/study-nudge.md`'s "Never stack
 	/// proposals" section for the full account.
 	///
+	/// **That migration's inline commentary still describes the pre-#345
+	/// contract**, naming this method by its old name and calling the
+	/// conflict target a row whose content the next pass would overwrite.
+	/// It is deliberately left alone: `sqlx` checksums an applied
+	/// migration, so editing even a comment in one makes the next `cargo
+	/// sqlx migrate run` fail with "previously applied but has been
+	/// modified" on any database that already ran it — verified directly
+	/// against a scratch database rather than assumed. Shipped migration
+	/// text is frozen; this doc comment and `docs/study-nudge.md` are where
+	/// the current contract lives.
+	///
 	/// **One statement, not read-then-write.** The same race RCM2's own doc
 	/// comment named (a `chatgpt-codex-connector` review on
 	/// #313: a concurrent waker pass, or the subject's own `POST /sessions`
@@ -360,8 +371,9 @@ impl SessionRepository {
 	///
 	/// **Nothing is lost by refusing to refresh here, which is the part
 	/// worth checking rather than assuming.** This method's only caller
-	/// (`nudge::waker::propose_a_session`) is reached only when
-	/// `first_prepared` returned `None`, and this statement's conflict
+	/// (`nudge::waker::consider`, in its `Verdict::NothingToSay` arm) is
+	/// reached only when `first_prepared` returned `None`, and this
+	/// statement's conflict
 	/// target (`origin = 'system' AND started_at IS NULL AND status IN
 	/// ('paused', 'scheduled', 'draft')`) is a strict subset of what
 	/// `first_prepared` searches. So a conflicting row can never be the
