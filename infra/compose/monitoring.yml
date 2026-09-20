@@ -342,31 +342,30 @@ services:
       # tokens), which this general-purpose sidecar on the shared network
       # has no business reading.
       #
-      # create_host_path: false on registry/ but deliberately NOT on git/,
-      # asymmetric on purpose: registry/ is created by cargo's very first
-      # build/check, ever, on any project — a missing registry/ genuinely
-      # means "cargo has literally never run here," worth failing loudly
-      # on. git/ is only created when a dependency is git-sourced,
-      # and — verified directly against this workspace's own Cargo.lock —
-      # there are zero `git+` entries, so git/ commonly does not exist even
-      # on a fully-set-up machine that's built this repo many times.
-      # create_host_path: false would make that the normal case, not an
-      # edge case, and (unlike a container that already exists and merely
-      # exits) a bind-mount failure at *creation* time means Compose never
-      # creates the container at all — restart: unless-stopped has nothing
-      # to retry, so this sidecar would need a manual recreate to ever
-      # start. Letting Docker auto-create git/ (default behavior, root-
-      # owned) is the safer default here: it's read-only from this
-      # container's own side regardless, and the only cost is a future
-      # `cargo build` that adds a *first* git dependency needing one manual
-      # `chown` if that ever happens — far cheaper than this sidecar not
-      # coming up at all on a totally ordinary setup.
-      - type: bind
-        source: ${CARGO_HOME_PATH:-/root/.cargo}/registry
-        target: /mnt/cargo/registry
-        read_only: true
-        bind:
-          create_host_path: false
+      # Both left on Docker's default auto-create (short-form mount,
+      # root-owned if created) rather than create_host_path: false, even
+      # though that flag is available and IS used below on target/ — an
+      # earlier version of this file applied it to registry/ alone, on the
+      # reasoning that a missing registry/ means "cargo has literally never
+      # run here." That reasoning didn't account for what the source path
+      # actually is: ${CARGO_HOME_PATH:-/root/.cargo}, whose fallback half
+      # is a placeholder, not a real cargo home. On an existing deployment
+      # that simply hasn't set CARGO_HOME_PATH yet — the common initial
+      # state, and exactly the case example.env documents as "silently
+      # reports 0 for both cargo panels rather than erroring" — the
+      # fallback /root/.cargo/registry won't exist either, and
+      # create_host_path: false turned that documented zero-fallback into
+      # a container-*creation* failure instead (Codex caught this
+      # contradiction directly). create_host_path: false is only safe on a
+      # mount source with no unconfigured/guessed state to begin with,
+      # which is why it stays on target/ below (${REPO_ROOT} is always the
+      # real checked-out repo, never a fallback guess) but not here: git/'s
+      # own reasoning — verified directly against this workspace's Cargo.lock
+      # (zero `git+` entries) — already covered why forcing loudly on a
+      # commonly-absent directory backfires; the same logic just as clearly
+      # covers registry/ once CARGO_HOME_PATH's fallback is accounted for,
+      # not only git/.
+      - ${CARGO_HOME_PATH:-/root/.cargo}/registry:/mnt/cargo/registry:ro
       - ${CARGO_HOME_PATH:-/root/.cargo}/git:/mnt/cargo/git:ro
       # Long-form, not the short `${REPO_ROOT}/target:/mnt/workspace-target:ro`
       # this used to be: that form's own missing-host-path auto-create
