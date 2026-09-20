@@ -36,6 +36,7 @@ TARGETS=(
 
 dir_size_bytes() {
 	local path="$1"
+	local size
 	if [ -d "$path" ]; then
 		# `-B1` (block-size 1, no `--apparent-size`), not `-b` — `-b` is GNU
 		# du's shorthand for `--apparent-size --block-size=1`, which reports
@@ -44,21 +45,23 @@ dir_size_bytes() {
 		# "space consumed" a filesystem would run out of, not a number that
 		# can overstate it.
 		#
-		# `|| echo 0` rather than letting `du`'s exit code propagate: `du`
-		# can observe a file vanish mid-traversal (Docker actively writing
-		# to docker_data_root is the realistic case here) and exit nonzero
-		# despite printing a usable total. Under `set -e`+pipefail that
-		# would abort the whole script before the atomic rename below,
-		# freezing every target's value — including the three that scanned
-		# fine — at whatever the last successful pass produced. Degrading
-		# just the one glitchy target to 0 for this pass is a smaller,
-		# self-correcting cost next interval; the hostDirUsageStaleness
-		# panel exists for the case where the whole script is actually dead,
-		# not for one transient per-target miss.
-		du -s -B1 "$path" 2>/dev/null | awk '{print $1}' || echo 0
+		# The `||` guards the *assignment*, not a bare pipeline followed by
+		# its own `echo 0` — `du` can observe a file vanish mid-traversal
+		# (Docker actively writing to docker_data_root is the realistic
+		# case here) and exit nonzero under pipefail despite awk already
+		# having printed a usable total; a fallback appended as a separate
+		# statement would land *after* that already-emitted line instead of
+		# replacing it, producing two lines for one metric and corrupting
+		# the whole textfile. Capturing into a variable first means a
+		# failed assignment simply reassigns `size` to 0 — nothing printed
+		# by the failed attempt survives into the final value. The blank
+		# check covers `du` succeeding but printing nothing, same reason.
+		size="$(du -s -B1 "$path" 2>/dev/null | awk '{print $1}')" || size=0
+		[ -n "$size" ] || size=0
 	else
-		echo 0
+		size=0
 	fi
+	echo "$size"
 }
 
 # Written to a per-run tmp file and renamed into place — a `mv` on the same
