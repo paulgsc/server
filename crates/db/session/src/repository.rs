@@ -260,11 +260,11 @@ impl SessionRepository {
 	/// rule, argued in full in `docs/study-nudge.md`'s "Never stack
 	/// proposals" section.
 	///
-	/// **Renamed from `provision_if_absent` by #345**, which made the
-	/// conflict branch a no-op (see the last section below). The name it
-	/// carried between #284 and #345 described a refresh this method no
-	/// longer performs; keeping a name that claims one would be worse than
-	/// the churn of changing it.
+	/// **Renamed from `provision_or_refresh` by #345**, which made the
+	/// conflict branch a no-op (see the last section below). That name,
+	/// which this method carried between #284 and #345, described a refresh
+	/// it no longer performs; keeping a name that claims one would be worse
+	/// than the churn of changing it.
 	///
 	/// **The predicate is `origin = 'system' AND started_at IS NULL`, not
 	/// "anything prepared".** This deliberately replaces the coarser guard
@@ -315,8 +315,10 @@ impl SessionRepository {
 	/// call, landing a competing row in the window between a read and a
 	/// write) is closed the same way here — `SQLite`'s own per-statement
 	/// write serialization decides which of two racing calls actually
-	/// lands, and the loser's content becomes the `DO UPDATE`, not a second
-	/// row. Bounded per #253: an equality probe against a partial index,
+	/// lands, and the loser's write resolves to the `ON CONFLICT` branch
+	/// rather than a second row. Since #345 that branch is `DO NOTHING`, so
+	/// the loser's content is simply discarded and the winner's row stands
+	/// untouched. Bounded per #253: an equality probe against a partial index,
 	/// not a scan — the same discipline `first_prepared`'s three single-status
 	/// probes already established for the neighbouring query.
 	///

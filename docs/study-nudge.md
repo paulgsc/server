@@ -716,11 +716,14 @@ and zero rows are affected — an outcome `refresh_stale_proposal` treats as
 second, orphaned proposal under a brand-new id while the `StudyAction`
 `consider` already selected kept pointing at the old one, which is exactly
 why this method exists separately from `provision_if_absent` rather than
-reusing it: that method's own `ON CONFLICT` refresh is safe for its one
-caller (a race there can only ever be against another concurrent waker
-pass's own fresh candidate, never a person's action — `create_session`/
-`duplicate_session` can never write `origin = 'system'` at all), which is
-not true of `refresh_stale_proposal`'s situation.
+reusing it. Since `#345` that method does not refresh at all — its
+`ON CONFLICT` branch is `DO NOTHING`, because it runs before its pass can
+hold a claim and so must never rewrite a row another pass may already have
+sent a notification about. `refresh_if_untouched` is the one remaining
+path that rewrites a proposal's content, and it is safe precisely because
+`refresh_stale_proposal` calls it *after* winning that claim; its own
+hazard is the read-then-write window above, which the `WHERE` clause
+closes.
 
 The checks inside `refresh_stale_proposal` itself (origin, `started_at`,
 `created_at == updated_at`) are downgraded from a safety gate to a pure
@@ -803,6 +806,15 @@ conflicting_row_a_person_edited_since_it_was_inserted` reproduces the full
 three-step interleaving directly: one pass's insert, a person's edit
 landing on it, then a second pass's own conflicting write — and asserts
 the edit survives untouched.
+
+**`#345` has since superseded that fix with a stronger one.** The guarded
+`DO UPDATE` above closed the person-edits-it case but not the one
+`#342`'s review found: a machine write never moves `updated_at`, so a
+*racing pass's* delayed write still satisfied `created_at = updated_at`
+and could rewrite a row the winner had already sent a notification about.
+The branch is now `DO NOTHING` outright, which closes both, and the test
+named above still passes — its property is now structural rather than
+conditional. See "Never stack proposals" above for the full argument.
 
 **An eighth real `chatgpt-codex-connector` finding, on the second closing
 review, is a race between two concurrent passes over the same subject —
