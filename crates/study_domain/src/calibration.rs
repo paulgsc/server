@@ -82,6 +82,14 @@ pub struct StudySelector {
 	/// What the server has prepared, if anything. Without it there is nothing
 	/// to point at and the honest answer is silence — a reminder with no
 	/// session to open is worse than no reminder.
+	///
+	/// `None` is a much narrower case than it used to be. As of #285 (RCM8)
+	/// `nudge::waker` composes a session for *any* warranted subject who has
+	/// nothing prepared, before it lets selection be final, so the only way
+	/// this arrives `None` at all is a catalogue that could compose nothing —
+	/// a deployment with no timeable activities in it. The silence below is
+	/// therefore still the honest answer; it is just no longer an answer
+	/// anyone reaches on an ordinary day.
 	pub prepared_session: Option<String>,
 }
 
@@ -101,6 +109,13 @@ impl Selector<StudyV1> for StudySelector {
 			// started, review material that was never studied, or announce
 			// new material to someone who has seen none — silence is still
 			// the honest answer for them.
+			//
+			// Both arms are reached only when nothing could be composed (see
+			// `prepared_session` above): `GetStarted` is what an empty
+			// catalogue falls back on, and `None` is what a subject gets when
+			// even that fallback does not fit. `nudge::waker` treats the
+			// second as the bug it now is, rather than the ordinary state it
+			// was before #285.
 			None if dominant == EngagementClass::Presence => Some(StudyAction::GetStarted),
 			None => None,
 		}
@@ -195,6 +210,16 @@ mod tests {
 		assert!(matches!(action, StudyAction::LessonReady { .. }), "got {action:?}");
 	}
 
+	/// Kept rather than replaced when #285 (RCM8) made this state
+	/// extraordinary, per that story's own acceptance criterion: the rule it
+	/// encodes — three of the four deficits have nothing honest to say
+	/// without a session — is still exactly true, and it is now what the
+	/// waker's empty-catalogue fallback rests on. What changed is who reaches
+	/// it: `nudge::waker` composes a session before selection is final, so
+	/// production only lands here when the catalogue can compose nothing.
+	/// The new rule has its own test, one level up, where it belongs —
+	/// `nudge::waker`'s `a_subject_who_has_only_ever_subscribed_gets_one_
+	/// proposed_session_and_exactly_one_notification`.
 	#[test]
 	fn with_nothing_prepared_three_of_four_deficits_stay_silent() {
 		// Still holds for Momentum, Mastery, and Freshness: none of them has

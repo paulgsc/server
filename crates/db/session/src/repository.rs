@@ -371,9 +371,10 @@ impl SessionRepository {
 	///
 	/// **Nothing is lost by refusing to refresh here, which is the part
 	/// worth checking rather than assuming.** This method's only caller
-	/// (`nudge::waker::consider`, in its `Verdict::NothingToSay` arm) is
-	/// reached only when `first_prepared` returned `None`, and this
-	/// statement's conflict
+	/// (`nudge::waker::propose_a_session`, which as of #285/RCM8 is reached
+	/// by any warranted subject with nothing prepared, not only by the
+	/// `NothingToSay` verdict RCM2 first hung it off) is reached only when
+	/// `first_prepared` returned `None`, and this statement's conflict
 	/// target (`origin = 'system' AND started_at IS NULL AND status IN
 	/// ('paused', 'scheduled', 'draft')`) is a strict subset of what
 	/// `first_prepared` searches. So a conflicting row can never be the
