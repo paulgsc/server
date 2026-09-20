@@ -38,11 +38,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Check License Compliance
-        uses: github-license-check@v1
-        with:
-          path: . # This checks the root of the monorepo
-          accepted: MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause # Customize as needed
+      # A "Check License Compliance" step used to sit here, declared as
+      # `uses: github-license-check@v1`. That is not a resolvable action
+      # reference -- a `uses:` value has to be `owner/repo@ref`, `./path` or
+      # `docker://...` -- so GitHub refused to create a run for this file at
+      # all, and every job in it, including the four cargo-deny checks above,
+      # has never once executed since #207 added them.
+      #
+      # Removed rather than repointed at a guess. Which licenses this
+      # monorepo accepts on the JS side is a policy decision, and enforcing
+      # one for the first time (`pnpm licenses list` can do it with no
+      # third-party action at all) is its own change with its own argument to
+      # make -- not something to smuggle in behind a syntax fix. The Rust
+      # half of that policy is `deny.toml`, which this same commit adds
+      # because `cargo deny check licenses` cannot run without one.
 
       - name: Check for banned dependencies
         run: |

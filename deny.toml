@@ -1,0 +1,60 @@
+# cargo-deny policy for this workspace.
+#
+# `.github/workflows/deny.yml` has referenced `cargo deny check` since #207,
+# but that workflow never actually ran (an invalid `uses:` reference made
+# GitHub refuse to create the run at all), so this file never had to exist.
+# With the workflow fixed, it does: `cargo deny check licenses` treats an
+# absent config as "no license is allowed" and rejects all 655 crates in the
+# graph, plain `MIT` included.
+#
+# The allow list below is therefore *derived from what is already in the
+# tree*, not invented: every entry was observed in `cargo deny list` output
+# for this workspace, and nothing was added speculatively. It extends the set
+# the deny.yml author originally wrote down (MIT, Apache-2.0, ISC,
+# BSD-2-Clause, BSD-3-Clause) with the other permissive licenses that are
+# genuinely present. Trimming it is a policy call worth making deliberately;
+# it is not trimmed here, because removing a license that a current
+# dependency actually uses would just fail the build.
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-1-Clause",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  # File-level copyleft, satisfied by not modifying the crates themselves:
+  # cssparser, selectors, ece, webpki-roots and three of their helpers.
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+# `LGPL-2.1-or-later` shows up in `cargo deny list` and is deliberately *not*
+# allowed. The only crates offering it are `r-efi` 5 and 6, whose expression
+# is `MIT OR Apache-2.0 OR LGPL-2.1-or-later` -- an `OR`, so `MIT` already
+# satisfies them. Leaving LGPL off the list means a future dependency that
+# genuinely requires it fails this check and gets a human decision instead of
+# inheriting one made here by accident.
+
+[[licenses.exceptions]]
+# `aws-lc-sys` is `ISC AND (Apache-2.0 OR ISC) AND OpenSSL` -- an `AND`, so
+# unlike the r-efi case above there is no alternative to satisfy instead.
+# Scoped to this one crate rather than allowing the OpenSSL license workspace
+# -wide: it arrives transitively through rustls' aws-lc-rs backend, and a
+# second crate wanting it should be a decision, not a silent inheritance.
+allow = ["OpenSSL"]
+crate = "aws-lc-sys"
+
+# `bans`, `sources` and `advisories` are deliberately left at their defaults.
+# The first two already pass unconfigured. `advisories` does not: the graph
+# carries 34 open RUSTSEC entries today, which is exactly why deny.yml marks
+# that one matrix leg `continue-on-error`. They are real and worth working
+# through, but silencing them with an `ignore` list here would convert a
+# visible backlog into a hidden one, and triaging them is its own change.
