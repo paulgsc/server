@@ -441,24 +441,31 @@ impl SessionRepository {
 	/// content in place — `name`, `activities`, `total_duration_ms` — but
 	/// only if it is, at the instant of this write, still in the same
 	/// untouched state the caller last observed. No insert fallback: this is
-	/// not "provision or refresh," it is "refresh this one row, or do
-	/// nothing."
+	/// "refresh this one row, or do nothing," never "refresh it or make a
+	/// new one".
 	///
-	/// **Why this exists alongside [`Self::provision_if_absent`].** That
-	/// method's own `ON CONFLICT` refresh is safe for its one caller
-	/// (`nudge::waker::consider`'s `NothingToSay` arm) because a row it could
-	/// race against is, by construction, always another concurrent waker
-	/// pass's own fresh candidate — `create_session`/`duplicate_session` can
-	/// never write `origin = 'system'` at all, so a person's own action can
-	/// never be the thing on the other side of *that* race. `nudge::waker::
-	/// refresh_stale_proposal`'s situation is different: it reads a specific,
-	/// already-existing row well before this write — across a full
-	/// `engine.evaluate` call and an admission check — and a real
-	/// `chatgpt-codex-connector` finding on `#335` caught that a person's own
-	/// `PATCH`/`DELETE` landing in that gap is entirely possible. `read, then
-	/// decide, then write` has a window no amount of care in the reading half
-	/// can close; only re-checking the same predicate atomically, in the
-	/// same statement as the write, actually closes it.
+	/// **Why this exists alongside [`Self::provision_if_absent`], and why it
+	/// is now the *only* path that rewrites a proposal's content.** That
+	/// method used to carry an `ON CONFLICT ... DO UPDATE` refresh of its
+	/// own; `#345` made that branch `DO NOTHING`, because it ran before its
+	/// pass had won `EngagementRepository::claim` and so could rewrite a row
+	/// a *different* pass had already sent a notification about. It cannot
+	/// be claim-gated — it necessarily runs before there is an action to
+	/// claim — so the refusal to write is what makes it safe. See its own
+	/// doc comment for the full argument.
+	///
+	/// This method is the other half of that split: it is called from
+	/// `nudge::waker::refresh_stale_proposal`, *after* that pass holds its
+	/// claim, which is what makes rewriting content safe here and nowhere
+	/// else. Its own hazard is a different one, and needs this `WHERE`
+	/// clause rather than a claim: it reads a specific, already-existing row
+	/// well before this write — across a full `engine.evaluate` call and an
+	/// admission check — and a real `chatgpt-codex-connector` finding on
+	/// `#335` caught that a person's own `PATCH`/`DELETE` landing in that
+	/// gap is entirely possible. `read, then decide, then write` has a
+	/// window no amount of care in the reading half can close; only
+	/// re-checking the same predicate atomically, in the same statement as
+	/// the write, actually closes it.
 	///
 	/// **The `WHERE` clause is the entire safety argument, not the read that
 	/// preceded this call.** It re-verifies `origin = 'system' AND started_at
