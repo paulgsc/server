@@ -969,13 +969,29 @@
         // operator raising that interval to reduce du's traversal cost
         // against a large Docker data-root would otherwise make a
         // perfectly healthy sidecar read as stopped between every scan.
+        //
+        // A sidecar that never completes even one scan (never created at
+        // all — e.g. a bind-mount source genuinely missing, monitoring.yml's
+        // own comments on registry/target's create_host_path: false) emits
+        // neither metric this expression reads, so it evaluates over an
+        // empty vector: grey "no data" (panelDefaults.harden, applied to
+        // every stat panel on this dashboard), not red. That's this
+        // codebase's own established third state, not a gap — panel-
+        // defaults.libsonnet's own header is explicit that grey must never
+        // be mistaken for healthy, same as every liveness panel already
+        // does for `up{job="..."}`. What grey can't distinguish here is
+        // "just started, first scan hasn't landed yet" from "will never
+        // work" — closing that would mean giving this sidecar its own
+        // scrape endpoint (or monitoring Compose itself for failed
+        // container creation), a materially bigger, more general piece of
+        // observability than this panel's job.
         expr: '(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds',
         instant: true,
         refId: 'A',
       },
     ],
     title: 'Disk Usage Scan Age (× configured interval)',
-    description: 'How many scan intervals old the last successful pass is — red means the sidecar stopped, not that disk usage stopped, and stays meaningful regardless of DISK_USAGE_SCAN_INTERVAL',
+    description: 'How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey "no data" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from "just started, give it one interval."',
     type: 'stat',
   },
 }

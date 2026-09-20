@@ -1700,7 +1700,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "How many scan intervals old the last successful pass is — red means the sidecar stopped, not that disk usage stopped, and stays meaningful regardless of DISK_USAGE_SCAN_INTERVAL",
+      "description": "How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey \"no data\" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from \"just started, give it one interval.\"",
       "fieldConfig": {
         "defaults": {
           "color": {
