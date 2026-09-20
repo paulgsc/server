@@ -23,7 +23,7 @@
 //! ones happen.
 
 use crate::handlers::db::session::new_id;
-use crate::nudge::constraints::StudyConstraints;
+use crate::nudge::constraints::{StudyConstraints, Suppressed};
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
 use crate::{AppState, NudgeContext};
@@ -153,9 +153,9 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// warrants.
 	//
 	// The repository handle is hoisted to a local rather than constructed
-	// inline: the `NothingToSay` arm below (#279/RCM2) needs the same one
-	// to write a provisioned session, and it is a cheap handle over the
-	// shared pool, not a connection of its own.
+	// inline: `propose_a_session` (#279/RCM2, widened by #285/RCM8) needs
+	// the same one to write a provisioned session, and it is a cheap handle
+	// over the shared pool, not a connection of its own.
 	let sessions = SessionRepository::new(db.clone());
 	let prepared_session = match sessions.first_prepared(subject_id).await {
 		Ok(prepared_session) => prepared_session,
@@ -184,13 +184,113 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		consented_topics,
 	};
 
+	// Read before the selector is built, because #285 (RCM8) below needs to
+	// know whether this subject had anything prepared *going in* — after the
+	// provisioning block runs, `Some` no longer distinguishes "they already
+	// had one" from "the waker just made one."
+	let nothing_prepared = prepared_session.is_none();
 	let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(constraints, StudySelector { prepared_session });
 	let gate = engagement.gate(subject_id).await?;
 	let last_intervened_at = gate
 		.and_then(|row| row.last_intervened_at)
 		.and_then(|raw| crate::nudge::clock::parse_timestamp(raw.as_str()));
 
-	let action = match engine.evaluate(&charge, now, last_intervened_at) {
+	let mut verdict = engine.evaluate(&charge, now, last_intervened_at);
+
+	// #285 (RCM8), the epic's closing move: **provisioning happens before
+	// selection is final, for every warranted subject with nothing
+	// prepared** — not only for the three deficits whose selector arm
+	// returns `None`.
+	//
+	// #279 (RCM2) hung provisioning off `Verdict::NothingToSay`, which is
+	// exactly the set of subjects `StudySelector::select` had no answer for:
+	// dominant deficit `Momentum`, `Mastery`, or `Freshness` with nothing to
+	// resume, review, or announce. That left the fourth class out. A
+	// `Presence`-dominant subject with nothing prepared never reaches
+	// `NothingToSay` at all, because #294 gave plain absence its one
+	// sessionless answer, `StudyAction::GetStarted` — so the person the
+	// whole cold-start epic (`#257`) is named for, someone who has done
+	// nothing but subscribe, got an invitation to go find something rather
+	// than the session RCM3/RCM4/RCM5 can now actually compose for them.
+	// `#285`'s own acceptance scenario states the fix as its first clause:
+	// one subscription, no sessions, no signals, clock advanced ⇒ *a session
+	// exists*, owned by that subject, `origin = 'system'`.
+	//
+	// So the condition here is "warranted, with nothing prepared", not any
+	// particular verdict. `Wait` is the one verdict that means *not*
+	// warranted — `evaluate` returns it before selection is ever reached,
+	// for a subject still inside refractory or still above threshold — and
+	// it is the only one excluded. Everything else has already proven
+	// eligibility and refractory, which is exactly the point at which
+	// composing a proposal is worth the catalogue read.
+	//
+	// Provisioning before a `Suppressed` verdict is deliberate and not new:
+	// #279's arm already wrote the session first and checked admission
+	// after, so a quiet-hours or not-yet-consented subject ends the pass
+	// with a real proposal waiting for the next admissible one. This only
+	// makes the `Presence` path behave the same way as the other three.
+	//
+	// `GetStarted` survives as exactly what `docs/study-nudge.md` predicted
+	// it would become here: the fallback for a catalogue that cannot produce
+	// anything. When `propose_a_session` comes back `Unavailable`, the
+	// sessionless verdict computed above is still standing, and for plain
+	// absence it is still honest — an invitation opens the app, which needs
+	// no session to exist.
+	if nothing_prepared && !matches!(verdict, Verdict::Wait { .. }) {
+		match propose_a_session(db, &sessions, subject_id, now).await {
+			Proposal::Prepared(session_id) => {
+				// Neutral to engagement (delta 0.0, filed under Freshness):
+				// it is the opportunity a later `LessonReady`/
+				// `ResumeAbandoned`/`SuggestReview`/`NewMaterial` needs to be
+				// sayable, not a sign of engagement itself. See
+				// `StudySignal::SessionProvisioned`'s own doc comment — this
+				// is the only thing in the codebase that applies it.
+				charge.apply::<StudyCalibration>(&StudySignal::SessionProvisioned { session_id: session_id.clone() }, now);
+				verdict = decide_with_a_proposal(engine.admissibility(), &charge, now, session_id);
+			}
+			Proposal::Unavailable { label, retry_in } => {
+				if matches!(verdict, Verdict::NothingToSay) {
+					// The one condition `#285` makes alertable, and the only
+					// way a pass still ends with nothing to say: this subject
+					// is due, past refractory, and their dominant deficit has
+					// no sessionless answer — while the catalogue could not
+					// produce a proposal either. `propose_a_session` has
+					// already logged *which* way the catalogue failed; this
+					// line is the separate fact that there was no fallback.
+					//
+					// `error!`, not the `warn!` this condition carried before
+					// the epic, and a different sentence: "there is nothing to
+					// point them at" described an ordinary state of the world
+					// in RCM2's day. What is wrong now is the catalogue, and a
+					// log line describing a condition that no longer exists is
+					// worse than no log line at all.
+					error!(
+						subject = %subject_id,
+						reason = label,
+						"warranted, but the catalogue produced nothing to propose and this subject's dominant deficit has no sessionless answer; a study deployment in this state can never nudge anyone whose deficit is not Presence"
+					);
+					crate::metrics::waker::record_nothing_to_say();
+					crate::metrics::waker::record_verdict(label, "n/a");
+					if let Some(retry_in) = retry_in {
+						let retry = now + retry_in;
+						let (levels, as_of) = charge.to_storage();
+						engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+					}
+					return Ok(false);
+				}
+				// Otherwise the sessionless verdict computed above — plain
+				// absence's `GetStarted`, admitted or suppressed — still
+				// stands, and it is the pass's real terminal outcome. Nothing
+				// is recorded here on purpose: `record_verdict` names *the*
+				// outcome one due subject reached this pass, so counting a
+				// failed proposal attempt alongside the notification that
+				// went out anyway would double-count the pass in the
+				// breakdown panel.
+			}
+		}
+	}
+
+	let action = match verdict {
 		Verdict::Intervene(action) => action,
 		Verdict::Wait { until } => {
 			crate::metrics::waker::record_verdict("wait", "n/a");
@@ -208,194 +308,31 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
-			// Depleted and past refractory/eligibility — `evaluate` only
-			// reaches this arm once both have already passed — but nothing
-			// fits. Plain absence always has `GetStarted` (see
-			// `StudySelector::select`), so reaching here means the dominant
-			// deficit is Momentum, Mastery, or Freshness with nothing
-			// prepared to resume, review, or announce.
+			// **Unreachable by construction as of #285 (RCM8)**, and kept
+			// only because `Verdict` is a closed enum this `match` has to be
+			// total over — defensive, not expected. Two facts rule it out.
+			// `evaluate` reaches its own `NothingToSay` arm only when
+			// `StudySelector::select` returns `None`, which it only does when
+			// `prepared_session` is `None`; and every warranted subject with
+			// nothing prepared has just been through the block above, which
+			// either handed selection a `Some` — exhaustive over all four
+			// classes — or returned early. `decide_with_a_proposal` can
+			// technically produce this arm, but only by the same `None`, from
+			// a selector that was just given a `Some`.
 			//
-			// #279 (RCM2)'s decision, written down per its acceptance
-			// criteria: provision a session here rather than widen the
-			// vocabulary. Two other shapes were weighed and rejected:
-			//
-			// - A fifth `StudyAction` variant (`ProposeSession`) breaks
-			//   `StudyAction::session_id()`'s totality — every existing
-			//   variant already carries a real id — and forces
-			//   `payload::topic_for`/`NudgePayload::for_action` to grow a
-			//   case for "the same message, before a session exists."
-			// - A new `Verdict` arm in `intervention` puts "the domain
-			//   wants something created" into the generic engine, which
-			//   `intervention`'s own docs are explicit about keeping free
-			//   of study vocabulary: "every user story adds a variant [to
-			//   `study_domain`]; none of them should touch `intervention`."
-			//
-			// So `intervention` and `StudySelector` both stay untouched:
-			// provisioning happens here, `prepared_session` becomes
-			// `Some`, and the *existing* selector maps the same dominant
-			// deficit to `ResumeAbandoned`/`SuggestReview`/`NewMaterial`
-			// exactly as it would for a session that already existed.
-			// RCM3 (#280), RCM4 (#281), and RCM5 (#282) are what actually
-			// fill it in — see `materialize_provisioned_session`'s own
-			// doc comment for what it writes and why.
-			//
-			// Crash safety without extra bookkeeping: the write below is
-			// a `Scheduled` row `SessionRepository::first_prepared` will
-			// find on any later pass (RCM5's own choice — see
-			// `materialize_provisioned_session`'s doc comment for why
-			// `Scheduled` is now safe where RCM2 originally chose
-			// `Draft`). A crash between this write and `claim` below
-			// costs this pass's notification, not a second session — the
-			// next pass reads the row this one already wrote and reaches
-			// `Verdict::Intervene` directly, skipping this arm entirely.
-			//
-			// Race safety is a separate concern from crash safety, and
-			// needs its own guard: `prepared_session` above was read at
-			// the *top* of `consider`, and a concurrent waker pass or the
-			// subject's own `POST /sessions` call can create a prepared
-			// session in the window between that read and this write.
-			// Because the provisioned row's id is always freshly
-			// generated, an unconditional `upsert` would not collide with
-			// whatever won that race — it would just add a second, blank
-			// draft beside it. `provision_if_absent` closes the window
-			// atomically (one statement, targeting #284's own partial
-			// unique index — `origin = 'system' AND started_at IS NULL`,
-			// not the three statuses `first_prepared` treats as prepared)
-			// rather than trusting the read that already happened; see its
-			// own doc comment for the mechanism and the #313 review that
-			// caught the original race. A race-losing write is a no-op
-			// rather than a refresh (#345): the row it would have
-			// rewritten is, by construction, another concurrent pass's
-			// brand-new proposal — never the stale one #284 wanted
-			// refreshed, since that row would have been found by
-			// `first_prepared` at the top of this function — and the
-			// winner may already have claimed and sent a notification
-			// pointing at it. Staleness is `refresh_stale_proposal`'s job,
-			// after a claim is won. The `first_prepared` re-read below is
-			// what makes this correct either way: whichever side of the
-			// race actually landed is what gets used, not necessarily the
-			// row built here.
-			let catalogue = match ActivityRepository::new(db.clone()).list().await {
-				Ok(catalogue) => catalogue,
-				Err(err) => {
-					error!(subject = %subject_id, error = %err, "could not read the activity catalogue; skipping this subject rather than provisioning an empty session");
-					crate::metrics::waker::record_verdict("storage_error", "n/a");
-					// A real Codex review finding on server#322 (P2): unlike
-					// `first_prepared`'s per-subject read a few lines above,
-					// a catalogue read is global -- if it is failing, it
-					// fails identically for every subject reaching this arm
-					// in the same pass. Leaving `eligible_at` where it was
-					// (as the other `storage_error` branches in this
-					// function do, for a genuinely per-subject failure)
-					// would let `EngagementRepository::due`'s oldest-32
-					// query keep re-selecting exactly these subjects every
-					// subsequent pass, crowding the batch and starving
-					// subjects who need no catalogue read at all -- one
-					// with an existing prepared session, say. Advance the
-					// gate instead of leaving it stuck.
-					let retry = now + chrono::Duration::hours(1);
-					let (levels, as_of) = charge.to_storage();
-					engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
-					return Ok(false);
-				}
-			};
-			let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
-			if provisioned.activities.is_empty() {
-				// A real Codex review finding on server#322 (P2): every one
-				// of `recommend()`'s picks was dropped by `provision()` --
-				// a `NULL` floor on every eligible candidate, or a cap so
-				// tight nothing fits. Persisting this anyway would write a
-				// `Scheduled` row `first_prepared`/`provision_if_absent`
-				// then treats as "already prepared" forever: nothing in
-				// this codebase re-provisions once a prepared session
-				// exists, so the subject would be stuck pointing at a
-				// permanently empty session even after the catalogue is
-				// fixed. Retry later instead of writing a session with
-				// nothing in it -- a longer backoff than the storage-error
-				// case above, since a catalogue that produces nothing
-				// timeable needs a content fix, not a quick retry.
-				warn!(subject = %subject_id, "recommend()+provision() produced no timeable activities; not persisting an empty session");
-				crate::metrics::waker::record_verdict("nothing_to_provision", "n/a");
-				let retry = now + chrono::Duration::hours(6);
-				let (levels, as_of) = charge.to_storage();
-				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
-				return Ok(false);
-			}
-			if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
-				error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
-				crate::metrics::waker::record_verdict("storage_error", "n/a");
-				return Ok(false);
-			}
-			let session_id = match sessions.first_prepared(subject_id).await {
-				Ok(Some(id)) => id,
-				Ok(None) => {
-					// Unreachable in practice: `provision_if_absent` just
-					// proved a prepared session exists for this subject,
-					// either the one built above or a concurrent writer's.
-					// Guarded rather than trusted, per this codebase's
-					// refuse-rather-than-guess convention.
-					error!(subject = %subject_id, "provisioned a session but none is findable immediately after; skipping this pass");
-					crate::metrics::waker::record_verdict("storage_error", "n/a");
-					return Ok(false);
-				}
-				Err(err) => {
-					error!(subject = %subject_id, error = %err, "could not re-read the provisioned session; skipping this subject");
-					crate::metrics::waker::record_verdict("storage_error", "n/a");
-					return Ok(false);
-				}
-			};
-
-			// Neutral to engagement (delta 0.0, filed under Freshness): it
-			// is the opportunity a later `LessonReady`/`ResumeAbandoned`/
-			// `SuggestReview`/`NewMaterial` needs to be sayable, not a
-			// sign of engagement itself. See `StudySignal::
-			// SessionProvisioned`'s own doc comment — this is the first
-			// thing in the codebase to actually apply it.
-			charge.apply::<StudyCalibration>(&StudySignal::SessionProvisioned { session_id: session_id.clone() }, now);
-
-			let deficits = charge.deficits::<StudyCalibration>(now);
-			let Some(reselected) = StudySelector {
-				prepared_session: Some(session_id),
-			}
-			.select(&deficits) else {
-				// Cannot happen by construction: reaching `NothingToSay`
-				// already proved the dominant deficit is not `Presence`,
-				// and `prepared_session` is now `Some`, so `select`'s
-				// `Some(_)` arm is exhaustive over the remaining three
-				// classes. Guarded rather than `.expect`ed anyway — a
-				// class added to `EngagementClass` without a matching
-				// `StudySelector` arm should cost one skipped pass for
-				// this subject, not a panicked waker.
-				error!(subject = %subject_id, "provisioned a session but the selector still found nothing to say; this should be unreachable");
-				crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
-				let retry = now + chrono::Duration::hours(6);
-				let (levels, as_of) = charge.to_storage();
-				engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
-				return Ok(false);
-			};
-
-			// The provisioned session is real and written, but the
-			// intervention itself still has to clear the same admission
-			// gate any other action would — quiet hours and consent do
-			// not stop applying just because this action came from
-			// provisioning rather than an existing session. Presence is
-			// re-checked against `reselected`'s own context here too,
-			// automatically: `engine`'s constraints hold one fixed
-			// `PresenceLeases` snapshot fetched once at the top of
-			// `consider`, and `admit` asks it about whatever action it is
-			// given, so this call site needed no changes of its own to
-			// become context-aware alongside the one above.
-			match engine.admissibility().admit(now, &reselected) {
-				Ok(()) => reselected,
-				Err(reason) => {
-					info!(subject = %subject_id, reason = reason.as_str(), "provisioned a session, but the intervention is not admissible yet");
-					crate::metrics::waker::record_verdict("suppressed", reason.as_str());
-					let retry = now + StudyCalibration::REFRACTORY.min(chrono::Duration::hours(1));
-					let (levels, as_of) = charge.to_storage();
-					engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
-					return Ok(false);
-				}
-			}
+			// So the only way here is a class added to `EngagementClass`
+			// without a matching `StudySelector` arm: a build-time mistake,
+			// not a state the running system can drift into. That costs this
+			// subject one skipped pass rather than a panicked waker, the same
+			// refuse-rather-than-guess convention the rest of this function
+			// follows.
+			error!(subject = %subject_id, "a prepared session still selected nothing to say; unreachable by construction — an EngagementClass with no StudySelector arm is the only way here");
+			crate::metrics::waker::record_nothing_to_say();
+			crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
+			let retry = now + chrono::Duration::hours(6);
+			let (levels, as_of) = charge.to_storage();
+			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+			return Ok(false);
 		}
 	};
 
@@ -450,6 +387,206 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	Ok(true)
 }
 
+/// What one attempt to compose something to point at produced — see
+/// [`propose_a_session`].
+enum Proposal {
+	/// A prepared session now exists for this subject: the one this pass
+	/// wrote, or a concurrent writer's that `first_prepared` resolved to
+	/// instead.
+	Prepared(String),
+	/// Nothing could be composed this pass. Both fields are what the caller
+	/// needs *only if* it has no sessionless action to fall back on; when it
+	/// does (plain absence's `GetStarted`), both are correctly ignored,
+	/// because the pass's terminal outcome is then that notification rather
+	/// than this failure.
+	Unavailable {
+		/// The `record_verdict` label for this failure, recorded by the
+		/// caller so exactly one verdict is counted per pass.
+		label: &'static str,
+		/// How far to push `eligible_at` out, or `None` to leave it exactly
+		/// where it is so the next pass retries this subject immediately.
+		retry_in: Option<chrono::Duration>,
+	},
+}
+
+/// Compose a session for a subject who has nothing prepared, and write it.
+///
+/// #279 (RCM2)'s decision, written down per its acceptance criteria:
+/// provision a session rather than widen the vocabulary. Two other shapes
+/// were weighed and rejected:
+///
+/// - A fifth `StudyAction` variant (`ProposeSession`) breaks
+///   `StudyAction::session_id()`'s totality — every existing variant already
+///   carries a real id — and forces `payload::topic_for`/
+///   `NudgePayload::for_action` to grow a case for "the same message, before
+///   a session exists."
+/// - A new `Verdict` arm in `intervention` puts "the domain wants something
+///   created" into the generic engine, which `intervention`'s own docs are
+///   explicit about keeping free of study vocabulary: "every user story adds
+///   a variant [to `study_domain`]; none of them should touch
+///   `intervention`."
+///
+/// So `intervention` and `StudySelector` both stay untouched: provisioning
+/// happens here, `prepared_session` becomes `Some`, and the *existing*
+/// selector maps the same dominant deficit to `LessonReady`/
+/// `ResumeAbandoned`/`SuggestReview`/`NewMaterial` exactly as it would for a
+/// session that already existed. RCM3 (#280), RCM4 (#281), and RCM5 (#282)
+/// are what actually fill it in — see `materialize_provisioned_session`'s own
+/// doc comment for what it writes and why.
+///
+/// **Crash safety without extra bookkeeping.** The write is a `Scheduled` row
+/// `SessionRepository::first_prepared` will find on any later pass (RCM5's own
+/// choice — see `materialize_provisioned_session`'s doc comment for why
+/// `Scheduled` is now safe where RCM2 originally chose `Draft`). A crash
+/// between this write and `consider`'s `claim` costs that pass's
+/// notification, not a second session — the next pass reads the row this one
+/// already wrote and never calls this function at all.
+///
+/// **Race safety is a separate concern, and needs its own guard.**
+/// `consider`'s `first_prepared` read happened at the *top* of the pass, and
+/// a concurrent waker pass or the subject's own `POST /sessions` call can
+/// create a prepared session in the window between that read and this write.
+/// Because the provisioned row's id is always freshly generated, an
+/// unconditional `upsert` would not collide with whatever won that race — it
+/// would just add a second, blank draft beside it. `provision_if_absent`
+/// closes the window atomically (one statement, targeting #284's own partial
+/// unique index — `origin = 'system' AND started_at IS NULL`, not the three
+/// statuses `first_prepared` treats as prepared) rather than trusting the
+/// read that already happened; see its own doc comment for the mechanism and
+/// the #313 review that caught the original race. A race-losing write is a
+/// no-op rather than a refresh (#345): the row it would otherwise rewrite is,
+/// by construction, another concurrent pass's brand-new proposal — never the
+/// stale one #284 wanted refreshed, since that row would have been found by
+/// `first_prepared` at the top of `consider` — and the winner may already
+/// have claimed and sent a notification pointing at it. Staleness is
+/// `refresh_stale_proposal`'s job, after a claim is won; see
+/// `docs/study-nudge.md`'s "Never stack proposals" section. The
+/// `first_prepared` re-read below is what makes this correct either way:
+/// whichever side of the race actually landed is what gets returned, not
+/// necessarily the row built here.
+///
+/// **Logs, but never records a verdict.** Every failure below says in the log
+/// what the catalogue could not do, which is true regardless of what the
+/// caller does next. Whether that failure is also the *pass's* outcome is the
+/// caller's question, not this function's — a `Presence`-dominant subject
+/// still gets `GetStarted` out of it — and `record_verdict` counts one
+/// terminal outcome per due subject per pass.
+async fn propose_a_session(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, now: DateTime<Utc>) -> Proposal {
+	let catalogue = match ActivityRepository::new(db.clone()).list().await {
+		Ok(catalogue) => catalogue,
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not read the activity catalogue; composing nothing rather than an empty session");
+			// A real Codex review finding on server#322 (P2): unlike
+			// `first_prepared`'s per-subject read, a catalogue read is
+			// global -- if it is failing, it fails identically for every
+			// subject reaching this function in the same pass. Leaving
+			// `eligible_at` where it was would let
+			// `EngagementRepository::due`'s oldest-32 query keep
+			// re-selecting exactly these subjects every subsequent pass,
+			// crowding the batch and starving subjects who need no
+			// catalogue read at all -- one with an existing prepared
+			// session, say. Ask for the gate to be advanced instead.
+			return Proposal::Unavailable {
+				label: "storage_error",
+				retry_in: Some(chrono::Duration::hours(1)),
+			};
+		}
+	};
+
+	let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
+	if provisioned.activities.is_empty() {
+		// A real Codex review finding on server#322 (P2): every one of
+		// `recommend()`'s picks was dropped by `provision()` -- a `NULL`
+		// floor on every eligible candidate, or a cap so tight nothing fits.
+		// Persisting this anyway would write a `Scheduled` row
+		// `first_prepared`/`provision_if_absent` then treats as "already
+		// prepared" forever: nothing in this codebase re-provisions once a
+		// prepared session exists, so the subject would be stuck pointing at
+		// a permanently empty session even after the catalogue is fixed.
+		// Retry later instead of writing a session with nothing in it -- a
+		// longer backoff than the storage-error case above, since a
+		// catalogue that produces nothing timeable needs a content fix, not
+		// a quick retry.
+		warn!(subject = %subject_id, "recommend()+provision() produced no timeable activities; not persisting an empty session");
+		return Proposal::Unavailable {
+			label: "nothing_to_provision",
+			retry_in: Some(chrono::Duration::hours(6)),
+		};
+	}
+
+	if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
+		error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
+		// Per-subject, unlike the catalogue failures above: the gate stays
+		// where it is so the very next pass tries this subject again.
+		return Proposal::Unavailable {
+			label: "storage_error",
+			retry_in: None,
+		};
+	}
+
+	match sessions.first_prepared(subject_id).await {
+		Ok(Some(session_id)) => Proposal::Prepared(session_id),
+		Ok(None) => {
+			// Unreachable in practice: `provision_if_absent` just proved a
+			// prepared session exists for this subject, either the one built
+			// above or a concurrent writer's. Guarded rather than trusted,
+			// per this codebase's refuse-rather-than-guess convention.
+			error!(subject = %subject_id, "provisioned a session but none is findable immediately after; skipping this pass");
+			Proposal::Unavailable {
+				label: "storage_error",
+				retry_in: None,
+			}
+		}
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not re-read the provisioned session; skipping this subject");
+			Proposal::Unavailable {
+				label: "storage_error",
+				retry_in: None,
+			}
+		}
+	}
+}
+
+/// Re-run the half of [`intervention::Engine::evaluate`] that happens *after*
+/// warrant, now that there is a session to point at.
+///
+/// Deliberately not a second `evaluate` call: warrant (refractory, then the
+/// solved eligibility instant) was settled before anything was written, and
+/// nothing this pass does afterwards can change it — `StudySignal::
+/// SessionProvisioned` carries a delta of `0.0` precisely so that composing a
+/// proposal is not itself evidence of engagement. What *does* change is the
+/// selector's input, so only selection and admission are redone, in the same
+/// order and with the same `retry_at` arithmetic `evaluate` uses.
+///
+/// The provisioned action still has to clear the same admission gate any
+/// other action would — quiet hours and consent do not stop applying just
+/// because this action came from provisioning rather than an existing
+/// session. Presence is re-checked against the new action's own context
+/// automatically: `consider`'s constraints hold one fixed `PresenceLeases`
+/// snapshot, fetched once at the top of the pass, and `admit` asks it about
+/// whatever action it is given.
+fn decide_with_a_proposal(admissibility: &StudyConstraints, charge: &Charge<StudyV1>, now: DateTime<Utc>, session_id: String) -> Verdict<StudyAction, Suppressed> {
+	let deficits = charge.deficits::<StudyCalibration>(now);
+	let Some(action) = (StudySelector {
+		prepared_session: Some(session_id),
+	})
+	.select(&deficits) else {
+		// Cannot happen: `select` is exhaustive over all four classes once
+		// `prepared_session` is `Some`. Handed back as a verdict rather than
+		// `.expect`ed so `consider`'s own defensive arm is the single place
+		// that decides what an impossible state costs.
+		return Verdict::NothingToSay;
+	};
+
+	match admissibility.admit(now, &action) {
+		Ok(()) => Verdict::Intervene(action),
+		Err(reason) => Verdict::Suppressed {
+			reason,
+			retry_at: now + StudyCalibration::REFRACTORY.min(chrono::Duration::hours(1)),
+		},
+	}
+}
+
 /// #284 (RCM7): refresh `prepared`'s content in place if it is an un-started
 /// `system` proposal — same id, freshly recommended contents — so an
 /// ordinary pass over someone who keeps ignoring the same proposal does not
@@ -477,10 +614,10 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// instead closes that: at most one pass per intervention ever reaches this
 /// call, and it is always the one that goes on to actuate.
 ///
-/// **Best-effort, not fatal.** Unlike `Verdict::NothingToSay`'s own
-/// provisioning (where a catalogue-read failure or an empty candidate set
-/// means genuinely nothing to offer this pass, so the whole pass backs off),
-/// a failure here still has a session to fall back to — the existing,
+/// **Best-effort, not fatal.** Unlike `propose_a_session` (where a
+/// catalogue-read failure or an empty candidate set means there may be
+/// nothing to offer this pass at all, and only plain absence's `GetStarted`
+/// saves it), a failure here still has a session to fall back to — the existing,
 /// unrefreshed proposal `prepared` already names. So every failure path
 /// below just logs and leaves that proposal exactly as it was, rather than
 /// failing `consider` or advancing any gate: the person still gets notified
@@ -848,8 +985,8 @@ mod tests {
 	/// #278's named edge case: someone subscribes, then unsubscribes every
 	/// device before ever becoming due. `actuate` already degrades correctly
 	/// once admission fails; the risk the issue calls out is landing in
-	/// `Verdict::NothingToSay` instead, which `consider` logs at `warn!` on
-	/// every pass. Presence — fastest half-life, highest weight — stays the
+	/// `Verdict::NothingToSay` instead, which `consider` logged at `warn!`
+	/// on every pass at the time (`error!`, and only on a bug, since #285). Presence — fastest half-life, highest weight — stays the
 	/// dominant deficit for a subject who has never received a single signal,
 	/// so `GetStarted` (#294) keeps firing and the engine explains the silence
 	/// as `NotConsented` at `info!` rather than falling through to a warn loop.
@@ -1887,5 +2024,345 @@ mod tests {
 				"a global catalogue failure must not leave this subject re-selected every pass, crowding out subjects that need no catalogue read at all"
 			);
 		});
+	}
+
+	/// **`#285` (RCM8), the `#257` epic's closing argument, as one scenario.**
+	///
+	/// Every preceding RCM story fixed a mechanism; this asserts the property
+	/// they were all for, in the exact shape `#285`'s own issue text states
+	/// it: a fresh database, one push subscription for one subject, no
+	/// sessions, no signals, no engagement rows; the clock advances past the
+	/// solved eligibility instant; the waker runs; and *then* a session
+	/// exists, owned by that subject, its activities selected by RCM3, each
+	/// block at its floor per RCM4, `origin = 'system'`, exactly one
+	/// notification accepted — and a second pass immediately after produces
+	/// no second session and no second notification.
+	///
+	/// Both of `#257`'s silences are in the setup rather than asserted
+	/// separately. **Silence #1** (no signal ⇒ no gate row ⇒ never due) is
+	/// why the only thing this subject ever does is subscribe: without
+	/// `first_contact` (#278, RCM1) the `due` query below could never return
+	/// them at all. **Silence #2** (nothing prepared ⇒ nothing to say) is why
+	/// the `sessions` table starts empty: before RCM2–RCM8 a subject in this
+	/// state got an invitation at best, and a `warn!` and a six-hour retry at
+	/// worst. Every clause below failed on `main` before this epic, starting
+	/// with the first.
+	///
+	/// Deliberately driven through `run_once`, not `consider`: `due`'s own
+	/// `WHERE eligible_at <= now` is the scheduler, and a test that called
+	/// `consider` directly would assert the decision while skipping the
+	/// discovery — exactly the half of silence #1 that was broken.
+	#[test]
+	fn a_subject_who_has_only_ever_subscribed_gets_one_proposed_session_and_exactly_one_notification() {
+		use metrics_util::debugging::DebuggingRecorder;
+		use push_kit::{PushSubscription, SubscriptionKeys};
+		use push_repo::{Consent, PushSubscriptionRepository, Topic};
+		use sqlx::sqlite::SqlitePoolOptions;
+		use std::sync::atomic::Ordering;
+		// `push_kit`'s own fixture (`crates/push_kit/src/sender.rs`): a real
+		// P-256 point and a real 16-byte auth secret, because "exactly one
+		// notification was accepted" is a clause about what `Sender::deliver`
+		// actually put on a socket. The inert placeholders the sibling tests
+		// in this module use are fine when the assertion is about what
+		// happened *before* the send — RFC 8291 encryption fails on them
+		// locally, no network involved — and are exactly wrong here.
+		const P256DH: &str = "BLMbF9ffKBiWQLCKvTHb6LO8Nb6dcUh6TItC455vu2kElga6PQvUmaFyCdykxY2nOSSL3yKgfbmFLRTUaGv4yV8";
+		const AUTH: &str = "xS03Fi5ErfTNH_l9WHE9Ig";
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-cold-start";
+
+		let (endpoint, notifications) = loopback_push_service();
+
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+			rt.block_on(async {
+				let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+				MIGRATOR.run(&pool).await.unwrap();
+
+				let now = Utc::now();
+				let now_str = now.to_rfc3339();
+				let engagement = EngagementRepository::new(pool.clone());
+				let sessions = SessionRepository::new(pool.clone());
+
+				// GIVEN one push subscription for one subject, and nothing
+				// else this subject has ever done.
+				PushSubscriptionRepository::new(pool.clone())
+					.upsert(
+						&PushSubscription {
+							endpoint: endpoint.clone(),
+							keys: SubscriptionKeys {
+								p256dh: P256DH.to_owned(),
+								auth: AUTH.to_owned(),
+							},
+						},
+						&Consent {
+							subject_id: subject_id.to_owned(),
+							topics: Topic::ALL.to_vec(),
+							consented_at: now_str.clone(),
+						},
+						&now_str,
+					)
+					.await
+					.unwrap();
+				assert!(
+					first_contact(&pool, subject_id).await.unwrap(),
+					"RCM1: subscribing is what puts a subject in the gate at all — without this row `due` can never return them, however long they stay away"
+				);
+				assert!(sessions.list(subject_id).await.unwrap().is_empty(), "no sessions: the state the whole epic is about");
+				assert!(
+					engagement.due(&now_str, BATCH).await.unwrap().is_empty(),
+					"and not due yet either: first contact seeds the charge full, so someone who installs the app at 9am is not interrupted at 9:05"
+				);
+
+				// WHEN the clock advances past the solved eligibility instant.
+				rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+				assert!(
+					engagement.due(&now_str, BATCH).await.unwrap().iter().any(|gate| gate.subject_id == subject_id),
+					"the solved instant has passed, so the arithmetic — not a schedule — is what makes this subject due"
+				);
+
+				// AND the waker runs.
+				let intervened = run_once(&pool, &nudge_context()).await.unwrap();
+				assert_eq!(intervened, 1, "one due subject, one intervention");
+
+				// THEN a session exists, owned by that subject.
+				let all = sessions.list(subject_id).await.unwrap();
+				assert_eq!(all.len(), 1, "exactly one, and it is the one the waker composed");
+				let record = &all[0];
+				assert!(matches!(record.origin, SessionOrigin::System), "origin = 'system' (#283, RCM6): proposed, not authored");
+				assert_eq!(record.status, SessionStatus::Scheduled, "#282 (RCM5)'s own choice of status");
+				assert!(record.started_at.is_none(), "nobody has opened it yet");
+				assert!(record.total_duration_ms > 0, "a real, timed session — not the placeholder row RCM2 originally wrote");
+
+				// AND its activities were selected by RCM3, and each block is
+				// at its floor per RCM4.
+				let catalogue = ActivityRepository::new(pool.clone()).list().await.unwrap();
+				assert_composed_by_rcm3_at_rcm4_floors(subject_id, record, &catalogue);
+
+				// AND exactly one notification was accepted.
+				assert_eq!(notifications.load(Ordering::SeqCst), 1, "one subject, one device, one push");
+				let sent = sqlx::query_scalar!(
+					r#"SELECT COUNT(*) AS "count: i64" FROM intervention_log WHERE subject_id = ? AND actuated_at IS NOT NULL"#,
+					subject_id
+				)
+				.fetch_one(&pool)
+				.await
+				.unwrap();
+				assert_eq!(sent, 1, "and the history says so too — a claimed-but-unsent row would be NULL here");
+
+				// AND running the waker again produces no second session and
+				// no second notification. This is the refractory floor and
+				// the claim doing their jobs together, not a special case:
+				// `intervened` wrote `eligible_at` 20 hours out, so `due`
+				// does not return this subject at all.
+				let again = run_once(&pool, &nudge_context()).await.unwrap();
+				assert_eq!(again, 0, "nothing is due; the second pass costs one index probe");
+				assert_eq!(sessions.list(subject_id).await.unwrap().len(), 1, "no second session");
+				assert_eq!(notifications.load(Ordering::SeqCst), 1, "no second notification");
+			});
+		});
+
+		assert_exactly_one_send_and_no_silence(&snapshotter);
+	}
+
+	/// The metric half of the scenario above, kept out of its body so the
+	/// narrative stays one readable pass.
+	fn assert_exactly_one_send_and_no_silence(snapshotter: &metrics_util::debugging::Snapshotter) {
+		use metrics_util::debugging::DebugValue;
+		use metrics_util::CompositeKey;
+
+		let snapshot: Vec<(CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, DebugValue)> = snapshotter.snapshot().into_vec();
+		let counter = |name: &str, label_value: Option<&str>| -> u64 {
+			snapshot
+				.iter()
+				.find_map(|(key, _, _, value)| {
+					let key = key.key();
+					let matches = key.name() == name && label_value.is_none_or(|wanted| key.labels().any(|label| label.value() == wanted));
+					matches.then_some(match value {
+						DebugValue::Counter(count) => *count,
+						_ => 0,
+					})
+				})
+				.unwrap_or(0)
+		};
+
+		assert_eq!(counter("nudge_waker_verdicts_total", Some("sent")), 1, "one pass landed a notification, and only one did");
+		assert_eq!(
+			counter("nudge_waker_nothing_to_say_total", None),
+			0,
+			"#285's own metric: a subject who has only subscribed is exactly who this epic exists for, so a deployment with something to say to nobody else must still have something to say to them"
+		);
+		assert_eq!(
+			counter("nudge_waker_verdicts_total", Some("nothing_to_say")),
+			0,
+			"and the verdict breakdown agrees — reaching the defensive arm at all would mean an EngagementClass has no StudySelector arm"
+		);
+	}
+
+	/// "The clock advances past the solved eligibility instant," for a
+	/// scenario that cannot advance it: `consider` reads `Utc::now()`
+	/// directly, so the gate row is rewritten instead to be exactly what
+	/// `first_contact` would have written had it happened far enough in the
+	/// past — the solved instant for a full charge, plus an hour.
+	///
+	/// The levels are that same full charge, untouched; only `as_of` moves.
+	/// Decay is a closed-form function of it (`engagement_charge`'s own
+	/// schema comment), so this is the same subject, later — not a hand-tuned
+	/// charge picked to produce the deficit the scenario wants.
+	async fn rewind_first_contact_past_the_solved_instant(engagement: &EngagementRepository, subject_id: &str, now: DateTime<Utc>) {
+		let shift = Charge::<StudyV1>::full::<StudyCalibration>(now).eligible_at::<StudyCalibration>(now) - now + Duration::hours(1);
+		let contacted_at = now - shift;
+		let seeded = Charge::<StudyV1>::full::<StudyCalibration>(contacted_at);
+		let (levels, as_of) = seeded.to_storage();
+
+		engagement
+			.save(subject_id, &levels, &as_of.to_rfc3339(), &seeded.eligible_at::<StudyCalibration>(contacted_at).to_rfc3339())
+			.await
+			.unwrap();
+	}
+
+	/// Two clauses of the scenario above: the session's activities are what
+	/// `recommend()` (#280, RCM3) picked, and every block sits at its floor
+	/// per `provision()` (#281, RCM4).
+	///
+	/// The first is recomputed from the same catalogue rather than
+	/// hard-coded, so it does not go stale if the seeded catalogue or
+	/// `DEFAULT_RECOMMENDATION_COUNT` changes. The second is deliberately
+	/// *not* recomputed: it restates RCM4's rule — `max(this activity's own
+	/// floor, the client's minimum)`, never the catalogue's `defaultMinutes`
+	/// — against the catalogue rows directly, so both failing together means
+	/// the picks changed and the second failing alone means the flooring did.
+	fn assert_composed_by_rcm3_at_rcm4_floors(subject_id: &str, record: &SessionRecord, catalogue: &[ActivityRecord]) {
+		use activity_repo::CLIENT_MIN_ACTIVITY_DURATION_MS;
+
+		let expected = provision(&recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &[], None, Utc::now()));
+		assert!(!expected.is_empty(), "the seeded catalogue always has at least one timeable activity");
+		assert_eq!(
+			record.activities,
+			expected.iter().map(|activity| serde_json::to_value(activity).unwrap()).collect::<Vec<_>>(),
+			"the stored activities must be exactly what recommend() picked and provision() floored"
+		);
+
+		for activity in &record.activities {
+			let id = activity.get("activityId").and_then(serde_json::Value::as_str).unwrap();
+			let minutes = activity
+				.get("config")
+				.and_then(|config| config.get("durationMinutes"))
+				.and_then(serde_json::Value::as_i64)
+				.unwrap();
+			let catalogued = catalogue.iter().find(|row| row.id == id).unwrap();
+			assert_eq!(
+				minutes,
+				catalogued.min_duration_ms.unwrap().max(CLIENT_MIN_ACTIVITY_DURATION_MS) / 60_000,
+				"every block must be at its floor, not at the catalogue's defaultMinutes"
+			);
+		}
+	}
+
+	/// A push service the scenario above can actually be delivered to:
+	/// loopback, `std::net`, no HTTP crate. Returns the endpoint to subscribe
+	/// with and a count of the notifications it has accepted.
+	///
+	/// `push_kit`'s `PushTransport` seam is narrow enough that a fake would be
+	/// six lines (its own doc comment says so, and `push_kit`'s tests use
+	/// one), but `NudgeContext::sender` is a concrete
+	/// `Sender<ReqwestTransport>` — so the seam a `file_host` test can reach
+	/// is the socket, not the trait. Answering `201` here is what makes
+	/// "exactly one notification was accepted" a claim about
+	/// `SendOutcome::Accepted` rather than about a mock.
+	fn loopback_push_service() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+		use std::io::{Read as _, Write as _};
+		use std::sync::atomic::{AtomicUsize, Ordering};
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+		endpoint.push_str("/wpush/v2/cold-start");
+
+		let notifications = std::sync::Arc::new(AtomicUsize::new(0));
+		let accepted = std::sync::Arc::clone(&notifications);
+
+		// Detached rather than joined: the accept loop has no way to know the
+		// test is finished, and the whole point of the second pass is that no
+		// further connection arrives. The count is read only after both passes
+		// have awaited their sends, so every increment that will ever happen
+		// has already happened by then.
+		std::thread::spawn(move || {
+			for stream in listener.incoming() {
+				let Ok(mut stream) = stream else { continue };
+
+				// The whole request — headers, then exactly `Content-Length`
+				// bytes — before answering, so the client sees a complete
+				// exchange rather than a reset mid-body that `SendOutcome`
+				// would read as a transport failure.
+				let mut request: Vec<u8> = Vec::new();
+				let mut chunk = [0_u8; 1024];
+				while let Ok(read) = stream.read(&mut chunk) {
+					if read == 0 {
+						break;
+					}
+					request.extend_from_slice(&chunk[..read]);
+					let Some(head) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+						continue;
+					};
+					let headers = String::from_utf8_lossy(&request[..head]).to_lowercase();
+					let length = headers
+						.lines()
+						.find_map(|line| line.strip_prefix("content-length:"))
+						.and_then(|value| value.trim().parse::<usize>().ok())
+						.unwrap_or(0);
+					if request.len() >= head + 4 + length {
+						break;
+					}
+				}
+
+				accepted.fetch_add(1, Ordering::SeqCst);
+				// `Connection: close`, so a second notification can never be
+				// smuggled down a kept-alive socket and go uncounted — one
+				// connection is one notification.
+				let _ = stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+				let _ = stream.flush();
+			}
+		});
+
+		(endpoint, notifications)
+	}
+
+	/// The `NudgeContext` the scenario above runs both of its passes with.
+	///
+	/// A real `ReqwestTransport`, because `NudgeContext::sender` is concrete
+	/// — but over a client built with `no_proxy()`, so a machine with
+	/// `HTTP_PROXY` set in its environment (this repo's own CI containers
+	/// among them) cannot silently route a loopback request through a proxy
+	/// that is not there. Quiet hours are disabled outright (`start == end`
+	/// never matches, per `is_within_quiet_hours`) rather than set to a fixed
+	/// window: the scenario must reach `Verdict::Intervene` regardless of the
+	/// wall-clock hour CI happens to run it at.
+	fn nudge_context() -> NudgeContext {
+		use push_kit::{ReqwestTransport, Sender, VapidIdentity};
+
+		let vapid = VapidIdentity::from_config(
+			Some("IQ9Ur0ykXoHS9gzfYX0aBjy9lvdrjx_PFUXmie9YRcY"),
+			Some("BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4"),
+			"mailto:test@example.com",
+		)
+		.unwrap();
+		let transport = ReqwestTransport::new(reqwest::Client::builder().no_proxy().build().unwrap());
+
+		NudgeContext {
+			clock: NudgeClock::resolve(Some("UTC")).0,
+			sender: std::sync::Arc::new(Sender::new(vapid.clone(), transport)),
+			vapid,
+			enabled: true,
+			quiet_hours_start: 0,
+			quiet_hours_end: 0,
+			presence_lease_ttl: std::time::Duration::from_secs(75),
+			base_url: "https://example.com".to_owned(),
+		}
 	}
 }

@@ -149,9 +149,13 @@ impl std::error::Error for PayloadError {}
 pub const fn topic_for(action: &StudyAction) -> Topic {
 	match action {
 		// Closest existing grant: someone who consented to "your lesson is
-		// ready" has consented to being told to start one. `GetStarted` is
-		// interim and retires once #279 lands, which does not warrant a
-		// fifth topic for a message this short-lived.
+		// ready" has consented to being told to start one. #285 (RCM8)
+		// settled what `GetStarted` is for good — not retired, but narrowed
+		// to the fallback for a catalogue that can compose nothing, since
+		// every warranted subject with nothing prepared now gets a real
+		// proposal instead. A message that rare still does not warrant a
+		// fifth topic, and the grant it borrows is the right one: someone
+		// invited to start something consented to exactly that.
 		StudyAction::LessonReady { .. } | StudyAction::GetStarted => Topic::LessonReady,
 		StudyAction::ResumeAbandoned { .. } | StudyAction::SuggestReview { .. } => Topic::Coaching,
 		StudyAction::NewMaterial { .. } => Topic::NewMaterial,

@@ -101,10 +101,14 @@ Plain absence is different: it has an honest sessionless answer. When
 `prepared_session` is `None` and the dominant deficit is `Presence`, the
 selector returns `StudyAction::GetStarted` instead of staying silent — an
 invitation, deep-linking to the app base rather than a session that does not
-exist. This is a deliberately **interim** answer, not the recommender: it
-invites, it does not propose. `#279` leaves it alone — see "Provisioning"
-below for why — and once `#285` lands, `GetStarted` either retires or
-becomes the documented fallback for an empty catalogue.
+exist. This was a deliberately **interim** answer, not the recommender: it
+invites, it does not propose. `#279` left it alone — see "Provisioning"
+below for why — and `#285` (RCM8) settled it, for the second of the two
+options this paragraph used to offer: `GetStarted` does not retire, it
+**narrows to the fallback for a catalogue that can compose nothing**. Every
+warranted subject with nothing prepared now gets a real proposal instead, the
+`Presence`-dominant one included — see "Nothing to say becomes a bug report"
+below.
 
 ### Provisioning: `NothingToSay` becomes an opportunity, not a dead end
 
@@ -116,6 +120,16 @@ deficit of `Momentum`, `Mastery`, or `Freshness` with nothing to resume,
 review, or announce — it writes a minimal `Draft` session (no activities, no
 scenes) for that subject on the spot, rather than logging a warning and
 waiting six hours to ask again.
+
+Two things below have moved since, and are described where they landed rather
+than rewritten here. `#282` (RCM5) is what makes the written row a full
+`Scheduled` session instead of a minimal `Draft` one — see "Materialising a
+session". `#285` (RCM8) is what widens the *condition*: the write no longer
+hangs off `Verdict::NothingToSay` at all, but off "warranted, with nothing
+prepared", which is what finally brings the fourth deficit in — see "Nothing
+to say becomes a bug report". Everything between those two sentences —
+what is written, why here and not in `intervention`, and what it costs on a
+crash — is unchanged by either.
 
 Three shapes for this were weighed, and the choice is recorded in
 `nudge::waker::consider`'s own doc comment on the `NothingToSay` arm, not
@@ -647,8 +661,8 @@ needed at the call site, and refreshing is skipped automatically whenever
 `Wait`, `Suppressed` (quiet hours, no consent, or presence), or
 `NothingToSay` is what `evaluate` actually decided. It is best-effort
 rather than fatal (a failure leaves the existing, unrefreshed proposal in
-place rather than failing the pass), unlike `NothingToSay`'s own
-provisioning, where a failure means genuinely nothing to offer. Bounded the
+place rather than failing the pass), unlike provisioning itself, where a
+failure can mean there is nothing to offer at all. Bounded the
 same way: one indexed lookup by id to decide whether to refresh, not a
 scan.
 
@@ -850,6 +864,84 @@ winner's own claim would have done — so the pass under test still reaches
 `Intervene` (`evaluate` never reads `eligible_at`) but then loses the
 claim, and asserts the proposal's content is completely untouched
 afterward.
+
+### Nothing to say becomes a bug report (#285, RCM8)
+
+`#279` (RCM2) hung provisioning off `Verdict::NothingToSay`, which is the set
+of subjects `StudySelector::select` had no answer for: dominant deficit
+`Momentum`, `Mastery`, or `Freshness`, with nothing to resume, review, or
+announce. That is three of the four classes. The fourth never reaches that
+verdict at all, because `#294` gave plain absence its one sessionless answer
+— so the person this whole epic is named for, someone who has done nothing
+but subscribe, got `GetStarted`'s invitation to go and find something rather
+than the session RCM3/RCM4/RCM5 can now actually compose for them.
+
+RCM8 changes the *condition*, not the machinery: provisioning now happens for
+any **warranted** subject with nothing prepared, before selection is final.
+`Verdict::Wait` is the one verdict that means "not warranted" — `evaluate`
+returns it before selection is ever reached — and it is the only one
+excluded. Everything else has already proven eligibility and refractory,
+which is exactly the point at which a catalogue read is worth doing.
+Provisioning ahead of a `Suppressed` verdict is deliberate and not new: RCM2's
+arm already wrote the session first and checked admission after, so a subject
+inside quiet hours ends the pass with a real proposal waiting for the next
+admissible one. RCM8 only makes the `Presence` path behave like the other
+three.
+
+Selection and admission are then re-run against the session that now exists
+(`nudge::waker::decide_with_a_proposal`) rather than the whole verdict being
+recomputed. Warrant was settled before anything was written and nothing the
+pass does afterwards can change it: `StudySignal::SessionProvisioned` carries
+a delta of `0.0` precisely so that composing a proposal is not itself evidence
+of engagement.
+
+**What is left of `NothingToSay`.** Two facts now rule the verdict out of the
+ordinary path. `evaluate` reaches it only when `select` returns `None`, which
+it does only when `prepared_session` is `None`; and every warranted subject
+with nothing prepared has just been through provisioning, which either handed
+selection a `Some` — exhaustive over all four classes — or failed outright.
+So the arm in `consider` is unreachable by construction and says so in a
+comment: the only way there is a class added to `EngagementClass` without a
+matching `StudySelector` arm, a build-time mistake rather than a state the
+running system can drift into.
+
+The one *reachable* silence left is a catalogue that can compose nothing —
+unreadable, or with no timeable activity in it. A `Presence`-dominant subject
+still gets `GetStarted` out of that, which is exactly the fallback role the
+"Cold start" section above always said this story would either retire it into
+or keep it for. Anyone else gets nothing, and that is now logged as the bug it
+is, at `error!` and in a sentence about the catalogue: "there is nothing to
+point them at" described an ordinary state of the world in RCM2's day, and a
+log line describing a condition that no longer exists is worse than no log
+line.
+
+**`nudge_waker_nothing_to_say_total` is the alertable form of that sentence. A
+non-zero value indicates a bug, not a quiet day.** It counts every pass that
+ended with a subject the arithmetic said to interrupt and nothing to say to
+them — an empty or unreadable catalogue, or the unreachable arm above. It is
+deliberately its own series rather than another label on
+`nudge_waker_verdicts_total`, whose every other value is an ordinary thing for
+a healthy deployment to do; an alert can be written against this name without
+depending on a label value surviving a refactor. A pass where an invitation
+still went out does not count: that subject was told *something*, and the
+failed proposal behind it is already in the logs and in
+`verdict="storage_error"`/`"nothing_to_provision"`.
+
+**The whole epic, as one test.** `a_subject_who_has_only_ever_subscribed_gets_
+one_proposed_session_and_exactly_one_notification` in `nudge::waker`'s test
+module is `#257`'s closing argument executed: a fresh database, one push
+subscription, no sessions, no signals, no engagement rows; the clock advanced
+past the solved eligibility instant; the waker run through `run_once` (not
+`consider` — `due`'s own `WHERE eligible_at <= now` is the half of silence #1
+that was broken, and a test that skipped discovery would assert the decision
+without it). It then asserts every clause of the scenario: a session exists,
+owned by that subject, `origin = 'system'`, its activities exactly what
+`recommend()` picked and `provision()` floored, each block at
+`max(activity floor, client minimum)`, exactly one notification accepted — over
+a real socket, against a loopback push service that answers `201` — and a
+second pass immediately after producing no second session and no second
+notification. Every one of those clauses failed on `main` before this epic,
+starting with the first.
 
 ### First contact: how a subject enters the gate at all
 
@@ -1451,6 +1543,20 @@ day and exists twice on fall-back day. `local_day_bounds` takes the earliest
 valid instant in both cases, so the range is always well-formed, but a nudge on
 those two days a year may land up to an hour off. The consequence is bounded and
 the alternative is a lot of machinery.
+
+**A cold-start proposal is a guess about a stranger.** `#257` closed with
+`#285`: someone who has only ever subscribed is now provably proposed to
+rather than passed over, and the end-to-end test above is what holds that
+shut. What the epic cannot close is the *quality* of that first proposal.
+`recommend()` picks for a subject with no history at all — no completions, no
+scores, no abandonment — so the three axes it weighs are, for this one person,
+reduced to catalogue order and a daily shuffle. It is a real session at real
+floors, and it is not yet an informed one; the first week of
+`intervention_log` rows against what those subjects actually open is what
+should revise it. The one silence left in the mechanism is narrower and
+louder: a catalogue that can compose nothing at all, which
+`nudge_waker_nothing_to_say_total` counts and which is a bug rather than a
+quiet day.
 
 **The calibration is a guess.** Every weight, half-life, ceiling, and the
 threshold itself were chosen by argument rather than by evidence. They are

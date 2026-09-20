@@ -63,3 +63,26 @@ pub fn record_session_rows_read(count: usize) {
 	#[allow(clippy::cast_possible_truncation)] // a session table is never near u64::MAX rows
 	metrics::counter!("nudge_waker_session_rows_read_total").increment(count as u64);
 }
+
+/// #285 (RCM8): every pass that ends with a subject the arithmetic said to
+/// interrupt and nothing to say to them.
+///
+/// Deliberately its own series rather than only a label on
+/// `nudge_waker_verdicts_total`. That counter is a *breakdown* — "which of
+/// the terminal outcomes did each due subject reach this pass" — and every
+/// one of its other values is an ordinary thing for a healthy deployment to
+/// do. This one is not: after `#257`'s cold-start epic, reaching it means the
+/// catalogue produced nothing to propose (a content or deployment bug), or a
+/// class was added to `EngagementClass` without a matching `StudySelector`
+/// arm (a build-time one). A non-zero value is a bug, not a quiet day — which
+/// is a sentence an alert rule can be written against without depending on a
+/// label value, and which `docs/study-nudge.md` says in exactly those words.
+///
+/// Not incremented for a `Wait`, a `Suppressed`, or any pass where an
+/// invitation still went out: a subject who got `GetStarted` because the
+/// catalogue was empty was told *something*, and the failed proposal behind
+/// it is already in the logs and in `verdict="storage_error"`/
+/// `"nothing_to_provision"`.
+pub fn record_nothing_to_say() {
+	metrics::counter!("nudge_waker_nothing_to_say_total").increment(1);
+}
