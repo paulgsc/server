@@ -60,5 +60,13 @@ runs:
         DATABASE_URL: sqlite://./dev.db
       run: |
         echo "Generating workspace-level SQLx metadata..."
-        nix develop .#ci --command \
-          "$HOME/.cargo/bin/sqlx" prepare --workspace -- --bin ${{ inputs.image-name }}
+        # `sqlx prepare` (unlike `database create`/`migrate run`) refuses to
+        # run unless invoked as `cargo sqlx prepare`, which sets `CARGO` --
+        # verified directly: `error: failed to get value of \`CARGO\`;
+        # \`prepare\` subcommand may only be invoked as \`cargo sqlx prepare\`.
+        # Rather than go back through `cargo sqlx` subcommand dispatch (PATH
+        # search, which risks resolving the nix-provided 0.7 cargo-sqlx
+        # instead of ours), resolve the devshell's own cargo path and set
+        # CARGO explicitly for our absolute-path sqlx binary.
+        nix develop .#ci --command bash -c \
+          'CARGO="$(command -v cargo)" "$HOME/.cargo/bin/sqlx" prepare --workspace -- --bin '"${{ inputs.image-name }}"
