@@ -6,7 +6,7 @@ pub async fn get_next_index(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, Err
 		.fetch_one(tx.as_mut())
 		.await?
 		.next_index;
-	Ok(next_index.into())
+	Ok(next_index)
 }
 
 pub async fn get_previous_mood(tx: &mut Transaction<'_, Sqlite>, index: i64) -> Result<i64, Error> {
