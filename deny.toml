@@ -43,18 +43,23 @@ allow = [
 # genuinely requires it fails this check and gets a human decision instead of
 # inheriting one made here by accident.
 
-[[licenses.exceptions]]
-# `aws-lc-sys` is `ISC AND (Apache-2.0 OR ISC) AND OpenSSL` -- an `AND`, so
-# unlike the r-efi case above there is no alternative to satisfy instead.
-# Scoped to this one crate rather than allowing the OpenSSL license workspace
-# -wide: it arrives transitively through rustls' aws-lc-rs backend, and a
-# second crate wanting it should be a decision, not a silent inheritance.
-allow = ["OpenSSL"]
-crate = "aws-lc-sys"
+# An `[[licenses.exceptions]]` entry for `aws-lc-sys` used to live here:
+# 0.34.0's expression was `ISC AND (Apache-2.0 OR ISC) AND OpenSSL`, an `AND`
+# with no alternative to satisfy instead of the OpenSSL clause. #344's first
+# `cargo update` pass bumped it to 0.45.0, whose expression dropped the
+# OpenSSL clause entirely (`ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND
+# MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC
+# OR MIT-0)`, verified directly via `cargo metadata`) -- every component is
+# already in the allow list above, so the exception is gone rather than left
+# as dead config `cargo deny check licenses` would otherwise warn is unmatched.
 
 # `bans`, `sources` and `advisories` are deliberately left at their defaults.
 # The first two already pass unconfigured. `advisories` does not: the graph
-# carries 34 open RUSTSEC entries today, which is exactly why deny.yml marks
-# that one matrix leg `continue-on-error`. They are real and worth working
-# through, but silencing them with an `ignore` list here would convert a
-# visible backlog into a hidden one, and triaging them is its own change.
+# carried 46 open RUSTSEC entries before #344 started (33 vulnerability, 9
+# unmaintained, 2 unsound, 2 yanked) -- which is exactly why deny.yml marks
+# that one matrix leg `continue-on-error`. This same `cargo update` pass
+# clears 20 of them (26 remain: 17 vulnerability, 9 unmaintained), verified
+# via `cargo deny check advisories` before and after. The rest are real and
+# worth working through, but silencing them with an `ignore` list here would
+# convert a visible backlog into a hidden one, and triaging them is #344's
+# ongoing work.
