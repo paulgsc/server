@@ -27,7 +27,6 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["io"] }
 scraper = "0.13.0"
 csv = "1.1.6"
-quick-xml = "0.36.2"
 
 [lints]
 workspace = true
