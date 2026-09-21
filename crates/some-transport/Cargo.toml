@@ -19,7 +19,26 @@ thiserror.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 serde_json = { workspace = true, optional = true }
-async-nats = { version = "0.44.2", optional = true }
+# `default-features = false` + explicit list is async-nats's own `default` set minus
+# `websockets` -- our nats/*.rs uses plain TCP NATS only (no ws:// or wss://), and
+# `websockets` pulls `tokio-websockets` -> `webpki-roots`, which carries a
+# CDLA-Permissive-2.0 license this workspace's `deny.toml` doesn't allow. Trimming the
+# unused feature avoids that decision entirely rather than expanding the allow list for
+# a dependency nothing here calls.
+async-nats = { version = "0.50.0", optional = true, default-features = false, features = [
+  "server_2_10",
+  "server_2_11",
+  "server_2_12",
+  "server_2_14",
+  "service",
+  "ring",
+  "jetstream",
+  "nkeys",
+  "crypto",
+  "object-store",
+  "kv",
+  "nuid",
+] }
 tokio  = { workspace = true, optional = true, features = ["sync", "time"] }
 futures = { version = "0.3", optional = true }
 prost = { version = "0.14.1", optional = true }
