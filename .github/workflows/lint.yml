@@ -95,7 +95,7 @@ jobs:
               cp "$migration_file" "$temp_migrations_dir/$filename"
             fi
           done
-          DATABASE_URL="sqlite:///$root_db" nix develop .#rust --command sqlx migrate run --source "$temp_migrations_dir"
+          DATABASE_URL="sqlite:///$root_db" nix develop .#rust --command "$HOME/.cargo/bin/sqlx" migrate run --source "$temp_migrations_dir"
           rm -rf "$temp_migrations_dir"
       - name: Cache sqlx metadata
         uses: actions/cache@v4
@@ -105,7 +105,15 @@ jobs:
           restore-keys: |
             sqlx-${{ runner.os }}-
       - name: Generate sqlx metadata
-        run: nix develop --command cargo sqlx prepare --workspace
+        # Unqualified `sqlx`/`cargo sqlx` here would resolve the nix devshell's
+        # own 0.7.x sqlx-cli first (see the "Install sqlx-cli" step above and
+        # prepare-sqlx/action.yml for the same footgun, confirmed there via a
+        # real CI failure). `sqlx prepare` also requires `CARGO` to be set --
+        # normally done by `cargo sqlx` dispatch -- so resolve the devshell's
+        # own cargo path and set it explicitly for our absolute-path binary.
+        run: |
+          nix develop --command bash -c \
+            'CARGO="$(command -v cargo)" "$HOME/.cargo/bin/sqlx" prepare --workspace'
       - name: Run compiler check
         run: nix develop --command cargo check --workspace
       - name: Run cargo clippy
