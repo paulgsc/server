@@ -59,7 +59,7 @@ crates/
 ├── push_kit/           Web Push (VAPID) actuation
 ├── intervention/, study_domain/
 │                       Domain logic for when and what the system intervenes on
-└── cursorium/, file_reader/, obs-websocket/,
+└── cursorium/, obs-websocket/,
     enum-name-derive/, gsheet_derive/
                         Supporting libraries and derive macros
 
