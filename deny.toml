@@ -53,13 +53,62 @@ allow = [
 # already in the allow list above, so the exception is gone rather than left
 # as dead config `cargo deny check licenses` would otherwise warn is unmatched.
 
-# `bans`, `sources` and `advisories` are deliberately left at their defaults.
-# The first two already pass unconfigured. `advisories` does not: the graph
-# carried 46 open RUSTSEC entries before #344 started (33 vulnerability, 9
-# unmaintained, 2 unsound, 2 yanked) -- which is exactly why deny.yml marks
-# that one matrix leg `continue-on-error`. This same `cargo update` pass
-# clears 20 of them (26 remain: 17 vulnerability, 9 unmaintained), verified
-# via `cargo deny check advisories` before and after. The rest are real and
-# worth working through, but silencing them with an `ignore` list here would
-# convert a visible backlog into a hidden one, and triaging them is #344's
-# ongoing work.
+# `bans` and `sources` are deliberately left at their defaults; both already
+# pass unconfigured. `advisories` does not: the graph carried 46 open RUSTSEC
+# entries before #344 started -- which is exactly why deny.yml marks that one
+# matrix leg `continue-on-error`. #344 is working through them PR by PR
+# (cargo-update bumps, dead-dependency removals, targeted version/feature
+# bumps); see that issue for the running tally.
+#
+# The three entries below are the first `ignore` additions of that effort,
+# added deliberately rather than reflexively: each is for a crate this
+# workspace genuinely still uses (confirmed by direct `grep`, not assumed),
+# reachable through a dependency neither this workspace nor its immediate
+# dependent controls, where the advisory's own "Solution:" field reads "No
+# safe upgrade is available!" -- verified directly via `cargo deny check
+# advisories`, not inferred from the advisory's prose. This is *not* a
+# blanket policy: every other still-open advisory (the legacy `oauth2`
+# 4.4.2/`reqwest` 0.11.27/`rustls` 0.21.12 stack and the
+# `google-youtubeanalytics2`/`yup-oauth2` 1.0.12/`hyper` 0.10.16 stack, both
+# in `sdk`) stays a visible failure pending a real fix or an explicit
+# scoping decision, not a silenced one.
+[advisories]
+ignore = [
+  # Marvin Attack (timing side-channel key recovery). Reachable only via
+  # `web-push 0.11.0` -> `jwt-simple 0.12.17` (feature `pure-rust`, not
+  # optional -- confirmed via `cargo tree -e features -i rsa@0.9.10`) ->
+  # `superboring` -> `rsa`. `web-push` has no newer release (0.11.0 is
+  # latest on crates.io) and doesn't feature-gate `jwt-simple`/`rsa` out,
+  # so there is no version bump or feature trim that removes it -- the
+  # only escape is dropping `push_kit`'s web-push functionality entirely.
+  # `push_kit` is genuinely used (`file_host`, `push_repo`; confirmed via
+  # `grep -rln web_push crates/push_kit/src/`), so that's a product
+  # decision, not a dependency-hygiene one.
+  { id = "RUSTSEC-2023-0071", reason = "rsa via web-push 0.11.0 (latest) -> jwt-simple's non-optional pure-rust feature -> superboring; no upstream fix, push_kit genuinely uses web-push" },
+
+  # Whole `google-apis-rs` project marked unmaintained upstream (not a
+  # specific vulnerable version range -- there is no patched version to
+  # move to; confirmed 8.0.0 still carries the same advisory via `cargo
+  # deny check advisories`). This is the dependency underneath
+  # `google-drive3`/`google-gmail1`/`google-sheets4`/`google-youtube3`,
+  # all of which `sdk` genuinely calls (confirmed via
+  # `grep -rln google_drive3\|google_gmail1\|google_sheets4\|google_youtube3
+  # crates/sdk/src/`). The advisory's own suggested replacement
+  # (`google-cloud-rust`) does not cover Drive/Gmail/Sheets/YouTube --
+  # it's Google Cloud Platform bindings, a different API surface entirely
+  # -- so there is no drop-in migration, only a full rewrite of `sdk`'s
+  # Google integrations.
+  { id = "RUSTSEC-2025-0066", reason = "google-apis-common: whole google-apis-rs project unmaintained upstream, no patched version exists, sdk genuinely uses drive3/gmail1/sheets4/youtube3" },
+
+  # `rustls-pemfile` itself is marked unmaintained (deprecated in favor of
+  # `rustls-pki-types`), not a version-range vulnerability -- 2.2.0 is
+  # already the latest release, so there is no upgrade within the crate.
+  # Reachable two ways: `yup-oauth2 12.1.0` -> `google-apis-common` (the
+  # actively-used stack above, pulls 2.2.0) and `reqwest 0.11.27` ->
+  # `oauth2 4.4.2` -> `sdk` directly (pulls 1.0.4; part of the legacy
+  # OAuth2 4.x chain still pending the scoping decision noted above). The
+  # google-apis-common leg alone is enough to justify this regardless of
+  # how that legacy-chain decision lands -- fixing it requires `yup-oauth2`
+  # itself to migrate off `rustls-pemfile`, not a change available here.
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: unmaintained (deprecated for rustls-pki-types), 2.2.0 is already latest; reachable via the actively-used yup-oauth2/google-apis-common stack" },
+]
