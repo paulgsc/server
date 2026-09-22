@@ -60,7 +60,7 @@ allow = [
 # (cargo-update bumps, dead-dependency removals, targeted version/feature
 # bumps); see that issue for the running tally.
 #
-# The three entries below are the first `ignore` additions of that effort,
+# The two entries below are the first `ignore` additions of that effort,
 # added deliberately rather than reflexively: each is for a crate this
 # workspace genuinely still uses (confirmed by direct `grep`, not assumed),
 # reachable through a dependency neither this workspace nor its immediate
@@ -72,6 +72,24 @@ allow = [
 # `google-youtubeanalytics2`/`yup-oauth2` 1.0.12/`hyper` 0.10.16 stack, both
 # in `sdk`) stays a visible failure pending a real fix or an explicit
 # scoping decision, not a silenced one.
+#
+# A third entry, for `RUSTSEC-2025-0134` (rustls-pemfile), lived here
+# briefly and was wrong: it claimed the crate's own `google-apis-common`
+# leg had "no fix available", but that leg was actually a redundant
+# duplicate `yup-oauth2 11.0.0` resolution pulled in only by the
+# then-current `google-apis-common 7.0.0`/`google-drive3` etc `6.0.0`
+# generation -- `sdk` already depended on `yup-oauth2 12.1.0` directly, and
+# the next `google-apis-common`/Google API crate generation (8.0.0/7.0.0)
+# already resolves to that same 12.x line, which doesn't need
+# `rustls-pemfile` at all (caught by Codex review on the PR that introduced
+# this entry; verified directly, not taken on faith -- see that PR's commit
+# history for the version bump and the one-line `CustomHyperClientBuilder`
+# fix it required). Bumping those four crates collapses the duplicate and
+# removes the `rustls-pemfile 2.2.0` leg entirely, confirmed via `cargo
+# deny check advisories` before/after. The advisory still fires for
+# `rustls-pemfile 1.0.4` via the separate legacy `oauth2 4.4.2` chain, so
+# it stays visible (not re-added here) pending that chain's own scoping
+# decision, same as the rest of that list.
 [advisories]
 ignore = [
   # Marvin Attack (timing side-channel key recovery). Reachable only via
@@ -97,18 +115,8 @@ ignore = [
   # (`google-cloud-rust`) does not cover Drive/Gmail/Sheets/YouTube --
   # it's Google Cloud Platform bindings, a different API surface entirely
   # -- so there is no drop-in migration, only a full rewrite of `sdk`'s
-  # Google integrations.
+  # Google integrations. This holds regardless of the crate's own version
+  # (7.0.0 -> 8.0.0 bumped elsewhere in this same change for unrelated
+  # reasons; the advisory follows the project, not the version).
   { id = "RUSTSEC-2025-0066", reason = "google-apis-common: whole google-apis-rs project unmaintained upstream, no patched version exists, sdk genuinely uses drive3/gmail1/sheets4/youtube3" },
-
-  # `rustls-pemfile` itself is marked unmaintained (deprecated in favor of
-  # `rustls-pki-types`), not a version-range vulnerability -- 2.2.0 is
-  # already the latest release, so there is no upgrade within the crate.
-  # Reachable two ways: `yup-oauth2 12.1.0` -> `google-apis-common` (the
-  # actively-used stack above, pulls 2.2.0) and `reqwest 0.11.27` ->
-  # `oauth2 4.4.2` -> `sdk` directly (pulls 1.0.4; part of the legacy
-  # OAuth2 4.x chain still pending the scoping decision noted above). The
-  # google-apis-common leg alone is enough to justify this regardless of
-  # how that legacy-chain decision lands -- fixing it requires `yup-oauth2`
-  # itself to migrate off `rustls-pemfile`, not a change available here.
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: unmaintained (deprecated for rustls-pki-types), 2.2.0 is already latest; reachable via the actively-used yup-oauth2/google-apis-common stack" },
 ]

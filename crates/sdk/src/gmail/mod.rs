@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::URL_SAFE, Engine};
 use chrono::{DateTime, Utc};
 use google_gmail1::api::{Message, MessagePart};
 use google_gmail1::yup_oauth2::Error as OAuth2Error;
+use google_gmail1::yup_oauth2::CustomHyperClientBuilder;
 use google_gmail1::yup_oauth2::InstalledFlowAuthenticator;
 use google_gmail1::yup_oauth2::InstalledFlowReturnMethod;
 use google_gmail1::{Error as GmailError, Gmail};
@@ -172,7 +173,7 @@ impl GoogleGmailClient {
 		let client = google_client::build_http_client()?;
 		let auth_client = google_client::build_legacy_client()?;
 
-		let auth = InstalledFlowAuthenticator::with_client(secret, InstalledFlowReturnMethod::HTTPRedirect, auth_client)
+		let auth = InstalledFlowAuthenticator::with_client(secret, InstalledFlowReturnMethod::HTTPRedirect, CustomHyperClientBuilder::from(auth_client))
 			.persist_tokens_to_disk(".googleapis/gmail")
 			.build()
 			.await?;
