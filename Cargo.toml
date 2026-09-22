@@ -23,7 +23,6 @@ members = [
   "crates/study_domain",
   "crates/db/session",
   "crates/enum-name-derive",
-  "crates/file_reader",
   "crates/gsheet_derive",
   "crates/obs-websocket",
   "crates/some-cache",
@@ -62,7 +61,6 @@ edition = "2021"
 
 [workspace.dependencies]
 
-file_reader = { path = "crates/file_reader" }
 enum-name-derive = { path = "crates/enum-name-derive" }
 gsheet_derive = { path = "crates/gsheet_derive" }
 obs-websocket = { path = "crates/obs-websocket" }
