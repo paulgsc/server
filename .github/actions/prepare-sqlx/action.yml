@@ -11,6 +11,19 @@ runs:
   steps:
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@v12
+    # flake.nix pins nixpkgs to nixos-24.05, a snapshot that predates sqlx
+    # 0.8's release -- the sqlx-cli the devshell provides is 0.7.x. Rather
+    # than move the nixpkgs pin (broader blast radius: every other tool the
+    # devshell provides), install the exact version we need with cargo inside
+    # the same devshell (so it shares its rustc/cargo), and invoke it below
+    # by absolute path rather than relying on PATH precedence over the
+    # nix-provided binary of the same name.
+    - name: Install matching sqlx-cli
+      shell: bash
+      run: |
+        set -euo pipefail
+        nix develop .#ci --command \
+          cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
     # Create database and run migrations
     - name: Setup database and run migrations
       if: inputs.needs-migrations == 'true'
@@ -21,7 +34,7 @@ runs:
         set -euo pipefail
         echo "Creating database..."
         mkdir -p "$(dirname ./dev.db)"
-        nix develop .#ci --command sqlx database create
+        nix develop .#ci --command "$HOME/.cargo/bin/sqlx" database create
 
         # Reversible migrations are owned by the workspace now. SQLx expects
         # the up migrations to have a .sql suffix when given a custom source,
@@ -35,7 +48,7 @@ runs:
         done
 
         echo "Running staged migrations..."
-        nix develop .#ci --command sqlx migrate run --source "$staged"
+        nix develop .#ci --command "$HOME/.cargo/bin/sqlx" migrate run --source "$staged"
         rm -rf "$staged"
 
         echo "All migrations completed successfully"
@@ -47,5 +60,13 @@ runs:
         DATABASE_URL: sqlite://./dev.db
       run: |
         echo "Generating workspace-level SQLx metadata..."
-        nix develop .#ci --command \
-          cargo sqlx prepare --workspace -- --bin ${{ inputs.image-name }}
+        # `sqlx prepare` (unlike `database create`/`migrate run`) refuses to
+        # run unless invoked as `cargo sqlx prepare`, which sets `CARGO` --
+        # verified directly: `error: failed to get value of \`CARGO\`;
+        # \`prepare\` subcommand may only be invoked as \`cargo sqlx prepare\`.
+        # Rather than go back through `cargo sqlx` subcommand dispatch (PATH
+        # search, which risks resolving the nix-provided 0.7 cargo-sqlx
+        # instead of ours), resolve the devshell's own cargo path and set
+        # CARGO explicitly for our absolute-path sqlx binary.
+        nix develop .#ci --command bash -c \
+          'CARGO="$(command -v cargo)" "$HOME/.cargo/bin/sqlx" prepare --workspace -- --bin '"${{ inputs.image-name }}"
