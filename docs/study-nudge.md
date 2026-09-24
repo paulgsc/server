@@ -1463,6 +1463,45 @@ The NUDGE row's *Waker Pass Duration* panel draws the last pass against the
 configured deadline; `nudge_waker_pass_deadline_exceeded_total` counts passes
 that ran out, and its healthy value is zero.
 
+### History has a horizon (#265, SLI4)
+
+`intervention_log` exists to answer "why did I get that notification?" — and
+**that answer expires after 90 days**
+(`engagement_repo::INTERVENTION_LOG_RETENTION_DAYS`). Confusion about a nudge
+arrives late, so the horizon is long; at one row per intervention it costs
+almost nothing to keep. Past it, the row is gone and the question can no longer
+be answered from this table.
+
+The rule, stated so the next history table can cite it rather than re-derive
+it (#258's `activity_outcome` is the first that will):
+
+1. **Time-based, on the row's own event timestamp** (`decided_at` here). Not
+   count-based: "the last N" answers *how many*, and the question is *when*.
+2. **An index on that timestamp** (`idx_intervention_log_decided_at`), so the
+   sweep is a range read — one index probe on a day with nothing to delete.
+3. **A bounded delete** (`RETENTION_SWEEP_LIMIT`, 500 rows, oldest first), so a
+   first run against a table that has grown since launch drains over several
+   passes instead of becoming the long pole in one.
+4. **Run from the waker's pass**, after the subjects it had to handle and only
+   if the pass deadline (above) has not run out — not from a second scheduled
+   task. The waker is already a bounded, cancellable loop; the sweep inherits
+   both. A sweep failure is logged and does not fail the pass.
+
+Rows with `actuated_at IS NULL` — claimed but never confirmed: a crash between
+claim and send, or a timed-out delivery — are **not exempt**. That window
+matters for minutes; nothing reads those rows to recover anything, because the
+claim is deliberately final. Exempting them would make them the only rows with
+no horizon at all.
+
+`engagement_charge` deliberately has **no** time-based horizon. It is bounded by
+construction (one row per subject × class), and its rows are current state, not
+history: deleting a long-silent subject's charge would reset them to *full* —
+exactly the person the charge exists to notice. A subject whose account is gone
+leaves four rows behind; removing them belongs to whatever deletes the account,
+which does not exist yet. `sessions` retention is out of scope for the same
+reason in the other direction: a person's sessions are their data, not the
+system's history.
+
 ### One policy, one language
 
 An earlier draft kept a JSON fixture so a TypeScript copy of the policy and a

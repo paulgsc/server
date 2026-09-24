@@ -1,0 +1,12 @@
+-- #265 (SLI4): the index the retention sweep reads.
+--
+-- `intervention_log` is history with a horizon now (see
+-- `engagement_repo::INTERVENTION_LOG_RETENTION_DAYS`), and the sweep that
+-- enforces it asks one question of the whole table: which rows were decided
+-- before the horizon, oldest first. The existing
+-- `idx_intervention_log_subject` leads with `subject_id`, so it cannot answer
+-- that without a full scan — and a full scan on every waker pass is exactly
+-- the "cost that depends on a collection size nobody bounds" #253 exists to
+-- remove. With this index the sweep is a range read that stops after its own
+-- `LIMIT`, and on a pass with nothing past the horizon it is one index probe.
+CREATE INDEX idx_intervention_log_decided_at ON intervention_log(decided_at);

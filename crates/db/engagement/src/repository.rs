@@ -22,6 +22,45 @@ pub struct GateRow {
 	pub intervention_count: i64,
 }
 
+/// How long `intervention_log` keeps a row: ninety days from `decided_at`
+/// (#265, SLI4).
+///
+/// The log exists to answer "why did I get that notification?", and that
+/// question arrives late — someone notices a pattern, or a confusing nudge,
+/// weeks after the fact. The schema comment names "weeks later" as the
+/// horizon; ninety days covers every realistic version of it with room to
+/// spare, and at one row per intervention (at most one per subject per
+/// `REFRACTORY`) it costs almost nothing to keep. A shorter horizon would
+/// save little; "forever" is not a policy, it is the absence of one.
+///
+/// **Time-based, not count-based.** A per-subject "keep the last N" bounds
+/// storage regardless of activity rate, but answers the wrong question: the
+/// question is *when* something happened, and "the last N" of a quiet subject
+/// can reach back a year while a busy one's forgets last week.
+///
+/// **Rows with `actuated_at IS NULL` are not exempt.** `NULL` means claimed but
+/// never confirmed — a crash between claim and send, or (#264) a delivery that
+/// timed out. That window matters for minutes, not months: nothing reads those
+/// rows to recover or retry anything (the claim is deliberately final), so at
+/// ninety days one says no more than a sent row does. Exempting them would make
+/// them the only rows in the table with no horizon at all.
+///
+/// This is the rule a history table in this schema inherits: a horizon on the
+/// row's own event timestamp, an index on that timestamp, and a sweep bounded
+/// by [`RETENTION_SWEEP_LIMIT`] run from the waker's pass — see
+/// `docs/study-nudge.md`, "History has a horizon".
+pub const INTERVENTION_LOG_RETENTION_DAYS: i64 = 90;
+
+/// The most rows one retention sweep deletes (#265, SLI4).
+///
+/// A first run against a table that has been growing since launch must not
+/// become the long pole in a waker pass, so the sweep deletes at most this
+/// many and leaves the rest for the next pass — the same bound-not-page shape
+/// as the waker's own `BATCH`. At one pass per five minutes that is still
+/// well over a hundred thousand rows a day, far ahead of any rate this table
+/// is written at.
+pub const RETENTION_SWEEP_LIMIT: i64 = 500;
+
 pub struct EngagementRepository {
 	pool: SqlitePool,
 }
@@ -256,6 +295,34 @@ impl EngagementRepository {
 			.execute(&self.pool)
 			.await?;
 		Ok(())
+	}
+
+	/// Delete up to `limit` `intervention_log` rows decided before `horizon`,
+	/// oldest first, and return how many went (#265, SLI4).
+	///
+	/// Bounded on purpose — see [`RETENTION_SWEEP_LIMIT`]. Reads
+	/// `idx_intervention_log_decided_at`, so a sweep with nothing to do is one
+	/// index probe and a sweep with work stops after its own `LIMIT`.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn prune_intervention_log(&self, horizon: &str, limit: i64) -> Result<u64, sqlx::Error> {
+		let deleted = sqlx::query!(
+			r#"
+			DELETE FROM intervention_log
+			WHERE id IN (
+			    SELECT id FROM intervention_log
+			    WHERE decided_at < ?1
+			    ORDER BY decided_at ASC
+			    LIMIT ?2
+			)
+			"#,
+			horizon,
+			limit,
+		)
+		.execute(&self.pool)
+		.await?;
+		Ok(deleted.rows_affected())
 	}
 
 	/// Hand a claim back when nothing reached anyone.
