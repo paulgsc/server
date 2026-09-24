@@ -77,6 +77,9 @@ pub struct NudgeContext {
 	/// #264 (SLI3): the bound on one waker pass — see
 	/// `Config::waker_pass_deadline_ms`.
 	pub pass_deadline: std::time::Duration,
+	/// #289 (TEL4): whether provisioning ranks with this subject's outcome
+	/// history — see `Config::recommender_uses_outcomes`.
+	pub recommender_uses_outcomes: bool,
 }
 
 #[derive(Clone)]
@@ -185,6 +188,7 @@ impl AppState {
 			base_url: config.app_base_url.clone(),
 			delivery_timeout: std::time::Duration::from_millis(config.push_delivery_timeout_ms),
 			pass_deadline: std::time::Duration::from_millis(config.waker_pass_deadline_ms),
+			recommender_uses_outcomes: config.recommender_uses_outcomes,
 		}))
 	}
 }

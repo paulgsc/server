@@ -27,11 +27,13 @@ use crate::nudge::constraints::{StudyConstraints, Suppressed};
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
 use crate::{AppState, NudgeContext};
-use activity_repo::{default_session_name, provision, recommend, total_duration_ms, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT};
+use activity_repo::{
+	default_session_name, provision, recommend, total_duration_ms, ActivityHistory, ActivityOutcome, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT,
+};
 use chrono::{DateTime, Utc};
 use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
-use outcome_repo::{OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
+use outcome_repo::{ActivityStats, OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
@@ -404,7 +406,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// absence it is still honest — an invitation opens the app, which needs
 	// no session to exist.
 	if nothing_prepared && !matches!(verdict, Verdict::Wait { .. }) {
-		match propose_a_session(db, &sessions, subject_id, now).await {
+		match propose_a_session(db, nudge, &sessions, subject_id, now).await {
 			Proposal::Prepared(session_id) => {
 				// Neutral to engagement (delta 0.0, filed under Freshness):
 				// it is the opportunity a later `LessonReady`/
@@ -548,7 +550,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// before the one send it corresponds to — not one per pass that merely
 	// evaluated to `Intervene`.
 	if let Some(session_id) = action.session_id() {
-		refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
+		refresh_stale_proposal(db, nudge, &sessions, subject_id, session_id, now).await;
 	}
 
 	let Delivery { accepted, timed_out } = actuate(db, nudge, &action, subject_id, deadline).await?;
@@ -607,6 +609,78 @@ async fn save_unless_superseded(
 		debug!(subject = %subject_id, "a signal folded in while this pass was deciding; keeping its charge and eligibility rather than this pass's");
 	}
 	Ok(())
+}
+
+/// What `recommend()` ranks a subject's proposal with, beyond the catalogue
+/// (#289, TEL4).
+///
+/// `Default` is the cold-start input every provisioned session used before
+/// `activity_outcome` existed: no history, so every activity reads as never
+/// played. It is still what every subject gets unless
+/// `NudgeContext::recommender_uses_outcomes` is on — and what a subject with
+/// no outcomes gets even when it is, which is the "zero-data path is
+/// unchanged" property #289 requires.
+#[derive(Debug, Clone, Default)]
+pub struct RankingInputs {
+	pub history: Vec<ActivityHistory>,
+	pub last_session_at: Option<DateTime<Utc>>,
+}
+
+impl RankingInputs {
+	/// Turn one subject's per-activity stats into the recommender's history.
+	///
+	/// - never played (only skipped, or absent) → no entry: still new on
+	///   axis 1, full lift on axis 2;
+	/// - an assessed mean → `Completed { score: mean }`, so a poorly-scored
+	///   activity lifts and a well-scored one does not;
+	/// - otherwise, abandoned and never completed → `Abandoned`;
+	/// - otherwise, completed but never assessed → `Unassessed`.
+	///
+	/// `last_session_at` is the latest play across every activity, which is
+	/// what axis 1's "republished since their last session" compares against.
+	///
+	/// Computed once per decision from one query, so the recommender's seeded
+	/// shuffle stays deterministic: the same subject on the same day, with the
+	/// same outcomes, gets the same proposal.
+	#[must_use]
+	pub fn from_stats(stats: &[ActivityStats]) -> Self {
+		let history = stats
+			.iter()
+			.filter(|activity| activity.plays > 0)
+			.map(|activity| ActivityHistory {
+				activity_id: activity.activity_id.clone(),
+				outcome: match activity.mean_score {
+					Some(score) => ActivityOutcome::Completed { score },
+					None if activity.completed == 0 => ActivityOutcome::Abandoned,
+					None => ActivityOutcome::Unassessed,
+				},
+			})
+			.collect();
+		let last_session_at = stats
+			.iter()
+			.filter_map(|activity| activity.last_played_at.as_deref())
+			.filter_map(crate::nudge::clock::parse_timestamp)
+			.max();
+		Self { history, last_session_at }
+	}
+}
+
+/// This subject's ranking inputs, behind the #289 flag.
+///
+/// A failed read falls back to the cold-start input rather than failing the
+/// proposal: ranking without history is exactly what this path did before the
+/// flag existed, and a person still gets a real session.
+async fn ranking_inputs(db: &SqlitePool, nudge: &NudgeContext, subject_id: &str) -> RankingInputs {
+	if !nudge.recommender_uses_outcomes {
+		return RankingInputs::default();
+	}
+	match OutcomeRepository::new(db.clone()).stats(subject_id).await {
+		Ok(stats) => RankingInputs::from_stats(&stats),
+		Err(err) => {
+			error!(subject = %subject_id, error = %err, "could not read outcome stats; ranking this proposal as though nothing had been played");
+			RankingInputs::default()
+		}
+	}
 }
 
 /// What one attempt to compose something to point at produced — see
@@ -693,7 +767,7 @@ enum Proposal {
 /// caller's question, not this function's — a `Presence`-dominant subject
 /// still gets `GetStarted` out of it — and `record_verdict` counts one
 /// terminal outcome per due subject per pass.
-async fn propose_a_session(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, now: DateTime<Utc>) -> Proposal {
+async fn propose_a_session(db: &SqlitePool, nudge: &NudgeContext, sessions: &SessionRepository, subject_id: &str, now: DateTime<Utc>) -> Proposal {
 	let catalogue = match ActivityRepository::new(db.clone()).list().await {
 		Ok(catalogue) => catalogue,
 		Err(err) => {
@@ -715,7 +789,8 @@ async fn propose_a_session(db: &SqlitePool, sessions: &SessionRepository, subjec
 		}
 	};
 
-	let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
+	let inputs = ranking_inputs(db, nudge, subject_id).await;
+	let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
 	if provisioned.activities.is_empty() {
 		// A real Codex review finding on server#322 (P2): every one of
 		// `recommend()`'s picks was dropped by `provision()` -- a `NULL`
@@ -886,7 +961,7 @@ fn decide_with_a_proposal(admissibility: &StudyConstraints, charge: &Charge<Stud
 /// its own doc comment for the three ways the row can have changed and why
 /// each one safely no-ops instead. Everything here only decides whether
 /// it is worth doing the catalogue read and `recommend()` call at all.
-async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
+async fn refresh_stale_proposal(db: &SqlitePool, nudge: &NudgeContext, sessions: &SessionRepository, subject_id: &str, prepared: &str, now: DateTime<Utc>) {
 	let record = match sessions.get(subject_id, prepared).await {
 		Ok(Some(record)) => record,
 		Ok(None) => return,
@@ -906,7 +981,8 @@ async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, s
 			return;
 		}
 	};
-	let refreshed = materialize_provisioned_session(new_id(), subject_id, &catalogue, now);
+	let inputs = ranking_inputs(db, nudge, subject_id).await;
+	let refreshed = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
 	if refreshed.activities.is_empty() {
 		// Same trap #322 (P2) named for the original provisioning path: a
 		// catalogue with nothing currently timeable must not clobber a real
@@ -977,9 +1053,9 @@ async fn refresh_stale_proposal(db: &SqlitePool, sessions: &SessionRepository, s
 /// production, not a re-implementation of it — the same reason
 /// `dump_proposed_session.rs` calls `activity_repo::provision` rather than
 /// re-deriving its output.
-pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: &[ActivityRecord], now: DateTime<Utc>) -> SessionRecord {
+pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: &[ActivityRecord], inputs: &RankingInputs, now: DateTime<Utc>) -> SessionRecord {
 	let stamp = now.to_rfc3339();
-	let picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &[], None, now);
+	let picks = recommend(subject_id, DEFAULT_RECOMMENDATION_COUNT, catalogue, &inputs.history, inputs.last_session_at, now);
 	let provisioned = provision(&picks);
 
 	// `name` is built from whichever picks actually survived `provision` —
@@ -1391,6 +1467,7 @@ mod tests {
 					base_url: "https://example.com".to_owned(),
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
+					recommender_uses_outcomes: false,
 				};
 
 				run_once(&pool, &nudge)
@@ -1499,6 +1576,7 @@ mod tests {
 					base_url: "https://example.com".to_owned(),
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
+					recommender_uses_outcomes: false,
 				};
 
 				let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline())
@@ -1658,6 +1736,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			// First pass: nothing prepared, provisions a real session.
@@ -1785,6 +1864,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			// First pass: nothing prepared, provisions a real proposal.
@@ -1899,6 +1979,7 @@ mod tests {
 					base_url: "https://example.com".to_owned(),
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
+					recommender_uses_outcomes: false,
 				};
 
 				// First pass: provisions the proposal.
@@ -2026,6 +2107,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			// First pass: provisions a real proposal, exactly as the sibling
@@ -2126,6 +2208,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			// First pass: provisions the proposal.
@@ -2220,6 +2303,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
@@ -2298,6 +2382,7 @@ mod tests {
 				base_url: "https://example.com".to_owned(),
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
+				recommender_uses_outcomes: false,
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
@@ -2664,6 +2749,7 @@ mod tests {
 			base_url: "https://example.com".to_owned(),
 			delivery_timeout: std::time::Duration::from_secs(10),
 			pass_deadline: std::time::Duration::from_secs(120),
+			recommender_uses_outcomes: false,
 		}
 	}
 
@@ -3147,6 +3233,86 @@ mod tests {
 		// landed (decay over the test's milliseconds is negligible); 80 if
 		// they had all read the same starting charge.
 		assert!(mastery < 5.0, "every one of {SIGNALS} concurrent folds must land: mastery is {mastery}");
+	}
+
+	/// #289 (TEL4): how per-activity stats become the recommender's history.
+	#[test]
+	fn ranking_history_maps_assessed_abandoned_and_unassessed_play_distinctly() {
+		fn stats(id: &str, completed: i64, abandoned: i64, skipped: i64, mean_score: Option<f64>, last: Option<&str>) -> ActivityStats {
+			ActivityStats {
+				activity_id: id.to_owned(),
+				plays: completed + abandoned,
+				completed,
+				abandoned,
+				skipped,
+				mean_score,
+				last_played_at: last.map(ToOwned::to_owned),
+			}
+		}
+
+		let inputs = RankingInputs::from_stats(&[
+			stats("assessed", 2, 0, 0, Some(0.3), Some("2026-09-20T10:00:00+00:00")),
+			stats("abandoned", 0, 1, 0, None, Some("2026-09-22T10:00:00+00:00")),
+			stats("unassessed", 1, 1, 0, None, Some("2026-09-21T10:00:00+00:00")),
+			stats("only-skipped", 0, 0, 3, None, None),
+		]);
+		let outcome = |id: &str| inputs.history.iter().find(|entry| entry.activity_id == id).map(|entry| entry.outcome);
+		assert_eq!(outcome("assessed"), Some(ActivityOutcome::Completed { score: 0.3 }));
+		assert_eq!(outcome("abandoned"), Some(ActivityOutcome::Abandoned));
+		assert_eq!(outcome("unassessed"), Some(ActivityOutcome::Unassessed), "finished without a score is not a score");
+		assert_eq!(outcome("only-skipped"), None, "a block passed over was never played, so it is still new");
+		assert_eq!(inputs.last_session_at, crate::nudge::clock::parse_timestamp("2026-09-22T10:00:00+00:00"));
+
+		let empty = RankingInputs::from_stats(&[]);
+		assert!(empty.history.is_empty() && empty.last_session_at.is_none(), "no outcomes is exactly the cold-start input");
+	}
+
+	/// #289 (TEL4): the flag, both ways. Off, a subject's outcomes are not
+	/// read at all; on, they are. A subject with no outcomes gets the same
+	/// proposal either way, and the same subject on the same day gets the
+	/// same proposal twice — stats are read once per decision, not sampled.
+	#[tokio::test]
+	async fn the_outcome_flag_gates_ranking_and_changes_nothing_for_a_subject_with_no_outcomes() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		sqlx::query!(
+			"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score) VALUES ('subject-with-history', 'session-1', 'honeycomb', 0, '2026-09-20T10:00:00+00:00', '2026-09-20T10:05:00+00:00', 300000, 300000, 'completed', 0.95)"
+		)
+		.execute(&pool)
+		.await
+		.unwrap();
+
+		let off = nudge_context();
+		let on = NudgeContext {
+			recommender_uses_outcomes: true,
+			..nudge_context()
+		};
+
+		let with_history_off = ranking_inputs(&pool, &off, "subject-with-history").await;
+		assert!(with_history_off.history.is_empty(), "flag off: outcomes are not read");
+		let with_history_on = ranking_inputs(&pool, &on, "subject-with-history").await;
+		assert_eq!(with_history_on.history.len(), 1, "flag on: they are");
+
+		let catalogue = ActivityRepository::new(pool.clone()).list().await.unwrap();
+		let now = t0();
+		let fresh_off = materialize_provisioned_session("a".to_owned(), "subject-fresh", &catalogue, &ranking_inputs(&pool, &off, "subject-fresh").await, now);
+		let fresh_on = materialize_provisioned_session("a".to_owned(), "subject-fresh", &catalogue, &ranking_inputs(&pool, &on, "subject-fresh").await, now);
+		assert_eq!(fresh_off.activities, fresh_on.activities, "the zero-data path is unchanged by the flag");
+		assert_eq!(fresh_off.name, fresh_on.name);
+
+		let first = materialize_provisioned_session("a".to_owned(), "subject-with-history", &catalogue, &with_history_on, now);
+		let again = materialize_provisioned_session(
+			"a".to_owned(),
+			"subject-with-history",
+			&catalogue,
+			&ranking_inputs(&pool, &on, "subject-with-history").await,
+			now,
+		);
+		assert_eq!(first.activities, again.activities, "determinism survives the flag");
 	}
 
 	/// A signal folded in while the waker was deciding is not overwritten by

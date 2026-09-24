@@ -1235,6 +1235,44 @@ scoring zero. Send it only for an assessment of the block as a whole — a
 LeetType round's single selection is not one (#329): it would make a wrong tap
 raise a notification.
 
+### Subject stats
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/subjects/me/stats` | Per-activity plays, completion and abandonment rates, mean assessed score, last play — plus `history` in the client's `RankingSignals.history` shape (#289) |
+
+One row per activity the subject has an outcome for, from `activity_outcome`,
+in one grouped query over `idx_activity_outcome_subject_activity` — bounded by
+the catalogue (`outcome_repo::STATS_CEILING`), not by how much someone has
+played. `history` is one `ActivityPlay { activityId, at }` per activity at its
+most recent play (ms since the epoch); `activities[].plays` carries the count
+the client's frequency axis would otherwise get by counting entries. Skipped
+blocks are not plays, and a `null` score is excluded from the mean rather than
+averaged in as zero.
+
+#### Outcome stats and the flag that gates them
+
+`RECOMMENDER_USES_OUTCOMES` (default **off**) decides whether a provisioned
+session is ranked with these stats (`RankingInputs::from_stats`): an assessed
+mean becomes `Completed { score }`, abandoned-and-never-completed becomes
+`Abandoned`, completed-but-unassessed becomes `Unassessed` (played, but no
+evidence it landed), and an activity only ever skipped stays unplayed. Off, the
+recommender sees every activity as never played — the cold-start ranking it
+has used since #280. A subject with no outcomes gets the identical proposal
+either way, and a subject's stats are read once per decision, so the seeded
+shuffle stays deterministic.
+
+**Turning it on is a decision, not a deploy.** What would justify it, looked
+at on real data rather than on whoever tested it:
+
+- enough outcomes to rank on — most active subjects with several assessed
+  blocks across more than one activity;
+- abandonment rates and mean scores that actually *separate* activities — if
+  every activity abandons at the same rate, axis 2 is noise;
+- proposals, recomputed offline for real subjects with the flag on, that a
+  person looking at them would call sensible — a poorly-scored activity
+  offered again, a mastered one offered less.
+
 ### Presence
 
 | Method | Path | Purpose |

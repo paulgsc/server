@@ -82,6 +82,56 @@ fn to_record(
 	})
 }
 
+/// The most activities one subject's stats can span (#289).
+///
+/// The result is one row per activity the subject has an outcome for, so it
+/// is bounded by the catalogue, not by how much they have played — this is
+/// that bound written into the query rather than left to be re-derived, per
+/// #253's invariant. Matches `activity_repo::CATALOG_CEILING`; a catalogue
+/// that ever outgrows it has a bigger problem than these stats.
+pub const STATS_CEILING: i64 = 500;
+
+/// How one subject has fared with one activity, from `activity_outcome` (#289).
+///
+/// Skipped blocks are counted separately and excluded from `plays`: a block
+/// passed over was never played, and counting it would make "never played"
+/// (the recommender's first axis) false for something nobody did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityStats {
+	pub activity_id: String,
+	/// Completed plus abandoned blocks.
+	pub plays: i64,
+	pub completed: i64,
+	pub abandoned: i64,
+	pub skipped: i64,
+	/// Mean over **assessed** completed blocks only — `NULL` scores are
+	/// excluded, never counted as zero (#286). `None` when nothing was
+	/// assessed.
+	pub mean_score: Option<f64>,
+	/// The most recent `ended_at` of a played (not skipped) block.
+	pub last_played_at: Option<String>,
+}
+
+impl ActivityStats {
+	/// `completed / plays`, or `None` with no plays.
+	#[must_use]
+	pub fn completion_rate(&self) -> Option<f64> {
+		ratio(self.completed, self.plays)
+	}
+
+	/// `abandoned / plays`, or `None` with no plays.
+	#[must_use]
+	pub fn abandonment_rate(&self) -> Option<f64> {
+		ratio(self.abandoned, self.plays)
+	}
+}
+
+#[allow(clippy::cast_precision_loss)] // per-subject block counts are nowhere near 2^52
+fn ratio(part: i64, whole: i64) -> Option<f64> {
+	(whole > 0).then(|| part as f64 / whole as f64)
+}
+
 pub struct OutcomeRepository {
 	pool: SqlitePool,
 }
@@ -203,6 +253,55 @@ impl OutcomeRepository {
 			row.score,
 		)
 		.map(Some)
+	}
+
+	/// Every activity this subject has an outcome for, with its counts, mean
+	/// assessed score, and last play (#289).
+	///
+	/// One grouped query over `idx_activity_outcome_subject_activity`, bounded
+	/// by [`STATS_CEILING`]. `AVG` skips `NULL` natively, which is exactly
+	/// "excluded, not zero"; the `CASE` restricts it to completed blocks,
+	/// which is the only kind `POST /outcomes` lets carry a score anyway.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn stats(&self, subject_id: &str) -> Result<Vec<ActivityStats>, sqlx::Error> {
+		let rows = sqlx::query!(
+			r#"
+			SELECT
+			    activity_id AS "activity_id!",
+			    SUM(CASE WHEN outcome != 'skipped' THEN 1 ELSE 0 END) AS "plays!: i64",
+			    SUM(CASE WHEN outcome = 'completed' THEN 1 ELSE 0 END) AS "completed!: i64",
+			    SUM(CASE WHEN outcome = 'abandoned' THEN 1 ELSE 0 END) AS "abandoned!: i64",
+			    SUM(CASE WHEN outcome = 'skipped' THEN 1 ELSE 0 END) AS "skipped!: i64",
+			    AVG(CASE WHEN outcome = 'completed' THEN score END) AS "mean_score: f64",
+			    MAX(CASE WHEN outcome != 'skipped' THEN ended_at END) AS "last_played_at: String"
+			FROM activity_outcome
+			WHERE subject_id = ?1
+			GROUP BY activity_id
+			ORDER BY activity_id
+			LIMIT ?2
+			"#,
+			subject_id,
+			STATS_CEILING,
+		)
+		.fetch_all(&self.pool)
+		.await?;
+
+		Ok(
+			rows
+				.into_iter()
+				.map(|row| ActivityStats {
+					activity_id: row.activity_id,
+					plays: row.plays,
+					completed: row.completed,
+					abandoned: row.abandoned,
+					skipped: row.skipped,
+					mean_score: row.mean_score,
+					last_played_at: row.last_played_at,
+				})
+				.collect(),
+		)
 	}
 
 	/// Delete up to `limit` rows that ended before `horizon`, oldest first,
