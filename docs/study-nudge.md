@@ -1473,7 +1473,10 @@ almost nothing to keep. Past it, the row is gone and the question can no longer
 be answered from this table.
 
 The rule, stated so the next history table can cite it rather than re-derive
-it (#258's `activity_outcome` is the first that will):
+it — #286's `activity_outcome` is the first that does, with its own horizon of
+**one year** (`outcome_repo::ACTIVITY_OUTCOME_RETENTION_DAYS`; a person's study
+history answers "have they played this" across a summer away, which ninety days
+would not):
 
 1. **Time-based, on the row's own event timestamp** (`decided_at` here). Not
    count-based: "the last N" answers *how many*, and the question is *when*.

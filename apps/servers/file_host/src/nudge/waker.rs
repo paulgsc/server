@@ -31,6 +31,7 @@ use activity_repo::{default_session_name, provision, recommend, total_duration_m
 use chrono::{DateTime, Utc};
 use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
+use outcome_repo::{OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
@@ -151,8 +152,9 @@ pub struct PassReport {
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
 	/// counts.
 	pub deadline_exceeded: bool,
-	/// `intervention_log` rows this pass's retention sweep deleted (#265,
-	/// SLI4) — see [`sweep_history`].
+	/// History rows this pass's retention sweep deleted — `intervention_log`
+	/// (#265, SLI4) and `activity_outcome` (#286) together — see
+	/// [`sweep_history`].
 	pub pruned: u64,
 }
 
@@ -236,40 +238,58 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 		// Housekeeping after the work people are waiting on, and only if the
 		// pass still has time: a pass that ran out has already left due
 		// subjects for the next one, and the sweep can wait with them.
-		report.pruned = sweep_history(&engagement, now).await;
+		report.pruned = sweep_history(&engagement, &OutcomeRepository::new(db.clone()), now).await;
 	}
 
 	Ok(report)
 }
 
-/// Enforce `intervention_log`'s retention horizon, one bounded bite per pass
-/// (#265, SLI4).
+/// Enforce each history table's retention horizon, one bounded bite per
+/// table per pass (#265, SLI4).
 ///
 /// Run from the waker rather than a second scheduled task: the waker is
 /// already a bounded periodic loop with a cancellation token, so the sweep
-/// inherits both — and #264's pass deadline — for free. The delete is capped at
-/// `RETENTION_SWEEP_LIMIT`, so a first run against a table that has been
+/// inherits both — and #264's pass deadline — for free. Each delete is capped
+/// at `RETENTION_SWEEP_LIMIT`, so a first run against a table that has been
 /// growing since launch drains over several passes instead of becoming the
 /// long pole in one; with nothing past the horizon it is one index probe.
 ///
-/// Returns how many rows went. A failure is logged and swallowed rather than
-/// failing the pass: retention is housekeeping, and the subjects this pass
-/// already handled were handled — `error!` still reaches the workspace-wide
-/// tracing-error panel.
-async fn sweep_history(engagement: &EngagementRepository, now: DateTime<Utc>) -> u64 {
-	let horizon = now - chrono::Duration::days(INTERVENTION_LOG_RETENTION_DAYS);
-	match engagement.prune_intervention_log(&horizon.to_rfc3339(), RETENTION_SWEEP_LIMIT).await {
-		Ok(pruned) => {
-			if pruned > 0 {
-				info!(pruned, horizon = %horizon, "intervention_log rows past the retention horizon deleted");
+/// Covers `intervention_log` (`INTERVENTION_LOG_RETENTION_DAYS`) and, since
+/// #286, `activity_outcome` (`ACTIVITY_OUTCOME_RETENTION_DAYS`) — the next
+/// history table joins this list rather than growing its own loop.
+///
+/// Returns how many rows went, across both. A failure is logged and swallowed
+/// rather than failing the pass: retention is housekeeping, and the subjects
+/// this pass already handled were handled — `error!` still reaches the
+/// workspace-wide tracing-error panel.
+async fn sweep_history(engagement: &EngagementRepository, outcomes: &OutcomeRepository, now: DateTime<Utc>) -> u64 {
+	let log_horizon = now - chrono::Duration::days(INTERVENTION_LOG_RETENTION_DAYS);
+	let outcome_horizon = now - chrono::Duration::days(ACTIVITY_OUTCOME_RETENTION_DAYS);
+	let sweeps = [
+		(
+			"intervention_log",
+			log_horizon,
+			engagement.prune_intervention_log(&log_horizon.to_rfc3339(), RETENTION_SWEEP_LIMIT).await,
+		),
+		(
+			"activity_outcome",
+			outcome_horizon,
+			outcomes.prune(&outcome_horizon.to_rfc3339(), RETENTION_SWEEP_LIMIT).await,
+		),
+	];
+
+	let mut total = 0;
+	for (table, horizon, result) in sweeps {
+		match result {
+			Ok(0) => {}
+			Ok(pruned) => {
+				info!(table, pruned, horizon = %horizon, "history rows past the retention horizon deleted");
+				total += pruned;
 			}
-			pruned
-		}
-		Err(err) => {
-			error!(error = %err, "intervention_log retention sweep failed; the next pass will try again");
-			0
+			Err(err) => error!(table, error = %err, "retention sweep failed; the next pass will try again"),
 		}
 	}
+	total
 }
 
 /// Evaluate one subject, and act if the engine says so.
@@ -2928,8 +2948,34 @@ mod tests {
 			.unwrap();
 		}
 
+		// #286: `activity_outcome` is swept by the same pass, against its own
+		// (longer) horizon — one row just past it, one just inside.
+		for (session_id, days_ago) in [
+			("session-past-horizon", ACTIVITY_OUTCOME_RETENTION_DAYS + 1),
+			("session-inside-horizon", ACTIVITY_OUTCOME_RETENTION_DAYS - 1),
+		] {
+			let ended_at = (now - Duration::days(days_ago)).to_rfc3339();
+			sqlx::query!(
+				"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score) VALUES ('subject-history', ?, 'honeycomb', 0, ?, ?, 60000, 60000, 'completed', NULL)",
+				session_id,
+				ended_at,
+				ended_at
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
 		let report = run_once(&pool, &nudge_context()).await.unwrap();
-		assert_eq!(report.pruned, 3, "the three rows decided before the horizon, and only those: {report:?}");
+		assert_eq!(
+			report.pruned, 4,
+			"the three intervention_log rows decided before its horizon and the one outcome past its own, and only those: {report:?}"
+		);
+		let outcomes: Vec<String> = sqlx::query_scalar!(r#"SELECT session_id AS "session_id!" FROM activity_outcome"#)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(outcomes, vec!["session-inside-horizon".to_owned()], "activity_outcome keeps what is inside its horizon");
 
 		let survivors: Vec<String> = sqlx::query_scalar!(r#"SELECT action_kind AS "action_kind!" FROM intervention_log ORDER BY decided_at"#)
 			.fetch_all(&pool)
@@ -2974,7 +3020,7 @@ mod tests {
 			.unwrap();
 		}
 
-		let first = sweep_history(&engagement, now).await;
+		let first = sweep_history(&engagement, &OutcomeRepository::new(pool.clone()), now).await;
 		#[allow(clippy::cast_sign_loss)] // both are small positive constants
 		let limit = RETENTION_SWEEP_LIMIT as u64;
 		assert_eq!(first, limit, "a sweep never deletes more than its limit");
@@ -2988,8 +3034,16 @@ mod tests {
 
 		#[allow(clippy::cast_sign_loss)]
 		let extra = EXTRA as u64;
-		assert_eq!(sweep_history(&engagement, now).await, extra, "the next sweep takes the remainder");
-		assert_eq!(sweep_history(&engagement, now).await, 0, "and after that there is nothing past the horizon");
+		assert_eq!(
+			sweep_history(&engagement, &OutcomeRepository::new(pool.clone()), now).await,
+			extra,
+			"the next sweep takes the remainder"
+		);
+		assert_eq!(
+			sweep_history(&engagement, &OutcomeRepository::new(pool.clone()), now).await,
+			0,
+			"and after that there is nothing past the horizon"
+		);
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a

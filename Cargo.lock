@@ -1250,6 +1250,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "outcome_repo",
  "presence_repo",
  "push_kit",
  "push_repo",
@@ -2729,6 +2730,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "outcome_repo"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

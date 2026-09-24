@@ -1,0 +1,27 @@
+[package]
+name = "outcome_repo"
+description = "Per-block activity outcomes — the history the recommender will stand on"
+readme = "README.md"
+categories = ["database"]
+keywords = ["outcome", "telemetry", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "uuid",
+  "time",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
