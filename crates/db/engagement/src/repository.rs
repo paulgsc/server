@@ -136,6 +136,36 @@ impl EngagementRepository {
 		Ok(output)
 	}
 
+	/// [`Self::save`], but only if the stored charge is still the one the
+	/// caller read — its `as_of` equals `read_as_of` (`None` for a subject that
+	/// had no rows). Returns whether it wrote.
+	///
+	/// The waker reads a subject's charge at the top of a pass and saves it
+	/// after deciding, which can be seconds later (a push delivery sits in
+	/// between). A signal folded in during that window ([`Self::fold`]) has
+	/// already written a newer charge and re-solved `eligible_at` from it; an
+	/// unconditional save would overwrite both with a verdict computed from
+	/// the stale read. Every fold stamps a fresh `as_of`, so an unchanged
+	/// `as_of` is exactly "nothing folded in since" — an optimistic version
+	/// check, done under the same `BEGIN IMMEDIATE` write lock `fold` takes
+	/// (a real `chatgpt-codex-connector` finding on #360).
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn save_if_unchanged(&self, subject_id: &str, read_as_of: Option<&str>, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<bool, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+		let current = sqlx::query_scalar!("SELECT as_of FROM engagement_charge WHERE subject_id = ? LIMIT 1", subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		if current.as_deref() != read_as_of {
+			tx.rollback().await?;
+			return Ok(false);
+		}
+		Self::write(&mut tx, subject_id, levels, as_of, eligible_at).await?;
+		tx.commit().await?;
+		Ok(true)
+	}
+
 	async fn write(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, subject_id: &str, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<(), sqlx::Error> {
 		for (class, level) in levels {
 			let class = i64::from(*class);
