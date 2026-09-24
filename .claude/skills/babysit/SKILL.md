@@ -49,6 +49,11 @@ Scheduled check-ins on a PR that stopped changing keep spending tokens for no be
 Track this per PR you are watching (opened by you, driven for its author, or explicitly
 subscribed to on the user's behalf).
 
+This is the **fallback** for a PR you cannot yet classify as blocked on a human — most
+often because a bot review you requested has not answered. A PR you *can* see is waiting
+only on a person — including a green, reviewed, mergeable PR waiting to be merged — is
+covered by the section above: stand down at once, and don't count check-ins.
+
 A PR is **quiet-and-green** at a check-in when all of the following hold, compared to
 the last check-in:
 
@@ -79,8 +84,9 @@ another one:
    one message to the user instead) noting it looks stable and mergeable, and that
    you're standing down from active polling — at this point it's waiting on a human to
    merge it, not on you.
-2. Call `unsubscribe_pr_activity` for that PR.
-3. Do not schedule a further check-in for it.
+2. Delete its check-ins and do not schedule another — and **keep the PR activity
+   subscription**, exactly as in the section above: it is how a later review, comment or
+   merge reaches you, and it costs nothing while idle.
 
 Any of the following resets the quiet-cycle counter to zero and puts the PR straight
 back into the normal drive-to-green loop: a CI transition (to red, or a fresh run on a
@@ -88,4 +94,4 @@ new head), a new commit, a new review or comment, a merge conflict appearing, or
 Approvals regression. This rule only removes _idle_ re-polling of a PR that has nothing
 left to react to — it never excuses skipping or delaying a reaction to something that
 actually changed. If the user or a new webhook event asks you to look at a stood-down
-PR again, resume normally (re-subscribe, reset the counter to zero).
+PR again, resume normally (reset the counter to zero).
