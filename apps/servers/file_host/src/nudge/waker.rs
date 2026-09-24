@@ -64,6 +64,7 @@ pub fn spawn(state: &AppState, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 	crate::metrics::waker::record_interval(interval);
+	crate::metrics::waker::record_pass_deadline(nudge.pass_deadline);
 
 	tokio::spawn(async move {
 		info!(interval_secs = interval.as_secs(), "engagement waker started");
@@ -78,7 +79,10 @@ pub fn spawn(state: &AppState, interval: Duration) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::waker::record_pass_started();
-					match run_once(&db, &nudge).await {
+					let started = tokio::time::Instant::now();
+					let result = run_once(&db, &nudge).await;
+					crate::metrics::waker::record_pass_duration(started.elapsed());
+					match result {
 						Ok(_) => crate::metrics::waker::record_successful_pass(),
 						Err(err) => {
 							let class = classify_pass_error(&err);
@@ -132,6 +136,19 @@ pub(crate) fn classify_pass_error(err: &sqlx::Error) -> &'static str {
 	}
 }
 
+/// What one pass got through — see [`run_once`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PassReport {
+	/// Subjects `consider` was run for, successfully or not.
+	pub considered: usize,
+	/// Of those, how many ended with a notification accepted somewhere.
+	pub intervened: usize,
+	/// Due subjects this pass fetched and never reached, because
+	/// `NudgeContext::pass_deadline` ran out first. Untouched: their gate rows
+	/// are exactly as `due` found them, so the next pass picks them up.
+	pub deferred: usize,
+}
+
 /// One pass. Public so a debug endpoint can force it without waiting.
 ///
 /// Takes the database pool and a proven-present `&NudgeContext` — the
@@ -143,25 +160,54 @@ pub(crate) fn classify_pass_error(err: &sqlx::Error) -> &'static str {
 /// count, so the waker has no reason to know the WS layer exists at all —
 /// see `nudge::presence`.
 ///
+/// **Bounded by `NudgeContext::pass_deadline` (#264, SLI3).** The loop below
+/// is serial on purpose — a burst that would notify a whole userbase at once
+/// is worth rate-limiting into — and nothing above it is a `tower` layer, so
+/// before this a pass took exactly as long as its slowest push providers
+/// did. The deadline is checked *between* subjects, never inside one:
+/// `consider` claims before it sends, and cancelling it part-way would put a
+/// crash-shaped event on an arbitrary side of that line instead of the one
+/// the claim was designed for. Cancellation is not needed to keep the
+/// overrun bounded either — every await inside `consider` is bounded on its
+/// own (each delivery by `NudgeContext::delivery_timeout`, each query by
+/// `SQLite`'s `busy_timeout`), so a pass overruns its deadline by at most one
+/// subject's worth of work. Subjects not reached are left exactly as `due`
+/// returned them and are still due next pass — the same property `BATCH`
+/// already relies on.
+///
 /// # Errors
 /// Any storage failure. Per-subject failures are logged and skipped rather than
 /// aborting the pass — one bad row must not stop everyone else's.
-pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<usize, sqlx::Error> {
+pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassReport, sqlx::Error> {
+	let deadline = tokio::time::Instant::now() + nudge.pass_deadline;
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
 	crate::metrics::waker::record_due(due.len());
 
+	let mut report = PassReport::default();
 	if due.is_empty() {
-		return Ok(0);
+		return Ok(report);
 	}
 
 	debug!(count = due.len(), "subjects the arithmetic marked eligible");
-	let mut intervened = 0;
 
-	for gate in due {
+	for gate in &due {
+		if tokio::time::Instant::now() >= deadline {
+			report.deferred = due.len() - report.considered;
+			warn!(
+				considered = report.considered,
+				deferred = report.deferred,
+				deadline_ms = nudge.pass_deadline.as_millis(),
+				"waker pass reached its deadline; the remaining due subjects are left for the next pass"
+			);
+			crate::metrics::waker::record_deadline_exceeded();
+			break;
+		}
+
+		report.considered += 1;
 		match consider(db, nudge, &engagement, &gate.subject_id).await {
-			Ok(true) => intervened += 1,
+			Ok(true) => report.intervened += 1,
 			Ok(false) => {}
 			Err(err) => {
 				error!(subject = %gate.subject_id, error = %err, "could not consider a due subject");
@@ -170,7 +216,7 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<usize, sq
 		}
 	}
 
-	Ok(intervened)
+	Ok(report)
 }
 
 /// Evaluate one subject, and act if the engine says so.
@@ -418,7 +464,21 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		refresh_stale_proposal(db, &sessions, subject_id, session_id, now).await;
 	}
 
-	let accepted = actuate(db, nudge, &action, subject_id).await?;
+	let Delivery { accepted, timed_out } = actuate(db, nudge, &action, subject_id).await?;
+	if accepted == 0 && timed_out > 0 {
+		// #264 (SLI3): a timeout is crash-shaped, and lands on the same side
+		// of the claim-before-send line a crash does. Unlike every other
+		// failure `actuate` sees, it cannot say whether the push service
+		// took the message — a provider that received the request and never
+		// answered may still deliver it — so handing the claim back here
+		// would let the next pass send a second notification for one
+		// intervention. Kept instead: this intervention is spent, the gate
+		// already sits at `next_eligible`, and `actuated_at` stays `NULL`
+		// because nothing confirmed acceptance.
+		warn!(subject = %subject_id, timed_out, "no device confirmed the intervention and at least one delivery timed out; keeping the claim rather than risking a duplicate");
+		crate::metrics::waker::record_verdict("delivery_timed_out", "n/a");
+		return Ok(false);
+	}
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
 		crate::metrics::waker::record_verdict("no_device_accepted", "n/a");
@@ -839,8 +899,14 @@ pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: 
 /// Put an action on the wire, to every device that consented to its topic.
 ///
 /// Returns how many were **accepted** — which, as `push_kit` is at pains to
-/// say, is not how many were delivered.
-async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, subject_id: &str) -> Result<usize, sqlx::Error> {
+/// say, is not how many were delivered — and how many timed out.
+///
+/// Each delivery is bounded by `NudgeContext::delivery_timeout` (#264,
+/// SLI3). A provider that has not answered by then is recorded exactly like
+/// any other non-acceptance — `record_failure`, never a prune, never
+/// `Accepted` — but counted separately, because what the caller may do next
+/// differs: see `consider`.
+async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, subject_id: &str) -> Result<Delivery, sqlx::Error> {
 	let subscriptions_repo = PushSubscriptionRepository::new(db.clone());
 	let subscriptions = subscriptions_repo.for_subject(subject_id).await?;
 
@@ -849,21 +915,26 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		Ok(bytes) => bytes,
 		Err(err) => {
 			error!(error = %err, "could not serialize the notification payload");
-			return Ok(0);
+			return Ok(Delivery::default());
 		}
 	};
 
 	let topic = crate::nudge::payload::topic_for(action);
-	let mut accepted = 0;
+	let mut delivery = Delivery::default();
 
 	for stored in subscriptions {
 		if !stored.accepts(topic) {
 			continue;
 		}
 
-		let outcome = nudge.sender.deliver(&stored.subscription, &encoded).await;
-		let stamp = Utc::now().to_rfc3339();
 		let endpoint = &stored.subscription.endpoint;
+		let Ok(outcome) = tokio::time::timeout(nudge.delivery_timeout, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
+			warn!(%endpoint, timeout_ms = nudge.delivery_timeout.as_millis(), "push service did not answer in time");
+			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
+			delivery.timed_out += 1;
+			continue;
+		};
+		let stamp = Utc::now().to_rfc3339();
 
 		if outcome.should_prune() {
 			info!(%endpoint, "subscription is gone; pruning");
@@ -877,14 +948,23 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 			continue;
 		}
 
-		accepted += 1;
+		delivery.accepted += 1;
 		// Deliberately not "delivered": the push service accepted it, and
 		// whether anyone ever sees it is not observable from here.
 		debug_assert_eq!(outcome, SendOutcome::Accepted);
 		subscriptions_repo.record_success(endpoint, &stamp).await?;
 	}
 
-	Ok(accepted)
+	Ok(delivery)
+}
+
+/// What [`actuate`] reports back for one intervention.
+#[derive(Debug, Default, Clone, Copy)]
+struct Delivery {
+	/// Push services that answered `Accepted`.
+	accepted: usize,
+	/// Push services that did not answer within `NudgeContext::delivery_timeout`.
+	timed_out: usize,
 }
 
 /// Fold a signal into a subject's charge and re-solve their eligibility.
@@ -1170,6 +1250,8 @@ mod tests {
 					quiet_hours_end: 8,
 					presence_lease_ttl: std::time::Duration::from_secs(75),
 					base_url: "https://example.com".to_owned(),
+					delivery_timeout: std::time::Duration::from_secs(10),
+					pass_deadline: std::time::Duration::from_secs(120),
 				};
 
 				run_once(&pool, &nudge)
@@ -1276,6 +1358,8 @@ mod tests {
 					quiet_hours_end: 8,
 					presence_lease_ttl: std::time::Duration::from_secs(75),
 					base_url: "https://example.com".to_owned(),
+					delivery_timeout: std::time::Duration::from_secs(10),
+					pass_deadline: std::time::Duration::from_secs(120),
 				};
 
 				let intervened = consider(&pool, &nudge, &engagement, subject_id)
@@ -1431,6 +1515,8 @@ mod tests {
 				quiet_hours_end: 8,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			// First pass: nothing prepared, provisions a real session.
@@ -1556,6 +1642,8 @@ mod tests {
 				quiet_hours_end: 0,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			// First pass: nothing prepared, provisions a real proposal.
@@ -1668,6 +1756,8 @@ mod tests {
 					quiet_hours_end: 0,
 					presence_lease_ttl: std::time::Duration::from_secs(75),
 					base_url: "https://example.com".to_owned(),
+					delivery_timeout: std::time::Duration::from_secs(10),
+					pass_deadline: std::time::Duration::from_secs(120),
 				};
 
 				// First pass: provisions the proposal.
@@ -1793,6 +1883,8 @@ mod tests {
 				quiet_hours_end: 0,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			// First pass: provisions a real proposal, exactly as the sibling
@@ -1891,6 +1983,8 @@ mod tests {
 				quiet_hours_end: 0,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			// First pass: provisions the proposal.
@@ -1983,6 +2077,8 @@ mod tests {
 				quiet_hours_end: 8,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
@@ -2059,6 +2155,8 @@ mod tests {
 				quiet_hours_end: 8,
 				presence_lease_ttl: std::time::Duration::from_secs(75),
 				base_url: "https://example.com".to_owned(),
+				delivery_timeout: std::time::Duration::from_secs(10),
+				pass_deadline: std::time::Duration::from_secs(120),
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id).await.unwrap();
@@ -2177,7 +2275,7 @@ mod tests {
 				);
 
 				// AND the waker runs.
-				let intervened = run_once(&pool, &nudge_context()).await.unwrap();
+				let intervened = run_once(&pool, &nudge_context()).await.unwrap().intervened;
 				assert_eq!(intervened, 1, "one due subject, one intervention");
 
 				// THEN a session exists, owned by that subject.
@@ -2210,7 +2308,7 @@ mod tests {
 				// the claim doing their jobs together, not a special case:
 				// `intervened` wrote `eligible_at` 20 hours out, so `due`
 				// does not return this subject at all.
-				let again = run_once(&pool, &nudge_context()).await.unwrap();
+				let again = run_once(&pool, &nudge_context()).await.unwrap().intervened;
 				assert_eq!(again, 0, "nothing is due; the second pass costs one index probe");
 				assert_eq!(sessions.list(subject_id).await.unwrap().len(), 1, "no second session");
 				assert_eq!(notifications.load(Ordering::SeqCst), 1, "no second notification");
@@ -2423,7 +2521,239 @@ mod tests {
 			quiet_hours_end: 0,
 			presence_lease_ttl: std::time::Duration::from_secs(75),
 			base_url: "https://example.com".to_owned(),
+			delivery_timeout: std::time::Duration::from_secs(10),
+			pass_deadline: std::time::Duration::from_secs(120),
 		}
+	}
+
+	/// A push service that accepts every connection and never answers — the
+	/// provider #264 (SLI3) is about. Connections are held open for the life
+	/// of the test rather than dropped, because a dropped socket is a reset
+	/// the client sees at once, which is a transport error and not a stall.
+	/// Returns the endpoint and how many connections it has accepted.
+	fn stalling_push_service() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+		use std::sync::atomic::{AtomicUsize, Ordering};
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+		endpoint.push_str("/wpush/v2/stalled");
+
+		let connections = std::sync::Arc::new(AtomicUsize::new(0));
+		let seen = std::sync::Arc::clone(&connections);
+		// `collect` never returns — `incoming` never ends — so every accepted
+		// stream stays owned, and open, for as long as the thread lives.
+		std::thread::spawn(move || {
+			let _held: Vec<std::net::TcpStream> = listener
+				.incoming()
+				.flatten()
+				.inspect(|_| {
+					seen.fetch_add(1, Ordering::SeqCst);
+				})
+				.collect();
+		});
+
+		(endpoint, connections)
+	}
+
+	/// One consenting device for `subject_id`, keyed with `push_kit`'s real
+	/// fixture so encryption succeeds and the request actually reaches the
+	/// socket — see the cold-start scenario above for why the inert
+	/// placeholders are wrong for any test about what a send did.
+	async fn subscribe(pool: &SqlitePool, subject_id: &str, endpoint: &str, now: &str) {
+		use push_kit::{PushSubscription, SubscriptionKeys};
+		use push_repo::Consent;
+
+		PushSubscriptionRepository::new(pool.clone())
+			.upsert(
+				&PushSubscription {
+					endpoint: endpoint.to_owned(),
+					keys: SubscriptionKeys {
+						p256dh: "BLMbF9ffKBiWQLCKvTHb6LO8Nb6dcUh6TItC455vu2kElga6PQvUmaFyCdykxY2nOSSL3yKgfbmFLRTUaGv4yV8".to_owned(),
+						auth: "xS03Fi5ErfTNH_l9WHE9Ig".to_owned(),
+					},
+				},
+				&Consent {
+					subject_id: subject_id.to_owned(),
+					topics: Topic::ALL.to_vec(),
+					consented_at: now.to_owned(),
+				},
+				now,
+			)
+			.await
+			.unwrap();
+	}
+
+	async fn intervention_rows(pool: &SqlitePool, subject_id: &str) -> (i64, i64) {
+		let total = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count: i64" FROM intervention_log WHERE subject_id = ?"#, subject_id)
+			.fetch_one(pool)
+			.await
+			.unwrap();
+		let actuated = sqlx::query_scalar!(
+			r#"SELECT COUNT(*) AS "count: i64" FROM intervention_log WHERE subject_id = ? AND actuated_at IS NOT NULL"#,
+			subject_id
+		)
+		.fetch_one(pool)
+		.await
+		.unwrap();
+		(total, actuated)
+	}
+
+	/// #264 (SLI3): a pass stops at its deadline, between subjects, and the
+	/// subjects it never reached are untouched and still due.
+	///
+	/// Six due subjects, every one with a single device on a push service
+	/// that never answers. Each delivery is cut off at 200ms and the pass at
+	/// 300ms, so the pass reaches the second subject before the deadline and
+	/// the third after it — but the assertions below do not depend on that
+	/// arithmetic landing exactly: they hold for any split in which at least
+	/// one subject was reached and at least one was not, and they check each
+	/// subject against the side of the split it actually landed on.
+	#[test]
+	fn a_pass_that_reaches_its_deadline_leaves_the_subjects_it_never_reached_untouched_and_still_due() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const SUBJECTS: usize = 6;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let (endpoint, connections) = stalling_push_service();
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let engagement = EngagementRepository::new(pool.clone());
+			let subjects: Vec<String> = (0..SUBJECTS).map(|i| numbered("subject-stalled-", i)).collect();
+			for (i, subject_id) in subjects.iter().enumerate() {
+				// One endpoint per subject: `push_subscriptions` is keyed by
+				// endpoint, and the stall is a property of the service, not of
+				// the path.
+				subscribe(&pool, subject_id, &numbered(&endpoint, i), &now_str).await;
+				first_contact(&pool, subject_id).await.unwrap();
+				rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+			}
+			assert_eq!(engagement.due(&now_str, BATCH).await.unwrap().len(), SUBJECTS, "every subject starts due");
+
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				pass_deadline: std::time::Duration::from_millis(300),
+				..nudge_context()
+			};
+			let started = std::time::Instant::now();
+			let report = run_once(&pool, &nudge).await.unwrap();
+			let elapsed = started.elapsed();
+
+			assert!(
+				report.considered >= 1,
+				"the deadline is checked between subjects, so the first is always reached: {report:?}"
+			);
+			assert!(report.deferred >= 1, "six subjects at 200ms each cannot all fit in a 300ms pass: {report:?}");
+			assert_eq!(
+				report.considered + report.deferred,
+				SUBJECTS,
+				"every due subject is either considered or deferred: {report:?}"
+			);
+			assert_eq!(report.intervened, 0, "nothing was accepted, so nothing counts as an intervention: {report:?}");
+			assert!(
+				elapsed < std::time::Duration::from_secs(5),
+				"a pass over a provider that never answers must still end — it took {elapsed:?}"
+			);
+			assert_eq!(
+				connections.load(std::sync::atomic::Ordering::SeqCst),
+				report.considered,
+				"one delivery attempt per considered subject, none for the rest"
+			);
+
+			let still_due: Vec<String> = engagement.due(&now_str, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
+			let sessions = SessionRepository::new(pool.clone());
+			let mut reached = 0;
+			for subject_id in &subjects {
+				let (total, actuated) = intervention_rows(&pool, subject_id).await;
+				if total == 0 {
+					// Deferred: not claimed, not proposed to, and still due.
+					assert!(still_due.contains(subject_id), "{subject_id} was never reached, so the next pass must still find it");
+					assert!(
+						sessions.list(subject_id).await.unwrap().is_empty(),
+						"{subject_id} was never reached, so nothing was proposed to it"
+					);
+				} else {
+					// Reached: the timeout kept the claim (see the next test).
+					reached += 1;
+					assert_eq!((total, actuated), (1, 0), "{subject_id}: claimed once, never confirmed");
+					assert!(!still_due.contains(subject_id), "{subject_id}'s claim stands, so it is not retried into a duplicate");
+				}
+			}
+			assert_eq!(reached, report.considered, "the subjects with a claim are exactly the ones the report says were considered");
+		});
+	}
+
+	/// #264 (SLI3): a timed-out delivery is a failure — never a prune, never
+	/// `Accepted` — and no sequence of passes turns it into a second
+	/// notification.
+	///
+	/// One subject, two devices: one on a push service that never answers,
+	/// one on a service that accepts. The first pass sends exactly once and
+	/// records the stall against the stalled device only; the second pass
+	/// sends nothing at all. Exactly one `intervention_log` row, and it is
+	/// the one that reached `actuated_at`.
+	///
+	/// The single-device case — every device stalls — is the other half of
+	/// "no duplicate", and is asserted per subject in the deadline test
+	/// above: the claim is kept rather than released, so the next pass never
+	/// finds that subject due.
+	#[test]
+	fn a_timed_out_delivery_is_a_failure_not_a_prune_and_is_never_retried_into_a_duplicate() {
+		use sqlx::sqlite::SqlitePoolOptions;
+		use std::sync::atomic::Ordering;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-one-slow-device";
+		let (stalled, stalled_connections) = stalling_push_service();
+		let (answering, accepted) = loopback_push_service();
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let engagement = EngagementRepository::new(pool.clone());
+			subscribe(&pool, subject_id, &stalled, &now_str).await;
+			subscribe(&pool, subject_id, &answering, &now_str).await;
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				..nudge_context()
+			};
+
+			let first = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(first.intervened, 1, "the answering device accepted, so this is an intervention: {first:?}");
+			assert_eq!(stalled_connections.load(Ordering::SeqCst), 1, "the stalled device was tried");
+			assert_eq!(accepted.load(Ordering::SeqCst), 1, "and the answering one accepted, once");
+
+			let devices = PushSubscriptionRepository::new(pool.clone()).for_subject(subject_id).await.unwrap();
+			assert_eq!(devices.len(), 2, "a timeout is not a prune: both devices are still subscribed");
+			let stalled_device = devices.iter().find(|device| device.subscription.endpoint == stalled).unwrap();
+			let answering_device = devices.iter().find(|device| device.subscription.endpoint == answering).unwrap();
+			assert_eq!(stalled_device.failure_count, 1, "the timeout is recorded against the device that timed out");
+			assert_eq!(answering_device.failure_count, 0, "and not against the one that answered");
+
+			let second = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(second, PassReport::default(), "nothing is due: the claim from the first pass stands");
+			assert_eq!(accepted.load(Ordering::SeqCst), 1, "no second notification");
+			assert_eq!(stalled_connections.load(Ordering::SeqCst), 1, "and no second attempt at the stalled device either");
+			assert_eq!(
+				intervention_rows(&pool, subject_id).await,
+				(1, 1),
+				"exactly one intervention_log row, and it reached actuated_at"
+			);
+		});
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a

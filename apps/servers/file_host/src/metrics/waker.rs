@@ -128,3 +128,33 @@ pub fn record_session_rows_read(count: usize) {
 pub fn record_nothing_to_say() {
 	metrics::counter!("nudge_waker_nothing_to_say_total").increment(1);
 }
+
+/// #264 (SLI3): publish the configured pass deadline once, at spawn.
+///
+/// The dashboard draws it beside [`record_pass_duration`] — the same reason
+/// `record_interval` exports the interval rather than letting a panel assume
+/// `Config`'s default.
+pub fn record_pass_deadline(deadline: Duration) {
+	metrics::gauge!("nudge_waker_pass_deadline_seconds").set(deadline.as_secs_f64());
+}
+
+/// #264 (SLI3): how long the last pass took.
+///
+/// Successful or not, empty or not. A gauge rather than a histogram, like
+/// the rest of this module: one pass per interval is too few observations
+/// for a distribution to say more than "the last one took this long", and
+/// read next to `nudge_waker_pass_deadline_seconds` that is the question —
+/// is a pass getting close to its bound?
+pub fn record_pass_duration(elapsed: Duration) {
+	metrics::gauge!("nudge_waker_last_pass_duration_seconds").set(elapsed.as_secs_f64());
+}
+
+/// #264 (SLI3): every pass that stopped early because its deadline ran out.
+///
+/// Healthy value is zero; a pass that hits it has left due
+/// subjects for the next pass, which is correct behaviour once and a sign of
+/// a stalling push provider (or a `BATCH` the deployment has outgrown) when
+/// sustained.
+pub fn record_deadline_exceeded() {
+	metrics::counter!("nudge_waker_pass_deadline_exceeded_total").increment(1);
+}

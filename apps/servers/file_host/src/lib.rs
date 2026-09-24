@@ -71,6 +71,12 @@ pub struct NudgeContext {
 	pub quiet_hours_end: u32,
 	pub presence_lease_ttl: std::time::Duration,
 	pub base_url: String,
+	/// #264 (SLI3): the bound on one `Sender::deliver` — see
+	/// `Config::push_delivery_timeout_ms`.
+	pub delivery_timeout: std::time::Duration,
+	/// #264 (SLI3): the bound on one waker pass — see
+	/// `Config::waker_pass_deadline_ms`.
+	pub pass_deadline: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -177,6 +183,8 @@ impl AppState {
 			quiet_hours_end: config.nudge_quiet_hours_end,
 			presence_lease_ttl: std::time::Duration::from_secs(config.nudge_presence_lease_ttl_seconds),
 			base_url: config.app_base_url.clone(),
+			delivery_timeout: std::time::Duration::from_millis(config.push_delivery_timeout_ms),
+			pass_deadline: std::time::Duration::from_millis(config.waker_pass_deadline_ms),
 		}))
 	}
 }

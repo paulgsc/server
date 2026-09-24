@@ -1396,7 +1396,13 @@ eligible_at <= now` that also moves `eligible_at` forward. Two waker passes — 
 one pass and a just-restarted process — cannot both conclude a subject is due. A
 crash between claiming and sending therefore costs that intervention rather than
 duplicating it, which is the right way round for a feature whose whole value is
-not being annoying. If every device fails, the claim is released.
+not being annoying. If every device fails, the claim is released — unless a
+delivery **timed out** (#264, SLI3). A timeout is crash-shaped: it cannot say
+whether the push service took the message, and a provider that received the
+request and never answered may still deliver it. So it lands on the same side
+of the line a crash does — the claim is kept, the intervention is spent, and
+`intervention_log.actuated_at` stays `NULL` because nothing confirmed
+acceptance. The timed-out device is recorded as a failure (never a prune).
 
 Two further brakes: an intervention **recharges** the classes it addresses, so
 the next pass finds nothing to do; and `REFRACTORY` is a hard floor whatever the
@@ -1428,6 +1434,30 @@ session outranks a `scheduled` one, which outranks an untouched `draft`, with
 doc comment for why). #262's characterisation test now asserts this bound
 directly: at most one row read per due subject, independent of how many
 sessions it owns.
+
+### A pass is bounded, not just a request (#264, SLI3)
+
+`TimeoutLayer` bounds inbound HTTP. The waker is a spawned loop with no
+`tower` layer above it, and it is serial on purpose — a burst that would
+notify a whole userbase at once is worth rate-limiting into. Before #264,
+serial also meant *unbounded*: one push provider that stopped answering held
+every later subject in the batch for as long as it stayed silent. Two bounds
+now, at the two levels where running out means something different:
+
+- **Per delivery — `PUSH_DELIVERY_TIMEOUT_MS` (default 10s).** A provider that
+  has not answered is a failure against that device (above), and the loop moves
+  on to the next device and the next subject.
+- **Per pass — `WAKER_PASS_DEADLINE_MS` (default 2 min, inside the 5-minute
+  interval).** Checked *between* subjects, never inside one: `consider` claims
+  before it sends, and cancelling it part-way would put a crash-shaped event on
+  an arbitrary side of that line. Every await inside it is already bounded on
+  its own, so the overrun is at most one subject's work. Subjects the pass did
+  not reach are left exactly as `due` found them and are picked up next pass —
+  the same property `BATCH` relies on.
+
+The NUDGE row's *Waker Pass Duration* panel draws the last pass against the
+configured deadline; `nudge_waker_pass_deadline_exceeded_total` counts passes
+that ran out, and its healthy value is zero.
 
 ### One policy, one language
 
