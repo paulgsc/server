@@ -1,0 +1,3 @@
+DROP INDEX idx_activity_outcome_ended_at;
+DROP INDEX idx_activity_outcome_subject_activity;
+DROP TABLE activity_outcome;
