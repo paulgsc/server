@@ -99,38 +99,39 @@ local dashboard = {
     nudge.due { gridPos: utils.gridPos(0, 46, 4, 4), id: 931 },
     nudge.configErrors { gridPos: utils.gridPos(4, 46, 5, 4), id: 933 },
     nudge.outcomesByVerdict { gridPos: utils.gridPos(9, 46, 15, 4), id: 932 },
+    nudge.passDuration { gridPos: utils.gridPos(0, 50, 24, 4), id: 934 },
 
     // =============== ABUSE (#215/#232) ===============
     // "Are we abusing resources — do we close sockets, is the rate limiter
     // doing its job." Rebuilds `dashboards/parked/rate-limit.jsonnet`'s
     // "Proof of Failure (By Contradiction)" idea on premises that now exist
     // — see abuse-panels.libsonnet's own header.
-    abuse.rateLimited { gridPos: utils.gridPos(0, 50, 6, 4), id: 922 },
-    abuse.shed { gridPos: utils.gridPos(6, 50, 6, 4), id: 923 },
-    abuse.timedOut { gridPos: utils.gridPos(12, 50, 6, 4), id: 924 },
-    abuse.wsRefused { gridPos: utils.gridPos(18, 50, 6, 4), id: 925 },
+    abuse.rateLimited { gridPos: utils.gridPos(0, 54, 6, 4), id: 922 },
+    abuse.shed { gridPos: utils.gridPos(6, 54, 6, 4), id: 923 },
+    abuse.timedOut { gridPos: utils.gridPos(12, 54, 6, 4), id: 924 },
+    abuse.wsRefused { gridPos: utils.gridPos(18, 54, 6, 4), id: 925 },
 
-    abuse.refusalsByReason { gridPos: utils.gridPos(0, 54, 12, 6), id: 926 },
-    abuse.tokensAvailable { gridPos: utils.gridPos(12, 54, 12, 6), id: 927 },
+    abuse.refusalsByReason { gridPos: utils.gridPos(0, 58, 12, 6), id: 926 },
+    abuse.tokensAvailable { gridPos: utils.gridPos(12, 58, 12, 6), id: 927 },
 
-    abuse.invariant { gridPos: utils.gridPos(0, 60, 24, 4), id: 928 },
+    abuse.invariant { gridPos: utils.gridPos(0, 64, 24, 4), id: 928 },
 
     // =============== ROW 1: UPTIME SLA ===============
-    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 64, 6, 4) },
-    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 64, 6, 4) },
-    panels.tcpConnectivity { gridPos: utils.gridPos(12, 64, 6, 4) },
-    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 64, 6, 4) },
+    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 68, 6, 4) },
+    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 68, 6, 4) },
+    panels.tcpConnectivity { gridPos: utils.gridPos(12, 68, 6, 4) },
+    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 68, 6, 4) },
 
     // =============== ROW 2: UPTIME TRENDS & DIAGNOSTICS ===============
-    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 68, 12, 8) },
-    panels.probeDiagnostics { gridPos: utils.gridPos(12, 68, 12, 8) },
+    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 72, 12, 8) },
+    panels.probeDiagnostics { gridPos: utils.gridPos(12, 72, 12, 8) },
 
     // =============== ROW 3: APPLICATION METRICS ===============
     // The standalone liveness stat this row used to carry (#212/G3) is
     // superseded by the HEALTH row's UP panel above, which is the same
     // `up{job="file_host"}` query — no need for both.
-    panels.operationDuration { gridPos: utils.gridPos(0, 76, 12, 8) },
-    panels.tracingErrors { gridPos: utils.gridPos(12, 76, 12, 8) },
+    panels.operationDuration { gridPos: utils.gridPos(0, 80, 12, 8) },
+    panels.tracingErrors { gridPos: utils.gridPos(12, 80, 12, 8) },
   ]),
   refresh: '5s',
   schemaVersion: 38,

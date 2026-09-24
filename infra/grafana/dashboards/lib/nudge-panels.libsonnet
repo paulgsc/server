@@ -115,4 +115,35 @@ local statOptions = {
     },
     options: { legend: { showLegend: true, placement: 'bottom' }, tooltip: { mode: 'multi', sort: 'desc' } },
   },
+
+  // #264 (SLI3): how long each pass takes, against the deadline that bounds
+  // it. The waker's loop is serial on purpose, so one push provider that
+  // stops answering used to stretch a pass for as long as it stayed silent —
+  // LOOPS would still read ok, because a pass *was* running. The deadline
+  // line is the configured `WAKER_PASS_DEADLINE_MS`, exported rather than
+  // assumed (same reason as `nudge_waker_interval_seconds`); a last-pass
+  // line that sits on it is a pass that ran out and left due subjects for
+  // the next one. `nudge_waker_pass_deadline_exceeded_total` counts those
+  // and is exempted in scripts/check_metric_contract.py as an alert signal
+  // — this panel is where a human sees the same thing.
+  passDuration: {
+    title: 'Waker Pass Duration',
+    description: 'Duration of the last engagement-waker pass, against the configured WAKER_PASS_DEADLINE_MS.',
+    type: 'timeseries',
+    targets: [
+      { expr: 'nudge_waker_last_pass_duration_seconds', legendFormat: 'last pass', refId: 'A' },
+      { expr: 'nudge_waker_pass_deadline_seconds', legendFormat: 'deadline', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 's',
+        custom: { drawStyle: 'line', fillOpacity: 10, lineWidth: 2, pointSize: 4, showPoints: 'never', spanNulls: true },
+        color: { mode: 'palette-classic' },
+      },
+      overrides: [
+        { matcher: { id: 'byName', options: 'deadline' }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: 'red' } }, { id: 'custom.fillOpacity', value: 0 }, { id: 'custom.lineStyle', value: { fill: 'dash', dash: [10, 10] } }] },
+      ],
+    },
+    options: { legend: { showLegend: true, placement: 'bottom' }, tooltip: { mode: 'multi', sort: 'desc' } },
+  },
 }

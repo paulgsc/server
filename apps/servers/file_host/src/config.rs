@@ -209,6 +209,35 @@ pub struct Config {
 	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300")]
 	pub nudge_waker_seconds: u64,
 
+	/// How long one push delivery may take before it counts as a failure
+	/// (#264, SLI3).
+	///
+	/// A push service that accepts answers in well under a second; one that
+	/// has not answered in ten is not going to, and every second past that is
+	/// a second the rest of the batch waits in the serial loop. Long enough
+	/// that a slow-but-working provider on a bad day is not misread as down,
+	/// short enough that one black-holed endpoint costs a pass seconds rather
+	/// than the transport's own (unbounded) patience. A timed-out delivery is
+	/// recorded as a failure — never a prune, never `Accepted` — and does not
+	/// hand the claim back: see `nudge::waker::actuate`.
+	#[arg(long, env = "PUSH_DELIVERY_TIMEOUT_MS", default_value = "10000")]
+	pub push_delivery_timeout_ms: u64,
+
+	/// How long one waker pass may run before it stops taking on new subjects
+	/// (#264, SLI3).
+	///
+	/// Two minutes: well inside `NUDGE_WAKER_SECONDS`' default of five, so a
+	/// pass that hits it still leaves the next tick to start on time rather
+	/// than be delayed by `MissedTickBehavior::Delay`, and long enough for a
+	/// full `BATCH` of 32 subjects at typical sub-second delivery latency to
+	/// finish many times over. A pass that runs out starts no further subject
+	/// and tries no further device — each delivery's timeout is also capped at
+	/// what the pass has left — but never cancels a subject part-way, so a
+	/// claim already written stands. Subjects it did not reach are still due on
+	/// the next pass, the property `BATCH` already relies on.
+	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000")]
+	pub waker_pass_deadline_ms: u64,
+
 	/// How long a client-written presence lease stays fresh before a due
 	/// subject's notification is sent as though nobody were looking.
 	///
