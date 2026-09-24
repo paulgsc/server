@@ -11,6 +11,34 @@ polling is; it does not weaken any rule the parent instructions state as "never"
 (skipping a real CI failure, walking away from a red or conflicted PR, disabling a
 test, etc.) — those still apply in full.
 
+## Stand down at once when a PR is blocked on a human
+
+The quiet-cycle count below exists to confirm a PR has *stopped changing*. A PR whose only
+remaining blocker is a person — a design decision you handed off (including `steward/SKILL.md`'s
+review-cap hand-off), an approval, a human review, or the merge itself — has nothing left for a
+check-in to react to, so don't count cycles: stand down in the same turn you establish the block.
+
+A PR is **blocked on a human** when the next move is theirs and nothing of yours is in flight:
+no CI run still going on your latest push, no bot review you requested still unanswered, no
+fix you still owe on an open thread. If any of those is pending, keep watching until it
+resolves; the moment it does and only the human's move remains, stand down.
+
+To stand down:
+
+1. Say once, where the human will see it (the PR for one you opened or drive, the user for
+   one you only watch), exactly what the PR is waiting on — usually already done by the
+   hand-off comment itself; don't post a second one.
+2. Call `unsubscribe_pr_activity` for that PR.
+3. Delete every check-in you scheduled for it (`delete_trigger`; confirm with
+   `list_triggers`), and do not re-arm one — not even a long-interval one "just in case."
+
+This is per blocking episode, not once per PR. When the human answers (a reply, a new
+commit, a merge of what it depended on), resume normally: re-subscribe, act, and drive the
+PR as usual. If it then becomes blocked on a human again, stand down again the same way.
+Their response is the wake-up signal — silent re-polling of a PR nobody but them can move
+only spends tokens (a session did exactly this overnight on #362, re-arming hourly checks
+on a PR waiting solely on the user's decision).
+
 ## Stand down once a PR goes quiet and green
 
 Scheduled check-ins on a PR that stopped changing keep spending tokens for no benefit.
