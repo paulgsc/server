@@ -20,6 +20,10 @@ pub struct GateRow {
 	pub last_intervened_at: Option<String>,
 	pub last_action: Option<String>,
 	pub intervention_count: i64,
+	/// The newest `curriculum_publication` epoch already folded into this
+	/// subject's charge (#273, CAT5) — the subject's one watermark. Behind the
+	/// log's epoch means new material they have not been drained for yet.
+	pub curriculum_epoch: i64,
 }
 
 /// How long `intervention_log` keeps a row: ninety days from `decided_at`
@@ -111,9 +115,9 @@ impl EngagementRepository {
 	/// has read and then tries to write after another writer committed fails
 	/// with `SQLITE_BUSY` instead of waiting, while an immediate one simply
 	/// waits its turn under `busy_timeout`. That is what serialises every
-	/// read-modify-write of a charge — `/signals`, `POST /outcomes`, and the
-	/// waker's `CurriculumUpdated` fan-out all go through here (via
-	/// `nudge::waker::observe`).
+	/// read-modify-write of a charge — `/signals` and `POST /outcomes` go through
+	/// here (via `nudge::waker::observe`), and [`Self::catch_up`] takes the same
+	/// lock.
 	///
 	/// `apply` receives the stored rows (empty for a subject never seen) and
 	/// returns the levels to store, their `as_of`, the solved `eligible_at`,
@@ -186,8 +190,8 @@ impl EngagementRepository {
 
 		sqlx::query!(
 			r#"
-			INSERT INTO engagement_gate (subject_id, eligible_at, intervention_count)
-			VALUES (?, ?, 0)
+			INSERT INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch)
+			VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication))
 			ON CONFLICT(subject_id) DO UPDATE SET eligible_at = excluded.eligible_at
 			"#,
 			subject_id,
@@ -221,7 +225,7 @@ impl EngagementRepository {
 		let mut tx = self.pool.begin().await?;
 
 		let inserted = sqlx::query!(
-			r#"INSERT OR IGNORE INTO engagement_gate (subject_id, eligible_at, intervention_count) VALUES (?, ?, 0)"#,
+			r#"INSERT OR IGNORE INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch) VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication))"#,
 			subject_id,
 			eligible_at,
 		)
@@ -257,7 +261,7 @@ impl EngagementRepository {
 			GateRow,
 			r#"
 			SELECT subject_id as "subject_id!", eligible_at, last_intervened_at, last_action,
-			       intervention_count as "intervention_count!: i64"
+			       intervention_count as "intervention_count!: i64", curriculum_epoch as "curriculum_epoch!: i64"
 			FROM engagement_gate WHERE subject_id = ?
 			"#,
 			subject_id
@@ -267,30 +271,95 @@ impl EngagementRepository {
 	}
 
 	/// **The waker's entire query.** Subjects the arithmetic already marked
-	/// eligible, oldest first.
+	/// eligible, and subjects behind the curriculum `epoch` (#273, CAT5) —
+	/// eligible ones first, oldest first.
 	///
 	/// Note what is absent: no scan, no per-subject decay, no decision. The
-	/// crossing instant was solved when the last signal arrived, so this is an
-	/// index range read that returns nothing on a quiet day.
+	/// crossing instant was solved when the last signal arrived, and new
+	/// material is one epoch every subject's watermark is compared against, so
+	/// this is two index range reads that return nothing on a quiet day. Each
+	/// half is limited on its own index before the halves are merged, so a
+	/// large backlog on one side never turns the other into a scan.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn due(&self, now: &str, limit: i64) -> Result<Vec<GateRow>, sqlx::Error> {
+	pub async fn due(&self, now: &str, epoch: i64, limit: i64) -> Result<Vec<GateRow>, sqlx::Error> {
 		sqlx::query_as!(
 			GateRow,
 			r#"
-			SELECT subject_id as "subject_id!", eligible_at, last_intervened_at, last_action,
-			       intervention_count as "intervention_count!: i64"
-			FROM engagement_gate
-			WHERE eligible_at <= ?
+			SELECT subject_id as "subject_id!", eligible_at as "eligible_at!", last_intervened_at, last_action,
+			       intervention_count as "intervention_count!: i64", curriculum_epoch as "curriculum_epoch!: i64"
+			FROM (
+				SELECT * FROM (
+					SELECT subject_id, eligible_at, last_intervened_at, last_action, intervention_count, curriculum_epoch
+					FROM engagement_gate
+					WHERE eligible_at <= ?1
+					ORDER BY eligible_at ASC
+					LIMIT ?3
+				)
+				UNION
+				SELECT * FROM (
+					SELECT subject_id, eligible_at, last_intervened_at, last_action, intervention_count, curriculum_epoch
+					FROM engagement_gate
+					WHERE curriculum_epoch < ?2
+					ORDER BY curriculum_epoch ASC
+					LIMIT ?3
+				)
+			)
 			ORDER BY eligible_at ASC
-			LIMIT ?
+			LIMIT ?3
 			"#,
 			now,
+			epoch,
 			limit
 		)
 		.fetch_all(&self.pool)
 		.await
+	}
+
+	/// Catch a subject up to the curriculum `epoch` (#273, CAT5): apply
+	/// `apply` to their charge and advance their watermark to `epoch`, in
+	/// **one** write transaction — the drain and the watermark move together or
+	/// not at all.
+	///
+	/// That pairing is the whole idempotency argument: the watermark only moves
+	/// forward, and only with the drain, so a pass re-run after a crash — or two
+	/// passes racing — cannot drain anyone twice for the same publications.
+	/// Returns `None`, writing nothing, when the subject is not behind `epoch`
+	/// (already caught up) or has no gate row.
+	///
+	/// Takes the same `BEGIN IMMEDIATE` write lock as [`Self::fold`], so a
+	/// signal folded in concurrently is serialised with it, not overwritten.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure; nothing is written if any step fails.
+	pub async fn catch_up<T>(&self, subject_id: &str, epoch: i64, apply: impl FnOnce(&[ChargeRow]) -> (Vec<(u16, f64)>, String, String, T)) -> Result<Option<T>, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+		let behind = sqlx::query_scalar!(
+			r#"SELECT curriculum_epoch < ? AS "behind!: bool" FROM engagement_gate WHERE subject_id = ?"#,
+			epoch,
+			subject_id
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if behind != Some(true) {
+			tx.rollback().await?;
+			return Ok(None);
+		}
+		let stored = sqlx::query_as!(
+			ChargeRow,
+			r#"SELECT class as "class!: i64", level as "level!: f64", as_of FROM engagement_charge WHERE subject_id = ?"#,
+			subject_id
+		)
+		.fetch_all(&mut *tx)
+		.await?;
+		let (levels, as_of, eligible_at, output) = apply(&stored);
+		Self::write(&mut tx, subject_id, &levels, &as_of, &eligible_at).await?;
+		sqlx::query!("UPDATE engagement_gate SET curriculum_epoch = ? WHERE subject_id = ?", epoch, subject_id)
+			.execute(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(Some(output))
 	}
 
 	/// Claim a subject for one intervention, atomically — and write the

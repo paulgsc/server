@@ -37,7 +37,7 @@
 pub mod calibration;
 pub mod signal;
 
-pub use calibration::{signal_for_block, StudyCalibration, StudySelector, SCORE_TARGET};
+pub use calibration::{signal_for_block, CurriculumAudience, StudyCalibration, StudySelector, CURRICULUM_AUDIENCE, SCORE_TARGET};
 pub use signal::{EngagementClass, StudyAction, StudySignal};
 
 use intervention::Domain;

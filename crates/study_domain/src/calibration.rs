@@ -122,6 +122,43 @@ impl Selector<StudyV1> for StudySelector {
 	}
 }
 
+/// Who `CurriculumUpdated` drains when new material is published (#273,
+/// CAT5).
+///
+/// `CurriculumUpdated` "drains freshness for everyone it applies to"; this is
+/// the decision about who that is, and it sits here because it is the same
+/// kind of decision as a half-life — a policy about people, not plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurriculumAudience {
+	/// Every subject the nudge already knew when the material was published —
+	/// who had a gate row (had subscribed, or sent any signal) before the
+	/// publication was detected.
+	///
+	/// This is #273's "any history at all" position, with history meaning
+	/// *known to the nudge*. It is what a per-subject watermark can answer in
+	/// O(1) with no per-(publication, subject) state: a subject's watermark
+	/// starts at the epoch current when the nudge first learns of them, so
+	/// someone who arrives after a publication is never behind it, and nothing
+	/// they later edit or delete changes that. Against the alternatives:
+	///
+	/// - **Every subject** would drain someone on their first day, undoing
+	///   `Charge::from_storage`'s deliberately full start for material they
+	///   cannot have missed.
+	/// - **Every subject who has not already seen it** needs per-subject play
+	///   history of the new material specifically; for lessons that is where
+	///   #277 (CUR4) goes, as a relevance check when the subject is caught up
+	///   rather than an audience query at publish time.
+	///
+	/// The cost of this choice, accepted: a subject who subscribed but never
+	/// studied is drained too. They are someone the nudge may already
+	/// interrupt; new material is a fair thing to interrupt them with.
+	KnownBeforePublication,
+}
+
+/// The audience rule this release applies — implemented by
+/// `engagement_gate.curriculum_epoch`, the one watermark per subject.
+pub const CURRICULUM_AUDIENCE: CurriculumAudience = CurriculumAudience::KnownBeforePublication;
+
 /// The score below which a completed, assessed block counts as *not landing*
 /// (#287, TEL2) — the threshold `POST /outcomes` derives
 /// [`StudySignal::ScoredBelowTarget`] against.

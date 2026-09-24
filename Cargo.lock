@@ -1252,6 +1252,7 @@ dependencies = [
  "opentelemetry_sdk",
  "outcome_repo",
  "presence_repo",
+ "publication_repo",
  "push_kit",
  "push_repo",
  "rand 0.9.5",
@@ -3056,6 +3057,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "publication_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

@@ -34,6 +34,7 @@ use chrono::{DateTime, Utc};
 use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use outcome_repo::{ActivityStats, OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
+use publication_repo::{Publication, PublicationRepository};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
@@ -146,14 +147,18 @@ pub struct PassReport {
 	pub considered: usize,
 	/// Of those, how many ended with a notification accepted somewhere.
 	pub intervened: usize,
-	/// Due subjects this pass fetched and never reached, because
-	/// `NudgeContext::pass_deadline` ran out first. Untouched: their gate rows
-	/// are exactly as `due` found them, so the next pass picks them up.
+	/// Due subjects this pass fetched and never considered, because
+	/// `NudgeContext::pass_deadline` ran out first. Still due — at most one was
+	/// caught up to the curriculum epoch before the deadline struck — so the
+	/// next pass picks them up.
 	pub deferred: usize,
 	/// Whether the pass ran out of time — before a subject, or inside one's
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
 	/// counts.
 	pub deadline_exceeded: bool,
+	/// Subjects behind the curriculum epoch this pass caught up — one
+	/// `CurriculumUpdated` each (#273, CAT5); see [`catch_up`].
+	pub caught_up: usize,
 	/// History rows this pass's retention sweep deleted — `intervention_log`
 	/// (#265, SLI4) and `activity_outcome` (#286) together — see
 	/// [`sweep_history`].
@@ -200,15 +205,28 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	let deadline = tokio::time::Instant::now() + nudge.pass_deadline;
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
-	let due = engagement.due(&now.to_rfc3339(), BATCH).await?;
+	// New material first, so this pass's `due` already reads the epoch it
+	// moved to: one append per publication, whatever the number of subjects.
+	let newest = newest_publication(db, now, deadline).await;
+	let mut report = PassReport::default();
+	// Detection is storage work before the first subject; a pass it ran out
+	// of time starts nothing more (a real `chatgpt-codex-connector` finding on
+	// #362). Nothing was read, so nothing is deferred: the next pass reads it.
+	if tokio::time::Instant::now() >= deadline {
+		warn!(deadline_ms = nudge.pass_deadline.as_millis(), "waker pass reached its deadline before reading due subjects");
+		report.deadline_exceeded = true;
+		crate::metrics::waker::record_deadline_exceeded();
+		return Ok(report);
+	}
+	let epoch = newest.as_ref().map_or(0, |publication| publication.id);
+	let due = engagement.due(&now.to_rfc3339(), epoch, BATCH).await?;
 	crate::metrics::waker::record_due(due.len());
 
-	let mut report = PassReport::default();
-	debug!(count = due.len(), "subjects the arithmetic marked eligible");
+	debug!(count = due.len(), epoch, "subjects the arithmetic marked eligible, or behind the curriculum epoch");
 
-	for gate in &due {
+	for (reached, gate) in due.iter().enumerate() {
 		if tokio::time::Instant::now() >= deadline {
-			report.deferred = due.len() - report.considered;
+			report.deferred = due.len() - reached;
 			warn!(
 				considered = report.considered,
 				deferred = report.deferred,
@@ -216,6 +234,47 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 				"waker pass reached its deadline; the remaining due subjects are left for the next pass"
 			);
 			break;
+		}
+
+		// Behind the epoch (#273, CAT5): fold the new material in first, so
+		// `consider` decides on the drained charge. A subject the drain leaves
+		// ineligible is done for this pass — the fold re-solved `eligible_at`,
+		// and the arithmetic, not this loop, decides when they are next due.
+		if let Some(publication) = newest.as_ref().filter(|_| gate.curriculum_epoch < epoch) {
+			let due_by_time = match catch_up(db, &gate.subject_id, publication).await {
+				// Against the clock now, not the pass's `now`: a drain that
+				// makes them eligible at once solves `eligible_at` to the
+				// catch-up's own instant, which is later than the pass began
+				// (a real `chatgpt-codex-connector` finding on #362).
+				Ok(Some(eligible_at)) => {
+					report.caught_up += 1;
+					eligible_at <= Utc::now()
+				}
+				// Someone else caught them up between `due` and here.
+				Ok(None) => crate::nudge::clock::parse_timestamp(&gate.eligible_at).is_none_or(|at| at <= now),
+				Err(err) => {
+					error!(subject = %gate.subject_id, error = %err, "could not catch a subject up to the curriculum epoch; they stay behind for the next pass");
+					crate::metrics::waker::record_verdict("storage_error", "n/a");
+					false
+				}
+			};
+			if !due_by_time {
+				continue;
+			}
+			// The catch-up is this subject's storage work; `consider` is more
+			// of it and may provision a session. Neither is started past the
+			// deadline — the subject stays due and the next pass considers
+			// them (a real `chatgpt-codex-connector` finding on #362).
+			if tokio::time::Instant::now() >= deadline {
+				report.deferred = due.len() - reached;
+				warn!(
+					considered = report.considered,
+					deferred = report.deferred,
+					deadline_ms = nudge.pass_deadline.as_millis(),
+					"waker pass reached its deadline catching a subject up; they and the rest are left for the next pass"
+				);
+				break;
+			}
 		}
 
 		report.considered += 1;
@@ -244,6 +303,65 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	}
 
 	Ok(report)
+}
+
+/// Append newly published catalogue material to the log and return its newest
+/// entry, whose `id` is the curriculum epoch (#273, CAT5).
+///
+/// This is the whole of publishing: O(catalogue) — bounded by
+/// `ACTIVITY_DETECTION_CEILING`, and refused over it — never O(subjects). Who
+/// the material reaches is each subject's watermark falling behind the epoch,
+/// which `due` reads and [`catch_up`] closes; see `docs/study-nudge.md`,
+/// "Scaling invariants".
+///
+/// Failures are logged and read as "nothing new", never propagated: a pass
+/// that cannot read the log still serves the subjects the arithmetic marked
+/// due, and the new material waits for a pass that can. A detection that runs
+/// the pass out of time does not start the epoch read; `run_once` then ends
+/// the pass.
+async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio::time::Instant) -> Option<Publication> {
+	let publications = PublicationRepository::new(db.clone());
+	match publications.detect_activity_publications(&now.to_rfc3339()).await {
+		Ok(0) => {}
+		Ok(found) => info!(found, "new catalogue material detected"),
+		Err(err) => error!(error = %err, "could not detect catalogue publications"),
+	}
+	if tokio::time::Instant::now() >= deadline {
+		return None;
+	}
+	match publications.newest().await {
+		Ok(newest) => newest,
+		Err(err) => {
+			error!(error = %err, "could not read the curriculum epoch; nobody is caught up this pass");
+			None
+		}
+	}
+}
+
+/// Catch a subject behind the curriculum epoch up to it (#273, CAT5): fold
+/// **one** `CurriculumUpdated`, naming the newest publication, and advance
+/// their watermark to its epoch — one transaction, see
+/// `EngagementRepository::catch_up`.
+///
+/// One drain however many publications the subject missed: the signal means
+/// "there is new material", and a drain per publication would let a burst of
+/// catalogue edits empty someone's freshness in a single pass. Returns the
+/// re-solved `eligible_at`, or `None` if they were caught up in the meantime.
+///
+/// # Errors
+/// Propagates any storage failure; nothing is written if any step fails.
+async fn catch_up(db: &SqlitePool, subject_id: &str, newest: &Publication) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+	let now = Utc::now();
+	let signal = StudySignal::CurriculumUpdated {
+		curriculum_id: newest.curriculum_id.clone(),
+	};
+	let eligible_at = EngagementRepository::new(db.clone())
+		.catch_up(subject_id, newest.id, |stored| fold_signal(stored, &signal, now))
+		.await?;
+	if let Some(eligible_at) = eligible_at {
+		debug!(subject = %subject_id, epoch = newest.id, eligible_at = %eligible_at, "caught up to the curriculum epoch");
+	}
+	Ok(eligible_at)
 }
 
 /// Enforce each history table's retention horizon, one bounded bite per
@@ -1201,27 +1319,31 @@ pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::S
 	// `session-completed` from `/signals`, say) used to be able to read the
 	// same stored charge and have the second save erase the first; a real
 	// `chatgpt-codex-connector` finding on #360.
-	let eligible_at = EngagementRepository::new(db.clone())
-		.fold(subject_id, |stored| {
-			#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-			let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
-			let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
-
-			// No rows means never seen, and `from_storage` starts such a subject
-			// **full** rather than empty — an empty charge is instantly eligible, so
-			// the alternative would nudge a brand-new account before it did anything.
-			let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
-
-			charge.apply::<StudyCalibration>(signal, now);
-			let eligible_at = charge.eligible_at::<StudyCalibration>(now);
-
-			let (levels, stamp) = charge.to_storage();
-			(levels, stamp.to_rfc3339(), eligible_at.to_rfc3339(), eligible_at)
-		})
-		.await?;
+	let eligible_at = EngagementRepository::new(db.clone()).fold(subject_id, |stored| fold_signal(stored, signal, now)).await?;
 
 	debug!(subject = %subject_id, signal = signal.kind(), eligible_at = %eligible_at, "signal folded in");
 	Ok(eligible_at)
+}
+
+/// Apply `signal` to a stored charge and re-solve eligibility — the body of
+/// every charge fold, whether a signal arriving ([`observe`]) or a subject
+/// catching up to new material ([`catch_up`]). Returns what
+/// `EngagementRepository::fold`/`catch_up` store, plus the solved `eligible_at`.
+fn fold_signal(stored: &[engagement_repo::ChargeRow], signal: &StudySignal, now: DateTime<Utc>) -> (Vec<(u16, f64)>, String, String, DateTime<Utc>) {
+	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+	let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
+
+	// No rows means never seen, and `from_storage` starts such a subject
+	// **full** rather than empty — an empty charge is instantly eligible, so
+	// the alternative would nudge a brand-new account before it did anything.
+	let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+
+	charge.apply::<StudyCalibration>(signal, now);
+	let eligible_at = charge.eligible_at::<StudyCalibration>(now);
+
+	let (levels, stamp) = charge.to_storage();
+	(levels, stamp.to_rfc3339(), eligible_at.to_rfc3339(), eligible_at)
 }
 
 /// First contact: give a subject who has never been observed a gate row,
@@ -2332,7 +2454,7 @@ mod tests {
 				"an empty session must never be persisted as Scheduled — that would trap the subject permanently"
 			);
 
-			let still_due = engagement.due(&now_str, BATCH).await.unwrap();
+			let still_due = engagement.due(&now_str, 0, BATCH).await.unwrap();
 			assert!(
 				!still_due.iter().any(|gate| gate.subject_id == subject_id),
 				"the gate must be pushed out, not left at `now` — otherwise this subject would be re-selected and re-attempted every single pass"
@@ -2407,7 +2529,7 @@ mod tests {
 			let sessions = SessionRepository::new(pool.clone());
 			assert_eq!(sessions.first_prepared(subject_id).await.unwrap(), None);
 
-			let still_due = engagement.due(&now_str, BATCH).await.unwrap();
+			let still_due = engagement.due(&now_str, 0, BATCH).await.unwrap();
 			assert!(
 				!still_due.iter().any(|gate| gate.subject_id == subject_id),
 				"a global catalogue failure must not leave this subject re-selected every pass, crowding out subjects that need no catalogue read at all"
@@ -2505,14 +2627,14 @@ mod tests {
 				);
 				assert!(sessions.list(subject_id).await.unwrap().is_empty(), "no sessions: the state the whole epic is about");
 				assert!(
-					engagement.due(&now_str, BATCH).await.unwrap().is_empty(),
+					engagement.due(&now_str, 0, BATCH).await.unwrap().is_empty(),
 					"and not due yet either: first contact seeds the charge full, so someone who installs the app at 9am is not interrupted at 9:05"
 				);
 
 				// WHEN the clock advances past the solved eligibility instant.
 				rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
 				assert!(
-					engagement.due(&now_str, BATCH).await.unwrap().iter().any(|gate| gate.subject_id == subject_id),
+					engagement.due(&now_str, 0, BATCH).await.unwrap().iter().any(|gate| gate.subject_id == subject_id),
 					"the solved instant has passed, so the arithmetic — not a schedule — is what makes this subject due"
 				);
 
@@ -2877,7 +2999,7 @@ mod tests {
 				first_contact(&pool, subject_id).await.unwrap();
 				rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
 			}
-			assert_eq!(engagement.due(&now_str, BATCH).await.unwrap().len(), SUBJECTS, "every subject starts due");
+			assert_eq!(engagement.due(&now_str, 0, BATCH).await.unwrap().len(), SUBJECTS, "every subject starts due");
 
 			let nudge = NudgeContext {
 				delivery_timeout: std::time::Duration::from_millis(200),
@@ -2910,7 +3032,7 @@ mod tests {
 				"one delivery attempt per considered subject, none for the rest"
 			);
 
-			let still_due: Vec<String> = engagement.due(&now_str, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
+			let still_due: Vec<String> = engagement.due(&now_str, 0, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
 			let sessions = SessionRepository::new(pool.clone());
 			let mut reached = 0;
 			for subject_id in &subjects {
@@ -3363,6 +3485,252 @@ mod tests {
 		assert!(ranking_inputs(&pool, &off, "subject-sprawling").await.is_some(), "flag off: stats are never read");
 	}
 
+	async fn publish(pool: &SqlitePool, id: &str, version: i64) {
+		let published_at = Utc::now().to_rfc3339();
+		sqlx::query!(
+			r#"
+			INSERT INTO activities (id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio)
+			VALUES (?1, ?1, 'new material', 'hexagon', ?1, 'study', 'ready', 300000, ?2, ?3, '[]', '{}', NULL)
+			ON CONFLICT (id) DO UPDATE SET version = excluded.version, published_at = excluded.published_at
+			"#,
+			id,
+			published_at,
+			version
+		)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn freshness(pool: &SqlitePool, subject_id: &str) -> Option<f64> {
+		EngagementRepository::new(pool.clone())
+			.charge(subject_id)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|row| row.class == 4)
+			.map(|row| row.level)
+	}
+
+	async fn migrated_pool() -> SqlitePool {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		pool
+	}
+
+	/// #273 (CAT5): the catalogue that exists at deploy is the baseline; a new
+	/// activity drains freshness once for every subject the nudge already
+	/// knew; a second pass drains nobody again, because the watermark moved
+	/// with the drain; and a version bump is news again.
+	#[tokio::test]
+	async fn a_publication_drains_everyone_known_before_it_once() {
+		let pool = migrated_pool().await;
+		first_contact(&pool, "subject-a").await.unwrap();
+		first_contact(&pool, "subject-b").await.unwrap();
+		let nudge = nudge_context();
+
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "the seeded catalogue is not new to anyone");
+		let before = freshness(&pool, "subject-a").await.unwrap();
+
+		publish(&pool, "new-thing", 1).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 2, "both were known before the publication");
+		let after_one = freshness(&pool, "subject-a").await.unwrap();
+		assert!(before - after_one > 30.0, "CurriculumUpdated drains freshness by 35: {before} -> {after_one}");
+
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "caught up is caught up");
+		let after_rerun = freshness(&pool, "subject-a").await.unwrap();
+		assert!((after_one - after_rerun).abs() < 0.01, "a second pass drains nothing: {after_one} vs {after_rerun}");
+		let newest = PublicationRepository::new(pool.clone()).newest().await.unwrap().unwrap();
+		assert!(
+			catch_up(&pool, "subject-a", &newest).await.unwrap().is_none(),
+			"and a direct catch-up at the same epoch writes nothing"
+		);
+
+		publish(&pool, "new-thing", 2).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 2, "a version bump is new material again");
+	}
+
+	/// #273 (CAT5): the audience is fixed by each subject's own watermark — a
+	/// subject the nudge first learns of after a publication is stamped with
+	/// its epoch and is never behind it, while one known before is drained.
+	#[tokio::test]
+	async fn a_subject_known_only_after_a_publication_is_not_drained_by_it() {
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		first_contact(&pool, "subject-early").await.unwrap();
+		publish(&pool, "new-thing", 1).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 1, "the early subject");
+
+		first_contact(&pool, "subject-late").await.unwrap();
+		observe(&pool, "subject-late-by-signal", &StudySignal::SessionStarted { session_id: "s".to_owned() })
+			.await
+			.unwrap();
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "neither late subject is behind");
+		assert_eq!(freshness(&pool, "subject-late").await, Some(100.0), "first contact starts full and stays full");
+		let epoch = PublicationRepository::new(pool.clone()).newest().await.unwrap().unwrap().id;
+		for late in ["subject-late", "subject-late-by-signal"] {
+			let gate = EngagementRepository::new(pool.clone()).gate(late).await.unwrap().unwrap();
+			assert_eq!(gate.curriculum_epoch, epoch, "{late} starts at the current epoch");
+		}
+	}
+
+	/// #273 (CAT5): however many publications a subject missed, catching up is
+	/// one drain — the semantic signal is "there is new material".
+	#[tokio::test]
+	async fn several_missed_publications_cause_one_drain() {
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		first_contact(&pool, "subject-away").await.unwrap();
+		let before = freshness(&pool, "subject-away").await.unwrap();
+
+		publish(&pool, "new-thing", 1).await;
+		publish(&pool, "other-thing", 1).await;
+		publish(&pool, "third-thing", 1).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 1);
+		let after = freshness(&pool, "subject-away").await.unwrap();
+		assert!((before - after - 35.0).abs() < 1.0, "one drain of 35, not three: {before} -> {after}");
+	}
+
+	/// #273 (CAT5): behind subjects are bounded by what already bounds a pass —
+	/// `BATCH` — and later passes finish the rest, each exactly once. There is
+	/// no separate fan-out loop, cap, or cursor.
+	#[tokio::test]
+	async fn behind_subjects_beyond_a_batch_are_finished_by_later_passes() {
+		const EXTRA: i64 = 5;
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		for i in 0..BATCH + EXTRA {
+			first_contact(&pool, &numbered("subject-", i)).await.unwrap();
+		}
+		publish(&pool, "new-thing", 1).await;
+
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let (batch, extra) = (BATCH as usize, EXTRA as usize);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, batch, "one pass reaches one batch");
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, extra, "the next reaches the rest, and only the rest");
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "then nobody is behind");
+	}
+
+	/// #273 (CAT5): a subject the drain makes eligible is considered in the
+	/// same pass that caught them up, not left for the next (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn a_catch_up_that_makes_a_subject_eligible_is_considered_in_the_same_pass() {
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		let subject_id = "subject-almost-drifted";
+		// Just above `THRESHOLD`; draining freshness by 35 takes it under — see
+		// `a_publication_makes_new_material_the_thing_to_say`.
+		let now = Utc::now();
+		let levels: Vec<(u16, f64)> = vec![(1, 61.0), (2, 44.0), (3, 22.0), (4, 35.0)];
+		EngagementRepository::new(pool.clone())
+			.save(subject_id, &levels, &now.to_rfc3339(), &(now + Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let report = run_once(&pool, &nudge).await.unwrap();
+		assert_eq!(report.caught_up, 1, "{report:?}");
+		assert_eq!(report.considered, 1, "eligible after the drain, so considered now: {report:?}");
+	}
+
+	/// #273 (CAT5): detection is storage work before the first subject; a pass
+	/// already out of time after it reads nothing more — no epoch, no `due` —
+	/// and the next pass with time catches everyone up (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn a_pass_out_of_time_after_detection_starts_no_more_queries() {
+		let pool = migrated_pool().await;
+		first_contact(&pool, "subject-a").await.unwrap();
+		// Already due by time, so a `due` read would return them.
+		let now = Utc::now();
+		let full: Vec<(u16, f64)> = vec![(1, 100.0), (2, 100.0), (3, 100.0), (4, 100.0)];
+		EngagementRepository::new(pool.clone())
+			.save("subject-a", &full, &now.to_rfc3339(), &(now - Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let out_of_time = NudgeContext {
+			pass_deadline: std::time::Duration::ZERO,
+			..nudge_context()
+		};
+		let report = run_once(&pool, &out_of_time).await.unwrap();
+		assert!(report.deadline_exceeded, "{report:?}");
+		assert_eq!(
+			(report.caught_up, report.considered, report.deferred),
+			(0, 0, 0),
+			"`due` never ran, so there was nothing to reach or defer: {report:?}"
+		);
+
+		assert_eq!(run_once(&pool, &nudge_context()).await.unwrap().caught_up, 1, "the next pass with time");
+	}
+
+	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
+	/// the thinnest margin, with a session prepared, is told about new material
+	/// once a publication drains it — `StudyAction::NewMaterial`, on
+	/// `Topic::NewMaterial`.
+	#[tokio::test]
+	async fn a_publication_makes_new_material_the_thing_to_say() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let subject_id = "subject-almost-drifted";
+		// Weighted shortfalls 39 / 39.2 / 39 / 26 and an aggregate of 116.8 —
+		// just above `THRESHOLD` (110), so not yet eligible. Draining
+		// freshness by 35 takes it to 0: its shortfall becomes 40, the
+		// largest, and the aggregate falls to 102.8, under the threshold.
+		// Only freshness moved, so it is what is said.
+		let now = Utc::now();
+		let levels: Vec<(u16, f64)> = vec![(1, 61.0), (2, 44.0), (3, 22.0), (4, 35.0)];
+		EngagementRepository::new(pool.clone())
+			.save(subject_id, &levels, &now.to_rfc3339(), &(now + Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+
+		publish(&pool, "new-thing", 1).await;
+		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
+		assert!(catch_up(&pool, subject_id, &newest).await.unwrap().is_some(), "known before the publication, so behind it");
+
+		let stored = EngagementRepository::new(pool.clone()).charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+		let as_of = crate::nudge::clock::parse_timestamp(&stored[0].as_of).unwrap();
+		let charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+
+		let constraints = StudyConstraints {
+			clock: NudgeClock::resolve(Some("UTC")).0,
+			enabled: true,
+			quiet_hours_start: 0,
+			quiet_hours_end: 0,
+			presence: PresenceLeases::empty(std::time::Duration::from_secs(75)),
+			consented_topics: Topic::ALL.to_vec(),
+		};
+		let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(
+			constraints,
+			StudySelector {
+				prepared_session: Some("session-next".to_owned()),
+			},
+		);
+		let verdict = engine.evaluate(&charge, as_of, None);
+		let Verdict::Intervene(action) = verdict else {
+			panic!("expected an intervention once freshness drained, got {verdict:?}");
+		};
+		assert_eq!(
+			action,
+			StudyAction::NewMaterial {
+				session_id: "session-next".to_owned()
+			}
+		);
+		assert_eq!(crate::nudge::payload::topic_for(&action), Topic::NewMaterial);
+	}
+
 	/// A signal folded in while the waker was deciding is not overwritten by
 	/// the waker's stale verdict (from a `chatgpt-codex-connector` finding on
 	/// #360): the waker reads, a signal folds and re-solves, and the waker's
@@ -3491,7 +3859,7 @@ mod tests {
 
 		// The motivating case: the waker's first query against a database
 		// that never had `engagement_gate` created.
-		let missing_table = EngagementRepository::new(pool.clone()).due(&t0().to_rfc3339(), BATCH).await.unwrap_err();
+		let missing_table = EngagementRepository::new(pool.clone()).due(&t0().to_rfc3339(), 0, BATCH).await.unwrap_err();
 		assert_eq!(classify_pass_error(&missing_table), "schema");
 
 		sqlx::query("CREATE TABLE t (a INTEGER)").execute(&pool).await.unwrap();
