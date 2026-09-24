@@ -230,10 +230,11 @@ pub struct Config {
 	/// pass that hits it still leaves the next tick to start on time rather
 	/// than be delayed by `MissedTickBehavior::Delay`, and long enough for a
 	/// full `BATCH` of 32 subjects at typical sub-second delivery latency to
-	/// finish many times over. A pass that runs out stops between subjects —
-	/// never inside one, so a claim already written stands — and the subjects
-	/// it did not reach are still due on the next pass, the property `BATCH`
-	/// already relies on.
+	/// finish many times over. A pass that runs out starts no further subject
+	/// and tries no further device — each delivery's timeout is also capped at
+	/// what the pass has left — but never cancels a subject part-way, so a
+	/// claim already written stands. Subjects it did not reach are still due on
+	/// the next pass, the property `BATCH` already relies on.
 	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000")]
 	pub waker_pass_deadline_ms: u64,
 

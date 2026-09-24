@@ -1448,12 +1448,16 @@ now, at the two levels where running out means something different:
   has not answered is a failure against that device (above), and the loop moves
   on to the next device and the next subject.
 - **Per pass — `WAKER_PASS_DEADLINE_MS` (default 2 min, inside the 5-minute
-  interval).** Checked *between* subjects, never inside one: `consider` claims
-  before it sends, and cancelling it part-way would put a crash-shaped event on
-  an arbitrary side of that line. Every await inside it is already bounded on
-  its own, so the overrun is at most one subject's work. Subjects the pass did
-  not reach are left exactly as `due` found them and are picked up next pass —
-  the same property `BATCH` relies on.
+  interval).** Checked between subjects *and* between one subject's devices:
+  each delivery's timeout is the lesser of the delivery timeout and what the
+  pass has left, and a device reached after the deadline is not tried (a
+  subject's device list is unbounded, so the per-delivery bound alone would let
+  one subject hold a pass for `devices × timeout`). `consider` itself is never
+  cancelled part-way — it claims before it sends, and cancelling it would put a
+  crash-shaped event on an arbitrary side of that line — so what remains past
+  the deadline is storage work `busy_timeout` bounds. Subjects the pass did not
+  reach are left exactly as `due` found them and are picked up next pass — the
+  same property `BATCH` relies on.
 
 The NUDGE row's *Waker Pass Duration* panel draws the last pass against the
 configured deadline; `nudge_waker_pass_deadline_exceeded_total` counts passes
