@@ -28,13 +28,17 @@ To stand down:
 1. Say once, where the human will see it (the PR for one you opened or drive, the user for
    one you only watch), exactly what the PR is waiting on — usually already done by the
    hand-off comment itself; don't post a second one.
-2. Call `unsubscribe_pr_activity` for that PR.
-3. Delete every check-in you scheduled for it (`delete_trigger`; confirm with
+2. Delete every check-in you scheduled for it (`delete_trigger`; confirm with
    `list_triggers`), and do not re-arm one — not even a long-interval one "just in case."
+3. **Keep the PR activity subscription.** It is how their answer reaches you — a review, an
+   approval, a comment, a push — and an idle subscription costs nothing; a scheduled
+   check-in is what spends tokens. Unsubscribing here would leave nothing to wake the
+   session when they respond (a real `chatgpt-codex-connector` finding on the PR that
+   added this section). Unsubscribe only when the PR is merged or closed, or the user says
+   to stop.
 
 This is per blocking episode, not once per PR. When the human answers (a reply, a new
-commit, a merge of what it depended on), resume normally: re-subscribe, act, and drive the
-PR as usual. If it then becomes blocked on a human again, stand down again the same way.
+commit, a merge of what it depended on), resume normally: act, and drive the PR as usual. If it then becomes blocked on a human again, stand down again the same way.
 Their response is the wake-up signal — silent re-polling of a PR nobody but them can move
 only spends tokens (a session did exactly this overnight on #362, re-arming hourly checks
 on a PR waiting solely on the user's decision).
