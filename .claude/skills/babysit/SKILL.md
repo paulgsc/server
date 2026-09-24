@@ -11,11 +11,48 @@ polling is; it does not weaken any rule the parent instructions state as "never"
 (skipping a real CI failure, walking away from a red or conflicted PR, disabling a
 test, etc.) — those still apply in full.
 
+## Stand down at once when a PR is blocked on a human
+
+The quiet-cycle count below exists to confirm a PR has *stopped changing*. A PR whose only
+remaining blocker is a person — a design decision you handed off (including `steward/SKILL.md`'s
+review-cap hand-off), an approval, a human review, or the merge itself — has nothing left for a
+check-in to react to, so don't count cycles: stand down in the same turn you establish the block.
+
+A PR is **blocked on a human** when the next move is theirs and nothing of yours is in flight:
+no CI run still going on your latest push, no bot review you requested still unanswered, no
+fix you still owe on an open thread. If any of those is pending, keep watching until it
+resolves; the moment it does and only the human's move remains, stand down.
+
+To stand down:
+
+1. Say once, where the human will see it (the PR for one you opened or drive, the user for
+   one you only watch), exactly what the PR is waiting on — usually already done by the
+   hand-off comment itself; don't post a second one.
+2. Delete every check-in you scheduled for it (`delete_trigger`; confirm with
+   `list_triggers`), and do not re-arm one — not even a long-interval one "just in case."
+3. **Keep the PR activity subscription.** It is how their answer reaches you — a review, an
+   approval, a comment, a push — and an idle subscription costs nothing; a scheduled
+   check-in is what spends tokens. Unsubscribing here would leave nothing to wake the
+   session when they respond (a real `chatgpt-codex-connector` finding on the PR that
+   added this section). Unsubscribe only when the PR is merged or closed, or the user says
+   to stop.
+
+This is per blocking episode, not once per PR. When the human answers (a reply, a new
+commit, a merge of what it depended on), resume normally: act, and drive the PR as usual. If it then becomes blocked on a human again, stand down again the same way.
+Their response is the wake-up signal — silent re-polling of a PR nobody but them can move
+only spends tokens (a session did exactly this overnight on #362, re-arming hourly checks
+on a PR waiting solely on the user's decision).
+
 ## Stand down once a PR goes quiet and green
 
 Scheduled check-ins on a PR that stopped changing keep spending tokens for no benefit.
 Track this per PR you are watching (opened by you, driven for its author, or explicitly
 subscribed to on the user's behalf).
+
+This is the **fallback** for a PR you cannot yet classify as blocked on a human — most
+often because a bot review you requested has not answered. A PR you *can* see is waiting
+only on a person — including a green, reviewed, mergeable PR waiting to be merged — is
+covered by the section above: stand down at once, and don't count check-ins.
 
 A PR is **quiet-and-green** at a check-in when all of the following hold, compared to
 the last check-in:
@@ -47,8 +84,9 @@ another one:
    one message to the user instead) noting it looks stable and mergeable, and that
    you're standing down from active polling — at this point it's waiting on a human to
    merge it, not on you.
-2. Call `unsubscribe_pr_activity` for that PR.
-3. Do not schedule a further check-in for it.
+2. Delete its check-ins and do not schedule another — and **keep the PR activity
+   subscription**, exactly as in the section above: it is how a later review, comment or
+   merge reaches you, and it costs nothing while idle.
 
 Any of the following resets the quiet-cycle counter to zero and puts the PR straight
 back into the normal drive-to-green loop: a CI transition (to red, or a fresh run on a
@@ -56,4 +94,4 @@ new head), a new commit, a new review or comment, a merge conflict appearing, or
 Approvals regression. This rule only removes _idle_ re-polling of a PR that has nothing
 left to react to — it never excuses skipping or delaying a reaction to something that
 actually changed. If the user or a new webhook event asks you to look at a stood-down
-PR again, resume normally (re-subscribe, reset the counter to zero).
+PR again, resume normally (reset the counter to zero).
