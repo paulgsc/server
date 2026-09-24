@@ -40,6 +40,13 @@ typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
 database they just migrated themselves. `/ready`'s body names the pending
 migrations; DEPS renders it as `schema down`.
 
+Two cases look like schema drift and aren't, and both are named as what
+they are. A database with no `_sqlx_migrations` table at all reads "never
+migrated … empty or wrong database file (is its volume mounted?)": with
+`create_if_missing`, an unmounted volume at boot yields a fresh empty file,
+not an error. And when `sqlite` itself is down, `schema` reports "not
+checked" and DEPS shows only `sqlite down` — one cause, one red.
+
 ### 3. Rejecting {#rejecting}
 
 Elevated 5xx rate. `main.rs`'s tower stack already sheds and times out

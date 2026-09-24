@@ -197,7 +197,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace(max by (dependency) (dependency_up == 0), \"state\", \"$1 down\", \"dependency\", \"(.*)\")\nor (label_replace(0 * count(dependency_up) + 1, \"state\", \"all up\", \"__name__\", \".*\") unless on() max(dependency_up == 0))\n",
+          "expr": "label_replace(\n  max by (dependency) (dependency_up == 0)\n    unless on(dependency) (max by (dependency) (dependency_up{dependency=\"schema\"} == 0) and on() max(dependency_up{dependency=\"sqlite\"} == 0)),\n  \"state\", \"$1 down\", \"dependency\", \"(.*)\"\n)\nor (label_replace(0 * count(dependency_up) + 1, \"state\", \"all up\", \"__name__\", \".*\") unless on() max(dependency_up == 0))\n",
           "instant": true,
           "legendFormat": "{{state}}",
           "refId": "A"

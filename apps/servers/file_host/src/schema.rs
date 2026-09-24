@@ -44,6 +44,12 @@ pub struct Drift {
 	/// Applied, but the file changed since. The schema is whatever the old
 	/// file produced, not what this build's queries were checked against.
 	pub modified: Vec<i64>,
+	/// No `_sqlx_migrations` table at all. Usually not "forgot to migrate"
+	/// but "this isn't the database you think it is": `create_if_missing`
+	/// quietly makes a fresh empty file when the real one's volume isn't
+	/// mounted (Docker creates a missing bind-mount source as an empty
+	/// directory), so everything reads as pending.
+	pub never_migrated: bool,
 }
 
 impl Drift {
@@ -57,6 +63,9 @@ impl fmt::Display for Drift {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		if self.is_current() {
 			return f.write_str("current");
+		}
+		if self.never_migrated {
+			f.write_str("never migrated: no _sqlx_migrations table, so this is an empty or wrong database file (is its volume mounted?); ")?;
 		}
 		if !self.pending.is_empty() {
 			write!(f, "{} pending ({}); run `sqlx migrate run`", self.pending.len(), self.pending.join(", "))?;
@@ -102,7 +111,10 @@ pub async fn drift(pool: &SqlitePool, migrator: &Migrator) -> Result<Drift, sqlx
 		HashMap::new()
 	};
 
-	let mut drift = Drift::default();
+	let mut drift = Drift {
+		never_migrated: !has_table,
+		..Drift::default()
+	};
 	for migration in migrator.iter().filter(|m| !m.migration_type.is_down_migration()) {
 		match applied.get(&migration.version) {
 			None => {
@@ -140,8 +152,10 @@ mod tests {
 		let drift = drift(&pool, &MIGRATOR).await.unwrap();
 
 		assert!(!drift.is_current());
+		assert!(drift.never_migrated);
 		assert_eq!(drift.pending.len(), up_versions().len());
 		assert!(drift.failed.is_empty() && drift.modified.is_empty());
+		assert!(drift.to_string().starts_with("never migrated"), "{drift}");
 	}
 
 	#[tokio::test]
@@ -164,6 +178,7 @@ mod tests {
 		sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?").bind(latest).execute(&pool).await.unwrap();
 
 		let drift = drift(&pool, &MIGRATOR).await.unwrap();
+		assert!(!drift.never_migrated);
 		assert_eq!(drift.pending.len(), 1);
 		assert!(drift.pending[0].starts_with(&latest.to_string()), "{:?}", drift.pending);
 		let message = drift.to_string();
@@ -207,6 +222,7 @@ mod tests {
 			pending: vec!["3 c".to_owned()],
 			failed: vec![1],
 			modified: vec![2],
+			never_migrated: false,
 		};
 		assert_eq!(drift.to_string(), "1 pending (3 c); run `sqlx migrate run`; failed: [1]; modified after apply: [2]");
 		let drift = Drift {

@@ -105,21 +105,22 @@ async fn main() -> Result<()> {
 		.max_connections(5) // Don't go too high with SQLite
 		.connect_with(connection_options)
 		.await?;
+	let shutdown_token = CancellationToken::new();
+
+	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
 	// Not a gate: `/ready` already answers 503 for this (see `schema`), and
 	// refusing to start would take `/health` and `/metrics` down with it —
 	// the two things that would otherwise tell you why. This line is so the
 	// first thing in the log names the cause instead of whichever query hits
-	// the missing table first.
-	match file_host::schema::drift(&pool, &file_host::schema::MIGRATOR).await {
+	// the missing table first. After `AppState::build`, not before: that is
+	// where `OtelGuard::new` installs the tracing subscriber, and an event
+	// emitted earlier goes to the no-op default dispatcher.
+	match file_host::schema::drift(&app_state.core.shared_db, &file_host::schema::MIGRATOR).await {
 		Ok(drift) if drift.is_current() => {}
 		Ok(drift) => tracing::error!(database_url = %config.database_url, %drift, "database schema is behind this build"),
-		Err(err) => tracing::error!(error = %err, "could not read the database's applied migrations"),
+		Err(err) => tracing::error!(database_url = %config.database_url, error = %err, "could not read the database's applied migrations"),
 	}
-
-	let shutdown_token = CancellationToken::new();
-
-	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
 
 	let mut versioned_routes = Router::new()
 		.merge(mood_events(&config))

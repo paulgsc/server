@@ -43,7 +43,10 @@ local docLink(anchor) = [
   // that is down, named ("schema down" rather than a bare "3/4"), or a
   // single green "all up". `schema` (#fault-conditions) is the one that
   // isn't a connection: migrations this build expects that the database
-  // hasn't applied — `/ready`'s body lists which.
+  // hasn't applied — `/ready`'s body lists which. Hidden while `sqlite`
+  // itself is down: an unreadable database can't have its migrations read
+  // either, so the schema tile would be the same cause a second time — and
+  // would point at `sqlx migrate run` for what is really a missing volume.
   deps: {
     title: 'DEPS',
     type: 'stat',
@@ -51,7 +54,11 @@ local docLink(anchor) = [
     links: docLink('dependency-down'),
     targets: [{
       expr: |||
-        label_replace(max by (dependency) (dependency_up == 0), "state", "$1 down", "dependency", "(.*)")
+        label_replace(
+          max by (dependency) (dependency_up == 0)
+            unless on(dependency) (max by (dependency) (dependency_up{dependency="schema"} == 0) and on() max(dependency_up{dependency="sqlite"} == 0)),
+          "state", "$1 down", "dependency", "(.*)"
+        )
         or (label_replace(0 * count(dependency_up) + 1, "state", "all up", "__name__", ".*") unless on() max(dependency_up == 0))
       |||,
       legendFormat: '{{state}}',

@@ -64,7 +64,16 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 	// only the three checks that can actually await something are run
 	// concurrently.
 	let nats = check_nats(&state);
-	let (sqlite, schema, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_schema(&state.core.shared_db), check_redis(&state));
+	let (sqlite, mut schema, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_schema(&state.core.shared_db), check_redis(&state));
+
+	// An unreadable database can't have its migrations read either, and
+	// "schema: disk I/O error" next to "sqlite: disk I/O error" points at
+	// `sqlx migrate run` for what is really a missing volume. Still unhealthy
+	// (nothing verified it), but the message says whose failure it is; DEPS
+	// hides the schema tile while sqlite's is showing for the same reason.
+	if !sqlite.healthy {
+		schema.error = Some("not checked: sqlite is unreachable".to_string());
+	}
 
 	// A gauge per dependency, not just the aggregate `ready` bool — #225's
 	// DEPS panel needs to name which one is down, not just that something is.
