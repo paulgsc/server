@@ -1,0 +1,30 @@
+[package]
+name = "curriculum_repo"
+description = "Server-owned lesson content — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["curriculum", "lessons", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+hex = "0.4.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10.9"
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "uuid",
+  "time",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

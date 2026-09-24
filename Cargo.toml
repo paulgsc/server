@@ -14,6 +14,7 @@ members = [
   "crates/cursorium",
   "crates/db/activity",
   "crates/db/capture",
+  "crates/db/curriculum",
   "crates/db/mood_event",
   "crates/db/engagement",
   "crates/db/outcome",
@@ -77,6 +78,7 @@ some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
 activity_repo = { path = "crates/db/activity" }
 capture_repo = { path = "crates/db/capture" }
+curriculum_repo = { path = "crates/db/curriculum" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }
 outcome_repo = { path = "crates/db/outcome" }
