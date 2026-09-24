@@ -286,6 +286,20 @@ pub(crate) const ANNOUNCE_PER_PASS: i64 = 64;
 /// like the retention sweep, this must not fail a pass whose subjects were
 /// already handled, and everything it skips is still pending next pass.
 async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) -> Announced {
+	let mut announced = fan_out_publications(db, deadline).await;
+	// After the work, not only before each recipient: a claim or fold that
+	// starts just inside the deadline can finish past it, and the pass has
+	// overrun all the same — a real `chatgpt-codex-connector` finding on #362,
+	// the fan-out's twin of the one on #357.
+	if tokio::time::Instant::now() >= deadline {
+		announced.deadline_exceeded = true;
+	}
+	announced
+}
+
+/// [`announce_publications`]' body; it checks the deadline before each
+/// recipient, and its caller once more after everything it awaited.
+async fn fan_out_publications(db: &SqlitePool, deadline: tokio::time::Instant) -> Announced {
 	let publications = PublicationRepository::new(db.clone());
 	let stamp = Utc::now().to_rfc3339();
 	let mut announced = Announced::default();
@@ -3657,6 +3671,23 @@ mod tests {
 		assert!(!with_time.deadline_exceeded);
 		assert_eq!(with_time.applied, 3, "the next pass with time reaches everyone");
 		assert!(PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty());
+	}
+
+	/// #273 (CAT5): a deadline that runs out after the last recipient — here,
+	/// with nothing left to announce, after the only reads — is still reported,
+	/// so `run_once` counts it and skips the sweep (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn an_announcement_that_ends_past_the_deadline_reports_it() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let announced = announce_publications(&pool, tokio::time::Instant::now()).await;
+		assert_eq!(announced.applied, 0);
+		assert!(announced.deadline_exceeded, "no recipient ran, yet the pass is past its deadline: {announced:?}");
 	}
 
 	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
