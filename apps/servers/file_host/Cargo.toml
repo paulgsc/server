@@ -112,6 +112,9 @@ tokio = { workspace = true, features = [
   "test-util",
 ] }
 metrics-util = { workspace = true }
+# A real on-disk database for the waker's lock-classification test: two
+# connections to `:memory:` would be two databases, not one contended one.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

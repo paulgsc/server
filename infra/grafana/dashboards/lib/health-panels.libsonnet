@@ -8,9 +8,23 @@ local panelDefaults = import 'panel-defaults.libsonnet';
 
 local docsUrl = 'https://github.com/paulgsc/server/blob/main/docs/fault-conditions.md';
 
-// #216/P4 (#236) exports both the most recent successful pass and the live
-// configured interval. An empty pass counts as successful: quiet success and
-// a stopped task are precisely the two states this signal must separate.
+// #216/P4 (#236) exports the live configured interval, when the most recent
+// pass started, and whether the last one that finished failed (and in which
+// class — see metrics/waker.rs). An empty pass counts as successful: quiet
+// success and a stopped task are precisely the two states this signal must
+// separate, and a failing pass is a third that must not read as either.
+
+// A verdict panel says what is wrong, not only that something is: DEPS and
+// LOOPS each return exactly one series per finding, carrying the finding in
+// a `state` label, and render it with `textMode: 'name'` (the same
+// mechanism `buildInfo` below uses for its labels). The value only picks the
+// color. `label_replace(x, "state", "…", "__name__", ".*")` is the idiom
+// for stamping a constant label onto an aggregated series (which has no
+// `__name__`, so `.*` matches the empty string); `A or (B unless on() A)`
+// is precedence, so only the most severe finding renders. Checked with
+// `promtool test rules` (Prometheus 2.54) when written — each state, the
+// precedence, and no-data when the series are absent — but nothing in CI
+// re-checks PromQL semantics, so re-run that by hand after changing these.
 
 local docLink(anchor) = [
   {
@@ -25,34 +39,47 @@ local docLink(anchor) = [
   // same 0/1/no-data convention used by every other dashboard's liveness row.
   up: panelDefaults.livenessPanel('UP', ['file_host'], 900, {}) { links: docLink('unreachable') },
 
-  // DEPS — condition #2 (dependency down). `unit: '/3'` is Grafana's plain
-  // custom-suffix mechanism — a raw value of 3 renders as "3/3".
+  // DEPS — condition #2 (dependency down). One red tile per dependency
+  // that is down, named ("schema down" rather than a bare "3/4"), or a
+  // single green "all up". `schema` (#fault-conditions) is the one that
+  // isn't a connection: migrations this build expects that the database
+  // hasn't applied — `/ready`'s body lists which.
   deps: {
     title: 'DEPS',
     type: 'stat',
     id: 901,
     links: docLink('dependency-down'),
-    targets: [{ expr: 'sum(dependency_up)', instant: true, refId: 'A' }],
+    targets: [{
+      expr: |||
+        label_replace(max by (dependency) (dependency_up == 0), "state", "$1 down", "dependency", "(.*)")
+        or (label_replace(0 * count(dependency_up) + 1, "state", "all up", "__name__", ".*") unless on() max(dependency_up == 0))
+      |||,
+      legendFormat: '{{state}}',
+      instant: true,
+      refId: 'A',
+    }],
     fieldConfig: {
       defaults: {
-        unit: '/3',
+        unit: 'none',
         color: { mode: 'thresholds' },
-        thresholds: { mode: 'absolute', steps: [{ color: 'red', value: null }, { color: 'green', value: 3 }] },
+        thresholds: { mode: 'absolute', steps: [{ color: 'red', value: null }, { color: 'green', value: 1 }] },
       },
       overrides: [],
     },
-    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'name' },
   },
 
   // ERRORS — condition #3 (rejecting). Sustained non-zero 5xx rate is red;
   // the 5m rate window is what makes "sustained" mean something rather than
-  // reddening on a single blip.
+  // reddening on a single blip. `/ready` is excluded: its 503 *is* DEPS's
+  // finding, answered to the container healthcheck every 30s, and counting
+  // it here turned one down dependency into two red panels.
   errors: {
     title: 'ERRORS',
     type: 'stat',
     id: 902,
     links: docLink('rejecting'),
-    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5.."}[5m]))', instant: true, refId: 'A' }],
+    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5..", route!="/ready"}[5m]))', instant: true, refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 'reqps',
@@ -87,25 +114,39 @@ local docLink(anchor) = [
     options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
   },
 
-  // LOOPS — condition #5 (stalled). Three missed configured intervals is a
-  // fault; deriving the threshold from the exported interval keeps a tuned
-  // deployment honest.
+  // LOOPS — condition #5 (stalled). Three states, most severe first:
+  // STALLED (no pass has *started* in three configured intervals — the task
+  // died or a pass is hung), FAILING · <class> (passes run, and the last one
+  // returned an error — the class names what to fix, e.g. `schema` for a
+  // database missing migrations), ok. Deriving the threshold from the
+  // exported interval keeps a tuned deployment honest. The stall predicate
+  // is repeated rather than factored into a jsonnet local on purpose:
+  // scripts/check_metric_contract.py reads metric names lexically out of
+  // `expr:` strings, and an interpolated name is one it can't see.
   loops: {
     title: 'LOOPS',
     type: 'stat',
     id: 904,
     links: docLink('stalled'),
-    targets: [{ expr: '(time() - nudge_waker_last_pass_timestamp_seconds) > bool (3 * nudge_waker_interval_seconds)', instant: true, refId: 'A' }],
+    targets: [{
+      expr: |||
+        label_replace((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds), "state", "STALLED", "__name__", ".*")
+        or (label_replace(max by (error) (nudge_waker_pass_failing == 1), "state", "FAILING · $1", "error", "(.*)") unless on() ((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)))
+        or (label_replace(0 * max(nudge_waker_last_attempt_timestamp_seconds), "state", "ok", "__name__", ".*") unless on() (((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)) or max(nudge_waker_pass_failing == 1)))
+      |||,
+      legendFormat: '{{state}}',
+      instant: true,
+      refId: 'A',
+    }],
     fieldConfig: {
       defaults: {
         unit: 'none',
-        mappings: [{ type: 'value', options: { '0': { text: 'ok', color: 'green' }, '1': { text: 'STALLED', color: 'red' } } }],
         color: { mode: 'thresholds' },
-        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }] },
+        thresholds: { mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }] },
       },
       overrides: [],
     },
-    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'name' },
   },
 
   // SIGNAL — condition #6 (blind). Red the instant *any* of the five panels
@@ -123,15 +164,16 @@ local docLink(anchor) = [
     id: 905,
     links: docLink('blind'),
     targets: [{
-      // Same reasoning as LOOPS above about writing the metric name out
-      // literally rather than interpolating `waker_last_pass`.
+      // Same reasoning as LOOPS above about writing the metric names out
+      // literally rather than interpolating them.
       expr: |||
         (
           sum(absent(up{job="file_host"}))
           or sum(absent(dependency_up))
           or sum(absent(http_requests_total))
           or sum(absent(refusals_total))
-          or sum(absent(nudge_waker_last_pass_timestamp_seconds))
+          or sum(absent(nudge_waker_last_attempt_timestamp_seconds))
+          or sum(absent(nudge_waker_pass_failing))
           or sum(absent(nudge_waker_interval_seconds))
         ) or vector(0)
       |||,

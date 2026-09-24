@@ -4,8 +4,8 @@
 // proves the engagement waker's tick is alive — a pass that runs on
 // schedule and finds every due subject suppressed, or claims one and then
 // has every device reject the push, leaves LOOPS exactly as green as a
-// quiet day with nothing due. Both are "nudge_waker_last_pass_timestamp_seconds
-// moved recently"; neither tells you which one happened. That gap is what
+// quiet day with nothing due. Both are "a pass started recently and didn't
+// fail"; neither tells you which one happened. That gap is what
 // let #257's cold-start silence — the nudge saying nothing for exactly the
 // subject who most needed it — read as "nudge: ok" on this dashboard for as
 // long as it went unnoticed.

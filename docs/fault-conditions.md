@@ -30,7 +30,15 @@ can be evaluated at all.
 `/ready` non-200, per-dependency gauge. SQLite pool exhausted, NATS
 disconnected, Redis unreachable — before #221 (F1), all three were invisible
 until a request happened to fail. `handlers::readiness` checks each with a
-bounded timeout and exports `dependency_up{dependency="sqlite"|"nats"|"redis"}`.
+bounded timeout and exports
+`dependency_up{dependency="sqlite"|"nats"|"redis"|"schema"}`.
+
+`schema` is the one that isn't a connection: the database is reachable but
+hasn't applied every migration this binary embeds (`crate::schema`) —
+typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
+`cargo check` and CI can't see it, because both check queries against a
+database they just migrated themselves. `/ready`'s body names the pending
+migrations; DEPS renders it as `schema down`.
 
 ### 3. Rejecting {#rejecting}
 
@@ -49,11 +57,20 @@ is the only place this was ever counted.
 
 ### 5. Stalled {#stalled}
 
-Age of the last successful background pass exceeds 3× its interval. The
-`nudge` waker (see the [PUSH] epic, #236) is designed so a quiet day and a
-dead loop produce byte-identical output: nothing. A last-success timestamp
-gauge turns "nothing happened" into a comparison against a known interval
-instead of a silence nobody can distinguish from correctness.
+No background pass has *started* within 3× its interval, or the last one to
+finish failed. The `nudge` waker (see the [PUSH] epic, #236) is designed so
+a quiet day and a dead loop produce byte-identical output: nothing. A
+last-attempt timestamp gauge turns "nothing happened" into a comparison
+against a known interval instead of a silence nobody can distinguish from
+correctness.
+
+Those are two different faults, and LOOPS names which: `STALLED` means
+nothing is running to fail (the task died, or a pass is hung), while
+`FAILING · <class>` means passes run and error, with the class
+(`schema`/`locked`/`io`/`pool`/`other`, from
+`nudge_waker_pass_failing{error}`) naming what to go and fix. A single
+last-*success* timestamp read the same for both, so a database missing a
+migration once looked exactly like a dead loop.
 
 ### 6. Blind {#blind}
 
@@ -72,3 +89,10 @@ ERRORS (#3), REFUSALS (#4), LOOPS (#5), SIGNAL (#6 — red the instant any of
 the other five goes grey, so "five greens" and "five greys" can never be
 mistaken for each other at a glance). Each panel links back to its
 condition's anchor on this page.
+
+Two rules keep the row legible rather than merely complete. **One cause, one
+red:** ERRORS excludes `/ready`, whose 503 is DEPS's finding repeated to the
+container healthcheck — counting it turned one down dependency into two red
+panels. **The red names the cause:** DEPS and LOOPS render their finding as
+text (`schema down`, `FAILING · schema`) rather than a count or a bare
+STALLED, so the row answers "what", not only "whether".

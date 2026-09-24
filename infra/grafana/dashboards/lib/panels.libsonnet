@@ -229,9 +229,12 @@ local utils = import 'utils.libsonnet';
   // operational faults rather than ordinary client traffic — see
   // infra/grafana/provisioning/alerting/file-host-errors.yml, which alerts
   // on exactly this series.
+  // `increase(...[5m])` is a count per five minutes, not a rate — 'short'
+  // and the title say so. Under 'ops' a waker failing once per 300s tick
+  // read as "1 ops/s", three hundred times what was happening.
   tracingErrors: {
     datasource: config.prometheusDataSource,
-    fieldConfig: utils.timeSeriesFieldConfig('ops', 0),
+    fieldConfig: utils.timeSeriesFieldConfig('short', 0),
     id: 10,
     options: utils.timeSeriesOptions,
     targets: [{
@@ -239,7 +242,7 @@ local utils = import 'utils.libsonnet';
       legendFormat: '{{target}}',
       refId: 'A',
     }],
-    title: '🚨 Tracing Error Events by Target',
+    title: '🚨 Tracing Error Events by Target (per 5m)',
     type: 'timeseries',
   },
 }
