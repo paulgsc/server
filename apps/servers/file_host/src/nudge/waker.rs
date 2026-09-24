@@ -147,9 +147,10 @@ pub struct PassReport {
 	pub considered: usize,
 	/// Of those, how many ended with a notification accepted somewhere.
 	pub intervened: usize,
-	/// Due subjects this pass fetched and never reached, because
-	/// `NudgeContext::pass_deadline` ran out first. Untouched: their gate rows
-	/// are exactly as `due` found them, so the next pass picks them up.
+	/// Due subjects this pass fetched and never considered, because
+	/// `NudgeContext::pass_deadline` ran out first. Still due — at most one was
+	/// caught up to the curriculum epoch before the deadline struck — so the
+	/// next pass picks them up.
 	pub deferred: usize,
 	/// Whether the pass ran out of time — before a subject, or inside one's
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
@@ -259,6 +260,20 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 			};
 			if !due_by_time {
 				continue;
+			}
+			// The catch-up is this subject's storage work; `consider` is more
+			// of it and may provision a session. Neither is started past the
+			// deadline — the subject stays due and the next pass considers
+			// them (a real `chatgpt-codex-connector` finding on #362).
+			if tokio::time::Instant::now() >= deadline {
+				report.deferred = due.len() - reached;
+				warn!(
+					considered = report.considered,
+					deferred = report.deferred,
+					deadline_ms = nudge.pass_deadline.as_millis(),
+					"waker pass reached its deadline catching a subject up; they and the rest are left for the next pass"
+				);
+				break;
 			}
 		}
 
