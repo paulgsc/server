@@ -17,6 +17,9 @@ pub struct Publication {
 	pub source: String,
 	pub curriculum_id: String,
 	pub version: i64,
+	/// When this publication was detected (RFC 3339): the audience is fixed
+	/// as of this instant.
+	pub detected_at: String,
 	/// The last subject this fan-out applied to, in subject order.
 	pub cursor_subject: Option<String>,
 }
@@ -106,7 +109,7 @@ impl PublicationRepository {
 		sqlx::query_as!(
 			Publication,
 			r#"
-			SELECT id AS "id!", source, curriculum_id, version, cursor_subject
+			SELECT id AS "id!", source, curriculum_id, version, detected_at, cursor_subject
 			FROM curriculum_publication
 			WHERE fanned_out_at IS NULL
 			ORDER BY id
@@ -127,6 +130,15 @@ impl PublicationRepository {
 	/// make stale; draining them would nudge someone on their first day for
 	/// something they have not missed.
 	///
+	/// **Fixed at detection.** Only sessions started by
+	/// `Publication::detected_at` count, so a fan-out that spans several passes
+	/// reaches the same audience whichever side of the cursor a newcomer's id
+	/// falls — someone whose first session came after the publication has not
+	/// missed it either (a real `chatgpt-codex-connector` finding on #362).
+	/// Compared as `julianday`, not as text: `started_at` is client-supplied
+	/// ISO-8601 and may carry any offset; one that does not parse still counts
+	/// as studied, as it did before this cutoff existed.
+	///
 	/// **Seeks, never rescans.** The read starts past
 	/// `Publication::cursor_subject` on `idx_sessions_started_subject`, a
 	/// partial index of started sessions only, so a pass examines the sessions
@@ -142,11 +154,13 @@ impl PublicationRepository {
 			SELECT DISTINCT subject_id AS "subject_id!"
 			FROM sessions INDEXED BY idx_sessions_started_subject
 			WHERE started_at IS NOT NULL AND subject_id > ?1
+				AND COALESCE(julianday(started_at) <= julianday(?3), 1)
 			ORDER BY subject_id
 			LIMIT ?2
 			"#,
 			after,
-			limit
+			limit,
+			publication.detected_at
 		)
 		.fetch_all(&self.pool)
 		.await

@@ -3673,6 +3673,32 @@ mod tests {
 		assert!(PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty());
 	}
 
+	/// #273 (CAT5): the audience is fixed when the publication is detected —
+	/// a subject whose first session started afterwards has not missed it,
+	/// wherever their id falls relative to the cursor (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn a_subject_who_first_studies_after_a_publication_is_not_its_audience() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		studied(&pool, "subject-a-before").await;
+		studied(&pool, "subject-z-after").await;
+		// In another offset, to hold the comparison to instants, not text.
+		sqlx::query!("UPDATE sessions SET started_at = '2999-01-01T02:00:00+02:00' WHERE subject_id = 'subject-z-after'")
+			.execute(&pool)
+			.await
+			.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let announced = announce_publications(&pool, far_deadline()).await;
+		assert_eq!(announced.applied, 1, "{announced:?}");
+		let reached: Vec<String> = sqlx::query_scalar!("SELECT subject_id FROM curriculum_delivery").fetch_all(&pool).await.unwrap();
+		assert_eq!(reached, ["subject-a-before"]);
+	}
+
 	/// #273 (CAT5): a deadline that runs out after the last recipient — here,
 	/// with nothing left to announce, after the only reads — is still reported,
 	/// so `run_once` counts it and skips the sweep (from a
