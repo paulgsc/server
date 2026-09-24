@@ -160,11 +160,11 @@
               },
               {
                 "color": "green",
-                "value": 3
+                "value": 1
               }
             ]
           },
-          "unit": "/3"
+          "unit": "none"
         },
         "overrides": []
       },
@@ -193,12 +193,13 @@
           ],
           "values": false
         },
-        "textMode": "value"
+        "textMode": "name"
       },
       "targets": [
         {
-          "expr": "sum(dependency_up)",
+          "expr": "label_replace(\n  max by (dependency) (dependency_up == 0)\n    unless on(dependency) (max by (dependency) (dependency_up{dependency=\"schema\"} == 0) and on() max(dependency_up{dependency=\"sqlite\"} == 0)),\n  \"state\", \"$1 down\", \"dependency\", \"(.*)\"\n)\nor (label_replace(0 * count(dependency_up) + 1, \"state\", \"all up\", \"__name__\", \".*\") unless on() max(dependency_up == 0))\n",
           "instant": true,
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
@@ -271,7 +272,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+          "expr": "sum(rate(http_requests_total{status=~\"5..\", route!=\"/ready\"}[5m])) or (0 * sum(rate(http_requests_total[5m])))",
           "instant": true,
           "refId": "A"
         }
@@ -362,19 +363,6 @@
           "mappings": [
             {
               "options": {
-                "0": {
-                  "color": "green",
-                  "text": "ok"
-                },
-                "1": {
-                  "color": "red",
-                  "text": "STALLED"
-                }
-              },
-              "type": "value"
-            },
-            {
-              "options": {
                 "match": "null+nan",
                 "result": {
                   "color": "#8E8E8E",
@@ -389,8 +377,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "#8E8E8E",
+                "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           },
@@ -423,12 +415,13 @@
           ],
           "values": false
         },
-        "textMode": "value"
+        "textMode": "name"
       },
       "targets": [
         {
-          "expr": "(time() - nudge_waker_last_pass_timestamp_seconds) > bool (3 * nudge_waker_interval_seconds)",
+          "expr": "label_replace((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds), \"state\", \"STALLED\", \"__name__\", \".*\")\nor (label_replace(max by (error) (nudge_waker_pass_failing == 1), \"state\", \"FAILING · $1\", \"error\", \"(.*)\") unless on() ((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)))\nor (label_replace(0 * max(nudge_waker_last_attempt_timestamp_seconds), \"state\", \"ok\", \"__name__\", \".*\") unless on() (((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)) or max(nudge_waker_pass_failing == 1)))\n",
           "instant": true,
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
@@ -509,7 +502,7 @@
       },
       "targets": [
         {
-          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_pass_timestamp_seconds))\n  or sum(absent(nudge_waker_interval_seconds))\n) or vector(0)\n",
+          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_attempt_timestamp_seconds))\n  or sum(absent(nudge_waker_pass_failing))\n  or sum(absent(nudge_waker_interval_seconds))\n) or vector(0)\n",
           "instant": true,
           "refId": "A"
         }
@@ -2760,7 +2753,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "short"
         }
       },
       "gridPos": {
@@ -2787,7 +2780,7 @@
           "refId": "A"
         }
       ],
-      "title": "🚨 Tracing Error Events by Target",
+      "title": "🚨 Tracing Error Events by Target (per 5m)",
       "type": "timeseries"
     }
   ],

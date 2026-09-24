@@ -17,6 +17,7 @@ pub mod models;
 pub mod nudge;
 pub mod rate_limiter;
 pub mod routes;
+pub mod schema;
 pub mod subject;
 pub mod utils;
 pub mod websocket;

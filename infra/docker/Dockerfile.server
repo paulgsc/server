@@ -70,6 +70,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY apps/ apps/
 COPY .sqlx/ .sqlx/
+# Embedded by `schema::MIGRATOR` (sqlx::migrate!) so /ready can name
+# migrations the runtime database hasn't applied yet.
+COPY migrations/ migrations/
 
 # Build configuration
 ENV CARGO_INCREMENTAL=0

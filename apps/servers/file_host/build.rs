@@ -27,6 +27,11 @@ use std::process::Command;
 
 fn main() {
 	println!("cargo:rerun-if-changed=migrations");
+	// `schema::MIGRATOR` embeds the workspace-root `migrations/`. Cargo
+	// resolves these paths against this package's directory, where the bare
+	// `migrations` above doesn't exist — which makes cargo rerun this script
+	// on every build, keeping GIT_SHA/BUILT_AT fresh locally, so it stays.
+	println!("cargo:rerun-if-changed=../../../migrations");
 	println!("cargo:rerun-if-changed=../../../.git/HEAD");
 	println!("cargo:rerun-if-env-changed=VCS_REF");
 	println!("cargo:rerun-if-env-changed=GIT_DIRTY");

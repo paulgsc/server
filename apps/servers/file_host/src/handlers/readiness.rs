@@ -6,6 +6,12 @@
 //! `AppState` actually holds a handle to (`SQLite`, NATS, Redis) and answers
 //! 503 with a per-dependency breakdown when any of them is unreachable.
 //!
+//! `schema` is the fourth, and the only one that isn't a connection: a
+//! reachable `SQLite` file that is missing migrations this binary's queries
+//! were compiled against can't serve either, and it fails on whichever
+//! query happens to touch the missing table first rather than here. See
+//! `crate::schema` for why neither `cargo check` nor CI can catch it.
+//!
 //! Every check that can actually block is bounded by
 //! [`DEPENDENCY_CHECK_TIMEOUT`] and run concurrently: a readiness probe
 //! that hangs waiting on one dependency is worse than one that answers
@@ -22,10 +28,10 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 use tracing::instrument;
 
-/// Bounds each of the two checks that can actually block (`SQLite`, Redis).
+/// Bounds each check that can actually block (`SQLite`, schema, Redis).
 /// Well under the 15s `TASK_TIMEOUT_MS` request timeout even run
 /// sequentially — run concurrently (as they are here) the whole handler
-/// resolves in one dependency's worth of this budget, not the sum of two.
+/// resolves in one dependency's worth of this budget, not the sum of three.
 const DEPENDENCY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Serialize)]
@@ -55,18 +61,32 @@ pub struct ReadinessResponse {
 pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<ReadinessResponse>) {
 	// `check_nats` is synchronous (a non-blocking state read, not a
 	// round-trip — see its own doc comment), so it isn't part of the join;
-	// only the two checks that can actually await something are run
+	// only the three checks that can actually await something are run
 	// concurrently.
 	let nats = check_nats(&state);
-	let (sqlite, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_redis(&state));
+	let (sqlite, mut schema, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_schema(&state.core.shared_db), check_redis(&state));
+
+	// An unreadable database can't have its migrations read either, and
+	// "schema: disk I/O error" next to "sqlite: disk I/O error" points at
+	// `sqlx migrate run` for what is really a missing volume. Unhealthy even
+	// if the schema read itself succeeded — the two checks can land on
+	// different pooled connections, and one database that answers one query
+	// and fails the next hasn't verified anything — but the message says
+	// whose failure it is; DEPS hides the schema tile while sqlite's is
+	// showing for the same reason.
+	if !sqlite.healthy {
+		schema.healthy = false;
+		schema.error = Some("not checked: sqlite is unreachable".to_string());
+	}
 
 	// A gauge per dependency, not just the aggregate `ready` bool — #225's
 	// DEPS panel needs to name which one is down, not just that something is.
 	gauge!("dependency_up", "dependency" => "sqlite").set(f64::from(sqlite.healthy));
 	gauge!("dependency_up", "dependency" => "nats").set(f64::from(nats.healthy));
 	gauge!("dependency_up", "dependency" => "redis").set(f64::from(redis.healthy));
+	gauge!("dependency_up", "dependency" => "schema").set(f64::from(schema.healthy));
 
-	let ready = sqlite.healthy && nats.healthy && redis.healthy;
+	let ready = sqlite.healthy && nats.healthy && redis.healthy && schema.healthy;
 	let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
 
 	(
@@ -78,7 +98,7 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 			git_sha: build_info::git_sha_with_dirty_marker(),
 			built_at: build_info::BUILT_AT,
 			rust: build_info::RUSTC_VERSION,
-			dependencies: vec![sqlite, nats, redis],
+			dependencies: vec![sqlite, nats, redis, schema],
 		}),
 	)
 }
@@ -94,6 +114,32 @@ async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 		},
 		Err(_) => DependencyStatus {
 			name: "sqlite",
+			healthy: false,
+			error: Some("check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
+		},
+	}
+}
+
+/// Healthy only when every migration embedded in this binary is applied —
+/// the error names the pending ones and the command that applies them. A
+/// database that can't be read at all is reported here too rather than
+/// guessed about, though `sqlite` above is the check that owns that failure.
+async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
+	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, crate::schema::drift(pool, &crate::schema::MIGRATOR)).await;
+	match result {
+		Ok(Ok(drift)) if drift.is_current() => DependencyStatus { name: "schema", healthy: true, error: None },
+		Ok(Ok(drift)) => DependencyStatus {
+			name: "schema",
+			healthy: false,
+			error: Some(drift.to_string()),
+		},
+		Ok(Err(e)) => DependencyStatus {
+			name: "schema",
+			healthy: false,
+			error: Some("could not read _sqlx_migrations: ".to_string() + &e.to_string()),
+		},
+		Err(_) => DependencyStatus {
+			name: "schema",
 			healthy: false,
 			error: Some("check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
 		},

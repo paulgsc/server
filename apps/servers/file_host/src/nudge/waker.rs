@@ -77,14 +77,59 @@ pub fn spawn(state: &AppState, interval: Duration) {
 					return;
 				}
 				_ = ticker.tick() => {
+					crate::metrics::waker::record_pass_started();
 					match run_once(&db, &nudge).await {
 						Ok(_) => crate::metrics::waker::record_successful_pass(),
-						Err(err) => error!(error = %err, "waker pass failed"),
+						Err(err) => {
+							let class = classify_pass_error(&err);
+							error!(error = %err, class, "waker pass failed");
+							crate::metrics::waker::record_failed_pass(class);
+						}
 					}
 				}
 			}
 		}
 	});
+}
+
+/// Which `metrics::waker::PASS_ERROR_CLASSES` bucket a failed pass lands in
+/// — the word LOOPS shows after "FAILING ·", so it names the thing to go and
+/// fix rather than the error type.
+///
+/// - `schema`: the query names a table or column the database doesn't have.
+///   Nearly always a local database nobody ran `sqlx migrate run` on;
+///   `/ready`'s `schema` dependency names which migrations.
+/// - `locked`: `SQLITE_BUSY`/`SQLITE_LOCKED` outlasted `busy_timeout`.
+/// - `io`: the file itself — can't open, read-only, full, corrupt, not a
+///   database. Check the volume before the code.
+/// - `pool`: no connection was handed out (timed out or closed).
+/// - `other`: everything else; the log line has the detail.
+///
+/// Classified on `SQLite`'s primary result code (the low byte of the extended
+/// code sqlx reports) plus the message text for `schema`, because a missing
+/// table is plain `SQLITE_ERROR` — only the message says which kind.
+pub(crate) fn classify_pass_error(err: &sqlx::Error) -> &'static str {
+	match err {
+		sqlx::Error::Database(db) => {
+			let message = db.message();
+			if message.starts_with("no such table") || message.starts_with("no such column") {
+				return "schema";
+			}
+			match db.code().and_then(|code| code.parse::<i32>().ok()).map(|code| code & 0xff) {
+				// SQLITE_BUSY, SQLITE_LOCKED
+				Some(5 | 6) => "locked",
+				// SQLITE_READONLY, SQLITE_IOERR, SQLITE_CORRUPT, SQLITE_FULL, SQLITE_CANTOPEN, SQLITE_NOTADB
+				Some(8 | 10 | 11 | 13 | 14 | 26) => "io",
+				// SQLITE_SCHEMA
+				Some(17) => "schema",
+				_ => "other",
+			}
+		}
+		sqlx::Error::ColumnNotFound(_) => "schema",
+		sqlx::Error::Io(_) => "io",
+		sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => "pool",
+		_ => "other",
+	}
 }
 
 /// One pass. Public so a debug endpoint can force it without waiting.
@@ -2379,5 +2424,92 @@ mod tests {
 			presence_lease_ttl: std::time::Duration::from_secs(75),
 			base_url: "https://example.com".to_owned(),
 		}
+	}
+
+	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a
+	/// pass can hit, produced the way a pass would hit it — not a
+	/// hand-built error value whose code might not match what `SQLite`
+	/// actually reports.
+	#[tokio::test]
+	async fn pass_errors_are_classified_by_what_to_go_and_fix() {
+		use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+		use std::str::FromStr as _;
+
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+
+		// The motivating case: the waker's first query against a database
+		// that never had `engagement_gate` created.
+		let missing_table = EngagementRepository::new(pool.clone()).due(&t0().to_rfc3339(), BATCH).await.unwrap_err();
+		assert_eq!(classify_pass_error(&missing_table), "schema");
+
+		sqlx::query("CREATE TABLE t (a INTEGER)").execute(&pool).await.unwrap();
+		let missing_column = sqlx::query("SELECT b FROM t").execute(&pool).await.unwrap_err();
+		assert_eq!(classify_pass_error(&missing_column), "schema");
+
+		let syntax = sqlx::query("SELEKT 1").execute(&pool).await.unwrap_err();
+		assert_eq!(classify_pass_error(&syntax), "other");
+
+		// Two connections to one file: the first holds a write lock, the
+		// second has no busy_timeout to wait it out.
+		let dir = tempfile::tempdir().unwrap();
+		let url = "sqlite://".to_owned() + &dir.path().join("locked.db").to_string_lossy();
+		let holder = SqlitePoolOptions::new()
+			.max_connections(1)
+			.connect_with(SqliteConnectOptions::from_str(&url).unwrap().create_if_missing(true))
+			.await
+			.unwrap();
+		sqlx::query("CREATE TABLE t (a INTEGER)").execute(&holder).await.unwrap();
+		let mut lock = holder.acquire().await.unwrap();
+		sqlx::query("BEGIN IMMEDIATE").execute(&mut *lock).await.unwrap();
+		let contender = SqlitePoolOptions::new()
+			.max_connections(1)
+			.connect_with(SqliteConnectOptions::from_str(&url).unwrap().busy_timeout(std::time::Duration::ZERO))
+			.await
+			.unwrap();
+		let busy = sqlx::query("INSERT INTO t VALUES (1)").execute(&contender).await.unwrap_err();
+		assert_eq!(classify_pass_error(&busy), "locked");
+		drop(lock);
+
+		assert_eq!(classify_pass_error(&sqlx::Error::Io(std::io::Error::other("disk gone"))), "io");
+
+		pool.close().await;
+		let closed = sqlx::query("SELECT 1").execute(&pool).await.unwrap_err();
+		assert_eq!(classify_pass_error(&closed), "pool");
+
+		for err in [&missing_table, &busy, &closed, &syntax] {
+			assert!(crate::metrics::waker::PASS_ERROR_CLASSES.contains(&classify_pass_error(err)));
+		}
+	}
+
+	/// A failed pass sets exactly its own class to 1 and every other class
+	/// to 0, and the next success clears it — the state LOOPS reads.
+	#[test]
+	fn a_failed_pass_is_visible_until_the_next_success() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let failing = |class: &str| {
+			snapshotter
+				.snapshot()
+				.into_vec()
+				.into_iter()
+				.find(|(key, ..)| key.key().name() == "nudge_waker_pass_failing" && key.key().labels().any(|l| l.value() == class))
+				.map(|(.., value)| value)
+		};
+
+		metrics::with_local_recorder(&recorder, || {
+			crate::metrics::waker::record_interval(std::time::Duration::from_secs(300));
+			for class in crate::metrics::waker::PASS_ERROR_CLASSES {
+				assert_eq!(failing(class), Some(DebugValue::Gauge(0.0.into())), "{class} exists at 0 from spawn");
+			}
+
+			crate::metrics::waker::record_failed_pass("schema");
+			assert_eq!(failing("schema"), Some(DebugValue::Gauge(1.0.into())));
+			assert_eq!(failing("locked"), Some(DebugValue::Gauge(0.0.into())));
+
+			crate::metrics::waker::record_successful_pass();
+			assert_eq!(failing("schema"), Some(DebugValue::Gauge(0.0.into())));
+		});
 	}
 }

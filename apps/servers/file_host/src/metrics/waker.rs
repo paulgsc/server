@@ -5,18 +5,53 @@
 //! which stopped running.  The interval is exported too: the dashboard must
 //! compare the pass age with the deployment's actual configuration rather
 //! than with the default compiled into `Config`.
+//!
+//! Two gauges, because "not succeeding" has two causes LOOPS has to tell
+//! apart. `nudge_waker_last_attempt_timestamp_seconds` moves when a pass
+//! *starts*: stale means the task died or a pass is hung (#264) — nothing is
+//! running to fail. `nudge_waker_pass_failing{error}` says the last pass that
+//! did finish failed, and in which [`PASS_ERROR_CLASSES`] bucket — the task
+//! is alive and something it depends on isn't. A single "last success"
+//! timestamp read the same for both, which is how a database missing a
+//! migration once looked identical to a dead loop.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Publish the configured interval as soon as the task is spawned.
+/// Every value `nudge_waker_pass_failing`'s `error` label can take.
+///
+/// See `nudge::waker::classify_pass_error` for what lands in each. Fixed, so
+/// every series exists from spawn onward: a class that has never failed
+/// reads 0 rather than absent, which SIGNAL would otherwise call blind.
+pub const PASS_ERROR_CLASSES: [&str; 5] = ["schema", "locked", "io", "pool", "other"];
+
+/// Publish the configured interval as soon as the task is spawned, and
+/// start every failure class at 0.
 pub fn record_interval(interval: Duration) {
 	metrics::gauge!("nudge_waker_interval_seconds").set(interval.as_secs_f64());
+	set_failing(None);
+}
+
+/// Mark the start of a pass.
+pub fn record_pass_started() {
+	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |elapsed| elapsed.as_secs_f64());
+	metrics::gauge!("nudge_waker_last_attempt_timestamp_seconds").set(timestamp);
 }
 
 /// Mark a completed, successful pass, including an empty one.
 pub fn record_successful_pass() {
-	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |elapsed| elapsed.as_secs_f64());
-	metrics::gauge!("nudge_waker_last_pass_timestamp_seconds").set(timestamp);
+	set_failing(None);
+}
+
+/// Mark a pass that returned an error, by class. Stays set until the next
+/// pass succeeds — the dashboard reads "the last pass failed", not a rate.
+pub fn record_failed_pass(class: &'static str) {
+	set_failing(Some(class));
+}
+
+fn set_failing(class: Option<&'static str>) {
+	for candidate in PASS_ERROR_CLASSES {
+		metrics::gauge!("nudge_waker_pass_failing", "error" => candidate).set(if Some(candidate) == class { 1.0 } else { 0.0 });
+	}
 }
 
 /// The terminal outcome one due subject reached this pass, and — for
@@ -26,7 +61,7 @@ pub fn record_successful_pass() {
 /// optional label Prometheus would show as absent on some series and
 /// present on others.
 ///
-/// This is the gap LOOPS (`nudge_waker_last_pass_timestamp_seconds`) cannot
+/// This is the gap LOOPS (`nudge_waker_last_attempt_timestamp_seconds`) cannot
 /// close: a tick that runs on schedule and a tick that finds every due
 /// subject suppressed, or claims one and then has every device reject the
 /// push, both leave LOOPS green. Feeds the NUDGE row's outcomes panel

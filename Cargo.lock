@@ -1267,6 +1267,7 @@ dependencies = [
  "some-transport",
  "sqlx",
  "study_domain",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
