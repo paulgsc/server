@@ -8,7 +8,7 @@
 //! `20260924001200_create_curriculum_publication.up.sql` and
 //! `study_domain::CURRICULUM_AUDIENCE`.
 
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// One entry in the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,9 +110,12 @@ impl PublicationRepository {
 	/// puts nobody behind. That keeps a corpus baseline O(1) in subjects —
 	/// no watermark is touched. A no-op for a triple already recorded.
 	///
+	/// On `conn`, so the importer records a baseline in the same transaction
+	/// as the lesson it covers.
+	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn record_baseline(&self, source: &str, curriculum_id: &str, version: i64, now: &str) -> Result<(), sqlx::Error> {
+	pub async fn record_baseline(conn: &mut SqliteConnection, source: &str, curriculum_id: &str, version: i64, now: &str) -> Result<(), sqlx::Error> {
 		sqlx::query!(
 			r#"
 			INSERT INTO curriculum_publication (source, curriculum_id, version, detected_at, baseline)
@@ -124,7 +127,7 @@ impl PublicationRepository {
 			version,
 			now
 		)
-		.execute(&self.pool)
+		.execute(&mut *conn)
 		.await?;
 		Ok(())
 	}

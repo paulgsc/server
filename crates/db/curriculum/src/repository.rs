@@ -1,5 +1,5 @@
 use crate::model::{content_hash, CurriculumEntry, Level, ManifestEntry};
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// What [`CurriculumRepository::upsert`] did to one lesson.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,24 +27,25 @@ impl CurriculumRepository {
 		Self { pool }
 	}
 
-	/// How many lessons the table holds.
+	/// How many lessons the table holds — on `conn`, so the importer can ask
+	/// inside the transaction it writes in.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn count(&self) -> Result<i64, sqlx::Error> {
-		sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum"#).fetch_one(&self.pool).await
+	pub async fn count(conn: &mut SqliteConnection) -> Result<i64, sqlx::Error> {
+		sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum"#).fetch_one(&mut *conn).await
 	}
 
-	/// The stored hash and manifest fields for `key`, if it exists.
-	async fn existing(&self, key: &str) -> Result<Option<(String, ManifestEntry)>, sqlx::Error> {
+	/// The stored hash, activity, and manifest fields for `key`, if it exists.
+	async fn existing(conn: &mut SqliteConnection, key: &str) -> Result<Option<(String, String, ManifestEntry)>, sqlx::Error> {
 		let row = sqlx::query!(
 			r#"
-			SELECT content_hash, level, display_name, description, batch_count, total_questions, total_messages, tags
+			SELECT content_hash, activity_id, level, display_name, description, batch_count, total_questions, total_messages, tags
 			FROM curriculum WHERE key = ?
 			"#,
 			key
 		)
-		.fetch_optional(&self.pool)
+		.fetch_optional(&mut *conn)
 		.await?;
 
 		row
@@ -57,6 +58,7 @@ impl CurriculumRepository {
 					.map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
 				Ok((
 					row.content_hash,
+					row.activity_id,
 					ManifestEntry {
 						key: key.to_owned(),
 						display_name: row.display_name,
@@ -81,11 +83,13 @@ impl CurriculumRepository {
 	/// to everyone. Changed bytes are a version bump; changed metadata alone is
 	/// written without one.
 	///
-	/// With `dry_run`, decides and reports but writes nothing.
+	/// With `dry_run`, decides and reports but writes nothing. Runs on `conn`
+	/// — the importer's transaction — rather than the pool, so a whole import
+	/// commits or rolls back as one.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn upsert(&self, activity_id: &str, entry: &ManifestEntry, body: &[u8], now: &str, dry_run: bool) -> Result<Change, sqlx::Error> {
+	pub async fn upsert(conn: &mut SqliteConnection, activity_id: &str, entry: &ManifestEntry, body: &[u8], now: &str, dry_run: bool) -> Result<Change, sqlx::Error> {
 		let hash = content_hash(body);
 		let text = String::from_utf8_lossy(body);
 		let level = entry.difficulty.map(Level::as_str);
@@ -98,10 +102,13 @@ impl CurriculumRepository {
 			.transpose()
 			.map_err(|err| sqlx::Error::Encode(Box::new(err)))?;
 
-		let change = match self.existing(&entry.key).await? {
+		// The activity is metadata too: re-running with a corrected
+		// `--activity` must write it (a real `chatgpt-codex-connector` finding
+		// on #365).
+		let change = match Self::existing(conn, &entry.key).await? {
 			None => Change::Inserted,
-			Some((stored_hash, _)) if stored_hash != hash => Change::ContentChanged,
-			Some((_, stored)) if stored != *entry => Change::MetadataChanged,
+			Some((stored_hash, _, _)) if stored_hash != hash => Change::ContentChanged,
+			Some((_, stored_activity, stored)) if stored != *entry || stored_activity != activity_id => Change::MetadataChanged,
 			Some(_) => Change::Unchanged,
 		};
 		if dry_run {
@@ -131,7 +138,7 @@ impl CurriculumRepository {
 					hash,
 					text,
 				)
-				.execute(&self.pool)
+				.execute(&mut *conn)
 				.await?;
 			}
 			Change::ContentChanged => {
@@ -156,7 +163,7 @@ impl CurriculumRepository {
 					hash,
 					text,
 				)
-				.execute(&self.pool)
+				.execute(&mut *conn)
 				.await?;
 			}
 			Change::MetadataChanged => {
@@ -177,7 +184,7 @@ impl CurriculumRepository {
 					entry.total_messages,
 					tags,
 				)
-				.execute(&self.pool)
+				.execute(&mut *conn)
 				.await?;
 			}
 		}

@@ -106,9 +106,17 @@ pub async fn import_dir(pool: &SqlitePool, dir: &Path, activity_id: &str, now: &
 	let manifest_bytes = std::fs::read(dir.join("manifest.json")).map_err(ImportError::Manifest)?;
 	let manifest: ManifestFile = serde_json::from_slice(&manifest_bytes).map_err(ImportError::ManifestShape)?;
 
-	let lessons = CurriculumRepository::new(pool.clone());
+	// One transaction for the whole import. The first import's baseline rows
+	// and the lessons they cover must land together: an import interrupted
+	// between them would leave lessons that a retry — seeing a non-empty
+	// table — no longer treats as the baseline, and #277 would then announce
+	// the whole existing corpus to everyone (a real `chatgpt-codex-connector`
+	// finding on #365). `BEGIN IMMEDIATE` also means no waker pass can detect
+	// a lesson mid-import. The lock is held for local file reads and at most
+	// `MANIFEST_CEILING` small writes; this is an offline operator command.
+	let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 	let mut report = ImportReport {
-		baseline: lessons.count().await? == 0,
+		baseline: CurriculumRepository::count(&mut tx).await? == 0,
 		..ImportReport::default()
 	};
 
@@ -120,24 +128,29 @@ pub async fn import_dir(pool: &SqlitePool, dir: &Path, activity_id: &str, now: &
 				continue;
 			}
 		};
-		match read_lesson(dir, &entry.key) {
-			Ok(body) => match lessons.upsert(activity_id, &entry, &body, now, dry_run).await? {
-				Change::Inserted => report.inserted.push(entry.key),
-				Change::ContentChanged => report.content_changed.push(entry.key),
-				Change::MetadataChanged => report.metadata_changed.push(entry.key),
-				Change::Unchanged => report.unchanged.push(entry.key),
-			},
-			Err(reason) => report.failed.push((entry.key, reason)),
+		let body = match read_lesson(dir, &entry.key) {
+			Ok(body) => body,
+			Err(reason) => {
+				report.failed.push((entry.key, reason));
+				continue;
+			}
+		};
+		if report.baseline && !dry_run {
+			PublicationRepository::record_baseline(&mut tx, PUBLICATION_SOURCE, &entry.key, 1, now).await?;
+		}
+		match CurriculumRepository::upsert(&mut tx, activity_id, &entry, &body, now, dry_run).await? {
+			Change::Inserted => report.inserted.push(entry.key),
+			Change::ContentChanged => report.content_changed.push(entry.key),
+			Change::MetadataChanged => report.metadata_changed.push(entry.key),
+			Change::Unchanged => report.unchanged.push(entry.key),
 		}
 	}
 
-	if report.baseline && !dry_run {
-		let publications = PublicationRepository::new(pool.clone());
-		for key in &report.inserted {
-			publications.record_baseline(PUBLICATION_SOURCE, key, 1, now).await?;
-		}
+	if dry_run {
+		tx.rollback().await?;
+	} else {
+		tx.commit().await?;
 	}
-
 	Ok(report)
 }
 
@@ -260,6 +273,68 @@ mod tests {
 	}
 
 	/// One bad lesson fails alone; the rest import; the report names it.
+	/// A first import that fails part-way writes nothing — no lesson, no
+	/// baseline row — so the retry is still the first import and still the
+	/// baseline, and #277 never announces the existing corpus (from a
+	/// `chatgpt-codex-connector` finding on #365).
+	#[tokio::test]
+	async fn an_interrupted_first_import_leaves_nothing_and_the_retry_is_still_the_baseline() {
+		let pool = pool().await;
+		let dir = tempfile::tempdir().unwrap();
+		write_corpus(dir.path(), &[entry("alpha", "A"), entry("boom", "B"), entry("gamma", "C")]);
+		for key in ["alpha", "boom", "gamma"] {
+			let mut file = key.to_owned();
+			file.push_str(".json");
+			std::fs::write(dir.path().join(file), br#"{"batches":[1]}"#).unwrap();
+		}
+		// A storage failure on the second lesson, after the first was written.
+		sqlx::query("CREATE TRIGGER fail_boom BEFORE INSERT ON curriculum WHEN NEW.key = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(import_dir(&pool, dir.path(), "topik", "2026-09-01T00:00:00+00:00", false).await.is_err());
+		let written: (i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM curriculum), (SELECT COUNT(*) FROM curriculum_publication WHERE source = 'curriculum')")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(written, (0, 0), "nothing from the failed run survives");
+
+		sqlx::query("DROP TRIGGER fail_boom").execute(&pool).await.unwrap();
+		let retry = import_dir(&pool, dir.path(), "topik", "2026-09-01T00:00:00+00:00", false).await.unwrap();
+		assert!(retry.baseline, "the retry is still the first import");
+		assert_eq!(retry.inserted.len(), 3);
+		let baselined: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM curriculum_publication WHERE source = 'curriculum' AND baseline = 1")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(baselined, 3, "and every lesson is baselined");
+	}
+
+	/// Re-running with a corrected `--activity` over unchanged bytes and
+	/// manifest writes the new activity (from a `chatgpt-codex-connector`
+	/// finding on #365).
+	#[tokio::test]
+	async fn a_corrected_activity_is_written() {
+		let pool = pool().await;
+		let dir = tempfile::tempdir().unwrap();
+		write_corpus(dir.path(), &[entry("beginner", "Beginner")]);
+		std::fs::write(dir.path().join("beginner.json"), br#"{"batches":[1]}"#).unwrap();
+		import_dir(&pool, dir.path(), "wrong-activity", "2026-09-01T00:00:00+00:00", false).await.unwrap();
+
+		let fixed = import_dir(&pool, dir.path(), "topik", "2026-09-02T00:00:00+00:00", false).await.unwrap();
+		assert_eq!(fixed.metadata_changed, ["beginner"], "{fixed:?}");
+		let stored: String = sqlx::query_scalar("SELECT activity_id FROM curriculum WHERE key = 'beginner'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(stored, "topik");
+		assert_eq!(
+			published_at(&pool, "beginner").await,
+			("2026-09-01T00:00:00+00:00".to_owned(), 1),
+			"and it is not new material"
+		);
+	}
+
 	#[tokio::test]
 	async fn a_bad_lesson_fails_alone() {
 		let pool = pool().await;
