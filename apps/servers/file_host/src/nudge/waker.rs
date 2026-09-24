@@ -1057,24 +1057,32 @@ struct Delivery {
 /// # Errors
 /// Propagates any storage failure.
 pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::StudySignal) -> Result<chrono::DateTime<Utc>, sqlx::Error> {
-	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 
-	let stored = engagement.charge(subject_id).await?;
-	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-	let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
-	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
+	// One write transaction for the read, the fold, and the save — see
+	// `EngagementRepository::fold`. Two signals for the same subject arriving
+	// together (a poor score from `POST /outcomes` beside a
+	// `session-completed` from `/signals`, say) used to be able to read the
+	// same stored charge and have the second save erase the first; a real
+	// `chatgpt-codex-connector` finding on #360.
+	let eligible_at = EngagementRepository::new(db.clone())
+		.fold(subject_id, |stored| {
+			#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+			let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+			let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
 
-	// No rows means never seen, and `from_storage` starts such a subject
-	// **full** rather than empty — an empty charge is instantly eligible, so
-	// the alternative would nudge a brand-new account before it did anything.
-	let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+			// No rows means never seen, and `from_storage` starts such a subject
+			// **full** rather than empty — an empty charge is instantly eligible, so
+			// the alternative would nudge a brand-new account before it did anything.
+			let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
 
-	charge.apply::<StudyCalibration>(signal, now);
-	let eligible_at = charge.eligible_at::<StudyCalibration>(now);
+			charge.apply::<StudyCalibration>(signal, now);
+			let eligible_at = charge.eligible_at::<StudyCalibration>(now);
 
-	let (levels, stamp) = charge.to_storage();
-	engagement.save(subject_id, &levels, &stamp.to_rfc3339(), &eligible_at.to_rfc3339()).await?;
+			let (levels, stamp) = charge.to_storage();
+			(levels, stamp.to_rfc3339(), eligible_at.to_rfc3339(), eligible_at)
+		})
+		.await?;
 
 	debug!(subject = %subject_id, signal = signal.kind(), eligible_at = %eligible_at, "signal folded in");
 	Ok(eligible_at)
@@ -3044,6 +3052,57 @@ mod tests {
 			0,
 			"and after that there is nothing past the horizon"
 		);
+	}
+
+	/// Concurrent signals for one subject all land (from a
+	/// `chatgpt-codex-connector` finding on #360): `observe` reads, folds, and
+	/// saves in one `BEGIN IMMEDIATE` transaction, so no fold can start from a
+	/// charge another is about to overwrite. Before, three concurrent poor
+	/// scores could each read a full charge and leave it drained by one.
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	async fn concurrent_signals_for_one_subject_are_all_folded_in() {
+		use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+		use std::str::FromStr as _;
+
+		const SIGNALS: u32 = 6;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let dir = tempfile::tempdir().unwrap();
+		let url = "sqlite://".to_owned() + &dir.path().join("fold.db").to_string_lossy();
+		let options = SqliteConnectOptions::from_str(&url)
+			.unwrap()
+			.create_if_missing(true)
+			.journal_mode(SqliteJournalMode::Wal)
+			.busy_timeout(std::time::Duration::from_secs(10));
+		let pool = SqlitePoolOptions::new().max_connections(SIGNALS).connect_with(options).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let signal = StudySignal::ScoredBelowTarget {
+			activity_id: "honeycomb".to_owned(),
+			score: 0.0,
+		};
+		let tasks: Vec<_> = (0..SIGNALS)
+			.map(|_| {
+				let pool = pool.clone();
+				let signal = signal.clone();
+				tokio::spawn(async move { observe(&pool, "subject-busy", &signal).await.unwrap() })
+			})
+			.collect();
+		for task in tasks {
+			task.await.unwrap();
+		}
+
+		let mastery = EngagementRepository::new(pool.clone())
+			.charge("subject-busy")
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|row| row.class == 3)
+			.unwrap()
+			.level;
+		// Full (100) less 20 per poor score, six times: 0 if every fold
+		// landed (decay over the test's milliseconds is negligible); 80 if
+		// they had all read the same starting charge.
+		assert!(mastery < 5.0, "every one of {SIGNALS} concurrent folds must land: mastery is {mastery}");
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a

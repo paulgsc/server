@@ -100,6 +100,18 @@ pub async fn record(State(state): State<AppState>, subject: SubjectId, Json(requ
 /// without the NATS connection `AppState::build` needs.
 pub(crate) async fn record_outcome(db: &SqlitePool, subject_id: &str, request: OutcomeRequest) -> Result<OutcomeAccepted, FileHostError> {
 	let record = validate_shape(request)?;
+	let outcomes = OutcomeRepository::new(db.clone());
+
+	// A replay is recognised against what was *recorded*, before anything
+	// that depends on the session's current shape: `PATCH /sessions/:id` can
+	// replace a session's activities or shorten it after the fact, and an
+	// identical retry of a report that was valid when it arrived must still
+	// answer `replayed: true`, not a 422 (a real `chatgpt-codex-connector`
+	// finding on #360). Subject-scoped, so another subject's row is never
+	// read here.
+	if let Some(stored) = outcomes.get(subject_id, &record.session_id, record.block_index).await? {
+		return replay(&stored, &record);
+	}
 
 	let session = SessionRepository::new(db.clone())
 		.get(subject_id, &record.session_id)
@@ -108,13 +120,10 @@ pub(crate) async fn record_outcome(db: &SqlitePool, subject_id: &str, request: O
 		.ok_or(FileHostError::NotFound)?;
 	validate_against_session(&record, &session)?;
 
-	match OutcomeRepository::new(db.clone()).record(subject_id, &record).await? {
-		Recorded::Existing(stored) if stored == record => Ok(OutcomeAccepted {
-			replayed: true,
-			signal: None,
-			eligible_at: None,
-		}),
-		Recorded::Existing(_) => Err(FileHostError::Conflict("this block already has a different outcome recorded")),
+	match outcomes.record(subject_id, &record).await? {
+		// A concurrent report of the same block won the insert between the
+		// `get` above and this write.
+		Recorded::Existing(stored) => replay(&stored, &record),
 		Recorded::New => {
 			let Some(signal) = study_domain::signal_for_block(&record.activity_id, record.outcome == OutcomeKind::Completed, record.score) else {
 				return Ok(OutcomeAccepted {
@@ -130,6 +139,20 @@ pub(crate) async fn record_outcome(db: &SqlitePool, subject_id: &str, request: O
 				eligible_at: Some(eligible_at.to_rfc3339()),
 			})
 		}
+	}
+}
+
+/// The answer to a report of a block that already has an outcome: an
+/// identical one is a harmless retry, a different one is refused.
+fn replay(stored: &OutcomeRecord, record: &OutcomeRecord) -> Result<OutcomeAccepted, FileHostError> {
+	if stored == record {
+		Ok(OutcomeAccepted {
+			replayed: true,
+			signal: None,
+			eligible_at: None,
+		})
+	} else {
+		Err(FileHostError::Conflict("this block already has a different outcome recorded"))
 	}
 }
 
@@ -361,6 +384,25 @@ mod tests {
 		);
 		assert_eq!(rows(&pool).await, 1, "no second row");
 		assert_eq!(stored_levels(&pool).await, after_one, "no second drain");
+	}
+
+	/// An identical retry is recognised against what was recorded, even after
+	/// the session was edited so the original report would no longer validate
+	/// (from a `chatgpt-codex-connector` finding on #360).
+	#[tokio::test]
+	async fn a_replay_is_recognised_even_after_the_session_changed_shape() {
+		let pool = pool().await;
+		record_outcome(&pool, SUBJECT, request(Some(0.1))).await.unwrap();
+
+		let sessions = SessionRepository::new(pool.clone());
+		let mut edited = sessions.get(SUBJECT, SESSION).await.unwrap().unwrap();
+		edited.activities = vec![serde_json::json!({ "activityId": "leetype" })];
+		edited.total_duration_ms = 1_000;
+		sessions.upsert(SUBJECT, &edited).await.unwrap();
+
+		let replay = record_outcome(&pool, SUBJECT, request(Some(0.1))).await.unwrap();
+		assert!(replay.replayed, "still the same report of the same block");
+		assert_eq!(rows(&pool).await, 1);
 	}
 
 	/// A replay that disagrees with what was recorded is refused, and changes

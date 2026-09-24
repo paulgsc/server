@@ -56,6 +56,32 @@ pub enum Recorded {
 	Existing(OutcomeRecord),
 }
 
+#[allow(clippy::too_many_arguments)] // one per column, straight from a `sqlx::query!` row
+fn to_record(
+	session_id: String,
+	activity_id: String,
+	block_index: i64,
+	started_at: String,
+	ended_at: String,
+	planned_ms: i64,
+	elapsed_ms: i64,
+	outcome: &str,
+	score: Option<f64>,
+) -> Result<OutcomeRecord, sqlx::Error> {
+	let outcome = OutcomeKind::parse(outcome).ok_or_else(|| sqlx::Error::Decode("activity_outcome.outcome is not completed, abandoned, or skipped".into()))?;
+	Ok(OutcomeRecord {
+		session_id,
+		activity_id,
+		block_index,
+		started_at,
+		ended_at,
+		planned_ms,
+		elapsed_ms,
+		outcome,
+		score,
+	})
+}
+
 pub struct OutcomeRepository {
 	pool: SqlitePool,
 }
@@ -110,6 +136,10 @@ impl OutcomeRepository {
 			return Ok(Recorded::New);
 		}
 
+		// Unscoped on purpose: the conflict that got us here is on
+		// `(session_id, block_index)` alone, so this row exists whichever
+		// subject wrote it. The caller has already proven the session is this
+		// subject's.
 		let row = sqlx::query!(
 			r#"
 			SELECT session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score
@@ -121,19 +151,58 @@ impl OutcomeRepository {
 		)
 		.fetch_one(&self.pool)
 		.await?;
+		Ok(Recorded::Existing(to_record(
+			row.session_id,
+			row.activity_id,
+			row.block_index,
+			row.started_at,
+			row.ended_at,
+			row.planned_ms,
+			row.elapsed_ms,
+			&row.outcome,
+			row.score,
+		)?))
+	}
 
-		let parsed = OutcomeKind::parse(&row.outcome).ok_or_else(|| sqlx::Error::Decode("activity_outcome.outcome is not completed, abandoned, or skipped".into()))?;
-		Ok(Recorded::Existing(OutcomeRecord {
-			session_id: row.session_id,
-			activity_id: row.activity_id,
-			block_index: row.block_index,
-			started_at: row.started_at,
-			ended_at: row.ended_at,
-			planned_ms: row.planned_ms,
-			elapsed_ms: row.elapsed_ms,
-			outcome: parsed,
-			score: row.score,
-		}))
+	/// The outcome already recorded for this subject's `(session_id,
+	/// block_index)`, if any (#287).
+	///
+	/// Read before anything that depends on the session's *current* shape: a
+	/// replay must be recognised against what was recorded, even if the
+	/// session was edited since and would no longer validate the original
+	/// report.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure, including a stored `outcome` that does
+	/// not parse.
+	pub async fn get(&self, subject_id: &str, session_id: &str, block_index: i64) -> Result<Option<OutcomeRecord>, sqlx::Error> {
+		let Some(row) = sqlx::query!(
+			r#"
+			SELECT session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score
+			FROM activity_outcome
+			WHERE subject_id = ?1 AND session_id = ?2 AND block_index = ?3
+			"#,
+			subject_id,
+			session_id,
+			block_index,
+		)
+		.fetch_optional(&self.pool)
+		.await?
+		else {
+			return Ok(None);
+		};
+		to_record(
+			row.session_id,
+			row.activity_id,
+			row.block_index,
+			row.started_at,
+			row.ended_at,
+			row.planned_ms,
+			row.elapsed_ms,
+			&row.outcome,
+			row.score,
+		)
+		.map(Some)
 	}
 
 	/// Delete up to `limit` rows that ended before `horizon`, oldest first,
