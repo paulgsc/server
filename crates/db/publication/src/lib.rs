@@ -17,6 +17,8 @@ pub struct Publication {
 	pub source: String,
 	pub curriculum_id: String,
 	pub version: i64,
+	/// The last subject this fan-out applied to, in subject order.
+	pub cursor_subject: Option<String>,
 }
 
 /// The most catalogue rows one detection pass reads — `activity_repo::CATALOG_CEILING`,
@@ -104,7 +106,7 @@ impl PublicationRepository {
 		sqlx::query_as!(
 			Publication,
 			r#"
-			SELECT id AS "id!", source, curriculum_id, version
+			SELECT id AS "id!", source, curriculum_id, version, cursor_subject
 			FROM curriculum_publication
 			WHERE fanned_out_at IS NULL
 			ORDER BY id
@@ -116,8 +118,8 @@ impl PublicationRepository {
 		.await
 	}
 
-	/// Up to `limit` subjects this publication applies to and has not yet been
-	/// applied to.
+	/// The next `limit` subjects this publication applies to, in subject order,
+	/// after its cursor.
 	///
 	/// **The audience rule** (`study_domain::CURRICULUM_AUDIENCE`): subjects who
 	/// have started at least one session. A subject who has never studied starts
@@ -125,27 +127,41 @@ impl PublicationRepository {
 	/// make stale; draining them would nudge someone on their first day for
 	/// something they have not missed.
 	///
+	/// **Seeks, never rescans.** The read starts past
+	/// `Publication::cursor_subject` on `idx_sessions_started_subject`, a
+	/// partial index of started sessions only, so a pass examines the sessions
+	/// of the subjects it returns — not everyone already reached (a real
+	/// `chatgpt-codex-connector` finding on #362).
+	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn audience(&self, publication_id: i64, limit: i64) -> Result<Vec<String>, sqlx::Error> {
+	pub async fn audience(&self, publication: &Publication, limit: i64) -> Result<Vec<String>, sqlx::Error> {
+		let after = publication.cursor_subject.as_deref().unwrap_or("");
 		sqlx::query_scalar!(
 			r#"
-			SELECT DISTINCT sessions.subject_id AS "subject_id!"
-			FROM sessions
-			WHERE sessions.started_at IS NOT NULL
-			  AND NOT EXISTS (
-			      SELECT 1 FROM curriculum_delivery
-			      WHERE curriculum_delivery.publication_id = ?1
-			        AND curriculum_delivery.subject_id = sessions.subject_id
-			  )
-			ORDER BY sessions.subject_id
+			SELECT DISTINCT subject_id AS "subject_id!"
+			FROM sessions INDEXED BY idx_sessions_started_subject
+			WHERE started_at IS NOT NULL AND subject_id > ?1
+			ORDER BY subject_id
 			LIMIT ?2
 			"#,
-			publication_id,
+			after,
 			limit
 		)
 		.fetch_all(&self.pool)
 		.await
+	}
+
+	/// Move a publication's cursor past `subject_id`: everyone up to and
+	/// including it has had the publication applied.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn advance_cursor(&self, publication_id: i64, subject_id: &str) -> Result<(), sqlx::Error> {
+		sqlx::query!("UPDATE curriculum_publication SET cursor_subject = ? WHERE id = ?", subject_id, publication_id)
+			.execute(&self.pool)
+			.await?;
+		Ok(())
 	}
 
 	/// Claim `(publication, subject)` before applying the signal. `true` means
@@ -166,8 +182,9 @@ impl PublicationRepository {
 		Ok(inserted.rows_affected() == 1)
 	}
 
-	/// Mark a publication's fan-out complete: its audience query came back
-	/// short of what was asked for, so everyone it applies to has it.
+	/// Mark a publication's fan-out complete: its audience read came back short
+	/// of what was asked for and every subject in it was claimed, so everyone it
+	/// applies to has it.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.

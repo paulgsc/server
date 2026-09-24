@@ -31,12 +31,22 @@ CREATE TABLE curriculum_publication (
     version        INTEGER NOT NULL,
     detected_at    TEXT    NOT NULL,   -- ISO-8601 UTC
     fanned_out_at  TEXT,               -- ISO-8601 UTC; NULL while in progress
+    -- The last subject_id this publication's fan-out has applied to, in
+    -- subject order. The next pass's audience read seeks past it rather than
+    -- rescanning everyone already reached; NULL before the first batch.
+    cursor_subject TEXT,
 
     UNIQUE (source, curriculum_id, version)
 );
 
 -- The waker's "what is still being fanned out" read.
 CREATE INDEX idx_curriculum_publication_pending ON curriculum_publication(fanned_out_at, id);
+
+-- The audience read for a catalogue publication (subjects who have started a
+-- session, in subject order, past the cursor) seeks this partial index
+-- directly: it holds only started sessions, so a pass examines the sessions of
+-- the subjects it returns, not the whole table's history.
+CREATE INDEX idx_sessions_started_subject ON sessions(subject_id) WHERE started_at IS NOT NULL;
 
 CREATE TABLE curriculum_delivery (
     publication_id INTEGER NOT NULL,

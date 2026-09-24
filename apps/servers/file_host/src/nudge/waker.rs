@@ -244,8 +244,16 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 		// Housekeeping after the work people are waiting on, and only if the
 		// pass still has time: a pass that ran out has already left due
 		// subjects for the next one, and the sweep can wait with them.
-		report.announced = announce_publications(db, deadline).await;
-		report.pruned = sweep_history(&engagement, &OutcomeRepository::new(db.clone()), now).await;
+		let announced = announce_publications(db, deadline).await;
+		report.announced = announced.applied;
+		if announced.deadline_exceeded {
+			// The fan-out ran the pass out of time: count it like any other
+			// deadline, and leave the sweep for a pass that has room.
+			report.deadline_exceeded = true;
+			crate::metrics::waker::record_deadline_exceeded();
+		} else {
+			report.pruned = sweep_history(&engagement, &OutcomeRepository::new(db.clone()), now).await;
+		}
 	}
 
 	Ok(report)
@@ -277,9 +285,10 @@ pub(crate) const ANNOUNCE_PER_PASS: i64 = 64;
 /// subjects the signal was applied to. Failures are logged, not propagated:
 /// like the retention sweep, this must not fail a pass whose subjects were
 /// already handled, and everything it skips is still pending next pass.
-async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) -> usize {
+async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) -> Announced {
 	let publications = PublicationRepository::new(db.clone());
 	let stamp = Utc::now().to_rfc3339();
+	let mut announced = Announced::default();
 
 	match publications.detect_activity_publications(&stamp).await {
 		Ok(0) => {}
@@ -290,18 +299,17 @@ async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) 
 		Ok(pending) => pending,
 		Err(err) => {
 			error!(error = %err, "could not read pending publications");
-			return 0;
+			return announced;
 		}
 	};
 
-	let mut applied: usize = 0;
-	for publication in pending {
+	'publications: for publication in pending {
 		#[allow(clippy::cast_possible_wrap)] // bounded by ANNOUNCE_PER_PASS
-		let budget = ANNOUNCE_PER_PASS - applied as i64;
-		if budget <= 0 || tokio::time::Instant::now() >= deadline {
+		let budget = ANNOUNCE_PER_PASS - announced.applied as i64;
+		if budget <= 0 {
 			break;
 		}
-		let audience = match publications.audience(publication.id, budget).await {
+		let audience = match publications.audience(&publication, budget).await {
 			Ok(audience) => audience,
 			Err(err) => {
 				error!(publication = publication.id, error = %err, "could not read a publication's audience");
@@ -309,37 +317,71 @@ async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) 
 			}
 		};
 		#[allow(clippy::cast_possible_wrap)] // at most `budget`
-		let exhausted = (audience.len() as i64) < budget;
+		let last_batch = (audience.len() as i64) < budget;
 
 		let signal = StudySignal::CurriculumUpdated {
 			curriculum_id: publication.curriculum_id.clone(),
 		};
+		// Every subject up to here has been claimed; the cursor only ever
+		// moves over a contiguous claimed prefix, so a transient failure
+		// leaves that subject (and everyone after it) for the next pass.
+		let mut claimed_through: Option<&str> = None;
+		let mut complete = true;
 		for subject_id in &audience {
+			// The deadline between recipients, not only before the first:
+			// each claim and fold can wait out SQLite's busy timeout (a real
+			// `chatgpt-codex-connector` finding on #362).
+			if tokio::time::Instant::now() >= deadline {
+				announced.deadline_exceeded = true;
+				complete = false;
+				break;
+			}
 			match publications.claim_delivery(publication.id, subject_id, &stamp).await {
-				Ok(true) => {}
-				Ok(false) => continue,
+				Ok(true) => match observe(db, subject_id, &signal).await {
+					Ok(_) => announced.applied += 1,
+					Err(err) => {
+						error!(publication = publication.id, subject = %subject_id, error = %err, "claimed a delivery but could not apply it; this subject will not be drained for this publication");
+					}
+				},
+				Ok(false) => {}
 				Err(err) => {
-					error!(publication = publication.id, subject = %subject_id, error = %err, "could not claim a delivery");
-					continue;
+					error!(publication = publication.id, subject = %subject_id, error = %err, "could not claim a delivery; leaving it, and the rest of this batch, for the next pass");
+					complete = false;
+					break;
 				}
 			}
-			match observe(db, subject_id, &signal).await {
-				Ok(_) => applied += 1,
-				Err(err) => {
-					error!(publication = publication.id, subject = %subject_id, error = %err, "claimed a delivery but could not apply it; this subject will not be drained for this publication");
-				}
-			}
+			claimed_through = Some(subject_id.as_str());
 		}
 
-		if exhausted {
+		if let Some(subject_id) = claimed_through {
+			if let Err(err) = publications.advance_cursor(publication.id, subject_id).await {
+				error!(publication = publication.id, error = %err, "could not advance a publication's cursor; the next pass re-reads, and the delivery claims keep it idempotent");
+			}
+		}
+		// Done only when the audience came back short *and* every subject in
+		// it was claimed — never on a batch a failure or the deadline cut off
+		// (a real `chatgpt-codex-connector` finding on #362).
+		if last_batch && complete {
 			if let Err(err) = publications.mark_fanned_out(publication.id, &stamp).await {
 				error!(publication = publication.id, error = %err, "could not mark a publication fanned out; the next pass will find its audience empty and try again");
 			} else {
 				info!(publication = publication.id, curriculum_id = %publication.curriculum_id, version = publication.version, "publication announced to everyone it applies to");
 			}
 		}
+		if announced.deadline_exceeded {
+			break 'publications;
+		}
 	}
-	applied
+	announced
+}
+
+/// What [`announce_publications`] got through.
+#[derive(Debug, Default, Clone, Copy)]
+struct Announced {
+	/// Subjects the signal was applied to.
+	applied: usize,
+	/// Whether the pass deadline cut the fan-out short.
+	deadline_exceeded: bool,
 }
 
 /// Enforce each history table's retention horizon, one bounded bite per
@@ -3571,14 +3613,50 @@ mod tests {
 		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 		let (cap, extra) = (ANNOUNCE_PER_PASS as usize, EXTRA as usize);
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, cap, "the first pass stops at the cap");
-		assert_eq!(
-			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().len(),
-			1,
-			"and the publication is still in progress"
-		);
+		let pending = PublicationRepository::new(pool.clone()).pending(10).await.unwrap();
+		assert_eq!(pending.len(), 1, "and the publication is still in progress");
+		let past_cursor: i64 = sqlx::query_scalar!(
+			r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum_delivery WHERE subject_id > ?"#,
+			pending[0].cursor_subject
+		)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(pending[0].cursor_subject.is_some(), "its cursor has moved");
+		assert_eq!(past_cursor, 0, "everyone reached is at or before the cursor, so the next pass seeks past them");
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, extra, "the next pass reaches the rest, and only the rest");
 		assert!(PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty(), "then it is done");
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 0);
+	}
+
+	/// #273 (CAT5): the fan-out honours the pass deadline between recipients
+	/// and reports it, and a batch the deadline cut short is never marked
+	/// complete (from `chatgpt-codex-connector` findings on #362).
+	#[tokio::test]
+	async fn an_announcement_the_deadline_cuts_short_stays_pending_and_is_reported() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		for i in 0..3 {
+			studied(&pool, &numbered("subject-", i)).await;
+		}
+		publish(&pool, "new-thing", 1).await;
+
+		let out_of_time = announce_publications(&pool, tokio::time::Instant::now()).await;
+		assert!(out_of_time.deadline_exceeded, "{out_of_time:?}");
+		assert_eq!(out_of_time.applied, 0);
+		assert_eq!(
+			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().len(),
+			1,
+			"a cut-short batch is not marked complete"
+		);
+
+		let with_time = announce_publications(&pool, far_deadline()).await;
+		assert!(!with_time.deadline_exceeded);
+		assert_eq!(with_time.applied, 3, "the next pass with time reaches everyone");
+		assert!(PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty());
 	}
 
 	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
@@ -3608,7 +3686,7 @@ mod tests {
 			.unwrap();
 
 		publish(&pool, "new-thing", 1).await;
-		assert_eq!(announce_publications(&pool, far_deadline()).await, 1);
+		assert_eq!(announce_publications(&pool, far_deadline()).await.applied, 1);
 
 		let stored = EngagementRepository::new(pool.clone()).charge(subject_id).await.unwrap();
 		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
