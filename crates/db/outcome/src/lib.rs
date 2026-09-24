@@ -92,8 +92,9 @@ mod tests {
 		insert(&pool, "session-b", 0, "completed", Some(0.8)).await.unwrap();
 	}
 
-	/// The schema refuses what `OutcomeKind::parse` refuses, and a score
-	/// outside `[0, 1]` — so a path that forgot to validate cannot write one.
+	/// The schema refuses what `OutcomeKind::parse` refuses, a score outside
+	/// `[0, 1]`, and a score on anything but a completed block — so a path
+	/// that forgot to validate cannot write one.
 	#[tokio::test]
 	async fn an_unknown_outcome_or_an_out_of_range_score_is_refused_by_the_schema() {
 		let pool = pool().await;
@@ -101,6 +102,12 @@ mod tests {
 		assert!(insert(&pool, "session-a", 1, "completed", Some(1.5)).await.is_err(), "score above 1");
 		assert!(insert(&pool, "session-a", 2, "completed", Some(-0.1)).await.is_err(), "score below 0");
 		insert(&pool, "session-a", 3, "completed", Some(1.0)).await.unwrap();
+		assert!(
+			insert(&pool, "session-a", 4, "abandoned", Some(0.2)).await.is_err(),
+			"an abandoned block is unassessed by definition"
+		);
+		assert!(insert(&pool, "session-a", 5, "skipped", Some(0.0)).await.is_err(), "and so is a skipped one");
+		insert(&pool, "session-a", 6, "abandoned", None).await.unwrap();
 	}
 
 	/// `.down.sql` removes exactly this table, and `.up.sql` puts it back.

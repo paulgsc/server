@@ -52,7 +52,8 @@
 --                   anything else the way `SessionStatus::parse` does) and
 --                   CHECKed here too, so a bad value cannot be written by a
 --                   path that forgot to parse.
---   score        -- REAL in [0, 1], and NULLABLE ON PURPOSE. NULL means *not
+--   score        -- REAL in [0, 1], only on a completed block (CHECKed), and
+--                   NULLABLE ON PURPOSE. NULL means *not
 --                   assessed*: `honeycomb`'s endless mode has no completion,
 --                   an abandoned block has no assessment at all, and not every
 --                   activity grades. It must never be conflated with 0.0,
@@ -84,7 +85,10 @@ CREATE TABLE activity_outcome (
     planned_ms   INTEGER NOT NULL CHECK (planned_ms >= 0),
     elapsed_ms   INTEGER NOT NULL CHECK (elapsed_ms >= 0),
     outcome      TEXT    NOT NULL CHECK (outcome IN ('completed', 'abandoned', 'skipped')),
-    score        REAL             CHECK (score IS NULL OR (score >= 0.0 AND score <= 1.0)),
+    -- Only a completed block can carry a score, and only in [0, 1]: an
+    -- abandoned or skipped block is unassessed by definition, and a score on
+    -- one would be averaged in by #289's stats as if it had been.
+    score        REAL             CHECK (score IS NULL OR (outcome = 'completed' AND score >= 0.0 AND score <= 1.0)),
 
     UNIQUE (session_id, block_index)
 );
