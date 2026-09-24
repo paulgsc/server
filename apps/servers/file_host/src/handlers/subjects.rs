@@ -24,7 +24,7 @@
 use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
-use outcome_repo::{ActivityStats, OutcomeRepository};
+use outcome_repo::{ActivityStats, OutcomeRepository, StatsError};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tracing::instrument;
@@ -57,7 +57,9 @@ pub struct ActivityPlay {
 /// `GET /subjects/me/stats`
 ///
 /// # Errors
-/// 500 for a storage failure.
+/// 400 when the subject's outcomes span more activities than
+/// `outcome_repo::STATS_CEILING` (refused, never truncated); 500 for a
+/// storage failure.
 #[axum::debug_handler]
 #[instrument(name = "subject_stats", skip_all, fields(otel.kind = "server"))]
 pub async fn stats(State(state): State<AppState>, subject: SubjectId) -> Result<Json<SubjectStats>, FileHostError> {
@@ -67,7 +69,10 @@ pub async fn stats(State(state): State<AppState>, subject: SubjectId) -> Result<
 /// The handler's body, over a pool rather than `AppState`, so it is testable
 /// without the NATS connection `AppState::build` needs.
 pub(crate) async fn subject_stats(db: &SqlitePool, subject_id: &str) -> Result<SubjectStats, FileHostError> {
-	let stats = OutcomeRepository::new(db.clone()).stats(subject_id).await?;
+	let stats = OutcomeRepository::new(db.clone()).stats(subject_id).await.map_err(|err| match err {
+		StatsError::OverCeiling => FileHostError::MaxRecordLimitExceeded,
+		StatsError::Storage(err) => FileHostError::Sqlite(err),
+	})?;
 
 	let history = stats
 		.iter()

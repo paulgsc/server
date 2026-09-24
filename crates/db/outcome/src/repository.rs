@@ -132,6 +132,31 @@ fn ratio(part: i64, whole: i64) -> Option<f64> {
 	(whole > 0).then(|| part as f64 / whole as f64)
 }
 
+/// Why [`OutcomeRepository::stats`] could not answer.
+#[derive(Debug)]
+pub enum StatsError {
+	/// The subject has outcomes for more than [`STATS_CEILING`] activities.
+	OverCeiling,
+	Storage(sqlx::Error),
+}
+
+impl std::fmt::Display for StatsError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::OverCeiling => write!(f, "outcomes span more than {STATS_CEILING} activities"),
+			Self::Storage(err) => write!(f, "{err}"),
+		}
+	}
+}
+
+impl std::error::Error for StatsError {}
+
+impl From<sqlx::Error> for StatsError {
+	fn from(err: sqlx::Error) -> Self {
+		Self::Storage(err)
+	}
+}
+
 pub struct OutcomeRepository {
 	pool: SqlitePool,
 }
@@ -259,13 +284,18 @@ impl OutcomeRepository {
 	/// assessed score, and last play (#289).
 	///
 	/// One grouped query over `idx_activity_outcome_subject_activity`, bounded
-	/// by [`STATS_CEILING`]. `AVG` skips `NULL` natively, which is exactly
+	/// by [`STATS_CEILING`] — and a subject over it is refused
+	/// ([`StatsError::OverCeiling`]), never answered with a partial list.
+	/// `AVG` skips `NULL` natively, which is exactly
 	/// "excluded, not zero"; the `CASE` restricts it to completed blocks,
 	/// which is the only kind `POST /outcomes` lets carry a score anyway.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn stats(&self, subject_id: &str) -> Result<Vec<ActivityStats>, sqlx::Error> {
+	pub async fn stats(&self, subject_id: &str) -> Result<Vec<ActivityStats>, StatsError> {
+		// One past the ceiling, so "more than it" is observable without a
+		// second COUNT query.
+		let fetch_limit = STATS_CEILING + 1;
 		let rows = sqlx::query!(
 			r#"
 			SELECT
@@ -283,10 +313,17 @@ impl OutcomeRepository {
 			LIMIT ?2
 			"#,
 			subject_id,
-			STATS_CEILING,
+			fetch_limit,
 		)
 		.fetch_all(&self.pool)
 		.await?;
+		// Refused, never truncated: a silent prefix would read every omitted
+		// activity as never played (a real `chatgpt-codex-connector` finding
+		// on #361). The ceiling mirrors the catalogue's, but nothing ties an
+		// outcome's `activity_id` to the catalogue, so it is checked here.
+		if i64::try_from(rows.len()).unwrap_or(i64::MAX) > STATS_CEILING {
+			return Err(StatsError::OverCeiling);
+		}
 
 		Ok(
 			rows

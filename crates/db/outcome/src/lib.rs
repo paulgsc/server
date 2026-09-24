@@ -11,7 +11,7 @@ pub mod model;
 pub mod repository;
 
 pub use model::OutcomeKind;
-pub use repository::{ActivityStats, OutcomeRecord, OutcomeRepository, Recorded, ACTIVITY_OUTCOME_RETENTION_DAYS, STATS_CEILING};
+pub use repository::{ActivityStats, OutcomeRecord, OutcomeRepository, Recorded, StatsError, ACTIVITY_OUTCOME_RETENTION_DAYS, STATS_CEILING};
 
 #[cfg(test)]
 mod tests {
@@ -159,5 +159,30 @@ mod tests {
 		assert_eq!(honeycomb.abandonment_rate(), Some(0.25));
 
 		assert!(OutcomeRepository::new(pool.clone()).stats("subject-nobody").await.unwrap().is_empty());
+	}
+
+	/// Over the ceiling is refused, never a silent prefix (from a
+	/// `chatgpt-codex-connector` finding on #361).
+	#[tokio::test]
+	async fn stats_over_the_ceiling_are_refused_not_truncated() {
+		let pool = pool().await;
+		for i in 0..=super::STATS_CEILING {
+			let mut session = String::from("session-");
+			session.push_str(&i.to_string());
+			let mut activity = String::from("activity-");
+			activity.push_str(&i.to_string());
+			sqlx::query!(
+				"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score) VALUES ('subject-local', ?, ?, 0, '2026-09-24T10:00:00+00:00', '2026-09-24T10:05:00+00:00', 1, 1, 'completed', NULL)",
+				session,
+				activity
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		assert!(matches!(
+			OutcomeRepository::new(pool.clone()).stats("subject-local").await,
+			Err(super::StatsError::OverCeiling)
+		));
 	}
 }
