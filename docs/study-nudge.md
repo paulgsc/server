@@ -1647,15 +1647,17 @@ again and again: a lesson whose file bytes are unchanged (`content_hash`,
 SHA-256 over the exact bytes) is not written and does not look new; changed
 bytes are a version bump with a new `published_at`; a manifest rename alone is
 written without either. A malformed or missing lesson fails alone and is named
-in the report; the exit code is `1` if anything failed, `2` if the run could
-not start. It never deletes a lesson missing from the directory.
+in the report — except on the first import, which is all or nothing (below);
+the exit code is `1` if anything failed, `2` if the run could not start. It never deletes a lesson missing from the directory.
 
 **The first import is a baseline.** Into an empty table, what is imported is
 what the app has served all along, so every lesson is written to
 `curriculum_publication` as a `baseline` row: *seen*, so #277 never mistakes it
 for new, but not an epoch — the epoch is the newest non-baseline row — so nobody
-falls behind it and no watermark is touched. Every later import's new or changed
-lessons are what #277 announces.
+falls behind it and no watermark is touched. It is all or nothing: if any lesson
+fails, nothing is written, so the re-run after fixing it is still the first
+import — a partly written one would leave the repaired lessons to be announced
+as new. Every later import's new or changed lessons are what #277 announces.
 
 Nothing in the server's startup or request path runs or waits on this.
 

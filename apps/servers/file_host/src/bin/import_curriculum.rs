@@ -11,8 +11,9 @@
 //! it, waits on it, or knows it exists.
 //!
 //! Exits 0 when every lesson imported (or would have), 1 when any lesson
-//! failed — the rest are still imported — and 2 when the run could not start
-//! at all (no manifest, not a manifest, no database).
+//! failed — the rest are still imported, except on a first import, which
+//! writes nothing unless every lesson succeeds — and 2 when the run could not
+//! start at all (no manifest, not a manifest, no database).
 //!
 //! Deliberately does not read [`file_host::Config`], for the same reason
 //! `dump-routes` does not: the server's config requires secrets this command
@@ -64,7 +65,7 @@ async fn main() -> ExitCode {
 		}
 	};
 
-	let verb = if args.dry_run { "would be" } else { "were" };
+	let verb = if args.dry_run || report.rolled_back { "would be" } else { "were" };
 	let _ = writeln!(
 		out,
 		"{} new, {} changed, {} renamed only, {} unchanged {verb} imported",
@@ -73,7 +74,12 @@ async fn main() -> ExitCode {
 		report.metadata_changed.len(),
 		report.unchanged.len()
 	);
-	if report.baseline && !args.dry_run {
+	if report.rolled_back {
+		let _ = writeln!(
+			out,
+			"first import into an empty table, and a lesson failed: nothing was written, so the re-run after fixing it is still the baseline"
+		);
+	} else if report.baseline && !args.dry_run {
 		let _ = writeln!(
 			out,
 			"first import into an empty table: recorded as the baseline, so none of it will be announced as new material"
