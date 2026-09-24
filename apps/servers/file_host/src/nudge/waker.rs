@@ -232,9 +232,13 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 		// and the arithmetic, not this loop, decides when they are next due.
 		if let Some(publication) = newest.as_ref().filter(|_| gate.curriculum_epoch < epoch) {
 			let due_by_time = match catch_up(db, &gate.subject_id, publication).await {
+				// Against the clock now, not the pass's `now`: a drain that
+				// makes them eligible at once solves `eligible_at` to the
+				// catch-up's own instant, which is later than the pass began
+				// (a real `chatgpt-codex-connector` finding on #362).
 				Ok(Some(eligible_at)) => {
 					report.caught_up += 1;
-					eligible_at <= now
+					eligible_at <= Utc::now()
 				}
 				// Someone else caught them up between `due` and here.
 				Ok(None) => crate::nudge::clock::parse_timestamp(&gate.eligible_at).is_none_or(|at| at <= now),
@@ -3579,6 +3583,29 @@ mod tests {
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, batch, "one pass reaches one batch");
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, extra, "the next reaches the rest, and only the rest");
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "then nobody is behind");
+	}
+
+	/// #273 (CAT5): a subject the drain makes eligible is considered in the
+	/// same pass that caught them up, not left for the next (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn a_catch_up_that_makes_a_subject_eligible_is_considered_in_the_same_pass() {
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		let subject_id = "subject-almost-drifted";
+		// Just above `THRESHOLD`; draining freshness by 35 takes it under — see
+		// `a_publication_makes_new_material_the_thing_to_say`.
+		let now = Utc::now();
+		let levels: Vec<(u16, f64)> = vec![(1, 61.0), (2, 44.0), (3, 22.0), (4, 35.0)];
+		EngagementRepository::new(pool.clone())
+			.save(subject_id, &levels, &now.to_rfc3339(), &(now + Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let report = run_once(&pool, &nudge).await.unwrap();
+		assert_eq!(report.caught_up, 1, "{report:?}");
+		assert_eq!(report.considered, 1, "eligible after the drain, so considered now: {report:?}");
 	}
 
 	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
