@@ -5,10 +5,18 @@
 //! **epoch**. Nothing in this crate knows about subjects: who a publication
 //! reaches is each subject's own watermark (`engagement_gate.curriculum_epoch`)
 //! falling behind the epoch, and the waker catching them up — see
-//! `20260924001200_create_curriculum_publication.up.sql` and
-//! `study_domain::CURRICULUM_AUDIENCE`.
+//! `20260924001200_create_curriculum_publication.up.sql`. Lessons (#277) append
+//! to the same log; which publications apply to whom is answered per subject at
+//! catch-up time by [`PublicationRepository::relevant_since`], under
+//! `study_domain::CURRICULUM_AUDIENCE` and `study_domain::LESSON_AUDIENCE`.
 
 use sqlx::{SqliteConnection, SqlitePool};
+
+/// `curriculum_publication.source` for a catalogue activity (#273).
+pub const ACTIVITY_SOURCE: &str = "activity";
+
+/// `curriculum_publication.source` for a lesson (#277).
+pub const LESSON_SOURCE: &str = "curriculum";
 
 /// One entry in the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +32,10 @@ pub struct Publication {
 /// The most catalogue rows one detection pass reads — `activity_repo::CATALOG_CEILING`,
 /// restated so this crate need not depend on that one.
 pub const ACTIVITY_DETECTION_CEILING: i64 = 500;
+
+/// The most lessons one detection pass reads — `curriculum_repo::MANIFEST_CEILING`,
+/// restated so this crate need not depend on that one.
+pub const LESSON_DETECTION_CEILING: i64 = 1_000;
 
 /// Why a detection pass could not run.
 #[derive(Debug)]
@@ -96,6 +108,93 @@ impl PublicationRepository {
 		.execute(&self.pool)
 		.await?;
 		Ok(inserted.rows_affected())
+	}
+
+	/// Record every lesson `(key, version)` not seen before as a publication
+	/// (#277, CUR4), and return how many were new.
+	///
+	/// A lesson's `version` moves only when its file's bytes change (#275), so
+	/// a re-import of unchanged content, or a manifest rename, is never a
+	/// publication; the first import of an existing corpus is recorded as a
+	/// baseline by the importer itself ([`Self::record_baseline`]). Bounded by
+	/// [`LESSON_DETECTION_CEILING`] (`curriculum_repo::MANIFEST_CEILING`'s
+	/// value), and refused — never read as a prefix — over it, like
+	/// [`Self::detect_activity_publications`].
+	///
+	/// # Errors
+	/// [`PublicationError::OverCeiling`] for an over-ceiling corpus, or any
+	/// `sqlx` failure.
+	pub async fn detect_curriculum_publications(&self, now: &str) -> Result<u64, PublicationError> {
+		let rows = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum"#).fetch_one(&self.pool).await?;
+		if rows > LESSON_DETECTION_CEILING {
+			return Err(PublicationError::OverCeiling {
+				rows,
+				ceiling: LESSON_DETECTION_CEILING,
+			});
+		}
+		let inserted = sqlx::query!(
+			r#"
+			INSERT INTO curriculum_publication (source, curriculum_id, version, detected_at)
+			SELECT 'curriculum', key, version, ?1 FROM curriculum WHERE true
+			ON CONFLICT (source, curriculum_id, version) DO NOTHING
+			"#,
+			now
+		)
+		.execute(&self.pool)
+		.await?;
+		Ok(inserted.rows_affected())
+	}
+
+	/// The newest publication after `watermark`, up to and including `epoch`,
+	/// that applies to `subject_id` — or `None` if nothing they missed is news
+	/// to them (#277, CUR4).
+	///
+	/// This is where each audience rule is applied: per subject, when they are
+	/// caught up, never as an audience query at publish time.
+	///
+	/// - A catalogue activity (`study_domain::CURRICULUM_AUDIENCE`) applies to
+	///   everyone behind it.
+	/// - A lesson (`study_domain::LESSON_AUDIENCE`) applies to a subject who had
+	///   played its activity — a completed or abandoned block in
+	///   `activity_outcome` that ended by the lesson's `detected_at` — answered
+	///   by a point lookup on `idx_activity_outcome_subject_activity`. A lesson
+	///   whose key the `curriculum` table no longer holds applies to nobody.
+	///
+	/// Walks the publications in the gap newest first and stops at the first
+	/// that applies: O(publications missed), never O(subjects).
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn relevant_since(&self, subject_id: &str, watermark: i64, epoch: i64) -> Result<Option<Publication>, sqlx::Error> {
+		sqlx::query_as!(
+			Publication,
+			r#"
+			SELECT p.id AS "id!", p.source, p.curriculum_id, p.version, p.detected_at
+			FROM curriculum_publication p
+			WHERE p.id > ?2 AND p.id <= ?3 AND p.baseline = 0
+			  AND (
+				p.source = 'activity'
+				OR (
+					p.source = 'curriculum'
+					AND EXISTS (
+						SELECT 1
+						FROM curriculum c
+						JOIN activity_outcome o ON o.subject_id = ?1 AND o.activity_id = c.activity_id
+						WHERE c.key = p.curriculum_id
+						  AND o.outcome != 'skipped'
+						  AND COALESCE(julianday(o.ended_at) <= julianday(p.detected_at), 1)
+					)
+				)
+			  )
+			ORDER BY p.id DESC
+			LIMIT 1
+			"#,
+			subject_id,
+			watermark,
+			epoch
+		)
+		.fetch_optional(&self.pool)
+		.await
 	}
 
 	/// Record `(source, curriculum_id, version)` as seen **without announcing

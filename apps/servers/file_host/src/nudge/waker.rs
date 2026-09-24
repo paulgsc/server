@@ -241,17 +241,18 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 		// ineligible is done for this pass — the fold re-solved `eligible_at`,
 		// and the arithmetic, not this loop, decides when they are next due.
 		if let Some(publication) = newest.as_ref().filter(|_| gate.curriculum_epoch < epoch) {
-			let due_by_time = match catch_up(db, &gate.subject_id, publication).await {
+			let due_by_time = match catch_up(db, &gate.subject_id, gate.curriculum_epoch, publication).await {
 				// Against the clock now, not the pass's `now`: a drain that
 				// makes them eligible at once solves `eligible_at` to the
 				// catch-up's own instant, which is later than the pass began
 				// (a real `chatgpt-codex-connector` finding on #362).
-				Ok(Some(eligible_at)) => {
+				Ok(CatchUp::Drained(eligible_at)) => {
 					report.caught_up += 1;
 					eligible_at <= Utc::now()
 				}
-				// Someone else caught them up between `due` and here.
-				Ok(None) => crate::nudge::clock::parse_timestamp(&gate.eligible_at).is_none_or(|at| at <= now),
+				// Nothing they missed applies to them, or someone else caught
+				// them up between `due` and here: due only if they already were.
+				Ok(CatchUp::NothingApplies | CatchUp::AlreadyCaughtUp) => crate::nudge::clock::parse_timestamp(&gate.eligible_at).is_none_or(|at| at <= now),
 				Err(err) => {
 					error!(subject = %gate.subject_id, error = %err, "could not catch a subject up to the curriculum epoch; they stay behind for the next pass");
 					crate::metrics::waker::record_verdict("storage_error", "n/a");
@@ -329,6 +330,16 @@ async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio
 	if tokio::time::Instant::now() >= deadline {
 		return None;
 	}
+	// #277 (CUR4): lessons append to the same log — a second producer, not a
+	// second mechanism.
+	match publications.detect_curriculum_publications(&now.to_rfc3339()).await {
+		Ok(0) => {}
+		Ok(found) => info!(found, "new lesson material detected"),
+		Err(err) => error!(error = %err, "could not detect lesson publications"),
+	}
+	if tokio::time::Instant::now() >= deadline {
+		return None;
+	}
 	match publications.newest().await {
 		Ok(newest) => newest,
 		Err(err) => {
@@ -338,30 +349,51 @@ async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio
 	}
 }
 
-/// Catch a subject behind the curriculum epoch up to it (#273, CAT5): fold
-/// **one** `CurriculumUpdated`, naming the newest publication, and advance
-/// their watermark to its epoch — one transaction, see
-/// `EngagementRepository::catch_up`.
+/// What [`catch_up`] did for a subject behind the curriculum epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatchUp {
+	/// Something they missed applies to them: drained once, watermark moved to
+	/// the epoch; the re-solved `eligible_at`.
+	Drained(DateTime<Utc>),
+	/// Nothing they missed applies to them (#277: only lessons for activities
+	/// they have not played): watermark moved, no drain.
+	NothingApplies,
+	/// Caught up in the meantime; nothing written.
+	AlreadyCaughtUp,
+}
+
+/// Catch a subject behind the curriculum epoch up to it (#273, CAT5; #277,
+/// CUR4).
+///
+/// Finds the newest publication since their `watermark` that applies to them
+/// (`PublicationRepository::relevant_since` — where `CURRICULUM_AUDIENCE` and
+/// `LESSON_AUDIENCE` are applied). If there is one, folds **one**
+/// `CurriculumUpdated` naming it and advances the watermark to the epoch in
+/// the same transaction (`EngagementRepository::catch_up`); if not, advances
+/// the watermark alone.
 ///
 /// One drain however many publications the subject missed: the signal means
 /// "there is new material", and a drain per publication would let a burst of
-/// catalogue edits empty someone's freshness in a single pass. Returns the
-/// re-solved `eligible_at`, or `None` if they were caught up in the meantime.
+/// catalogue edits empty someone's freshness in a single pass.
 ///
 /// # Errors
 /// Propagates any storage failure; nothing is written if any step fails.
-async fn catch_up(db: &SqlitePool, subject_id: &str, newest: &Publication) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+async fn catch_up(db: &SqlitePool, subject_id: &str, watermark: i64, newest: &Publication) -> Result<CatchUp, sqlx::Error> {
+	let engagement = EngagementRepository::new(db.clone());
+	let Some(relevant) = PublicationRepository::new(db.clone()).relevant_since(subject_id, watermark, newest.id).await? else {
+		let moved = engagement.advance_watermark(subject_id, newest.id).await?;
+		debug!(subject = %subject_id, epoch = newest.id, "nothing new applies; watermark advanced");
+		return Ok(if moved { CatchUp::NothingApplies } else { CatchUp::AlreadyCaughtUp });
+	};
 	let now = Utc::now();
 	let signal = StudySignal::CurriculumUpdated {
-		curriculum_id: newest.curriculum_id.clone(),
+		curriculum_id: relevant.curriculum_id.clone(),
 	};
-	let eligible_at = EngagementRepository::new(db.clone())
-		.catch_up(subject_id, newest.id, |stored| fold_signal(stored, &signal, now))
-		.await?;
-	if let Some(eligible_at) = eligible_at {
-		debug!(subject = %subject_id, epoch = newest.id, eligible_at = %eligible_at, "caught up to the curriculum epoch");
-	}
-	Ok(eligible_at)
+	let eligible_at = engagement.catch_up(subject_id, newest.id, |stored| fold_signal(stored, &signal, now)).await?;
+	Ok(eligible_at.map_or(CatchUp::AlreadyCaughtUp, |eligible_at| {
+		debug!(subject = %subject_id, epoch = newest.id, curriculum_id = %relevant.curriculum_id, eligible_at = %eligible_at, "caught up to the curriculum epoch");
+		CatchUp::Drained(eligible_at)
+	}))
 }
 
 /// Enforce each history table's retention horizon, one bounded bite per
@@ -3545,7 +3577,7 @@ mod tests {
 		assert!((after_one - after_rerun).abs() < 0.01, "a second pass drains nothing: {after_one} vs {after_rerun}");
 		let newest = PublicationRepository::new(pool.clone()).newest().await.unwrap().unwrap();
 		assert!(
-			catch_up(&pool, "subject-a", &newest).await.unwrap().is_none(),
+			catch_up(&pool, "subject-a", 0, &newest).await.unwrap() == CatchUp::AlreadyCaughtUp,
 			"and a direct catch-up at the same epoch writes nothing"
 		);
 
@@ -3696,7 +3728,11 @@ mod tests {
 
 		publish(&pool, "new-thing", 1).await;
 		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
-		assert!(catch_up(&pool, subject_id, &newest).await.unwrap().is_some(), "known before the publication, so behind it");
+		let watermark = EngagementRepository::new(pool.clone()).gate(subject_id).await.unwrap().unwrap().curriculum_epoch;
+		assert!(
+			matches!(catch_up(&pool, subject_id, watermark, &newest).await.unwrap(), CatchUp::Drained(_)),
+			"known before the publication, so behind it"
+		);
 
 		let stored = EngagementRepository::new(pool.clone()).charge(subject_id).await.unwrap();
 		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -3729,6 +3765,144 @@ mod tests {
 			}
 		);
 		assert_eq!(crate::nudge::payload::topic_for(&action), Topic::NewMaterial);
+	}
+
+	/// One `activity_outcome` row for `subject_id` on `activity_id` — what puts
+	/// them in `LESSON_AUDIENCE` for that activity's lessons (#277), unless the
+	/// block was skipped.
+	async fn played(pool: &SqlitePool, subject_id: &str, activity_id: &str, outcome: &str) {
+		let mut session = String::from("session-played-");
+		session.push_str(subject_id);
+		session.push_str(activity_id);
+		sqlx::query!(
+			"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score) VALUES (?, ?, ?, 0, '2026-09-20T10:00:00+00:00', '2026-09-20T10:05:00+00:00', 300000, 300000, ?, NULL)",
+			subject_id,
+			session,
+			activity_id,
+			outcome
+		)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// A `topiks`-shaped corpus directory with one lesson per `(key, body)`.
+	#[allow(clippy::disallowed_methods)] // a fixture file, not a tracing argument
+	fn write_topiks(dir: &std::path::Path, lessons: &[(&str, &str, &[u8])]) {
+		let entries: Vec<serde_json::Value> = lessons
+			.iter()
+			.map(|(key, name, _)| serde_json::json!({ "key": key, "displayName": name, "description": "d", "batchCount": 1, "totalQuestions": 1, "totalMessages": 1 }))
+			.collect();
+		std::fs::write(
+			dir.join("manifest.json"),
+			serde_json::to_vec(&serde_json::json!({ "version": "1", "topiks": entries })).unwrap(),
+		)
+		.unwrap();
+		for (key, _, body) in lessons {
+			let mut file = (*key).to_owned();
+			file.push_str(".json");
+			std::fs::write(dir.join(file), body).unwrap();
+		}
+	}
+
+	/// #277 (CUR4), in order: importing the existing corpus announces nothing
+	/// and moves no epoch; a new lesson drains exactly the known subjects who
+	/// had played its activity when it was published; re-importing unchanged
+	/// content, or a rename, announces nothing; changed content is news again —
+	/// and for a subject who is otherwise almost due, the news is what gets
+	/// said: `NewMaterial`, on `Topic::NewMaterial`.
+	#[tokio::test]
+	async fn a_new_lesson_drains_once_those_who_had_played_its_activity() {
+		use curriculum_repo::import_dir;
+
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		let learner = "subject-plays-topik";
+		// Almost due, with freshness the thinnest margin — see
+		// `a_publication_makes_new_material_the_thing_to_say`.
+		let now = Utc::now();
+		let levels: Vec<(u16, f64)> = vec![(1, 61.0), (2, 44.0), (3, 22.0), (4, 35.0)];
+		EngagementRepository::new(pool.clone())
+			.save(learner, &levels, &now.to_rfc3339(), &(now + Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+		played(&pool, learner, "topik", "completed").await;
+		for other in ["subject-plays-honeycomb", "subject-skipped-topik", "subject-plays-topik-later"] {
+			first_contact(&pool, other).await.unwrap();
+		}
+		played(&pool, "subject-plays-honeycomb", "honeycomb", "completed").await;
+		played(&pool, "subject-skipped-topik", "topik", "skipped").await;
+		// Played, but only after the lesson is published: it applies to them no
+		// more than to someone who never played.
+		played(&pool, "subject-plays-topik-later", "topik", "completed").await;
+		sqlx::query!("UPDATE activity_outcome SET ended_at = '2999-01-01T00:00:00+00:00' WHERE subject_id = 'subject-plays-topik-later'")
+			.execute(&pool)
+			.await
+			.unwrap();
+
+		let dir = tempfile::tempdir().unwrap();
+		write_topiks(dir.path(), &[("beginner", "Beginner", b"{\"v\":1}")]);
+		import_dir(&pool, dir.path(), "topik", &now.to_rfc3339(), false).await.unwrap();
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "the existing corpus is not new to anyone");
+
+		write_topiks(dir.path(), &[("beginner", "Beginner", b"{\"v\":1}"), ("intermediate", "Intermediate", b"{\"v\":1}")]);
+		import_dir(&pool, dir.path(), "topik", &now.to_rfc3339(), false).await.unwrap();
+		assert_eq!(
+			run_once(&pool, &nudge).await.unwrap().caught_up,
+			1,
+			"one subject had played topik when it was published; honeycomb-only, skip-only and later players are not its audience"
+		);
+		let epoch = PublicationRepository::new(pool.clone()).newest().await.unwrap().unwrap().id;
+		for other in ["subject-plays-honeycomb", "subject-skipped-topik", "subject-plays-topik-later"] {
+			let gate = EngagementRepository::new(pool.clone()).gate(other).await.unwrap().unwrap();
+			assert_eq!(gate.curriculum_epoch, epoch, "{other}: the watermark moves even when nothing applies");
+			assert_eq!(freshness(&pool, other).await, Some(100.0), "{other}: and nothing is drained");
+		}
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "and never twice");
+
+		let stored = EngagementRepository::new(pool.clone()).charge(learner).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+		let as_of = crate::nudge::clock::parse_timestamp(&stored[0].as_of).unwrap();
+		let charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+		let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(
+			StudyConstraints {
+				clock: NudgeClock::resolve(Some("UTC")).0,
+				enabled: true,
+				quiet_hours_start: 0,
+				quiet_hours_end: 0,
+				presence: PresenceLeases::empty(std::time::Duration::from_secs(75)),
+				consented_topics: Topic::ALL.to_vec(),
+			},
+			StudySelector {
+				prepared_session: Some("session-openable".to_owned()),
+			},
+		);
+		let verdict = engine.evaluate(&charge, as_of, None);
+		let Verdict::Intervene(action) = verdict else {
+			panic!("expected the new lesson to make this subject due, got {verdict:?}");
+		};
+		assert_eq!(
+			action,
+			StudyAction::NewMaterial {
+				session_id: "session-openable".to_owned()
+			}
+		);
+		assert_eq!(crate::nudge::payload::topic_for(&action), Topic::NewMaterial);
+
+		write_topiks(
+			dir.path(),
+			&[("beginner", "Beginner, renamed", b"{\"v\":1}"), ("intermediate", "Intermediate", b"{\"v\":1}")],
+		);
+		import_dir(&pool, dir.path(), "topik", &now.to_rfc3339(), false).await.unwrap();
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "unchanged bytes, or a rename, are not new material");
+
+		write_topiks(
+			dir.path(),
+			&[("beginner", "Beginner, renamed", b"{\"v\":2}"), ("intermediate", "Intermediate", b"{\"v\":1}")],
+		);
+		import_dir(&pool, dir.path(), "topik", &now.to_rfc3339(), false).await.unwrap();
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 1, "changed bytes are new material again");
 	}
 
 	/// A signal folded in while the waker was deciding is not overwritten by

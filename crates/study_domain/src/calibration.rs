@@ -159,6 +159,38 @@ pub enum CurriculumAudience {
 /// `engagement_gate.curriculum_epoch`, the one watermark per subject.
 pub const CURRICULUM_AUDIENCE: CurriculumAudience = CurriculumAudience::KnownBeforePublication;
 
+/// Who a published *lesson* drains (#277, CUR4).
+///
+/// Narrower than [`CURRICULUM_AUDIENCE`], because a lesson carries what an
+/// activity does not — which activity it is for — and firing every lesson at
+/// everyone is how a well-designed signal becomes the thing people mute.
+/// `EngagementClass::Freshness` is weighted lowest precisely so staleness
+/// colours *what* is said more than *whether*; over-firing would invert that
+/// by sheer volume.
+///
+/// Applied per subject when they are caught up to the curriculum epoch
+/// (`publication_repo::PublicationRepository::relevant_since`), never as an
+/// audience query at publish time: a subject behind only on lessons that do
+/// not apply to them has their watermark advanced with no drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LessonAudience {
+	/// Subjects known before the lesson was published (as
+	/// [`CURRICULUM_AUDIENCE`]) who had also played its activity by then — a
+	/// completed or abandoned block of it in `activity_outcome` (#286) that
+	/// ended by the lesson's detection.
+	///
+	/// **Chosen:** use only what the server knows. **Rejected, for now:**
+	/// scoping by the subject's target level. `targetTopikLevel` is a
+	/// `UserProfile` field the client keeps in its own storage and this server
+	/// has never seen; bringing profile targets server-side is a bigger move
+	/// than this story and a dependency to name, not one to smuggle in. When it
+	/// lands, a lesson far from someone's level can stop reaching them.
+	KnownAndPlayedTheActivity,
+}
+
+/// The audience rule this release applies to a published lesson.
+pub const LESSON_AUDIENCE: LessonAudience = LessonAudience::KnownAndPlayedTheActivity;
+
 /// The score below which a completed, assessed block counts as *not landing*
 /// (#287, TEL2) — the threshold `POST /outcomes` derives
 /// [`StudySignal::ScoredBelowTarget`] against.

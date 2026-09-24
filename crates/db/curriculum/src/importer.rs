@@ -35,7 +35,7 @@ use sqlx::SqlitePool;
 use std::path::Path;
 
 /// `curriculum_publication.source` for lessons (#277).
-pub const PUBLICATION_SOURCE: &str = "curriculum";
+pub const PUBLICATION_SOURCE: &str = publication_repo::LESSON_SOURCE;
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {

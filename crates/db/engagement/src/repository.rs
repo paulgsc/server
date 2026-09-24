@@ -362,6 +362,24 @@ impl EngagementRepository {
 		Ok(Some(output))
 	}
 
+	/// Move a subject's watermark up to `epoch` **without** a drain — for a
+	/// subject behind only on publications that do not apply to them (#277,
+	/// CUR4: a lesson for an activity they have never played). Only ever
+	/// forward; returns whether it moved.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn advance_watermark(&self, subject_id: &str, epoch: i64) -> Result<bool, sqlx::Error> {
+		let moved = sqlx::query!(
+			"UPDATE engagement_gate SET curriculum_epoch = ?1 WHERE subject_id = ?2 AND curriculum_epoch < ?1",
+			epoch,
+			subject_id
+		)
+		.execute(&self.pool)
+		.await?;
+		Ok(moved.rows_affected() > 0)
+	}
+
 	/// Claim a subject for one intervention, atomically — and write the
 	/// intervention's recharged charge with it.
 	///

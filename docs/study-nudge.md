@@ -1611,6 +1611,24 @@ deploying this drains nobody. Nothing a subject later edits or deletes changes
 whether they were known. The accepted cost: someone who subscribed but never
 studied is drained too.
 
+**Lessons append to the same log (#277, CUR4)** — a second producer, not a
+second mechanism. A lesson `(key, version)` not seen before is a publication
+with `source = 'curriculum'`, and its version only moves when the file's bytes
+do (#275), so re-importing unchanged content or renaming a lesson publishes
+nothing; the importer's first import writes `baseline` rows, which are seen but
+are not an epoch. A lesson's audience is narrower,
+`study_domain::LESSON_AUDIENCE`: subjects who had **played its activity** (a
+completed or abandoned block in `activity_outcome`) by the time it was
+detected. That rule is applied per subject **at catch-up**, not as an audience
+query at publish time: `PublicationRepository::relevant_since` walks the
+publications a subject missed, newest first, and stops at the first that
+applies to them — O(publications missed), a point lookup each. If none does,
+their watermark moves up with no drain. A lesson at a level far from someone's
+target would be closer still to noise, but `targetTopikLevel` lives in the
+client's profile and this server has never seen it; scoping by level waits on
+profile targets moving server-side, and is named as that dependency rather than
+guessed at.
+
 ### Importing lesson content (#275, CUR2)
 
 Lessons live in the `curriculum` table (#274) — one row per lesson, the lesson
