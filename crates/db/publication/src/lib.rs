@@ -8,7 +8,7 @@
 //! `20260924001200_create_curriculum_publication.up.sql` and
 //! `study_domain::CURRICULUM_AUDIENCE`.
 
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// One entry in the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,9 +98,44 @@ impl PublicationRepository {
 		Ok(inserted.rows_affected())
 	}
 
+	/// Record `(source, curriculum_id, version)` as seen **without announcing
+	/// it** — a baseline row (#275, CUR2). Used for material the app was
+	/// already serving before this server knew about it: the first import of
+	/// an existing lesson corpus is what everyone has been studying all along
+	/// and must not drain anyone.
+	///
+	/// A baseline row is in the log, so detection never mistakes it for new,
+	/// but it is not an epoch: the epoch is the newest row with `baseline = 0`
+	/// ([`Self::newest`], and the stamp on a new gate row), so recording one
+	/// puts nobody behind. That keeps a corpus baseline O(1) in subjects —
+	/// no watermark is touched. A no-op for a triple already recorded.
+	///
+	/// On `conn`, so the importer records a baseline in the same transaction
+	/// as the lesson it covers.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn record_baseline(conn: &mut SqliteConnection, source: &str, curriculum_id: &str, version: i64, now: &str) -> Result<(), sqlx::Error> {
+		sqlx::query!(
+			r#"
+			INSERT INTO curriculum_publication (source, curriculum_id, version, detected_at, baseline)
+			VALUES (?1, ?2, ?3, ?4, 1)
+			ON CONFLICT (source, curriculum_id, version) DO NOTHING
+			"#,
+			source,
+			curriculum_id,
+			version,
+			now
+		)
+		.execute(&mut *conn)
+		.await?;
+		Ok(())
+	}
+
 	/// The newest publication — whose `id` is the epoch — or `None` for an
-	/// empty log. One primary-key read, whatever the size of the log or the
-	/// number of subjects.
+	/// empty log. Baseline rows ([`Self::record_baseline`]) are skipped: they
+	/// are seen, not announced. One read from the top of the primary key,
+	/// whatever the number of subjects.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
@@ -110,6 +145,7 @@ impl PublicationRepository {
 			r#"
 			SELECT id AS "id!", source, curriculum_id, version, detected_at
 			FROM curriculum_publication
+			WHERE baseline = 0
 			ORDER BY id DESC
 			LIMIT 1
 			"#
@@ -194,6 +230,24 @@ mod tests {
 			baseline,
 			"and nothing partial was recorded"
 		);
+	}
+
+	/// The epoch lookups read the partial index on non-baseline rows, not the
+	/// baseline rows a corpus's first import appends after them (from a
+	/// `chatgpt-codex-connector` finding on #365).
+	#[tokio::test]
+	async fn the_epoch_lookups_read_the_partial_index() {
+		let pool = pool().await;
+		for query in [
+			"EXPLAIN QUERY PLAN SELECT id, source, curriculum_id, version, detected_at FROM curriculum_publication WHERE baseline = 0 ORDER BY id DESC LIMIT 1",
+			"EXPLAIN QUERY PLAN SELECT COALESCE(MAX(id), 0) FROM curriculum_publication WHERE baseline = 0",
+		] {
+			let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(query).fetch_all(&pool).await.unwrap();
+			assert!(
+				plan.iter().any(|(_, _, _, detail)| detail.contains("idx_curriculum_publication_epoch")),
+				"{query}: {plan:?}"
+			);
+		}
 	}
 
 	#[tokio::test]

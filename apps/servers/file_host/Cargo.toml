@@ -36,6 +36,10 @@ path = "src/bin/dump_proposed_session.rs"
 name = "dump-provisioned-session"
 path = "src/bin/dump_provisioned_session.rs"
 
+[[bin]]
+name = "import-curriculum"
+path = "src/bin/import_curriculum.rs"
+
 [dependencies]
 # path crates
 mood_event = { workspace = true }
@@ -93,6 +97,7 @@ some-cache.workspace = true
 some-metrics.workspace = true
 activity_repo = { workspace = true }
 capture_repo = { workspace = true }
+curriculum_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }
 outcome_repo = { workspace = true }

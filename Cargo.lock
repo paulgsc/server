@@ -850,10 +850,12 @@ name = "curriculum_repo"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "publication_repo",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tempfile",
  "tokio",
 ]
 
@@ -1248,6 +1250,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
+ "curriculum_repo",
  "dashmap",
  "dotenvy",
  "engagement_repo",
