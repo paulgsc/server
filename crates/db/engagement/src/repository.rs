@@ -65,6 +65,17 @@ pub const INTERVENTION_LOG_RETENTION_DAYS: i64 = 90;
 /// is written at.
 pub const RETENTION_SWEEP_LIMIT: i64 = 500;
 
+/// What [`EngagementRepository::catch_up`] wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatchUpWrite<T> {
+	/// Drained and advanced, together; what `apply` returned.
+	Drained(T),
+	/// The chosen publication was already consumed: advanced, no drain.
+	Advanced,
+	/// Not behind the epoch, or no gate row: nothing written.
+	NotBehind,
+}
+
 pub struct EngagementRepository {
 	pool: SqlitePool,
 }
@@ -325,26 +336,41 @@ impl EngagementRepository {
 	/// That pairing is the whole idempotency argument: the watermark only moves
 	/// forward, and only with the drain, so a pass re-run after a crash — or two
 	/// passes racing — cannot drain anyone twice for the same publications.
-	/// Returns `None`, writing nothing, when the subject is not behind `epoch`
-	/// (already caught up) or has no gate row.
+	///
+	/// `drain_for` is the publication the caller chose to drain for, picked
+	/// from a watermark it read *before* this lock. The drain happens only if
+	/// that publication is still newer than the watermark read *under* the
+	/// lock; if another pass has consumed it since, the watermark is advanced
+	/// with no drain — the chosen publication was the newest relevant one in
+	/// the caller's range, so nothing relevant lies above the current
+	/// watermark either (a real `chatgpt-codex-connector` finding on #367).
 	///
 	/// Takes the same `BEGIN IMMEDIATE` write lock as [`Self::fold`], so a
 	/// signal folded in concurrently is serialised with it, not overwritten.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure; nothing is written if any step fails.
-	pub async fn catch_up<T>(&self, subject_id: &str, epoch: i64, apply: impl FnOnce(&[ChargeRow]) -> (Vec<(u16, f64)>, String, String, T)) -> Result<Option<T>, sqlx::Error> {
+	pub async fn catch_up<T>(
+		&self,
+		subject_id: &str,
+		drain_for: i64,
+		epoch: i64,
+		apply: impl FnOnce(&[ChargeRow]) -> (Vec<(u16, f64)>, String, String, T),
+	) -> Result<CatchUpWrite<T>, sqlx::Error> {
 		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-		let behind = sqlx::query_scalar!(
-			r#"SELECT curriculum_epoch < ? AS "behind!: bool" FROM engagement_gate WHERE subject_id = ?"#,
-			epoch,
-			subject_id
-		)
-		.fetch_optional(&mut *tx)
-		.await?;
-		if behind != Some(true) {
+		let watermark = sqlx::query_scalar!(r#"SELECT curriculum_epoch AS "epoch!: i64" FROM engagement_gate WHERE subject_id = ?"#, subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		let Some(watermark) = watermark.filter(|watermark| *watermark < epoch) else {
 			tx.rollback().await?;
-			return Ok(None);
+			return Ok(CatchUpWrite::NotBehind);
+		};
+		if watermark >= drain_for {
+			sqlx::query!("UPDATE engagement_gate SET curriculum_epoch = ? WHERE subject_id = ?", epoch, subject_id)
+				.execute(&mut *tx)
+				.await?;
+			tx.commit().await?;
+			return Ok(CatchUpWrite::Advanced);
 		}
 		let stored = sqlx::query_as!(
 			ChargeRow,
@@ -359,7 +385,7 @@ impl EngagementRepository {
 			.execute(&mut *tx)
 			.await?;
 		tx.commit().await?;
-		Ok(Some(output))
+		Ok(CatchUpWrite::Drained(output))
 	}
 
 	/// Move a subject's watermark up to `epoch` **without** a drain — for a

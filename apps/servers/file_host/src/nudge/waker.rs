@@ -31,7 +31,7 @@ use activity_repo::{
 	default_session_name, provision, recommend, total_duration_ms, ActivityHistory, ActivityOutcome, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT,
 };
 use chrono::{DateTime, Utc};
-use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
+use engagement_repo::{CatchUpWrite, EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use outcome_repo::{ActivityStats, OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
 use publication_repo::{Publication, PublicationRepository};
@@ -389,11 +389,18 @@ async fn catch_up(db: &SqlitePool, subject_id: &str, watermark: i64, newest: &Pu
 	let signal = StudySignal::CurriculumUpdated {
 		curriculum_id: relevant.curriculum_id.clone(),
 	};
-	let eligible_at = engagement.catch_up(subject_id, newest.id, |stored| fold_signal(stored, &signal, now)).await?;
-	Ok(eligible_at.map_or(CatchUp::AlreadyCaughtUp, |eligible_at| {
-		debug!(subject = %subject_id, epoch = newest.id, curriculum_id = %relevant.curriculum_id, eligible_at = %eligible_at, "caught up to the curriculum epoch");
-		CatchUp::Drained(eligible_at)
-	}))
+	Ok(
+		match engagement.catch_up(subject_id, relevant.id, newest.id, |stored| fold_signal(stored, &signal, now)).await? {
+			CatchUpWrite::Drained(eligible_at) => {
+				debug!(subject = %subject_id, epoch = newest.id, curriculum_id = %relevant.curriculum_id, eligible_at = %eligible_at, "caught up to the curriculum epoch");
+				CatchUp::Drained(eligible_at)
+			}
+			// Another pass consumed `relevant` since this one read the
+			// watermark: advanced without draining it again.
+			CatchUpWrite::Advanced => CatchUp::NothingApplies,
+			CatchUpWrite::NotBehind => CatchUp::AlreadyCaughtUp,
+		},
+	)
 }
 
 /// Enforce each history table's retention horizon, one bounded bite per
@@ -3903,6 +3910,40 @@ mod tests {
 		);
 		import_dir(&pool, dir.path(), "topik", &now.to_rfc3339(), false).await.unwrap();
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 1, "changed bytes are new material again");
+	}
+
+	/// #277 (CUR4): a catch-up that chose its publication from a stale
+	/// watermark — another pass drained that publication since — advances
+	/// without draining it again (from a `chatgpt-codex-connector` finding on
+	/// #367).
+	#[tokio::test]
+	async fn a_catch_up_from_a_stale_watermark_does_not_drain_twice() {
+		use curriculum_repo::import_dir;
+
+		let pool = migrated_pool().await;
+		let subject_id = "subject-racing";
+		first_contact(&pool, subject_id).await.unwrap();
+		let stale = EngagementRepository::new(pool.clone()).gate(subject_id).await.unwrap().unwrap().curriculum_epoch;
+
+		// Pass one: a new activity, which applies to them, is drained for.
+		publish(&pool, "new-thing", 1).await;
+		assert_eq!(run_once(&pool, &nudge_context()).await.unwrap().caught_up, 1);
+		let drained_once = freshness(&pool, subject_id).await.unwrap();
+
+		// Then a lesson for an activity they have never played moves the epoch.
+		let dir = tempfile::tempdir().unwrap();
+		write_topiks(dir.path(), &[("beginner", "Beginner", b"{}")]);
+		import_dir(&pool, dir.path(), "honeycomb", &Utc::now().to_rfc3339(), false).await.unwrap();
+		write_topiks(dir.path(), &[("beginner", "Beginner", b"{}"), ("second", "Second", b"{}")]);
+		import_dir(&pool, dir.path(), "honeycomb", &Utc::now().to_rfc3339(), false).await.unwrap();
+		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
+
+		// A racing pass that read the watermark before pass one picks the
+		// activity publication again — and must not drain for it twice.
+		assert_eq!(catch_up(&pool, subject_id, stale, &newest).await.unwrap(), CatchUp::NothingApplies);
+		assert!((freshness(&pool, subject_id).await.unwrap() - drained_once).abs() < 0.01, "drained once, not twice");
+		let gate = EngagementRepository::new(pool.clone()).gate(subject_id).await.unwrap().unwrap();
+		assert_eq!(gate.curriculum_epoch, newest.id, "and the watermark still reaches the epoch");
 	}
 
 	/// A signal folded in while the waker was deciding is not overwritten by
