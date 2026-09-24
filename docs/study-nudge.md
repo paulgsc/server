@@ -1593,6 +1593,36 @@ deploying this drains nobody. Nothing a subject later edits or deletes changes
 whether they were known. The accepted cost: someone who subscribed but never
 studied is drained too.
 
+### Importing lesson content (#275, CUR2)
+
+Lessons live in the `curriculum` table (#274) — one row per lesson, the lesson
+file itself stored verbatim — rather than in `paulgsc/some-ui`'s
+`public/topiks` directory. An operator puts them there, offline:
+
+```sh
+DATABASE_URL=sqlite:///path/to/file_host.db \
+  cargo run -q --bin import-curriculum -- path/to/public/topiks --dry-run
+# then, if the report looks right, without --dry-run
+```
+
+Run it when the corpus changes — a lesson added or edited in `some-ui` — and
+once per environment to bring an existing corpus across. It is safe to run
+again and again: a lesson whose file bytes are unchanged (`content_hash`,
+SHA-256 over the exact bytes) is not written and does not look new; changed
+bytes are a version bump with a new `published_at`; a manifest rename alone is
+written without either. A malformed or missing lesson fails alone and is named
+in the report; the exit code is `1` if anything failed, `2` if the run could
+not start. It never deletes a lesson missing from the directory.
+
+**The first import is a baseline.** Into an empty table, what is imported is
+what the app has served all along, so every lesson is written to
+`curriculum_publication` as a `baseline` row: *seen*, so #277 never mistakes it
+for new, but not an epoch — the epoch is the newest non-baseline row — so nobody
+falls behind it and no watermark is touched. Every later import's new or changed
+lessons are what #277 announces.
+
+Nothing in the server's startup or request path runs or waits on this.
+
 ### A pass is bounded, not just a request (#264, SLI3)
 
 `TimeoutLayer` bounds inbound HTTP. The waker is a spawned loop with no

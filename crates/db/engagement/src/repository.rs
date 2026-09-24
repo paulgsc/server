@@ -191,7 +191,7 @@ impl EngagementRepository {
 		sqlx::query!(
 			r#"
 			INSERT INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch)
-			VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication))
+			VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication WHERE baseline = 0))
 			ON CONFLICT(subject_id) DO UPDATE SET eligible_at = excluded.eligible_at
 			"#,
 			subject_id,
@@ -225,7 +225,7 @@ impl EngagementRepository {
 		let mut tx = self.pool.begin().await?;
 
 		let inserted = sqlx::query!(
-			r#"INSERT OR IGNORE INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch) VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication))"#,
+			r#"INSERT OR IGNORE INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch) VALUES (?, ?, 0, (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication WHERE baseline = 0))"#,
 			subject_id,
 			eligible_at,
 		)

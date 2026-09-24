@@ -6,9 +6,13 @@
 //! the importer (#275), the routes' `ETag` (#276), and the `CurriculumUpdated`
 //! producer (#277) all share.
 
+pub mod importer;
 pub mod model;
+pub mod repository;
 
+pub use importer::{import_dir, ImportError, ImportReport, PUBLICATION_SOURCE};
 pub use model::{content_hash, CurriculumEntry, Level, ManifestEntry};
+pub use repository::{Change, CurriculumRepository};
 
 #[cfg(test)]
 mod tests {
