@@ -1352,9 +1352,12 @@ increasing `version` somewhere in the set. On `GET /activities/:id` the tag
 is `id@version`, scoped to the one row that response actually returned,
 rather than the whole-catalogue fingerprint — an unrelated activity's edit
 should not invalidate a client's cached copy of this one. `fingerprint()` is
-also the value #273 (CAT5)'s `CurriculumUpdated` producer reads "the
-catalogue changed" from; that story calls this method directly rather than
-inventing a second notion of catalogue version.
+*not* what #273 (CAT5)'s `CurriculumUpdated` producer reads, although this
+section once said it would: a single hash says *that* the catalogue changed
+but not *which* entry, and the producer has to know which `(id, version)` is
+new to announce it. It compares `activities` against its own
+`curriculum_publication` table instead — see "New material is announced,
+once" below.
 
 **The bound is a refusal, not a truncation.** `GET /activities` counts the
 table before querying it; over `CATALOG_CEILING` rows and the whole request
@@ -1509,6 +1512,31 @@ session outranks a `scheduled` one, which outranks an untouched `draft`, with
 doc comment for why). #262's characterisation test now asserts this bound
 directly: at most one row read per due subject, independent of how many
 sessions it owns.
+
+### New material is announced, once (#273, CAT5)
+
+`CurriculumUpdated` — freshness's −35, the case a pure activity model cannot
+express — has a producer. Each waker pass records every catalogue `(id,
+version)` it has not seen before in `curriculum_publication`: a new activity or
+a version bump is new material. The catalogue that existed when this landed is
+recorded by the migration as already announced, so deploying it drains nobody.
+
+**Who it drains** is `study_domain::CURRICULUM_AUDIENCE`, beside the
+calibration numbers: **subjects who have started at least one session**. Not
+everyone — a subject who has only subscribed starts full on purpose, and to
+them everything is new — and not "everyone who has not seen it", which needs
+play history of something that was only just published (#277 is where lessons,
+with a genuinely narrower audience, go further).
+
+**At most once per subject.** Each `(publication, subject)` is claimed in
+`curriculum_delivery` *before* the signal is folded, so re-running a publish,
+or resuming one a crashed pass left half done, never drains twice (applying it
+twice would drain 70 and move someone's next interruption). A crash between
+the claim and the fold costs that subject that one drain instead.
+
+**Bounded and resumable.** A pass applies it to at most `ANNOUNCE_PER_PASS`
+(64) subjects, after its due subjects and inside its deadline; the delivery
+table is the cursor the next pass resumes from.
 
 ### A pass is bounded, not just a request (#264, SLI3)
 

@@ -34,6 +34,7 @@ use chrono::{DateTime, Utc};
 use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use outcome_repo::{ActivityStats, OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
+use publication_repo::PublicationRepository;
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
 use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
@@ -154,6 +155,9 @@ pub struct PassReport {
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
 	/// counts.
 	pub deadline_exceeded: bool,
+	/// Subjects a `CurriculumUpdated` was applied to this pass (#273, CAT5) —
+	/// see [`announce_publications`].
+	pub announced: usize,
 	/// History rows this pass's retention sweep deleted — `intervention_log`
 	/// (#265, SLI4) and `activity_outcome` (#286) together — see
 	/// [`sweep_history`].
@@ -240,10 +244,102 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 		// Housekeeping after the work people are waiting on, and only if the
 		// pass still has time: a pass that ran out has already left due
 		// subjects for the next one, and the sweep can wait with them.
+		report.announced = announce_publications(db, deadline).await;
 		report.pruned = sweep_history(&engagement, &OutcomeRepository::new(db.clone()), now).await;
 	}
 
 	Ok(report)
+}
+
+/// How many subjects one pass applies `CurriculumUpdated` to (#273, CAT5).
+///
+/// A publish reaches everyone it applies to — one read-modify-write of their
+/// charge each — so it is bounded like everything else reachable from the
+/// waker (#253): a pass applies at most this many, and the rest are picked up
+/// on the next pass from `curriculum_delivery`, which is what makes the
+/// fan-out resumable.
+pub(crate) const ANNOUNCE_PER_PASS: i64 = 64;
+
+/// `CurriculumUpdated`'s producer: detect newly published catalogue entries,
+/// and apply the signal to each subject they apply to, at most once each
+/// (#273, CAT5).
+///
+/// A publication is a catalogue `(id, version)` never seen before — a new row
+/// or a version bump; the catalogue that existed when this landed is recorded
+/// as the baseline by its migration, so deploying this announces nothing. The
+/// audience is `study_domain::CURRICULUM_AUDIENCE`. Each subject's delivery is
+/// claimed in `curriculum_delivery` *before* the signal is folded, so
+/// re-running a publish — or resuming one a crashed pass left half done —
+/// never drains anyone twice; a crash between the two costs that subject that
+/// one drain instead.
+///
+/// Runs after the pass's subjects and inside its deadline. Returns how many
+/// subjects the signal was applied to. Failures are logged, not propagated:
+/// like the retention sweep, this must not fail a pass whose subjects were
+/// already handled, and everything it skips is still pending next pass.
+async fn announce_publications(db: &SqlitePool, deadline: tokio::time::Instant) -> usize {
+	let publications = PublicationRepository::new(db.clone());
+	let stamp = Utc::now().to_rfc3339();
+
+	match publications.detect_activity_publications(&stamp).await {
+		Ok(0) => {}
+		Ok(found) => info!(found, "new catalogue material detected; announcing it"),
+		Err(err) => error!(error = %err, "could not detect catalogue publications"),
+	}
+	let pending = match publications.pending(ANNOUNCE_PER_PASS).await {
+		Ok(pending) => pending,
+		Err(err) => {
+			error!(error = %err, "could not read pending publications");
+			return 0;
+		}
+	};
+
+	let mut applied: usize = 0;
+	for publication in pending {
+		#[allow(clippy::cast_possible_wrap)] // bounded by ANNOUNCE_PER_PASS
+		let budget = ANNOUNCE_PER_PASS - applied as i64;
+		if budget <= 0 || tokio::time::Instant::now() >= deadline {
+			break;
+		}
+		let audience = match publications.audience(publication.id, budget).await {
+			Ok(audience) => audience,
+			Err(err) => {
+				error!(publication = publication.id, error = %err, "could not read a publication's audience");
+				continue;
+			}
+		};
+		#[allow(clippy::cast_possible_wrap)] // at most `budget`
+		let exhausted = (audience.len() as i64) < budget;
+
+		let signal = StudySignal::CurriculumUpdated {
+			curriculum_id: publication.curriculum_id.clone(),
+		};
+		for subject_id in &audience {
+			match publications.claim_delivery(publication.id, subject_id, &stamp).await {
+				Ok(true) => {}
+				Ok(false) => continue,
+				Err(err) => {
+					error!(publication = publication.id, subject = %subject_id, error = %err, "could not claim a delivery");
+					continue;
+				}
+			}
+			match observe(db, subject_id, &signal).await {
+				Ok(_) => applied += 1,
+				Err(err) => {
+					error!(publication = publication.id, subject = %subject_id, error = %err, "claimed a delivery but could not apply it; this subject will not be drained for this publication");
+				}
+			}
+		}
+
+		if exhausted {
+			if let Err(err) = publications.mark_fanned_out(publication.id, &stamp).await {
+				error!(publication = publication.id, error = %err, "could not mark a publication fanned out; the next pass will find its audience empty and try again");
+			} else {
+				info!(publication = publication.id, curriculum_id = %publication.curriculum_id, version = publication.version, "publication announced to everyone it applies to");
+			}
+		}
+	}
+	applied
 }
 
 /// Enforce each history table's retention horizon, one bounded bite per
@@ -3361,6 +3457,190 @@ mod tests {
 		}
 		assert!(ranking_inputs(&pool, &on, "subject-sprawling").await.is_none(), "flag on: refused, not cold-started");
 		assert!(ranking_inputs(&pool, &off, "subject-sprawling").await.is_some(), "flag off: stats are never read");
+	}
+
+	/// A session this subject has actually started — what puts them in
+	/// `CURRICULUM_AUDIENCE` (#273).
+	async fn studied(pool: &SqlitePool, subject_id: &str) {
+		let now = Utc::now().to_rfc3339();
+		let mut id = String::from("session-studied-");
+		id.push_str(subject_id);
+		let record = SessionRecord {
+			name: id.clone(),
+			id,
+			status: SessionStatus::Completed,
+			origin: SessionOrigin::User,
+			activities: Vec::new(),
+			scenes: Vec::new(),
+			layout_mode: LayoutMode::Basic,
+			layout: None,
+			total_duration_ms: 0,
+			created_at: now.clone(),
+			updated_at: now.clone(),
+			started_at: Some(now.clone()),
+			completed_at: Some(now),
+			final_elapsed_ms: None,
+		};
+		SessionRepository::new(pool.clone()).upsert(subject_id, &record).await.unwrap();
+	}
+
+	async fn publish(pool: &SqlitePool, id: &str, version: i64) {
+		let published_at = Utc::now().to_rfc3339();
+		sqlx::query!(
+			r#"
+			INSERT INTO activities (id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio)
+			VALUES (?1, ?1, 'new material', 'hexagon', ?1, 'study', 'ready', 300000, ?2, ?3, '[]', '{}', NULL)
+			ON CONFLICT (id) DO UPDATE SET version = excluded.version, published_at = excluded.published_at
+			"#,
+			id,
+			published_at,
+			version
+		)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn freshness(pool: &SqlitePool, subject_id: &str) -> Option<f64> {
+		EngagementRepository::new(pool.clone())
+			.charge(subject_id)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|row| row.class == 4)
+			.map(|row| row.level)
+	}
+
+	/// #273 (CAT5): the catalogue that exists at deploy is a baseline, a new
+	/// activity drains freshness once for subjects who have studied — and only
+	/// them — a re-run drains nobody twice, and a version bump is news again.
+	#[tokio::test]
+	async fn publishing_an_activity_drains_freshness_once_for_subjects_who_have_studied() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		studied(&pool, "subject-studied").await;
+		first_contact(&pool, "subject-studied").await.unwrap();
+		first_contact(&pool, "subject-only-subscribed").await.unwrap();
+		let nudge = nudge_context();
+
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 0, "the seeded catalogue is not new to anyone");
+		let before = freshness(&pool, "subject-studied").await.unwrap();
+
+		publish(&pool, "new-thing", 1).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 1, "one subject has studied");
+		let after_one = freshness(&pool, "subject-studied").await.unwrap();
+		assert!(before - after_one > 30.0, "CurriculumUpdated drains freshness by 35: {before} -> {after_one}");
+		assert_eq!(
+			freshness(&pool, "subject-only-subscribed").await,
+			Some(100.0),
+			"someone who has never studied starts full and stays full — everything is new to them"
+		);
+
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 0, "re-running the publish announces nothing");
+		let after_rerun = freshness(&pool, "subject-studied").await.unwrap();
+		assert!(
+			(after_one - after_rerun).abs() < 0.01,
+			"two applications drain the same as one: {after_one} vs {after_rerun}"
+		);
+
+		publish(&pool, "new-thing", 2).await;
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 1, "a version bump is new material again");
+	}
+
+	/// #273 (CAT5): the fan-out is bounded per pass and resumes where it left
+	/// off, without re-announcing to anyone it already reached.
+	#[tokio::test]
+	async fn the_announcement_fan_out_is_bounded_per_pass_and_resumable() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const EXTRA: i64 = 5;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		for i in 0..ANNOUNCE_PER_PASS + EXTRA {
+			studied(&pool, &numbered("subject-", i)).await;
+		}
+		publish(&pool, "new-thing", 1).await;
+		let nudge = nudge_context();
+
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let (cap, extra) = (ANNOUNCE_PER_PASS as usize, EXTRA as usize);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, cap, "the first pass stops at the cap");
+		assert_eq!(
+			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().len(),
+			1,
+			"and the publication is still in progress"
+		);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, extra, "the next pass reaches the rest, and only the rest");
+		assert!(PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty(), "then it is done");
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().announced, 0);
+	}
+
+	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
+	/// the thinnest margin, with a session prepared, is told about new material
+	/// once a publication drains it — `StudyAction::NewMaterial`, on
+	/// `Topic::NewMaterial`.
+	#[tokio::test]
+	async fn a_publication_makes_new_material_the_thing_to_say() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let subject_id = "subject-almost-drifted";
+		studied(&pool, subject_id).await;
+		// Weighted shortfalls 39 / 39.2 / 39 / 26 and an aggregate of 116.8 —
+		// just above `THRESHOLD` (110), so not yet eligible. Draining
+		// freshness by 35 takes it to 0: its shortfall becomes 40, the
+		// largest, and the aggregate falls to 102.8, under the threshold.
+		// Only freshness moved, so it is what is said.
+		let now = Utc::now();
+		let levels: Vec<(u16, f64)> = vec![(1, 61.0), (2, 44.0), (3, 22.0), (4, 35.0)];
+		EngagementRepository::new(pool.clone())
+			.save(subject_id, &levels, &now.to_rfc3339(), &(now + Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+
+		publish(&pool, "new-thing", 1).await;
+		assert_eq!(announce_publications(&pool, far_deadline()).await, 1);
+
+		let stored = EngagementRepository::new(pool.clone()).charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+		let as_of = crate::nudge::clock::parse_timestamp(&stored[0].as_of).unwrap();
+		let charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+
+		let constraints = StudyConstraints {
+			clock: NudgeClock::resolve(Some("UTC")).0,
+			enabled: true,
+			quiet_hours_start: 0,
+			quiet_hours_end: 0,
+			presence: PresenceLeases::empty(std::time::Duration::from_secs(75)),
+			consented_topics: Topic::ALL.to_vec(),
+		};
+		let engine = Engine::<StudyV1, StudyCalibration, _, _>::new(
+			constraints,
+			StudySelector {
+				prepared_session: Some("session-next".to_owned()),
+			},
+		);
+		let verdict = engine.evaluate(&charge, as_of, None);
+		let Verdict::Intervene(action) = verdict else {
+			panic!("expected an intervention once freshness drained, got {verdict:?}");
+		};
+		assert_eq!(
+			action,
+			StudyAction::NewMaterial {
+				session_id: "session-next".to_owned()
+			}
+		);
+		assert_eq!(crate::nudge::payload::topic_for(&action), Topic::NewMaterial);
 	}
 
 	/// A signal folded in while the waker was deciding is not overwritten by

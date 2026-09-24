@@ -122,6 +122,39 @@ impl Selector<StudyV1> for StudySelector {
 	}
 }
 
+/// Who `CurriculumUpdated` drains when new material is published (#273,
+/// CAT5).
+///
+/// `CurriculumUpdated` "drains freshness for everyone it applies to"; this is
+/// the decision about who that is, and it sits here because it is the same
+/// kind of decision as a half-life — a policy about people, not plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurriculumAudience {
+	/// Every subject who has started at least one session.
+	///
+	/// Chosen over the two alternatives #273 names:
+	///
+	/// - **Every subject** would drain someone who has only ever subscribed.
+	///   `Charge::from_storage` starts an unseen subject *full*, deliberately,
+	///   so a fresh account is not nudged before it has done anything; a
+	///   publish on their first day would undo that for material they cannot
+	///   have missed — to them, everything is new.
+	/// - **Every subject who has not already seen it** is more nearly right,
+	///   and needs per-subject play history of the new material specifically —
+	///   which does not exist for something that was just published. It is
+	///   where #277 (CUR4) ends up for lessons, whose audience is genuinely
+	///   narrower.
+	///
+	/// "Has studied at all" is the middle position: someone who has sat down
+	/// with the old material is exactly who new material makes the old stale
+	/// for.
+	SubjectsWhoHaveStudied,
+}
+
+/// The audience rule this release applies — `publication_repo`'s audience
+/// query implements it.
+pub const CURRICULUM_AUDIENCE: CurriculumAudience = CurriculumAudience::SubjectsWhoHaveStudied;
+
 /// The score below which a completed, assessed block counts as *not landing*
 /// (#287, TEL2) — the threshold `POST /outcomes` derives
 /// [`StudySignal::ScoredBelowTarget`] against.
