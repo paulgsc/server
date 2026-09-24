@@ -11,7 +11,7 @@ pub mod model;
 pub mod repository;
 
 pub use model::OutcomeKind;
-pub use repository::{OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_DAYS};
+pub use repository::{OutcomeRecord, OutcomeRepository, Recorded, ACTIVITY_OUTCOME_RETENTION_DAYS};
 
 #[cfg(test)]
 mod tests {

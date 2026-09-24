@@ -1206,6 +1206,35 @@ It is not, since `#278`, the only place a subject *begins* to exist:
 (`POST /push/subscriptions`) writes the initial gate row, seeded full, before
 any signal has ever arrived.
 
+### Outcomes
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/outcomes` | How one activity block of a session went — `{ sessionId, blockIndex, activityId, startedAt, endedAt, plannedMs, elapsedMs, outcome, score? }` (#287) |
+
+An applet that just graded someone says so here, and the server — not the
+applet — decides what that means for the engine. The block is written to
+`activity_outcome` (one row per block; see its migration for the grain), and a
+signal is **derived** from it by `study_domain::signal_for_block`, beside the
+calibration numbers: a completed block scored below `SCORE_TARGET` (0.7) is
+`ScoredBelowTarget`, `scored-below-target`'s first real producer. Everything
+else derives nothing — finishing is `SessionCompleted`'s to credit, and an
+abandoned block is already `SessionAbandoned`, which counting twice would drain
+momentum twice.
+
+Replays are safe: `(sessionId, blockIndex)` is the key, only the first report
+of a block writes a row, and only that one folds a signal. An identical retry
+answers `replayed: true`; a contradictory one is a `409`. Invalid input — a
+block index outside the session, the wrong activity for that block, more
+elapsed time than the whole session, a score outside `[0, 1]` or on a block
+that did not complete — is a `422` naming the field, never clamped. Another
+subject's session is a `404`.
+
+`score` is optional and `null` means *not assessed*, which is not the same as
+scoring zero. Send it only for an assessment of the block as a whole — a
+LeetType round's single selection is not one (#329): it would make a wrong tap
+raise a notification.
+
 ### Presence
 
 | Method | Path | Purpose |

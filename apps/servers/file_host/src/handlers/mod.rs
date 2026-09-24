@@ -1,5 +1,6 @@
 pub mod db;
 pub mod health;
+pub mod outcomes;
 pub mod pipeline;
 pub mod presence;
 pub mod push;

@@ -16,6 +16,7 @@ use file_host::routes::{
 	db::{activities, mood_events, sessions, tabs},
 	health::get_health,
 	metrics::get_metrics,
+	outcomes::outcomes,
 	presence::presence,
 	push::push,
 	readiness::get_readiness,
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
 		.merge(push(&config))
 		.merge(presence(&config))
 		.merge(signals(&config))
+		.merge(outcomes(&config))
 		.merge(post_now_playing())
 		.merge(post_utterance());
 
