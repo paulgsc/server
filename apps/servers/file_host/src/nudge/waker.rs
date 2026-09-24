@@ -318,6 +318,15 @@ async fn fan_out_publications(db: &SqlitePool, deadline: tokio::time::Instant) -
 	};
 
 	'publications: for publication in pending {
+		// Before each publication and again after its audience read, not only
+		// per recipient: an empty or failed batch never enters the recipient
+		// loop, and would otherwise run on past the deadline — and mark itself
+		// complete — (a real `chatgpt-codex-connector` finding on #362). A
+		// failed read `continue`s into this same check.
+		if tokio::time::Instant::now() >= deadline {
+			announced.deadline_exceeded = true;
+			break;
+		}
 		#[allow(clippy::cast_possible_wrap)] // bounded by ANNOUNCE_PER_PASS
 		let budget = ANNOUNCE_PER_PASS - announced.applied as i64;
 		if budget <= 0 {
@@ -330,6 +339,10 @@ async fn fan_out_publications(db: &SqlitePool, deadline: tokio::time::Instant) -
 				continue;
 			}
 		};
+		if tokio::time::Instant::now() >= deadline {
+			announced.deadline_exceeded = true;
+			break;
+		}
 		#[allow(clippy::cast_possible_wrap)] // at most `budget`
 		let last_batch = (audience.len() as i64) < budget;
 
@@ -3697,6 +3710,32 @@ mod tests {
 		assert_eq!(announced.applied, 1, "{announced:?}");
 		let reached: Vec<String> = sqlx::query_scalar!("SELECT subject_id FROM curriculum_delivery").fetch_all(&pool).await.unwrap();
 		assert_eq!(reached, ["subject-a-before"]);
+	}
+
+	/// #273 (CAT5): a publication with nobody to reach is not marked complete
+	/// by a pass already past its deadline — the empty batch never enters the
+	/// per-recipient check (from a `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn an_empty_audience_past_the_deadline_is_left_pending() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let out_of_time = announce_publications(&pool, tokio::time::Instant::now()).await;
+		assert!(out_of_time.deadline_exceeded, "{out_of_time:?}");
+		assert_eq!(
+			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().len(),
+			1,
+			"no work past the deadline, completion included"
+		);
+		announce_publications(&pool, far_deadline()).await;
+		assert!(
+			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty(),
+			"the next pass with time completes it"
+		);
 	}
 
 	/// #273 (CAT5): a deadline that runs out after the last recipient — here,
