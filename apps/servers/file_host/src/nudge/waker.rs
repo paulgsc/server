@@ -206,12 +206,21 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	let now = Utc::now();
 	// New material first, so this pass's `due` already reads the epoch it
 	// moved to: one append per publication, whatever the number of subjects.
-	let newest = newest_publication(db, now).await;
+	let newest = newest_publication(db, now, deadline).await;
+	let mut report = PassReport::default();
+	// Detection is storage work before the first subject; a pass it ran out
+	// of time starts nothing more (a real `chatgpt-codex-connector` finding on
+	// #362). Nothing was read, so nothing is deferred: the next pass reads it.
+	if tokio::time::Instant::now() >= deadline {
+		warn!(deadline_ms = nudge.pass_deadline.as_millis(), "waker pass reached its deadline before reading due subjects");
+		report.deadline_exceeded = true;
+		crate::metrics::waker::record_deadline_exceeded();
+		return Ok(report);
+	}
 	let epoch = newest.as_ref().map_or(0, |publication| publication.id);
 	let due = engagement.due(&now.to_rfc3339(), epoch, BATCH).await?;
 	crate::metrics::waker::record_due(due.len());
 
-	let mut report = PassReport::default();
 	debug!(count = due.len(), epoch, "subjects the arithmetic marked eligible, or behind the curriculum epoch");
 
 	for (reached, gate) in due.iter().enumerate() {
@@ -292,13 +301,18 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 ///
 /// Failures are logged and read as "nothing new", never propagated: a pass
 /// that cannot read the log still serves the subjects the arithmetic marked
-/// due, and the new material waits for a pass that can.
-async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>) -> Option<Publication> {
+/// due, and the new material waits for a pass that can. A detection that runs
+/// the pass out of time does not start the epoch read; `run_once` then ends
+/// the pass.
+async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio::time::Instant) -> Option<Publication> {
 	let publications = PublicationRepository::new(db.clone());
 	match publications.detect_activity_publications(&now.to_rfc3339()).await {
 		Ok(0) => {}
 		Ok(found) => info!(found, "new catalogue material detected"),
 		Err(err) => error!(error = %err, "could not detect catalogue publications"),
+	}
+	if tokio::time::Instant::now() >= deadline {
+		return None;
 	}
 	match publications.newest().await {
 		Ok(newest) => newest,
@@ -3608,6 +3622,38 @@ mod tests {
 		assert_eq!(report.considered, 1, "eligible after the drain, so considered now: {report:?}");
 	}
 
+	/// #273 (CAT5): detection is storage work before the first subject; a pass
+	/// already out of time after it reads nothing more — no epoch, no `due` —
+	/// and the next pass with time catches everyone up (from a
+	/// `chatgpt-codex-connector` finding on #362).
+	#[tokio::test]
+	async fn a_pass_out_of_time_after_detection_starts_no_more_queries() {
+		let pool = migrated_pool().await;
+		first_contact(&pool, "subject-a").await.unwrap();
+		// Already due by time, so a `due` read would return them.
+		let now = Utc::now();
+		let full: Vec<(u16, f64)> = vec![(1, 100.0), (2, 100.0), (3, 100.0), (4, 100.0)];
+		EngagementRepository::new(pool.clone())
+			.save("subject-a", &full, &now.to_rfc3339(), &(now - Duration::days(1)).to_rfc3339())
+			.await
+			.unwrap();
+		publish(&pool, "new-thing", 1).await;
+
+		let out_of_time = NudgeContext {
+			pass_deadline: std::time::Duration::ZERO,
+			..nudge_context()
+		};
+		let report = run_once(&pool, &out_of_time).await.unwrap();
+		assert!(report.deadline_exceeded, "{report:?}");
+		assert_eq!(
+			(report.caught_up, report.considered, report.deferred),
+			(0, 0, 0),
+			"`due` never ran, so there was nothing to reach or defer: {report:?}"
+		);
+
+		assert_eq!(run_once(&pool, &nudge_context()).await.unwrap().caught_up, 1, "the next pass with time");
+	}
+
 	/// #273 (CAT5), end to end through the engine: a subject whose freshness is
 	/// the thinnest margin, with a session prepared, is told about new material
 	/// once a publication drains it — `StudyAction::NewMaterial`, on
@@ -3634,7 +3680,7 @@ mod tests {
 			.unwrap();
 
 		publish(&pool, "new-thing", 1).await;
-		let newest = newest_publication(&pool, Utc::now()).await.unwrap();
+		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
 		assert!(catch_up(&pool, subject_id, &newest).await.unwrap().is_some(), "known before the publication, so behind it");
 
 		let stored = EngagementRepository::new(pool.clone()).charge(subject_id).await.unwrap();
