@@ -667,18 +667,22 @@ impl RankingInputs {
 
 /// This subject's ranking inputs, behind the #289 flag.
 ///
-/// A failed read falls back to the cold-start input rather than failing the
-/// proposal: ranking without history is exactly what this path did before the
-/// flag existed, and a person still gets a real session.
-async fn ranking_inputs(db: &SqlitePool, nudge: &NudgeContext, subject_id: &str) -> RankingInputs {
+/// With the flag on, a stats read that fails — a storage error, or a subject
+/// whose outcomes span more activities than `STATS_CEILING` — is `None`, and
+/// the caller composes nothing rather than falling back to the cold-start
+/// input: ranking a subject *with* history as though they had none would
+/// persist a proposal that looks informed and is not (a real
+/// `chatgpt-codex-connector` finding on #361). With the flag off, the
+/// cold-start input is the policy, not a fallback.
+async fn ranking_inputs(db: &SqlitePool, nudge: &NudgeContext, subject_id: &str) -> Option<RankingInputs> {
 	if !nudge.recommender_uses_outcomes {
-		return RankingInputs::default();
+		return Some(RankingInputs::default());
 	}
 	match OutcomeRepository::new(db.clone()).stats(subject_id).await {
-		Ok(stats) => RankingInputs::from_stats(&stats),
+		Ok(stats) => Some(RankingInputs::from_stats(&stats)),
 		Err(err) => {
-			error!(subject = %subject_id, error = %err, "could not read outcome stats; ranking this proposal as though nothing had been played");
-			RankingInputs::default()
+			error!(subject = %subject_id, error = %err, "could not read outcome stats; composing nothing rather than ranking this subject as though nothing had been played");
+			None
 		}
 	}
 }
@@ -789,7 +793,15 @@ async fn propose_a_session(db: &SqlitePool, nudge: &NudgeContext, sessions: &Ses
 		}
 	};
 
-	let inputs = ranking_inputs(db, nudge, subject_id).await;
+	let Some(inputs) = ranking_inputs(db, nudge, subject_id).await else {
+		// Per-subject, like a failed session write below: the gate is pushed
+		// out an hour rather than left where it is, since an over-ceiling
+		// history will not fix itself by the next pass.
+		return Proposal::Unavailable {
+			label: "storage_error",
+			retry_in: Some(chrono::Duration::hours(1)),
+		};
+	};
 	let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
 	if provisioned.activities.is_empty() {
 		// A real Codex review finding on server#322 (P2): every one of
@@ -981,7 +993,11 @@ async fn refresh_stale_proposal(db: &SqlitePool, nudge: &NudgeContext, sessions:
 			return;
 		}
 	};
-	let inputs = ranking_inputs(db, nudge, subject_id).await;
+	let Some(inputs) = ranking_inputs(db, nudge, subject_id).await else {
+		// The existing proposal is a real, playable session; leave it rather
+		// than replace it with one ranked on no history.
+		return;
+	};
 	let refreshed = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
 	if refreshed.activities.is_empty() {
 		// Same trap #322 (P2) named for the original provisioning path: a
@@ -3292,15 +3308,27 @@ mod tests {
 			..nudge_context()
 		};
 
-		let with_history_off = ranking_inputs(&pool, &off, "subject-with-history").await;
+		let with_history_off = ranking_inputs(&pool, &off, "subject-with-history").await.unwrap();
 		assert!(with_history_off.history.is_empty(), "flag off: outcomes are not read");
-		let with_history_on = ranking_inputs(&pool, &on, "subject-with-history").await;
+		let with_history_on = ranking_inputs(&pool, &on, "subject-with-history").await.unwrap();
 		assert_eq!(with_history_on.history.len(), 1, "flag on: they are");
 
 		let catalogue = ActivityRepository::new(pool.clone()).list().await.unwrap();
 		let now = t0();
-		let fresh_off = materialize_provisioned_session("a".to_owned(), "subject-fresh", &catalogue, &ranking_inputs(&pool, &off, "subject-fresh").await, now);
-		let fresh_on = materialize_provisioned_session("a".to_owned(), "subject-fresh", &catalogue, &ranking_inputs(&pool, &on, "subject-fresh").await, now);
+		let fresh_off = materialize_provisioned_session(
+			"a".to_owned(),
+			"subject-fresh",
+			&catalogue,
+			&ranking_inputs(&pool, &off, "subject-fresh").await.unwrap(),
+			now,
+		);
+		let fresh_on = materialize_provisioned_session(
+			"a".to_owned(),
+			"subject-fresh",
+			&catalogue,
+			&ranking_inputs(&pool, &on, "subject-fresh").await.unwrap(),
+			now,
+		);
 		assert_eq!(fresh_off.activities, fresh_on.activities, "the zero-data path is unchanged by the flag");
 		assert_eq!(fresh_off.name, fresh_on.name);
 
@@ -3309,10 +3337,30 @@ mod tests {
 			"a".to_owned(),
 			"subject-with-history",
 			&catalogue,
-			&ranking_inputs(&pool, &on, "subject-with-history").await,
+			&ranking_inputs(&pool, &on, "subject-with-history").await.unwrap(),
 			now,
 		);
 		assert_eq!(first.activities, again.activities, "determinism survives the flag");
+
+		// A subject whose history cannot be read in full is not ranked as
+		// though they had none (from a `chatgpt-codex-connector` finding on
+		// #361): over the stats ceiling, there are no inputs at all.
+		for i in 0..=outcome_repo::STATS_CEILING {
+			let mut activity = String::from("bulk-");
+			activity.push_str(&i.to_string());
+			let mut session = String::from("session-bulk-");
+			session.push_str(&i.to_string());
+			sqlx::query!(
+				"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome, score) VALUES ('subject-sprawling', ?, ?, 0, '2026-09-20T10:00:00+00:00', '2026-09-20T10:05:00+00:00', 1, 1, 'completed', NULL)",
+				session,
+				activity
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		assert!(ranking_inputs(&pool, &on, "subject-sprawling").await.is_none(), "flag on: refused, not cold-started");
+		assert!(ranking_inputs(&pool, &off, "subject-sprawling").await.is_some(), "flag off: stats are never read");
 	}
 
 	/// A signal folded in while the waker was deciding is not overwritten by
