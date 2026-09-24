@@ -44,16 +44,16 @@ pub struct Manifest {
 /// not an error — and a corpus over [`MANIFEST_CEILING`] is refused rather
 /// than silently truncated.
 pub(crate) async fn manifest(db: &SqlitePool) -> Result<Manifest, FileHostError> {
-	let lessons = CurriculumRepository::new(db.clone());
-	if CurriculumRepository::count(&mut *db.acquire().await?).await? > MANIFEST_CEILING {
+	// One read of one past the ceiling, not a count and then a listing: two
+	// reads can see two snapshots, and an import committing between them would
+	// turn the refusal into a silently truncated manifest (a real
+	// `chatgpt-codex-connector` finding on #366).
+	let rows = CurriculumRepository::new(db.clone()).entries(MANIFEST_CEILING + 1).await?;
+	#[allow(clippy::cast_possible_wrap)] // at most MANIFEST_CEILING + 1
+	if rows.len() as i64 > MANIFEST_CEILING {
 		return Err(FileHostError::MaxRecordLimitExceeded);
 	}
-	let topiks: Vec<ManifestEntry> = lessons
-		.entries(MANIFEST_CEILING)
-		.await?
-		.iter()
-		.map(curriculum_repo::CurriculumEntry::manifest_entry)
-		.collect();
+	let topiks: Vec<ManifestEntry> = rows.iter().map(curriculum_repo::CurriculumEntry::manifest_entry).collect();
 	// Disallowed for tracing; this is the hashed listing itself.
 	#[allow(clippy::disallowed_methods)]
 	let listing = serde_json::to_vec(&topiks)?;
@@ -81,8 +81,19 @@ pub async fn get_manifest(State(state): State<AppState>, headers: HeaderMap) -> 
 }
 
 /// One lesson's stored bytes, verbatim, and its `ETag` — or `NotFound`.
+///
+/// `key` may carry the `.json` the client's file names have (`beginner.json`
+/// for the lesson `beginner`): the exact key is tried first, so a key that
+/// genuinely ends in `.json` still resolves to itself.
 pub(crate) async fn lesson(db: &SqlitePool, key: &str) -> Result<(String, String), FileHostError> {
-	CurriculumRepository::new(db.clone()).body(key).await?.ok_or(FileHostError::NotFound)
+	let lessons = CurriculumRepository::new(db.clone());
+	if let Some(found) = lessons.body(key).await? {
+		return Ok(found);
+	}
+	match key.strip_suffix(".json") {
+		Some(bare) => lessons.body(bare).await?.ok_or(FileHostError::NotFound),
+		None => Err(FileHostError::NotFound),
+	}
 }
 
 /// `GET /curriculum/:key`
@@ -177,6 +188,12 @@ mod tests {
 
 		let (hash, body) = lesson(&pool, "beginner").await.unwrap();
 		assert_eq!(body, "{ \"batches\": [] }", "verbatim, never re-serialised");
+		assert_eq!(
+			lesson(&pool, "beginner.json").await.unwrap(),
+			(hash.clone(), body.clone()),
+			"the client's `<key>.json` file name resolves to the same lesson"
+		);
+		assert!(matches!(lesson(&pool, "missing.json").await, Err(FileHostError::NotFound)));
 		assert_eq!(hash, curriculum_repo::content_hash(body.as_bytes()));
 
 		let mut renamed = entry("beginner");

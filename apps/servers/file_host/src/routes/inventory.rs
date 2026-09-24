@@ -309,6 +309,12 @@ pub const ROUTES: &[RouteDescriptor] = &[
 	},
 	RouteDescriptor {
 		method: "GET",
+		path: "/curriculum/manifest.json",
+		versioned: true,
+		module: "curriculum",
+	},
+	RouteDescriptor {
+		method: "GET",
 		path: "/curriculum/:key",
 		versioned: true,
 		module: "curriculum",
