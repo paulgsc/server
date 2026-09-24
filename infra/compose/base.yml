@@ -2,6 +2,15 @@ networks:
   monitoring-network:
     name: shared-dev-network
     driver: bridge
+  # docker-socket-proxy (infra/compose/loki.yml) and promtail only — every
+  # other service in this stack joins monitoring-network, so putting the
+  # proxy there too would let any of them (redis, ollama, orchestrator,
+  # the exporters, ...) reach a Docker API surface if it were ever
+  # compromised. `internal: true` gives it no outbound route at all, which
+  # neither side of this pair needs anyway.
+  docker-proxy-network:
+    driver: bridge
+    internal: true
 volumes:
   caddy_data:
     driver: local
@@ -20,4 +29,8 @@ volumes:
   nats_jetstream:
     driver: local
   pipeline_prompts_dump:
+    driver: local
+  loki_data:
+    driver: local
+  promtail_positions:
     driver: local

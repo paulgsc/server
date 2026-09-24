@@ -131,6 +131,7 @@ local dashboard = {
     // `up{job="file_host"}` query — no need for both.
     panels.operationDuration { gridPos: utils.gridPos(0, 76, 12, 8) },
     panels.tracingErrors { gridPos: utils.gridPos(12, 76, 12, 8) },
+    panels.fileHostLogs { gridPos: utils.gridPos(0, 84, 24, 10) },
   ]),
   refresh: '5s',
   schemaVersion: 38,

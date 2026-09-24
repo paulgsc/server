@@ -26,10 +26,14 @@ conditions `dashboard.jsonnet`'s HEALTH row renders a verdict on.
 | `processor.jsonnet` ("WHO DUNNIT") | If the host hangs, which process/container did it? | `namedprocess_*` (process-exporter), `container_*` (cadvisor), `node_*`, `up`, `ALERTS` | #212 (G2/G3) |
 | `cache-dashboard.jsonnet` | Is `some-cache`'s hit rate healthy, and is the dedup guard absorbing thundering herds? | `cache_hits_total`, `cache_misses_total`, `cache_fetch_duration_seconds`, `cache_dedup_waiters_total` (some-cache, `metrics` facade, namespace-labeled) | #212 (G2/G3/G4 — rewritten from a 14-fake-name version) |
 
-Every dashboard above binds to the one provisioned Prometheus datasource —
+Every metric panel above binds to the provisioned Prometheus datasource —
 `infra/grafana/provisioning/datasources/datasources.yml` pins `uid:
 prometheus`, and `dashboards/lib/config.libsonnet` is the single jsonnet-side
-definition every panel takes it from (#218).
+definition every panel takes it from (#218). The same file also pins `uid:
+loki` for the provisioned Loki datasource — logs, not metrics; see
+`dashboard.jsonnet`'s `fileHostLogs` panel and `infra/loki/` for the
+ingestion side (promtail ships every container's stdout into it via the
+Docker API).
 
 ## Parked
 

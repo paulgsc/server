@@ -1,13 +1,21 @@
 // config.libsonnet
 {
-  // The one provisioned datasource (infra/grafana/provisioning/datasources/datasources.yml
-  // pins uid: prometheus). Every panel in every surviving dashboard takes
-  // its datasource reference from here — see #218. One datasource does not
-  // need a template-variable picker, so this is the uid directly rather
-  // than an indirection through `$datasource`.
+  // The provisioned metrics datasource (infra/grafana/provisioning/datasources/datasources.yml
+  // pins uid: prometheus). Every metric panel in every surviving dashboard
+  // takes its datasource reference from here — see #218. No
+  // template-variable picker needed for a single metrics datasource, so
+  // this is the uid directly rather than an indirection through
+  // `$datasource`.
   prometheusDataSource: {
     type: 'prometheus',
     uid: 'prometheus',
+  },
+
+  // The provisioned logs datasource, same pinned-uid reasoning as
+  // prometheusDataSource above — see datasources.yml's own comment on it.
+  lokiDataSource: {
+    type: 'loki',
+    uid: 'loki',
   },
 
   // Blackbox job names (make them configurable!)

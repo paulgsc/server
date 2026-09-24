@@ -84,6 +84,23 @@ services:
     scrape:
       job: cadvisor
       target: 'cadvisor:8080'
+  - service: loki
+    container_name: loki
+    hoist_set: false
+    scrape:
+      job: loki
+      target: 'loki:3100'
+  - service: promtail
+    container_name: promtail
+    hoist_set: false
+    scrape:
+      job: promtail
+      target: 'promtail:9080'
+  - service: docker-socket-proxy
+    container_name: docker-socket-proxy
+    hoist_set: false
+    scrape:
+      reason: a narrow Docker API proxy for promtail's own container discovery/log-reading — no metrics endpoint of its own to scrape
   - service: blackbox-exporter
     container_name: blackbox_exporter
     hoist_set: false
