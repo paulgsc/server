@@ -232,6 +232,24 @@ mod tests {
 		);
 	}
 
+	/// The epoch lookups read the partial index on non-baseline rows, not the
+	/// baseline rows a corpus's first import appends after them (from a
+	/// `chatgpt-codex-connector` finding on #365).
+	#[tokio::test]
+	async fn the_epoch_lookups_read_the_partial_index() {
+		let pool = pool().await;
+		for query in [
+			"EXPLAIN QUERY PLAN SELECT id, source, curriculum_id, version, detected_at FROM curriculum_publication WHERE baseline = 0 ORDER BY id DESC LIMIT 1",
+			"EXPLAIN QUERY PLAN SELECT COALESCE(MAX(id), 0) FROM curriculum_publication WHERE baseline = 0",
+		] {
+			let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(query).fetch_all(&pool).await.unwrap();
+			assert!(
+				plan.iter().any(|(_, _, _, detail)| detail.contains("idx_curriculum_publication_epoch")),
+				"{query}: {plan:?}"
+			);
+		}
+	}
+
 	#[tokio::test]
 	async fn the_migration_round_trips() {
 		let pool = pool().await;

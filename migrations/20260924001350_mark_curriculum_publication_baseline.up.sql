@@ -14,3 +14,11 @@
 -- stamped with their maximum when that migration ran, so they are the epoch
 -- everyone is already at.
 ALTER TABLE curriculum_publication ADD COLUMN baseline INTEGER NOT NULL DEFAULT 0 CHECK (baseline IN (0, 1));
+
+-- The epoch lookups -- `newest()` on every waker pass, and the stamp on every
+-- new gate row -- read the newest `baseline = 0` row. A corpus's first import
+-- appends up to `MANIFEST_CEILING` baseline rows *after* the last real
+-- publication; without this they would be walked on every pass. With it, the
+-- lookup is one seek from the top of this index (a real
+-- `chatgpt-codex-connector` finding on #365).
+CREATE INDEX idx_curriculum_publication_epoch ON curriculum_publication(id) WHERE baseline = 0;
