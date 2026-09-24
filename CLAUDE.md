@@ -56,7 +56,9 @@ for how it consumes the snapshot.
 Before implementing a story, and again before fixing any review finding, check the change
 against the written invariants of the subsystem it touches. For the study nudge that is
 `docs/study-nudge.md`, "Scaling invariants": O(1) work per signal, O(1) state per subject, no
-(signal × subject) table, and the waker's only query being an indexed range read. If the change
+(signal × subject) table, the waker's only query being an indexed range read, and every pass
+bounded by `BATCH` and the pass deadline alone — no mechanism-specific cap, cursor or deadline
+checks. That section is the source of truth; this list is only a pointer to it. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
 breaks it, and wait for a decision instead of building it or patching around it. Two things
 also count as drift and should be raised the same way:
