@@ -272,7 +272,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total{status=~\"5..\", route!=\"/ready\"}[5m]))",
+          "expr": "sum(rate(http_requests_total{status=~\"5..\", route!=\"/ready\"}[5m])) or (0 * sum(rate(http_requests_total[5m])))",
           "instant": true,
           "refId": "A"
         }

@@ -68,10 +68,14 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 
 	// An unreadable database can't have its migrations read either, and
 	// "schema: disk I/O error" next to "sqlite: disk I/O error" points at
-	// `sqlx migrate run` for what is really a missing volume. Still unhealthy
-	// (nothing verified it), but the message says whose failure it is; DEPS
-	// hides the schema tile while sqlite's is showing for the same reason.
+	// `sqlx migrate run` for what is really a missing volume. Unhealthy even
+	// if the schema read itself succeeded — the two checks can land on
+	// different pooled connections, and one database that answers one query
+	// and fails the next hasn't verified anything — but the message says
+	// whose failure it is; DEPS hides the schema tile while sqlite's is
+	// showing for the same reason.
 	if !sqlite.healthy {
+		schema.healthy = false;
 		schema.error = Some("not checked: sqlite is unreachable".to_string());
 	}
 

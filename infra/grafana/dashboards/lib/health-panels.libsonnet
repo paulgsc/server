@@ -80,13 +80,17 @@ local docLink(anchor) = [
   // the 5m rate window is what makes "sustained" mean something rather than
   // reddening on a single blip. `/ready` is excluded: its 503 *is* DEPS's
   // finding, answered to the container healthcheck every 30s, and counting
-  // it here turned one down dependency into two red panels.
+  // it here turned one down dependency into two red panels. The `or 0 *`
+  // fallback reads 0 (green) when no other route has ever produced a 5xx —
+  // `sum()` of an empty selector is no data, not zero, which would trade
+  // the duplicate red for grey — gated on `http_requests_total` existing
+  // at all, so a genuinely missing family still reads no-data for SIGNAL.
   errors: {
     title: 'ERRORS',
     type: 'stat',
     id: 902,
     links: docLink('rejecting'),
-    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5..", route!="/ready"}[5m]))', instant: true, refId: 'A' }],
+    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5..", route!="/ready"}[5m])) or (0 * sum(rate(http_requests_total[5m])))', instant: true, refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 'reqps',
