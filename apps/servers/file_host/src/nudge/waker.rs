@@ -147,6 +147,10 @@ pub struct PassReport {
 	/// `NudgeContext::pass_deadline` ran out first. Untouched: their gate rows
 	/// are exactly as `due` found them, so the next pass picks them up.
 	pub deferred: usize,
+	/// Whether the pass ran out of time — before a subject, or inside one's
+	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
+	/// counts.
+	pub deadline_exceeded: bool,
 }
 
 /// One pass. Public so a debug endpoint can force it without waiting.
@@ -208,7 +212,6 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 				deadline_ms = nudge.pass_deadline.as_millis(),
 				"waker pass reached its deadline; the remaining due subjects are left for the next pass"
 			);
-			crate::metrics::waker::record_deadline_exceeded();
 			break;
 		}
 
@@ -221,6 +224,15 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 			}
 		}
+	}
+
+	// After the loop, not only at the pre-subject check above: a deadline
+	// that runs out inside the last (or only) subject's deliveries truncates
+	// the pass just as much, and would otherwise go uncounted — a real
+	// `chatgpt-codex-connector` finding on #357.
+	if report.deferred > 0 || tokio::time::Instant::now() >= deadline {
+		report.deadline_exceeded = true;
+		crate::metrics::waker::record_deadline_exceeded();
 	}
 
 	Ok(report)
@@ -2679,6 +2691,7 @@ mod tests {
 				"every due subject is either considered or deferred: {report:?}"
 			);
 			assert_eq!(report.intervened, 0, "nothing was accepted, so nothing counts as an intervention: {report:?}");
+			assert!(report.deadline_exceeded, "{report:?}");
 			assert!(
 				elapsed < std::time::Duration::from_secs(5),
 				"a pass over a provider that never answers must still end — it took {elapsed:?}"
@@ -2829,6 +2842,7 @@ mod tests {
 				"the pass must end near its deadline, not after 5 × 10s — it took {elapsed:?}"
 			);
 			assert_eq!(report.considered, 1, "{report:?}");
+			assert!(report.deadline_exceeded, "a deadline reached inside the only subject still counts: {report:?}");
 			assert_eq!(connections.load(Ordering::SeqCst), 1, "only the first device was tried before the pass ran out");
 			assert_eq!(
 				intervention_rows(&pool, subject_id).await,
