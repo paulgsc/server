@@ -4,7 +4,7 @@
 //! new signal class is a product decision, a half-life is an operational one
 //! discovered by watching real people.
 
-use crate::signal::{EngagementClass, StudyAction};
+use crate::signal::{EngagementClass, StudyAction, StudySignal};
 use crate::StudyV1;
 use chrono::Duration;
 use intervention::{Calibration, Deficit, Selector};
@@ -119,6 +119,48 @@ impl Selector<StudyV1> for StudySelector {
 			None if dominant == EngagementClass::Presence => Some(StudyAction::GetStarted),
 			None => None,
 		}
+	}
+}
+
+/// The score below which a completed, assessed block counts as *not landing*
+/// (#287, TEL2) — the threshold `POST /outcomes` derives
+/// [`StudySignal::ScoredBelowTarget`] against.
+///
+/// A constant because a constant is the honest starting point: there is no
+/// distribution of real scores yet to set per-activity targets from, and a
+/// per-activity table invented today would be a table of guesses with more
+/// places to be wrong. 0.7 is the conventional "you mostly have this" line —
+/// below it, review is a better next step than more new material, which is
+/// exactly what draining `Mastery` asks the selector for. The signal's own
+/// delta already scales with how far below the score was
+/// (`-20 × (1 − score)`), so a 0.69 barely moves the battery and a 0.1 moves it
+/// a lot; this line only decides whether the signal exists at all.
+pub const SCORE_TARGET: f64 = 0.7;
+
+/// What one activity block's outcome contributes to the engine, beyond what
+/// the session-level signals already say (#287, TEL2).
+///
+/// A policy, and sited here beside the numbers it is calibrated against:
+///
+/// | Outcome | Signal |
+/// |---|---|
+/// | completed, `score < SCORE_TARGET` | `ScoredBelowTarget` |
+/// | completed, `score >= SCORE_TARGET` | nothing — `SessionCompleted` already credits finishing |
+/// | completed, no score | nothing — not assessed is not assessed badly |
+/// | abandoned | nothing — `SessionAbandoned` is emitted at session level, and counting a bail twice would drain momentum twice |
+/// | skipped | nothing — a block passed over was never attempted, so there is no performance to report and no attendance beyond what the session already says |
+///
+/// `completed` is the only argument that is not data about the block: it is
+/// whether the block ran to its end. A score on anything else is refused
+/// upstream (`POST /outcomes`) rather than ignored here.
+#[must_use]
+pub fn signal_for_block(activity_id: &str, completed: bool, score: Option<f64>) -> Option<StudySignal> {
+	match score {
+		Some(score) if completed && score < SCORE_TARGET => Some(StudySignal::ScoredBelowTarget {
+			activity_id: activity_id.to_owned(),
+			score,
+		}),
+		_ => None,
 	}
 }
 
@@ -302,5 +344,48 @@ mod tests {
 
 		let action = empty.select(&charge.deficits::<StudyCalibration>(later)).unwrap();
 		assert!(matches!(action, StudyAction::GetStarted), "got {action:?}");
+	}
+
+	/// #287 (TEL2): the derivation table, row by row.
+	#[test]
+	fn only_a_completed_block_scored_below_target_produces_a_signal() {
+		use super::{signal_for_block, SCORE_TARGET};
+
+		assert_eq!(
+			signal_for_block("honeycomb", true, Some(0.4)),
+			Some(StudySignal::ScoredBelowTarget {
+				activity_id: "honeycomb".to_owned(),
+				score: 0.4
+			})
+		);
+		assert_eq!(signal_for_block("honeycomb", true, Some(SCORE_TARGET)), None, "at target is not below it");
+		assert_eq!(signal_for_block("honeycomb", true, Some(1.0)), None);
+		assert_eq!(signal_for_block("honeycomb", true, None), None, "not assessed is not assessed badly");
+		assert_eq!(
+			signal_for_block("honeycomb", false, Some(0.1)),
+			None,
+			"an abandoned or skipped block reports no performance"
+		);
+		assert_eq!(signal_for_block("honeycomb", false, None), None);
+	}
+
+	/// The signal the derivation produces drains `Mastery` and nothing else —
+	/// which is what makes the selector say *review*, not *more*.
+	#[test]
+	fn a_poor_score_drains_mastery_and_selects_review() {
+		let now = Utc.with_ymd_and_hms(2026, 9, 24, 12, 0, 0).unwrap();
+		let mut charge = Charge::<StudyV1>::full::<StudyCalibration>(now);
+		// Enough poor results that Mastery is the deepest deficit.
+		for _ in 0..8 {
+			charge.apply::<StudyCalibration>(&super::signal_for_block("honeycomb", true, Some(0.0)).unwrap(), now);
+		}
+		let deficits = charge.deficits::<StudyCalibration>(now);
+		assert_eq!(deficits.first().map(|deficit| deficit.class), Some(EngagementClass::Mastery));
+		assert_eq!(
+			selector().select(&deficits),
+			Some(StudyAction::SuggestReview {
+				session_id: "session-1".to_owned()
+			})
+		);
 	}
 }

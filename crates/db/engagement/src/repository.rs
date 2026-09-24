@@ -97,7 +97,76 @@ impl EngagementRepository {
 	/// Propagates any `sqlx` failure.
 	pub async fn save(&self, subject_id: &str, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<(), sqlx::Error> {
 		let mut tx = self.pool.begin().await?;
+		Self::write(&mut tx, subject_id, levels, as_of, eligible_at).await?;
+		tx.commit().await
+	}
 
+	/// Read a subject's charge, apply `apply` to it, and write the result —
+	/// as **one** write transaction, so two concurrent folds for the same
+	/// subject cannot both start from the same stored charge and have the
+	/// second save silently overwrite the first.
+	///
+	/// `BEGIN IMMEDIATE` takes `SQLite`'s write lock before the read rather
+	/// than upgrading to it at the first write: a deferred transaction that
+	/// has read and then tries to write after another writer committed fails
+	/// with `SQLITE_BUSY` instead of waiting, while an immediate one simply
+	/// waits its turn under `busy_timeout`. That is what serialises every
+	/// read-modify-write of a charge — `/signals`, `POST /outcomes`, and the
+	/// waker's `CurriculumUpdated` fan-out all go through here (via
+	/// `nudge::waker::observe`).
+	///
+	/// `apply` receives the stored rows (empty for a subject never seen) and
+	/// returns the levels to store, their `as_of`, the solved `eligible_at`,
+	/// and whatever the caller wants back.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure; nothing is written if any step fails.
+	pub async fn fold<T>(&self, subject_id: &str, apply: impl FnOnce(&[ChargeRow]) -> (Vec<(u16, f64)>, String, String, T)) -> Result<T, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+		let stored = sqlx::query_as!(
+			ChargeRow,
+			r#"SELECT class as "class!: i64", level as "level!: f64", as_of FROM engagement_charge WHERE subject_id = ?"#,
+			subject_id
+		)
+		.fetch_all(&mut *tx)
+		.await?;
+		let (levels, as_of, eligible_at, output) = apply(&stored);
+		Self::write(&mut tx, subject_id, &levels, &as_of, &eligible_at).await?;
+		tx.commit().await?;
+		Ok(output)
+	}
+
+	/// [`Self::save`], but only if the stored charge is still the one the
+	/// caller read — its `as_of` equals `read_as_of` (`None` for a subject that
+	/// had no rows). Returns whether it wrote.
+	///
+	/// The waker reads a subject's charge at the top of a pass and saves it
+	/// after deciding, which can be seconds later (a push delivery sits in
+	/// between). A signal folded in during that window ([`Self::fold`]) has
+	/// already written a newer charge and re-solved `eligible_at` from it; an
+	/// unconditional save would overwrite both with a verdict computed from
+	/// the stale read. Every fold stamps a fresh `as_of`, so an unchanged
+	/// `as_of` is exactly "nothing folded in since" — an optimistic version
+	/// check, done under the same `BEGIN IMMEDIATE` write lock `fold` takes
+	/// (a real `chatgpt-codex-connector` finding on #360).
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn save_if_unchanged(&self, subject_id: &str, read_as_of: Option<&str>, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<bool, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+		let current = sqlx::query_scalar!("SELECT as_of FROM engagement_charge WHERE subject_id = ? LIMIT 1", subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		if current.as_deref() != read_as_of {
+			tx.rollback().await?;
+			return Ok(false);
+		}
+		Self::write(&mut tx, subject_id, levels, as_of, eligible_at).await?;
+		tx.commit().await?;
+		Ok(true)
+	}
+
+	async fn write(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, subject_id: &str, levels: &[(u16, f64)], as_of: &str, eligible_at: &str) -> Result<(), sqlx::Error> {
 		for (class, level) in levels {
 			let class = i64::from(*class);
 			sqlx::query!(
@@ -111,7 +180,7 @@ impl EngagementRepository {
 				level,
 				as_of,
 			)
-			.execute(&mut *tx)
+			.execute(&mut **tx)
 			.await?;
 		}
 
@@ -124,10 +193,9 @@ impl EngagementRepository {
 			subject_id,
 			eligible_at,
 		)
-		.execute(&mut *tx)
+		.execute(&mut **tx)
 		.await?;
-
-		tx.commit().await
+		Ok(())
 	}
 
 	/// Give a subject nobody has yet observed a gate row, seeded full.
@@ -225,13 +293,25 @@ impl EngagementRepository {
 		.await
 	}
 
-	/// Claim a subject for one intervention, atomically.
+	/// Claim a subject for one intervention, atomically — and write the
+	/// intervention's recharged charge with it.
 	///
 	/// Returns the log id if this call won the claim, `None` if it did not. The
-	/// check and the claim are one statement so that two waker passes — or one
-	/// pass and a just-restarted process — cannot both conclude the subject is
-	/// due. `eligible_at` moves forward as part of the same write, which is
-	/// what closes the window rather than a lock.
+	/// check and the claim are one transaction so that two waker passes — or
+	/// one pass and a just-restarted process — cannot both conclude the
+	/// subject is due. `eligible_at` moves forward as part of the same write,
+	/// which is what closes the window rather than a lock.
+	///
+	/// **Version-checked against the charge the caller read** (`read_as_of`,
+	/// `None` for a subject that had no rows), under the same `BEGIN
+	/// IMMEDIATE` write lock [`Self::fold`] takes. A signal folded in after the
+	/// waker's read means the action it chose was chosen from deficits that no
+	/// longer exist: the claim is refused, nothing is sent, and the subject is
+	/// reconsidered on a later pass from the charge the signal left. The
+	/// recharge (`levels`/`as_of`) is written in the same transaction as the
+	/// claim, so no fold can land between the two and have the recharge
+	/// either overwrite it or be lost (real `chatgpt-codex-connector` findings
+	/// on #360).
 	///
 	/// Claiming happens *before* delivery. A crash in between therefore costs
 	/// the intervention rather than duplicating it, which is the right way
@@ -239,8 +319,27 @@ impl EngagementRepository {
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn claim(&self, subject_id: &str, now: &str, next_eligible_at: &str, action_kind: &str, action: &str) -> Result<Option<i64>, sqlx::Error> {
-		let mut tx = self.pool.begin().await?;
+	#[allow(clippy::too_many_arguments)] // one claim, one row of each table it writes
+	pub async fn claim(
+		&self,
+		subject_id: &str,
+		read_as_of: Option<&str>,
+		now: &str,
+		next_eligible_at: &str,
+		action_kind: &str,
+		action: &str,
+		levels: &[(u16, f64)],
+		as_of: &str,
+	) -> Result<Option<i64>, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+		let current = sqlx::query_scalar!("SELECT as_of FROM engagement_charge WHERE subject_id = ? LIMIT 1", subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		if current.as_deref() != read_as_of {
+			tx.rollback().await?;
+			return Ok(None);
+		}
 
 		let claimed = sqlx::query!(
 			r#"
@@ -279,6 +378,7 @@ impl EngagementRepository {
 		.fetch_one(&mut *tx)
 		.await?;
 
+		Self::write(&mut tx, subject_id, levels, as_of, next_eligible_at).await?;
 		tx.commit().await?;
 		Ok(Some(id.id))
 	}

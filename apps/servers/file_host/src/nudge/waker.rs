@@ -297,6 +297,9 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;
+	// The version every save below is conditional on — see
+	// `EngagementRepository::save_if_unchanged`.
+	let read_as_of = stored.first().map(|row| row.as_of.clone());
 	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 	let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
 	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
@@ -438,7 +441,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 					if let Some(retry_in) = retry_in {
 						let retry = now + retry_in;
 						let (levels, as_of) = charge.to_storage();
-						engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+						save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
 					}
 					return Ok(false);
 				}
@@ -461,14 +464,14 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Push the gate out so this subject stops being returned by `due`.
 			// Without it the waker would re-read the same row every pass.
 			let (levels, as_of) = charge.to_storage();
-			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &until.to_rfc3339()).await?;
+			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, until).await?;
 			return Ok(false);
 		}
 		Verdict::Suppressed { reason, retry_at } => {
 			info!(subject = %subject_id, reason = reason.as_str(), "warranted but not admissible");
 			crate::metrics::waker::record_verdict("suppressed", reason.as_str());
 			let (levels, as_of) = charge.to_storage();
-			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry_at.to_rfc3339()).await?;
+			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry_at).await?;
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
@@ -495,7 +498,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();
-			engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &retry.to_rfc3339()).await?;
+			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
 			return Ok(false);
 		}
 	};
@@ -506,17 +509,28 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// Disallowed for tracing; this is the stored history column.
 	#[allow(clippy::disallowed_methods)]
 	let serialized = serde_json::to_string(&action).unwrap_or_default();
+	// The recharge is written by the claim itself, version-checked against
+	// `read_as_of`: a signal folded in since this pass read the charge means
+	// `action` was chosen from deficits that no longer exist, so the claim is
+	// refused and nothing stale is sent — see `EngagementRepository::claim`.
+	let (levels, as_of) = charge.to_storage();
 	let Some(log_id) = engagement
-		.claim(subject_id, &now.to_rfc3339(), &next_eligible.to_rfc3339(), action.kind(), &serialized)
+		.claim(
+			subject_id,
+			read_as_of.as_deref(),
+			&now.to_rfc3339(),
+			&next_eligible.to_rfc3339(),
+			action.kind(),
+			&serialized,
+			&levels,
+			&as_of.to_rfc3339(),
+		)
 		.await?
 	else {
-		info!(subject = %subject_id, "another pass claimed this subject first");
+		info!(subject = %subject_id, "another pass claimed this subject first, or a signal changed their charge while this pass was deciding");
 		crate::metrics::waker::record_verdict("claim_lost", "n/a");
 		return Ok(false);
 	};
-
-	let (levels, as_of) = charge.to_storage();
-	engagement.save(subject_id, &levels, &as_of.to_rfc3339(), &next_eligible.to_rfc3339()).await?;
 
 	// #284 (RCM7): refresh only after winning the claim above, not merely on
 	// `Verdict::Intervene` — a real `chatgpt-codex-connector` finding on
@@ -563,6 +577,36 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	crate::metrics::waker::record_verdict("sent", "n/a");
 	Ok(true)
+}
+
+/// Write the waker's verdict for a subject unless a signal folded in since it
+/// read their charge (#360).
+///
+/// If one did, that signal has already written a newer charge and re-solved
+/// `eligible_at` from it, and this pass's verdict — computed from the older
+/// read — is the stale one: dropping it leaves the subject exactly where the
+/// signal put them, to be reconsidered on a later pass. The intervention path
+/// does not come through here: its recharge is written by the version-checked
+/// claim itself (`EngagementRepository::claim`), so a signal that lands first
+/// refuses the claim rather than letting a stale action be sent.
+async fn save_unless_superseded(
+	engagement: &EngagementRepository,
+	subject_id: &str,
+	read_as_of: Option<&str>,
+	levels: &[(u16, f64)],
+	as_of: DateTime<Utc>,
+	eligible_at: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+	if !engagement
+		.save_if_unchanged(subject_id, read_as_of, levels, &as_of.to_rfc3339(), &eligible_at.to_rfc3339())
+		.await?
+	{
+		// Not a verdict of its own: the caller has already recorded this
+		// subject's terminal outcome for the pass, and the breakdown counts
+		// exactly one per subject.
+		debug!(subject = %subject_id, "a signal folded in while this pass was deciding; keeping its charge and eligibility rather than this pass's");
+	}
+	Ok(())
 }
 
 /// What one attempt to compose something to point at produced — see
@@ -1057,24 +1101,32 @@ struct Delivery {
 /// # Errors
 /// Propagates any storage failure.
 pub async fn observe(db: &SqlitePool, subject_id: &str, signal: &study_domain::StudySignal) -> Result<chrono::DateTime<Utc>, sqlx::Error> {
-	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 
-	let stored = engagement.charge(subject_id).await?;
-	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-	let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
-	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
+	// One write transaction for the read, the fold, and the save — see
+	// `EngagementRepository::fold`. Two signals for the same subject arriving
+	// together (a poor score from `POST /outcomes` beside a
+	// `session-completed` from `/signals`, say) used to be able to read the
+	// same stored charge and have the second save erase the first; a real
+	// `chatgpt-codex-connector` finding on #360.
+	let eligible_at = EngagementRepository::new(db.clone())
+		.fold(subject_id, |stored| {
+			#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+			let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+			let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
 
-	// No rows means never seen, and `from_storage` starts such a subject
-	// **full** rather than empty — an empty charge is instantly eligible, so
-	// the alternative would nudge a brand-new account before it did anything.
-	let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
+			// No rows means never seen, and `from_storage` starts such a subject
+			// **full** rather than empty — an empty charge is instantly eligible, so
+			// the alternative would nudge a brand-new account before it did anything.
+			let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
 
-	charge.apply::<StudyCalibration>(signal, now);
-	let eligible_at = charge.eligible_at::<StudyCalibration>(now);
+			charge.apply::<StudyCalibration>(signal, now);
+			let eligible_at = charge.eligible_at::<StudyCalibration>(now);
 
-	let (levels, stamp) = charge.to_storage();
-	engagement.save(subject_id, &levels, &stamp.to_rfc3339(), &eligible_at.to_rfc3339()).await?;
+			let (levels, stamp) = charge.to_storage();
+			(levels, stamp.to_rfc3339(), eligible_at.to_rfc3339(), eligible_at)
+		})
+		.await?;
 
 	debug!(subject = %subject_id, signal = signal.kind(), eligible_at = %eligible_at, "signal folded in");
 	Ok(eligible_at)
@@ -3044,6 +3096,172 @@ mod tests {
 			0,
 			"and after that there is nothing past the horizon"
 		);
+	}
+
+	/// Concurrent signals for one subject all land (from a
+	/// `chatgpt-codex-connector` finding on #360): `observe` reads, folds, and
+	/// saves in one `BEGIN IMMEDIATE` transaction, so no fold can start from a
+	/// charge another is about to overwrite. Before, three concurrent poor
+	/// scores could each read a full charge and leave it drained by one.
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	async fn concurrent_signals_for_one_subject_are_all_folded_in() {
+		use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+		use std::str::FromStr as _;
+
+		const SIGNALS: u32 = 6;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let dir = tempfile::tempdir().unwrap();
+		let url = "sqlite://".to_owned() + &dir.path().join("fold.db").to_string_lossy();
+		let options = SqliteConnectOptions::from_str(&url)
+			.unwrap()
+			.create_if_missing(true)
+			.journal_mode(SqliteJournalMode::Wal)
+			.busy_timeout(std::time::Duration::from_secs(10));
+		let pool = SqlitePoolOptions::new().max_connections(SIGNALS).connect_with(options).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let signal = StudySignal::ScoredBelowTarget {
+			activity_id: "honeycomb".to_owned(),
+			score: 0.0,
+		};
+		let tasks: Vec<_> = (0..SIGNALS)
+			.map(|_| {
+				let pool = pool.clone();
+				let signal = signal.clone();
+				tokio::spawn(async move { observe(&pool, "subject-busy", &signal).await.unwrap() })
+			})
+			.collect();
+		for task in tasks {
+			task.await.unwrap();
+		}
+
+		let mastery = EngagementRepository::new(pool.clone())
+			.charge("subject-busy")
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|row| row.class == 3)
+			.unwrap()
+			.level;
+		// Full (100) less 20 per poor score, six times: 0 if every fold
+		// landed (decay over the test's milliseconds is negligible); 80 if
+		// they had all read the same starting charge.
+		assert!(mastery < 5.0, "every one of {SIGNALS} concurrent folds must land: mastery is {mastery}");
+	}
+
+	/// A signal folded in while the waker was deciding is not overwritten by
+	/// the waker's stale verdict (from a `chatgpt-codex-connector` finding on
+	/// #360): the waker reads, a signal folds and re-solves, and the waker's
+	/// later save — computed from the older read — is dropped.
+	#[tokio::test]
+	async fn a_waker_save_never_overwrites_a_signal_folded_in_after_its_read() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		let engagement = EngagementRepository::new(pool.clone());
+		let subject_id = "subject-racing";
+		first_contact(&pool, subject_id).await.unwrap();
+
+		// The waker's read, at the top of `consider`.
+		let stored = engagement.charge(subject_id).await.unwrap();
+		let read_as_of = stored.first().map(|row| row.as_of.clone());
+
+		// A poor score lands while the waker is still deciding.
+		let signal_eligible_at = observe(
+			&pool,
+			subject_id,
+			&StudySignal::ScoredBelowTarget {
+				activity_id: "honeycomb".to_owned(),
+				score: 0.0,
+			},
+		)
+		.await
+		.unwrap();
+
+		// The waker's verdict, from its stale read: "full, wait a year".
+		let stale = Charge::<StudyV1>::full::<StudyCalibration>(Utc::now());
+		let (levels, as_of) = stale.to_storage();
+		save_unless_superseded(&engagement, subject_id, read_as_of.as_deref(), &levels, as_of, Utc::now() + Duration::days(365))
+			.await
+			.unwrap();
+
+		let mastery = engagement.charge(subject_id).await.unwrap().into_iter().find(|row| row.class == 3).unwrap().level;
+		assert!(mastery < 90.0, "the poor score's drain survives: mastery is {mastery}");
+		let gate = engagement.gate(subject_id).await.unwrap().unwrap();
+		assert_eq!(gate.eligible_at, signal_eligible_at.to_rfc3339(), "and so does the eligibility it re-solved");
+
+		// With nothing folded in since its read, the waker's save still lands.
+		let fresh = engagement.charge(subject_id).await.unwrap().first().map(|row| row.as_of.clone());
+		let later = Utc::now() + Duration::days(2);
+		save_unless_superseded(&engagement, subject_id, fresh.as_deref(), &levels, as_of, later).await.unwrap();
+		assert_eq!(engagement.gate(subject_id).await.unwrap().unwrap().eligible_at, later.to_rfc3339());
+	}
+
+	/// A signal folded in after the waker read the charge refuses the waker's
+	/// claim — nothing chosen from the stale deficits is sent — and the claim
+	/// writes the intervention's recharge in the same transaction when it does
+	/// win (from a `chatgpt-codex-connector` finding on #360).
+	#[tokio::test]
+	async fn a_claim_is_refused_when_a_signal_changed_the_charge_since_the_read() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		let engagement = EngagementRepository::new(pool.clone());
+		let subject_id = "subject-claim-race";
+		first_contact(&pool, subject_id).await.unwrap();
+		let past = (Utc::now() - Duration::hours(1)).to_rfc3339();
+		let stored = engagement.charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+		engagement.save(subject_id, &levels, &stored[0].as_of, &past).await.unwrap();
+
+		let read_as_of = engagement.charge(subject_id).await.unwrap().first().map(|row| row.as_of.clone());
+		observe(
+			&pool,
+			subject_id,
+			&StudySignal::ScoredBelowTarget {
+				activity_id: "honeycomb".to_owned(),
+				score: 0.0,
+			},
+		)
+		.await
+		.unwrap();
+		// `observe` re-solved eligibility from a still-mostly-full charge; put
+		// the gate back in the past so only the version check can refuse.
+		let after = engagement.charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let after_levels: Vec<(u16, f64)> = after.iter().map(|row| (row.class as u16, row.level)).collect();
+		let fold_as_of = after[0].as_of.clone();
+		sqlx::query!("UPDATE engagement_gate SET eligible_at = ? WHERE subject_id = ?", past, subject_id)
+			.execute(&pool)
+			.await
+			.unwrap();
+
+		let now = Utc::now().to_rfc3339();
+		let later = (Utc::now() + Duration::hours(20)).to_rfc3339();
+		let stale = engagement
+			.claim(subject_id, read_as_of.as_deref(), &now, &later, "lesson-ready", "{}", &levels, &now)
+			.await
+			.unwrap();
+		assert_eq!(stale, None, "a claim decided from the pre-signal charge is refused");
+		assert_eq!(intervention_rows(&pool, subject_id).await, (0, 0), "and nothing was logged");
+		assert_eq!(engagement.charge(subject_id).await.unwrap()[0].as_of, fold_as_of, "the signal's charge stands");
+
+		let won = engagement
+			.claim(subject_id, Some(&fold_as_of), &now, &later, "lesson-ready", "{}", &after_levels, &now)
+			.await
+			.unwrap();
+		assert!(won.is_some(), "a claim decided from the current charge wins");
+		assert_eq!(
+			engagement.charge(subject_id).await.unwrap()[0].as_of,
+			now,
+			"and writes its recharge in the same transaction"
+		);
+		assert_eq!(engagement.gate(subject_id).await.unwrap().unwrap().eligible_at, later);
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a

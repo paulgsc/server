@@ -339,6 +339,13 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		versioned: true,
 		module: "signals",
 	},
+	// ── outcomes ────────────────────────────────────────────────────────────
+	RouteDescriptor {
+		method: "POST",
+		path: "/outcomes",
+		versioned: true,
+		module: "outcomes",
+	},
 	// ── misc ────────────────────────────────────────────────────────────────
 	RouteDescriptor {
 		method: "POST",
@@ -423,6 +430,7 @@ mod tests {
 		("push", include_str!("push.rs"), true),
 		("presence", include_str!("presence.rs"), true),
 		("signals", include_str!("signals.rs"), true),
+		("outcomes", include_str!("outcomes.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),
 		("utterance", include_str!("utterance.rs"), true),
 	];

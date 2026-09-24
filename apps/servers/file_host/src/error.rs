@@ -37,6 +37,12 @@ pub enum FileHostError {
 	#[error("maximum record limit exceeded")]
 	MaxRecordLimitExceeded,
 
+	// The request is well-formed but contradicts something already recorded —
+	// a replayed `POST /outcomes` for a block whose stored outcome differs.
+	// Distinct from 422: nothing is wrong with the body on its own.
+	#[error("conflicts with an existing record: {0}")]
+	Conflict(&'static str),
+
 	// ---- transparent from-conversions ----
 	#[error("serialization error: {0}")]
 	NonSerializableData(#[from] serde_json::Error),
@@ -144,6 +150,7 @@ impl FileHostError {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
+			Self::Conflict(_) => StatusCode::CONFLICT,
 			Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
@@ -167,6 +174,7 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => "invalid_encoded_date",
 			Self::UnprocessableEntity { .. } => "unprocessable_entity",
 			Self::MaxRecordLimitExceeded => "max_record_limit_exceeded",
+			Self::Conflict(_) => "conflict",
 			Self::NonSerializableData(_) => "serialization_error",
 			Self::IntegerConversionError(_) => "integer_conversion_error",
 			Self::ResponseBuildError(_) => "response_build_error",
@@ -197,6 +205,7 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => "invalid encoded date",
 			Self::UnprocessableEntity { .. } => "error in request body",
 			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
+			Self::Conflict(reason) => reason,
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
