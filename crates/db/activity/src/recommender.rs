@@ -66,6 +66,13 @@ pub enum ActivityOutcome {
 	/// "unlearned, worth repeating" under axis 2, never as a mark against
 	/// the activity.
 	Completed { score: f64 },
+	/// Played, but never assessed — finished without a score (#289). Counts
+	/// as played for axis 1, and lifts like no history at all on axis 2:
+	/// only evidence that it *landed* pulls a candidate down, and there is
+	/// none. Deliberately not `Completed { score: 1.0 }` (which would bury
+	/// it) nor anything derived from completion time — attendance is not
+	/// performance (#288).
+	Unassessed,
 }
 
 /// How many activities a provisioned session proposes.
@@ -166,7 +173,7 @@ fn published_at(activity: &ActivityRecord) -> Option<DateTime<Utc>> {
 /// *good* completed score pulls this down.
 fn engagement_lift(entry: Option<&ActivityHistory>) -> f64 {
 	match entry.map(|h| h.outcome) {
-		None | Some(ActivityOutcome::Abandoned) => 1.0,
+		None | Some(ActivityOutcome::Abandoned | ActivityOutcome::Unassessed) => 1.0,
 		Some(ActivityOutcome::Completed { score }) => 1.0 - score.clamp(0.0, 1.0),
 	}
 }

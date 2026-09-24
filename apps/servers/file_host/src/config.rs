@@ -238,6 +238,15 @@ pub struct Config {
 	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000")]
 	pub waker_pass_deadline_ms: u64,
 
+	/// Whether the recommender ranks a provisioned session with this subject's
+	/// outcome history (#289, TEL4). **Off by default, and meant to stay off
+	/// until someone has looked at real data** — see `docs/study-nudge.md`,
+	/// "Outcome stats and the flag that gates them", for what would justify
+	/// turning it on. Off, the recommender sees every activity as unplayed,
+	/// exactly as it did before `activity_outcome` existed.
+	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value = "false")]
+	pub recommender_uses_outcomes: bool,
+
 	/// How long a client-written presence lease stays fresh before a due
 	/// subject's notification is sent as though nobody were looking.
 	///

@@ -21,6 +21,7 @@ use file_host::routes::{
 	push::push,
 	readiness::get_readiness,
 	signals::signals,
+	subjects::subjects,
 	tab_metadata::post_now_playing,
 	utterance::post_utterance,
 };
@@ -132,6 +133,7 @@ async fn main() -> Result<()> {
 		.merge(presence(&config))
 		.merge(signals(&config))
 		.merge(outcomes(&config))
+		.merge(subjects(&config))
 		.merge(post_now_playing())
 		.merge(post_utterance());
 

@@ -346,6 +346,13 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		versioned: true,
 		module: "outcomes",
 	},
+	// ── subjects ────────────────────────────────────────────────────────────
+	RouteDescriptor {
+		method: "GET",
+		path: "/subjects/me/stats",
+		versioned: true,
+		module: "subjects",
+	},
 	// ── misc ────────────────────────────────────────────────────────────────
 	RouteDescriptor {
 		method: "POST",
@@ -431,6 +438,7 @@ mod tests {
 		("presence", include_str!("presence.rs"), true),
 		("signals", include_str!("signals.rs"), true),
 		("outcomes", include_str!("outcomes.rs"), true),
+		("subjects", include_str!("subjects.rs"), true),
 		("tab_metadata", include_str!("tab_metadata.rs"), true),
 		("utterance", include_str!("utterance.rs"), true),
 	];

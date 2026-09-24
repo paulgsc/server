@@ -96,7 +96,13 @@ fn main() -> io::Result<()> {
 	// Same fixed subject and clock as `dump_proposed_session.rs`, so the two
 	// fixtures stay comparable and this one reproduces on every regen.
 	let now = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
-	let record = materialize_provisioned_session("session-fixture-provisioned".to_owned(), "fixture-subject", &catalogue, now);
+	let record = materialize_provisioned_session(
+		"session-fixture-provisioned".to_owned(),
+		"fixture-subject",
+		&catalogue,
+		&file_host::nudge::waker::RankingInputs::default(),
+		now,
+	);
 
 	let stdout = io::stdout();
 	let mut out = stdout.lock();
