@@ -32,17 +32,16 @@ fn to_http(err: &ActivityRepoError) -> FileHostError {
 }
 
 /// Wraps a fingerprint in the quoted form `ETag` requires (RFC 9110 §8.8.3).
-/// Always ASCII hex plus an `@`/quote, so this cannot fail on the values this
-/// module ever passes it — `expect` documents that invariant rather than
-/// threading a fallible conversion through two call sites for a string this
-/// crate built itself.
-fn etag_value(tag: &str) -> HeaderValue {
+/// The tags this crate builds are ASCII (hex digests, `id@version`), so this
+/// does not fail in practice; a tag that somehow isn't valid header content
+/// is a 500, not a panic — `clippy.toml` denies `expect` outside tests.
+pub(crate) fn etag_value(tag: &str) -> Result<HeaderValue, FileHostError> {
 	// `write!` rather than `format!`: `clippy.toml` disallows `format!`
 	// (eager allocation ahead of tracing) — same substitution
 	// `ts_emitter::render_ts` already makes.
 	let mut quoted = String::with_capacity(tag.len() + 2);
 	let _ = write!(quoted, "\"{tag}\"");
-	HeaderValue::from_str(&quoted).expect("an activities ETag is always valid header content")
+	HeaderValue::from_str(&quoted).map_err(|err| FileHostError::OperationError(err.to_string()))
 }
 
 /// The opaque-tag component of an entity-tag, with any leading weak
@@ -63,7 +62,7 @@ fn opaque_tag(raw: &[u8]) -> &[u8] {
 /// `If-None-Match` may list several comma-separated tags, or `*` to match
 /// anything — both handled here, matching the header's actual grammar
 /// (RFC 9110 §13.1.2) rather than a single-value shortcut.
-fn if_none_match_hits(headers: &HeaderMap, etag: &HeaderValue) -> bool {
+pub(crate) fn if_none_match_hits(headers: &HeaderMap, etag: &HeaderValue) -> bool {
 	let Some(raw) = headers.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()) else {
 		return false;
 	};
@@ -71,7 +70,7 @@ fn if_none_match_hits(headers: &HeaderMap, etag: &HeaderValue) -> bool {
 	raw.split(',').map(str::trim).any(|candidate| candidate == "*" || opaque_tag(candidate.as_bytes()) == etag)
 }
 
-fn not_modified(etag: HeaderValue) -> Response {
+pub(crate) fn not_modified(etag: HeaderValue) -> Response {
 	let mut response = StatusCode::NOT_MODIFIED.into_response();
 	response.headers_mut().insert(ETAG, etag);
 	response
@@ -95,7 +94,7 @@ fn ok_with_etag<T: serde::Serialize>(body: &T, etag: HeaderValue) -> Response {
 pub async fn list_activities(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, FileHostError> {
 	let repo = repo(&state);
 	let fingerprint = repo.fingerprint().await.map_err(|err| to_http(&err))?;
-	let etag = etag_value(&fingerprint);
+	let etag = etag_value(&fingerprint)?;
 
 	if if_none_match_hits(&headers, &etag) {
 		return Ok(not_modified(etag));
@@ -121,7 +120,7 @@ pub async fn get_activity(State(state): State<AppState>, headers: HeaderMap, Pat
 	let record: ActivityRecord = repo.get(&id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
 	let mut tag = String::new();
 	let _ = write!(tag, "{}@{}", record.id, record.version);
-	let etag = etag_value(&tag);
+	let etag = etag_value(&tag)?;
 
 	if if_none_match_hits(&headers, &etag) {
 		return Ok(not_modified(etag));
@@ -152,26 +151,26 @@ mod tests {
 
 	#[test]
 	fn etag_value_is_wrapped_in_the_quoted_form_the_header_requires() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		assert_eq!(etag.to_str().unwrap(), "\"abc123\"");
 	}
 
 	#[test]
 	fn if_none_match_misses_when_the_header_is_absent() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		assert!(!if_none_match_hits(&HeaderMap::new(), &etag), "no If-None-Match header at all must never read as a hit");
 	}
 
 	#[test]
 	fn if_none_match_hits_on_an_exact_match() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		let headers = headers_with_if_none_match("\"abc123\"");
 		assert!(if_none_match_hits(&headers, &etag));
 	}
 
 	#[test]
 	fn if_none_match_misses_on_a_different_tag() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		let headers = headers_with_if_none_match("\"someone-elses-tag\"");
 		assert!(!if_none_match_hits(&headers, &etag));
 	}
@@ -182,21 +181,21 @@ mod tests {
 	/// opaque-tags to match, not the strength.
 	#[test]
 	fn if_none_match_hits_a_weak_validator_against_a_strong_tag() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		let headers = headers_with_if_none_match("W/\"abc123\"");
 		assert!(if_none_match_hits(&headers, &etag), "a weak validator naming the same opaque tag must still be a hit");
 	}
 
 	#[test]
 	fn if_none_match_hits_on_the_wildcard() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		let headers = headers_with_if_none_match("*");
 		assert!(if_none_match_hits(&headers, &etag), "`*` must match any current ETag, per RFC 9110 §13.1.2");
 	}
 
 	#[test]
 	fn if_none_match_hits_when_the_tag_is_one_of_several_comma_separated() {
-		let etag = etag_value("abc123");
+		let etag = etag_value("abc123").unwrap();
 		let headers = headers_with_if_none_match("\"other-tag\", \"abc123\", \"a-third-tag\"");
 		assert!(
 			if_none_match_hits(&headers, &etag),

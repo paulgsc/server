@@ -300,6 +300,19 @@ pub const ROUTES: &[RouteDescriptor] = &[
 		versioned: true,
 		module: "activities",
 	},
+	// ── curriculum ──────────────────────────────────────────────────────────
+	RouteDescriptor {
+		method: "GET",
+		path: "/curriculum/manifest",
+		versioned: true,
+		module: "curriculum",
+	},
+	RouteDescriptor {
+		method: "GET",
+		path: "/curriculum/:key",
+		versioned: true,
+		module: "curriculum",
+	},
 	// ── push ────────────────────────────────────────────────────────────────
 	RouteDescriptor {
 		method: "GET",
@@ -434,6 +447,7 @@ mod tests {
 		("tabs", include_str!("db/tab.rs"), true),
 		("sessions", include_str!("db/session.rs"), true),
 		("activities", include_str!("db/activities.rs"), true),
+		("curriculum", include_str!("db/curriculum.rs"), true),
 		("push", include_str!("push.rs"), true),
 		("presence", include_str!("presence.rs"), true),
 		("signals", include_str!("signals.rs"), true),

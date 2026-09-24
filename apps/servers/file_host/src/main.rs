@@ -13,7 +13,7 @@ use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCK
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::routes::{
-	db::{activities, mood_events, sessions, tabs},
+	db::{activities, curriculum, mood_events, sessions, tabs},
 	health::get_health,
 	metrics::get_metrics,
 	outcomes::outcomes,
@@ -129,6 +129,7 @@ async fn main() -> Result<()> {
 		.merge(tabs(&config))
 		.merge(sessions(&config))
 		.merge(activities(&config))
+		.merge(curriculum(&config))
 		.merge(push(&config))
 		.merge(presence(&config))
 		.merge(signals(&config))

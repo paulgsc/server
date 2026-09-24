@@ -1275,6 +1275,24 @@ scoring zero. Send it only for an assessment of the block as a whole — a
 LeetType round's single selection is not one (#329): it would make a wrong tap
 raise a notification.
 
+### Curriculum
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/curriculum/manifest` | `{ version, topiks: TopikMetadata[] }` — the manifest `@some-ui/topik` reads, from the `curriculum` table (#276) |
+| `GET` | `/curriculum/:key` | One lesson file, verbatim, or a JSON `404` |
+
+The same two files `apps/www` fetches from `/topiks/` today, with the one
+difference the route exists for: a lesson that does not exist is a real `404`
+with an error body, where a static server behind `try_files … /index.html`
+answers `200` with a page. An empty corpus is a valid, empty manifest at `200`.
+Both answer `If-None-Match` with `304`: a lesson's `ETag` is its `content_hash`
+(#274), and the manifest's is `content_hash` over its listing — which is also
+its `version` — so one notion of "changed" serves the importer, the cache, and
+#277. The manifest is bounded (`MANIFEST_CEILING`) and refused, never
+truncated, above it. A lesson keyed `manifest` would be shadowed by the listing
+route; the importer's corpus has none.
+
 ### Subject stats
 
 | Method | Path | Purpose |
