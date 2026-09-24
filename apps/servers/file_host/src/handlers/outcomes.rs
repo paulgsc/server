@@ -42,7 +42,7 @@ use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
 use chrono::{DateTime, Utc};
-use outcome_repo::{OutcomeKind, OutcomeRecord, OutcomeRepository, Recorded};
+use outcome_repo::{OutcomeKind, OutcomeRecord, OutcomeRepository, Recorded, ACTIVITY_OUTCOME_RETENTION_DAYS};
 use serde::{Deserialize, Serialize};
 use session_repo::SessionRepository;
 use sqlx::SqlitePool;
@@ -195,6 +195,14 @@ fn validate_shape(request: OutcomeRequest) -> Result<OutcomeRecord, FileHostErro
 		if ended < started {
 			errors.push(("endedAt", "must not be before startedAt".into()));
 		}
+	}
+	// A block that ended before `activity_outcome`'s retention horizon would
+	// be written, then deleted by the next sweep — after which an identical
+	// retry would look new and fold its signal again, breaking the replay
+	// guarantee (a real `chatgpt-codex-connector` finding on #360). History
+	// that old is not history this table keeps, so it is refused up front.
+	if ended_at.is_some_and(|ended| ended < Utc::now() - chrono::Duration::days(ACTIVITY_OUTCOME_RETENTION_DAYS)) {
+		errors.push(("endedAt", "is older than the outcome retention horizon".into()));
 	}
 
 	match (outcome, started_at, ended_at) {
@@ -466,6 +474,15 @@ mod tests {
 		let mut backwards = request(None);
 		backwards.ended_at = "2026-09-24T09:00:00Z".to_owned();
 		assert_eq!(field_errors(&record_outcome(&pool, SUBJECT, backwards).await.unwrap_err()), ["endedAt"]);
+
+		let mut ancient = request(None);
+		ancient.started_at = "2020-01-01T00:00:00Z".to_owned();
+		ancient.ended_at = "2020-01-01T00:05:00Z".to_owned();
+		assert_eq!(
+			field_errors(&record_outcome(&pool, SUBJECT, ancient).await.unwrap_err()),
+			["endedAt"],
+			"a block older than retention would be swept and then replayable as new"
+		);
 
 		assert_eq!(rows(&pool).await, 0, "nothing refused was written");
 	}
