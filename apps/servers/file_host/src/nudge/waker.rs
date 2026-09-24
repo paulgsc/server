@@ -509,17 +509,28 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// Disallowed for tracing; this is the stored history column.
 	#[allow(clippy::disallowed_methods)]
 	let serialized = serde_json::to_string(&action).unwrap_or_default();
+	// The recharge is written by the claim itself, version-checked against
+	// `read_as_of`: a signal folded in since this pass read the charge means
+	// `action` was chosen from deficits that no longer exist, so the claim is
+	// refused and nothing stale is sent — see `EngagementRepository::claim`.
+	let (levels, as_of) = charge.to_storage();
 	let Some(log_id) = engagement
-		.claim(subject_id, &now.to_rfc3339(), &next_eligible.to_rfc3339(), action.kind(), &serialized)
+		.claim(
+			subject_id,
+			read_as_of.as_deref(),
+			&now.to_rfc3339(),
+			&next_eligible.to_rfc3339(),
+			action.kind(),
+			&serialized,
+			&levels,
+			&as_of.to_rfc3339(),
+		)
 		.await?
 	else {
-		info!(subject = %subject_id, "another pass claimed this subject first");
+		info!(subject = %subject_id, "another pass claimed this subject first, or a signal changed their charge while this pass was deciding");
 		crate::metrics::waker::record_verdict("claim_lost", "n/a");
 		return Ok(false);
 	};
-
-	let (levels, as_of) = charge.to_storage();
-	save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, next_eligible).await?;
 
 	// #284 (RCM7): refresh only after winning the claim above, not merely on
 	// `Verdict::Intervene` — a real `chatgpt-codex-connector` finding on
@@ -574,9 +585,10 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// If one did, that signal has already written a newer charge and re-solved
 /// `eligible_at` from it, and this pass's verdict — computed from the older
 /// read — is the stale one: dropping it leaves the subject exactly where the
-/// signal put them, to be reconsidered on a later pass. A claim already won
-/// this pass still stands (its gate write is its own), so a dropped save after
-/// an intervention costs only that intervention's recharge, never a duplicate.
+/// signal put them, to be reconsidered on a later pass. The intervention path
+/// does not come through here: its recharge is written by the version-checked
+/// claim itself (`EngagementRepository::claim`), so a signal that lands first
+/// refuses the claim rather than letting a stale action be sent.
 async fn save_unless_superseded(
 	engagement: &EngagementRepository,
 	subject_id: &str,
@@ -3185,6 +3197,71 @@ mod tests {
 		let later = Utc::now() + Duration::days(2);
 		save_unless_superseded(&engagement, subject_id, fresh.as_deref(), &levels, as_of, later).await.unwrap();
 		assert_eq!(engagement.gate(subject_id).await.unwrap().unwrap().eligible_at, later.to_rfc3339());
+	}
+
+	/// A signal folded in after the waker read the charge refuses the waker's
+	/// claim — nothing chosen from the stale deficits is sent — and the claim
+	/// writes the intervention's recharge in the same transaction when it does
+	/// win (from a `chatgpt-codex-connector` finding on #360).
+	#[tokio::test]
+	async fn a_claim_is_refused_when_a_signal_changed_the_charge_since_the_read() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		let engagement = EngagementRepository::new(pool.clone());
+		let subject_id = "subject-claim-race";
+		first_contact(&pool, subject_id).await.unwrap();
+		let past = (Utc::now() - Duration::hours(1)).to_rfc3339();
+		let stored = engagement.charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let levels: Vec<(u16, f64)> = stored.iter().map(|row| (row.class as u16, row.level)).collect();
+		engagement.save(subject_id, &levels, &stored[0].as_of, &past).await.unwrap();
+
+		let read_as_of = engagement.charge(subject_id).await.unwrap().first().map(|row| row.as_of.clone());
+		observe(
+			&pool,
+			subject_id,
+			&StudySignal::ScoredBelowTarget {
+				activity_id: "honeycomb".to_owned(),
+				score: 0.0,
+			},
+		)
+		.await
+		.unwrap();
+		// `observe` re-solved eligibility from a still-mostly-full charge; put
+		// the gate back in the past so only the version check can refuse.
+		let after = engagement.charge(subject_id).await.unwrap();
+		#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		let after_levels: Vec<(u16, f64)> = after.iter().map(|row| (row.class as u16, row.level)).collect();
+		let fold_as_of = after[0].as_of.clone();
+		sqlx::query!("UPDATE engagement_gate SET eligible_at = ? WHERE subject_id = ?", past, subject_id)
+			.execute(&pool)
+			.await
+			.unwrap();
+
+		let now = Utc::now().to_rfc3339();
+		let later = (Utc::now() + Duration::hours(20)).to_rfc3339();
+		let stale = engagement
+			.claim(subject_id, read_as_of.as_deref(), &now, &later, "lesson-ready", "{}", &levels, &now)
+			.await
+			.unwrap();
+		assert_eq!(stale, None, "a claim decided from the pre-signal charge is refused");
+		assert_eq!(intervention_rows(&pool, subject_id).await, (0, 0), "and nothing was logged");
+		assert_eq!(engagement.charge(subject_id).await.unwrap()[0].as_of, fold_as_of, "the signal's charge stands");
+
+		let won = engagement
+			.claim(subject_id, Some(&fold_as_of), &now, &later, "lesson-ready", "{}", &after_levels, &now)
+			.await
+			.unwrap();
+		assert!(won.is_some(), "a claim decided from the current charge wins");
+		assert_eq!(
+			engagement.charge(subject_id).await.unwrap()[0].as_of,
+			now,
+			"and writes its recharge in the same transaction"
+		);
+		assert_eq!(engagement.gate(subject_id).await.unwrap().unwrap().eligible_at, later);
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a

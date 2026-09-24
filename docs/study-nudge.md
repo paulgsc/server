@@ -1433,6 +1433,14 @@ of the line a crash does — the claim is kept, the intervention is spent, and
 `intervention_log.actuated_at` stays `NULL` because nothing confirmed
 acceptance. The timed-out device is recorded as a failure (never a prune).
 
+**Every waker write to a charge is version-checked** against the charge that
+pass read (#287/#360). Signals fold in under a `BEGIN IMMEDIATE` write lock
+(`EngagementRepository::fold`), so concurrent signals never lose each other; and
+a waker verdict — a `Wait`/`Suppressed` save, or the claim with its recharge —
+is written only if no signal landed since the pass read the charge. If one did,
+the claim is refused and nothing chosen from the stale deficits is sent; the
+subject is reconsidered next pass from where the signal left them.
+
 Two further brakes: an intervention **recharges** the classes it addresses, so
 the next pass finds nothing to do; and `REFRACTORY` is a hard floor whatever the
 arithmetic says.

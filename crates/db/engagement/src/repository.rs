@@ -293,13 +293,25 @@ impl EngagementRepository {
 		.await
 	}
 
-	/// Claim a subject for one intervention, atomically.
+	/// Claim a subject for one intervention, atomically — and write the
+	/// intervention's recharged charge with it.
 	///
 	/// Returns the log id if this call won the claim, `None` if it did not. The
-	/// check and the claim are one statement so that two waker passes — or one
-	/// pass and a just-restarted process — cannot both conclude the subject is
-	/// due. `eligible_at` moves forward as part of the same write, which is
-	/// what closes the window rather than a lock.
+	/// check and the claim are one transaction so that two waker passes — or
+	/// one pass and a just-restarted process — cannot both conclude the
+	/// subject is due. `eligible_at` moves forward as part of the same write,
+	/// which is what closes the window rather than a lock.
+	///
+	/// **Version-checked against the charge the caller read** (`read_as_of`,
+	/// `None` for a subject that had no rows), under the same `BEGIN
+	/// IMMEDIATE` write lock [`Self::fold`] takes. A signal folded in after the
+	/// waker's read means the action it chose was chosen from deficits that no
+	/// longer exist: the claim is refused, nothing is sent, and the subject is
+	/// reconsidered on a later pass from the charge the signal left. The
+	/// recharge (`levels`/`as_of`) is written in the same transaction as the
+	/// claim, so no fold can land between the two and have the recharge
+	/// either overwrite it or be lost (real `chatgpt-codex-connector` findings
+	/// on #360).
 	///
 	/// Claiming happens *before* delivery. A crash in between therefore costs
 	/// the intervention rather than duplicating it, which is the right way
@@ -307,8 +319,27 @@ impl EngagementRepository {
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn claim(&self, subject_id: &str, now: &str, next_eligible_at: &str, action_kind: &str, action: &str) -> Result<Option<i64>, sqlx::Error> {
-		let mut tx = self.pool.begin().await?;
+	#[allow(clippy::too_many_arguments)] // one claim, one row of each table it writes
+	pub async fn claim(
+		&self,
+		subject_id: &str,
+		read_as_of: Option<&str>,
+		now: &str,
+		next_eligible_at: &str,
+		action_kind: &str,
+		action: &str,
+		levels: &[(u16, f64)],
+		as_of: &str,
+	) -> Result<Option<i64>, sqlx::Error> {
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+		let current = sqlx::query_scalar!("SELECT as_of FROM engagement_charge WHERE subject_id = ? LIMIT 1", subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		if current.as_deref() != read_as_of {
+			tx.rollback().await?;
+			return Ok(None);
+		}
 
 		let claimed = sqlx::query!(
 			r#"
@@ -347,6 +378,7 @@ impl EngagementRepository {
 		.fetch_one(&mut *tx)
 		.await?;
 
+		Self::write(&mut tx, subject_id, levels, as_of, next_eligible_at).await?;
 		tx.commit().await?;
 		Ok(Some(id.id))
 	}
