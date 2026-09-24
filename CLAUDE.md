@@ -51,6 +51,27 @@ diff; a payload-only change won't show up in this artifact at all, so don't trea
 route-snapshot diff as proof a payload change made it across — see that repo's own `CLAUDE.md`
 for how it consumes the snapshot.
 
+## Drift is loud, not silent
+
+Before implementing a story, and again before fixing any review finding, check the change
+against the written invariants of the subsystem it touches. For the study nudge that is
+`docs/study-nudge.md`, "Scaling invariants": O(1) work per signal, O(1) state per subject, no
+(signal × subject) table, and the waker's only query being an indexed range read. If the change
+would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
+breaks it, and wait for a decision instead of building it or patching around it. Two things
+also count as drift and should be raised the same way:
+
+- **A spec is not an exemption.** #273's original spec asked for a per-subject fan-out, and it
+  was built exactly as written, which is how the drift got in.
+- **Findings clustering in one mechanism across review rounds** (#362: a deadline inside the
+  fan-out, then the cursor, then the audience snapshot) mean the shape is wrong, not that
+  another fix is due. Check them against the invariants before the next push, not only when
+  `steward/SKILL.md`'s review cap forces the question.
+
+If you notice you're relying on an invariant a subsystem doesn't have written down, write it in
+that subsystem's doc as part of the change. An invariant that exists only in someone's head
+drifts without anyone noticing.
+
 ## Cold-start footguns worth not re-discovering
 
 These bite during ordinary implementation work, **before any PR exists** — read this at the
