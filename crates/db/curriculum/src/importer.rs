@@ -35,7 +35,7 @@ use sqlx::SqlitePool;
 use std::path::Path;
 
 /// `curriculum_publication.source` for lessons (#277).
-pub const PUBLICATION_SOURCE: &str = "curriculum";
+pub const PUBLICATION_SOURCE: &str = publication_repo::LESSON_SOURCE;
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -55,6 +55,11 @@ pub struct ImportReport {
 	pub failed: Vec<(String, String)>,
 	/// Whether this run was the corpus's first import, recorded as a baseline.
 	pub baseline: bool,
+	/// Whether the run was rolled back: a first import with any failed lesson
+	/// writes nothing, so the fixed re-run is still the first import and still
+	/// the baseline (a real `chatgpt-codex-connector` finding on #367). The
+	/// lists above then say what *would* have been written.
+	pub rolled_back: bool,
 }
 
 impl ImportReport {
@@ -146,8 +151,16 @@ pub async fn import_dir(pool: &SqlitePool, dir: &Path, activity_id: &str, now: &
 		}
 	}
 
+	// A first import is all or nothing. Committing the lessons that worked
+	// would leave the table non-empty, so a re-run after fixing the failed
+	// ones would no longer be the baseline — and the repaired lessons, which
+	// belong to the original corpus, would be announced as new. Later imports
+	// keep per-lesson isolation: nothing about them is a baseline.
 	if dry_run {
 		tx.rollback().await?;
+	} else if report.baseline && !report.failed.is_empty() {
+		tx.rollback().await?;
+		report.rolled_back = true;
 	} else {
 		tx.commit().await?;
 	}
@@ -272,7 +285,6 @@ mod tests {
 		);
 	}
 
-	/// One bad lesson fails alone; the rest import; the report names it.
 	/// A first import that fails part-way writes nothing — no lesson, no
 	/// baseline row — so the retry is still the first import and still the
 	/// baseline, and #277 never announces the existing corpus (from a
@@ -335,10 +347,17 @@ mod tests {
 		);
 	}
 
+	/// Past the first import, one bad lesson fails alone; the rest import; the
+	/// report names it.
 	#[tokio::test]
 	async fn a_bad_lesson_fails_alone() {
 		let pool = pool().await;
 		let dir = tempfile::tempdir().unwrap();
+		// Past the first import, which is all or nothing (see
+		// `a_first_import_with_a_failed_lesson_writes_nothing`).
+		write_corpus(dir.path(), &[entry("existing", "Existing")]);
+		std::fs::write(dir.path().join("existing.json"), b"{}").unwrap();
+		assert!(import_dir(&pool, dir.path(), "topik", "2026-08-01T00:00:00+00:00", false).await.unwrap().baseline);
 		write_corpus(
 			dir.path(),
 			&[
@@ -354,8 +373,34 @@ mod tests {
 
 		let report = import_dir(&pool, dir.path(), "topik", "2026-09-01T00:00:00+00:00", false).await.unwrap();
 		assert_eq!(report.inserted, ["good"]);
+		assert!(!report.rolled_back, "a later import keeps what worked");
 		let failed: Vec<&str> = report.failed.iter().map(|(what, _)| what.as_str()).collect();
 		assert_eq!(failed, ["missing", "broken", "../escape", "topiks[4]"]);
+	}
+
+	/// A first import with a failed lesson writes nothing, so the re-run
+	/// after the fix is still the baseline and the repaired lesson is not
+	/// announced as new (from a `chatgpt-codex-connector` finding on #367).
+	#[tokio::test]
+	async fn a_first_import_with_a_failed_lesson_writes_nothing() {
+		let pool = pool().await;
+		let dir = tempfile::tempdir().unwrap();
+		write_corpus(dir.path(), &[entry("good", "Good"), entry("repaired", "Repaired")]);
+		std::fs::write(dir.path().join("good.json"), b"{}").unwrap();
+
+		let first = import_dir(&pool, dir.path(), "topik", "2026-09-01T00:00:00+00:00", false).await.unwrap();
+		assert!(first.baseline && first.rolled_back, "{first:?}");
+		let written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM curriculum").fetch_one(&pool).await.unwrap();
+		assert_eq!(written, 0);
+
+		std::fs::write(dir.path().join("repaired.json"), b"{}").unwrap();
+		let retry = import_dir(&pool, dir.path(), "topik", "2026-09-01T00:00:00+00:00", false).await.unwrap();
+		assert!(retry.baseline && !retry.rolled_back, "{retry:?}");
+		let baselined: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM curriculum_publication WHERE source = 'curriculum' AND baseline = 1")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(baselined, 2, "the repaired lesson is part of the baseline, not news");
 	}
 
 	/// `--dry-run` reports what would change and writes nothing at all.

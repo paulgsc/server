@@ -1611,6 +1611,24 @@ deploying this drains nobody. Nothing a subject later edits or deletes changes
 whether they were known. The accepted cost: someone who subscribed but never
 studied is drained too.
 
+**Lessons append to the same log (#277, CUR4)** — a second producer, not a
+second mechanism. A lesson `(key, version)` not seen before is a publication
+with `source = 'curriculum'`, and its version only moves when the file's bytes
+do (#275), so re-importing unchanged content or renaming a lesson publishes
+nothing; the importer's first import writes `baseline` rows, which are seen but
+are not an epoch. A lesson's audience is narrower,
+`study_domain::LESSON_AUDIENCE`: subjects who had **played its activity** (a
+completed or abandoned block in `activity_outcome`) by the time it was
+detected. That rule is applied per subject **at catch-up**, not as an audience
+query at publish time: `PublicationRepository::relevant_since` walks the
+publications a subject missed, newest first, and stops at the first that
+applies to them — O(publications missed), a point lookup each. If none does,
+their watermark moves up with no drain. A lesson at a level far from someone's
+target would be closer still to noise, but `targetTopikLevel` lives in the
+client's profile and this server has never seen it; scoping by level waits on
+profile targets moving server-side, and is named as that dependency rather than
+guessed at.
+
 ### Importing lesson content (#275, CUR2)
 
 Lessons live in the `curriculum` table (#274) — one row per lesson, the lesson
@@ -1629,15 +1647,17 @@ again and again: a lesson whose file bytes are unchanged (`content_hash`,
 SHA-256 over the exact bytes) is not written and does not look new; changed
 bytes are a version bump with a new `published_at`; a manifest rename alone is
 written without either. A malformed or missing lesson fails alone and is named
-in the report; the exit code is `1` if anything failed, `2` if the run could
-not start. It never deletes a lesson missing from the directory.
+in the report — except on the first import, which is all or nothing (below);
+the exit code is `1` if anything failed, `2` if the run could not start. It never deletes a lesson missing from the directory.
 
 **The first import is a baseline.** Into an empty table, what is imported is
 what the app has served all along, so every lesson is written to
 `curriculum_publication` as a `baseline` row: *seen*, so #277 never mistakes it
 for new, but not an epoch — the epoch is the newest non-baseline row — so nobody
-falls behind it and no watermark is touched. Every later import's new or changed
-lessons are what #277 announces.
+falls behind it and no watermark is touched. It is all or nothing: if any lesson
+fails, nothing is written, so the re-run after fixing it is still the first
+import — a partly written one would leave the repaired lessons to be announced
+as new. Every later import's new or changed lessons are what #277 announces.
 
 Nothing in the server's startup or request path runs or waits on this.
 
