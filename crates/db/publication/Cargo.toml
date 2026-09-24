@@ -1,6 +1,6 @@
 [package]
 name = "publication_repo"
-description = "Which published material has been announced to whom"
+description = "The append-only log of published material, and its epoch"
 readme = "README.md"
 categories = ["database"]
 keywords = ["curriculum", "publication", "sqlite", "repository"]

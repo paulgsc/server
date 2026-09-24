@@ -130,30 +130,34 @@ impl Selector<StudyV1> for StudySelector {
 /// kind of decision as a half-life — a policy about people, not plumbing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CurriculumAudience {
-	/// Every subject who has started at least one session.
+	/// Every subject the nudge already knew when the material was published —
+	/// who had a gate row (had subscribed, or sent any signal) before the
+	/// publication was detected.
 	///
-	/// Chosen over the two alternatives #273 names:
+	/// This is #273's "any history at all" position, with history meaning
+	/// *known to the nudge*. It is what a per-subject watermark can answer in
+	/// O(1) with no per-(publication, subject) state: a subject's watermark
+	/// starts at the epoch current when the nudge first learns of them, so
+	/// someone who arrives after a publication is never behind it, and nothing
+	/// they later edit or delete changes that. Against the alternatives:
 	///
-	/// - **Every subject** would drain someone who has only ever subscribed.
-	///   `Charge::from_storage` starts an unseen subject *full*, deliberately,
-	///   so a fresh account is not nudged before it has done anything; a
-	///   publish on their first day would undo that for material they cannot
-	///   have missed — to them, everything is new.
-	/// - **Every subject who has not already seen it** is more nearly right,
-	///   and needs per-subject play history of the new material specifically —
-	///   which does not exist for something that was just published. It is
-	///   where #277 (CUR4) ends up for lessons, whose audience is genuinely
-	///   narrower.
+	/// - **Every subject** would drain someone on their first day, undoing
+	///   `Charge::from_storage`'s deliberately full start for material they
+	///   cannot have missed.
+	/// - **Every subject who has not already seen it** needs per-subject play
+	///   history of the new material specifically; for lessons that is where
+	///   #277 (CUR4) goes, as a relevance check when the subject is caught up
+	///   rather than an audience query at publish time.
 	///
-	/// "Has studied at all" is the middle position: someone who has sat down
-	/// with the old material is exactly who new material makes the old stale
-	/// for.
-	SubjectsWhoHaveStudied,
+	/// The cost of this choice, accepted: a subject who subscribed but never
+	/// studied is drained too. They are someone the nudge may already
+	/// interrupt; new material is a fair thing to interrupt them with.
+	KnownBeforePublication,
 }
 
-/// The audience rule this release applies — `publication_repo`'s audience
-/// query implements it.
-pub const CURRICULUM_AUDIENCE: CurriculumAudience = CurriculumAudience::SubjectsWhoHaveStudied;
+/// The audience rule this release applies — implemented by
+/// `engagement_gate.curriculum_epoch`, the one watermark per subject.
+pub const CURRICULUM_AUDIENCE: CurriculumAudience = CurriculumAudience::KnownBeforePublication;
 
 /// The score below which a completed, assessed block counts as *not landing*
 /// (#287, TEL2) — the threshold `POST /outcomes` derives

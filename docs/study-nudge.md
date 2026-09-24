@@ -48,6 +48,46 @@ its transport and its domain at compile time, so a vtable to reach one
 implementation buys nothing and costs inlining. Where the inverse would buy
 something, it would be defensible; here it does not.
 
+## Scaling invariants, and drift is loud
+
+The nudge is **memoryless**. Every per-subject state is a sink: a subject's gate
+row stays exactly as it is until an outside event moves it — the subject doing
+something (a signal folds in and re-solves `eligible_at`), or the world changing
+(new material moves the curriculum epoch). The waker discovers what the
+arithmetic already decided; it never scans, never decays anyone on a timer, and
+never keeps books about who has been told what. Four invariants make that true
+and keep it true as the system grows:
+
+1. **O(1) work per signal emitted.** Publishing new material is one append to
+   `curriculum_publication`, whatever the number of subjects. Nothing is fanned
+   out on write.
+2. **O(1) state per subject, independent of the number of signals.** A subject
+   carries a charge, a gate row, and one watermark per kind of global event
+   (`engagement_gate.curriculum_epoch`). **No table has one row per (signal,
+   subject)** — that product is the shape of a notification system that has
+   turned into a database engine.
+3. **The waker's only query is an indexed range read** (`EngagementRepository::due`):
+   subjects whose `eligible_at` has passed, or whose watermark is behind the
+   epoch. A quiet day returns nothing.
+4. **Every pass is bounded by `BATCH` and the pass deadline, and nothing else.**
+   A mechanism that needs its own per-pass cap, cursor, or deadline checks is
+   doing fan-out work the gate should have made unnecessary.
+
+**Drift is loud, not silent.** When a story's spec, a change, or a fix for a
+review finding would break one of these, **stop and raise it** on the issue or
+PR — name the invariant and the shape that would break it — instead of
+implementing it or patching around it. The tell is a review cycle whose
+findings cluster in one mechanism (deadline inside the fan-out, then the
+cursor, then the audience snapshot…): each fix is locally right and the shape
+is wrong. #273 is the worked example. Its original spec asked for a
+per-subject fan-out; the first implementation built one faithfully, four
+review rounds kept finding holes in exactly that mechanism, and the answer was
+not a fifth fix but the epoch and watermark in "New material is one epoch, not
+a fan-out" below. Changing an invariant is allowed — by deciding to, in this
+section, not by accretion.
+
+---
+
 ## The battery, and why it is not a rate limiter
 
 Engagement is a **vector** of levels, one per class, that decays with time and is
@@ -1356,8 +1396,8 @@ should not invalidate a client's cached copy of this one. `fingerprint()` is
 section once said it would: a single hash says *that* the catalogue changed
 but not *which* entry, and the producer has to know which `(id, version)` is
 new to announce it. It compares `activities` against its own
-`curriculum_publication` table instead — see "New material is announced,
-once" below.
+`curriculum_publication` log instead — see "New material is one epoch, not a
+fan-out" below.
 
 **The bound is a refusal, not a truncation.** `GET /activities` counts the
 table before querying it; over `CATALOG_CEILING` rows and the whole request
@@ -1513,30 +1553,45 @@ doc comment for why). #262's characterisation test now asserts this bound
 directly: at most one row read per due subject, independent of how many
 sessions it owns.
 
-### New material is announced, once (#273, CAT5)
+### New material is one epoch, not a fan-out (#273, CAT5)
 
 `CurriculumUpdated` — freshness's −35, the case a pure activity model cannot
-express — has a producer. Each waker pass records every catalogue `(id,
+express — has a producer, and it costs O(1) in subjects (see "Scaling
+invariants" above).
+
+**Publishing is one append.** Each waker pass records every catalogue `(id,
 version)` it has not seen before in `curriculum_publication`: a new activity or
-a version bump is new material. The catalogue that existed when this landed is
-recorded by the migration as already announced, so deploying it drains nobody.
+a version bump is new material. That table is an append-only log, and its
+`MAX(id)` is the **epoch**. Detection reads the catalogue (bounded, and refused
+over its ceiling), never the subjects.
+
+**Each subject carries one watermark**, `engagement_gate.curriculum_epoch`: the
+newest epoch already folded into their charge. `due` returns subjects whose
+`eligible_at` has passed *or* whose watermark is behind the epoch, from two
+indexes. For a behind subject the waker folds **one** `CurriculumUpdated` and
+advances the watermark to the epoch in the same `BEGIN IMMEDIATE` transaction
+(`EngagementRepository::catch_up`), then considers them as usual if the drain
+made them eligible.
+
+- **Idempotent by construction.** The watermark only moves forward, and only
+  with the drain, so a re-run pass, a crash, or two racing passes cannot drain
+  anyone twice — there is no claim table to get right.
+- **One drain per catch-up.** A subject who missed three publications is
+  drained once: the signal means "there is new material", and a drain per
+  publication would let a burst of catalogue edits empty someone's freshness in
+  one pass.
+- **Bounded by `BATCH` and the pass deadline**, like every other due subject.
+  More than a batch behind is simply more than a batch due; later passes finish
+  the rest.
 
 **Who it drains** is `study_domain::CURRICULUM_AUDIENCE`, beside the
-calibration numbers: **subjects who have started at least one session**. Not
-everyone — a subject who has only subscribed starts full on purpose, and to
-them everything is new — and not "everyone who has not seen it", which needs
-play history of something that was only just published (#277 is where lessons,
-with a genuinely narrower audience, go further).
-
-**At most once per subject.** Each `(publication, subject)` is claimed in
-`curriculum_delivery` *before* the signal is folded, so re-running a publish,
-or resuming one a crashed pass left half done, never drains twice (applying it
-twice would drain 70 and move someone's next interruption). A crash between
-the claim and the fold costs that subject that one drain instead.
-
-**Bounded and resumable.** A pass applies it to at most `ANNOUNCE_PER_PASS`
-(64) subjects, after its due subjects and inside its deadline; the delivery
-table is the cursor the next pass resumes from.
+calibration numbers: **every subject the nudge knew before the publication**. A
+gate row is stamped with the current epoch when it is created — first contact
+or a first signal — so someone who arrives after a publication is never behind
+it; the migration stamps every existing row with the baseline epoch, so
+deploying this drains nobody. Nothing a subject later edits or deletes changes
+whether they were known. The accepted cost: someone who subscribed but never
+studied is drained too.
 
 ### A pass is bounded, not just a request (#264, SLI3)
 

@@ -1,4 +1,3 @@
-DROP TABLE curriculum_delivery;
-DROP INDEX idx_sessions_started_subject;
-DROP INDEX idx_curriculum_publication_pending;
+DROP INDEX idx_engagement_gate_curriculum_epoch;
+ALTER TABLE engagement_gate DROP COLUMN curriculum_epoch;
 DROP TABLE curriculum_publication;

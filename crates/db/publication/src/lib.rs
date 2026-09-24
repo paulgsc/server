@@ -1,27 +1,24 @@
-//! Which published material has been announced to whom (#273, CAT5).
+//! The append-only log of published material, and its epoch (#273, CAT5).
 //!
-//! Storage for the `CurriculumUpdated` producer: detecting that an activity
-//! `(id, version)` is new, working out who it applies to, and recording — per
-//! subject, before the signal is applied — that it has been applied, so a
-//! publish is announced to each subject at most once however many times the
-//! fan-out runs. See `20260924001200_create_curriculum_publication.up.sql` for
-//! the schema's reasoning and `study_domain::CURRICULUM_AUDIENCE` for the
-//! audience rule's.
+//! Storage for the `CurriculumUpdated` producer. Detecting that an activity
+//! `(id, version)` is new appends it here; the log's `MAX(id)` is the
+//! **epoch**. Nothing in this crate knows about subjects: who a publication
+//! reaches is each subject's own watermark (`engagement_gate.curriculum_epoch`)
+//! falling behind the epoch, and the waker catching them up — see
+//! `20260924001200_create_curriculum_publication.up.sql` and
+//! `study_domain::CURRICULUM_AUDIENCE`.
 
 use sqlx::SqlitePool;
 
-/// One publication whose fan-out is still in progress.
+/// One entry in the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publication {
+	/// The epoch this publication moved the log to.
 	pub id: i64,
 	pub source: String,
 	pub curriculum_id: String,
 	pub version: i64,
-	/// When this publication was detected (RFC 3339): the audience is fixed
-	/// as of this instant.
 	pub detected_at: String,
-	/// The last subject this fan-out applied to, in subject order.
-	pub cursor_subject: Option<String>,
 }
 
 /// The most catalogue rows one detection pass reads — `activity_repo::CATALOG_CEILING`,
@@ -101,112 +98,24 @@ impl PublicationRepository {
 		Ok(inserted.rows_affected())
 	}
 
-	/// Publications still being fanned out, oldest first.
+	/// The newest publication — whose `id` is the epoch — or `None` for an
+	/// empty log. One primary-key read, whatever the size of the log or the
+	/// number of subjects.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn pending(&self, limit: i64) -> Result<Vec<Publication>, sqlx::Error> {
+	pub async fn newest(&self) -> Result<Option<Publication>, sqlx::Error> {
 		sqlx::query_as!(
 			Publication,
 			r#"
-			SELECT id AS "id!", source, curriculum_id, version, detected_at, cursor_subject
+			SELECT id AS "id!", source, curriculum_id, version, detected_at
 			FROM curriculum_publication
-			WHERE fanned_out_at IS NULL
-			ORDER BY id
-			LIMIT ?
-			"#,
-			limit
+			ORDER BY id DESC
+			LIMIT 1
+			"#
 		)
-		.fetch_all(&self.pool)
+		.fetch_optional(&self.pool)
 		.await
-	}
-
-	/// The next `limit` subjects this publication applies to, in subject order,
-	/// after its cursor.
-	///
-	/// **The audience rule** (`study_domain::CURRICULUM_AUDIENCE`): subjects who
-	/// have started at least one session. A subject who has never studied starts
-	/// with a full charge on purpose and has nothing that new material could
-	/// make stale; draining them would nudge someone on their first day for
-	/// something they have not missed.
-	///
-	/// **Fixed at detection.** Only sessions started by
-	/// `Publication::detected_at` count, so a fan-out that spans several passes
-	/// reaches the same audience whichever side of the cursor a newcomer's id
-	/// falls — someone whose first session came after the publication has not
-	/// missed it either (a real `chatgpt-codex-connector` finding on #362).
-	/// Compared as `julianday`, not as text: `started_at` is client-supplied
-	/// ISO-8601 and may carry any offset; one that does not parse still counts
-	/// as studied, as it did before this cutoff existed.
-	///
-	/// **Seeks, never rescans.** The read starts past
-	/// `Publication::cursor_subject` on `idx_sessions_started_subject`, a
-	/// partial index of started sessions only, so a pass examines the sessions
-	/// of the subjects it returns — not everyone already reached (a real
-	/// `chatgpt-codex-connector` finding on #362).
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn audience(&self, publication: &Publication, limit: i64) -> Result<Vec<String>, sqlx::Error> {
-		let after = publication.cursor_subject.as_deref().unwrap_or("");
-		sqlx::query_scalar!(
-			r#"
-			SELECT DISTINCT subject_id AS "subject_id!"
-			FROM sessions INDEXED BY idx_sessions_started_subject
-			WHERE started_at IS NOT NULL AND subject_id > ?1
-				AND COALESCE(julianday(started_at) <= julianday(?3), 1)
-			ORDER BY subject_id
-			LIMIT ?2
-			"#,
-			after,
-			limit,
-			publication.detected_at
-		)
-		.fetch_all(&self.pool)
-		.await
-	}
-
-	/// Move a publication's cursor past `subject_id`: everyone up to and
-	/// including it has had the publication applied.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn advance_cursor(&self, publication_id: i64, subject_id: &str) -> Result<(), sqlx::Error> {
-		sqlx::query!("UPDATE curriculum_publication SET cursor_subject = ? WHERE id = ?", subject_id, publication_id)
-			.execute(&self.pool)
-			.await?;
-		Ok(())
-	}
-
-	/// Claim `(publication, subject)` before applying the signal. `true` means
-	/// this call made the claim and the caller should apply the signal; `false`
-	/// means it was already applied, and applying it again would drain twice.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn claim_delivery(&self, publication_id: i64, subject_id: &str, now: &str) -> Result<bool, sqlx::Error> {
-		let inserted = sqlx::query!(
-			"INSERT INTO curriculum_delivery (publication_id, subject_id, applied_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-			publication_id,
-			subject_id,
-			now
-		)
-		.execute(&self.pool)
-		.await?;
-		Ok(inserted.rows_affected() == 1)
-	}
-
-	/// Mark a publication's fan-out complete: its audience read came back short
-	/// of what was asked for and every subject in it was claimed, so everyone it
-	/// applies to has it.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn mark_fanned_out(&self, publication_id: i64, now: &str) -> Result<(), sqlx::Error> {
-		sqlx::query!("UPDATE curriculum_publication SET fanned_out_at = ? WHERE id = ?", now, publication_id)
-			.execute(&self.pool)
-			.await?;
-		Ok(())
 	}
 }
 
@@ -231,18 +140,33 @@ mod tests {
 	async fn the_catalogue_that_exists_at_migration_is_not_a_publication() {
 		let pool = pool().await;
 		let repo = PublicationRepository::new(pool.clone());
+		let baseline = repo.newest().await.unwrap().map(|publication| publication.id);
 		assert_eq!(repo.detect_activity_publications("2026-09-24T00:00:00+00:00").await.unwrap(), 0);
-		assert!(repo.pending(10).await.unwrap().is_empty());
+		assert_eq!(repo.newest().await.unwrap().map(|publication| publication.id), baseline, "the epoch did not move");
 	}
 
-	/// A delivery is claimed exactly once per (publication, subject).
+	/// A new activity, or a version bump, moves the epoch — once; detecting
+	/// again moves nothing.
 	#[tokio::test]
-	async fn a_delivery_is_claimed_once() {
+	async fn a_publication_moves_the_epoch_once() {
 		let pool = pool().await;
 		let repo = PublicationRepository::new(pool.clone());
-		assert!(repo.claim_delivery(1, "subject-a", "now").await.unwrap());
-		assert!(!repo.claim_delivery(1, "subject-a", "now").await.unwrap(), "a second claim is a replay");
-		assert!(repo.claim_delivery(2, "subject-a", "now").await.unwrap(), "a different publication is different news");
+		let before = repo.newest().await.unwrap().map_or(0, |publication| publication.id);
+		sqlx::query!(
+			"INSERT INTO activities (id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio) VALUES ('new-thing', 'n', 'd', 'hexagon', 'new-thing', 'study', 'ready', NULL, '2026-09-24T00:00:00Z', 1, '[]', '{}', NULL)"
+		)
+		.execute(&pool)
+		.await
+		.unwrap();
+		assert_eq!(repo.detect_activity_publications("now").await.unwrap(), 1);
+		assert_eq!(repo.detect_activity_publications("now").await.unwrap(), 0, "and never twice");
+		let newest = repo.newest().await.unwrap().unwrap();
+		assert!(newest.id > before);
+		assert_eq!((newest.source.as_str(), newest.curriculum_id.as_str(), newest.version), ("activity", "new-thing", 1));
+
+		sqlx::query!("UPDATE activities SET version = 2 WHERE id = 'new-thing'").execute(&pool).await.unwrap();
+		assert_eq!(repo.detect_activity_publications("now").await.unwrap(), 1, "a version bump is news again");
+		assert!(repo.newest().await.unwrap().unwrap().id > newest.id);
 	}
 
 	/// A catalogue over the detection ceiling is refused, never read as a
@@ -250,6 +174,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_over_ceiling_catalogue_is_refused_not_truncated() {
 		let pool = pool().await;
+		let baseline = PublicationRepository::new(pool.clone()).newest().await.unwrap();
 		let seeded: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM activities"#).fetch_one(&pool).await.unwrap();
 		for i in seeded..=super::ACTIVITY_DETECTION_CEILING {
 			let mut id = String::from("bulk-");
@@ -264,8 +189,9 @@ mod tests {
 		}
 		let result = PublicationRepository::new(pool.clone()).detect_activity_publications("now").await;
 		assert!(matches!(result, Err(super::PublicationError::OverCeiling { .. })), "{result:?}");
-		assert!(
-			PublicationRepository::new(pool.clone()).pending(10).await.unwrap().is_empty(),
+		assert_eq!(
+			PublicationRepository::new(pool.clone()).newest().await.unwrap(),
+			baseline,
 			"and nothing partial was recorded"
 		);
 	}
@@ -274,12 +200,16 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
-		let tables: i64 =
-			sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM sqlite_master WHERE type = 'table' AND name IN ('curriculum_publication', 'curriculum_delivery')"#)
-				.fetch_one(&pool)
-				.await
-				.unwrap();
-		assert_eq!(tables, 0, "down drops both tables");
+		let tables: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM sqlite_master WHERE type = 'table' AND name = 'curriculum_publication'"#)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(tables, 0, "down drops the log");
+		let watermark: i64 = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM pragma_table_info('engagement_gate') WHERE name = 'curriculum_epoch'"#)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(watermark, 0, "and the watermark column");
 		MIGRATOR.run(&pool).await.unwrap();
 		assert_eq!(
 			PublicationRepository::new(pool.clone()).detect_activity_publications("now").await.unwrap(),

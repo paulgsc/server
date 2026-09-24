@@ -1,65 +1,48 @@
 -- #273 (CAT5): "new material exists" becomes a fact the server notices, and
--- `StudySignal::CurriculumUpdated` gets its first producer.
+-- `StudySignal::CurriculumUpdated` gets its first producer — without fanning
+-- it out to anyone.
 --
 -- The catalogue arrives by migration, not by a write route (#271), so there is
 -- no request to hang "this was just published" on. Instead each waker pass
--- compares `activities` against this table: an `(id, version)` pair it has not
+-- compares `activities` against this log: an `(id, version)` pair it has not
 -- recorded is a publication -- a new row *or* a version bump, both of which are
--- new material to someone who has played the old one. #277 (CUR4) reuses the
--- same two tables for lesson content with `source = 'curriculum'`, rather than
--- growing a second mechanism.
+-- new material to someone who has played the old one. #277 (CUR4) appends
+-- lesson content to the same log with `source = 'curriculum'`.
 --
---   curriculum_publication -- one row per (source, curriculum_id, version) ever
---                             seen. `fanned_out_at` NULL means its audience is
---                             still being worked through; set once the fan-out
---                             has reached everyone it applies to.
---   curriculum_delivery    -- one row per (publication, subject) the signal has
---                             been applied to. The PRIMARY KEY is the
---                             idempotency guarantee: the row is claimed *before*
---                             the signal is folded, so re-running a publish --
---                             or a pass that crashed half-way through one --
---                             can never drain a subject twice. A crash between
---                             claim and fold costs that one subject that one
---                             drain, which is the right way round (the same
---                             reasoning as the waker's claim-before-send).
+-- FAN-OUT-ON-READ, NOT ON WRITE. Publishing is one append here, whatever the
+-- number of subjects. The log's `MAX(id)` is the **epoch**; each subject
+-- carries one watermark, `engagement_gate.curriculum_epoch` (below), the
+-- newest epoch already folded into their charge. The waker treats a subject
+-- behind the epoch as due and catches them up -- one drain, watermark advanced
+-- in the same transaction. Nothing records (publication, subject) pairs: state
+-- is O(1) per publication and O(1) per subject, never their product. See
+-- `docs/study-nudge.md`, "Scaling invariants".
 --
 -- No REFERENCES, matching every other table in this schema.
 CREATE TABLE curriculum_publication (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,   -- the epoch
     source         TEXT    NOT NULL,   -- 'activity' (#273); 'curriculum' is #277's
     curriculum_id  TEXT    NOT NULL,   -- the activity id; the signal's `curriculum_id`
     version        INTEGER NOT NULL,
     detected_at    TEXT    NOT NULL,   -- ISO-8601 UTC
-    fanned_out_at  TEXT,               -- ISO-8601 UTC; NULL while in progress
-    -- The last subject_id this publication's fan-out has applied to, in
-    -- subject order. The next pass's audience read seeks past it rather than
-    -- rescanning everyone already reached; NULL before the first batch.
-    cursor_subject TEXT,
 
     UNIQUE (source, curriculum_id, version)
 );
 
--- The waker's "what is still being fanned out" read.
-CREATE INDEX idx_curriculum_publication_pending ON curriculum_publication(fanned_out_at, id);
-
--- The audience read for a catalogue publication (subjects who have started a
--- session, in subject order, past the cursor) seeks this partial index
--- directly: it holds only started sessions, so a pass examines the sessions of
--- the subjects it returns, not the whole table's history.
-CREATE INDEX idx_sessions_started_subject ON sessions(subject_id) WHERE started_at IS NOT NULL;
-
-CREATE TABLE curriculum_delivery (
-    publication_id INTEGER NOT NULL,
-    subject_id     TEXT    NOT NULL,
-    applied_at     TEXT    NOT NULL,   -- ISO-8601 UTC
-
-    PRIMARY KEY (publication_id, subject_id)
-);
-
 -- THE BASELINE. Everything already in the catalogue when this lands is what the
--- app has been serving all along -- not new material to anyone. Recorded as
--- already fanned out, so the first pass after deploy announces nothing, rather
--- than draining every subject's freshness by 35 on the day this ships.
-INSERT INTO curriculum_publication (source, curriculum_id, version, detected_at, fanned_out_at)
-SELECT 'activity', id, version, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+-- app has been serving all along -- not new material to anyone.
+INSERT INTO curriculum_publication (source, curriculum_id, version, detected_at)
+SELECT 'activity', id, version, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 FROM activities;
+
+-- THE WATERMARK. Every gate row that exists today starts at the baseline epoch,
+-- so deploying this drains nobody. A gate row created later is stamped with the
+-- epoch current at its creation (`EngagementRepository`'s two inserts), so a
+-- subject who arrives after a publication is never behind it.
+ALTER TABLE engagement_gate ADD COLUMN curriculum_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE engagement_gate SET curriculum_epoch = (SELECT COALESCE(MAX(id), 0) FROM curriculum_publication);
+
+-- The second half of the waker's one query: `eligible_at <= now OR
+-- curriculum_epoch < epoch`, answered from this index and
+-- `idx_engagement_gate_eligible_at` together.
+CREATE INDEX idx_engagement_gate_curriculum_epoch ON engagement_gate(curriculum_epoch);
