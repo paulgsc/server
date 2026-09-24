@@ -1,0 +1,26 @@
+{
+  "source_sha": "87b139be90bdf11d42903246e2d41aa228dd2bda",
+  "include": [
+    {
+      "name": "file_host",
+      "dockerfile": "./infra/docker/Dockerfile.server",
+      "repo_suffix": "server",
+      "needs_sqlx": true,
+      "needs_migrations": true
+    },
+    {
+      "name": "maishatu-obs",
+      "dockerfile": "./infra/docker/Dockerfile.obs",
+      "repo_suffix": "obs",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "orchestrator",
+      "dockerfile": "./infra/docker/Dockerfile.orchestrator",
+      "repo_suffix": "orchestrator",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    }
+  ]
+}
