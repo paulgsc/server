@@ -11,4 +11,4 @@
 
 pub mod repository;
 
-pub use repository::{ChargeRow, EngagementRepository, GateRow};
+pub use repository::{ChargeRow, EngagementRepository, GateRow, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};

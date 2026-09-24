@@ -29,7 +29,7 @@ use crate::nudge::presence;
 use crate::{AppState, NudgeContext};
 use activity_repo::{default_session_name, provision, recommend, total_duration_ms, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT};
 use chrono::{DateTime, Utc};
-use engagement_repo::EngagementRepository;
+use engagement_repo::{EngagementRepository, INTERVENTION_LOG_RETENTION_DAYS, RETENTION_SWEEP_LIMIT};
 use intervention::{Admissibility, Calibration, Charge, Engine, Selector, Verdict};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
@@ -151,6 +151,9 @@ pub struct PassReport {
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
 	/// counts.
 	pub deadline_exceeded: bool,
+	/// `intervention_log` rows this pass's retention sweep deleted (#265,
+	/// SLI4) — see [`sweep_history`].
+	pub pruned: u64,
 }
 
 /// One pass. Public so a debug endpoint can force it without waiting.
@@ -197,10 +200,6 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	crate::metrics::waker::record_due(due.len());
 
 	let mut report = PassReport::default();
-	if due.is_empty() {
-		return Ok(report);
-	}
-
 	debug!(count = due.len(), "subjects the arithmetic marked eligible");
 
 	for gate in &due {
@@ -233,9 +232,44 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	if report.deferred > 0 || tokio::time::Instant::now() >= deadline {
 		report.deadline_exceeded = true;
 		crate::metrics::waker::record_deadline_exceeded();
+	} else {
+		// Housekeeping after the work people are waiting on, and only if the
+		// pass still has time: a pass that ran out has already left due
+		// subjects for the next one, and the sweep can wait with them.
+		report.pruned = sweep_history(&engagement, now).await;
 	}
 
 	Ok(report)
+}
+
+/// Enforce `intervention_log`'s retention horizon, one bounded bite per pass
+/// (#265, SLI4).
+///
+/// Run from the waker rather than a second scheduled task: the waker is
+/// already a bounded periodic loop with a cancellation token, so the sweep
+/// inherits both — and #264's pass deadline — for free. The delete is capped at
+/// `RETENTION_SWEEP_LIMIT`, so a first run against a table that has been
+/// growing since launch drains over several passes instead of becoming the
+/// long pole in one; with nothing past the horizon it is one index probe.
+///
+/// Returns how many rows went. A failure is logged and swallowed rather than
+/// failing the pass: retention is housekeeping, and the subjects this pass
+/// already handled were handled — `error!` still reaches the workspace-wide
+/// tracing-error panel.
+async fn sweep_history(engagement: &EngagementRepository, now: DateTime<Utc>) -> u64 {
+	let horizon = now - chrono::Duration::days(INTERVENTION_LOG_RETENTION_DAYS);
+	match engagement.prune_intervention_log(&horizon.to_rfc3339(), RETENTION_SWEEP_LIMIT).await {
+		Ok(pruned) => {
+			if pruned > 0 {
+				info!(pruned, horizon = %horizon, "intervention_log rows past the retention horizon deleted");
+			}
+			pruned
+		}
+		Err(err) => {
+			error!(error = %err, "intervention_log retention sweep failed; the next pass will try again");
+			0
+		}
+	}
 }
 
 /// Evaluate one subject, and act if the engine says so.
@@ -2854,6 +2888,108 @@ mod tests {
 			let failures: i64 = devices.iter().map(|device| device.failure_count).sum();
 			assert_eq!(failures, 1, "a device that was never tried is not recorded as failing");
 		});
+	}
+
+	/// #265 (SLI4): a pass deletes exactly the `intervention_log` rows decided
+	/// before the ninety-day horizon — sent or not — and nothing newer.
+	///
+	/// Driven through `run_once` with nothing due, because the quiet pass is
+	/// the one that runs most: the sweep must happen on a day with no work,
+	/// not only on a day with some.
+	#[tokio::test]
+	async fn a_pass_deletes_exactly_the_intervention_history_past_the_retention_horizon() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let now = Utc::now();
+		let horizon = Duration::days(INTERVENTION_LOG_RETENTION_DAYS);
+		// (label, decided_at, actuated_at)
+		let rows = [
+			("sent, a year ago", now - Duration::days(365), Some(now - Duration::days(365))),
+			("sent, a day past the horizon", now - horizon - Duration::days(1), Some(now - horizon - Duration::days(1))),
+			("claimed but never confirmed, past the horizon", now - horizon - Duration::days(1), None),
+			("sent, a day inside the horizon", now - horizon + Duration::days(1), Some(now - horizon + Duration::days(1))),
+			("claimed but never confirmed, today", now, None),
+		];
+		for (label, decided_at, actuated_at) in &rows {
+			let decided_at = decided_at.to_rfc3339();
+			let actuated_at = actuated_at.map(|at| at.to_rfc3339());
+			sqlx::query!(
+				"INSERT INTO intervention_log (subject_id, action_kind, action, decided_at, actuated_at) VALUES ('subject-history', ?, '{}', ?, ?)",
+				label,
+				decided_at,
+				actuated_at
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
+		let report = run_once(&pool, &nudge_context()).await.unwrap();
+		assert_eq!(report.pruned, 3, "the three rows decided before the horizon, and only those: {report:?}");
+
+		let survivors: Vec<String> = sqlx::query_scalar!(r#"SELECT action_kind AS "action_kind!" FROM intervention_log ORDER BY decided_at"#)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			survivors,
+			vec!["sent, a day inside the horizon".to_owned(), "claimed but never confirmed, today".to_owned()],
+			"a claimed-but-unconfirmed row is not exempt from the horizon, and is not deleted before it either"
+		);
+	}
+
+	/// #265 (SLI4): one sweep deletes at most `RETENTION_SWEEP_LIMIT` rows,
+	/// oldest first, so a first run against a table that has grown since
+	/// launch drains over several passes rather than becoming the long pole in
+	/// one.
+	#[tokio::test]
+	async fn one_retention_sweep_is_bounded_and_takes_the_oldest_rows_first() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		const EXTRA: i64 = 5;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		// `LIMIT + EXTRA` rows past the horizon, one minute apart, oldest first
+		// — so "which survive the first sweep" has exactly one right answer.
+		let now = Utc::now();
+		let oldest = now - Duration::days(INTERVENTION_LOG_RETENTION_DAYS * 2);
+		let engagement = EngagementRepository::new(pool.clone());
+		for minute in 0..RETENTION_SWEEP_LIMIT + EXTRA {
+			let decided_at = (oldest + Duration::minutes(minute)).to_rfc3339();
+			let label = numbered("row-", minute);
+			sqlx::query!(
+				"INSERT INTO intervention_log (subject_id, action_kind, action, decided_at, actuated_at) VALUES ('subject-backlog', ?, '{}', ?, ?)",
+				label,
+				decided_at,
+				decided_at
+			)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
+		let first = sweep_history(&engagement, now).await;
+		#[allow(clippy::cast_sign_loss)] // both are small positive constants
+		let limit = RETENTION_SWEEP_LIMIT as u64;
+		assert_eq!(first, limit, "a sweep never deletes more than its limit");
+
+		let survivors: Vec<String> = sqlx::query_scalar!(r#"SELECT action_kind AS "action_kind!" FROM intervention_log ORDER BY decided_at"#)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		let newest: Vec<String> = (RETENTION_SWEEP_LIMIT..RETENTION_SWEEP_LIMIT + EXTRA).map(|minute| numbered("row-", minute)).collect();
+		assert_eq!(survivors, newest, "the oldest rows go first, so what is left is the newest of the backlog");
+
+		#[allow(clippy::cast_sign_loss)]
+		let extra = EXTRA as u64;
+		assert_eq!(sweep_history(&engagement, now).await, extra, "the next sweep takes the remainder");
+		assert_eq!(sweep_history(&engagement, now).await, 0, "and after that there is nothing past the horizon");
 	}
 
 	/// Each class `classify_pass_error` can return is a real `sqlx::Error` a
