@@ -1,6 +1,16 @@
 use crate::model::{content_hash, CurriculumEntry, Level, ManifestEntry};
 use sqlx::{SqliteConnection, SqlitePool};
 
+/// The most lessons one manifest lists (#276).
+///
+/// The corpus grows and the manifest lists all of it, so the bound is in the
+/// query per #253 — and exceeding it is a refusal, never a silently short
+/// manifest, the same shape `activity_repo::CATALOG_CEILING` takes. At a few
+/// hundred bytes of metadata per entry this is well under a megabyte, and a
+/// corpus that outgrows it needs a paginated manifest, which the client's
+/// `TopikManifestSchema` does not describe yet.
+pub const MANIFEST_CEILING: i64 = 1_000;
+
 /// What [`CurriculumRepository::upsert`] did to one lesson.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
@@ -189,6 +199,20 @@ impl CurriculumRepository {
 			}
 		}
 		Ok(change)
+	}
+
+	/// One lesson's stored bytes and their hash, or `None` for a key this
+	/// table does not hold.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn body(&self, key: &str) -> Result<Option<(String, String)>, sqlx::Error> {
+		Ok(
+			sqlx::query!("SELECT content_hash, body FROM curriculum WHERE key = ?", key)
+				.fetch_optional(&self.pool)
+				.await?
+				.map(|row| (row.content_hash, row.body)),
+		)
 	}
 
 	/// Every lesson's manifest-facing row, by key, without bodies.

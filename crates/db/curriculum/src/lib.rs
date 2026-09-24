@@ -12,7 +12,7 @@ pub mod repository;
 
 pub use importer::{import_dir, ImportError, ImportReport, PUBLICATION_SOURCE};
 pub use model::{content_hash, CurriculumEntry, Level, ManifestEntry};
-pub use repository::{Change, CurriculumRepository};
+pub use repository::{Change, CurriculumRepository, MANIFEST_CEILING};
 
 #[cfg(test)]
 mod tests {
