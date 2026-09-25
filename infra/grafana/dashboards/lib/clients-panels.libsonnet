@@ -82,7 +82,12 @@ local timeSeriesOptions = {
   deviceConns: {
     title: 'DEVICE CONNS',
     type: 'stat',
-    targets: [{ expr: 'sum(ws_connections{state="connected"}) - sum(ws_client_connections{client_type="probe"})', instant: true, refId: 'A' }],
+    // Counted from the per-socket gauge itself rather than as WS CONNS minus
+    // PROBE: those two are different gauges (store size vs live sockets), and
+    // the difference between them is exactly the leaked store entries
+    // overview-panels.libsonnet's LEAKED ENTRIES counts — which this panel
+    // used to report as devices.
+    targets: [{ expr: 'sum(ws_client_connections{client_type!="probe"}) or on() (0 * max(ws_connections{state="connected"}))', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('none'),
     options: statOptions,
   },
@@ -95,7 +100,9 @@ local timeSeriesOptions = {
   probeConns: {
     title: 'PROBE',
     type: 'stat',
-    targets: [{ expr: 'sum(ws_client_connections{client_type="probe"})', instant: true, refId: 'A' }],
+    // Same fallback as DEVICE CONNS: a label value that has never been seen
+    // is 0, not "no data", as long as file_host itself is being scraped.
+    targets: [{ expr: 'sum(ws_client_connections{client_type="probe"}) or on() (0 * max(ws_connections{state="connected"}))', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('none'),
     options: statOptions,
   },

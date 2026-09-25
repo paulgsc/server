@@ -64,7 +64,9 @@ local timeSeriesOptions = {
   rateLimited: {
     title: 'RATE LIMITED',
     type: 'stat',
-    targets: [{ expr: 'sum(rate(rate_limit_decisions_total{outcome="rejected"}[5m]))', instant: true, refId: 'A' }],
+    // `rejected` doesn't exist as a series until the first rejection; read
+    // that as 0 as long as the limiter is reporting decisions at all.
+    targets: [{ expr: 'sum(rate(rate_limit_decisions_total{outcome="rejected"}[5m])) or (0 * sum(rate(rate_limit_decisions_total[5m])))', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('reqps'),
     options: statOptions,
   },
@@ -151,17 +153,22 @@ local timeSeriesOptions = {
   // either doesn't, and *empty* only when a source metric is genuinely
   // missing (correctly falling through to `panelDefaults.hardenAll`'s grey
   // "no data", applied in `dashboard.jsonnet`).
+  //
+  // `max(...)` on the capacity gauge and `or vector(0)` on the rejection
+  // rate: without them this read "no data" on a healthy server forever — a
+  // labelled capacity gauge never matches the label-free `sum` it is compared
+  // with, and `rejected` doesn't exist as a series until the first rejection.
   invariant: {
     title: 'INVARIANT: Traffic Above Limit ∧ Zero Rejections',
     type: 'stat',
     targets: [{
       expr: |||
         (
-          sum(rate(http_requests_total[1m])) > bool (rate_limit_capacity_per_minute / 60)
+          sum(rate(http_requests_total[1m])) > bool (max(rate_limit_capacity_per_minute) / 60)
         )
         *
         (
-          sum(rate(rate_limit_decisions_total{outcome="rejected"}[1m])) == bool 0
+          (sum(rate(rate_limit_decisions_total{outcome="rejected"}[1m])) or vector(0)) == bool 0
         )
       |||,
       instant: true,
