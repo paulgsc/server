@@ -36,9 +36,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY apps/ apps/
 
-# Optimize release build
-ENV CARGO_INCREMENTAL=0
-ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C embed-bitcode=yes"
+# Codegen flags live in the workspace's `[profile.release]`, not RUSTFLAGS
+# here: RUSTFLAGS is part of every crate's fingerprint, so setting it only
+# after cook made this build recompile every dependency cook had just built.
 
 # Build and strip binary
 RUN cargo build --release --bin some-obs
