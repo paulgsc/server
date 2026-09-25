@@ -230,7 +230,7 @@ local docLink(anchor) = [
     title: 'Uptime',
     type: 'stat',
     id: 907,
-    targets: [{ expr: 'time() - process_start_time_seconds', instant: true, refId: 'A' }],
+    targets: [{ expr: 'time() - process_start_time_seconds{job="file_host"}', instant: true, refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 's',
