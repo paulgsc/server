@@ -29,14 +29,27 @@ could grow unnoticed:
     for the same reason, so the local command can't be the way debt sneaks in
     either (again unless `--allow-growth`).
 
-A finding's identity is (file, lint, the source text it points at), counted.
-Not the line number, so an unrelated edit that shifts a finding down the file
-is not a new finding. Not just (file, lint) either: fixing one finding and
-introducing a different one of the same lint in the same file would then
-leave the count unchanged and pass. With the source text in the identity,
-that swap is a stale entry plus a new finding. The cost is deliberate: editing
-a line that carries recorded debt changes its identity, so a line you touch
-has to meet the bar — whitespace aside, which is normalised away.
+A finding's identity is (file, lint, enclosing item, the source text it
+points at), counted. Not the line number, so an unrelated edit that shifts a
+finding down the file is not a new finding. Each other part closes a swap that
+would otherwise leave the counts unchanged and pass:
+
+  * the source text — fixing one finding and adding a *different* one of the
+    same lint in the same file;
+  * the enclosing item (the nearest `fn`/`struct`/`enum`/`trait`/`mod`/`impl`
+    header at or above the finding) — removing one of several byte-identical
+    findings and adding the same line in another item. The workspace has
+    exactly this shape: 19 identical `println!` skip guards in one file, one
+    per test fn, whose neighbouring lines are identical too.
+
+The floor, stated rather than hidden: two byte-identical findings inside the
+*same* item are indistinguishable without line numbers, so removing one and
+adding the same line elsewhere in that item passes. The multiset of findings
+is unchanged by that edit; closing it would cost the line-shift immunity.
+
+The cost is deliberate: editing a line that carries recorded debt changes its
+identity, so a line you touch has to meet the bar — whitespace aside, which is
+normalised away — and so does renaming the item that contains it.
 
 Real compiler errors (`E0xxx`) and a build that did not finish always fail,
 baseline or not.
@@ -66,8 +79,37 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE = REPO_ROOT / "scripts" / "clippy_baseline.json"
 COMPILER_ERROR = re.compile(r"^E\d{4}$")
 WHITESPACE = re.compile(r"\s+")
+ITEM_HEADER = re.compile(
+	r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe|default)\s+|extern\s+\"[^\"]*\"\s+)*"
+	r"(?:(?P<kind>fn|struct|enum|trait|mod|union)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)|(?P<impl>impl\b[^{;]*))"
+)
 
-Key = tuple[str, str, str]  # (file, lint, source text)
+Key = tuple[str, str, str, str]  # (file, lint, enclosing item, source text)
+
+_sources: dict[str, list[str] | None] = {}
+
+
+def enclosing_item(file: str, line_start: int | None) -> str:
+	"""The nearest item header at or above `line_start`, e.g. `fn test_connect`.
+
+	Lexical, like the repo's other check scripts: it reads the file on disk,
+	which is the tree clippy just built.
+	"""
+	if line_start is None:
+		return ""
+	if file not in _sources:
+		path = REPO_ROOT / file
+		_sources[file] = path.read_text(encoding="utf-8").splitlines() if path.is_file() else None
+	lines = _sources[file]
+	if lines is None:
+		return ""
+	for index in range(min(line_start, len(lines)) - 1, -1, -1):
+		match = ITEM_HEADER.match(lines[index])
+		if match:
+			if match.group("impl"):
+				return WHITESPACE.sub(" ", match.group("impl")).strip()
+			return match.group("kind") + " " + match.group("name")
+	return ""
 
 
 def primary_span(message: dict) -> dict:
@@ -132,15 +174,15 @@ def read(stream) -> tuple[Counter, list[str], bool]:
 		if occurrence in seen:
 			continue
 		seen.add(occurrence)
-		findings[(file, code, source_text(span, message))] += 1
+		findings[(file, code, enclosing_item(file, span.get("line_start")), source_text(span, message))] += 1
 
 	return findings, errors, succeeded
 
 
 def to_json(findings: Counter) -> dict:
-	nested: dict[str, dict[str, dict[str, int]]] = {}
-	for (file, code, text), count in sorted(findings.items()):
-		nested.setdefault(file, {}).setdefault(code, {})[text] = count
+	nested: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+	for (file, code, item, text), count in sorted(findings.items()):
+		nested.setdefault(file, {}).setdefault(code, {}).setdefault(item or "<file scope>", {})[text] = count
 	return nested
 
 
@@ -148,9 +190,10 @@ def load(path: Path) -> Counter:
 	nested = json.loads(path.read_text(encoding="utf-8"))
 	counts: Counter = Counter()
 	for file, codes in nested.items():
-		for code, texts in codes.items():
-			for text, count in texts.items():
-				counts[(file, code, text)] = count
+		for code, items in codes.items():
+			for item, texts in items.items():
+				for text, count in texts.items():
+					counts[(file, code, "" if item == "<file scope>" else item, text)] = count
 	return counts
 
 
@@ -160,8 +203,8 @@ def exceeding(current: Counter, allowed: Counter) -> list[tuple[Key, int, int]]:
 
 def report(heading: str, rows: list[tuple[Key, int, int]]) -> None:
 	print(heading)
-	for (file, code, text), before, after in rows:
-		print(f"  {file}: {code} {before} -> {after}: {text[:120]}")
+	for (file, code, item, text), before, after in rows:
+		print(f"  {file} [{item or 'file scope'}]: {code} {before} -> {after}: {text[:120]}")
 
 
 def main() -> int:
@@ -192,7 +235,7 @@ def main() -> int:
 			print("(--allow-growth exists only for a clippy toolchain bump, which brings new lints.)")
 			return 1
 		BASELINE.write_text(json.dumps(to_json(findings), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-		files = len({file for file, _, _ in findings})
+		files = len({file for file, *_ in findings})
 		print(f"wrote {sum(findings.values())} findings across {files} files to {BASELINE.relative_to(REPO_ROOT)}")
 		return 0
 

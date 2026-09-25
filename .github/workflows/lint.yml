@@ -53,6 +53,7 @@ jobs:
             migrations/**
             .cargo/**
             clippy.toml
+            .rustfmt.toml
             rustfmt.toml
             rust-toolchain
             scripts/check_clippy_baseline.py
@@ -93,7 +94,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Enforce the #[instrument] skip policy
-        run: python3 scripts/check_instrument_skip.py
+        run: |
+          python3 scripts/check_instrument_skip.py --self-test
+          python3 scripts/check_instrument_skip.py
 
       # Same database setup as test.yml: `sqlx::query!` checks SQL against a
       # migrated schema at compile time, so clippy cannot build without it.
