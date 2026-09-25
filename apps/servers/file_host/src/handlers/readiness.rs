@@ -106,7 +106,11 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, sqlx::query("SELECT 1").fetch_one(pool)).await;
 	match result {
-		Ok(Ok(_)) => DependencyStatus { name: "sqlite", healthy: true, error: None },
+		Ok(Ok(_)) => DependencyStatus {
+			name: "sqlite",
+			healthy: true,
+			error: None,
+		},
 		Ok(Err(e)) => DependencyStatus {
 			name: "sqlite",
 			healthy: false,
@@ -127,7 +131,11 @@ async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, crate::schema::drift(pool, &crate::schema::MIGRATOR)).await;
 	match result {
-		Ok(Ok(drift)) if drift.is_current() => DependencyStatus { name: "schema", healthy: true, error: None },
+		Ok(Ok(drift)) if drift.is_current() => DependencyStatus {
+			name: "schema",
+			healthy: true,
+			error: None,
+		},
 		Ok(Ok(drift)) => DependencyStatus {
 			name: "schema",
 			healthy: false,
@@ -152,7 +160,11 @@ async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 /// does not need `DEPENDENCY_CHECK_TIMEOUT`.
 fn check_nats(state: &AppState) -> DependencyStatus {
 	if state.realtime.transport.is_connected() {
-		DependencyStatus { name: "nats", healthy: true, error: None }
+		DependencyStatus {
+			name: "nats",
+			healthy: true,
+			error: None,
+		}
 	} else {
 		DependencyStatus {
 			name: "nats",
@@ -171,7 +183,11 @@ async fn check_redis(state: &AppState) -> DependencyStatus {
 	.await;
 
 	match result {
-		Ok(Ok(_)) => DependencyStatus { name: "redis", healthy: true, error: None },
+		Ok(Ok(_)) => DependencyStatus {
+			name: "redis",
+			healthy: true,
+			error: None,
+		},
 		Ok(Err(e)) => DependencyStatus {
 			name: "redis",
 			healthy: false,

@@ -9,7 +9,7 @@ pub struct HealthResponse {
 }
 
 #[axum::debug_handler]
-#[instrument(name = "health")]
+#[instrument(name = "health", skip_all)]
 pub async fn health() -> (StatusCode, Json<HealthResponse>) {
 	let response = HealthResponse {
 		status: "healthy",

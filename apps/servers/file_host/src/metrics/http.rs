@@ -127,9 +127,18 @@ mod tests {
 	/// `{name}` where axum expects `:name`, or a `/api/v1` nesting mismatch).
 	#[tokio::test]
 	async fn matched_path_equals_route_inventory_full_path() {
-		let versioned: Router = ROUTES.iter().filter(|r| r.versioned).fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
-		let unversioned: Router = ROUTES.iter().filter(|r| !r.versioned).fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
-		let app = Router::new().nest(crate::API_V1_BASE_PATH, versioned).merge(unversioned).layer(axum::middleware::from_fn(record_matched_path));
+		let versioned: Router = ROUTES
+			.iter()
+			.filter(|r| r.versioned)
+			.fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
+		let unversioned: Router = ROUTES
+			.iter()
+			.filter(|r| !r.versioned)
+			.fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
+		let app = Router::new()
+			.nest(crate::API_V1_BASE_PATH, versioned)
+			.merge(unversioned)
+			.layer(axum::middleware::from_fn(record_matched_path));
 
 		let inventory_paths: BTreeSet<String> = ROUTES.iter().map(RouteDescriptor::full_path).collect();
 
