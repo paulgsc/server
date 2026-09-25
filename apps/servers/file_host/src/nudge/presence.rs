@@ -199,7 +199,6 @@ mod tests {
 		use crate::websocket::{connection::client_type_label, WebSocketFsm};
 		use axum::http::HeaderMap;
 		use sqlx::sqlite::SqlitePoolOptions;
-		use std::net::SocketAddr;
 		use tokio_util::sync::CancellationToken;
 
 		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -216,16 +215,14 @@ mod tests {
 		let ws = WebSocketFsm::new();
 		let mut headers = HeaderMap::new();
 		headers.insert("x-probe-source", "blackbox-exporter".parse().unwrap());
-		let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-		let client_id = ws.client_id_from_request(&headers, &addr);
+		let peer = crate::net::peer_key("127.0.0.1:9999".parse().unwrap());
+		let client_id = ws.client_id_from_request(&headers, &peer);
 		assert_eq!(
 			client_type_label(&client_id),
 			"probe",
 			"sanity check: this is the same probe tagging presence used to trust"
 		);
-		ws.add_connection(&headers, &addr, &CancellationToken::new())
-			.await
-			.expect("the probe's connection is accepted like any other");
+		ws.add_connection(&headers, &peer, &CancellationToken::new()).await.unwrap(); // the probe's connection is accepted like any other
 
 		// No presence lease was ever written for this subject — nobody real
 		// is looking at anything. `observe` has no `ws` argument to consult,

@@ -1,8 +1,11 @@
-use crate::AppState;
+use crate::{
+	net::{Peer, PeerKey},
+	AppState,
+};
 use axum::{
 	extract::{
 		ws::{WebSocket, WebSocketUpgrade},
-		ConnectInfo, FromRef, State,
+		FromRef, State,
 	},
 	http::{HeaderMap, StatusCode},
 	response::IntoResponse,
@@ -10,7 +13,7 @@ use axum::{
 	Router,
 };
 use futures::stream::StreamExt;
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -170,8 +173,12 @@ impl Drop for ConnectionCleanup {
 	}
 }
 
-async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> impl IntoResponse {
-	let client_id = addr.ip().to_string();
+async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, Peer { key: peer, admission }: Peer, headers: HeaderMap) -> impl IntoResponse {
+	// Never the raw address (#372). Admission is counted under the
+	// process-stable `AdmissionKey`, so a connection held across midnight
+	// still counts against the same client's allowance; the daily `PeerKey`
+	// is what these log lines name. `ConnectionGuard` logs no client key.
+	let client_id = peer.to_string();
 	let cancel_token = state.core.cancel_token.clone();
 	info!("Incoming WS request from {client_id}");
 
@@ -182,8 +189,8 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 	}
 
 	// Wrap acquire in a timeout (e.g., 5 seconds)
-	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(client_id.clone())).await {
-		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, addr, permit, cancel_token)),
+	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(admission.into_string())).await {
+		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, peer, permit, cancel_token)),
 		Ok(Err(err)) => {
 			use AcquireErrorKind::*;
 			let (reason, metric_reason) = match err.kind {
@@ -207,7 +214,7 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 }
 
 /// Orchestrates the WebSocket connection lifecycle
-async fn handle_socket(socket: WebSocket, state: AppState, headers: HeaderMap, addr: SocketAddr, permit: ConnectionPermit, cancel_token: CancellationToken) {
+async fn handle_socket(socket: WebSocket, state: AppState, headers: HeaderMap, peer: PeerKey, permit: ConnectionPermit, cancel_token: CancellationToken) {
 	let (mut sender, receiver) = socket.split();
 
 	// Direct WS client channel (mpsc)
@@ -217,14 +224,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, headers: HeaderMap, a
 	let ws_fsm = state.realtime.ws;
 
 	// Establish connection through FSM
-	let conn_key = match establish_connection(&ws_fsm, &headers, &addr, &cancel_token).await {
-		Ok(connection) => connection,
-		Err(_) => {
-			return;
-		}
+	let Ok(conn_key) = establish_connection(&ws_fsm, &headers, &peer, &cancel_token).await else {
+		return;
 	};
 
-	let client_type = client_type_label(&ws_fsm.client_id_from_request(&headers, &addr));
+	let client_type = client_type_label(&ws_fsm.client_id_from_request(&headers, &peer));
 
 	if send_initial_handshake(&mut sender).await.is_err() {
 		clear_connection(&ws_fsm, &conn_key, client_type).await;
@@ -332,7 +336,7 @@ mod tests {
 			rt.block_on(async {
 				let fsm = WebSocketFsm::new();
 				let headers = HeaderMap::new();
-				let addr: SocketAddr = "127.0.0.1:9999".parse().expect("valid socket addr");
+				let peer = crate::net::peer_key("127.0.0.1:9999".parse().unwrap());
 				let cancel = CancellationToken::new();
 
 				// "Opening a WebSocket": the store-level half of connection
@@ -341,7 +345,7 @@ mod tests {
 				// and gauge storage back to zero as it reads it, so an
 				// intermediate check here would consume the very count the
 				// assertions below are looking for.
-				let key = fsm.add_connection(&headers, &addr, &cancel).await.expect("add_connection");
+				let key = fsm.add_connection(&headers, &peer, &cancel).await.unwrap();
 
 				// "Closing it": the store entry goes first, the way every
 				// real removal path in `message`/`broadcast` handlers calls
@@ -397,8 +401,8 @@ mod tests {
 
 			rt.block_on(async {
 				let fsm = WebSocketFsm::new();
-				let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-				let key = fsm.add_connection(&HeaderMap::new(), &addr, &CancellationToken::new()).await.unwrap();
+				let peer = crate::net::peer_key("127.0.0.1:9999".parse().unwrap());
+				let key = fsm.add_connection(&HeaderMap::new(), &peer, &CancellationToken::new()).await.unwrap();
 				assert_eq!(fsm.store.len(), 1);
 
 				drop(ConnectionCleanup {

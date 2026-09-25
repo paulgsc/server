@@ -14,7 +14,10 @@ pub mod handlers;
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod net;
 pub mod nudge;
+#[cfg(test)]
+mod privacy;
 pub mod rate_limiter;
 pub mod routes;
 pub mod schema;

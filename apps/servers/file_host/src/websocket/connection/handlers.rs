@@ -1,16 +1,15 @@
 use super::errors::ConnectionError;
-use crate::WebSocketFsm;
+use crate::{net::PeerKey, WebSocketFsm};
 use axum::extract::ws::{Message, WebSocket};
 use axum::http::HeaderMap;
 use futures::sink::SinkExt;
 use futures::stream::SplitSink;
-use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use ws_events::events::Event;
 
-pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
-	let key = state.add_connection(headers, addr, cancel_token).await?;
+pub async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, peer: &PeerKey, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
+	let key = state.add_connection(headers, peer, cancel_token).await?;
 	info!(connection_id = %key, "WebSocket connection established");
 	Ok(key)
 }
@@ -28,7 +27,7 @@ pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Mes
 /// `ConnectionCleanup` (`websocket.rs`) — the handshake send failed before
 /// that guard was ever constructed, so nothing else will record its removal.
 /// `client_type` is passed in by the caller (recomputed from the same
-/// headers/addr `add_connection` used) rather than looked up here, since the
+/// headers/peer `add_connection` used) rather than looked up here, since the
 /// store entry is gone by the time this returns.
 ///
 /// Recorded as `client_disconnect`, not `error`: the handshake is the first

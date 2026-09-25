@@ -173,19 +173,19 @@ impl ConnectionPermit {
 		if let Some(mut client_state) = self.guard.clients.get_mut(&self.client_id) {
 			// decrement active count
 			let active = client_state.active.fetch_sub(1, Ordering::SeqCst);
-			tracing::info!("ConnectionPermit released for client {} (active={})", self.client_id, active - 1);
+			tracing::info!(active = active - 1, "ConnectionPermit released");
 
 			// wake next queued connection if any
 			if let Some(waiter) = client_state.queue.pop_front() {
 				let _ = waiter.send(());
-				debug!("Client {} dequeued into active slot", self.client_id);
+				debug!("queued client dequeued into active slot");
 			}
 
 			// cleanup if empty
 			if client_state.active.load(Ordering::SeqCst) == 0 && client_state.queue.is_empty() {
 				drop(client_state); // Release before remove
 				self.guard.clients.remove(&self.client_id);
-				debug!("Client state cleaned up for {}", self.client_id);
+				debug!("idle client state cleaned up");
 			}
 		}
 	}
@@ -223,13 +223,19 @@ impl ConnectionGuard {
 	/// Acquires a connection permit for `client_id`, queueing the caller if the
 	/// client is already at its per-client limit.
 	///
+	/// `client_id` is never logged, here or when the permit is released. The
+	/// accounting needs a key that is stable for as long as a connection can
+	/// stay open, and a stable key in a log line would link a client across
+	/// days (`file_host` passes its process-stable `net::AdmissionKey`; see
+	/// its `docs/identity.md`).
+	///
 	/// # Errors
 	///
 	/// Returns [`AcquireErrorKind::GlobalLimit`] if the global semaphore has
 	/// been closed, and [`AcquireErrorKind::QueueFull`] if the client is at its
 	/// per-client limit and its wait queue is already full.
 	pub async fn acquire(&self, client_id: String) -> Result<ConnectionPermit, AcquireError> {
-		info!("Client {} attempting to acquire connection permit", client_id);
+		info!("client attempting to acquire connection permit");
 
 		// fast global check
 		let global_permit = self.inner.global.clone().acquire_owned().await.map_err(|_| AcquireError {
@@ -245,7 +251,7 @@ impl ConnectionGuard {
 
 		if active_count < MAX_PER_CLIENT {
 			client_state.active.fetch_add(1, Ordering::SeqCst);
-			info!("Client {} acquired active slot ({}/{})", client_id, active_count + 1, MAX_PER_CLIENT);
+			info!(active = active_count + 1, max = MAX_PER_CLIENT, "client acquired active slot");
 			return Ok(ConnectionPermit {
 				_global: global_permit,
 				client_id,
@@ -256,12 +262,7 @@ impl ConnectionGuard {
 		if client_state.queue.len() < MAX_QUEUE_PER_CLIENT {
 			let (tx, rx) = oneshot::channel();
 			client_state.queue.push_back(tx);
-			info!(
-				"Client {} queued for connection slot (queue={}/{})",
-				client_id,
-				client_state.queue.len(),
-				MAX_QUEUE_PER_CLIENT
-			);
+			info!(queue = client_state.queue.len(), max = MAX_QUEUE_PER_CLIENT, "client queued for connection slot");
 			drop(client_state); // Release lock before awaiting
 
 			let _ = rx.await;
@@ -277,10 +278,9 @@ impl ConnectionGuard {
 			client_state.active.fetch_add(1, Ordering::SeqCst);
 
 			info!(
-				"Client {} dequeued into active slot ({}/{})",
-				client_id,
-				client_state.active.load(Ordering::SeqCst),
-				MAX_PER_CLIENT
+				active = client_state.active.load(Ordering::SeqCst),
+				max = MAX_PER_CLIENT,
+				"client dequeued into active slot"
 			);
 			return Ok(ConnectionPermit {
 				_global: global_permit,
@@ -290,7 +290,7 @@ impl ConnectionGuard {
 		}
 
 		drop(global_permit);
-		info!("Client {} connection rejected: queue full", client_id);
+		info!("client connection rejected: queue full");
 		Err(AcquireError {
 			kind: AcquireErrorKind::QueueFull,
 		})
