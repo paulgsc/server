@@ -18,6 +18,17 @@
 //! client's burst must not starve another), and nothing may treat it as "who".
 //! Identity is [`crate::subject::SubjectId`]'s alone. See `docs/identity.md`.
 //!
+//! Accounting that outlives a day needs a key that doesn't rotate under it:
+//! a WebSocket held open across midnight keeps its admission permit, and if
+//! the next connection from the same address were counted under the new day's
+//! key, it would get a fresh per-client allowance — a client could stack
+//! connections up to the global limit by outlasting rotations. That is what
+//! [`AdmissionKey`] is for: the same keyed digest over a secret that lives as
+//! long as the process. Because it *doesn't* rotate, it would link a client
+//! across days if it were logged, so it can't be: it has no `Display`, its
+//! `Debug` is redacted, and `ws_conn_manager::ConnectionGuard` — the one thing
+//! it is handed to — logs no client key at all.
+//!
 //! The digest is SHA-256 over `secret || address`. The input is fixed-length
 //! and the output is only ever compared for equality, so length extension (the
 //! usual reason to prefer HMAC) gives an attacker nothing here.
@@ -74,27 +85,66 @@ struct Keyer {
 
 impl Keyer {
 	fn fresh(day: u64) -> Self {
-		let mut secret = [0u8; 32];
-		rand::rng().fill_bytes(&mut secret);
-		Self { day, secret }
+		Self { day, secret: random_secret() }
 	}
 
 	fn key(&mut self, ip: IpAddr, day: u64) -> PeerKey {
 		if day != self.day {
 			*self = Self::fresh(day);
 		}
-		let mut digest = Sha256::new();
-		digest.update(self.secret);
-		// Canonical form, so `::ffff:10.0.0.1` and `10.0.0.1` are one client.
-		match ip.to_canonical() {
-			IpAddr::V4(v4) => digest.update(v4.octets()),
-			IpAddr::V6(v6) => digest.update(v6.octets()),
-		}
-		PeerKey(hex::encode(&digest.finalize()[..KEY_BYTES]))
+		PeerKey(keyed(&self.secret, ip))
 	}
 }
 
+fn random_secret() -> [u8; 32] {
+	let mut secret = [0u8; 32];
+	rand::rng().fill_bytes(&mut secret);
+	secret
+}
+
+fn keyed(secret: &[u8; 32], ip: IpAddr) -> String {
+	let mut digest = Sha256::new();
+	digest.update(secret);
+	// Canonical form, so `::ffff:10.0.0.1` and `10.0.0.1` are one client.
+	match ip.to_canonical() {
+		IpAddr::V4(v4) => digest.update(v4.octets()),
+		IpAddr::V6(v6) => digest.update(v6.octets()),
+	}
+	hex::encode(&digest.finalize()[..KEY_BYTES])
+}
+
 static KEYER: LazyLock<Mutex<Keyer>> = LazyLock::new(|| Mutex::new(Keyer::fresh(today())));
+
+/// The admission secret: generated once, never rotated, never persisted.
+static ADMISSION_SECRET: LazyLock<[u8; 32]> = LazyLock::new(random_secret);
+
+/// A client's address, reduced to a key stable for this process's whole life.
+///
+/// For accounting that must not reset at midnight (see the module docs).
+/// Never logged: no `Display`, and `Debug` is redacted.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct AdmissionKey(String);
+
+impl AdmissionKey {
+	/// For handing to `ConnectionGuard`, whose API is `String`-keyed and which
+	/// logs no client key.
+	#[must_use]
+	pub fn into_string(self) -> String {
+		self.0
+	}
+}
+
+impl fmt::Debug for AdmissionKey {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str("AdmissionKey([redacted])")
+	}
+}
+
+/// The process-stable admission key for the socket's own peer address.
+#[must_use]
+pub fn admission_key(addr: SocketAddr) -> AdmissionKey {
+	AdmissionKey(keyed(&ADMISSION_SECRET, addr.ip()))
+}
 
 fn today() -> u64 {
 	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() / SECONDS_PER_DAY)
@@ -130,12 +180,17 @@ pub fn forwarded_peer_key(headers: &axum::http::HeaderMap) -> Option<PeerKey> {
 /// The key every request shares when the router has no connection info.
 pub const UNKNOWN_PEER: &str = "unknown-peer";
 
-/// Extracts the requesting peer's [`PeerKey`].
+/// Extracts the requesting peer's keys: the daily [`PeerKey`] for fairness and
+/// logs, and the process-stable [`AdmissionKey`] for accounting that outlives a
+/// day.
 ///
 /// The one place in the crate allowed to read `ConnectInfo` — `clippy.toml`
 /// disallows the type everywhere else, so a handler can't go around this and
 /// hold the raw address.
-pub struct Peer(pub PeerKey);
+pub struct Peer {
+	pub key: PeerKey,
+	pub admission: AdmissionKey,
+}
 
 #[axum::async_trait]
 impl<S: Send + Sync> FromRequestParts<S> for Peer {
@@ -150,7 +205,16 @@ impl<S: Send + Sync> FromRequestParts<S> for Peer {
 		// Neither present means a router built without
 		// `into_make_service_with_connect_info` — a test harness, in practice.
 		// One shared bucket is the honest answer: there is no peer to key.
-		Ok(Self(addr.map_or_else(|| PeerKey(UNKNOWN_PEER.to_owned()), peer_key)))
+		Ok(addr.map_or_else(
+			|| Self {
+				key: PeerKey(UNKNOWN_PEER.to_owned()),
+				admission: AdmissionKey(UNKNOWN_PEER.to_owned()),
+			},
+			|addr| Self {
+				key: peer_key(addr),
+				admission: admission_key(addr),
+			},
+		))
 	}
 }
 
@@ -207,6 +271,30 @@ mod tests {
 		let tuesday = keyer.key("10.0.0.1".parse().unwrap(), 11);
 		assert_ne!(monday, tuesday);
 		assert_ne!(before, keyer.secret, "the secret is replaced, not reused");
+	}
+
+	/// Codex P2 on #374: the admission key must not reset at midnight, or a
+	/// client that holds connections across the rotation gets a fresh
+	/// per-client allowance each day.
+	#[test]
+	fn the_admission_key_survives_the_daily_rotation_that_the_peer_key_does_not() {
+		let mut keyer = Keyer::fresh(10);
+		let ip: IpAddr = "10.0.0.1".parse().unwrap();
+		let monday = keyer.key(ip, 10);
+		let tuesday = keyer.key(ip, 11);
+		assert_ne!(monday, tuesday, "sanity check: the peer key rotated");
+		assert_eq!(admission_key(addr("10.0.0.1")), admission_key(addr("10.0.0.1")));
+		assert_ne!(admission_key(addr("10.0.0.1")), admission_key(addr("10.0.0.2")));
+	}
+
+	#[test]
+	fn an_admission_key_is_unrelated_to_the_peer_key_and_redacted_in_debug() {
+		use std::fmt::Write;
+		let admission = admission_key(addr("10.0.0.1"));
+		let mut debug = String::new();
+		write!(debug, "{admission:?}").unwrap();
+		assert_eq!(debug, "AdmissionKey([redacted])");
+		assert_ne!(admission.into_string(), peer_key(addr("10.0.0.1")).as_str());
 	}
 
 	#[test]

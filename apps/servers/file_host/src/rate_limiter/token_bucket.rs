@@ -22,7 +22,7 @@ use tracing::warn;
 /// an error while refilling.
 pub async fn rate_limit_middleware(
 	State(limiter): State<Arc<PartitionedTokenBucketLimiter>>,
-	Peer(peer): Peer,
+	Peer { key: peer, .. }: Peer,
 	request: axum::http::Request<Body>,
 	next: Next,
 ) -> Result<Response, RateLimitError> {

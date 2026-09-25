@@ -11,9 +11,9 @@ sees it. `X-Client-ID` is on the list for the opposite reason: it is a client
 asserting an identity, and #372 removed the code that believed it.
 
 So this fails on any *read* of those headers — `.get(...)`, `.get_all(...)`,
-`.contains_key(...)`, `.remove(...)` with the name as a string literal or as
-an `http::header` constant, borrowed or not — in Rust source under `apps/` or `crates/`,
-outside the allowlist below. Writes are fine (tests build requests carrying
+`.contains_key(...)`, `.remove(...)`, or `HeaderMap` indexing (`headers[...]`),
+with the name as a string literal or as an `http::header` constant, borrowed or
+not — in Rust source under `apps/` or `crates/`, outside the allowlist below. Writes are fine (tests build requests carrying
 these headers to prove they are ignored), so `.insert(...)` is not matched.
 
 The clippy half of the same boundary — `axum::extract::ConnectInfo`, the raw
@@ -46,12 +46,17 @@ ALLOWED = {
 HEADER_NAMES = ["user-agent", "x-forwarded-for", "x-real-ip", "forwarded", "cf-connecting-ip", "true-client-ip", "x-client-id"]
 HEADER_CONSTANTS = ["USER_AGENT", "FORWARDED"]
 
-READ = re.compile(
-	r"\.(?:get|get_all|contains_key|remove)\(\s*&?\s*"
-	r"(?:"
+_HEADER = (
+	r"&?\s*(?:"
 	r'"(?P<literal>' + "|".join(re.escape(name) for name in HEADER_NAMES) + r')"'
 	r"|(?:[A-Za-z_][A-Za-z0-9_]*::)*(?P<constant>" + "|".join(HEADER_CONSTANTS) + r")\b"
-	r")",
+	r")"
+)
+# A method call (`.get(...)` and friends), or `HeaderMap` indexing
+# (`headers["user-agent"]`, `&headers[header::USER_AGENT]`), whose `[` follows
+# an expression — so a one-element array literal `["user-agent"]` isn't one.
+READ = re.compile(
+	r"(?:\.(?:get|get_all|contains_key|remove)\(\s*|(?<=[\w)\]])\s*\[\s*)" + _HEADER,
 	re.IGNORECASE,
 )
 
@@ -77,6 +82,9 @@ SHOULD_FLAG = [
 	"headers.get(&header::USER_AGENT)",
 	"headers.get(& USER_AGENT)",
 	'headers.get(&"x-forwarded-for")',
+	'let ua = headers["user-agent"].to_str();',
+	"let ua = &headers[header::USER_AGENT];",
+	'req.headers()["X-Forwarded-For"]',
 	'headers.remove("cf-connecting-ip")',
 ]
 SHOULD_PASS = [
@@ -86,6 +94,8 @@ SHOULD_PASS = [
 	"headers.get(CONTENT_TYPE)",
 	'headers.get("x-forwarded-for-ish")',
 	'let user_agent = "user-agent";',
+	'const NAMES: [&str; 1] = ["user-agent"];',
+	'headers["content-type"]',
 ]
 
 

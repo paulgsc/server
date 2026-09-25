@@ -16,12 +16,13 @@ still exposed — stated rather than assumed.
 
 ## Who owns "who is calling"
 
-There are three handles on a request. Exactly one of them is an identity.
+There are four handles on a request. Exactly one of them is an identity.
 
 | Handle | What it is | Identity? |
 |---|---|---|
 | `subject::SubjectId` | The subject a request acts for. Decided in one place, the extractor in `subject.rs`. | **Yes, the only one.** |
-| `net::PeerKey` | A keyed, daily-rotating hash of the peer's address. Used by the rate limiter and WebSocket admission for fairness. | No |
+| `net::PeerKey` | A keyed, daily-rotating hash of the peer's address. Used by the rate limiter for fairness, and named in log lines. | No |
+| `net::AdmissionKey` | The same keyed hash over a secret that lives as long as the process. Used for WebSocket admission accounting. **Never logged.** | No |
 | `ws_connection::ClientId` | `probe:` / `proxy:<PeerKey>` / `direct:<PeerKey>`. Groups WebSocket connections for metric labels. | No |
 
 Until #372 there were three identities and none had an owner. The rate limiter
@@ -42,6 +43,16 @@ labelled `auth`. Nothing authenticated that header, and no client sent it.
   secret is dropped, nothing can recompute that day's keys, including a later
   memory dump of the process. A key in yesterday's logs can no longer be tied to
   an address.
+- **A second, process-stable key for accounting that outlives a day.** A
+  WebSocket held open across midnight keeps its admission permit. If the next
+  connection from the same address were counted under the new day's
+  `PeerKey`, it would get a fresh per-client allowance, and a client could
+  stack connections up to the global limit by outlasting rotations. So
+  `ConnectionGuard` counts under an `AdmissionKey` instead. Because it doesn't
+  rotate, it would link a client across days if it ever reached a log line,
+  so it can't: it has no `Display`, its `Debug` is redacted, and
+  `ConnectionGuard` logs no client key at all. It lives only in memory, and is
+  gone with the process.
 - **Not an identity.** The first `X-Forwarded-For` hop is client-controlled.
   Forging it buys a caller a different fairness bucket and nothing else, which is
   only acceptable because nothing treats a `PeerKey` as "who".
@@ -81,8 +92,9 @@ nowhere is marked as such and belongs to review.
    through `lint.yml`'s clippy ratchet: `net::Peer` is the one `#[allow]`. Also by
    `file_host::privacy`'s capturing-layer tests. They record every field of every
    event and span on the rate limiter's rejection path and on WebSocket
-   admission, the two paths that logged an address before #372, and fail if an
-   address appears anywhere in them.
+   admission, the two paths that logged an address before #372, and on
+   `ConnectionGuard`'s permit accounting, and fail if an address, or the
+   process-stable admission key, appears anywhere in them.
 
 3. **Fingerprinting headers are read only in `net.rs`.** These are
    `User-Agent`, `X-Forwarded-For`, `X-Real-IP`, `Forwarded` and the CDN

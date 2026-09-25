@@ -10,9 +10,10 @@
 //!   fails here until someone decides which it is.
 //! - **No address reaches a log line.** A capturing `tracing` layer records
 //!   every field of every event and span on the paths that used to log one —
-//!   the rate limiter's rejection and a WebSocket connection's admission
-//!   (#372) — and the test fails if an address appears in any of them, however
-//!   it got there (a field, a formatted message, a `Debug` of a struct).
+//!   the rate limiter's rejection, a WebSocket connection's admission (#372)
+//!   and `ConnectionGuard`'s permit accounting — and the test fails if an
+//!   address appears in any of them, however it got there (a field, a
+//!   formatted message, a `Debug` of a struct).
 //!
 //! The static half of the same boundary lives in clippy.toml
 //! (`disallowed-types`: `ConnectInfo`) and `scripts/check_privacy.py`
@@ -253,4 +254,30 @@ async fn admitting_a_websocket_connection_logs_no_address() {
 		captured.lines()
 	);
 	captured.assert_no_address(&["10.1.2.3", "10.9.8.7"]);
+}
+
+/// Codex P2 on #374: admission is counted under the process-stable
+/// `AdmissionKey` so a connection held across midnight still counts, which
+/// makes that key linkable across days — so `ConnectionGuard` must never log
+/// it. Acquire and release both log; neither may name the key or the address.
+#[tokio::test]
+async fn connection_admission_logs_neither_the_admission_key_nor_the_address() {
+	let (captured, _guard) = capture();
+	let guard = ws_conn_manager::ConnectionGuard::new();
+	let addr = SocketAddr::from(([10, 1, 2, 3], 5555));
+	let key = crate::net::admission_key(addr).into_string();
+
+	let permits = [
+		guard.acquire(key.clone()).await.unwrap(),
+		guard.acquire(crate::net::admission_key(addr).into_string()).await.unwrap(),
+	];
+	assert_eq!(guard.active_per_client(&key), 2, "sanity check: both counted against one client");
+	permits.into_iter().for_each(ws_conn_manager::ConnectionPermit::release);
+
+	let lines = captured.lines();
+	assert!(lines.iter().any(|line| line.contains("acquired active slot")), "{lines:#?}");
+	for line in &lines {
+		assert!(!line.contains(&key), "the admission key reached a log line: {line}");
+	}
+	captured.assert_no_address(&["10.1.2.3"]);
 }

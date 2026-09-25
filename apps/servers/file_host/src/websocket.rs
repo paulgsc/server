@@ -173,10 +173,11 @@ impl Drop for ConnectionCleanup {
 	}
 }
 
-async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, Peer(peer): Peer, headers: HeaderMap) -> impl IntoResponse {
-	// Admission is keyed by the peer's keyed, rotating `PeerKey`, never the
-	// raw address (#372) — so `ConnectionGuard`'s own log lines, which name
-	// this key, carry no address either.
+async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, Peer { key: peer, admission }: Peer, headers: HeaderMap) -> impl IntoResponse {
+	// Never the raw address (#372). Admission is counted under the
+	// process-stable `AdmissionKey`, so a connection held across midnight
+	// still counts against the same client's allowance; the daily `PeerKey`
+	// is what these log lines name. `ConnectionGuard` logs no client key.
 	let client_id = peer.to_string();
 	let cancel_token = state.core.cancel_token.clone();
 	info!("Incoming WS request from {client_id}");
@@ -188,7 +189,7 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 	}
 
 	// Wrap acquire in a timeout (e.g., 5 seconds)
-	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(client_id.clone())).await {
+	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(admission.into_string())).await {
 		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, peer, permit, cancel_token)),
 		Ok(Err(err)) => {
 			use AcquireErrorKind::*;
