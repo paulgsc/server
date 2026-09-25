@@ -915,11 +915,6 @@
         "continue;": 1
       }
     },
-    "clippy::redundant_pub_crate": {
-      "fn spawn_event_forwarder": {
-        "pub(crate) fn spawn_event_forwarder(": 1
-      }
-    },
     "clippy::semicolon_if_nothing_returned": {
       "fn forward_event": {
         "()": 2
@@ -973,14 +968,6 @@
     "clippy::disallowed_methods": {
       "fn send_initial_handshake": {
         "let msg = serde_json::to_string(&ping_event)?;": 1
-      }
-    },
-    "clippy::redundant_pub_crate": {
-      "fn clear_connection": {
-        "pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {": 1
-      },
-      "fn send_initial_handshake": {
-        "pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>) -> Result<(), ConnectionError> {": 1
       }
     }
   },
@@ -1108,11 +1095,6 @@
     "clippy::map_unwrap_or": {
       "fn handle_websocket_message": {
         "let reason_str = reason .as_ref() .map(|f| format!(\"{}: {}\", f.code, f.reason)) .unwrap_or_else(|| \"No reason provided\".to_string());": 1
-      }
-    },
-    "clippy::redundant_pub_crate": {
-      "fn spawn_process_incoming_messages": {
-        "pub(crate) fn spawn_process_incoming_messages(": 1
       }
     },
     "clippy::too_many_lines": {
@@ -1444,11 +1426,6 @@
     "clippy::option_if_let_else": {
       "fn calculate_current_time": {
         "if let Some(start) = self.start_instant { let elapsed = start.elapsed().as_millis() as TimeMs; elapsed.saturating_sub(self.accumulated_pause_duration) } else { 0 }": 1
-      }
-    },
-    "clippy::redundant_pub_crate": {
-      "struct EngineState": {
-        "pub(crate) struct EngineState {": 1
       }
     },
     "clippy::unchecked_time_subtraction": {
@@ -1884,33 +1861,6 @@
         "repo.get(\"subject-a\", \"session-1\").await.expect(\"query should not fail\").is_some(),": 1,
         "repo.get(\"subject-b\", \"session-1\").await.expect(\"query should not fail\").is_none(),": 1,
         "repo.upsert(\"subject-a\", &fixture(\"session-1\")).await.expect(\"seed subject-a's session\");": 1
-      }
-    }
-  },
-  "crates/enum-name-derive/src/lib.rs": {
-    "clippy::disallowed_macros": {
-      "fn get_filename_from_attributes": {
-        ".expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
-      }
-    },
-    "clippy::expect_fun_call": {
-      "fn get_filename_from_attributes": {
-        ".expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
-      }
-    },
-    "clippy::expect_used": {
-      "fn get_filename_from_attributes": {
-        "variant .attrs .iter() .find(|attr| attr.path.is_ident(\"filename\")) .and_then(|attr| { if let Ok(Meta::NameValue(meta)) = attr.parse_meta() { if let Lit::Str(lit) = meta.lit { Some(lit.value()) } else { None } } else { None } }) .expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
-      }
-    },
-    "clippy::manual_let_else": {
-      "fn derive_enum_filename_and_from_string": {
-        "let data = if let syn::Data::Enum(data) = input.data { data } else { panic!(\"EnumFilenameAndFromString can only be derived for enums\"); };": 1
-      }
-    },
-    "clippy::missing_panics_doc": {
-      "fn derive_enum_filename_and_from_string": {
-        "pub fn derive_enum_filename_and_from_string(input: TokenStream) -> TokenStream {": 1
       }
     }
   },
@@ -2949,9 +2899,6 @@
       }
     },
     "clippy::must_use_candidate": {
-      "fn current_timecode": {
-        "pub fn current_timecode(&self) -> Timecode {": 1
-      },
       "fn is_active": {
         "pub fn is_active(&self) -> bool {": 1
       },
@@ -2989,11 +2936,6 @@
         "Self((current as f64 / total as f64).clamp(0.0, 1.0))": 2
       }
     },
-    "clippy::disallowed_macros": {
-      "fn from_ms": {
-        "Self(format!(\"{:02}:{:02}:{:02}.{:03}\", hours, minutes, seconds, milliseconds))": 1
-      }
-    },
     "clippy::missing_const_for_fn": {
       "fn value": {
         "pub fn value(&self) -> f64 { self.0 }": 1
@@ -3008,11 +2950,6 @@
       },
       "fn value": {
         "pub fn value(&self) -> f64 {": 1
-      }
-    },
-    "clippy::uninlined_format_args": {
-      "fn from_ms": {
-        "Self(format!(\"{:02}:{:02}:{:02}.{:03}\", hours, minutes, seconds, milliseconds))": 1
       }
     }
   },

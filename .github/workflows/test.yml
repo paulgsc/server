@@ -34,6 +34,8 @@ jobs:
           PATTERNS: |
             Cargo.toml
             Cargo.lock
+            **/Cargo.toml
+            **/*.rs
             apps/**
             crates/**
             fixtures/**
@@ -79,6 +81,21 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
+
+      # Unused code the compiler can't see: `.rs` files no `mod` reaches (never
+      # compiled, so never linted), unused dependencies, `[workspace.dependencies]`
+      # entries no member uses, and `test`/`doctest` settings that disagree with
+      # whether a target has tests. `--deny-warnings` because unlinked files and
+      # the test settings are warnings by default, and a warning never turns CI
+      # red. It needs no build, so it runs first. Silence a false positive with
+      # `[package.metadata.cargo-shear] ignored = [...]` (or `ignored-paths`)
+      # plus a comment saying why. Pinned, installed locked and never cached,
+      # for the same trust-boundary reason as sqlx-cli below.
+      - name: Install cargo-shear
+        run: cargo install cargo-shear --version 1.11.2 --locked
+
+      - name: Check for unused files and dependencies
+        run: cargo shear --deny-warnings
 
       # `sqlx::query!` verifies SQL against a real schema at compile time, so
       # `cargo check` needs a migrated database — or the `.sqlx` cache built

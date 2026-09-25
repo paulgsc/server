@@ -97,7 +97,7 @@ pub(crate) struct EngineState {
 }
 
 impl EngineState {
-	pub fn new(total_duration: TimeMs) -> Self {
+	pub(super) fn new(total_duration: TimeMs) -> Self {
 		Self {
 			state: OrchestratorState::new(total_duration),
 			start_instant: None,
@@ -111,7 +111,7 @@ impl EngineState {
 	///
 	/// Returns wall-clock time minus accumulated pause duration.
 	/// Returns 0 if orchestration hasn't started.
-	pub fn calculate_current_time(&self) -> TimeMs {
+	pub(super) fn calculate_current_time(&self) -> TimeMs {
 		if let Some(start) = self.start_instant {
 			let elapsed = start.elapsed().as_millis() as TimeMs;
 			elapsed.saturating_sub(self.accumulated_pause_duration)
@@ -142,7 +142,7 @@ impl EngineState {
 	///
 	/// For guaranteed replay determinism, consider adding a sequence number
 	/// to `TimedEvent` (see struct-level docs).
-	pub fn apply_event(&mut self, event: &TimedEvent<OrchestratorEvent>) {
+	pub(super) fn apply_event(&mut self, event: &TimedEvent<OrchestratorEvent>) {
 		match &event.event {
 			OrchestratorEvent::Lifetime(lifetime_event) => match lifetime_event {
 				LifetimeEvent::Start { id, kind } => {
@@ -179,7 +179,7 @@ impl EngineState {
 	/// Consider deprecating `current_active_scene` in favor of having clients
 	/// query `active_lifetimes` directly. This makes concurrency explicit and
 	/// prevents incorrect assumptions about single-scene semantics.
-	pub fn sync_view_state(&mut self, current_time: TimeMs) {
+	pub(super) fn sync_view_state(&mut self, current_time: TimeMs) {
 		// Update time-derived presentation state
 		self.state.current_time = current_time;
 		self.state.progress = Progress::new(current_time, self.state.total_duration);
@@ -215,7 +215,7 @@ impl EngineState {
 	///
 	/// O(n) where n = number of events before `time`. For frequent seeks,
 	/// consider implementing checkpoint snapshots.
-	pub fn reconstruct_from_start(&mut self, cursor: &mut Cursor, timeline: &Timeline, time: TimeMs) {
+	pub(super) fn reconstruct_from_start(&mut self, cursor: &mut Cursor, timeline: &Timeline, time: TimeMs) {
 		self.active_lifetimes.clear();
 		cursor.reset();
 

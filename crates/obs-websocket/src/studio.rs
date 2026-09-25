@@ -33,12 +33,12 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// subscribers that already exist: the first snapshot can be taken before
 /// anyone subscribes, and a studio that then sits unchanged would never send
 /// another. [`crate::ObsWebSocketManager::stream_events`] replays it.
-pub async fn publish(client: Arc<Client>, changed: Arc<Notify>, latest: Arc<LatestStudio>, events: broadcast::Sender<ObsEvent>) {
+pub(crate) async fn publish(client: Arc<Client>, changed: Arc<Notify>, latest: Arc<LatestStudio>, events: broadcast::Sender<ObsEvent>) {
 	publish_with(|| snapshot(&client), &changed, &latest, &events).await;
 }
 
 /// The most recent snapshot of the current connection, if one has been taken.
-pub type LatestStudio = watch::Sender<Option<Box<StudioSnapshot>>>;
+pub(crate) type LatestStudio = watch::Sender<Option<Box<StudioSnapshot>>>;
 
 async fn publish_with<F, Fut>(mut take_snapshot: F, changed: &Notify, latest: &LatestStudio, events: &broadcast::Sender<ObsEvent>)
 where
@@ -74,7 +74,7 @@ const MEDIA_KINDS: [&str; 2] = ["ffmpeg_source", "vlc_source"];
 /// Fails if any query fails for a reason other than OBS saying it doesn't
 /// apply (a video-only input has no volume, a disabled replay buffer has no
 /// state); those are left out of the snapshot instead.
-pub async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
+pub(crate) async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
 	let stream = client.streaming().status().await?;
 	let recording = client.recording().status().await?;
 	let replay_buffer_active = unless_unsupported(client.replay_buffer().status().await)?;
@@ -228,11 +228,11 @@ fn collect<T>(results: Vec<Result<T>>) -> Result<Vec<T>> {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub(crate) mod tests {
 	use super::*;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	pub fn empty_studio() -> StudioSnapshot {
+	pub(crate) fn empty_studio() -> StudioSnapshot {
 		StudioSnapshot {
 			stream: StreamState {
 				active: false,

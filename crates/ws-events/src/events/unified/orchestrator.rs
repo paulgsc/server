@@ -10,7 +10,7 @@ pub struct TickCommandMessage {
 	pub command: Option<tick_command_message::Command>,
 }
 
-pub mod tick_command_message {
+pub(super) mod tick_command_message {
 	use super::*;
 
 	#[derive(Clone, PartialEq, prost::Oneof)]

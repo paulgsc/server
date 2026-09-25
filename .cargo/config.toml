@@ -19,6 +19,9 @@ rustflags = [
     # `multiple_crate_versions` is allowed there deliberately — see the comment
     # on it in the root Cargo.toml — and has to be re-allowed here to stick.
     "-A", "clippy::multiple_crate_versions",
+    # Same for `redundant_pub_crate`, which contradicts `unreachable_pub` —
+    # see its comment in the root Cargo.toml.
+    "-A", "clippy::redundant_pub_crate",
     "-D", "warnings"
 ]
 

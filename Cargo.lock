@@ -1231,16 +1231,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enum-name-derive"
-version = "0.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "trybuild",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1327,20 +1317,17 @@ dependencies = [
  "activity_repo",
  "anyhow",
  "axum",
- "bytes",
  "capture_repo",
  "chrono",
  "chrono-tz",
  "clap",
  "curriculum_repo",
- "dashmap",
  "dotenvy",
  "engagement_repo",
  "futures",
  "hex",
  "intervention",
  "lazy_static",
- "log",
  "metrics",
  "metrics-util",
  "mood_event",
@@ -1369,7 +1356,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "tower 0.4.13",
  "tower-http 0.5.2",
@@ -1377,7 +1363,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tungstenite",
- "uuid",
  "ws-conn-manager",
  "ws-connection",
  "ws-events",
@@ -1630,15 +1615,6 @@ dependencies = [
  "ff",
  "rand_core 0.6.4",
  "subtle",
-]
-
-[[package]]
-name = "gsheet_derive"
-version = "0.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -2549,15 +2525,8 @@ dependencies = [
 name = "mood_event"
 version = "0.0.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "regex",
  "serde",
- "serde_json",
  "sqlx",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2885,20 +2854,14 @@ name = "orchestrator"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "cursorium",
  "dashmap",
- "futures",
- "prost 0.14.4",
- "serde",
- "serde_json",
  "some-metrics",
  "some-transport",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "ws-connection",
  "ws-events",
 ]
 
@@ -3884,15 +3847,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4116,7 +4070,6 @@ dependencies = [
  "fastrand",
  "metrics",
  "moka",
- "once_cell",
  "redis",
  "serde",
  "serde_json",
@@ -4131,7 +4084,6 @@ name = "some-metrics"
 version = "0.0.0"
 dependencies = [
  "axum",
- "metrics",
  "metrics-exporter-prometheus",
  "thiserror 1.0.69",
  "tokio",
@@ -4142,9 +4094,7 @@ dependencies = [
 name = "some-obs"
 version = "0.0.0"
 dependencies = [
- "chrono",
  "obs-websocket",
- "prost 0.14.4",
  "serde",
  "serde_json",
  "some-transport",
@@ -4176,8 +4126,6 @@ dependencies = [
  "dashmap",
  "futures",
  "prost 0.14.4",
- "serde",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -4563,12 +4511,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
-name = "target-tuple"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4579,15 +4521,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "termcolor"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
-dependencies = [
- "winapi-util",
 ]
 
 [[package]]
@@ -4822,45 +4755,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "1.1.6+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
-dependencies = [
- "indexmap 2.14.2",
- "serde_core",
- "serde_spanned",
- "toml_datetime",
- "toml_parser",
- "toml_writer",
- "winnow",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_parser"
-version = "1.1.3+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
-dependencies = [
- "winnow",
-]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
-
-[[package]]
 name = "tonic"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5075,21 +4969,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "trybuild"
-version = "1.0.121"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0cabaa10be1917331a313866bd94526343e03c77bcf69144b62b072ad35d47c"
-dependencies = [
- "glob",
- "serde",
- "serde_derive",
- "serde_json",
- "target-tuple",
- "termcolor",
- "toml",
-]
 
 [[package]]
 name = "tryhard"
@@ -5663,12 +5542,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
-name = "winnow"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5713,7 +5586,6 @@ dependencies = [
  "prost 0.14.4",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
  "uuid",
 ]
 

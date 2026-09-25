@@ -59,9 +59,8 @@ crates/
 ├── push_kit/           Web Push (VAPID) actuation
 ├── intervention/, study_domain/
 │                       Domain logic for when and what the system intervenes on
-└── cursorium/, obs-websocket/,
-    enum-name-derive/, gsheet_derive/
-                        Supporting libraries and derive macros
+└── cursorium/, obs-websocket/
+                        Supporting libraries
 
 docs/        Design notes, fault taxonomy, dashboard conventions, SLAs
 infra/       Compose files, Grafana dashboards, Prometheus, NATS config

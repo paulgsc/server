@@ -56,10 +56,8 @@ axum = { workspace = true, features = ["ws"] }
 # there fails if the two ever drift apart.
 tungstenite = { version = "0.24", default-features = false }
 anyhow = { workspace = true }
-bytes = { version = "1.10.1" }
 clap = { workspace = true }
 dotenvy = { workspace = true }
-log = "0.4.14"
 lazy_static = { workspace = true }
 futures = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
@@ -76,11 +74,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["limit", "load-shed"] }
 tower-http = { workspace = true, features = ["fs", "limit"] }
-tokio-stream = "0.1.17"
-dashmap = "6.1.0"
 hex = "0.4.3"
 sha2 = "0.10.9"
-uuid = "1.18.0"
 chrono.workspace = true
 tokio-util = { workspace = true }
 reqwest = { workspace = true }

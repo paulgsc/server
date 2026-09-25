@@ -19,3 +19,7 @@ ws-events = { workspace = true, features = ["tabsched"] }
 
 [lints]
 workspace = true
+
+[lib]
+test = false
+doctest = false

@@ -10,11 +10,11 @@ side compiles, passes clippy, or has an up-to-date `.sqlx/` cache — run
 `cargo check --workspace`, `cargo test --workspace`, **`cargo clippy` on every package your
 diff actually touches or adds** (see flags below — this is not optional; `cargo check` passing
 is not evidence `cargo clippy` will, verified directly: `cargo check -p enum-name-derive`
-succeeds while `cargo clippy -p enum-name-derive --keep-going --no-deps` reports real
-denied-lint errors in that crate's own non-test code), and `cargo sqlx prepare --workspace`
-yourself before every push, regardless of environment. `sqlx::query!`/`query_as!` verify SQL
-against a real database at compile time, so `DATABASE_URL` must point at a migrated throwaway
-database, not be unset.
+succeeded while `cargo clippy -p enum-name-derive --keep-going --no-deps` reported real
+denied-lint errors in that crate's own non-test code, before #375 deleted the crate), and
+`cargo sqlx prepare --workspace` yourself before every push, regardless of environment.
+`sqlx::query!`/`query_as!` verify SQL against a real database at compile time, so
+`DATABASE_URL` must point at a migrated throwaway database, not be unset.
 
 **Clippy is a ratchet, not a clean gate.** The workspace carries pre-existing clippy debt
 (1,255 findings across 127 files when the ratchet landed, mostly pedantic doc lints), so a
