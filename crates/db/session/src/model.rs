@@ -293,8 +293,10 @@ mod tests {
 
 	#[test]
 	fn ids_match_the_shape_the_client_minted() {
+		// No `{id}` in the failure message: CodeQL's cleartext-logging query
+		// reads a session id as a credential, and an assert message is a log.
 		let id = new_session_id();
-		assert!(id.starts_with("session-"), "got {id}");
+		assert!(id.starts_with("session-"));
 		assert!(uuid::Uuid::parse_str(id.trim_start_matches("session-")).is_ok());
 	}
 
