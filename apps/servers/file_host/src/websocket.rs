@@ -114,6 +114,16 @@ struct ConnectionCleanup {
 
 	permit: Option<ConnectionPermit>,
 
+	/// This socket's `ConnectionStore` entry, removed on drop if it is still
+	/// there. A close frame, the stale reaper and the forwarder ending each
+	/// remove it themselves, but a peer that drops TCP without a close frame,
+	/// a stream error, or an actor that stops answering all end the message
+	/// loop without doing so — and before this, nothing else ever did: the
+	/// entry and its actor outlived the socket until process exit, counted in
+	/// `ws_connections{state="connected"}` (and `subscribed`) the whole time
+	/// while `ws_client_connections` had already been decremented.
+	store_entry: Option<(WebSocketFsm, String)>,
+
 	/// The single choke point every socket's teardown passes through exactly
 	/// once — see #226/#227 and this module's `instrument` doc comment.
 	/// `client_type`/`started_at` are fixed at construction; `end_reason` is
@@ -139,6 +149,21 @@ impl Drop for ConnectionCleanup {
 
 		if let Some(permit) = self.permit.take() {
 			permit.release();
+		}
+
+		// `remove_connection` is async (it awaits the actor's shutdown), so it
+		// is handed to the runtime rather than awaited here. Checked first so
+		// the common case — some exit path above already removed it — neither
+		// spawns nor logs `remove_connection`'s "not found" warning.
+		if let Some((ws, key)) = self.store_entry.take() {
+			if ws.store.get(&key).is_some() {
+				if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+					let reason = String::from("socket ended: ") + self.end_reason;
+					runtime.spawn(async move {
+						let _ = ws.remove_connection(&key, reason).await;
+					});
+				}
+			}
 		}
 
 		instrument::record_removed(self.client_type, self.end_reason, self.started_at.elapsed().as_secs_f64());
@@ -220,6 +245,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, headers: HeaderMap, a
 		message_task: Some(message_task),
 		forward_cancel,
 		process_cancel,
+		store_entry: Some((ws_fsm.clone(), conn_key.clone())),
 		client_type,
 		started_at: Instant::now(),
 		end_reason: "cleanup",
@@ -331,6 +357,7 @@ mod tests {
 					forward_cancel: CancellationToken::new(),
 					process_cancel: CancellationToken::new(),
 					permit: None,
+					store_entry: Some((fsm.clone(), key.clone())),
 					client_type: "direct",
 					started_at: Instant::now(),
 					end_reason: "client_disconnect",
@@ -351,5 +378,54 @@ mod tests {
 			panic!("ws_connection_duration_seconds should be a histogram");
 		};
 		assert_eq!(samples.len(), 1);
+	}
+
+	/// The leak this guard's `store_entry` closes: a peer that drops TCP
+	/// without a close frame ends `process_incoming_messages` on `None`,
+	/// which — unlike a close frame, the stale reaper, or the forwarder
+	/// ending — never calls `remove_connection`. Nothing removes the entry
+	/// here before `ConnectionCleanup` drops, exactly as on that path, so the
+	/// drop alone has to. Before the fix, the entry stayed in the store until
+	/// process exit, and `ws_connections{state="connected"}` counted it.
+	#[test]
+	fn a_socket_that_ends_without_a_close_frame_leaves_no_store_entry() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+			rt.block_on(async {
+				let fsm = WebSocketFsm::new();
+				let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+				let key = fsm.add_connection(&HeaderMap::new(), &addr, &CancellationToken::new()).await.unwrap();
+				assert_eq!(fsm.store.len(), 1);
+
+				drop(ConnectionCleanup {
+					forward_task: Some(tokio::spawn(async {})),
+					message_task: Some(tokio::spawn(async { (0u64, "client_disconnect") })),
+					forward_cancel: CancellationToken::new(),
+					process_cancel: CancellationToken::new(),
+					permit: None,
+					store_entry: Some((fsm.clone(), key)),
+					client_type: "direct",
+					started_at: Instant::now(),
+					end_reason: "client_disconnect",
+				});
+
+				// The removal runs on a spawned task; give it the runtime.
+				let drained = timeout(Duration::from_secs(1), async {
+					while !fsm.store.is_empty() {
+						tokio::task::yield_now().await;
+					}
+				})
+				.await;
+				assert!(drained.is_ok(), "store entry outlived its socket");
+			});
+		});
+
+		let snapshot = snapshotter.snapshot().into_vec();
+		assert_eq!(gauge(&snapshot, "ws_connections", &[("state", "connected")]), Some(0.0));
+		assert_eq!(gauge(&snapshot, "ws_client_connections", &[("client_type", "direct")]), Some(0.0));
 	}
 }

@@ -138,7 +138,7 @@ local utils = import 'utils.libsonnet';
         refId: 'A',
       },
     ],
-    title: '💬 HTTP /ws Probe (101/429/503)',
+    title: '💬 WS Handshake Probe (101)',
     type: 'stat',
   },
 

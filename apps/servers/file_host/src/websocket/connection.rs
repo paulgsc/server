@@ -93,18 +93,21 @@ impl WebSocketFsm {
 
 		// The entry occupies a store slot from this point regardless of
 		// whether the subscribe below succeeds, so `created`/`connected` are
-		// recorded here rather than after — a subscribe failure that leaves
-		// this entry stranded (see the `?` below: nothing removes it on this
-		// path today) should show up as `connected` growing, not disappear
-		// from the count entirely.
+		// recorded here rather than after.
 		instrument::record_created(client_type);
 		instrument::set_connected(self.store.len());
 
-		// Update the actor's subscription state to match
-		handle.subscribe(default_subs).await.map_err(|e| {
+		// Update the actor's subscription state to match. On failure the
+		// caller never gets a key, so no `ConnectionCleanup` will ever exist
+		// to remove this entry — undo it here, or it strands in the store
+		// (and in `connected`) until process exit.
+		if let Err(e) = handle.subscribe(default_subs).await {
 			instrument::record_error("subscription_failed", "creation");
-			ConnectionError::SubscriptionFailed(e)
-		})?;
+			self.store.remove(&client_key).await;
+			instrument::record_removed(client_type, "error", 0.0);
+			instrument::set_connected(self.store.len());
+			return Err(ConnectionError::SubscriptionFailed(e));
+		}
 		let elapsed = start.elapsed();
 
 		info!(

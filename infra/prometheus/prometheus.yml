@@ -59,14 +59,15 @@ scrape_configs:
         source_labels: [__param_target]
       - target_label: __address__
         replacement: blackbox-exporter:9115
-  # Blackbox Exporter - HTTP / WS probe
+  # Blackbox Exporter - WS upgrade handshake probe (see infra/blackbox.yml's
+  # `ws_handshake` for why this is a `tcp` prober, not `http`)
   - job_name: 'websocket_blackbox_http'
     metrics_path: /probe
     params:
-      module: [http_2xx]
+      module: [ws_handshake]
     static_configs:
       - targets:
-          - http://file-host-server:3000/ws
+          - file-host-server:3000
         labels:
           service: 'file-host'
     relabel_configs:

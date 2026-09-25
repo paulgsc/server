@@ -70,11 +70,10 @@ local timeSeriesOptions = {
   },
 
   // DEVICE CONNS — WS CONNS with the blackbox WS liveness probe's own share
-  // subtracted. `infra/blackbox.yml`'s `websocket_blackbox_http` job
-  // completes a real upgrade against `/ws` on every 15s scrape and hangs up
-  // without sending a frame; the server counts that like any other
-  // connection until `STALE_TIMEOUT` (120s) reaps it, so up to ~8 can be
-  // stacked up with nobody on the other end. `connection.rs::client_id_from_request`
+  // subtracted. `infra/blackbox.yml`'s `ws_handshake` module completes a
+  // real upgrade against `/ws` on every 15s scrape and hangs up as soon as
+  // the `101` arrives, so the probe's share is usually 0 and at most one
+  // socket for a few milliseconds. `connection.rs::client_id_from_request`
   // tags that traffic `client_type="probe"` (via the header the blackbox
   // module now sends) precisely so this number can answer what WS CONNS
   // alone cannot: how many of those sockets are an actual device. Not a

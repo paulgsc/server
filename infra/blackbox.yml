@@ -3,24 +3,35 @@ modules:
     prober: tcp
     timeout: 10s
 
-  http_2xx:
-    prober: http
-    timeout: 10s
-    http:
-      valid_http_versions: ['HTTP/1.1', 'HTTP/2']
-      valid_status_codes: [101, 200, 429, 503] # Treat WebSocket upgrade as "up"
-      method: GET
-      headers:
-        Upgrade: websocket
-        Connection: Upgrade
-        Sec-WebSocket-Version: '13'
-        Sec-WebSocket-Key: 'x3JJHMbDL1EzLkh9GBhXDw=='
-        # Lets file_host's client_id_from_request tag this handshake
-        # client_type="probe" instead of "direct" — this prober completes a
-        # real WS upgrade against /ws and then hangs up immediately, and
-        # without this header the resulting connection was indistinguishable
-        # from an actual device until STALE_TIMEOUT (120s) reaped it. See
-        # apps/servers/file_host/src/websocket/connection.rs and
-        # infra/grafana/dashboards/lib/clients-panels.libsonnet's DEVICE
-        # CONNS / PROBE split.
-        X-Probe-Source: blackbox-exporter
+  # The WebSocket liveness probe for file_host's `/ws` — a real upgrade
+  # handshake that hangs up the moment the `101` arrives.
+  #
+  # This used to be an `http` prober sending the same Upgrade headers. That
+  # prober can't stop at a `101`: it goes on reading the upgraded socket as a
+  # response body until its own timeout, so every probe either
+  #   - held the socket (and a `ConnectionGuard` per-client permit — 5 per IP,
+  #     `ws_conn_manager::MAX_PER_CLIENT`) until file_host's 120s stale reaper
+  #     closed it, and the scrape timed out first: no `probe_success` sample
+  #     at all; or
+  #   - found all five of its own permits still held by earlier probes,
+  #     waited file_host's 5s permit timeout, and got a 408: a failure.
+  # It could never succeed, and at one attempt per 15s against five
+  # ~135s-long slots it refused itself ~0.03 times a second — which is what
+  # the HEALTH row's red REFUSALS panel and the `permit_timeout` ERROR logs
+  # were counting, with no real client involved.
+  #
+  # A `tcp` prober with `query_response` ends the probe (and closes the
+  # socket) as soon as the status line matches. Blackbox appends `\n` to
+  # every `send` (prober/query_response.go), so the request ends in `\r` and
+  # that `\n` completes the blank line that terminates the headers.
+  ws_handshake:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      query_response:
+        - send: "GET /ws HTTP/1.1\r\nHost: file-host-server\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\nX-Probe-Source: blackbox-exporter\r\n\r"
+        # 101 only. A 503 at capacity or a 408 on a permit timeout is a
+        # client that could not connect, which is what this probe measures.
+        # `X-Probe-Source` tags the connection `client_type="probe"` — see
+        # apps/servers/file_host/src/websocket/connection.rs.
+        - expect: "^HTTP/1\\.1 101 "

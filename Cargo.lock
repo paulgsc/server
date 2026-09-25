@@ -1294,6 +1294,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "tungstenite 0.24.0",
  "uuid",
  "ws-conn-manager",
  "ws-connection",

@@ -50,6 +50,11 @@ some-transport = { workspace = true, features = ["nats", "mpsc_utils"] }
 ws-events = { workspace = true, features = ["tabsched", "ws-events"] }
 
 axum = { workspace = true, features = ["ws"] }
+# Only to recognise the error axum's WebSocket wraps (see
+# websocket/message/handlers.rs `is_peer_gone`), so it must be the version
+# axum itself uses — axum 0.7 wraps tungstenite 0.24. The real-socket test
+# there fails if the two ever drift apart.
+tungstenite = { version = "0.24", default-features = false }
 anyhow = { workspace = true }
 bytes = { version = "1.10.1" }
 clap = { workspace = true }
