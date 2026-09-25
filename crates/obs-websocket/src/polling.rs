@@ -79,7 +79,7 @@ impl Default for PollingConfig {
 
 /// Polls until aborted, publishing each result. A failed query is logged and
 /// skipped; the connection's own event pump owns disconnect detection.
-pub async fn run(client: Arc<Client>, config: PollingConfig, events: broadcast::Sender<ObsEvent>) {
+pub(crate) async fn run(client: Arc<Client>, config: PollingConfig, events: broadcast::Sender<ObsEvent>) {
 	let mut high = interval(HIGH_FREQUENCY);
 	let mut medium = interval(MEDIUM_FREQUENCY);
 	let mut low = interval(LOW_FREQUENCY);
@@ -235,7 +235,7 @@ async fn input_list(client: &Client) -> Result<ObsEvent, obws::error::Error> {
 }
 
 /// Formats as OBS does in `outputTimecode`: `HH:MM:SS.mmm`.
-pub fn timecode(elapsed: Duration) -> String {
+pub(crate) fn timecode(elapsed: Duration) -> String {
 	let secs = elapsed.as_secs();
 	let mut out = String::with_capacity(12);
 	let _ = write!(out, "{:02}:{:02}:{:02}.{:03}", secs / 3600, secs / 60 % 60, secs % 60, elapsed.subsec_millis());

@@ -12,7 +12,7 @@ const STOPPED_TIMECODE: &str = "00:00:00.000";
 /// Converts an `obws` event. Events without a dedicated [`ObsEvent`] variant
 /// become [`ObsEvent::UnknownEvent`] carrying OBS's `eventType`/`eventData`;
 /// `None` only for events `obws` itself could not identify, which carry no data.
-pub fn to_obs_event(event: Event) -> Option<ObsEvent> {
+pub(crate) fn to_obs_event(event: Event) -> Option<ObsEvent> {
 	let mapped = match event {
 		Event::StreamStateChanged { active, state } => ObsEvent::StreamStateChanged(StreamStateData {
 			streaming: active,
