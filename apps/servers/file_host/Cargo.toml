@@ -74,10 +74,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["limit", "load-shed"] }
 tower-http = { workspace = true, features = ["fs", "limit"] }
-uuid = "1.18.0"
+hex = "0.4.3"
+sha2 = "0.10.9"
 chrono.workspace = true
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
+rand = "0.9.2"
 
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
@@ -123,6 +125,3 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
-
-[lib]
-doctest = false

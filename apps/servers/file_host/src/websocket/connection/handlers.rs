@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use ws_events::events::Event;
 
-pub async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, peer: &PeerKey, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
+pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, peer: &PeerKey, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
 	let key = state.add_connection(headers, peer, cancel_token).await?;
 	info!(connection_id = %key, "WebSocket connection established");
 	Ok(key)
