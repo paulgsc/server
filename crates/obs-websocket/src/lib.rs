@@ -8,7 +8,7 @@ use thiserror::Error;
 
 // Always available - types only
 pub mod types;
-pub use types::{ObsCommand, ObsEvent, UnknownEventData, YouTubePrivacy};
+pub use types::{ObsCommand, ObsEvent, StreamKey, UnknownEventData};
 
 // Feature-gated modules
 #[cfg(feature = "websocket")]
@@ -46,7 +46,13 @@ pub enum ObsWebsocketError {
 	ObsState(#[from] StateError),
 	#[error("Command execution failed: {0}")]
 	CommandFailed(String),
+	#[error(transparent)]
+	Command(#[from] CommandError),
 }
+
+/// How long [`ObsWebSocketManager::execute_command`] waits for OBS to answer.
+#[cfg(feature = "websocket")]
+pub const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Core OBS WebSocket manager with state machine guarantees
 #[cfg(feature = "websocket")]
@@ -96,9 +102,27 @@ impl ObsWebSocketManager {
 		Ok(result)
 	}
 
-	pub async fn execute_command(&self, command: ObsCommand) -> Result<(), ObsWebsocketError> {
-		let _ = self.obs_connection.execute_command(command).await;
-		Ok(())
+	/// Sends `command` and waits for OBS's response to it.
+	///
+	/// Returns OBS's `responseData` (`None` for requests that return nothing).
+	/// Success means OBS accepted the request, not that its effect finished:
+	/// after `StartStream`, watch `StreamStateChanged` for the output actually
+	/// reaching `OBS_WEBSOCKET_OUTPUT_STARTED`.
+	///
+	/// # Errors
+	///
+	/// [`CommandError::Rejected`] carries OBS's own code and reason when it
+	/// refuses the request. Also fails when not connected, when the connection
+	/// drops first, or after [`COMMAND_TIMEOUT`] with no response.
+	pub async fn execute_command(&self, command: ObsCommand) -> Result<Option<serde_json::Value>, ObsWebsocketError> {
+		let (reply, response) = tokio::sync::oneshot::channel();
+		self.obs_connection.execute_command(command, reply).await?;
+
+		match tokio::time::timeout(COMMAND_TIMEOUT, response).await {
+			Ok(Ok(result)) => Ok(result?),
+			Ok(Err(_)) => Err(CommandError::ConnectionClosed.into()),
+			Err(_) => Err(CommandError::Timeout(COMMAND_TIMEOUT).into()),
+		}
 	}
 
 	pub async fn next_event(&self) -> Result<ObsEvent, ObsWebsocketError> {

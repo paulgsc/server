@@ -59,6 +59,9 @@ required-features = ["websocket"]
 [[example]]
 name = "commands"
 required-features = ["websocket"]
+[[example]]
+name = "youtube"
+required-features = ["websocket"]
 
 [lints]
 workspace = true

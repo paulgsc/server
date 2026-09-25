@@ -110,7 +110,7 @@ async fn demo_stream_controls(obs_manager: &ObsWebSocketManager) -> Result<(), B
 
 	// Check if we can start streaming (won't actually start without proper setup)
 	match obs_manager.execute_command(ObsCommand::StartStream).await {
-		Ok(()) => tracing::info!("  ✅ Start stream command executed"),
+		Ok(_) => tracing::info!("  ✅ Start stream command executed"),
 		Err(e) => tracing::debug!("  ℹ️ Start stream: {} (expected if not configured)", e),
 	}
 
@@ -118,7 +118,7 @@ async fn demo_stream_controls(obs_manager: &ObsWebSocketManager) -> Result<(), B
 
 	// Stop streaming command
 	match obs_manager.execute_command(ObsCommand::StopStream).await {
-		Ok(()) => tracing::info!("  ✅ Stop stream command executed"),
+		Ok(_) => tracing::info!("  ✅ Stop stream command executed"),
 		Err(e) => tracing::debug!("  ℹ️ Stop stream: {} (expected if not streaming)", e),
 	}
 
@@ -131,7 +131,7 @@ async fn demo_recording_controls(obs_manager: &ObsWebSocketManager) -> Result<()
 
 	// Start recording
 	match obs_manager.execute_command(ObsCommand::StartRecording).await {
-		Ok(()) => {
+		Ok(_) => {
 			tracing::info!("  ✅ Recording started");
 
 			// Let it record for a brief moment
@@ -139,7 +139,7 @@ async fn demo_recording_controls(obs_manager: &ObsWebSocketManager) -> Result<()
 
 			// Stop recording
 			match obs_manager.execute_command(ObsCommand::StopRecording).await {
-				Ok(()) => tracing::info!("  ✅ Recording stopped"),
+				Ok(_) => tracing::info!("  ✅ Recording stopped"),
 				Err(e) => tracing::warn!("  ⚠️ Stop recording failed: {}", e),
 			}
 		}
@@ -157,7 +157,7 @@ async fn demo_scene_management(obs_manager: &ObsWebSocketManager) -> Result<(), 
 
 	for scene_name in test_scenes.iter() {
 		match obs_manager.execute_command(ObsCommand::SwitchScene(scene_name.to_string())).await {
-			Ok(()) => {
+			Ok(_) => {
 				tracing::info!("  ✅ Switched to scene: {}", scene_name);
 				sleep(Duration::from_millis(100)).await;
 			}
@@ -177,13 +177,13 @@ async fn demo_audio_controls(obs_manager: &ObsWebSocketManager) -> Result<(), Bo
 	for source in audio_sources.iter() {
 		// Test muting
 		match obs_manager.execute_command(ObsCommand::SetInputMute(source.to_string(), true)).await {
-			Ok(()) => {
+			Ok(_) => {
 				tracing::info!("  🔇 Muted: {}", source);
 				sleep(Duration::from_millis(50)).await;
 
 				// Unmute
 				match obs_manager.execute_command(ObsCommand::SetInputMute(source.to_string(), false)).await {
-					Ok(()) => tracing::info!("  🔊 Unmuted: {}", source),
+					Ok(_) => tracing::info!("  🔊 Unmuted: {}", source),
 					Err(e) => tracing::debug!("  ℹ️ Unmute {}: {}", source, e),
 				}
 			}
@@ -194,7 +194,7 @@ async fn demo_audio_controls(obs_manager: &ObsWebSocketManager) -> Result<(), Bo
 		let volumes = [0.5, 0.8, 1.0];
 		for &volume in volumes.iter() {
 			match obs_manager.execute_command(ObsCommand::SetInputVolume(source.to_string(), volume)).await {
-				Ok(()) => tracing::info!("  🎚️ Set {} volume to {:.1}", source, volume),
+				Ok(_) => tracing::info!("  🎚️ Set {} volume to {:.1}", source, volume),
 				Err(e) => tracing::debug!("  ℹ️ Volume {}: {} (may not exist)", source, e),
 			}
 			sleep(Duration::from_millis(30)).await;
@@ -210,7 +210,7 @@ async fn demo_studio_features(obs_manager: &ObsWebSocketManager) -> Result<(), B
 
 	// Toggle Studio Mode
 	match obs_manager.execute_command(ObsCommand::ToggleStudioMode(true)).await {
-		Ok(()) => {
+		Ok(_) => {
 			tracing::info!("  ✅ Toggled Studio Mode");
 			sleep(Duration::from_millis(100)).await;
 
@@ -223,7 +223,7 @@ async fn demo_studio_features(obs_manager: &ObsWebSocketManager) -> Result<(), B
 
 	// Toggle Virtual Camera
 	match obs_manager.execute_command(ObsCommand::StartVirtualCamera).await {
-		Ok(()) => {
+		Ok(_) => {
 			tracing::info!("  📷 Toggled Virtual Camera");
 			sleep(Duration::from_millis(100)).await;
 
@@ -236,7 +236,7 @@ async fn demo_studio_features(obs_manager: &ObsWebSocketManager) -> Result<(), B
 
 	// Toggle Replay Buffer
 	match obs_manager.execute_command(ObsCommand::StartReplayBuffer).await {
-		Ok(()) => {
+		Ok(_) => {
 			tracing::info!("  ⏪ Toggled Replay Buffer");
 			sleep(Duration::from_millis(100)).await;
 
@@ -261,7 +261,7 @@ async fn demo_custom_commands(obs_manager: &ObsWebSocketManager) -> Result<(), B
 	});
 
 	match obs_manager.execute_command(ObsCommand::Custom(version_request)).await {
-		Ok(()) => tracing::info!("  ✅ Custom version request executed"),
+		Ok(_) => tracing::info!("  ✅ Custom version request executed"),
 		Err(e) => tracing::debug!("  ℹ️ Custom version: {}", e),
 	}
 
@@ -272,7 +272,7 @@ async fn demo_custom_commands(obs_manager: &ObsWebSocketManager) -> Result<(), B
 	});
 
 	match obs_manager.execute_command(ObsCommand::Custom(stats_request)).await {
-		Ok(()) => tracing::info!("  ✅ Custom stats request executed"),
+		Ok(_) => tracing::info!("  ✅ Custom stats request executed"),
 		Err(e) => tracing::debug!("  ℹ️ Custom stats: {}", e),
 	}
 
@@ -283,7 +283,7 @@ async fn demo_custom_commands(obs_manager: &ObsWebSocketManager) -> Result<(), B
 	});
 
 	match obs_manager.execute_command(ObsCommand::Custom(scenes_request)).await {
-		Ok(()) => tracing::info!("  ✅ Custom scene list request executed"),
+		Ok(_) => tracing::info!("  ✅ Custom scene list request executed"),
 		Err(e) => tracing::debug!("  ℹ️ Custom scenes: {}", e),
 	}
 

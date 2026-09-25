@@ -1,3 +1,4 @@
+use crate::core::{ensure_request_id, CommandError, PendingRequests};
 use crate::polling::{CommandExecutor, InternalCommand, PollingConfig, PollingError, SharedSink};
 use futures_util::sink::SinkExt;
 use std::time::Duration;
@@ -18,6 +19,7 @@ enum OutboundMessage {
 pub struct ObsPollingManager {
 	config: PollingConfig,
 	command_executor: CommandExecutor,
+	pending: PendingRequests,
 	high_freq_interval: Duration,
 	medium_freq_interval: Duration,
 	low_freq_interval: Duration,
@@ -36,12 +38,12 @@ struct LoopCounters {
 }
 
 impl ObsPollingManager {
-	pub fn new(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink) -> Self {
-		Self::with_id_strategy(config, command_executor, sink)
+	pub fn new(config: PollingConfig, command_executor: CommandExecutor, pending: PendingRequests, sink: SharedSink) -> Self {
+		Self::with_id_strategy(config, command_executor, pending, sink)
 	}
 
 	/// Create with specific ID generation strategy
-	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, sink: SharedSink) -> Self {
+	pub fn with_id_strategy(config: PollingConfig, command_executor: CommandExecutor, pending: PendingRequests, sink: SharedSink) -> Self {
 		// Create bounded channel - adjust capacity as needed (512 seems reasonable)
 		let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundMessage>(512);
 
@@ -51,6 +53,7 @@ impl ObsPollingManager {
 		Self {
 			config,
 			command_executor,
+			pending,
 			high_freq_interval: Duration::from_secs(1),
 			medium_freq_interval: Duration::from_secs(5),
 			low_freq_interval: Duration::from_secs(30),
@@ -183,19 +186,33 @@ impl ObsPollingManager {
 		counters.cmd_counter += 1;
 
 		match internal_cmd {
-			InternalCommand::Execute(obs_cmd) => {
-				// Build the request using the command executor's builder
-				let request = self.command_executor.build_request(&obs_cmd)?;
+			InternalCommand::Execute { command, reply } => {
+				let mut request = match self.command_executor.build_request(&command) {
+					Ok(request) => request,
+					Err(e) => {
+						let _ = reply.send(Err(CommandError::InvalidRequest(e.to_string())));
+						return Ok(false);
+					}
+				};
+				let Some(request_id) = ensure_request_id(&mut request) else {
+					let _ = reply.send(Err(CommandError::InvalidRequest(
+						"only single requests (op 6) are supported; OBS's response could not be matched otherwise".to_owned(),
+					)));
+					return Ok(false);
+				};
+
+				// Register before sending so a fast response can't beat the registration.
+				self.pending.register(request_id, reply);
 
 				// Commands are higher priority - await send to ensure delivery
 				if let Err(e) = self.outbound_tx.send(OutboundMessage::Command(request)).await {
 					error!("Failed to queue command #{}: {e}", counters.cmd_counter);
 					return Err(PollingError::CriticalLoopTermination {
-						reason: format!("Command queue failure on command #{}: {e}", counters.cmd_counter),
+						reason: e.to_string(),
 					});
 				}
 
-				info!("Successfully queued command #{}: {:?}", counters.cmd_counter, obs_cmd);
+				info!("Queued command #{}: {:?}", counters.cmd_counter, command);
 				Ok(false) // Continue loop
 			}
 			InternalCommand::Disconnect => {

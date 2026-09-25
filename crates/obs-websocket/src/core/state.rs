@@ -1,4 +1,4 @@
-use crate::core::InternalCommand;
+use crate::core::{CommandReply, InternalCommand};
 use crate::{ObsCommand, ObsConfig, ObsEvent};
 use std::time::Instant;
 use thiserror::Error;
@@ -67,8 +67,13 @@ pub enum StateMessage {
 	TakeConnectionHandle(oneshot::Sender<Option<tokio::task::JoinHandle<()>>>),
 	UpdateConfig(ObsConfig),
 
-	// Command execution (for convenience)
-	ExecuteCommand(ObsCommand, oneshot::Sender<Result<(), StateError>>),
+	// Command execution (for convenience). `queued` reports whether the command
+	// reached the connection; `reply` later carries OBS's response to it.
+	ExecuteCommand {
+		command: ObsCommand,
+		reply: CommandReply,
+		queued: oneshot::Sender<Result<(), StateError>>,
+	},
 }
 
 /// Core state container - now owned exclusively by the actor
@@ -219,23 +224,25 @@ impl StateActor {
 				StateMessage::UpdateConfig(config) => {
 					self.state.config = config;
 				}
-				StateMessage::ExecuteCommand(command, reply) => {
-					let result = self.execute_command_internal(command).await;
-					let _ = reply.send(result);
+				StateMessage::ExecuteCommand { command, reply, queued } => {
+					let result = self.execute_command_internal(command, reply);
+					let _ = queued.send(result);
 				}
 			}
 		}
 	}
 
 	/// Internal command execution logic
-	async fn execute_command_internal(&self, command: ObsCommand) -> Result<(), StateError> {
+	fn execute_command_internal(&self, command: ObsCommand, reply: CommandReply) -> Result<(), StateError> {
 		if !self.state.can_execute_commands() {
 			return Err(StateError::NotConnected);
 		}
 
 		let sender = self.state.command_sender.as_ref().ok_or(StateError::NotConnected)?;
 
-		sender.try_send(InternalCommand::Execute(command)).map_err(|e| StateError::CommandFailed(e.to_string()))?;
+		sender
+			.try_send(InternalCommand::Execute { command, reply })
+			.map_err(|e| StateError::CommandFailed(e.to_string()))?;
 
 		Ok(())
 	}
@@ -321,11 +328,11 @@ impl StateHandle {
 	}
 
 	/// Execute a command
-	pub async fn execute_command(&self, command: ObsCommand) -> Result<(), StateError> {
+	pub async fn execute_command(&self, command: ObsCommand, reply: CommandReply) -> Result<(), StateError> {
 		let (tx, rx) = oneshot::channel();
 		self
 			.sender
-			.send(StateMessage::ExecuteCommand(command, tx))
+			.send(StateMessage::ExecuteCommand { command, reply, queued: tx })
 			.await
 			.map_err(|_| StateError::ActorUnavailable)?;
 		rx.await.map_err(|_| StateError::ActorUnavailable)?

@@ -18,16 +18,39 @@ pub enum ObsCommand {
 	StopReplayBuffer,
 	GetInputMute(String),
 	GetInputVolume(String),
-	SetYouTubeStream {
-		stream_key: String,
-		title: String,
-		description: String,
-		category: String,
-		privacy: YouTubePrivacy,
-		unlisted: bool,
-		tags: Vec<String>,
-	},
+	/// Point OBS's stream output at the `YouTube` RTMP ingest using `stream_key`.
+	///
+	/// This only configures where OBS pushes video. A broadcast's title,
+	/// description and privacy live on the platform side and are set through
+	/// the `YouTube` Data API: OBS's `rtmp_custom` service ignores such fields.
+	SetYouTubeStream { stream_key: StreamKey },
+	/// A raw single request (`op: 6`). A missing `d.requestId` is filled in so
+	/// the response can be matched back to the caller.
 	Custom(Value),
+}
+
+/// A stream key: anyone holding one can publish to the channel it belongs to,
+/// so `Debug` redacts it rather than letting it reach logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StreamKey(String);
+
+impl StreamKey {
+	#[must_use]
+	pub const fn new(key: String) -> Self {
+		Self(key)
+	}
+
+	#[must_use]
+	pub fn expose(&self) -> &str {
+		&self.0
+	}
+}
+
+impl std::fmt::Debug for StreamKey {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("StreamKey(***)")
+	}
 }
 
 /// Represents different types of requests that can be sent to OBS
@@ -308,16 +331,28 @@ pub struct SetCurrentProgramSceneParams {
 	pub scene_name: String,
 }
 
+// Request field names must match obs-websocket v5's protocol exactly: OBS
+// answers an unrecognised name with `MissingRequestField` (code 300).
+
 #[derive(Debug, Clone, Serialize)]
-pub struct SetInputMuteParams {
-	pub n: String,
-	pub b: bool,
+#[serde(rename_all = "camelCase")]
+pub struct InputNameParams {
+	pub input_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetInputMuteParams {
+	pub input_name: String,
+	pub input_muted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetInputVolumeParams {
-	pub n: String,
-	pub v: f64,
+	pub input_name: String,
+	/// Linear multiplier, `0.0..=20.0`, where `1.0` is unity gain.
+	pub input_volume_mul: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,8 +374,9 @@ pub struct SetCurrentSceneCollectionParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetStudioModeEnabledParams {
-	pub b: bool,
+	pub studio_mode_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -359,25 +395,12 @@ pub struct SetStreamServiceSettingsParams {
 	pub settings: StreamServiceSettings,
 }
 
+/// Settings for OBS's `rtmp_custom` stream service, which reads only these two
+/// fields (plus optional auth this crate doesn't use).
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamServiceSettings {
-	#[serde(rename = "key", skip_serializing_if = "Option::is_none")]
-	pub stream_key: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub server: Option<String>,
-	// YouTube-specific settings
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub title: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub description: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub game: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub privacy: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub unlisted: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub tags: Option<Vec<String>>,
+	pub server: String,
+	pub key: StreamKey,
 }
 
 /// Represents different types of events from OBS
@@ -600,6 +623,11 @@ pub struct VersionData {
 pub struct StreamStateData {
 	pub streaming: bool,
 	pub timecode: Option<String>,
+	/// OBS's `outputState`, e.g. `OBS_WEBSOCKET_OUTPUT_STARTED`. A successful
+	/// `StartStream` response only means OBS began starting the output; this
+	/// is where a failed ingest connection shows up (`..._STOPPED`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -714,28 +742,6 @@ pub struct StreamServiceSettingsResponse {
 	pub tags: Option<Vec<String>>,
 }
 
-// Add this enum for YouTube privacy settings:
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum YouTubePrivacy {
-	#[serde(rename = "public")]
-	Public,
-	#[serde(rename = "unlisted")]
-	Unlisted,
-	#[serde(rename = "private")]
-	Private,
-}
-
-impl YouTubePrivacy {
-	#[must_use]
-	pub const fn as_str(&self) -> &str {
-		match self {
-			Self::Public => "public",
-			Self::Unlisted => "unlisted",
-			Self::Private => "private",
-		}
-	}
-}
-
 /// Scene information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -844,5 +850,40 @@ impl ObsEvent {
 				| Self::ReplayBufferStateChanged(_)
 				| Self::StudioModeStateChanged(_)
 		)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	#[test]
+	fn set_youtube_stream_accepts_the_old_payload_shape() {
+		// Senders built against the earlier variant still send metadata fields;
+		// they must keep deserializing, with the extras ignored.
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setYouTubeStream",
+			"data": {
+				"stream_key": "abcd-efgh",
+				"title": "t", "description": "d", "category": "c",
+				"privacy": "public", "unlisted": false, "tags": []
+			}
+		}))
+		.unwrap();
+
+		match command {
+			ObsCommand::SetYouTubeStream { stream_key } => assert_eq!(stream_key.expose(), "abcd-efgh"),
+			other => panic!("expected SetYouTubeStream, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn stream_key_is_redacted_in_debug_output() {
+		let command = ObsCommand::SetYouTubeStream {
+			stream_key: StreamKey::new("abcd-efgh".to_owned()),
+		};
+		let rendered = std::fmt::format(format_args!("{command:?}"));
+		assert!(!rendered.contains("abcd-efgh"), "{rendered}");
 	}
 }

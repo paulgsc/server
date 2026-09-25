@@ -202,14 +202,15 @@ impl ConnectionManager {
 		let message_processor = self.msg_handler.processor();
 		let state_handle = self.state_handle.clone();
 		let command_executor = CommandExecutor::new(self.state_handle.clone());
-		let polling_manager = ObsPollingManager::new(config, command_executor, sink.clone());
+		let pending = PendingRequests::default();
+		let polling_manager = ObsPollingManager::new(config, command_executor, pending.clone(), sink.clone());
 
 		let polling_task = tokio::spawn(async move {
 			let _ = polling_manager.start_polling_loop(cmd_rx).await;
 		});
 
 		let message_task = tokio::spawn(async move {
-			message_processing_loop(stream, sink, event_tx, state_handle, message_processor).await;
+			message_processing_loop(stream, sink, event_tx, state_handle, message_processor, pending).await;
 		});
 
 		tokio::spawn(async move {
@@ -231,6 +232,7 @@ async fn message_processing_loop(
 	event_tx: async_broadcast::Sender<ObsEvent>,
 	state_handle: StateHandle,
 	message_processor: MessageProcessor,
+	pending: PendingRequests,
 ) {
 	let mut last_activity = Instant::now();
 	let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -242,6 +244,9 @@ async fn message_processing_loop(
 				match msg {
 					Some(Ok(TungsteniteMessage::Text(text))) => {
 						last_activity = Instant::now();
+						if let Ok(message) = serde_json::from_str::<serde_json::Value>(&text) {
+							pending.resolve(&message);
+						}
 						// TODO: need to update the message mod to work with expected type directly
 						 if let Ok(event) = message_processor.process_message(text.to_string()).await {
 							let _ = event_tx.broadcast(event).await;
@@ -285,7 +290,8 @@ async fn message_processing_loop(
 		}
 	}
 
-	// Connection ended, transition state to disconnected
+	// Connection ended: no response can arrive for anything still outstanding.
+	pending.fail_all();
 	tracing::info!("Message processing loop ended, transitioning to disconnected");
 	let _ = state_handle.transition_to_disconnected().await;
 }
@@ -338,9 +344,13 @@ impl ObsConnection {
 		self.connection_manager.disconnect().await
 	}
 
-	/// Execute a command
-	pub async fn execute_command(&self, command: ObsCommand) -> Result<(), ConnectionError> {
-		self.command_executor.execute(command).await.map_err(|e| ConnectionError::Communication(e.to_string()))
+	/// Queue a command; `reply` resolves with OBS's response to it.
+	pub async fn execute_command(&self, command: ObsCommand, reply: CommandReply) -> Result<(), ConnectionError> {
+		self
+			.command_executor
+			.execute(command, reply)
+			.await
+			.map_err(|e| ConnectionError::Communication(e.to_string()))
 	}
 
 	/// Get the next event

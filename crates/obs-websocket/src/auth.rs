@@ -10,6 +10,23 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::protocol::Message as TungsteniteMessage, MaybeTlsStream};
 use tracing::{info, warn};
 
+// obs-websocket v5 `EventSubscription` bits. OBS delivers only the categories
+// requested at Identify time; stream start/stop (`StreamStateChanged`) is an
+// Outputs event.
+const SUB_GENERAL: u32 = 1 << 0;
+const SUB_SCENES: u32 = 1 << 2;
+const SUB_INPUTS: u32 = 1 << 3;
+const SUB_TRANSITIONS: u32 = 1 << 4;
+const SUB_FILTERS: u32 = 1 << 5;
+const SUB_OUTPUTS: u32 = 1 << 6;
+const SUB_SCENE_ITEMS: u32 = 1 << 7;
+const SUB_UI: u32 = 1 << 10;
+
+/// Every category holding an event `EventMessageParser` handles, plus General
+/// and Filters (subscribed before; their events are forwarded as
+/// `UnknownEvent`). Excludes OBS's high-volume categories such as input meters.
+const EVENT_SUBSCRIPTIONS: u32 = SUB_GENERAL | SUB_SCENES | SUB_INPUTS | SUB_TRANSITIONS | SUB_FILTERS | SUB_OUTPUTS | SUB_SCENE_ITEMS | SUB_UI;
+
 pub async fn authenticate(
 	password: &str,
 	sink: &mut SplitSink<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>,
@@ -49,7 +66,7 @@ pub async fn authenticate(
 			"d": {
 				"rpcVersion": 1,
 				"authentication": auth,
-				"eventSubscriptions": 33 // Subscribe to all events
+				"eventSubscriptions": EVENT_SUBSCRIPTIONS
 			}
 		});
 
@@ -92,7 +109,7 @@ pub async fn maybe_identify(
 			"op": 1,
 			"d": {
 				"rpcVersion": 1,
-				"eventSubscriptions": 33
+				"eventSubscriptions": EVENT_SUBSCRIPTIONS
 			}
 		});
 

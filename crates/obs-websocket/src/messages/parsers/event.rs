@@ -20,19 +20,23 @@ impl EventMessageParser {
 
 		trace!("Parsing event type: {}", event_type_str);
 
+		// OBS nests an event's fields under `d.eventData`, not directly in `d`.
+		let no_data = serde_json::Map::new();
+		let data = d.get("eventData").and_then(Value::as_object).unwrap_or(&no_data);
+
 		let event = match event_type {
-			ObsEventType::StreamStateChanged => Self::parse_stream_state(d)?,
-			ObsEventType::RecordStateChanged => Self::parse_record_state(d)?,
-			ObsEventType::CurrentProgramSceneChanged => Self::parse_scene_change(d)?,
-			ObsEventType::SceneItemEnableStateChanged => Self::parse_scene_item_state(d)?,
-			ObsEventType::InputMuteStateChanged => Self::parse_input_mute_state(d)?,
-			ObsEventType::InputVolumeChanged => Self::parse_input_volume(d)?,
-			ObsEventType::VirtualcamStateChanged => Self::parse_virtualcam_state(d)?,
-			ObsEventType::ReplayBufferStateChanged => Self::parse_replay_buffer_state(d)?,
-			ObsEventType::StudioModeStateChanged => Self::parse_studio_mode_state(d)?,
-			ObsEventType::CurrentSceneTransitionChanged => Self::parse_transition_change(d)?,
-			ObsEventType::SceneTransitionStarted => Self::parse_transition_started(d)?,
-			ObsEventType::SceneTransitionEnded => Self::parse_transition_ended(d)?,
+			ObsEventType::StreamStateChanged => Self::parse_stream_state(data)?,
+			ObsEventType::RecordStateChanged => Self::parse_record_state(data)?,
+			ObsEventType::CurrentProgramSceneChanged => Self::parse_scene_change(data)?,
+			ObsEventType::SceneItemEnableStateChanged => Self::parse_scene_item_state(data)?,
+			ObsEventType::InputMuteStateChanged => Self::parse_input_mute_state(data)?,
+			ObsEventType::InputVolumeChanged => Self::parse_input_volume(data)?,
+			ObsEventType::VirtualcamStateChanged => Self::parse_virtualcam_state(data)?,
+			ObsEventType::ReplayBufferStateChanged => Self::parse_replay_buffer_state(data)?,
+			ObsEventType::StudioModeStateChanged => Self::parse_studio_mode_state(data)?,
+			ObsEventType::CurrentSceneTransitionChanged => Self::parse_transition_change(data)?,
+			ObsEventType::SceneTransitionStarted => Self::parse_transition_started(data)?,
+			ObsEventType::SceneTransitionEnded => Self::parse_transition_ended(data)?,
 			_ => {
 				warn!("Unknown event type: {}, creating UnknownEvent", event_type_str);
 				ObsEvent::UnknownEvent(UnknownEventData {
@@ -53,7 +57,12 @@ impl EventMessageParser {
 		} else {
 			Some("00:00:00.000".to_string())
 		};
-		Ok(ObsEvent::StreamStateChanged(StreamStateData { streaming, timecode }))
+		let output_state = d.get("outputState").and_then(Value::as_str).map(String::from);
+		Ok(ObsEvent::StreamStateChanged(StreamStateData {
+			streaming,
+			timecode,
+			output_state,
+		}))
 	}
 
 	fn parse_record_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {
@@ -125,5 +134,43 @@ impl EventMessageParser {
 	fn parse_transition_ended(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {
 		let transition_name = d.get("transitionName").and_then(Value::as_str).unwrap_or("").to_string();
 		Ok(ObsEvent::SceneTransitionEnded(SceneTransitionEndedData { transition_name }))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	#[test]
+	fn reads_event_fields_from_event_data() {
+		let event = EventMessageParser::parse(&json!({
+			"op": 5,
+			"d": {
+				"eventType": "StreamStateChanged",
+				"eventIntent": 64,
+				"eventData": { "outputActive": true, "outputState": "OBS_WEBSOCKET_OUTPUT_STARTED" }
+			}
+		}))
+		.unwrap();
+
+		match event {
+			ObsEvent::StreamStateChanged(data) => {
+				assert!(data.streaming);
+				assert_eq!(data.output_state.as_deref(), Some("OBS_WEBSOCKET_OUTPUT_STARTED"));
+			}
+			other => panic!("expected StreamStateChanged, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn scene_change_parses_instead_of_failing_on_a_missing_field() {
+		let event = EventMessageParser::parse(&json!({
+			"op": 5,
+			"d": { "eventType": "CurrentProgramSceneChanged", "eventIntent": 4, "eventData": { "sceneName": "Live" } }
+		}))
+		.unwrap();
+
+		assert!(matches!(event, ObsEvent::CurrentProgramSceneChanged(data) if data.scene_name == "Live"));
 	}
 }

@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, PollingError>;
 
+/// Primary RTMP ingest endpoint for `YouTube` live streams.
+const YOUTUBE_RTMP_INGEST: &str = "rtmp://a.rtmp.youtube.com/live2";
+
 /// Utility functions for specific OBS operations
 pub struct ObsRequestBuilder;
 
@@ -68,26 +71,26 @@ impl ObsRequestBuilder {
 		Self::create_request(
 			ObsRequestType::SetInputMute,
 			Some(SetInputMuteParams {
-				n: input_name.to_string(),
-				b: muted,
+				input_name: input_name.to_string(),
+				input_muted: muted,
 			}),
 		)
 	}
 
-	/// Set audio volume
-	pub fn set_input_volume(input_name: &str, volume: f64) -> Result<serde_json::Value> {
+	/// Set audio volume as a linear multiplier (`1.0` is unity gain)
+	pub fn set_input_volume(input_name: &str, volume_mul: f64) -> Result<serde_json::Value> {
 		Self::create_request(
 			ObsRequestType::SetInputVolume,
 			Some(SetInputVolumeParams {
-				n: input_name.to_string(),
-				v: volume,
+				input_name: input_name.to_string(),
+				input_volume_mul: volume_mul,
 			}),
 		)
 	}
 
 	/// Toggle studio mode
 	pub fn toggle_studio_mode(enabled: bool) -> Result<serde_json::Value> {
-		Self::create_request(ObsRequestType::SetStudioModeEnabled, Some(SetStudioModeEnabledParams { b: enabled }))
+		Self::create_request(ObsRequestType::SetStudioModeEnabled, Some(SetStudioModeEnabledParams { studio_mode_enabled: enabled }))
 	}
 
 	/// Start virtual camera
@@ -134,9 +137,8 @@ impl ObsRequestBuilder {
 	pub fn get_input_mute(input_name: &str) -> Result<serde_json::Value> {
 		Self::create_request(
 			ObsRequestType::GetInputMute,
-			Some(SetInputMuteParams {
-				n: input_name.to_string(),
-				b: false, // This param isn't used for GET requests but required by struct
+			Some(InputNameParams {
+				input_name: input_name.to_string(),
 			}),
 		)
 	}
@@ -145,36 +147,21 @@ impl ObsRequestBuilder {
 	pub fn get_input_volume(input_name: &str) -> Result<serde_json::Value> {
 		Self::create_request(
 			ObsRequestType::GetInputVolume,
-			Some(SetInputVolumeParams {
-				n: input_name.to_string(),
-				v: 0.0, // This param isn't used for GET requests but required by struct
+			Some(InputNameParams {
+				input_name: input_name.to_string(),
 			}),
 		)
 	}
 
-	/// Set YouTube stream settings
-	pub fn set_youtube_stream(
-		stream_key: &str,
-		title: &str,
-		description: &str,
-		category: &str,
-		privacy: YouTubePrivacy,
-		unlisted: bool,
-		tags: Vec<String>,
-	) -> Result<serde_json::Value> {
+	/// Point OBS's stream output at the primary `YouTube` RTMP ingest
+	pub fn set_youtube_stream(stream_key: &StreamKey) -> Result<serde_json::Value> {
 		Self::create_request(
 			ObsRequestType::SetStreamServiceSettings,
 			Some(SetStreamServiceSettingsParams {
-				service_type: "rtmp_custom".to_string(), // or "youtube_live" if using YouTube service
+				service_type: "rtmp_custom".to_string(),
 				settings: StreamServiceSettings {
-					stream_key: Some(stream_key.to_string()),
-					server: Some("rtmp://a.rtmp.youtube.com/live2".to_string()),
-					title: Some(title.to_string()),
-					description: Some(description.to_string()),
-					game: Some(category.to_string()),
-					privacy: Some(privacy.as_str().to_string()),
-					unlisted: Some(unlisted),
-					tags: Some(tags),
+					server: YOUTUBE_RTMP_INGEST.to_string(),
+					key: stream_key.clone(),
 				},
 			}),
 		)

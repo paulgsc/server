@@ -1,11 +1,13 @@
 use crate::core::state::{StateError, StateHandle};
+use crate::core::CommandReply;
 use crate::polling::PollingError;
 use crate::{ObsCommand, ObsRequestBuilder};
 use serde_json::Value as JsonValue;
 
 #[derive(Debug)]
 pub enum InternalCommand {
-	Execute(ObsCommand),
+	/// Send `command`; `reply` resolves with OBS's response to it.
+	Execute { command: ObsCommand, reply: CommandReply },
 	Disconnect,
 }
 
@@ -20,8 +22,8 @@ impl CommandExecutor {
 	}
 
 	/// Execute command with state validation
-	pub async fn execute(&self, command: ObsCommand) -> Result<(), StateError> {
-		self.state_handle.execute_command(command).await
+	pub async fn execute(&self, command: ObsCommand, reply: CommandReply) -> Result<(), StateError> {
+		self.state_handle.execute_command(command, reply).await
 	}
 
 	pub fn build_request(&self, command: &ObsCommand) -> Result<JsonValue, PollingError> {
@@ -40,15 +42,7 @@ impl CommandExecutor {
 			ObsCommand::StopReplayBuffer => ObsRequestBuilder::stop_replay_buffer(),
 			ObsCommand::GetInputMute(name) => ObsRequestBuilder::get_input_mute(name),
 			ObsCommand::GetInputVolume(name) => ObsRequestBuilder::get_input_volume(name),
-			ObsCommand::SetYouTubeStream {
-				stream_key,
-				title,
-				description,
-				category,
-				privacy,
-				unlisted,
-				tags,
-			} => ObsRequestBuilder::set_youtube_stream(stream_key, title, description, category, *privacy, *unlisted, tags.clone()),
+			ObsCommand::SetYouTubeStream { stream_key } => ObsRequestBuilder::set_youtube_stream(stream_key),
 			ObsCommand::Custom(json) => Ok(json.clone()),
 		}
 	}

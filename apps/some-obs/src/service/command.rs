@@ -58,7 +58,7 @@ impl ObsNatsService {
 		let obs_command = cmd_msg.to_obs_command()?;
 
 		match self.obs_manager.execute_command(obs_command).await {
-			Ok(()) => {
+			Ok(response_data) => {
 				// Send acknowledgment if reply_to is specified
 				if let Some(reply_subject) = cmd_msg.reply_to {
 					let ack = UnifiedEvent::try_from(Event::ObsStatus {
@@ -66,7 +66,8 @@ impl ObsNatsService {
 							event_type: "command_ack".to_string(),
 							data: serde_json::json!({
 								"request_id": cmd_msg.request_id,
-								"status": "success"
+								"status": "success",
+								"data": response_data
 							}),
 						}),
 					})?;
