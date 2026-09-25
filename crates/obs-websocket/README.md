@@ -52,7 +52,9 @@ with obs-websocket ≥ 5.5, and checks this when it connects.
 { "type": "pauseRecording" }
 ```
 
-`scene` on the source-visibility commands defaults to the live scene.
+`scene` on the source-visibility commands defaults to the live scene. A source
+inside an OBS group is addressed with the group's name as `scene`; the snapshot
+lists groups separately under `groups`.
 
 ## Configuration
 

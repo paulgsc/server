@@ -80,6 +80,8 @@ pub enum ObsCommand {
 
 	// -- Sources within a scene
 	/// Shows or hides `source` in `scene`, or in the live scene when omitted.
+	/// For a source inside a group, `scene` is the group's name (see
+	/// [`StudioSnapshot::groups`]).
 	SetSourceVisible {
 		source: String,
 		scene: Option<String>,
@@ -168,6 +170,9 @@ pub struct StudioSnapshot {
 	/// Set only in studio mode.
 	pub preview_scene: Option<String>,
 	pub scenes: Vec<SceneState>,
+	/// Source groups. A group also appears as a source in the scene holding it;
+	/// its own sources are addressed with the group's name as `scene`.
+	pub groups: Vec<SceneState>,
 	/// Every input with audio.
 	pub audio: Vec<AudioState>,
 	/// Every media source (`ffmpeg_source`, `vlc_source`).

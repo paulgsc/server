@@ -159,23 +159,8 @@ impl ObsWebSocketManager {
 			}
 		};
 
-		let events = self.events.clone();
-		let state = Arc::clone(&self.state);
 		let studio_changed = Arc::new(Notify::new());
-		let changed = Arc::clone(&studio_changed);
-		let pump = tokio::spawn(async move {
-			let mut obs_events = obs_events;
-			while let Some(event) = obs_events.next().await {
-				if let Some(event) = to_obs_event(event) {
-					// No subscribers is not an error; nobody is listening yet.
-					drop(events.send(event));
-				}
-				changed.notify_one();
-			}
-			// obws ends the stream when the socket closes.
-			tracing::info!("OBS connection closed");
-			state.send_replace(ConnectionState::Disconnected);
-		});
+		let pump = start_event_pump(obs_events, Arc::clone(&self.state), self.events.clone(), Arc::clone(&studio_changed));
 		let poller = tokio::spawn(polling::run(Arc::clone(&client), polling, self.events.clone()));
 		let publisher = tokio::spawn(studio::publish(Arc::clone(&client), studio_changed, self.events.clone()));
 
@@ -184,7 +169,6 @@ impl ObsWebSocketManager {
 			tasks: [pump, poller, publisher],
 		});
 		drop(slot);
-		self.state.send_replace(ConnectionState::Connected { since: Instant::now() });
 		tracing::info!(host = %self.config.host, port = self.config.port, "connected to OBS");
 		Ok(())
 	}
@@ -278,6 +262,34 @@ impl ObsWebSocketManager {
 	}
 }
 
+/// Marks the connection `Connected`, then forwards `obs_events` until the
+/// stream ends, which `obws` does when the socket closes; then marks it
+/// `Disconnected`.
+///
+/// `Connected` is set before the pump starts so that a socket closing right
+/// after the handshake always leaves the state `Disconnected`. Set afterwards,
+/// it could overwrite that `Disconnected`, and nothing would ever move the
+/// state off `Connected` again: `stream_events` would wait forever and callers
+/// would never reconnect.
+fn start_event_pump<S>(obs_events: S, state: Arc<watch::Sender<ConnectionState>>, events: broadcast::Sender<ObsEvent>, studio_changed: Arc<Notify>) -> JoinHandle<()>
+where
+	S: futures_util::Stream<Item = obws::events::Event> + Send + Unpin + 'static,
+{
+	state.send_replace(ConnectionState::Connected { since: Instant::now() });
+	tokio::spawn(async move {
+		let mut obs_events = obs_events;
+		while let Some(event) = obs_events.next().await {
+			if let Some(event) = to_obs_event(event) {
+				// No subscribers is not an error; nobody is listening yet.
+				drop(events.send(event));
+			}
+			studio_changed.notify_one();
+		}
+		tracing::info!("OBS connection closed");
+		state.send_replace(ConnectionState::Disconnected);
+	})
+}
+
 async fn close(connection: Connection) {
 	for task in connection.tasks {
 		task.abort();
@@ -287,5 +299,22 @@ async fn close(connection: Connection) {
 	// still hold one, in which case dropping ours lets obws shut down on its own.
 	if let Ok(mut client) = Arc::try_unwrap(connection.client) {
 		client.disconnect().await;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn a_socket_closing_right_after_connect_leaves_the_state_disconnected() {
+		let state = Arc::new(watch::Sender::new(ConnectionState::Connecting));
+		let (events, _) = broadcast::channel(4);
+
+		// An already-ended stream: OBS closed the socket straight after the handshake.
+		let pump = start_event_pump(futures_util::stream::empty(), Arc::clone(&state), events, Arc::new(Notify::new()));
+		pump.await.unwrap();
+
+		assert!(matches!(*state.borrow(), ConnectionState::Disconnected));
 	}
 }

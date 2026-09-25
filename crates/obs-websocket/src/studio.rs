@@ -71,7 +71,11 @@ pub async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
 
 	let scene_list = client.scenes().list().await?;
 	let scene_names: Vec<String> = scene_list.scenes.into_iter().map(|scene| scene.id.name).collect();
-	let scenes = collect(join_all(scene_names.iter().map(|name| scene_state(client, name))).await)?;
+	let scenes = collect(join_all(scene_names.iter().map(|name| scene_state(client, name, ItemList::Scene))).await)?;
+	// Groups aren't scenes in OBS's scene list, but their sources are addressed
+	// with the group's name as the scene, so they need their own entries.
+	let group_names = client.scenes().list_groups().await?;
+	let groups = collect(join_all(group_names.iter().map(|name| scene_state(client, name, ItemList::Group))).await)?;
 
 	let inputs = client.inputs().list(None).await?;
 	let audio = collect(join_all(inputs.iter().map(|input| audio_state(client, &input.id.name))).await)?;
@@ -90,7 +94,7 @@ pub async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
 		.iter()
 		.map(String::as_str)
 		.chain(inputs.iter().map(|input| input.id.name.as_str()))
-		.chain(scenes.iter().flat_map(|scene| scene.sources.iter().map(|source| source.name.as_str())))
+		.chain(scenes.iter().chain(&groups).flat_map(|scene| scene.sources.iter().map(|source| source.name.as_str())))
 		.collect();
 	let filters = collect(join_all(filter_owners.into_iter().map(|owner| filters_of(client, owner))).await)?;
 
@@ -113,6 +117,7 @@ pub async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
 		program_scene: scene_list.current_program_scene.map(|id| id.name).unwrap_or_default(),
 		preview_scene: scene_list.current_preview_scene.filter(|_| studio_mode).map(|id| id.name),
 		scenes,
+		groups,
 		audio: audio.into_iter().flatten().collect(),
 		media: media.into_iter().flatten().collect(),
 		filters: filters.into_iter().flatten().collect(),
@@ -122,9 +127,19 @@ pub async fn snapshot(client: &Client) -> Result<StudioSnapshot> {
 	})
 }
 
-async fn scene_state(client: &Client, scene: &str) -> Result<SceneState> {
+/// OBS lists a group's items with a request of its own.
+#[derive(Clone, Copy)]
+enum ItemList {
+	Scene,
+	Group,
+}
+
+async fn scene_state(client: &Client, scene: &str, list: ItemList) -> Result<SceneState> {
 	let scene_items = client.scene_items();
-	let items = scene_items.list(SceneId::Name(scene)).await?;
+	let items = match list {
+		ItemList::Scene => scene_items.list(SceneId::Name(scene)).await?,
+		ItemList::Group => scene_items.list_group(SceneId::Name(scene)).await?,
+	};
 	let visibility = join_all(items.iter().map(|item| scene_items.enabled(SceneId::Name(scene), item.id))).await;
 	let sources = items
 		.into_iter()
@@ -223,6 +238,7 @@ mod tests {
 			program_scene: String::new(),
 			preview_scene: None,
 			scenes: Vec::new(),
+			groups: Vec::new(),
 			audio: Vec::new(),
 			media: Vec::new(),
 			filters: Vec::new(),
