@@ -94,8 +94,14 @@ ARG BUILD_DATE=unknown
 ENV VCS_REF=${VCS_REF}
 ENV BUILD_DATE=${BUILD_DATE}
 
-# Step 3: build the binary
-RUN cargo build --release --bin file_host
+# Step 3: build the binary.
+# `-p` as well as `--bin`: `--bin` picks a target, not a package, so cargo
+# still unifies features across every workspace member. The recipe (`prepare
+# --bin`) holds only this binary's dependency closure, so cook resolves
+# features for that closure alone, and without `-p` the two disagree:
+# file_host's build recompiled 42 crates cook had built or skipped (obws and
+# everything some-obs's `obs-websocket/websocket` feature touches).
+RUN cargo build --release -p file_host --bin file_host
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/file_host
