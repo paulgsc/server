@@ -17,7 +17,7 @@ against a real database at compile time, so `DATABASE_URL` must point at a migra
 database, not be unset.
 
 **Clippy is a ratchet, not a clean gate.** The workspace carries pre-existing clippy debt
-(1,242 findings across 124 files when the ratchet landed, mostly pedantic doc lints), so a
+(1,255 findings across 127 files when the ratchet landed, mostly pedantic doc lints), so a
 plain `cargo clippy --workspace -- -D warnings` can never pass regardless of what you changed.
 `lint.yml` instead compares every finding against `scripts/clippy_baseline.json`, a count per
 (file, lint, enclosing item, the source text it points at): a new finding fails, and so does a
@@ -29,7 +29,7 @@ your own findings is not a way through; only a clippy toolchain bump may grow it
 what CI runs, before every push that touches Rust:
 
 ```sh
-cargo clippy --workspace --all-targets --keep-going --message-format=json \
+cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
   -- --cap-lints=warn -A unknown-lints > clippy.json
 python3 scripts/check_clippy_baseline.py clippy.json            # add --update after fixing debt
 ```
@@ -39,7 +39,9 @@ config's `-D warnings` a crate with any finding fails to build and every crate d
 is then never linted at all. `--keep-going` for the same truncation across independent crates.
 `--all-targets` because without it `#[cfg(test)]` code is never compiled, so clippy never sees
 test modules (verified directly: `cargo clippy -p activity_repo --no-deps` compiles clean with a
-real `.expect()` in its test module; `--all-targets` surfaces 27 findings in that crate). Redirect
+real `.expect()` in its test module; `--all-targets` surfaces 27 findings in that crate).
+`--all-features` likewise, or feature-gated code no consumer enables is never compiled at all
+(`some-transport`'s `inmem` carried 13 unseen findings). Redirect
 with `>`, never pipe through `| tail`: a pipeline reports the last command's exit code, not
 clippy's. The baseline depends on the clippy version, so `lint.yml` pins its toolchain — bump
 the pin and regenerate the baseline in the same change.

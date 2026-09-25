@@ -3190,6 +3190,65 @@
       }
     }
   },
+  "crates/some-transport/src/inmem.rs": {
+    "clippy::doc_markdown": {
+      "<file scope>": {
+        "//! - Lock-free using async_broadcast channels": 1,
+        "//! In-memory transport implementation using async_broadcast": 1
+      }
+    }
+  },
+  "crates/some-transport/src/inmem/receiver.rs": {
+    "clippy::missing_const_for_fn": {
+      "fn inner": {
+        "pub fn inner(&self) -> &Receiver<E> { &self.0 }": 1
+      },
+      "fn inner_mut": {
+        "pub fn inner_mut(&mut self) -> &mut Receiver<E> { &mut self.0 }": 1
+      },
+      "fn new": {
+        "pub fn new(receiver: Receiver<E>) -> Self { Self(receiver) }": 1
+      }
+    },
+    "clippy::must_use_candidate": {
+      "fn inner": {
+        "pub fn inner(&self) -> &Receiver<E> {": 1
+      },
+      "fn into_inner": {
+        "pub fn into_inner(self) -> Receiver<E> {": 1
+      },
+      "fn new": {
+        "pub fn new(receiver: Receiver<E>) -> Self {": 1
+      }
+    }
+  },
+  "crates/some-transport/src/inmem/transport.rs": {
+    "clippy::cast_lossless": {
+      "fn broadcast": {
+        ".map(|res| res.is_some() as usize)": 1
+      }
+    },
+    "clippy::disallowed_macros": {
+      "fn send_to_subject": {
+        "Err(TransportError::InvalidOperation(format!( \"broadcast is not supported on this transport (async_broadcast channel only!\" )))": 1
+      }
+    },
+    "clippy::doc_markdown": {
+      "<file scope>": {
+        "/// In-memory transport implementation using async_broadcast.": 1
+      }
+    },
+    "clippy::missing_const_for_fn": {
+      "fn main_sender": {
+        "pub fn main_sender(&self) -> &Sender<E> { &self.main_sender }": 1
+      }
+    },
+    "clippy::useless_format": {
+      "fn send_to_subject": {
+        "Err(TransportError::InvalidOperation(format!( \"broadcast is not supported on this transport (async_broadcast channel only!\" )))": 1
+      }
+    }
+  },
   "crates/some-transport/src/mpsc_utils/traits.rs": {
     "clippy::doc_markdown": {
       "trait UnboundedSenderExt": {

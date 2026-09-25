@@ -19,8 +19,9 @@ This replaces a grep step in lint.yml that had two blind spots, both silent:
     passed as long as its first line mentioned one elsewhere).
 
 Here an attribute is read to its matching `]`, however many lines that is,
-and `skip(`/`skip_all` must appear as an argument outside any string literal
-(`name = "skip"` records every argument all the same). `--self-test` runs the
+and `skip(...)`/`skip_all` must appear as a top-level argument outside any
+string literal (`name = "skip"` and `fields(skip_all = true)` both record every
+argument all the same). `--self-test` runs the
 rule against known-compliant and known-noncompliant attributes, and runs in
 lint.yml next to the real scan.
 
@@ -39,15 +40,37 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RUST_ROOTS = [REPO_ROOT / "apps", REPO_ROOT / "crates"]
 
 ATTRIBUTE = re.compile(r"#\[\s*(?:tracing\s*::\s*)?instrument\b")
-# `skip(...)` or `skip_all` as an argument of the attribute — matched only
-# after string literals are blanked, so `name = "skip"` or
-# `fields(note = "skip_all")` is not mistaken for a skip directive.
-SKIP = re.compile(r"(?:[(,]\s*)(?:skip_all\b|skip\s*\()")
+# `skip(...)` or `skip_all` as a *top-level* argument of the attribute. String
+# literals are blanked first (so `name = "skip"` isn't one), and arguments
+# nested inside another argument don't count (so `fields(skip_all = true)`,
+# which tracing reads as a field name, isn't one either).
+SKIP_DIRECTIVE = re.compile(r"^(?:skip_all|skip\s*\(.*\))$", re.DOTALL)
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 
 
+def top_level_arguments(attribute: str) -> list[str]:
+	"""`#[instrument(a, b(c, d), e)]` -> `["a", "b(c, d)", "e"]`."""
+	arguments, current, depth = [], [], 0
+	for char in STRING.sub('""', attribute):
+		if char == "(":
+			depth += 1
+			if depth == 1:
+				continue
+		elif char == ")":
+			depth -= 1
+			if depth == 0:
+				break
+		if depth == 1 and char == ",":
+			arguments.append("".join(current).strip())
+			current = []
+		elif depth >= 1:
+			current.append(char)
+	arguments.append("".join(current).strip())
+	return [argument for argument in arguments if argument]
+
+
 def names_its_skips(attribute: str) -> bool:
-	return bool(SKIP.search(STRING.sub('""', attribute)))
+	return any(SKIP_DIRECTIVE.match(argument) for argument in top_level_arguments(attribute))
 
 
 def attribute_text(source: str, start: int) -> str:
@@ -93,6 +116,9 @@ NONCOMPLIANT = [
 	'#[instrument(fields(note = "skip_all"))]',
 	'#[instrument(name = "skip(x)")]',
 	"#[instrument(fields(skipped = true))]",
+	"#[instrument(fields(skip_all = true))]",
+	"#[instrument(fields(skip(x)))]",
+	"#[instrument(skip_all_the_things)]",
 ]
 
 

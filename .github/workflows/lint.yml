@@ -120,12 +120,13 @@ jobs:
 
       # `--cap-lints=warn` so a crate with findings still builds and every
       # crate depending on it is still linted; `--all-targets` so test code is
-      # linted at all. The baseline check, not clippy's exit code, decides —
+      # linted at all; `--all-features` so code behind a feature no consumer
+      # enables (some-transport's `inmem`) is compiled, and so linted, at all. The baseline check, not clippy's exit code, decides —
       # and it fails on real compiler errors and on a build that did not
       # finish, so ignoring the exit code here hides nothing.
       - name: Run clippy
         run: |
-          cargo clippy --workspace --all-targets --keep-going --message-format=json \
+          cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
             -- --cap-lints=warn -A unknown-lints > clippy.json || true
 
       # `--base` is what stops a PR from recording its own new findings: the

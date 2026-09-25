@@ -56,14 +56,16 @@ baseline or not.
 
 Reads the output of:
 
-    cargo clippy --workspace --all-targets --keep-going --message-format=json \\
+    cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \\
       -- --cap-lints=warn -A unknown-lints
 
 `--cap-lints=warn` is what makes the set complete: with the config's
 `-D warnings` in force, a crate with any finding fails to build, and every
 crate that depends on it is then never linted at all. `--all-targets` so test
 code is linted too — without it `#[cfg(test)]` code is never compiled, and a
-finding there is invisible rather than absent.
+finding there is invisible rather than absent. `--all-features` for the same
+reason about feature-gated code: `some-transport`'s `inmem` is enabled by no
+consumer, and was never linted before it was added.
 """
 
 from __future__ import annotations
