@@ -30,9 +30,16 @@ pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Mes
 /// `client_type` is passed in by the caller (recomputed from the same
 /// headers/addr `add_connection` used) rather than looked up here, since the
 /// store entry is gone by the time this returns.
+///
+/// Recorded as `client_disconnect`, not `error`: the handshake is the first
+/// frame written to a socket that just upgraded, so the send failing means
+/// the peer has already hung up. The blackbox WS probe (`infra/blackbox.yml`'s
+/// `ws_handshake`) does exactly that on every scrape — it closes as soon as it
+/// reads the `101` — so labelling this `error` would make the probe the
+/// biggest source of "errors" on the Closes by Reason panel.
 pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {
 	let result = state.remove_connection(conn_key, "Connection failed during setup".to_string()).await;
-	super::instrument::record_removed(client_type, "error", 0.0);
+	super::instrument::record_removed(client_type, "client_disconnect", 0.0);
 
 	if let Err(e) = result {
 		error!(
