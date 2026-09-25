@@ -16,27 +16,35 @@ yourself before every push, regardless of environment. `sqlx::query!`/`query_as!
 against a real database at compile time, so `DATABASE_URL` must point at a migrated throwaway
 database, not be unset.
 
-**Don't run `cargo clippy --workspace` as a pass/fail gate** — this workspace already carries
-pre-existing clippy debt in crates a given push doesn't touch (`enum-name-derive` is a
-confirmed example: 5 real errors, unrelated to and unchanged by this PR's own diff), so a
-whole-workspace run can never pass clean regardless of what you changed. Scope the run to the
-packages your diff touches (`cargo clippy -p <pkg1> -p <pkg2> ...`), and if a workspace-wide
-run turns up a failure in a crate you didn't touch, confirm that with `git diff --stat
-origin/main -- <path>` before assuming it's yours to fix — an untouched crate's pre-existing
-failure is debt to note, not a blocker for your push.
+**Clippy is a ratchet, not a clean gate.** The workspace carries pre-existing clippy debt
+(1,255 findings across 127 files when the ratchet landed, mostly pedantic doc lints), so a
+plain `cargo clippy --workspace -- -D warnings` can never pass regardless of what you changed.
+`lint.yml` instead compares every finding against `scripts/clippy_baseline.json`, a count per
+(file, lint, enclosing item, the source text it points at): a new finding fails, and so does a
+*fixed* one until the baseline is regenerated. The source text and enclosing `fn`/`impl`/… are
+part of the identity, so **editing a line that carries recorded debt — or renaming the item
+containing it — means fixing it**: it is a new finding. `--update` refuses to
+record growth, and CI also fails if the committed baseline exceeds the base branch's, so recording
+your own findings is not a way through; only a clippy toolchain bump may grow it. Run exactly
+what CI runs, before every push that touches Rust:
 
-For `cargo clippy` specifically: pass `--keep-going`, since cargo's default fail-fast
-scheduling stops checking a second crate the moment the first one errors, silently
-truncating the finding list to whatever crate happened to fail first. Redirect output with
-`>`, never pipe through `| tail` — a pipeline reports the last command's exit code, not
-clippy's, so a piped run can look clean when it wasn't. **Also pass `--all-targets`** —
-without it, cargo doesn't compile `#[cfg(test)]` code at all, so clippy never even sees test
-modules, let alone lints them (verified directly: `cargo clippy -p activity_repo --no-deps`
-compiles clean even with a real `.expect()` sitting in its own test module; adding
-`--all-targets` to the identical command surfaces 27 errors in that same crate, `.expect()`
-included). CI's own `lint.yml` clippy job never passes `--all-targets` either, so it is
-currently blind to every clippy issue in test code — this is the only place that discipline
-gets enforced at all.
+```sh
+cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
+  -- --cap-lints=warn -A unknown-lints > clippy.json
+python3 scripts/check_clippy_baseline.py clippy.json            # add --update after fixing debt
+```
+
+Why those flags, since each one's absence fails silently: `--cap-lints=warn` because under the
+config's `-D warnings` a crate with any finding fails to build and every crate depending on it
+is then never linted at all. `--keep-going` for the same truncation across independent crates.
+`--all-targets` because without it `#[cfg(test)]` code is never compiled, so clippy never sees
+test modules (verified directly: `cargo clippy -p activity_repo --no-deps` compiles clean with a
+real `.expect()` in its test module; `--all-targets` surfaces 27 findings in that crate).
+`--all-features` likewise, or feature-gated code no consumer enables is never compiled at all
+(`some-transport`'s `inmem` carried 13 unseen findings). Redirect
+with `>`, never pipe through `| tail`: a pipeline reports the last command's exit code, not
+clippy's. The baseline depends on the clippy version, so `lint.yml` pins its toolchain — bump
+the pin and regenerate the baseline in the same change.
 
 ## Cross-repo coupling with `paulgsc/some-ui`
 
@@ -94,8 +102,14 @@ never "sounds like good practice."
   does promote the `-W clippy::expect_used` flag on that same list to a hard error (verified
   directly against a real crate — see the `--all-targets` note in "Pre-commit verification"
   above for why this only shows up with that flag). Use `.unwrap()`, never `.expect()`, in
-  test code — `cargo clippy --all-targets` is the only thing that will ever catch this here;
-  CI's own clippy job won't.
+  test code — only a run with `--all-targets` (which `lint.yml`'s ratchet uses) sees it.
+- **A database migrated with Python's `sqlite3` lacks sqlx's own `_sqlx_migrations` table**,
+  and `outcome_repo`'s tests query it — so `cargo clippy/test --all-targets` fails to compile
+  that crate with `no such table: _sqlx_migrations` plus two `E0282`s that look like real type
+  errors. CI migrates with `sqlx-cli`, which creates it. Locally, create it after applying the
+  `migrations/*.up.sql` files: `CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY,
+  description TEXT NOT NULL, installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL)`.
 - **A tool call can be denied by this environment's permission classifier independent of
   whether the action itself is valid.** Scheduling and cleanup calls in particular
   (`send_later`/`create_trigger`, `unsubscribe_pr_activity`, `delete_trigger`) have each been
