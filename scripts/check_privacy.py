@@ -12,7 +12,7 @@ asserting an identity, and #372 removed the code that believed it.
 
 So this fails on any *read* of those headers — `.get(...)`, `.get_all(...)`,
 `.contains_key(...)`, `.remove(...)` with the name as a string literal or as
-an `http::header` constant — in Rust source under `apps/` or `crates/`,
+an `http::header` constant, borrowed or not — in Rust source under `apps/` or `crates/`,
 outside the allowlist below. Writes are fine (tests build requests carrying
 these headers to prove they are ignored), so `.insert(...)` is not matched.
 
@@ -47,7 +47,7 @@ HEADER_NAMES = ["user-agent", "x-forwarded-for", "x-real-ip", "forwarded", "cf-c
 HEADER_CONSTANTS = ["USER_AGENT", "FORWARDED"]
 
 READ = re.compile(
-	r"\.(?:get|get_all|contains_key|remove)\(\s*"
+	r"\.(?:get|get_all|contains_key|remove)\(\s*&?\s*"
 	r"(?:"
 	r'"(?P<literal>' + "|".join(re.escape(name) for name in HEADER_NAMES) + r')"'
 	r"|(?:[A-Za-z_][A-Za-z0-9_]*::)*(?P<constant>" + "|".join(HEADER_CONSTANTS) + r")\b"
@@ -74,6 +74,9 @@ SHOULD_FLAG = [
 	"headers.get(USER_AGENT)",
 	"headers.get(header::USER_AGENT)",
 	"headers.get(axum::http::header::FORWARDED)",
+	"headers.get(&header::USER_AGENT)",
+	"headers.get(& USER_AGENT)",
+	'headers.get(&"x-forwarded-for")',
 	'headers.remove("cf-connecting-ip")',
 ]
 SHOULD_PASS = [
