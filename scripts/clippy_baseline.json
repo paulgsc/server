@@ -1,0 +1,709 @@
+{
+  "<outside the workspace>": {
+    "clippy::disallowed_macros": 1
+  },
+  "apps/orchestrator/src/lib.rs": {
+    "clippy::ignored_unit_patterns": 2,
+    "clippy::missing_errors_doc": 3,
+    "clippy::must_use_candidate": 4,
+    "clippy::needless_pass_by_value": 1,
+    "clippy::redundant_clone": 1,
+    "clippy::significant_drop_in_scrutinee": 1,
+    "clippy::uninlined_format_args": 1
+  },
+  "apps/servers/file_host/examples/random_rows_2d.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::uninlined_format_args": 1
+  },
+  "apps/servers/file_host/src/config.rs": {
+    "clippy::must_use_candidate": 2,
+    "clippy::new_without_default": 1,
+    "clippy::struct_excessive_bools": 1
+  },
+  "apps/servers/file_host/src/error.rs": {
+    "clippy::match_same_arms": 1,
+    "clippy::missing_const_for_fn": 3
+  },
+  "apps/servers/file_host/src/handlers/db/activities.rs": {
+    "clippy::expect_used": 1,
+    "clippy::missing_errors_doc": 2
+  },
+  "apps/servers/file_host/src/handlers/db/hopium.rs": {
+    "clippy::disallowed_macros": 7,
+    "clippy::manual_let_else": 1,
+    "clippy::missing_errors_doc": 11,
+    "clippy::option_if_let_else": 1,
+    "clippy::similar_names": 1,
+    "clippy::uninlined_format_args": 7,
+    "clippy::use_self": 1
+  },
+  "apps/servers/file_host/src/handlers/db/session.rs": {
+    "clippy::disallowed_macros": 2,
+    "clippy::missing_errors_doc": 8
+  },
+  "apps/servers/file_host/src/handlers/db/tab.rs": {
+    "clippy::disallowed_macros": 2,
+    "clippy::doc_markdown": 15,
+    "clippy::missing_const_for_fn": 2,
+    "clippy::missing_errors_doc": 10,
+    "clippy::option_if_let_else": 1,
+    "clippy::uninlined_format_args": 1,
+    "clippy::use_self": 1
+  },
+  "apps/servers/file_host/src/handlers/pipeline.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::future_not_send": 1,
+    "clippy::missing_errors_doc": 1,
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "apps/servers/file_host/src/handlers/presence.rs": {
+    "clippy::missing_errors_doc": 1,
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "apps/servers/file_host/src/handlers/push.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::missing_errors_doc": 4
+  },
+  "apps/servers/file_host/src/handlers/signals.rs": {
+    "clippy::missing_errors_doc": 1
+  },
+  "apps/servers/file_host/src/handlers/tab_metadata.rs": {
+    "clippy::ignored_unit_patterns": 2,
+    "clippy::let_unit_value": 2,
+    "clippy::missing_errors_doc": 1,
+    "clippy::redundant_closure": 1
+  },
+  "apps/servers/file_host/src/handlers/utterance.rs": {
+    "clippy::derive_partial_eq_without_eq": 1
+  },
+  "apps/servers/file_host/src/health.rs": {
+    "clippy::disallowed_macros": 4,
+    "clippy::missing_errors_doc": 1,
+    "clippy::too_long_first_doc_paragraph": 1,
+    "clippy::uninlined_format_args": 1
+  },
+  "apps/servers/file_host/src/lib.rs": {
+    "clippy::clone_on_copy": 1,
+    "clippy::missing_errors_doc": 1,
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "apps/servers/file_host/src/main.rs": {
+    "clippy::await_holding_lock": 1,
+    "clippy::ignored_unit_patterns": 1,
+    "clippy::significant_drop_in_scrutinee": 1,
+    "clippy::too_many_lines": 1,
+    "clippy::unused_async": 1,
+    "clippy::unwrap_used": 1
+  },
+  "apps/servers/file_host/src/metrics/instruments.rs": {
+    "clippy::cast_precision_loss": 1,
+    "clippy::doc_markdown": 2,
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "apps/servers/file_host/src/metrics/observability.rs": {
+    "clippy::missing_errors_doc": 2,
+    "clippy::significant_drop_tightening": 1,
+    "clippy::too_long_first_doc_paragraph": 1,
+    "clippy::unused_async": 1
+  },
+  "apps/servers/file_host/src/metrics/periodic.rs": {
+    "clippy::doc_markdown": 1
+  },
+  "apps/servers/file_host/src/metrics/pool.rs": {
+    "clippy::doc_markdown": 1
+  },
+  "apps/servers/file_host/src/metrics/waker.rs": {
+    "clippy::too_long_first_doc_paragraph": 2
+  },
+  "apps/servers/file_host/src/models/utils.rs": {
+    "clippy::disallowed_macros": 2,
+    "clippy::missing_errors_doc": 2,
+    "clippy::non_std_lazy_statics": 2,
+    "clippy::uninlined_format_args": 2,
+    "clippy::unwrap_used": 2
+  },
+  "apps/servers/file_host/src/nudge/constraints.rs": {
+    "clippy::disallowed_macros": 1
+  },
+  "apps/servers/file_host/src/nudge/payload.rs": {
+    "clippy::disallowed_macros": 2,
+    "clippy::option_if_let_else": 1
+  },
+  "apps/servers/file_host/src/nudge/presence.rs": {
+    "clippy::expect_used": 3
+  },
+  "apps/servers/file_host/src/nudge/waker.rs": {
+    "clippy::expect_used": 21,
+    "clippy::must_use_candidate": 1,
+    "clippy::too_long_first_doc_paragraph": 1,
+    "clippy::too_many_lines": 2
+  },
+  "apps/servers/file_host/src/routes/inventory.rs": {
+    "clippy::doc_markdown": 1
+  },
+  "apps/servers/file_host/src/routes/ts_emitter.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::expect_used": 2
+  },
+  "apps/servers/file_host/src/utils.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::cloned_instead_of_copied": 1,
+    "clippy::disallowed_macros": 3,
+    "clippy::manual_midpoint": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_panics_doc": 2,
+    "clippy::must_use_candidate": 3,
+    "clippy::should_panic_without_expect": 1,
+    "clippy::uninlined_format_args": 4,
+    "clippy::unreadable_literal": 2,
+    "clippy::unwrap_used": 2
+  },
+  "apps/servers/file_host/src/utils/retry.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::missing_errors_doc": 1
+  },
+  "apps/servers/file_host/src/websocket.rs": {
+    "clippy::doc_markdown": 1,
+    "clippy::enum_glob_use": 1,
+    "clippy::expect_used": 5,
+    "clippy::ignored_unit_patterns": 1,
+    "clippy::manual_let_else": 1,
+    "clippy::must_use_candidate": 1,
+    "clippy::new_without_default": 1,
+    "clippy::too_long_first_doc_paragraph": 1,
+    "clippy::unwrap_used": 2
+  },
+  "apps/servers/file_host/src/websocket/broadcast.rs": {
+    "clippy::missing_errors_doc": 1
+  },
+  "apps/servers/file_host/src/websocket/broadcast/errors.rs": {
+    "clippy::use_self": 1
+  },
+  "apps/servers/file_host/src/websocket/broadcast/handlers.rs": {
+    "clippy::disallowed_macros": 2,
+    "clippy::disallowed_methods": 2,
+    "clippy::ignored_unit_patterns": 2,
+    "clippy::manual_is_multiple_of": 2,
+    "clippy::needless_borrow": 1,
+    "clippy::needless_continue": 1,
+    "clippy::redundant_pub_crate": 1,
+    "clippy::semicolon_if_nothing_returned": 2,
+    "clippy::unused_unit": 2
+  },
+  "apps/servers/file_host/src/websocket/connection.rs": {
+    "clippy::disallowed_macros": 3,
+    "clippy::doc_markdown": 1,
+    "clippy::expect_used": 1,
+    "clippy::map_unwrap_or": 1,
+    "clippy::missing_errors_doc": 3,
+    "clippy::must_use_candidate": 1,
+    "clippy::redundant_closure": 2,
+    "clippy::redundant_closure_for_method_calls": 1,
+    "clippy::single_match_else": 1,
+    "clippy::uninlined_format_args": 2,
+    "clippy::unused_async": 1
+  },
+  "apps/servers/file_host/src/websocket/connection/errors.rs": {
+    "clippy::use_self": 1
+  },
+  "apps/servers/file_host/src/websocket/connection/handlers.rs": {
+    "clippy::disallowed_methods": 1,
+    "clippy::redundant_pub_crate": 3
+  },
+  "apps/servers/file_host/src/websocket/connection/instrument.rs": {
+    "clippy::too_long_first_doc_paragraph": 2
+  },
+  "apps/servers/file_host/src/websocket/heartbeat.rs": {
+    "clippy::missing_const_for_fn": 3,
+    "clippy::must_use_candidate": 3,
+    "clippy::return_self_not_must_use": 3
+  },
+  "apps/servers/file_host/src/websocket/message.rs": {
+    "clippy::disallowed_macros": 4,
+    "clippy::match_same_arms": 1,
+    "clippy::needless_pass_by_value": 1,
+    "clippy::needless_return": 1,
+    "clippy::semicolon_if_nothing_returned": 1,
+    "clippy::uninlined_format_args": 4,
+    "clippy::unnecessary_semicolon": 1,
+    "clippy::unused_async": 1,
+    "clippy::unused_self": 1
+  },
+  "apps/servers/file_host/src/websocket/message/handlers.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::ignored_unit_patterns": 1,
+    "clippy::map_unwrap_or": 1,
+    "clippy::redundant_pub_crate": 1,
+    "clippy::too_many_lines": 1
+  },
+  "apps/servers/file_host/src/websocket/shutdown.rs": {
+    "clippy::wildcard_imports": 1
+  },
+  "apps/some-obs/src/config.rs": {
+    "clippy::missing_errors_doc": 1,
+    "clippy::result_large_err": 1
+  },
+  "apps/some-obs/src/error.rs": {
+    "clippy::use_self": 1
+  },
+  "apps/some-obs/src/service.rs": {
+    "clippy::missing_errors_doc": 2
+  },
+  "apps/some-obs/src/service/command.rs": {
+    "clippy::ignored_unit_patterns": 1,
+    "clippy::missing_panics_doc": 1,
+    "clippy::must_use_candidate": 1,
+    "clippy::needless_continue": 1
+  },
+  "apps/some-obs/src/service/events.rs": {
+    "clippy::ignored_unit_patterns": 3,
+    "clippy::must_use_candidate": 1,
+    "clippy::needless_borrow": 1,
+    "clippy::needless_continue": 1
+  },
+  "apps/some-obs/src/service/heartbeat.rs": {
+    "clippy::ignored_unit_patterns": 1,
+    "clippy::must_use_candidate": 2
+  },
+  "crates/cursorium/examples/demo.rs": {
+    "clippy::disallowed_macros": 17,
+    "clippy::single_component_path_imports": 1,
+    "clippy::uninlined_format_args": 2
+  },
+  "crates/cursorium/src/core.rs": {
+    "clippy::collection_is_never_read": 1,
+    "clippy::disallowed_macros": 2,
+    "clippy::stable_sort_primitive": 1,
+    "clippy::uninlined_format_args": 6
+  },
+  "crates/cursorium/src/core/commands.rs": {
+    "clippy::expect_used": 6,
+    "clippy::use_self": 9
+  },
+  "crates/cursorium/src/core/config.rs": {
+    "clippy::clone_on_copy": 1,
+    "clippy::disallowed_macros": 2,
+    "clippy::explicit_counter_loop": 1,
+    "clippy::missing_const_for_fn": 5,
+    "clippy::missing_errors_doc": 1,
+    "clippy::must_use_candidate": 8,
+    "clippy::return_self_not_must_use": 4
+  },
+  "crates/cursorium/src/core/engine.rs": {
+    "clippy::enum_glob_use": 2,
+    "clippy::ignored_unit_patterns": 2,
+    "clippy::implicit_clone": 1,
+    "clippy::match_same_arms": 6,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::must_use_candidate": 2,
+    "clippy::needless_pass_by_value": 1,
+    "clippy::new_without_default": 1,
+    "clippy::redundant_clone": 1
+  },
+  "crates/cursorium/src/core/error.rs": {
+    "clippy::missing_const_for_fn": 1,
+    "clippy::must_use_candidate": 1
+  },
+  "crates/cursorium/src/core/orchestrator.rs": {
+    "clippy::missing_errors_doc": 9,
+    "clippy::must_use_candidate": 2,
+    "clippy::significant_drop_in_scrutinee": 1
+  },
+  "crates/cursorium/src/core/state.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::cast_sign_loss": 1,
+    "clippy::doc_markdown": 1,
+    "clippy::option_if_let_else": 1,
+    "clippy::redundant_pub_crate": 1,
+    "clippy::unchecked_time_subtraction": 1
+  },
+  "crates/cursorium/src/core/timeline.rs": {
+    "clippy::map_unwrap_or": 1,
+    "clippy::missing_const_for_fn": 4,
+    "clippy::unused_self": 1
+  },
+  "crates/cursorium/tests/orchestrator_fsm.rs": {
+    "clippy::missing_errors_doc": 8,
+    "clippy::missing_panics_doc": 1,
+    "clippy::must_use_candidate": 2,
+    "clippy::new_without_default": 1,
+    "clippy::redundant_clone": 1,
+    "clippy::unwrap_used": 1
+  },
+  "crates/db/activity/src/duration.rs": {
+    "clippy::doc_markdown": 1
+  },
+  "crates/db/activity/src/lib.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::expect_used": 7
+  },
+  "crates/db/activity/src/model.rs": {
+    "clippy::expect_used": 1
+  },
+  "crates/db/activity/src/repository.rs": {
+    "clippy::expect_used": 16
+  },
+  "crates/db/activity/tests/catalog_parity.rs": {
+    "clippy::expect_used": 8
+  },
+  "crates/db/activity/tests/session_activity_shape.rs": {
+    "clippy::expect_used": 3
+  },
+  "crates/db/capture/src/repository/tab.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 9,
+    "clippy::must_use_candidate": 1,
+    "clippy::use_self": 1
+  },
+  "crates/db/mood_event/src/core/model.rs": {
+    "clippy::derive_partial_eq_without_eq": 1
+  },
+  "crates/db/mood_event/src/core/queries.rs": {
+    "clippy::missing_errors_doc": 8
+  },
+  "crates/db/mood_event/src/core/repository.rs": {
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 12,
+    "clippy::must_use_candidate": 1
+  },
+  "crates/db/presence/src/repository.rs": {
+    "clippy::cast_possible_truncation": 2,
+    "clippy::disallowed_macros": 3,
+    "clippy::expect_used": 16
+  },
+  "crates/db/session/src/repository.rs": {
+    "clippy::expect_used": 35
+  },
+  "crates/enum-name-derive/src/lib.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::expect_fun_call": 1,
+    "clippy::expect_used": 1,
+    "clippy::manual_let_else": 1,
+    "clippy::missing_panics_doc": 1
+  },
+  "crates/obs-websocket/examples/commands.rs": {
+    "clippy::explicit_iter_loop": 3,
+    "clippy::future_not_send": 2,
+    "clippy::missing_errors_doc": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/examples/daemon.rs": {
+    "clippy::disallowed_macros": 3,
+    "clippy::uninlined_format_args": 2,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/examples/stream.rs": {
+    "clippy::ignored_unit_patterns": 3,
+    "clippy::must_use_candidate": 1
+  },
+  "crates/obs-websocket/examples/youtube.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::future_not_send": 2,
+    "clippy::missing_errors_doc": 1,
+    "clippy::uninlined_format_args": 1,
+    "clippy::unwrap_used": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/src/auth.rs": {
+    "clippy::disallowed_macros": 4,
+    "clippy::manual_let_else": 1,
+    "clippy::single_match": 1
+  },
+  "crates/obs-websocket/src/core/commands.rs": {
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 2,
+    "clippy::must_use_candidate": 1,
+    "clippy::result_large_err": 1
+  },
+  "crates/obs-websocket/src/core/connection.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 7,
+    "clippy::must_use_candidate": 3,
+    "clippy::significant_drop_tightening": 1,
+    "clippy::type_complexity": 1,
+    "clippy::unused_async": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/src/core/events.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::manual_let_else": 2,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 5,
+    "clippy::must_use_candidate": 1,
+    "clippy::needless_continue": 1
+  },
+  "crates/obs-websocket/src/core/retry.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::cast_precision_loss": 1,
+    "clippy::cast_sign_loss": 1,
+    "clippy::missing_const_for_fn": 2,
+    "clippy::must_use_candidate": 1
+  },
+  "crates/obs-websocket/src/core/state.rs": {
+    "clippy::doc_markdown": 1,
+    "clippy::enum_glob_use": 3,
+    "clippy::match_same_arms": 2,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 20,
+    "clippy::must_use_candidate": 1,
+    "clippy::needless_pass_by_value": 1,
+    "clippy::unused_async": 1,
+    "clippy::unused_self": 1
+  },
+  "crates/obs-websocket/src/lib.rs": {
+    "clippy::missing_errors_doc": 8,
+    "clippy::must_use_candidate": 2
+  },
+  "crates/obs-websocket/src/messages.rs": {
+    "clippy::must_use_candidate": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/src/messages/extractor.rs": {
+    "clippy::result_large_err": 3
+  },
+  "crates/obs-websocket/src/messages/parsers.rs": {
+    "clippy::redundant_pub_crate": 3
+  },
+  "crates/obs-websocket/src/messages/parsers/event.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::match_wildcard_for_single_variants": 1,
+    "clippy::redundant_pub_crate": 1,
+    "clippy::result_large_err": 13,
+    "clippy::unnecessary_wraps": 11,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/src/messages/parsers/hello.rs": {
+    "clippy::redundant_pub_crate": 1,
+    "clippy::result_large_err": 1
+  },
+  "crates/obs-websocket/src/messages/parsers/response.rs": {
+    "clippy::cast_possible_truncation": 3,
+    "clippy::redundant_pub_crate": 1,
+    "clippy::result_large_err": 22,
+    "clippy::unnecessary_wraps": 21,
+    "clippy::unwrap_used": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/obs-websocket/src/messages/processor.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::option_if_let_else": 1,
+    "clippy::result_large_err": 1,
+    "clippy::single_match_else": 1,
+    "clippy::unused_self": 1
+  },
+  "crates/obs-websocket/src/polling/config.rs": {
+    "clippy::result_large_err": 2
+  },
+  "crates/obs-websocket/src/polling/manager.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::disallowed_methods": 2
+  },
+  "crates/obs-websocket/src/polling/request_builder.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::doc_markdown": 1,
+    "clippy::result_large_err": 21,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/some-cache/src/config.rs": {
+    "clippy::missing_const_for_fn": 2,
+    "clippy::must_use_candidate": 1,
+    "clippy::return_self_not_must_use": 2
+  },
+  "crates/some-cache/src/dedup.rs": {
+    "clippy::disallowed_methods": 2,
+    "clippy::doc_markdown": 1,
+    "clippy::future_not_send": 2,
+    "clippy::missing_errors_doc": 6,
+    "clippy::must_use_candidate": 2,
+    "clippy::type_complexity": 2
+  },
+  "crates/some-cache/src/entry.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::missing_const_for_fn": 2,
+    "clippy::must_use_candidate": 1
+  },
+  "crates/some-cache/src/metrics.rs": {
+    "clippy::disallowed_macros": 1,
+    "clippy::option_if_let_else": 1
+  },
+  "crates/some-cache/src/store.rs": {
+    "clippy::cast_lossless": 1,
+    "clippy::cast_sign_loss": 3,
+    "clippy::disallowed_macros": 2,
+    "clippy::disallowed_methods": 2,
+    "clippy::doc_markdown": 3,
+    "clippy::future_not_send": 1,
+    "clippy::missing_const_for_fn": 2,
+    "clippy::missing_errors_doc": 10,
+    "clippy::must_use_candidate": 2,
+    "clippy::type_complexity": 1,
+    "clippy::unused_self": 1,
+    "clippy::unwrap_used": 1
+  },
+  "crates/some-cache/src/stream.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::manual_let_else": 5,
+    "clippy::missing_errors_doc": 5
+  },
+  "crates/some-metrics/src/lib.rs": {
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "crates/some-transport/src/mpsc_utils/traits.rs": {
+    "clippy::doc_markdown": 2,
+    "clippy::ignored_unit_patterns": 2,
+    "clippy::option_if_let_else": 4,
+    "clippy::single_match_else": 4
+  },
+  "crates/some-transport/src/mpsc_utils/types.rs": {
+    "clippy::missing_const_for_fn": 5
+  },
+  "crates/some-transport/src/nats/jetstream.rs": {
+    "clippy::cast_sign_loss": 1,
+    "clippy::disallowed_macros": 1,
+    "clippy::doc_markdown": 2,
+    "clippy::missing_errors_doc": 10,
+    "clippy::must_use_candidate": 1,
+    "clippy::too_long_first_doc_paragraph": 1
+  },
+  "crates/some-transport/src/nats/pool.rs": {
+    "clippy::missing_errors_doc": 1,
+    "clippy::must_use_candidate": 5,
+    "clippy::redundant_clone": 1
+  },
+  "crates/some-transport/src/nats/receiver.rs": {
+    "clippy::empty_line_after_doc_comments": 1,
+    "clippy::missing_const_for_fn": 3,
+    "clippy::must_use_candidate": 3
+  },
+  "crates/some-transport/src/nats/transport.rs": {
+    "clippy::disallowed_macros": 21,
+    "clippy::doc_markdown": 2,
+    "clippy::expect_used": 14,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::missing_errors_doc": 4,
+    "clippy::must_use_candidate": 3,
+    "clippy::similar_names": 6,
+    "clippy::stable_sort_primitive": 1,
+    "clippy::uninlined_format_args": 1
+  },
+  "crates/ws-conn-manager/benches/connection_guard.rs": {
+    "clippy::cast_sign_loss": 4,
+    "clippy::collection_is_never_read": 1,
+    "clippy::disallowed_macros": 5,
+    "clippy::expect_used": 2,
+    "clippy::explicit_iter_loop": 6,
+    "clippy::redundant_closure_for_method_calls": 1,
+    "clippy::significant_drop_tightening": 5,
+    "clippy::uninlined_format_args": 5,
+    "clippy::unwrap_used": 7,
+    "clippy::used_underscore_binding": 1
+  },
+  "crates/ws-connection/tests/conn_tests.rs": {
+    "clippy::disallowed_macros": 1
+  },
+  "crates/ws-connection/tests/subscriptions.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::cast_possible_wrap": 1,
+    "clippy::disallowed_macros": 5,
+    "clippy::invalid_upcast_comparisons": 1,
+    "clippy::manual_string_new": 2,
+    "clippy::redundant_clone": 6,
+    "clippy::uninlined_format_args": 5
+  },
+  "crates/ws-events/src/events/common.rs": {
+    "clippy::match_same_arms": 1,
+    "clippy::match_wildcard_for_single_variants": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::must_use_candidate": 1,
+    "clippy::use_self": 2
+  },
+  "crates/ws-events/src/events/common/event_type.rs": {
+    "clippy::derivable_impls": 1,
+    "clippy::disallowed_macros": 2,
+    "clippy::match_same_arms": 6,
+    "clippy::missing_const_for_fn": 2,
+    "clippy::must_use_candidate": 3,
+    "clippy::uninlined_format_args": 1,
+    "clippy::use_self": 33
+  },
+  "crates/ws-events/src/events/common/message.rs": {
+    "clippy::derivable_impls": 1,
+    "clippy::missing_const_for_fn": 3,
+    "clippy::must_use_candidate": 3,
+    "clippy::should_implement_trait": 1
+  },
+  "crates/ws-events/src/events/common/orchestrator/state.rs": {
+    "clippy::missing_const_for_fn": 3,
+    "clippy::must_use_candidate": 9,
+    "clippy::use_self": 6
+  },
+  "crates/ws-events/src/events/common/orchestrator/types.rs": {
+    "clippy::cast_precision_loss": 2,
+    "clippy::disallowed_macros": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::must_use_candidate": 3,
+    "clippy::uninlined_format_args": 1
+  },
+  "crates/ws-events/src/events/common/utterance.rs": {
+    "clippy::derive_partial_eq_without_eq": 1
+  },
+  "crates/ws-events/src/events/unified.rs": {
+    "clippy::cast_possible_truncation": 1,
+    "clippy::disallowed_macros": 3,
+    "clippy::disallowed_methods": 1,
+    "clippy::doc_markdown": 5,
+    "clippy::map_unwrap_or": 1,
+    "clippy::missing_const_for_fn": 1,
+    "clippy::must_use_candidate": 3,
+    "clippy::or_fun_call": 1,
+    "clippy::uninlined_format_args": 3,
+    "clippy::use_self": 1,
+    "clippy::wildcard_imports": 1
+  },
+  "crates/ws-events/src/events/unified/audio.rs": {
+    "clippy::cast_lossless": 1,
+    "clippy::cast_precision_loss": 1,
+    "clippy::derive_partial_eq_without_eq": 1,
+    "clippy::doc_markdown": 1,
+    "clippy::manual_is_multiple_of": 1,
+    "clippy::missing_const_for_fn": 4,
+    "clippy::missing_errors_doc": 1,
+    "clippy::must_use_candidate": 6
+  },
+  "crates/ws-events/src/events/unified/now_playing.rs": {
+    "clippy::derive_partial_eq_without_eq": 1,
+    "clippy::doc_markdown": 2
+  },
+  "crates/ws-events/src/events/unified/obs.rs": {
+    "clippy::derive_partial_eq_without_eq": 2,
+    "clippy::disallowed_methods": 3,
+    "clippy::doc_markdown": 5,
+    "clippy::missing_errors_doc": 6,
+    "clippy::must_use_candidate": 1,
+    "clippy::needless_pass_by_value": 3,
+    "clippy::return_self_not_must_use": 1
+  },
+  "crates/ws-events/src/events/unified/orchestrator.rs": {
+    "clippy::derive_partial_eq_without_eq": 9,
+    "clippy::disallowed_macros": 7,
+    "clippy::disallowed_methods": 3,
+    "clippy::doc_markdown": 4,
+    "clippy::uninlined_format_args": 6,
+    "clippy::use_self": 15,
+    "clippy::wildcard_imports": 2
+  },
+  "crates/ws-events/src/events/unified/system.rs": {
+    "clippy::derive_partial_eq_without_eq": 3
+  },
+  "crates/ws-events/src/events/unified/utterance.rs": {
+    "clippy::derive_partial_eq_without_eq": 1,
+    "clippy::disallowed_methods": 1,
+    "clippy::needless_pass_by_value": 1
+  },
+  "crates/ws-events/src/tabsched/common.rs": {
+    "clippy::doc_markdown": 2
+  }
+}

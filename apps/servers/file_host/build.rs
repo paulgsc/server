@@ -45,7 +45,10 @@ fn main() {
 	// means one git-derived value backs both the image's own metadata and
 	// what the running binary reports about itself, rather than two
 	// independent, driftable sources for the same fact.
-	let git_sha = env::var("VCS_REF").ok().filter(|v| !v.is_empty() && v != "unknown").unwrap_or_else(|| git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "unknown".to_string()));
+	let git_sha = env::var("VCS_REF")
+		.ok()
+		.filter(|v| !v.is_empty() && v != "unknown")
+		.unwrap_or_else(|| git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "unknown".to_string()));
 
 	let dirty = env::var("GIT_DIRTY").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
 		if git(&["status", "--porcelain"]).is_some_and(|s| !s.trim().is_empty()) {

@@ -1,29 +1,46 @@
-name: CI Workflow
+# Workspace lint: rustfmt, clippy (as a ratchet), and the #[instrument] skip
+# policy, on every pull request to main.
+#
+# History worth knowing before changing this file: from 748df86 until this
+# rewrite, `on.pull_request.branches` was `foo` — no such branch has ever
+# existed, so nothing here ran. It was paused because the gate could not
+# pass: `.cargo/config.toml` promotes clippy's pedantic/nursery lints to
+# errors and the workspace carries well over a thousand findings. Clippy now
+# runs as a ratchet over a committed baseline (see
+# scripts/check_clippy_baseline.py) instead of as a gate nobody can clear.
+#
+# Named `Lint`, not `CI Workflow`: test.yml has that name, and `concurrency`
+# below is keyed on `github.workflow`, so sharing it put both workflows in
+# one concurrency group where each queued behind — or displaced — the other.
+name: Lint
+
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
     branches:
-      - foo # this is paused for now 
-  release:
-    types: [published]
+      - main
+
 defaults:
   run:
     working-directory: ./
+
 permissions:
-  actions: write
   contents: read
-  pull-requests: write
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   determine_jobs:
     name: Determine jobs to run
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # `apps/**` was missing from this list while the workflow was paused,
+      # so a change to file_host alone would never have triggered it.
       - name: Detect Rust-related changes
         id: rust
         uses: technote-space/get-diff-action@v6
@@ -31,127 +48,82 @@ jobs:
           PATTERNS: |
             Cargo.toml
             Cargo.lock
+            apps/**
             crates/**
-            .cargo/**
-            rust-toolchain
-            flake.nix
-            flake.lock
             migrations/**
+            .cargo/**
+            clippy.toml
+            rustfmt.toml
+            rust-toolchain
+            scripts/check_clippy_baseline.py
+            scripts/clippy_baseline.json
+            scripts/check_instrument_skip.py
+            .github/workflows/lint.yml
             !**.md
             !**.mdx
-      - name: Detect Formatting-related changes
-        id: format
-        uses: technote-space/get-diff-action@v6
-        with:
-          PATTERNS: |
-            **/*.{yml,yaml,md,mdx,js,jsx,ts,tsx,json,toml,css}
-            !Cargo.toml
+
     outputs:
       rust: ${{ steps.rust.outputs.diff != '' }}
-      format: ${{ steps.format.outputs.format != '' }}
-  rust_ci:
+
+  rust_lint:
+    name: Rust lint
     runs-on: ubuntu-latest
     needs: determine_jobs
     if: needs.determine_jobs.outputs.rust == 'true'
     env:
-      DATABASE_URL: sqlite:///${{ github.workspace }}/test.db
+      DATABASE_URL: sqlite://${{ github.workspace }}/test.db
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v12
-      - name: Setup Cachix (optional - speeds up builds)
-        uses: cachix/cachix-action@v12
-        with:
-          name: nix-community
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: true
-      - name: Build development shell
-        run: |
-          nix develop .#ci --command rustc --version
-          nix develop .#ci --command cargo --version
-      - name: Install sqlx-cli
-        run: nix develop .#ci --command cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
-      - name: Setup databases and run migrations
-        run: |
-          root_db="${GITHUB_WORKSPACE}/test.db"
-          rm -f "$root_db"
-          touch "$root_db"
-          temp_migrations_dir="${GITHUB_WORKSPACE}/temp_migrations"
-          mkdir -p "$temp_migrations_dir"
-          counter=1
-          find . -path "*/migrations/*.sql" -type f | sort | while read -r migration_file; do
-            filename=$(basename "$migration_file")
-            crate_path=$(dirname "$(dirname "$migration_file")")
-            crate_name=$(basename "$crate_path")
-            if [[ -f "$temp_migrations_dir/$filename" ]]; then
-              timestamp=$(echo "$filename" | cut -d'_' -f1)
-              description=$(echo "$filename" | cut -d'_' -f2- | sed 's/\.sql$//')
-              new_filename="${timestamp}_${counter}_${crate_name}_${description}.sql"
-              cp "$migration_file" "$temp_migrations_dir/$new_filename"
-              ((counter++))
-            else
-              cp "$migration_file" "$temp_migrations_dir/$filename"
-            fi
-          done
-          DATABASE_URL="sqlite:///$root_db" nix develop .#rust --command "$HOME/.cargo/bin/sqlx" migrate run --source "$temp_migrations_dir"
-          rm -rf "$temp_migrations_dir"
-      - name: Cache sqlx metadata
-        uses: actions/cache@v4
-        with:
-          path: .sqlx
-          key: sqlx-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.sql', 'migrations/**/*.sql') }}
-          restore-keys: |
-            sqlx-${{ runner.os }}-
-      - name: Generate sqlx metadata
-        # Unqualified `sqlx`/`cargo sqlx` here would resolve the nix devshell's
-        # own 0.7.x sqlx-cli first (see the "Install sqlx-cli" step above and
-        # prepare-sqlx/action.yml for the same footgun, confirmed there via a
-        # real CI failure). `sqlx prepare` also requires `CARGO` to be set --
-        # normally done by `cargo sqlx` dispatch -- so resolve the devshell's
-        # own cargo path and set it explicitly for our absolute-path binary.
-        run: |
-          nix develop --command bash -c \
-            'CARGO="$(command -v cargo)" "$HOME/.cargo/bin/sqlx" prepare --workspace'
-      - name: Run compiler check
-        run: nix develop --command cargo check --workspace
-      - name: Run cargo clippy
-        run: nix develop --command cargo clippy --workspace -- -D warnings -A unknown-lints --no-deps
-      # --- NEW LINT STEP ---
-      - name: Enforce #[instrument] skip policy
-        run: |
-          echo "Checking for #[instrument] without skip/skip_all..."
-          # We search 'crates/' and 'src/' to cover your monorepo structure
-          OFFENDERS=$(grep -rn "#\[instrument" crates/ src/ 2>/dev/null | grep -vE "skip|skip_all" || true)
-          if [ -n "$OFFENDERS" ]; then
-            echo "::error::The following lines use #[instrument] without skipping arguments. To prevent log bloat, use #[instrument(skip(...))] or #[instrument(skip_all)]:"
-            echo "$OFFENDERS"
-            exit 1
-          fi
-      - name: Run cargo fmt
-        # ---------------------
 
-        run: nix develop --command cargo fmt --all -- --check
-  node_lint:
-    runs-on: ubuntu-latest
-    needs: determine_jobs
-    if: needs.determine_jobs.outputs.format == 'true'
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v12
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v12
+      # Pinned, not `stable`: the clippy baseline is a count of findings, and
+      # each clippy release adds lints. An unpinned toolchain would fail every
+      # open PR the day a new release ships. Bump this and regenerate
+      # scripts/clippy_baseline.json in the same change.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          name: nix-community
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: true
-      - name: Install dependencies
-        run: nix develop --command pnpm install --frozen-lockfile --prefer-offline
-      - name: Check prettier
-        run: nix develop --command pnpm prettier --check .
-      - name: Check eslint
-        run: nix develop --command pnpm lint
-      - name: Run typecheck
-        run: nix develop --command pnpm typecheck
+          toolchain: 1.94.1
+          components: clippy, rustfmt
+
+      # The two lexical checks first: they need no build, so a formatting or
+      # policy failure is reported in seconds rather than after the compile.
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Enforce the #[instrument] skip policy
+        run: python3 scripts/check_instrument_skip.py
+
+      # Same database setup as test.yml: `sqlx::query!` checks SQL against a
+      # migrated schema at compile time, so clippy cannot build without it.
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
+
+      - name: Create the database and run every crate's migrations
+        run: |
+          set -euo pipefail
+          rm -f "${GITHUB_WORKSPACE}/test.db"
+          staged="${GITHUB_WORKSPACE}/.migrations"
+          rm -rf "$staged" && mkdir -p "$staged"
+
+          find . -path '*/migrations/*.up.sql' -type f | sort | while read -r migration; do
+            cp "$migration" "$staged/$(basename "$migration" .up.sql).sql"
+          done
+
+          sqlx database create
+          sqlx migrate run --source "$staged"
+          rm -rf "$staged"
+
+      # `--cap-lints=warn` so a crate with findings still builds and every
+      # crate depending on it is still linted; `--all-targets` so test code is
+      # linted at all. The baseline check, not clippy's exit code, decides —
+      # and it fails on real compiler errors and on a build that did not
+      # finish, so ignoring the exit code here hides nothing.
+      - name: Run clippy
+        run: |
+          cargo clippy --workspace --all-targets --keep-going --message-format=json \
+            -- --cap-lints=warn -A unknown-lints > clippy.json || true
+
+      - name: Check clippy findings against the baseline
+        run: python3 scripts/check_clippy_baseline.py clippy.json
