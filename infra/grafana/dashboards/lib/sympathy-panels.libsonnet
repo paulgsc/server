@@ -186,7 +186,7 @@ local pct(lo, hi) = steps([{ color: green, value: null }, { color: amber, value:
     'Throttled — share of CPU periods each container was held back',
     'For every container with a CPU limit: the share of scheduler periods in which it wanted more CPU than its limit and was paused. Anything sustained above a few percent is latency the service pays for its limit, independent of how busy the host is.',
     [{
-      expr: '100 * sum by (name) (rate(container_cpu_cfs_throttled_periods_total{name=~"$container"}[5m])) / sum by (name) (rate(container_cpu_cfs_periods_total{name=~"$container"}[5m])) > 0',
+      expr: '100 * sum by (name) (rate(container_cpu_cfs_throttled_periods_total{name=~"$container"}[5m])) / sum by (name) (rate(container_cpu_cfs_periods_total{name=~"$container"}[5m]))',
       legendFormat: '{{name}}',
       refId: 'A',
     }],
