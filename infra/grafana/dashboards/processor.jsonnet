@@ -213,6 +213,26 @@ local dashboard = {
     // being scraped — every forensic panel above would otherwise read as
     // "system quiet" instead of "instrumentation dark".
     panelDefaults.livenessPanel('Exporter liveness', ['node', 'process_exporter', 'cadvisor'], 19, gridPos(0, 44, 24, 2)),
+
+    // ========== ROW 8: DISK SPACE CULPRITS ==========
+    // The CPU/Memory/IO trio in row 2 never had a disk-space sibling — this
+    // is "who's eating the disk" for (a) containers and (b) the cargo/rustc
+    // toolchain, neither of which the sys-dashboard's per-mount panels can
+    // attribute to a cause.
+    forensicPanels.topDiskSpaceOffenders {
+      id: 20,
+      gridPos: gridPos(0, 46, 12, 8),
+    },
+
+    forensicPanels.hostDirDiskUsage {
+      id: 21,
+      gridPos: gridPos(12, 46, 8, 8),
+    },
+
+    forensicPanels.hostDirUsageStaleness {
+      id: 22,
+      gridPos: gridPos(20, 46, 4, 8),
+    },
   ]),
   refresh: '5s',
   schemaVersion: 38,

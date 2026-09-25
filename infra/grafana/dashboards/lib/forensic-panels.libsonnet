@@ -41,13 +41,21 @@
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
+        // Both sides use `> bool`/`< bool` — a bare comparison *filters out*
+        // non-matching series instead of returning 0, so on a healthy
+        // system (the common case) this used to go empty forever instead
+        // of resolving to 0/"System Healthy". Same reasoning as LOOPS in
+        // health-panels.libsonnet. Multiplying the two bool results (not
+        // `and`, which does label-set matching rather than logical AND)
+        // is correct here since both sides already carry identical
+        // job/instance labels from the same single node_exporter target.
         expr: |||
           (
-            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > 3
+            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > bool 3
           )
-          and
+          *
           (
-            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < 30
+            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < bool 30
           )
         |||,
         instant: true,
@@ -146,7 +154,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              rate(namedprocess_namegroup_cpu_seconds_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_cpu_seconds_total{groupname!="", groupname=~"$process_group"}[1m])
             ) * 100
           )
         |||,
@@ -199,7 +207,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!=""}
+              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -248,8 +256,8 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              rate(namedprocess_namegroup_read_bytes_total{groupname!=""}[1m]) +
-              rate(namedprocess_namegroup_write_bytes_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_read_bytes_total{groupname!="", groupname=~"$process_group"}[1m]) +
+              rate(namedprocess_namegroup_write_bytes_total{groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -398,11 +406,11 @@
         expr: |||
           topk(8,
             sum by (name) (
-              rate(container_cpu_usage_seconds_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_cpu_usage_seconds_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -439,12 +447,12 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
-            container_memory_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_memory_usage_bytes{name!="", name=~"$container"}
             /
-            container_spec_memory_limit_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_spec_memory_limit_bytes{name!="", name=~"$container"}
           ) * 100
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -470,12 +478,12 @@
         expr: |||
           topk(6,
             sum by (name) (
-              rate(container_fs_reads_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m]) +
-              rate(container_fs_writes_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_fs_reads_bytes_total{name!="", name=~"$container"}[1m]) +
+              rate(container_fs_writes_bytes_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -511,7 +519,7 @@
         expr: |||
           topk(6,
             sum by (groupname) (
-              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!=""}[1m])
+              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -558,7 +566,7 @@
         expr: |||
           topk(8,
             sum by (groupname) (
-              rate(namedprocess_namegroup_major_page_faults_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_major_page_faults_total{groupname!="", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -607,7 +615,7 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              namedprocess_namegroup_num_threads{groupname!=""}
+              namedprocess_namegroup_num_threads{groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -649,7 +657,7 @@
         expr: |||
           topk(10,
             max by (groupname) (
-              namedprocess_namegroup_worst_fd_ratio{groupname!=""}
+              namedprocess_namegroup_worst_fd_ratio{groupname!="", groupname=~"$process_group"}
             )
           )
         |||,
@@ -792,7 +800,7 @@
         expr: |||
           container_processes{
             name!="",
-            container_label_com_docker_compose_service!=""
+            name=~"$container"
           }
         |||,
         format: 'table',
@@ -813,14 +821,177 @@
             instance: true,
             id: true,
             image: true,
+            // Whitelisted on cadvisor (infra/compose/monitoring.yml's
+            // --whitelisted_container_labels) but never set on a
+            // docker-compose stack — always empty, so hide rather than
+            // show a junk column.
+            container_label_io_kubernetes_container_name: true,
+            container_label_io_kubernetes_pod_name: true,
           },
           renameByName: {
-            container_label_com_docker_compose_service: 'Container Name',
+            name: 'Container Name',
             Value: 'Process Count',
           },
         },
       },
     ],
     type: 'table',
+  },
+
+  // ========== DISK SPACE CULPRITS ==========
+  // The CPU/Memory/IO trio above never had a disk-space sibling — the
+  // sys-dashboard's disk panels show *which mount* is filling, never
+  // *which container*. container_fs_usage_bytes is cadvisor's own
+  // writable-layer size, same job as containerIoBandwidth above.
+  topDiskSpaceOffenders:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
+      overrides: [
+        {
+          matcher: { id: 'byName', options: 'Container Name' },
+          properties: [{ id: 'custom.width', value: 300 }],
+        },
+      ],
+    },
+    options: {
+      frameIndex: 0,
+      showHeader: true,
+      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
+    },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        expr: |||
+          topk(10,
+            sum by (name) (
+              container_fs_usage_bytes{name!="", name=~"$container"}
+            )
+          )
+        |||,
+        format: 'table',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: '🗄️ TOP DISK SPACE OFFENDERS (containers)',
+    description: 'Writable-layer disk usage per container — cadvisor container_fs_usage_bytes',
+    transformations: [
+      {
+        id: 'organize',
+        options: {
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { name: 'Container Name', Value: 'Disk Usage' },
+        },
+      },
+    ],
+    type: 'table',
+  },
+
+  // Cargo's registry/git caches and the workspace target/ dir don't live in
+  // any container cadvisor can see — they're host paths a periodic `du`
+  // (scripts/disk-usage-textfile.sh, run by the disk-usage-exporter sidecar
+  // in infra/compose/monitoring.yml) feeds into node_exporter's textfile
+  // collector as hostdir_usage_bytes. Doesn't cover Docker's own data-root
+  // (build cache, dangling images/volumes) — see that script's own header
+  // comment for why measuring it safely needs a scoped Docker API call
+  // rather than raw filesystem access to a tree holding every other
+  // container's secrets.
+  hostDirDiskUsage:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
+      overrides: [
+        {
+          matcher: { id: 'byName', options: 'Target' },
+          properties: [{ id: 'custom.width', value: 220 }],
+        },
+      ],
+    },
+    options: {
+      frameIndex: 0,
+      showHeader: true,
+      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
+    },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        expr: 'hostdir_usage_bytes',
+        format: 'table',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: '🦀 CARGO HOST DIRECTORY USAGE',
+    description: 'du -s -B1 over the cargo registry/git caches and the workspace target/ dir — see scripts/disk-usage-textfile.sh',
+    transformations: [
+      {
+        id: 'organize',
+        options: {
+          excludeByName: { Time: true, __name__: true, job: true, instance: true },
+          renameByName: { target: 'Target', Value: 'Disk Usage' },
+        },
+      },
+    ],
+    type: 'table',
+  },
+
+  // Distinguishes "the sidecar is fine, cargo just isn't that big" from
+  // "the sidecar died three days ago" — a stat panel can't tell staleness
+  // from a gauge value alone, so this measures the scan's own age directly
+  // rather than trusting hostdir_usage_bytes to look wrong when it's stuck.
+  hostDirUsageStaleness:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 1,
+        color: { mode: 'thresholds' },
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'yellow', value: 3 },
+            { color: 'red', value: 6 },
+          ],
+        },
+      },
+      overrides: [],
+    },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value_and_name' },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        // A multiple of the *configured* scan interval
+        // (hostdir_usage_scan_interval_seconds, emitted by the same
+        // script off DISK_USAGE_SCAN_INTERVAL) rather than raw seconds
+        // against a threshold hardcoded to one assumed interval — an
+        // operator raising that interval to reduce du's traversal cost
+        // against a large Docker data-root would otherwise make a
+        // perfectly healthy sidecar read as stopped between every scan.
+        //
+        // A sidecar that never completes even one scan (never created at
+        // all — e.g. target/ genuinely missing, monitoring.yml's own
+        // comments on that mount's create_host_path: false) emits
+        // neither metric this expression reads, so it evaluates over an
+        // empty vector: grey "no data" (panelDefaults.harden, applied to
+        // every stat panel on this dashboard), not red. That's this
+        // codebase's own established third state, not a gap — panel-
+        // defaults.libsonnet's own header is explicit that grey must never
+        // be mistaken for healthy, same as every liveness panel already
+        // does for `up{job="..."}`. What grey can't distinguish here is
+        // "just started, first scan hasn't landed yet" from "will never
+        // work" — closing that would mean giving this sidecar its own
+        // scrape endpoint (or monitoring Compose itself for failed
+        // container creation), a materially bigger, more general piece of
+        // observability than this panel's job.
+        expr: '(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: 'Disk Usage Scan Age (× configured interval)',
+    description: 'How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey "no data" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from "just started, give it one interval."',
+    type: 'stat',
   },
 }

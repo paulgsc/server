@@ -59,6 +59,7 @@ EXEMPT_QUERIED_PREFIXES: dict[str, str] = {
 	"redis_": "redis_exporter (infra/compose/monitoring.yml)",
 	"gnatsd_": "prometheus-nats-exporter (infra/compose/monitoring.yml)",
 	"probe_": "blackbox-exporter (infra/compose/monitoring.yml)",
+	"hostdir_": "disk-usage-exporter's textfile-collector script (scripts/disk-usage-textfile.sh), served via node_exporter's --collector.textfile.directory (infra/compose/monitoring.yml)",
 }
 EXEMPT_QUERIED_EXACT: dict[str, str] = {
 	"up": "Prometheus's own per-target scrape-health series",

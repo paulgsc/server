@@ -150,7 +150,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(\n  (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode=\"idle\"})) > 3\n)\nand\n(\n  (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) < 30\n)\n",
+          "expr": "(\n  (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode=\"idle\"})) > bool 3\n)\n*\n(\n  (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) < bool 30\n)\n",
           "instant": true,
           "refId": "A"
         }
@@ -312,7 +312,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(15,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_cpu_seconds_total{groupname!=\"\"}[1m])\n  ) * 100\n)\n",
+          "expr": "topk(15,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_cpu_seconds_total{groupname!=\"\", groupname=~\"$process_group\"}[1m])\n  ) * 100\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -405,7 +405,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(15,\n  sum by (groupname) (\n    namedprocess_namegroup_memory_bytes{memtype=\"resident\", groupname!=\"\"}\n  )\n)\n",
+          "expr": "topk(15,\n  sum by (groupname) (\n    namedprocess_namegroup_memory_bytes{memtype=\"resident\", groupname!=\"\", groupname=~\"$process_group\"}\n  )\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -484,7 +484,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_read_bytes_total{groupname!=\"\"}[1m]) +\n    rate(namedprocess_namegroup_write_bytes_total{groupname!=\"\"}[1m])\n  )\n)\n",
+          "expr": "topk(10,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_read_bytes_total{groupname!=\"\", groupname=~\"$process_group\"}[1m]) +\n    rate(namedprocess_namegroup_write_bytes_total{groupname!=\"\", groupname=~\"$process_group\"}[1m])\n  )\n)\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -788,8 +788,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(8,\n  sum by (name) (\n    rate(container_cpu_usage_seconds_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m])\n  )\n)\n",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "topk(8,\n  sum by (name) (\n    rate(container_cpu_usage_seconds_total{name!=\"\", name=~\"$container\"}[1m])\n  )\n)\n",
+          "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
@@ -854,8 +854,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(\n  container_memory_usage_bytes{name!=\"\", container_label_com_docker_compose_service!=\"\"}\n  /\n  container_spec_memory_limit_bytes{name!=\"\", container_label_com_docker_compose_service!=\"\"}\n) * 100\n",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "(\n  container_memory_usage_bytes{name!=\"\", name=~\"$container\"}\n  /\n  container_spec_memory_limit_bytes{name!=\"\", name=~\"$container\"}\n) * 100\n",
+          "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
@@ -918,7 +918,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "container_processes{\n  name!=\"\",\n  container_label_com_docker_compose_service!=\"\"\n}\n",
+          "expr": "container_processes{\n  name!=\"\",\n  name=~\"$container\"\n}\n",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -932,6 +932,8 @@
             "excludeByName": {
               "Time": true,
               "__name__": true,
+              "container_label_io_kubernetes_container_name": true,
+              "container_label_io_kubernetes_pod_name": true,
               "id": true,
               "image": true,
               "instance": true,
@@ -939,7 +941,7 @@
             },
             "renameByName": {
               "Value": "Process Count",
-              "container_label_com_docker_compose_service": "Container Name"
+              "name": "Container Name"
             }
           }
         }
@@ -1002,7 +1004,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(6,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_context_switches_total{ctxswitchtype=\"nonvoluntary\", groupname!=\"\"}[1m])\n  )\n)\n",
+          "expr": "topk(6,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_context_switches_total{ctxswitchtype=\"nonvoluntary\", groupname!=\"\", groupname=~\"$process_group\"}[1m])\n  )\n)\n",
           "legendFormat": "{{groupname}} (involuntary)",
           "refId": "A"
         },
@@ -1072,7 +1074,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(8,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_major_page_faults_total{groupname!=\"\"}[1m])\n  )\n)\n",
+          "expr": "topk(8,\n  sum by (groupname) (\n    rate(namedprocess_namegroup_major_page_faults_total{groupname!=\"\", groupname=~\"$process_group\"}[1m])\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1153,7 +1155,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10,\n  sum by (groupname) (\n    namedprocess_namegroup_num_threads{groupname!=\"\"}\n  )\n)\n",
+          "expr": "topk(10,\n  sum by (groupname) (\n    namedprocess_namegroup_num_threads{groupname!=\"\", groupname=~\"$process_group\"}\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1215,7 +1217,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10,\n  max by (groupname) (\n    namedprocess_namegroup_worst_fd_ratio{groupname!=\"\"}\n  )\n)\n",
+          "expr": "topk(10,\n  max by (groupname) (\n    namedprocess_namegroup_worst_fd_ratio{groupname!=\"\", groupname=~\"$process_group\"}\n  )\n)\n",
           "legendFormat": "{{groupname}}",
           "refId": "A"
         }
@@ -1259,8 +1261,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(6,\n  sum by (name) (\n    rate(container_fs_reads_bytes_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m]) +\n    rate(container_fs_writes_bytes_total{name!=\"\", container_label_com_docker_compose_service!=\"\"}[1m])\n  )\n)\n",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "topk(6,\n  sum by (name) (\n    rate(container_fs_reads_bytes_total{name!=\"\", name=~\"$container\"}[1m]) +\n    rate(container_fs_writes_bytes_total{name!=\"\", name=~\"$container\"}[1m])\n  )\n)\n",
+          "legendFormat": "{{name}}",
           "refId": "A"
         }
       ],
@@ -1535,6 +1537,242 @@
         }
       ],
       "title": "Exporter liveness",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Writable-layer disk usage per container — cadvisor container_fs_usage_bytes",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Container Name"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "id": 20,
+      "options": {
+        "frameIndex": 0,
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Disk Usage"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10,\n  sum by (name) (\n    container_fs_usage_bytes{name!=\"\", name=~\"$container\"}\n  )\n)\n",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "🗄️ TOP DISK SPACE OFFENDERS (containers)",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {
+              "Value": "Disk Usage",
+              "name": "Container Name"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "du -s -B1 over the cargo registry/git caches and the workspace target/ dir — see scripts/disk-usage-textfile.sh",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Target"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 220
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 12,
+        "y": 46
+      },
+      "id": 21,
+      "options": {
+        "frameIndex": 0,
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Disk Usage"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hostdir_usage_bytes",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "🦀 CARGO HOST DIRECTORY USAGE",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {
+              "Value": "Disk Usage",
+              "target": "Target"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey \"no data\" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from \"just started, give it one interval.\"",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 6
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 46
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Disk Usage Scan Age (× configured interval)",
       "type": "stat"
     }
   ],
