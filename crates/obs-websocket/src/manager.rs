@@ -4,6 +4,7 @@ use crate::commands;
 use crate::config::ObsConfig;
 use crate::events::to_obs_event;
 use crate::polling::{self, PollingConfig};
+use crate::studio;
 use crate::types::ObsEvent;
 use crate::ObsCommand;
 use futures_util::future::BoxFuture;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 /// How long [`ObsWebSocketManager::execute_command`] waits for OBS to answer.
@@ -95,14 +96,16 @@ pub enum ConnectionState {
 	Failed { error: String },
 }
 
-/// One live connection: the client plus the tasks feeding events from it.
+/// One live connection: the client plus the tasks feeding events from it
+/// (event pump, poller, studio publisher).
 struct Connection {
 	client: Arc<Client>,
-	tasks: [JoinHandle<()>; 2],
+	tasks: [JoinHandle<()>; 3],
 }
 
-/// Connects to OBS, publishes its events and status snapshots as [`ObsEvent`]s,
-/// and runs [`ObsCommand`]s against it.
+/// Connects to OBS, publishes its events, status polls and whole-studio
+/// snapshots ([`ObsEvent::StudioChanged`]) as [`ObsEvent`]s, and runs
+/// [`ObsCommand`]s against it.
 ///
 /// One manager holds at most one connection; [`Self::connect`] replaces any
 /// existing one. After the socket drops, the state reads
@@ -158,6 +161,8 @@ impl ObsWebSocketManager {
 
 		let events = self.events.clone();
 		let state = Arc::clone(&self.state);
+		let studio_changed = Arc::new(Notify::new());
+		let changed = Arc::clone(&studio_changed);
 		let pump = tokio::spawn(async move {
 			let mut obs_events = obs_events;
 			while let Some(event) = obs_events.next().await {
@@ -165,14 +170,19 @@ impl ObsWebSocketManager {
 					// No subscribers is not an error; nobody is listening yet.
 					drop(events.send(event));
 				}
+				changed.notify_one();
 			}
 			// obws ends the stream when the socket closes.
 			tracing::info!("OBS connection closed");
 			state.send_replace(ConnectionState::Disconnected);
 		});
 		let poller = tokio::spawn(polling::run(Arc::clone(&client), polling, self.events.clone()));
+		let publisher = tokio::spawn(studio::publish(Arc::clone(&client), studio_changed, self.events.clone()));
 
-		*slot = Some(Connection { client, tasks: [pump, poller] });
+		*slot = Some(Connection {
+			client,
+			tasks: [pump, poller, publisher],
+		});
 		drop(slot);
 		self.state.send_replace(ConnectionState::Connected { since: Instant::now() });
 		tracing::info!(host = %self.config.host, port = self.config.port, "connected to OBS");

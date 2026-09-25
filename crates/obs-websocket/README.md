@@ -8,8 +8,8 @@ and holds settings.
 ```text
 speech ─▶ text ─▶ mapper (rules or model) ─▶ ObsCommand ─NATS─▶ some-obs ─▶ obws ─▶ OBS
                         ▲                                                            │
-                        └──── GetStudio snapshot: names + state ◀────────────────────┤
-                                                                 ObsEvent ◀──────────┘
+                        └──── StudioSnapshot: names + state ◀────────────────────────┤
+                                  display ◀── StudioChanged, events, clocks ◀─────────┘
 ```
 
 Built on [`obws`](https://crates.io/crates/obws), which needs OBS Studio ≥ 30.2
@@ -29,7 +29,13 @@ with obs-websocket ≥ 5.5, and checks this when it connects.
   a `command_ack` (with any response data, e.g. the new state after a toggle)
   or a `command_error` with the reason. A command that fails to parse also gets
   a `command_error`, so a model generating commands learns what it got wrong.
-- **Effects come back as events.** OBS pushes a change event for every command's
+- **State comes back whole.** `ObsEvent::StudioChanged` carries the full
+  `StudioSnapshot` (same shape `GetStudio` returns), published on connect and
+  once per burst of changes (at most every 250 ms while changes continue). A
+  display renders it as-is; it never has to fold individual events. Polling
+  adds only what events can't carry: running stream/recording clocks (1 s)
+  and performance stats (5 s).
+- **Effects also come back as events.** OBS pushes a change event for every command's
   effect (`StreamStateChanged`, `SceneItemEnableStateChanged`, …); events
   without a dedicated `ObsEvent` variant are forwarded as `UnknownEvent` with
   OBS's `eventType`/`eventData`.

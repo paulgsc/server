@@ -1,9 +1,9 @@
 //! Periodic status snapshots, published as the `*Response` variants of
 //! [`ObsEvent`].
 //!
-//! OBS pushes state changes as events; polling adds what events don't carry
-//! (running timecodes, stats) and a full snapshot on every connect, since each
-//! interval's first tick fires immediately.
+//! OBS pushes state changes as events, and the studio publisher turns them into
+//! whole-studio snapshots; polling adds what events don't carry: running
+//! timecodes and performance stats.
 
 use crate::types::{
 	CurrentCollectionData, CurrentProfileData, CurrentSceneData, CurrentTransitionData, InputInfo, InputListData, ObsEvent, ObsStats, ProfileListData, RecordingStatusData,
@@ -65,20 +65,14 @@ impl PollingConfig {
 }
 
 impl Default for PollingConfig {
+	/// Only what OBS's events don't carry: the running stream and recording
+	/// clocks every second, and performance stats every five. Everything else
+	/// arrives as events and in [`ObsEvent::StudioChanged`].
 	fn default() -> Self {
 		Self {
-			high: vec![PollTarget::StreamStatus, PollTarget::RecordStatus, PollTarget::CurrentProgramScene],
-			medium: vec![PollTarget::SceneList, PollTarget::StudioMode, PollTarget::Stats],
-			low: vec![
-				PollTarget::CurrentTransition,
-				PollTarget::InputList,
-				PollTarget::ProfileList,
-				PollTarget::CurrentProfile,
-				PollTarget::SceneCollectionList,
-				PollTarget::CurrentSceneCollection,
-				PollTarget::TransitionList,
-				PollTarget::Version,
-			],
+			high: vec![PollTarget::StreamStatus, PollTarget::RecordStatus],
+			medium: vec![PollTarget::Stats],
+			low: Vec::new(),
 		}
 	}
 }

@@ -335,6 +335,10 @@ pub enum ObsEvent {
 	SceneTransitionStarted(SceneTransitionStartedData),
 	SceneTransitionEnded(SceneTransitionEndedData),
 
+	/// The whole studio, published on connect and after each burst of changes:
+	/// a display can render this alone instead of folding individual events.
+	StudioChanged(Box<StudioSnapshot>),
+
 	// Generic events for unhandled cases
 	UnknownResponse(UnknownResponseData),
 	UnknownEvent(UnknownEventData),
@@ -687,6 +691,7 @@ impl ObsEvent {
 				| Self::VirtualcamStateChanged(_)
 				| Self::ReplayBufferStateChanged(_)
 				| Self::StudioModeStateChanged(_)
+				| Self::StudioChanged(_)
 		)
 	}
 }
