@@ -124,6 +124,21 @@ nowhere is marked as such and belongs to review.
    an account.
    *Enforced by* nothing yet; this lands with auth.
 
+8. **Speech is published, never kept, and never logged.** Speech to text
+   (`docs/speech-to-text.md`) publishes each transcript on core NATS
+   `speech.transcript` and nowhere else:
+   - no JetStream stream includes `speech.>`;
+   - no service writes a transcript to a table or file;
+   - no log line or span field carries its text;
+   - audio never leaves the speech process;
+   - a transcript carries no `SubjectId` and no device or host identifier.
+
+   A consumer that wants to keep transcripts changes this invariant first, here,
+   and classifies its table as invariant 1 asks.
+   *Enforced by* nothing yet. It lands with the service: a capturing-layer test
+   in the service, and NATS permissions that let only named consumers subscribe
+   to `speech.>`. The stream-subject rule belongs to review.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
