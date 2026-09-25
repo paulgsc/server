@@ -143,6 +143,16 @@ async fn process_incoming_messages(
 						}
 					}
 
+					Some(Err(e)) if is_peer_gone(&e) => {
+						debug!(
+							connection_id = %conn_key,
+							error = %e,
+							"Peer went away without a closing handshake"
+						);
+						end_reason = "client_disconnect";
+						break;
+					}
+
 					Some(Err(e)) => {
 						message_count += 1;
 						error!(
@@ -170,6 +180,37 @@ async fn process_incoming_messages(
 	}
 
 	(message_count, end_reason)
+}
+
+/// Whether a stream error only means the peer went away.
+///
+/// A client that drops TCP without a WebSocket close frame — a phone losing
+/// signal, a laptop lid closing, the blackbox `ws_handshake` probe right after
+/// its `101` — arrives here as an error, not as `None`: tungstenite reports
+/// EOF on an open connection as `ResetWithoutClosingHandshake`, and a TCP
+/// reset as an `Io` error. That is the client leaving, not a fault in this
+/// server, so it ends the loop as `client_disconnect` instead of logging at
+/// ERROR and counting `stream_error` — which, with the probe hanging up after
+/// every handshake, fired every 15 seconds.
+///
+/// Downcasts to the `tungstenite::Error` axum wraps, so the `tungstenite`
+/// dependency must match axum's; the real-socket test below goes through
+/// axum's own upgrade, and fails if they ever drift apart.
+fn is_peer_gone(error: &axum::Error) -> bool {
+	use std::io::ErrorKind;
+	use tungstenite::error::{Error, ProtocolError};
+
+	let Some(source) = std::error::Error::source(error) else {
+		return false;
+	};
+	match source.downcast_ref::<Error>() {
+		Some(Error::ConnectionClosed | Error::AlreadyClosed | Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => true,
+		Some(Error::Io(io)) => matches!(
+			io.kind(),
+			ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+		),
+		_ => false,
+	}
 }
 
 /// Handle a single WebSocket message based on its type
@@ -220,5 +261,82 @@ async fn handle_websocket_message(
 			instrument::record_message("binary");
 			Ok(())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::is_peer_gone;
+	use axum::{extract::ws::WebSocketUpgrade, routing::get, Router};
+	use std::sync::{Arc, Mutex};
+	use tokio::{
+		io::{AsyncReadExt, AsyncWriteExt},
+		net::{TcpListener, TcpStream},
+		sync::oneshot,
+		time::{timeout, Duration},
+	};
+
+	/// Upgrades one real connection through axum, lets `hang_up` end it from
+	/// the client side without a close frame, and returns how the server's
+	/// first `recv` classified that: `Some(true)` for "the peer went away",
+	/// `Some(false)` for a real stream error, `None` if it wasn't an error.
+	async fn server_view_of(hang_up: impl FnOnce(TcpStream)) -> Option<bool> {
+		let (tx, rx) = oneshot::channel();
+		let tx = Arc::new(Mutex::new(Some(tx)));
+		let app = Router::new().route(
+			"/ws",
+			get(move |ws: WebSocketUpgrade| {
+				let tx = tx.clone();
+				async move {
+					ws.on_upgrade(move |mut socket| async move {
+						let verdict = match socket.recv().await {
+							Some(Err(e)) => Some(is_peer_gone(&e)),
+							_ => None,
+						};
+						let sender = tx.lock().unwrap().take();
+						if let Some(sender) = sender {
+							let _ = sender.send(verdict);
+						}
+					})
+				}
+			}),
+		);
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let addr = listener.local_addr().unwrap();
+		tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+		let mut client = TcpStream::connect(addr).await.unwrap();
+		client
+			.write_all(
+				b"GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n\r\n",
+			)
+			.await
+			.unwrap();
+		let mut buf = [0u8; 512];
+		let n = client.read(&mut buf).await.unwrap();
+		assert!(buf[..n].starts_with(b"HTTP/1.1 101"), "no upgrade: {:?}", String::from_utf8_lossy(&buf[..n]));
+
+		hang_up(client);
+		timeout(Duration::from_secs(5), rx).await.unwrap().unwrap()
+	}
+
+	/// What the blackbox `ws_handshake` probe does: read the `101`, then close
+	/// the TCP connection without a close frame.
+	#[tokio::test]
+	async fn a_peer_that_closes_without_a_close_frame_is_a_disconnect() {
+		assert_eq!(server_view_of(drop).await, Some(true));
+	}
+
+	/// A peer whose connection is reset outright (RST) rather than closed.
+	#[tokio::test]
+	async fn a_peer_that_resets_the_connection_is_a_disconnect() {
+		let reset = |client: TcpStream| {
+			// Deprecated because a non-zero linger blocks the thread on drop;
+			// a zero linger doesn't wait for anything — it is the RST.
+			#[allow(deprecated)]
+			client.set_linger(Some(Duration::ZERO)).unwrap();
+			drop(client);
+		};
+		assert_eq!(server_view_of(reset).await, Some(true));
 	}
 }

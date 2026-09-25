@@ -91,6 +91,10 @@ async fn main() -> Result<()> {
 	// from a gap in an unrelated series.
 	file_host::metrics::build_info::record();
 
+	// Every refusal series at 0 from the start, so "never refused" reads as
+	// zero rather than as a missing family — see `refusals::register_all`.
+	file_host::metrics::refusals::register_all();
+
 	// #227 (C2): the configured ceiling `ws_connection_guard_occupancy` is
 	// measured against, stamped once for the same reason build info is —
 	// fixed for the process's life, so no reason to recompute it every tick.
