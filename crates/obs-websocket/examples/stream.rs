@@ -1,77 +1,34 @@
+//! Connect to OBS and log every event and status snapshot until Ctrl-C,
+//! reconnecting whenever the connection drops.
+//!
+//! ```sh
+//! OBS_HOST=127.0.0.1 OBS_PASSWORD=... cargo run -p obs-websocket --example stream --features websocket
+//! ```
+
 use obs_websocket::{ObsConfig, ObsWebSocketManager, PollingConfig, RetryConfig};
-use tokio::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
 	tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
 
-	// bridge_obs_events returns a JoinHandle. We await the handle itself.
-	let handle = bridge_obs_events();
-	handle.await?;
+	let obs = ObsWebSocketManager::new(ObsConfig::from_env());
+	let retry_delay = RetryConfig::default().initial_delay;
 
-	Ok(())
-}
-
-pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {
-	tokio::spawn(async move {
-		tracing::info!("Starting OBS event bridge with internal manager");
-
-		// Ensure these types are actually exported by your crate
-		let obs_config = ObsConfig::default();
-		let obs_manager = ObsWebSocketManager::new(obs_config, RetryConfig::default());
-
-		let cancel_token = CancellationToken::new();
-		let cancel_token_clone = cancel_token.clone();
-
-		let shutdown_task = tokio::spawn(async move {
-			let _ = tokio::signal::ctrl_c().await;
-			tracing::info!("Shutdown signal received");
-			cancel_token_clone.cancel();
-		});
-
-		loop {
-			tokio::select! {
-				_ = cancel_token.cancelled() => {
-					tracing::info!("Shutting down OBS bridge");
-					let _ = obs_manager.disconnect().await;
-					break; // Exit loop
+	tokio::select! {
+		() = async {
+			loop {
+				match obs.connect(PollingConfig::default()).await {
+					Ok(()) => {
+						obs.stream_events(|event| Box::pin(async move { tracing::debug!(?event, "OBS event") })).await;
+						tracing::warn!("OBS connection ended");
+					}
+					Err(e) => tracing::error!("failed to connect to OBS: {e}"),
 				}
-				result = async {
-					let requests = PollingConfig::default();
-					match obs_manager.connect(requests).await {
-						Ok(()) => {
-							tracing::info!("Connected to OBS WebSocket");
-							obs_manager.stream_events(|obs_event| {
-								Box::pin(async move {
-									tracing::debug!("new event picked up {:?}", obs_event);
-								})
-							}).await
-						}
-						Err(e) => {
-							tracing::error!("Failed to connect to OBS: {}", e);
-							Err(e)
-						}
-					}
-				} => {
-					if let Err(e) = result {
-						tracing::error!("OBS connection error: {}", e);
-					}
-					let _ = obs_manager.disconnect().await;
-
-					tokio::select! {
-						_ = cancel_token.cancelled() => {
-							break;
-						}
-						_ = tokio::time::sleep(Duration::from_secs(5)) => {
-							// Continue to next iteration of loop
-						}
-					}
-				}
+				tokio::time::sleep(retry_delay).await;
 			}
-		}
+		} => {}
+		_ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
+	}
 
-		shutdown_task.abort();
-		tracing::info!("OBS event bridge ended");
-	})
+	obs.disconnect().await;
 }

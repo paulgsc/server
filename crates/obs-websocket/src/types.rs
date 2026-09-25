@@ -1,383 +1,278 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Everything that can be done to OBS during a stream, one variant per intent.
+///
+/// Sources, scenes, inputs, filters and transitions are addressed by the names
+/// OBS shows, since that is what a spoken command carries. Resolving a loose
+/// name ("mic") to an exact one ("Mic/Aux") is the caller's job; the names that
+/// exist come from [`ObsCommand::GetStudio`]. An unknown name fails with OBS's
+/// own "not found" reason.
+///
+/// On the wire: `{"type": "setMute", "data": {"input": "Mic/Aux", "muted": true}}`;
+/// variants without fields omit `data`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ObsCommand {
+	// -- Streaming
 	StartStream,
 	StopStream,
+	/// Replies `{"outputActive": bool}` with the new state.
+	ToggleStream,
+	/// Sends a CEA-608 caption over the running stream.
+	SendStreamCaption {
+		text: String,
+	},
+	/// Point OBS's stream output at the `YouTube` RTMP ingest using `stream_key`.
+	///
+	/// This only configures where OBS pushes video. A broadcast's title,
+	/// description and privacy live on the platform side and are set through
+	/// the `YouTube` Data API: OBS's `rtmp_custom` service ignores such fields.
+	SetYouTubeStream {
+		stream_key: StreamKey,
+	},
+
+	// -- Recording
 	StartRecording,
+	/// Replies `{"outputPath": string}`, the finished file.
 	StopRecording,
-	SwitchScene(String),
-	SetInputMute(String, bool),
-	SetInputVolume(String, f64),
-	ToggleStudioMode(bool),
+	/// Replies `{"outputActive": bool}` with the new state.
+	ToggleRecording,
+	PauseRecording,
+	ResumeRecording,
+	/// Replies `{"outputPaused": bool}` with the new state.
+	TogglePauseRecording,
+	/// Finishes the current file and keeps recording into a new one.
+	SplitRecording,
+	/// Marks a chapter; OBS supports this only when recording to Hybrid MP4.
+	AddRecordingChapter {
+		name: Option<String>,
+	},
+
+	// -- Replay buffer and virtual camera
+	StartReplayBuffer,
+	StopReplayBuffer,
+	/// Saves the last N seconds the replay buffer holds.
+	SaveReplay,
 	StartVirtualCamera,
 	StopVirtualCamera,
-	StartReplayBuffer,
-	StopReplayBuffer,
-	GetInputMute(String),
-	GetInputVolume(String),
-	SetYouTubeStream {
-		stream_key: String,
-		title: String,
-		description: String,
-		category: String,
-		privacy: YouTubePrivacy,
-		unlisted: bool,
-		tags: Vec<String>,
+
+	// -- Scenes and transitions
+	/// Makes `scene` live (the program scene).
+	SwitchScene {
+		scene: String,
 	},
-	Custom(Value),
+	/// In studio mode, stages `scene` in the preview.
+	SetPreviewScene {
+		scene: String,
+	},
+	SetStudioMode {
+		enabled: bool,
+	},
+	/// In studio mode, transitions the preview scene to program.
+	TriggerTransition,
+	SetTransition {
+		transition: String,
+	},
+	SetTransitionDuration {
+		millis: u64,
+	},
+
+	// -- Sources within a scene
+	/// Shows or hides `source` in `scene`, or in the live scene when omitted.
+	/// For a source inside a group, `scene` is the group's name (see
+	/// [`StudioSnapshot::groups`]).
+	SetSourceVisible {
+		source: String,
+		scene: Option<String>,
+		visible: bool,
+	},
+	/// Replies `{"sceneItemEnabled": bool}` with the new state.
+	ToggleSourceVisible {
+		source: String,
+		scene: Option<String>,
+	},
+
+	// -- Audio
+	SetMute {
+		input: String,
+		muted: bool,
+	},
+	/// Replies `{"inputMuted": bool}` with the new state.
+	ToggleMute {
+		input: String,
+	},
+	/// Sets the volume in dB: `0.0` is unity, OBS's range is `-100.0..=26.0`.
+	SetVolume {
+		input: String,
+		db: f64,
+	},
+	/// Changes the volume by `delta_db`, clamped to OBS's range. Replies
+	/// `{"inputVolumeDb": number}` with the new level.
+	AdjustVolume {
+		input: String,
+		delta_db: f64,
+	},
+
+	// -- Media sources (music, clips)
+	Media {
+		input: String,
+		action: MediaAction,
+	},
+
+	// -- Filters, text, hotkeys
+	SetFilterEnabled {
+		source: String,
+		filter: String,
+		enabled: bool,
+	},
+	/// Replaces the text of a text source.
+	SetText {
+		input: String,
+		text: String,
+	},
+	/// Presses an OBS hotkey by its internal name, as listed in
+	/// [`StudioSnapshot::hotkeys`]: reaches anything bound to a hotkey in OBS,
+	/// including plugins.
+	TriggerHotkey {
+		name: String,
+	},
+
+	// -- Query
+	/// Replies with a [`StudioSnapshot`]: the current state and every name the
+	/// other commands accept.
+	GetStudio,
 }
 
-/// Represents different types of requests that can be sent to OBS
-#[derive(Debug, Clone, Serialize)]
-pub enum ObsRequestType {
-	// General
-	GetVersion,
-	GetStats,
-	GetHotkeyList,
-
-	// Scene Management
-	GetSceneList,
-	GetCurrentProgramScene,
-	SetCurrentProgramScene,
-	GetSceneTransitionList,
-	GetCurrentSceneTransition,
-	#[allow(dead_code)]
-	SetCurrrentSceneTransition,
-	#[allow(dead_code)]
-	TriggerSceneTransition,
-
-	// Source Management
-	GetInputList,
-	GetInputMute,
-	SetInputMute,
-	GetInputVolume,
-	SetInputVolume,
-	GetSourceFilterList,
-	GetSourcesList,
-
-	// Stream and Recording Status
-	GetStreamStatus,
-	GetRecordStatus,
-	StartStream,
-	StopStream,
-	StartRecord,
-	StopRecord,
-
-	// Profile and Collection Management
-	GetProfileList,
-	GetCurrentProfile,
-	SetCurrentProfile,
-	GetSceneCollectionList,
-	GetCurrentSceneCollection,
-	SetCurrentSceneCollection,
-
-	// Virtual Camera
-	GetVirtualCamStatus,
-	StartVirtualCam,
-	StopVirtualCam,
-
-	// Replay Buffer
-	GetReplayBufferStatus,
-	StartReplayBuffer,
-	StopReplayBuffer,
-
-	// Studio Mode
-	GetStudioModeEnabled,
-	SetStudioModeEnabled,
-
-	// Filters
-	#[allow(dead_code)]
-	GetSourceFilter,
-	#[allow(dead_code)]
-	SetSourceFilterEnabled,
-
-	// Service Management
-	SetStreamServiceSettings,
-	GetStreamServiceSettings,
-
-	// Unknown/Unhandled
-	Unknown(String),
+/// A playback action on a media source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaAction {
+	Play,
+	Pause,
+	Stop,
+	Restart,
+	Next,
+	Previous,
 }
 
-impl ObsRequestType {
+/// OBS's current state plus every name [`ObsCommand`] variants accept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioSnapshot {
+	pub stream: StreamState,
+	pub recording: RecordingState,
+	/// `None` when the replay buffer is disabled in OBS's output settings.
+	pub replay_buffer_active: Option<bool>,
+	pub virtual_camera_active: bool,
+	pub studio_mode: bool,
+	pub program_scene: String,
+	/// Set only in studio mode.
+	pub preview_scene: Option<String>,
+	pub scenes: Vec<SceneState>,
+	/// Source groups. A group also appears as a source in the scene holding it;
+	/// its own sources are addressed with the group's name as `scene`.
+	pub groups: Vec<SceneState>,
+	/// Every input with audio.
+	pub audio: Vec<AudioState>,
+	/// Every media source (`ffmpeg_source`, `vlc_source`).
+	pub media: Vec<MediaState>,
+	pub filters: Vec<FilterState>,
+	pub transitions: Vec<String>,
+	pub current_transition: Option<String>,
+	pub hotkeys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamState {
+	pub active: bool,
+	pub reconnecting: bool,
+	/// `HH:MM:SS.mmm` since the stream started.
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingState {
+	pub active: bool,
+	pub paused: bool,
+	/// `HH:MM:SS.mmm` of recorded time.
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneState {
+	pub name: String,
+	/// In OBS's layer order, bottom layer first (the Sources panel shows it last).
+	pub sources: Vec<SceneSourceState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceState {
+	pub name: String,
+	pub visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioState {
+	pub input: String,
+	pub muted: bool,
+	pub volume_db: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaState {
+	pub input: String,
+	pub playback: MediaPlayback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaPlayback {
+	Idle,
+	Loading,
+	Playing,
+	Paused,
+	Stopped,
+	Ended,
+	Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterState {
+	pub source: String,
+	pub filter: String,
+	pub enabled: bool,
+}
+
+/// A stream key: anyone holding one can publish to the channel it belongs to,
+/// so `Debug` redacts it rather than letting it reach logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StreamKey(String);
+
+impl StreamKey {
 	#[must_use]
-	pub fn as_str(&self) -> &str {
-		match self {
-			Self::GetVersion => "GetVersion",
-			Self::GetStats => "GetStats",
-			Self::GetHotkeyList => "GetHotkeyList",
-			Self::GetSceneList => "GetSceneList",
-			Self::GetCurrentProgramScene => "GetCurrentProgramScene",
-			Self::SetCurrentProgramScene => "SetCurrentProgramScene",
-			Self::GetSceneTransitionList => "GetSceneTransitionList",
-			Self::GetCurrentSceneTransition => "GetCurrentSceneTransition",
-			Self::SetCurrrentSceneTransition => "SetCurrrentSceneTransition",
-			Self::TriggerSceneTransition => "TriggerSceneTransition",
-			Self::GetInputList => "GetInputList",
-			Self::GetInputMute => "GetInputMute",
-			Self::GetInputVolume => "GetInputVolume",
-			Self::SetInputMute => "SetInputMute",
-			Self::SetInputVolume => "SetInputVolume",
-			Self::GetSourceFilterList => "GetSourceFilterList",
-			Self::GetSourcesList => "GetSourcesList",
-			Self::GetStreamStatus => "GetStreamStatus",
-			Self::GetRecordStatus => "GetRecordStatus",
-			Self::StartStream => "StartStream",
-			Self::StopStream => "StopStream",
-			Self::StartRecord => "StartRecord",
-			Self::StopRecord => "StopRecord",
-			Self::GetProfileList => "GetProfileList",
-			Self::GetCurrentProfile => "GetCurrentProfile",
-			Self::SetCurrentProfile => "SetCurrentProfile",
-			Self::GetSceneCollectionList => "GetSceneCollectionList",
-			Self::GetCurrentSceneCollection => "GetCurrentSceneCollection",
-			Self::SetCurrentSceneCollection => "SetCurrentSceneCollection",
-			Self::GetVirtualCamStatus => "GetVirtualCamStatus",
-			Self::StartVirtualCam => "StartVirtualCam",
-			Self::StopVirtualCam => "StopVirtualCam",
-			Self::GetReplayBufferStatus => "GetReplayBufferStatus",
-			Self::StartReplayBuffer => "StartReplayBuffer",
-			Self::StopReplayBuffer => "StopReplayBuffer",
-			Self::GetStudioModeEnabled => "GetStudioModeEnabled",
-			Self::SetStudioModeEnabled => "SetStudioModeEnabled",
-			Self::GetSourceFilter => "GetSourceFilter",
-			Self::SetSourceFilterEnabled => "SetSourceFilterEnabled",
-			Self::SetStreamServiceSettings => "SetStreamServiceSettings",
-			Self::GetStreamServiceSettings => "GetStreamServiceSettings",
-			Self::Unknown(s) => s,
-		}
+	pub const fn new(key: String) -> Self {
+		Self(key)
 	}
-}
 
-impl From<&str> for ObsRequestType {
-	/// Maps an OBS request type name to its variant, falling back to
-	/// [`Self::Unknown`] for names this crate does not model.
-	fn from(s: &str) -> Self {
-		match s {
-			"GetStreamStatus" => Self::GetStreamStatus,
-			"GetRecordStatus" => Self::GetRecordStatus,
-			"StartStream" => Self::StartStream,
-			"StopStream" => Self::StopStream,
-			"StartRecord" => Self::StartRecord,
-			"StopRecord" => Self::StopRecord,
-			"GetSceneList" => Self::GetSceneList,
-			"GetCurrentProgramScene" => Self::GetCurrentProgramScene,
-			"SetCurrentProgramScene" => Self::SetCurrentProgramScene,
-			"GetSourcesList" => Self::GetSourcesList,
-			"GetInputList" => Self::GetInputList,
-			"GetInputMute" => Self::GetInputMute,
-			"SetInputMute" => Self::SetInputMute,
-			"GetInputVolume" => Self::GetInputVolume,
-			"SetInputVolume" => Self::SetInputVolume,
-			"GetProfileList" => Self::GetProfileList,
-			"GetCurrentProfile" => Self::GetCurrentProfile,
-			"SetCurrentProfile" => Self::SetCurrentProfile,
-			"GetSceneCollectionList" => Self::GetSceneCollectionList,
-			"GetCurrentSceneCollection" => Self::GetCurrentSceneCollection,
-			"SetCurrentSceneCollection" => Self::SetCurrentSceneCollection,
-			"GetVirtualCamStatus" => Self::GetVirtualCamStatus,
-			"StartVirtualCam" => Self::StartVirtualCam,
-			"StopVirtualCam" => Self::StopVirtualCam,
-			"GetReplayBufferStatus" => Self::GetReplayBufferStatus,
-			"StartReplayBuffer" => Self::StartReplayBuffer,
-			"StopReplayBuffer" => Self::StopReplayBuffer,
-			"GetStudioModeEnabled" => Self::GetStudioModeEnabled,
-			"SetStudioModeEnabled" => Self::SetStudioModeEnabled,
-			"GetStats" => Self::GetStats,
-			"GetCurrentSceneTransition" => Self::GetCurrentSceneTransition,
-			// "SetCurrentSceneTransition" => Self::SetCurrentSceneTransition,
-			"GetSceneTransitionList" => Self::GetSceneTransitionList,
-			"GetSourceFilterList" => Self::GetSourceFilterList,
-			"GetHotkeyList" => Self::GetHotkeyList,
-			"GetVersion" => Self::GetVersion,
-			"SetStreamServiceSettings" => Self::SetStreamServiceSettings,
-			"GetStreamServiceSettings" => Self::GetStreamServiceSettings,
-			unknown => Self::Unknown(unknown.to_string()),
-		}
-	}
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ObsEventType {
-	// Stream events
-	StreamStateChanged,
-
-	// Recording events
-	RecordStateChanged,
-
-	// Scene events
-	CurrentProgramSceneChanged,
-	SceneItemEnableStateChanged,
-
-	// Input events
-	InputMuteStateChanged,
-	InputVolumeChanged,
-
-	// Virtual camera events
-	VirtualcamStateChanged,
-
-	// Replay buffer events
-	ReplayBufferStateChanged,
-
-	// Studio mode events
-	StudioModeStateChanged,
-
-	// Transition events
-	CurrentSceneTransitionChanged,
-	SceneTransitionStarted,
-	SceneTransitionEnded,
-
-	// Unknown/Unhandled
-	Unknown(String),
-}
-
-impl ObsEventType {
-	#[allow(dead_code)]
 	#[must_use]
-	pub fn as_str(&self) -> &str {
-		match self {
-			Self::StreamStateChanged => "StreamStateChanged",
-			Self::RecordStateChanged => "RecordStateChanged",
-			Self::CurrentProgramSceneChanged => "CurrentProgramSceneChanged",
-			Self::SceneItemEnableStateChanged => "SceneItemEnableStateChanged",
-			Self::InputMuteStateChanged => "InputMuteStateChanged",
-			Self::InputVolumeChanged => "InputVolumeChanged",
-			Self::VirtualcamStateChanged => "VirtualcamStateChanged",
-			Self::ReplayBufferStateChanged => "ReplayBufferStateChanged",
-			Self::StudioModeStateChanged => "StudioModeStateChanged",
-			Self::CurrentSceneTransitionChanged => "CurrentSceneTransitionChanged",
-			Self::SceneTransitionStarted => "SceneTransitionStarted",
-			Self::SceneTransitionEnded => "SceneTransitionEnded",
-			Self::Unknown(s) => s,
-		}
+	pub fn expose(&self) -> &str {
+		&self.0
 	}
 }
 
-impl From<&str> for ObsEventType {
-	/// Maps an OBS event type name to its variant, falling back to
-	/// [`Self::Unknown`] for names this crate does not model.
-	fn from(s: &str) -> Self {
-		match s {
-			"StreamStateChanged" => Self::StreamStateChanged,
-			"RecordStateChanged" => Self::RecordStateChanged,
-			"CurrentProgramSceneChanged" => Self::CurrentProgramSceneChanged,
-			"SceneItemEnableStateChanged" => Self::SceneItemEnableStateChanged,
-			"InputMuteStateChanged" => Self::InputMuteStateChanged,
-			"InputVolumeChanged" => Self::InputVolumeChanged,
-			"VirtualcamStateChanged" => Self::VirtualcamStateChanged,
-			"ReplayBufferStateChanged" => Self::ReplayBufferStateChanged,
-			"StudioModeStateChanged" => Self::StudioModeStateChanged,
-			"CurrentSceneTransitionChanged" => Self::CurrentSceneTransitionChanged,
-			"SceneTransitionStarted" => Self::SceneTransitionStarted,
-			"SceneTransitionEnded" => Self::SceneTransitionEnded,
-			unknown => Self::Unknown(unknown.to_string()),
-		}
+impl std::fmt::Debug for StreamKey {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("StreamKey(***)")
 	}
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ObsRequest<T>
-where
-	T: Serialize,
-{
-	#[serde(rename = "op")]
-	pub op_code: u8,
-	pub d: RequestData<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RequestData<T>
-where
-	T: Serialize,
-{
-	#[serde(rename = "requestType")]
-	pub t: ObsRequestType,
-	#[serde(rename = "requestId")]
-	pub id: String,
-	#[serde(rename = "requestData")]
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub p: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SetCurrentProgramSceneParams {
-	#[serde(rename = "sceneName")]
-	pub scene_name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SetInputMuteParams {
-	pub n: String,
-	pub b: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SetInputVolumeParams {
-	pub n: String,
-	pub v: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SetCurrrentSceneTransitionParams {
-	pub n: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SetCurrentProfileParams {
-	pub n: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SetCurrentSceneCollectionParams {
-	pub n: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SetStudioModeEnabledParams {
-	pub b: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SetSourceFilterEnabledParams {
-	pub n: String,
-	pub f: String,
-	pub b: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SetStreamServiceSettingsParams {
-	#[serde(rename = "streamServiceType")]
-	pub service_type: String,
-	#[serde(rename = "streamServiceSettings")]
-	pub settings: StreamServiceSettings,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StreamServiceSettings {
-	#[serde(rename = "key", skip_serializing_if = "Option::is_none")]
-	pub stream_key: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub server: Option<String>,
-	// YouTube-specific settings
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub title: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub description: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub game: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub privacy: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub unlisted: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub tags: Option<Vec<String>>,
 }
 
 /// Represents different types of events from OBS
@@ -445,16 +340,13 @@ pub enum ObsEvent {
 	SceneTransitionStarted(SceneTransitionStartedData),
 	SceneTransitionEnded(SceneTransitionEndedData),
 
+	/// The whole studio, published on connect and after each burst of changes:
+	/// a display can render this alone instead of folding individual events.
+	StudioChanged(Box<StudioSnapshot>),
+
 	// Generic events for unhandled cases
 	UnknownResponse(UnknownResponseData),
 	UnknownEvent(UnknownEventData),
-
-	// Connection events
-	Hello(HelloData),
-	Identified,
-
-	// Service Management
-	StreamServiceSettingsResponse(StreamServiceSettingsData),
 }
 
 // Data structures for each enum variant
@@ -600,6 +492,11 @@ pub struct VersionData {
 pub struct StreamStateData {
 	pub streaming: bool,
 	pub timecode: Option<String>,
+	/// OBS's `outputState`, e.g. `OBS_WEBSOCKET_OUTPUT_STARTED`. A successful
+	/// `StartStream` response only means OBS began starting the output; this
+	/// is where a failed ingest connection shows up (`..._STOPPED`).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -607,6 +504,10 @@ pub struct StreamStateData {
 pub struct RecordStateData {
 	pub recording: bool,
 	pub timecode: Option<String>,
+	/// OBS's `outputState`; pausing shows up here as
+	/// `OBS_WEBSOCKET_OUTPUT_PAUSED` while `recording` stays `true`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -686,54 +587,6 @@ pub struct UnknownResponseData {
 pub struct UnknownEventData {
 	pub event_type: String,
 	pub data: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HelloData {
-	pub obs_version: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamServiceSettingsData {
-	pub stream_service_type: String,
-	pub stream_service_settings: StreamServiceSettingsResponse,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamServiceSettingsResponse {
-	pub key: Option<String>,
-	pub server: Option<String>,
-	pub title: Option<String>,
-	pub description: Option<String>,
-	pub game: Option<String>,
-	pub privacy: Option<String>,
-	pub unlisted: Option<bool>,
-	pub tags: Option<Vec<String>>,
-}
-
-// Add this enum for YouTube privacy settings:
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum YouTubePrivacy {
-	#[serde(rename = "public")]
-	Public,
-	#[serde(rename = "unlisted")]
-	Unlisted,
-	#[serde(rename = "private")]
-	Private,
-}
-
-impl YouTubePrivacy {
-	#[must_use]
-	pub const fn as_str(&self) -> &str {
-		match self {
-			Self::Public => "public",
-			Self::Unlisted => "unlisted",
-			Self::Private => "private",
-		}
-	}
 }
 
 /// Scene information structure
@@ -843,6 +696,75 @@ impl ObsEvent {
 				| Self::VirtualcamStateChanged(_)
 				| Self::ReplayBufferStateChanged(_)
 				| Self::StudioModeStateChanged(_)
+				| Self::StudioChanged(_)
 		)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	#[test]
+	fn set_youtube_stream_accepts_the_old_payload_shape() {
+		// Senders built against the earlier variant still send metadata fields;
+		// they must keep deserializing, with the extras ignored.
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setYouTubeStream",
+			"data": {
+				"stream_key": "abcd-efgh",
+				"title": "t", "description": "d", "category": "c",
+				"privacy": "public", "unlisted": false, "tags": []
+			}
+		}))
+		.unwrap();
+
+		match command {
+			ObsCommand::SetYouTubeStream { stream_key } => assert_eq!(stream_key.expose(), "abcd-efgh"),
+			other => panic!("expected SetYouTubeStream, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn stream_key_is_redacted_in_debug_output() {
+		let command = ObsCommand::SetYouTubeStream {
+			stream_key: StreamKey::new("abcd-efgh".to_owned()),
+		};
+		let rendered = std::fmt::format(format_args!("{command:?}"));
+		assert!(!rendered.contains("abcd-efgh"), "{rendered}");
+	}
+
+	#[test]
+	fn commands_use_named_fields_on_the_wire() {
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setMute",
+			"data": { "input": "Mic/Aux", "muted": true }
+		}))
+		.unwrap();
+		assert!(matches!(command, ObsCommand::SetMute { ref input, muted: true } if input == "Mic/Aux"));
+
+		let media: ObsCommand = serde_json::from_value(json!({
+			"type": "media",
+			"data": { "input": "Intro music", "action": "play" }
+		}))
+		.unwrap();
+		assert!(matches!(media, ObsCommand::Media { action: MediaAction::Play, .. }));
+	}
+
+	#[test]
+	fn fieldless_commands_need_no_data() {
+		let command: ObsCommand = serde_json::from_value(json!({ "type": "pauseRecording" })).unwrap();
+		assert!(matches!(command, ObsCommand::PauseRecording));
+	}
+
+	#[test]
+	fn source_visibility_defaults_to_the_live_scene() {
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setSourceVisible",
+			"data": { "source": "Terminal", "visible": true }
+		}))
+		.unwrap();
+		assert!(matches!(command, ObsCommand::SetSourceVisible { scene: None, visible: true, .. }));
 	}
 }

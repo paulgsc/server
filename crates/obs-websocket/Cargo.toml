@@ -13,51 +13,28 @@ edition.workspace = true
 
 [features]
 default = []
-websocket = [
-    "dep:axum",
-    "dep:tokio-tungstenite",
-    "dep:futures-util",
-    "dep:async-broadcast",
-    "dep:tower-http",
-    "dep:tokio-util",
-    "dep:sha2",
-    "dep:base64",
-    "dep:once_cell",
-    "dep:uuid",
-    "dep:dialoguer",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-]
+websocket = ["dep:obws", "dep:futures-util", "dep:time", "dep:tracing", "tokio/time", "tokio/rt", "tokio/macros"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-chrono = { workspace = true }
-tokio = { version = "1", features = ["sync"] } 
+tokio = { version = "1", features = ["sync"] }
 
-axum = { version = "0.7", features = ["ws"], optional = true }
-dialoguer = { version = "0.11", optional = true }
 futures-util = { version = "0.3", optional = true }
-tokio-tungstenite = { version = "0.26.2", features = ["native-tls"], optional = true }
+obws = { version = "0.15", features = ["events"], optional = true }
+time = { version = "0.3", optional = true }
 tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", optional = true }
-tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
-async-broadcast = { version = "0.7.2", optional = true }
-once_cell = { version = "1.19", optional = true }
-sha2 = { version = "0.10.9", optional = true }
-base64 = { version = "0.22.1", optional = true }
-uuid = { version = "1.18.0", features = ["v4"], optional = true }
-tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = "0.3"
 
 [[example]]
 name = "stream"
 required-features = ["websocket"]
 [[example]]
-name = "commands"
+name = "youtube"
 required-features = ["websocket"]
 
 [lints]
