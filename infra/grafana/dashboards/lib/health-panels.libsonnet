@@ -183,7 +183,10 @@ local docLink(anchor) = [
   // signal, each stamped with its name (`label_replace`, same idiom as DEPS)
   // and weighted by the HEALTH row's own left-to-right precedence; `topk(1)`
   // keeps only the most upstream blindness (a dead scrape makes every other
-  // series absent too — naming it "deps" would point at the wrong fix). The
+  // series absent too — naming it "deps" would point at the wrong fix). A
+  // dead scrape is `up == 0`, not only an absent `up`: Prometheus keeps
+  // writing `up{job="file_host"} 0` for an unreachable target, so `absent()`
+  // alone never fired and the stale app series surfaced as "deps". The
   // `ok` row competes at 0, so it wins exactly when nothing is absent.
   //
   // The waker's three series only count when `nudge_waker_enabled` says the
@@ -201,7 +204,7 @@ local docLink(anchor) = [
       // literally rather than interpolating them.
       expr: |||
         topk(1,
-          label_replace(absent(up{job="file_host"}) * 7, "state", "BLIND · scrape", "__name__", ".*")
+          label_replace((absent(up{job="file_host"}) or on() ((max(up{job="file_host"}) == 0) + 1)) * 7, "state", "BLIND · scrape", "__name__", ".*")
           or label_replace(absent(dependency_up) * 6, "state", "BLIND · deps", "__name__", ".*")
           or label_replace(absent(http_requests_total) * 5, "state", "BLIND · http", "__name__", ".*")
           or label_replace(absent(refusals_total) * 4, "state", "BLIND · refusals", "__name__", ".*")

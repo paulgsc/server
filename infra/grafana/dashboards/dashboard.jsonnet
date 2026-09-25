@@ -153,7 +153,10 @@ local dashboard = {
   tags: ['rust', 'axum', 'prometheus', 'sla', 'health'],
   // Which build is running, as header pickers rather than a panel: always
   // visible, one line, and out of the way. Read from `service_info`'s
-  // labels (build_info.rs).
+  // labels (build_info.rs) with `query_result`, which is an instant query at
+  // the end of the time range — the build running *now*. `label_values`
+  // would list every build seen anywhere in the range, so across a deploy
+  // the header could keep showing the previous one.
   templating: {
     list: [
       {
@@ -161,8 +164,9 @@ local dashboard = {
         label: v.name,
         type: 'query',
         datasource: { type: 'prometheus', uid: 'prometheus' },
-        definition: 'label_values(service_info{job="file_host"}, %s)' % v.label,
-        query: { query: 'label_values(service_info{job="file_host"}, %s)' % v.label, refId: 'StandardVariableQuery' },
+        definition: 'query_result(max by (%s) (service_info{job="file_host"}))' % v.label,
+        query: { query: 'query_result(max by (%s) (service_info{job="file_host"}))' % v.label, refId: 'StandardVariableQuery' },
+        regex: '/%s="([^"]+)"/' % v.label,
         refresh: 2,
         hide: 0,
         includeAll: false,

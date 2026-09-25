@@ -507,7 +507,7 @@
       },
       "targets": [
         {
-          "expr": "topk(1,\n  label_replace(absent(up{job=\"file_host\"}) * 7, \"state\", \"BLIND · scrape\", \"__name__\", \".*\")\n  or label_replace(absent(dependency_up) * 6, \"state\", \"BLIND · deps\", \"__name__\", \".*\")\n  or label_replace(absent(http_requests_total) * 5, \"state\", \"BLIND · http\", \"__name__\", \".*\")\n  or label_replace(absent(refusals_total) * 4, \"state\", \"BLIND · refusals\", \"__name__\", \".*\")\n  or label_replace(absent(nudge_waker_enabled) * 3, \"state\", \"BLIND · waker\", \"__name__\", \".*\")\n  or label_replace(\n    (absent(nudge_waker_last_attempt_timestamp_seconds) or absent(nudge_waker_pass_failing) or absent(nudge_waker_interval_seconds)) * 2\n      and on() (max(nudge_waker_enabled) == 1),\n    \"state\", \"BLIND · loops\", \"__name__\", \".*\")\n  or label_replace(vector(0), \"state\", \"ok\", \"__name__\", \".*\")\n)\n",
+          "expr": "topk(1,\n  label_replace((absent(up{job=\"file_host\"}) or on() ((max(up{job=\"file_host\"}) == 0) + 1)) * 7, \"state\", \"BLIND · scrape\", \"__name__\", \".*\")\n  or label_replace(absent(dependency_up) * 6, \"state\", \"BLIND · deps\", \"__name__\", \".*\")\n  or label_replace(absent(http_requests_total) * 5, \"state\", \"BLIND · http\", \"__name__\", \".*\")\n  or label_replace(absent(refusals_total) * 4, \"state\", \"BLIND · refusals\", \"__name__\", \".*\")\n  or label_replace(absent(nudge_waker_enabled) * 3, \"state\", \"BLIND · waker\", \"__name__\", \".*\")\n  or label_replace(\n    (absent(nudge_waker_last_attempt_timestamp_seconds) or absent(nudge_waker_pass_failing) or absent(nudge_waker_interval_seconds)) * 2\n      and on() (max(nudge_waker_enabled) == 1),\n    \"state\", \"BLIND · loops\", \"__name__\", \".*\")\n  or label_replace(vector(0), \"state\", \"ok\", \"__name__\", \".*\")\n)\n",
           "instant": true,
           "legendFormat": "{{state}}",
           "refId": "A"
@@ -3315,7 +3315,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(service_info{job=\"file_host\"}, git_sha)",
+        "definition": "query_result(max by (git_sha) (service_info{job=\"file_host\"}))",
         "hide": 0,
         "includeAll": false,
         "label": "build",
@@ -3323,10 +3323,11 @@
         "name": "build",
         "options": [],
         "query": {
-          "query": "label_values(service_info{job=\"file_host\"}, git_sha)",
+          "query": "query_result(max by (git_sha) (service_info{job=\"file_host\"}))",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
+        "regex": "/git_sha=\"([^\"]+)\"/",
         "sort": 0,
         "type": "query"
       },
@@ -3336,7 +3337,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(service_info{job=\"file_host\"}, built_at)",
+        "definition": "query_result(max by (built_at) (service_info{job=\"file_host\"}))",
         "hide": 0,
         "includeAll": false,
         "label": "built",
@@ -3344,10 +3345,11 @@
         "name": "built",
         "options": [],
         "query": {
-          "query": "label_values(service_info{job=\"file_host\"}, built_at)",
+          "query": "query_result(max by (built_at) (service_info{job=\"file_host\"}))",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
+        "regex": "/built_at=\"([^\"]+)\"/",
         "sort": 0,
         "type": "query"
       }
