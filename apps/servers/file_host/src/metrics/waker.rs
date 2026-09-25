@@ -24,6 +24,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// reads 0 rather than absent, which SIGNAL would otherwise call blind.
 pub const PASS_ERROR_CLASSES: [&str; 5] = ["schema", "locked", "io", "pool", "other"];
 
+/// Whether this deployment runs the waker at all: 1 or 0, set once at boot
+/// on both branches of `main.rs`'s nudge gate.
+///
+/// Nudges are off by default (`NUDGE_ENABLED=false`), and a deployment that
+/// never turned them on exports none of the other gauges in this file — so
+/// without this one, LOOPS and SIGNAL (infra/grafana/dashboards/lib/
+/// health-panels.libsonnet) could not tell "switched off" from "task
+/// missing", and SIGNAL read BLIND permanently on exactly that configuration.
+pub fn record_enabled(enabled: bool) {
+	metrics::gauge!("nudge_waker_enabled").set(if enabled { 1.0 } else { 0.0 });
+}
+
 /// Publish the configured interval as soon as the task is spawned, and
 /// start every failure class at 0.
 pub fn record_interval(interval: Duration) {

@@ -60,6 +60,7 @@ local docLink(anchor) = [
           "state", "$1 down", "dependency", "(.*)"
         )
         or (label_replace(0 * count(dependency_up) + 1, "state", "all up", "__name__", ".*") unless on() max(dependency_up == 0))
+        or (label_replace(vector(-2), "state", "no data", "__name__", ".*") unless on() count(dependency_up))
       |||,
       legendFormat: '{{state}}',
       instant: true,
@@ -69,7 +70,8 @@ local docLink(anchor) = [
       defaults: {
         unit: 'none',
         color: { mode: 'thresholds' },
-        thresholds: { mode: 'absolute', steps: [{ color: 'red', value: null }, { color: 'green', value: 1 }] },
+        // -2 is the "no data" row above: grey, never red or green.
+        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }, { color: 'red', value: 0 }, { color: 'green', value: 1 }] },
       },
       overrides: [],
     },
@@ -90,7 +92,9 @@ local docLink(anchor) = [
     type: 'stat',
     id: 902,
     links: docLink('rejecting'),
-    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5..", route!="/ready"}[5m])) or (0 * sum(rate(http_requests_total[5m])))', instant: true, refId: 'A' }],
+    // A range query, not instant, so the tile carries its own sparkline:
+    // "is it rising" is the second question a red ERRORS raises.
+    targets: [{ expr: 'sum(rate(http_requests_total{status=~"5..", route!="/ready"}[5m])) or (0 * sum(rate(http_requests_total[5m])))', refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 'reqps',
@@ -100,7 +104,7 @@ local docLink(anchor) = [
       },
       overrides: [],
     },
-    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
+    options: { colorMode: 'value', graphMode: 'area', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
   },
 
   // REFUSALS — condition #4 (saturated). Same "sustained non-zero is red"
@@ -112,7 +116,7 @@ local docLink(anchor) = [
     type: 'stat',
     id: 903,
     links: docLink('saturated'),
-    targets: [{ expr: 'sum(rate(refusals_total[5m]))', instant: true, refId: 'A' }],
+    targets: [{ expr: 'sum(rate(refusals_total[5m]))', refId: 'A' }],
     fieldConfig: {
       defaults: {
         unit: 'ops',
@@ -122,7 +126,7 @@ local docLink(anchor) = [
       },
       overrides: [],
     },
-    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
+    options: { colorMode: 'value', graphMode: 'area', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
   },
 
   // LOOPS — condition #5 (stalled). Three states, most severe first:
@@ -130,7 +134,13 @@ local docLink(anchor) = [
   // died or a pass is hung), FAILING · <class> (passes run, and the last one
   // returned an error — the class names what to fix, e.g. `schema` for a
   // database missing migrations), ok. Deriving the threshold from the
-  // exported interval keeps a tuned deployment honest. The stall predicate
+  // exported interval keeps a tuned deployment honest. Below those, three
+  // states that aren't findings about the loop: NOT RUNNING (enabled, but no
+  // pass has ever started), off (`NUDGE_ENABLED` is false — the default — so
+  // there is no loop to judge; before `nudge_waker_enabled` existed this
+  // rendered blank, and SIGNAL called it BLIND), and no data. `textMode:
+  // 'name'` hides Grafana's own "no data" placeholder, which is why that one
+  // is an explicit row rather than left to `harden()`. The stall predicate
   // is repeated rather than factored into a jsonnet local on purpose:
   // scripts/check_metric_contract.py reads metric names lexically out of
   // `expr:` strings, and an interpolated name is one it can't see.
@@ -144,6 +154,9 @@ local docLink(anchor) = [
         label_replace((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds), "state", "STALLED", "__name__", ".*")
         or (label_replace(max by (error) (nudge_waker_pass_failing == 1), "state", "FAILING · $1", "error", "(.*)") unless on() ((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)))
         or (label_replace(0 * max(nudge_waker_last_attempt_timestamp_seconds), "state", "ok", "__name__", ".*") unless on() (((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)) or max(nudge_waker_pass_failing == 1)))
+        or label_replace((max(nudge_waker_enabled) == 1) unless on() max(nudge_waker_last_attempt_timestamp_seconds), "state", "NOT RUNNING", "__name__", ".*")
+        or label_replace((max(nudge_waker_enabled) == 0) - 1, "state", "off", "__name__", ".*")
+        or (label_replace(vector(-2), "state", "no data", "__name__", ".*") unless on() max(nudge_waker_enabled))
       |||,
       legendFormat: '{{state}}',
       instant: true,
@@ -153,22 +166,34 @@ local docLink(anchor) = [
       defaults: {
         unit: 'none',
         color: { mode: 'thresholds' },
-        thresholds: { mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }] },
+        // -2 no data (grey) / -1 off (blue: the deployment chose not to
+        // run the waker — `nudge_waker_enabled` 0, see metrics/waker.rs) /
+        // 0 ok / 1 STALLED, FAILING or NOT RUNNING.
+        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }, { color: 'blue', value: -1 }, { color: 'green', value: 0 }, { color: 'red', value: 1 }] },
       },
       overrides: [],
     },
     options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'name' },
   },
 
-  // SIGNAL — condition #6 (blind). Red the instant *any* of the five panels
-  // above is grey, so "five greens" and "five greys" are never mistaken for
-  // each other at a glance. `sum(absent(x))` collapses every absent() call
-  // to the same unlabeled series regardless of x's own label selector
-  // (Prometheus's `absent()` otherwise propagates equality-matched labels
-  // from the selector, which would keep e.g. `up{job="file_host"}`'s check
-  // from `or`-combining cleanly with the label-free ones); `or vector(0)`
-  // is the standard idiom for "1 if anything on the left fired, else 0" —
-  // reasoned through, not verified against a live Prometheus.
+  // SIGNAL — condition #6 (blind). Red the instant any of the five panels
+  // above has lost the series it reads, and — unlike the first version,
+  // which only said BLIND — naming which one, so the tile says where to look
+  // rather than only that something is wrong. One `absent()` term per
+  // signal, each stamped with its name (`label_replace`, same idiom as DEPS)
+  // and weighted by the HEALTH row's own left-to-right precedence; `topk(1)`
+  // keeps only the most upstream blindness (a dead scrape makes every other
+  // series absent too — naming it "deps" would point at the wrong fix). A
+  // dead scrape is `up == 0`, not only an absent `up`: Prometheus keeps
+  // writing `up{job="file_host"} 0` for an unreachable target, so `absent()`
+  // alone never fired and the stale app series surfaced as "deps". The
+  // `ok` row competes at 0, so it wins exactly when nothing is absent.
+  //
+  // The waker's three series only count when `nudge_waker_enabled` says the
+  // waker runs: a deployment with nudges off (the default) exports none of
+  // them, and reading that as blindness is how this tile sat at BLIND on a
+  // perfectly healthy server. `nudge_waker_enabled` itself must exist either
+  // way — main.rs sets it on both branches of the nudge gate.
   signal: {
     title: 'SIGNAL',
     type: 'stat',
@@ -178,69 +203,39 @@ local docLink(anchor) = [
       // Same reasoning as LOOPS above about writing the metric names out
       // literally rather than interpolating them.
       expr: |||
-        (
-          sum(absent(up{job="file_host"}))
-          or sum(absent(dependency_up))
-          or sum(absent(http_requests_total))
-          or sum(absent(refusals_total))
-          or sum(absent(nudge_waker_last_attempt_timestamp_seconds))
-          or sum(absent(nudge_waker_pass_failing))
-          or sum(absent(nudge_waker_interval_seconds))
-        ) or vector(0)
+        topk(1,
+          label_replace((absent(up{job="file_host"}) or on() ((max(up{job="file_host"}) == 0) + 1)) * 7, "state", "BLIND · scrape", "__name__", ".*")
+          or label_replace(absent(dependency_up) * 6, "state", "BLIND · deps", "__name__", ".*")
+          or label_replace(absent(http_requests_total) * 5, "state", "BLIND · http", "__name__", ".*")
+          or label_replace(absent(refusals_total) * 4, "state", "BLIND · refusals", "__name__", ".*")
+          or label_replace(absent(nudge_waker_enabled) * 3, "state", "BLIND · waker", "__name__", ".*")
+          or label_replace(
+            (absent(nudge_waker_last_attempt_timestamp_seconds) or absent(nudge_waker_pass_failing) or absent(nudge_waker_interval_seconds)) * 2
+              and on() (max(nudge_waker_enabled) == 1),
+            "state", "BLIND · loops", "__name__", ".*")
+          or label_replace(vector(0), "state", "ok", "__name__", ".*")
+        )
       |||,
+      legendFormat: '{{state}}',
       instant: true,
       refId: 'A',
     }],
     fieldConfig: {
       defaults: {
         unit: 'none',
-        mappings: [{ type: 'value', options: { '0': { text: 'ok', color: 'green' }, '1': { text: 'BLIND', color: 'red' } } }],
         color: { mode: 'thresholds' },
-        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }] },
+        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }, { color: 'green', value: 0 }, { color: 'red', value: 1 }] },
       },
       overrides: [],
     },
-    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'name' },
   },
 
-  // #213/F4's other half: which build is this, and how long has it been
-  // running. Not one of the six conditions, but the context that makes
-  // reading any of them trustworthy — "how long has it been like this" and
-  // "is this the build I think it is" are the first two questions a red
-  // panel raises. `service_info` is a fixed-1 info gauge; `textMode: 'name'`
-  // renders its labels (via legendFormat) instead of the value, which is
-  // the conventional way to surface an info-metric's labels as text.
-  buildInfo: {
-    title: 'Build',
-    type: 'stat',
-    id: 906,
-    targets: [{ expr: 'service_info', legendFormat: '{{git_sha}} · rustc {{rust}} · built {{built_at}}', instant: true, refId: 'A' }],
-    fieldConfig: {
-      defaults: {
-        unit: 'none',
-        color: { mode: 'fixed', fixedColor: 'text' },
-        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }] },
-      },
-      overrides: [],
-    },
-    options: { colorMode: 'none', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'name' },
-  },
-
-  uptime: {
-    title: 'Uptime',
-    type: 'stat',
-    id: 907,
-    targets: [{ expr: 'time() - process_start_time_seconds', instant: true, refId: 'A' }],
-    fieldConfig: {
-      defaults: {
-        unit: 's',
-        color: { mode: 'fixed', fixedColor: 'text' },
-        thresholds: { mode: 'absolute', steps: [{ color: panelDefaults.unknownColor, value: null }] },
-      },
-      overrides: [],
-    },
-    options: { colorMode: 'none', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value' },
-  },
+  // #213/F4's other half — which build is this, and how long has it been
+  // running — used to be two strips here (`buildInfo`, `uptime`) that spent
+  // a full row on a line of 8pt text. The build is now the `build`/`built`
+  // pickers in dashboard.jsonnet's header (from `service_info`'s labels),
+  // and uptime is overview-panels.libsonnet's UP FOR tile.
 
   // The wide timeseries below the stat row — "the shape of the day in one
   // glance". Outcome-split: served (2xx/3xx), 4xx, 5xx, refused.

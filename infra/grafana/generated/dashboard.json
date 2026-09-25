@@ -19,7 +19,7 @@
           "uid": "prometheus"
         },
         "enable": true,
-        "expr": "changes(process_start_time_seconds[$__interval]) > 0",
+        "expr": "changes(process_start_time_seconds{job=\"file_host\"}[$__interval]) > 0",
         "iconColor": "purple",
         "name": "Restarts",
         "step": "60s",
@@ -155,8 +155,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "#8E8E8E",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
               },
               {
                 "color": "green",
@@ -197,7 +201,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace(\n  max by (dependency) (dependency_up == 0)\n    unless on(dependency) (max by (dependency) (dependency_up{dependency=\"schema\"} == 0) and on() max(dependency_up{dependency=\"sqlite\"} == 0)),\n  \"state\", \"$1 down\", \"dependency\", \"(.*)\"\n)\nor (label_replace(0 * count(dependency_up) + 1, \"state\", \"all up\", \"__name__\", \".*\") unless on() max(dependency_up == 0))\n",
+          "expr": "label_replace(\n  max by (dependency) (dependency_up == 0)\n    unless on(dependency) (max by (dependency) (dependency_up{dependency=\"schema\"} == 0) and on() max(dependency_up{dependency=\"sqlite\"} == 0)),\n  \"state\", \"$1 down\", \"dependency\", \"(.*)\"\n)\nor (label_replace(0 * count(dependency_up) + 1, \"state\", \"all up\", \"__name__\", \".*\") unless on() max(dependency_up == 0))\nor (label_replace(vector(-2), \"state\", \"no data\", \"__name__\", \".*\") unless on() count(dependency_up))\n",
           "instant": true,
           "legendFormat": "{{state}}",
           "refId": "A"
@@ -259,7 +263,7 @@
       ],
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
@@ -273,7 +277,6 @@
       "targets": [
         {
           "expr": "sum(rate(http_requests_total{status=~\"5..\", route!=\"/ready\"}[5m])) or (0 * sum(rate(http_requests_total[5m])))",
-          "instant": true,
           "refId": "A"
         }
       ],
@@ -333,7 +336,7 @@
       ],
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
@@ -347,7 +350,6 @@
       "targets": [
         {
           "expr": "sum(rate(refusals_total[5m]))",
-          "instant": true,
           "refId": "A"
         }
       ],
@@ -377,8 +379,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#8E8E8E",
                 "value": null
+              },
+              {
+                "color": "blue",
+                "value": -1
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -419,7 +429,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds), \"state\", \"STALLED\", \"__name__\", \".*\")\nor (label_replace(max by (error) (nudge_waker_pass_failing == 1), \"state\", \"FAILING · $1\", \"error\", \"(.*)\") unless on() ((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)))\nor (label_replace(0 * max(nudge_waker_last_attempt_timestamp_seconds), \"state\", \"ok\", \"__name__\", \".*\") unless on() (((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)) or max(nudge_waker_pass_failing == 1)))\n",
+          "expr": "label_replace((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds), \"state\", \"STALLED\", \"__name__\", \".*\")\nor (label_replace(max by (error) (nudge_waker_pass_failing == 1), \"state\", \"FAILING · $1\", \"error\", \"(.*)\") unless on() ((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)))\nor (label_replace(0 * max(nudge_waker_last_attempt_timestamp_seconds), \"state\", \"ok\", \"__name__\", \".*\") unless on() (((time() - max(nudge_waker_last_attempt_timestamp_seconds)) > 3 * max(nudge_waker_interval_seconds)) or max(nudge_waker_pass_failing == 1)))\nor label_replace((max(nudge_waker_enabled) == 1) unless on() max(nudge_waker_last_attempt_timestamp_seconds), \"state\", \"NOT RUNNING\", \"__name__\", \".*\")\nor label_replace((max(nudge_waker_enabled) == 0) - 1, \"state\", \"off\", \"__name__\", \".*\")\nor (label_replace(vector(-2), \"state\", \"no data\", \"__name__\", \".*\") unless on() max(nudge_waker_enabled))\n",
           "instant": true,
           "legendFormat": "{{state}}",
           "refId": "A"
@@ -435,19 +445,6 @@
             "mode": "thresholds"
           },
           "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "text": "ok"
-                },
-                "1": {
-                  "color": "red",
-                  "text": "BLIND"
-                }
-              },
-              "type": "value"
-            },
             {
               "options": {
                 "match": "null+nan",
@@ -466,6 +463,14 @@
               {
                 "color": "#8E8E8E",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           },
@@ -498,12 +503,13 @@
           ],
           "values": false
         },
-        "textMode": "value"
+        "textMode": "name"
       },
       "targets": [
         {
-          "expr": "(\n  sum(absent(up{job=\"file_host\"}))\n  or sum(absent(dependency_up))\n  or sum(absent(http_requests_total))\n  or sum(absent(refusals_total))\n  or sum(absent(nudge_waker_last_attempt_timestamp_seconds))\n  or sum(absent(nudge_waker_pass_failing))\n  or sum(absent(nudge_waker_interval_seconds))\n) or vector(0)\n",
+          "expr": "topk(1,\n  label_replace((absent(up{job=\"file_host\"}) or on() ((max(up{job=\"file_host\"}) == 0) + 1)) * 7, \"state\", \"BLIND · scrape\", \"__name__\", \".*\")\n  or label_replace(absent(dependency_up) * 6, \"state\", \"BLIND · deps\", \"__name__\", \".*\")\n  or label_replace(absent(http_requests_total) * 5, \"state\", \"BLIND · http\", \"__name__\", \".*\")\n  or label_replace(absent(refusals_total) * 4, \"state\", \"BLIND · refusals\", \"__name__\", \".*\")\n  or label_replace(absent(nudge_waker_enabled) * 3, \"state\", \"BLIND · waker\", \"__name__\", \".*\")\n  or label_replace(\n    (absent(nudge_waker_last_attempt_timestamp_seconds) or absent(nudge_waker_pass_failing) or absent(nudge_waker_interval_seconds)) * 2\n      and on() (max(nudge_waker_enabled) == 1),\n    \"state\", \"BLIND · loops\", \"__name__\", \".*\")\n  or label_replace(vector(0), \"state\", \"ok\", \"__name__\", \".*\")\n)\n",
           "instant": true,
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
@@ -511,12 +517,17 @@
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Requests per minute actually served to clients: every HTTP route except the /ready and /health probes (and /metrics, which http.rs never counts). Informational, not a verdict: low traffic is not a fault. For \"is anyone connected\", see WS CLIENTS.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "fixedColor": "text",
-            "mode": "fixed"
+            "mode": "thresholds"
           },
+          "decimals": 1,
           "mappings": [
             {
               "options": {
@@ -534,7 +545,76 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "#8E8E8E",
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: req/min"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 4
+      },
+      "id": 940,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{route!~\"/ready|/health\"}[5m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "title": "TRAFFIC",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Real WebSocket clients connected right now — every client_type except the blackbox probe. Informational. If this disagrees with what you expect, open the Realtime row: LEAKED ENTRIES there says whether the server is counting sockets nobody holds.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
                 "value": null
               }
             ]
@@ -544,42 +624,46 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 2,
-        "w": 18,
-        "x": 0,
+        "h": 4,
+        "w": 4,
+        "x": 4,
         "y": 4
       },
-      "id": 906,
+      "id": 941,
       "options": {
-        "colorMode": "none",
-        "graphMode": "none",
+        "colorMode": "value",
+        "graphMode": "area",
         "justifyMode": "center",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "values": false
         },
-        "textMode": "name"
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
       },
       "targets": [
         {
-          "expr": "service_info",
-          "instant": true,
-          "legendFormat": "{{git_sha}} · rustc {{rust}} · built {{built_at}}",
+          "expr": "sum(ws_client_connections{client_type!=\"probe\"}) or on() (0 * max(ws_connections{state=\"connected\"}))",
           "refId": "A"
         }
       ],
-      "title": "Build",
+      "title": "WS CLIENTS",
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The 95th-percentile request duration across every route, over 5m windows. Orange from 300ms, red from 1s. If red: the HTTP Latency by Route panel below says which route; a /ws spike is time spent waiting for a connection permit.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "fixedColor": "text",
-            "mode": "fixed"
+            "mode": "thresholds"
           },
           "mappings": [
             {
@@ -598,7 +682,236 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "#8E8E8E",
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.29999999999999999
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 4
+      },
+      "id": 942,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "refId": "A"
+        }
+      ],
+      "title": "LATENCY p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Share of scrapes over the selected time range in which Prometheus reached file_host (up{job=\"file_host\"}). Red below 99%, orange below 99.9%. Widen the time picker to ask about a longer window; the SERVICES timeline shows when the misses were.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 99
+              },
+              {
+                "color": "green",
+                "value": 99.900000000000006
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 4
+      },
+      "id": 943,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "100 * avg_over_time(up{job=\"file_host\"}[$__range])",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AVAILABILITY",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "How many times file_host started over the selected time range. Orange at one or more: a deploy or a crash. Each one is a purple annotation on every graph (the Restarts toggle, top left) so it can be lined up against whatever changed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 4
+      },
+      "id": 944,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "changes(process_start_time_seconds{job=\"file_host\"}[$__range])",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "RESTARTS",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Time since this file_host process started. Scoped to job=\"file_host\": every exporter exports process_start_time_seconds too, and an unscoped query rendered one overlapping value per job. The running build is the `build` picker at the top of the dashboard.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
                 "value": null
               }
             ]
@@ -608,34 +921,146 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 2,
-        "w": 6,
-        "x": 18,
+        "h": 4,
+        "w": 4,
+        "x": 20,
         "y": 4
       },
-      "id": 907,
+      "id": 945,
       "options": {
-        "colorMode": "none",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "values": false
         },
-        "textMode": "value"
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
       },
       "targets": [
         {
-          "expr": "time() - process_start_time_seconds",
+          "expr": "time() - max(process_start_time_seconds{job=\"file_host\"})",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Uptime",
+      "title": "UP FOR",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Green while a service answers, red while it does not, over the selected time range. \"file_host /ws\" is the blackbox WebSocket handshake — a real client's view of /ws, independent of the metrics scrape. Hover a red band for its start and duration.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "fillOpacity": 75,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "DOWN"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "UP"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 946,
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "showLegend": false
+        },
+        "mergeValues": true,
+        "rowHeight": 0.80000000000000004,
+        "showValue": "never",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(up{job=\"file_host\"})",
+          "legendFormat": "file_host",
+          "refId": "A"
+        },
+        {
+          "expr": "max(probe_success{job=\"websocket_blackbox_http\"})",
+          "legendFormat": "file_host /ws",
+          "refId": "B"
+        },
+        {
+          "expr": "max(up{job=\"orchestrator\"})",
+          "legendFormat": "orchestrator",
+          "refId": "C"
+        },
+        {
+          "expr": "max(redis_up) or on() (0 * max(up{job=\"redis\"}))",
+          "legendFormat": "redis",
+          "refId": "D"
+        },
+        {
+          "expr": "(max(up{job=\"nats\"}) and on() count(gnatsd_varz_connections)) or on() (0 * max(up{job=\"nats\"}))",
+          "legendFormat": "nats",
+          "refId": "E"
+        }
+      ],
+      "title": "SERVICES — up, and when they weren't",
+      "type": "state-timeline"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 960,
+      "panels": [],
+      "title": "Traffic, latency & errors",
+      "type": "row"
     },
     {
       "fieldConfig": {
@@ -705,10 +1130,10 @@
         ]
       },
       "gridPos": {
-        "h": 6,
-        "w": 24,
+        "h": 8,
+        "w": 8,
         "x": 0,
-        "y": 6
+        "y": 15
       },
       "id": 908,
       "options": {
@@ -768,10 +1193,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 12
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 15
       },
       "id": 909,
       "options": {
@@ -799,379 +1224,10 @@
       "type": "timeseries"
     },
     {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 18
-      },
-      "id": 910,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(ws_connections{state=\"connected\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "WS CONNS",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 18
-      },
-      "id": 929,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(ws_connections{state=\"connected\"}) - sum(ws_client_connections{client_type=\"probe\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "DEVICE CONNS",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 18
-      },
-      "id": 930,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(ws_client_connections{client_type=\"probe\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "PROBE",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 12,
-        "y": 18
-      },
-      "id": 911,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(ws_connections{state=\"live\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "LIVE",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 16,
-        "y": 18
-      },
-      "id": 912,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(ws_connections{state=\"subscribed\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "SUBSCRIBED",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 1,
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 18
-      },
-      "id": 913,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(http_requests_total[5m])) * 60",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "REQ/MIN",
-      "type": "stat"
-    },
-    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1183,22 +1239,34 @@
             "lineWidth": 2,
             "pointSize": 4,
             "showPoints": "never",
-            "spanNulls": false,
+            "spanNulls": true,
             "stacking": {
               "mode": "none"
             }
           },
-          "unit": "ops"
-        },
-        "overrides": []
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
       },
       "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 22
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 15
       },
-      "id": 914,
+      "id": 10,
       "options": {
         "legend": {
           "placement": "bottom",
@@ -1211,18 +1279,322 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(ws_connection_lifecycle_total{event=\"created\"}[5m]))",
-          "legendFormat": "opened",
+          "expr": "sum by (target) (increase(tracing_events_total{level=\"error\"}[5m]))",
+          "legendFormat": "{{target}}",
           "refId": "A"
-        },
-        {
-          "expr": "sum(rate(ws_connection_lifecycle_total{event=\"removed\"}[5m]))",
-          "legendFormat": "closed",
-          "refId": "B"
         }
       ],
-      "title": "Connection Churn: Open / Close",
+      "title": "🚨 Tracing Error Events by Target (per 5m)",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 961,
+      "panels": [],
+      "title": "Metal — what the services cost the host",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "CPU each service is using as a share of its compose `cpus:` limit (cadvisor, 5m average). Past ~90% the kernel starts throttling it: requests queue for CPU even though the host may be idle — see WHO DUNNIT's throttling panel. Services without a CPU limit have no bar here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "id": 947,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama\"}[5m])) / on(name) (max by (name) (container_spec_cpu_quota{name=~\"file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama\"}) / max by (name) (container_spec_cpu_period{name=~\"file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama\"}))",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU — % of each service's limit",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Working-set memory (what the kernel will not reclaim) as a share of each service's compose `mem_limit`. At 100% the kernel OOM-kills it — a RESTARTS tick with no deploy behind it. Services without a limit have no bar here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 24
+      },
+      "id": 948,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "100 * max by (name) (container_memory_working_set_bytes{name=~\"file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama\"}) / max by (name) (container_spec_memory_limit_bytes{name=~\"file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama\"} > 0)",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory — % of each service's limit",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Bytes each service process reads plus writes per second, 5m average — storage I/O only (process-exporter, /proc/<pid>/io), so named volumes and the SQLite database count and network traffic does not. Read per process rather than per container because cadvisor has no per-container I/O on a cgroup-v2 host without the io controller delegated. For every other process on the host, see WHO DUNNIT.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 24
+      },
+      "id": 949,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "sum by (groupname) (rate(namedprocess_namegroup_read_bytes_total{groupname=~\"file_host|orchestrator|redis-server|nats-server|ollama\"}[5m])) + sum by (groupname) (rate(namedprocess_namegroup_write_bytes_total{groupname=~\"file_host|orchestrator|redis-server|nats-server|ollama\"}[5m]))",
+          "instant": true,
+          "legendFormat": "{{groupname}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk I/O — per service",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "How full each real filesystem on the host is. Orange from 80%, red from 90%: SQLite, Prometheus and container logs all fail writes when their filesystem fills.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 24
+      },
+      "id": 950,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "max by (mountpoint) (100 * (1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs|ramfs|nsfs|devtmpfs|autofs|fuse.*\", mountpoint!~\"/nix/store|/var/lib/docker/.+|/run.*\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs|ramfs|nsfs|devtmpfs|autofs|fuse.*\", mountpoint!~\"/nix/store|/var/lib/docker/.+|/run.*\"}))",
+          "instant": true,
+          "legendFormat": "{{mountpoint}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk space — % used per filesystem",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 962,
+      "panels": [],
+      "title": "Realtime — WebSocket",
+      "type": "row"
     },
     {
       "fieldConfig": {
@@ -1241,17 +1613,17 @@
               "mode": "normal"
             }
           },
-          "unit": "ops"
+          "unit": "none"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 12,
-        "y": 22
+        "x": 0,
+        "y": 32
       },
-      "id": 915,
+      "id": 919,
       "options": {
         "legend": {
           "placement": "bottom",
@@ -1264,76 +1636,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (end_reason) (rate(ws_connection_duration_seconds_count[5m]))",
-          "legendFormat": "{{end_reason}}",
+          "expr": "ws_client_connections",
+          "legendFormat": "{{client_type}}",
           "refId": "A"
         }
       ],
-      "title": "Closes by Reason",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          },
-          "unit": "ops"
-        }
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 28
-      },
-      "id": 916,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(cache_hits_total[5m])) by (namespace)",
-          "legendFormat": "{{namespace}} - hit"
-        },
-        {
-          "expr": "sum(rate(cache_misses_total[5m])) by (namespace)",
-          "legendFormat": "{{namespace}} - miss"
-        }
-      ],
-      "title": "Hits vs Misses by Namespace",
+      "title": "Client Type Distribution",
       "type": "timeseries"
     },
     {
@@ -1361,60 +1669,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 28
-      },
-      "id": 917,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sqlite_pool_size",
-          "legendFormat": "size",
-          "refId": "A"
-        },
-        {
-          "expr": "sqlite_pool_idle",
-          "legendFormat": "idle",
-          "refId": "B"
-        }
-      ],
-      "title": "SQLite Pool: Size vs Idle",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none"
-            }
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 34
+        "y": 32
       },
       "id": 918,
       "options": {
@@ -1456,54 +1711,6 @@
             "showPoints": "never",
             "spanNulls": false,
             "stacking": {
-              "mode": "normal"
-            }
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 34
-      },
-      "id": 919,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "ws_client_connections",
-          "legendFormat": "{{client_type}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Client Type Distribution",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
               "mode": "none"
             }
           },
@@ -1515,7 +1722,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 38
       },
       "id": 920,
       "options": {
@@ -1563,7 +1770,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 38
       },
       "id": 921,
       "options": {
@@ -1587,1282 +1794,1508 @@
       "type": "timeseries"
     },
     {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
+      "collapsed": true,
       "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 46
-      },
-      "id": 931,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "nudge_waker_due_subjects",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "DUE",
-      "type": "stat"
-    },
-    {
-      "description": "Startup configuration faults (e.g. an unparseable NUDGE_TIMEZONE) since the current file_host process started.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 4,
-        "y": 46
-      },
-      "id": 933,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "(sum(operation_errors_total{operation=\"nudge_config\"}) or vector(0)) and on() (up{job=\"file_host\"} == 1)",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Nudge Config Errors",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "normal"
-            }
-          },
-          "unit": "ops"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "sent / n/a"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "no_device_accepted / n/a"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 15,
-        "x": 9,
-        "y": 46
-      },
-      "id": 932,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (verdict, reason) (rate(nudge_waker_verdicts_total[5m]))",
-          "legendFormat": "{{verdict}} / {{reason}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Nudge Outcomes by Verdict",
-      "type": "timeseries"
-    },
-    {
-      "description": "Duration of the last engagement-waker pass, against the configured WAKER_PASS_DEADLINE_MS.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": true
-          },
-          "unit": "s"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "deadline"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
+        "h": 1,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 44
       },
-      "id": 934,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 963,
+      "panels": [
         {
-          "expr": "nudge_waker_last_pass_duration_seconds",
-          "legendFormat": "last pass",
-          "refId": "A"
-        },
-        {
-          "expr": "nudge_waker_pass_deadline_seconds",
-          "legendFormat": "deadline",
-          "refId": "B"
-        }
-      ],
-      "title": "Waker Pass Duration",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
           },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
+          "description": "Connection-store entries with no socket behind them: store size minus live sockets. Should sit at 0; anything else means some socket teardown path is not removing its entry (see websocket.rs ConnectionCleanup), and WS CONNS, LIVE and SUBSCRIBED are all inflated by that many.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
               },
-              "type": "special"
+              "decimals": 0,
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 45
+          },
+          "id": 951,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "value",
+            "wideLayout": true
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_connections{state=\"connected\"}) - (sum(ws_client_connections) or on() (0 * max(ws_connections{state=\"connected\"})))",
+              "refId": "A"
             }
           ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
+          "title": "LEAKED ENTRIES",
+          "type": "stat"
         },
-        "overrides": []
-      },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 45
+          },
+          "id": 910,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_connections{state=\"connected\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "WS CONNS",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 45
+          },
+          "id": 929,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_client_connections{client_type!=\"probe\"}) or on() (0 * max(ws_connections{state=\"connected\"}))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "DEVICE CONNS",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 45
+          },
+          "id": 930,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_client_connections{client_type=\"probe\"}) or on() (0 * max(ws_connections{state=\"connected\"}))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "PROBE",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 45
+          },
+          "id": 911,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_connections{state=\"live\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "LIVE",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 45
+          },
+          "id": 912,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(ws_connections{state=\"subscribed\"})",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "SUBSCRIBED",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 49
+          },
+          "id": 914,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(ws_connection_lifecycle_total{event=\"created\"}[5m]))",
+              "legendFormat": "opened",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(ws_connection_lifecycle_total{event=\"removed\"}[5m]))",
+              "legendFormat": "closed",
+              "refId": "B"
+            }
+          ],
+          "title": "Connection Churn: Open / Close",
+          "type": "timeseries"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 49
+          },
+          "id": 915,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (end_reason) (rate(ws_connection_duration_seconds_count[5m]))",
+              "legendFormat": "{{end_reason}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Closes by Reason",
+          "type": "timeseries"
+        }
+      ],
+      "title": "WebSocket connection lifecycle",
+      "type": "row"
+    },
+    {
+      "collapsed": true,
       "gridPos": {
-        "h": 4,
-        "w": 6,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 54
+        "y": 45
       },
-      "id": 922,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
+      "id": 964,
+      "panels": [
         {
-          "expr": "sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[5m]))",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "RATE LIMITED",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
           },
-          "mappings": [
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 46
+          },
+          "id": 922,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
             {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
+              "expr": "sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[5m])) or (0 * sum(rate(rate_limit_decisions_total[5m])))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "RATE LIMITED",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 46
+          },
+          "id": 923,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(refusals_total{reason=\"load_shed\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "SHED",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 46
+          },
+          "id": 924,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(refusals_total{reason=\"timeout\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "TIMED OUT",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 46
+          },
+          "id": 925,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(refusals_total{stage=\"ws\"}[5m]))",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "WS REFUSED",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal"
                 }
               },
-              "type": "special"
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 50
+          },
+          "id": 926,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (stage, reason) (rate(refusals_total[5m]))",
+              "legendFormat": "{{stage}}/{{reason}}",
+              "refId": "A"
             }
           ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
+          "title": "Refusals/sec by Reason",
+          "type": "timeseries"
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 54
-      },
-      "id": 923,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
         {
-          "expr": "sum(rate(refusals_total{reason=\"load_shed\"}[5m]))",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "SHED",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none"
                 }
               },
-              "type": "special"
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 50
+          },
+          "id": 927,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate_limit_tokens_available",
+              "legendFormat": "avg tokens available",
+              "refId": "A"
+            },
+            {
+              "expr": "rate_limit_active_clients",
+              "legendFormat": "tracked clients",
+              "refId": "B"
             }
           ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
+          "title": "Limiter: Tokens Available & Tracked Clients",
+          "type": "timeseries"
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 54
-      },
-      "id": 924,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
         {
-          "expr": "sum(rate(refusals_total{reason=\"timeout\"}[5m]))",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "TIMED OUT",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
               },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "thresholds",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 54
-      },
-      "id": 925,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(refusals_total{stage=\"ws\"}[5m]))",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "WS REFUSED",
-      "type": "stat"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "normal"
-            }
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 58
-      },
-      "id": 926,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (stage, reason) (rate(refusals_total[5m]))",
-          "legendFormat": "{{stage}}/{{reason}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Refusals/sec by Reason",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "mode": "none"
-            }
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 58
-      },
-      "id": 927,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "rate_limit_tokens_available",
-          "legendFormat": "avg tokens available",
-          "refId": "A"
-        },
-        {
-          "expr": "rate_limit_active_clients",
-          "legendFormat": "tracked clients",
-          "refId": "B"
-        }
-      ],
-      "title": "Limiter: Tokens Available & Tracked Clients",
-      "type": "timeseries"
-    },
-    {
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "text": "healthy"
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "color": "green",
+                      "text": "healthy"
+                    },
+                    "1": {
+                      "color": "red",
+                      "text": "FIRING — limiter not enforcing"
+                    }
+                  },
+                  "type": "value"
                 },
-                "1": {
-                  "color": "red",
-                  "text": "FIRING — limiter not enforcing"
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
                 }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "#8E8E8E",
+                    "value": null
+                  }
+                ]
               },
-              "type": "value"
+              "unit": "none"
             },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 24,
+            "x": 0,
+            "y": 56
+          },
+          "id": 928,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
             {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
+              "expr": "(\n  sum(rate(http_requests_total[1m])) > bool (rate_limit_capacity_per_minute / 60)\n)\n*\n(\n  sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[1m])) == bool 0\n)\n",
+              "instant": true,
+              "refId": "A"
             }
           ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#8E8E8E",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
+          "title": "INVARIANT: Traffic Above Limit ∧ Zero Rejections",
+          "type": "stat"
+        }
+      ],
+      "title": "Rate limiting & refusals",
+      "type": "row"
+    },
+    {
+      "collapsed": true,
       "gridPos": {
-        "h": 4,
+        "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 46
       },
-      "id": 928,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
+      "id": 965,
+      "panels": [
         {
-          "expr": "(\n  sum(rate(http_requests_total[1m])) > bool (rate_limit_capacity_per_minute / 60)\n)\n*\n(\n  sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[1m])) == bool 0\n)\n",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "INVARIANT: Traffic Above Limit ∧ Zero Rejections",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
                 }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "thresholds",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
               },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none"
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 68
-      },
-      "id": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "9.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "probe_success{job=\"websocket_blackbox_tcp\"} * on(service) probe_success{job=\"websocket_blackbox_http\"}",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "✅ Overall Uptime Status",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 3,
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 99
-              },
-              {
-                "color": "yellow",
-                "value": 99.900000000000006
-              },
-              {
-                "color": "green",
-                "value": 99.950000000000003
-              }
-            ]
-          },
-          "unit": "percent"
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 68
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "9.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * on(service)  probe_success{job=\"websocket_blackbox_http\"})[30d:]) * 100",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "🎯 30-Day Uptime SLA",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none"
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 68
-      },
-      "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "expr": "probe_success{job=\"websocket_blackbox_tcp\"}",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "🔌 TCP Connectivity (Port 3000)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "match": "null+nan",
-                "result": {
-                  "color": "#8E8E8E",
-                  "text": "no data"
-                }
-              },
-              "type": "special"
-            }
-          ],
-          "noValue": "no data",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none"
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 68
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "expr": "probe_success{job=\"websocket_blackbox_http\"}",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "💬 WS Handshake Probe (101)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "none"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 99.900000000000006
-              }
-            ]
-          },
-          "unit": "percent"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 72
-      },
-      "id": 3,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "avg_over_time((probe_success{job=\"websocket_blackbox_tcp\"} * on(service) probe_success{job=\"websocket_blackbox_http\"})[1h:]) * 100",
-          "legendFormat": "Combined Uptime %",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "📈 7-Day Uptime Trend",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "decimals": 3,
-          "unit": "s"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*Failures.*"
+              "unit": "none"
             },
-            "properties": [
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 47
+          },
+          "id": 931,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "nudge_waker_due_subjects",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "DUE",
+          "type": "stat"
+        },
+        {
+          "description": "Startup configuration faults (e.g. an unparseable NUDGE_TIMEZONE) since the current file_host process started.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "match": "null+nan",
+                    "result": {
+                      "color": "#8E8E8E",
+                      "text": "no data"
+                    }
+                  },
+                  "type": "special"
+                }
+              ],
+              "noValue": "no data",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 5,
+            "x": 4,
+            "y": 47
+          },
+          "id": 933,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false
+            },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "expr": "(sum(operation_errors_total{operation=\"nudge_config\"}) or vector(0)) and on() (up{job=\"file_host\"} == 1)",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Nudge Config Errors",
+          "type": "stat"
+        },
+        {
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "ops"
+            },
+            "overrides": [
               {
-                "id": "unit",
-                "value": "short"
+                "matcher": {
+                  "id": "byName",
+                  "options": "sent / n/a"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
               },
               {
-                "id": "custom.axisPlacement",
-                "value": "right"
+                "matcher": {
+                  "id": "byName",
+                  "options": "no_device_accepted / n/a"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
               }
             ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 72
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "probe_duration_seconds{job=\"websocket_blackbox_tcp\"}",
-          "legendFormat": "TCP P90 Duration",
-          "refId": "A"
-        },
-        {
-          "expr": "probe_duration_seconds{job=\"websocket_blackbox_http\"}",
-          "legendFormat": "HTTP P90 Duration",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(rate(probe_success{job=\"websocket_blackbox_tcp\"} == 0)[5m:])",
-          "legendFormat": "TCP Failures",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(rate(probe_success{job=\"websocket_blackbox_http\"} == 0)[5m:])",
-          "legendFormat": "HTTP Failures",
-          "refId": "D"
-        }
-      ],
-      "title": "🔍 Probe Diagnostics (Duration & Failures)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
           },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "none"
+          "gridPos": {
+            "h": 4,
+            "w": 15,
+            "x": 9,
+            "y": 47
+          },
+          "id": 932,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
             }
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
+          "targets": [
+            {
+              "expr": "sum by (verdict, reason) (rate(nudge_waker_verdicts_total[5m]))",
+              "legendFormat": "{{verdict}} / {{reason}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Nudge Outcomes by Verdict",
+          "type": "timeseries"
+        },
+        {
+          "description": "Duration of the last engagement-waker pass, against the configured WAKER_PASS_DEADLINE_MS.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
               },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "unit": "s"
+            },
+            "overrides": [
               {
-                "color": "red",
-                "value": 1
+                "matcher": {
+                  "id": "byName",
+                  "options": "deadline"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  }
+                ]
               }
             ]
           },
-          "unit": "s"
+          "gridPos": {
+            "h": 4,
+            "w": 24,
+            "x": 0,
+            "y": 51
+          },
+          "id": 934,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "nudge_waker_last_pass_duration_seconds",
+              "legendFormat": "last pass",
+              "refId": "A"
+            },
+            {
+              "expr": "nudge_waker_pass_deadline_seconds",
+              "legendFormat": "deadline",
+              "refId": "B"
+            }
+          ],
+          "title": "Waker Pass Duration",
+          "type": "timeseries"
         }
-      },
+      ],
+      "title": "Nudge waker",
+      "type": "row"
+    },
+    {
+      "collapsed": true,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 80
+        "y": 47
       },
-      "id": 9,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 966,
+      "panels": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(operation_duration_seconds_bucket[5m])) by (le, handler, operation))",
-          "legendFormat": "{{handler}} - {{operation}}",
-          "refId": "A"
-        }
-      ],
-      "title": "⚙️ Operation Duration (P95)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "mode": "none"
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "vis": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "unit": "ops"
             }
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              }
-            ]
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 48
           },
-          "unit": "short"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 80
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "showLegend": true
+          "id": 916,
+          "options": {
+            "legend": {
+              "calcs": [
+                "last",
+                "max",
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "right"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(cache_hits_total[5m])) by (namespace)",
+              "legendFormat": "{{namespace}} - hit"
+            },
+            {
+              "expr": "sum(rate(cache_misses_total[5m])) by (namespace)",
+              "legendFormat": "{{namespace}} - miss"
+            }
+          ],
+          "title": "Hits vs Misses by Namespace",
+          "type": "timeseries"
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
         {
-          "expr": "sum by (target) (increase(tracing_events_total{level=\"error\"}[5m]))",
-          "legendFormat": "{{target}}",
-          "refId": "A"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 48
+          },
+          "id": 917,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sqlite_pool_size",
+              "legendFormat": "size",
+              "refId": "A"
+            },
+            {
+              "expr": "sqlite_pool_idle",
+              "legendFormat": "idle",
+              "refId": "B"
+            }
+          ],
+          "title": "SQLite Pool: Size vs Idle",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": true,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 54
+          },
+          "id": 9,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(operation_duration_seconds_bucket[5m])) by (le, handler, operation))",
+              "legendFormat": "{{handler}} - {{operation}}",
+              "refId": "A"
+            }
+          ],
+          "title": "⚙️ Operation Duration (P95)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "How long the blackbox WebSocket handshake probe takes, TCP connect through the 101 response. Normally a few milliseconds; the probe fails at 5s.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2,
+                "pointSize": 4,
+                "showPoints": "never",
+                "spanNulls": true,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 54
+          },
+          "id": 11,
+          "options": {
+            "legend": {
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "probe_duration_seconds{job=\"websocket_blackbox_http\"}",
+              "legendFormat": "ws handshake",
+              "refId": "A"
+            },
+            {
+              "expr": "probe_duration_seconds{job=\"websocket_blackbox_tcp\"}",
+              "legendFormat": "tcp connect",
+              "refId": "B"
+            }
+          ],
+          "title": "WS Handshake Probe Duration",
+          "type": "timeseries"
         }
       ],
-      "title": "🚨 Tracing Error Events by Target (per 5m)",
-      "type": "timeseries"
+      "title": "Cache, storage & operations",
+      "type": "row"
     }
   ],
   "refresh": "5s",
@@ -2875,7 +3308,52 @@
     "health"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(max by (git_sha) (service_info{job=\"file_host\"}))",
+        "hide": 0,
+        "includeAll": false,
+        "label": "build",
+        "multi": false,
+        "name": "build",
+        "options": [],
+        "query": {
+          "query": "query_result(max by (git_sha) (service_info{job=\"file_host\"}))",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "/git_sha=\"([^\"]+)\"/",
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(max by (built_at) (service_info{job=\"file_host\"}))",
+        "hide": 0,
+        "includeAll": false,
+        "label": "built",
+        "multi": false,
+        "name": "built",
+        "options": [],
+        "query": {
+          "query": "query_result(max by (built_at) (service_info{job=\"file_host\"}))",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "/built_at=\"([^\"]+)\"/",
+        "sort": 0,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-1h",
@@ -2883,7 +3361,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "🩺 file_host Operational Dashboard",
+  "title": "🩺 file_host",
   "uid": "file-host-dashboard",
   "version": 1
 }

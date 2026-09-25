@@ -64,7 +64,9 @@ local timeSeriesOptions = {
   rateLimited: {
     title: 'RATE LIMITED',
     type: 'stat',
-    targets: [{ expr: 'sum(rate(rate_limit_decisions_total{outcome="rejected"}[5m]))', instant: true, refId: 'A' }],
+    // `rejected` doesn't exist as a series until the first rejection; read
+    // that as 0 as long as the limiter is reporting decisions at all.
+    targets: [{ expr: 'sum(rate(rate_limit_decisions_total{outcome="rejected"}[5m])) or (0 * sum(rate(rate_limit_decisions_total[5m])))', instant: true, refId: 'A' }],
     fieldConfig: statFieldConfig('reqps'),
     options: statOptions,
   },
@@ -151,6 +153,19 @@ local timeSeriesOptions = {
   // either doesn't, and *empty* only when a source metric is genuinely
   // missing (correctly falling through to `panelDefaults.hardenAll`'s grey
   // "no data", applied in `dashboard.jsonnet`).
+  //
+  // Known not to evaluate, deliberately left that way: the configured limit
+  // is per client IP (`rate_limit_middleware` keys a bucket per client), and
+  // the left side is aggregate traffic, so the premise itself is unsound —
+  // two clients at 40/min under a 60/min limit are aggregate 80/min with,
+  // correctly, zero rejections. As written, the labelled capacity gauge never
+  // matches the label-free `sum`, so the panel reads grey "no data" rather
+  // than that false FIRING (#369 made it evaluate, and Codex caught exactly
+  // this). Aggregate metrics can't express it soundly either:
+  // `rate_limit_active_clients` evicts buckets that have refilled, so it
+  // undercounts slow senders. It needs a per-client signal — e.g. the max
+  // per-client decision rate the limiter can compute internally — exported
+  // as one bounded gauge.
   invariant: {
     title: 'INVARIANT: Traffic Above Limit ∧ Zero Rejections',
     type: 'stat',

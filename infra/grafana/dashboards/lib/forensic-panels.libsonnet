@@ -38,16 +38,20 @@
       textMode: 'value_and_name',
       textSize: { title: 16, value: 14 },
     },
+    // `> bool` / `< bool` multiplied, not a bare `and`: `and` is a filter,
+    // so on a healthy host it returned no series and this panel read "no
+    // data" — the one state the honesty rule says must never stand in for
+    // "fine". Same fix and reasoning as abuse-panels.libsonnet's invariant.
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
-            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > 3
+            (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > bool 3
           )
-          and
+          *
           (
-            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < 30
+            (100 - avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) < bool 30
           )
         |||,
         instant: true,
@@ -146,7 +150,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              rate(namedprocess_namegroup_cpu_seconds_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_cpu_seconds_total{groupname=~"$process_group"}[1m])
             ) * 100
           )
         |||,
@@ -199,7 +203,7 @@
         expr: |||
           topk(15,
             sum by (groupname) (
-              namedprocess_namegroup_memory_bytes{memtype="resident", groupname!=""}
+              namedprocess_namegroup_memory_bytes{memtype="resident", groupname=~"$process_group"}
             )
           )
         |||,
@@ -248,8 +252,8 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              rate(namedprocess_namegroup_read_bytes_total{groupname!=""}[1m]) +
-              rate(namedprocess_namegroup_write_bytes_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_read_bytes_total{groupname=~"$process_group"}[1m]) +
+              rate(namedprocess_namegroup_write_bytes_total{groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -286,9 +290,12 @@
       overrides: [
         {
           matcher: { id: 'byName', options: 'Load per Core' },
+          // Its own axis: load per core lives around 0–2 while CPU Usage % is
+          // 0–100, and on one shared axis the load line was flat at zero.
           properties: [
             { id: 'color', value: { mode: 'fixed', fixedColor: 'red' } },
             { id: 'custom.lineWidth', value: 3 },
+            { id: 'custom.axisPlacement', value: 'right' },
           ],
         },
         {
@@ -301,7 +308,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'bottom' },
+      legend: { displayMode: 'list', placement: 'bottom' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -347,7 +354,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -389,7 +396,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -398,11 +405,11 @@
         expr: |||
           topk(8,
             sum by (name) (
-              rate(container_cpu_usage_seconds_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_cpu_usage_seconds_total{name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -431,7 +438,7 @@
       overrides: [],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -439,12 +446,12 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
-            container_memory_usage_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_memory_usage_bytes{name=~"$container"}
             /
-            container_spec_memory_limit_bytes{name!="", container_label_com_docker_compose_service!=""}
+            container_spec_memory_limit_bytes{name=~"$container"}
           ) * 100
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -461,7 +468,7 @@
       overrides: [],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -470,12 +477,12 @@
         expr: |||
           topk(6,
             sum by (name) (
-              rate(container_fs_reads_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m]) +
-              rate(container_fs_writes_bytes_total{name!="", container_label_com_docker_compose_service!=""}[1m])
+              rate(container_fs_reads_bytes_total{name=~"$container"}[1m]) +
+              rate(container_fs_writes_bytes_total{name=~"$container"}[1m])
             )
           )
         |||,
-        legendFormat: '{{container_label_com_docker_compose_service}}',
+        legendFormat: '{{name}}',
         refId: 'A',
       },
     ],
@@ -502,7 +509,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -511,7 +518,7 @@
         expr: |||
           topk(6,
             sum by (groupname) (
-              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname!=""}[1m])
+              rate(namedprocess_namegroup_context_switches_total{ctxswitchtype="nonvoluntary", groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -549,7 +556,7 @@
       overrides: [],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -558,7 +565,7 @@
         expr: |||
           topk(8,
             sum by (groupname) (
-              rate(namedprocess_namegroup_major_page_faults_total{groupname!=""}[1m])
+              rate(namedprocess_namegroup_major_page_faults_total{groupname=~"$process_group"}[1m])
             )
           )
         |||,
@@ -598,7 +605,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -607,7 +614,7 @@
         expr: |||
           topk(10,
             sum by (groupname) (
-              namedprocess_namegroup_num_threads{groupname!=""}
+              namedprocess_namegroup_num_threads{groupname=~"$process_group"}
             )
           )
         |||,
@@ -640,7 +647,7 @@
       overrides: [],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'right' },
+      legend: { displayMode: 'list', placement: 'right' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -649,7 +656,7 @@
         expr: |||
           topk(10,
             max by (groupname) (
-              namedprocess_namegroup_worst_fd_ratio{groupname!=""}
+              namedprocess_namegroup_worst_fd_ratio{groupname=~"$process_group"}
             )
           )
         |||,
@@ -688,7 +695,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'bottom' },
+      legend: { displayMode: 'list', placement: 'bottom' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -735,7 +742,7 @@
       ],
     },
     options: {
-      legend: { displayMode: 'visible', placement: 'bottom' },
+      legend: { displayMode: 'list', placement: 'bottom' },
       tooltip: { mode: 'multi', sort: 'desc' },
     },
     targets: [
@@ -791,8 +798,7 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           container_processes{
-            name!="",
-            container_label_com_docker_compose_service!=""
+            name=~"$container"
           }
         |||,
         format: 'table',
@@ -815,7 +821,7 @@
             image: true,
           },
           renameByName: {
-            container_label_com_docker_compose_service: 'Container Name',
+            name: 'Container Name',
             Value: 'Process Count',
           },
         },

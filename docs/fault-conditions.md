@@ -79,6 +79,13 @@ nothing is running to fail (the task died, or a pass is hung), while
 last-*success* timestamp read the same for both, so a database missing a
 migration once looked exactly like a dead loop.
 
+Not every deployment has a loop to judge. Nudges are off by default
+(`NUDGE_ENABLED=false`), and a waker that was never started exports none of
+its gauges — which LOOPS used to render as a blank tile and SIGNAL as
+BLIND, on a perfectly healthy server. `nudge_waker_enabled` (0 or 1, set at
+boot either way) makes "switched off" a stated fact: LOOPS reads `off` in
+blue, neither green nor red, and SIGNAL stops expecting the waker's series.
+
 ### 6. Blind {#blind}
 
 A series the dashboard depends on has no data. Established by the [GLANCE]
@@ -94,12 +101,16 @@ The HEALTH row at the top of `infra/grafana/dashboards/dashboard.jsonnet`
 (#225/F5) renders all six as one row of stat panels: UP (#1), DEPS (#2),
 ERRORS (#3), REFUSALS (#4), LOOPS (#5), SIGNAL (#6 — red the instant any of
 the other five goes grey, so "five greens" and "five greys" can never be
-mistaken for each other at a glance). Each panel links back to its
-condition's anchor on this page.
+mistaken for each other at a glance, and naming the first signal it lost —
+`BLIND · deps` — rather than only that it lost one). Each panel links back to
+its condition's anchor on this page.
 
 Two rules keep the row legible rather than merely complete. **One cause, one
 red:** ERRORS excludes `/ready`, whose 503 is DEPS's finding repeated to the
 container healthcheck — counting it turned one down dependency into two red
 panels. **The red names the cause:** DEPS and LOOPS render their finding as
 text (`schema down`, `FAILING · schema`) rather than a count or a bare
-STALLED, so the row answers "what", not only "whether".
+STALLED, so the row answers "what", not only "whether". A text-mode tile has
+one more obligation: Grafana hides its own "no data" placeholder in that
+mode, so each one returns an explicit grey `no data` row when its source is
+absent rather than rendering blank.

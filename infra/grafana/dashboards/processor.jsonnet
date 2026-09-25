@@ -4,6 +4,7 @@
 
 local forensicPanels = import 'lib/forensic-panels.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
+local sympathy = import 'lib/sympathy-panels.libsonnet';
 
 // Utility function for grid positioning
 local gridPos(x, y, w, h) = {
@@ -12,6 +13,12 @@ local gridPos(x, y, w, h) = {
   w: w,
   h: h,
 };
+
+local row(title, y, id) = { type: 'row', title: title, id: id, collapsed: false, gridPos: gridPos(0, y, 24, 1), panels: [] };
+
+// A collapsed row carries its panels inside itself; `hardenAll` is applied to
+// them here because the dashboard-level one only walks the top-level list.
+local collapsedRow(title, y, id, children) = row(title, y, id) { collapsed: true, panels: panelDefaults.hardenAll(children) };
 
 local dashboard = {
   annotations: {
@@ -44,7 +51,7 @@ local dashboard = {
       },
     ],
   },
-  description: 'Forensic dashboard to identify system hang culprits in docker-compose environment',
+  description: 'Mechanical sympathy for the host and the services on it: which resource is busy or saturated, and who is responsible. The original hang forensics are the collapsed row at the bottom.',
   editable: true,
   fiscalYearStartMonth: 0,
   graphTooltip: 1,
@@ -88,131 +95,61 @@ local dashboard = {
     },
   ],
   liveNow: false,
+  // Mechanical sympathy at a glance: eight verdict tiles (is any resource
+  // busy, is anything waiting on it, is anything about to break), then one
+  // band per resource saying who is responsible — see
+  // sympathy-panels.libsonnet's header for the USE-method shape. The
+  // original forensic panels, for "the host hung, what was it doing", are
+  // the collapsed row at the bottom.
   panels: panelDefaults.hardenAll([
-    // ========== ROW 1: CRITICAL SYSTEM INVARIANTS (RED ALERT ZONE) ==========
+    sympathy.cpuBusy { id: 20, gridPos: gridPos(0, 0, 3, 4) },
+    sympathy.cpuPressure { id: 21, gridPos: gridPos(3, 0, 3, 4) },
+    sympathy.memUsed { id: 22, gridPos: gridPos(6, 0, 3, 4) },
+    sympathy.memPressure { id: 23, gridPos: gridPos(9, 0, 3, 4) },
+    sympathy.diskBusy { id: 24, gridPos: gridPos(12, 0, 3, 4) },
+    sympathy.ioPressure { id: 25, gridPos: gridPos(15, 0, 3, 4) },
+    sympathy.diskFree { id: 26, gridPos: gridPos(18, 0, 3, 4) },
+    sympathy.oomKills { id: 27, gridPos: gridPos(21, 0, 3, 4) },
 
-    // System hang detector - primary alert
-    forensicPanels.systemHangDetector {
-      id: 1,
-      gridPos: gridPos(0, 0, 12, 6),
-    },
+    sympathy.collectors { id: 19, gridPos: gridPos(0, 4, 12, 3) },
+    sympathy.cpuAccounted { id: 28, gridPos: gridPos(12, 4, 6, 3) },
+    sympathy.cores { id: 29, gridPos: gridPos(18, 4, 6, 3) },
 
-    // #212/#217: `requestRateInvariant` used to sit here — a contradiction
-    // panel against `http_requests_total`, which nothing in this workspace
-    // emits. Removed; see forensic-panels.libsonnet.
+    row('CPU — who is using it, and who is waiting', 7, 40),
+    sympathy.cpuByProcess { id: 30, gridPos: gridPos(0, 8, 8, 9) },
+    sympathy.cpuByContainer { id: 31, gridPos: gridPos(8, 8, 8, 9) },
+    sympathy.cpuTrend { id: 32, gridPos: gridPos(16, 8, 8, 9) },
+    sympathy.cpuThrottling { id: 33, gridPos: gridPos(0, 17, 12, 7) },
+    forensicPanels.loadVsCpuDivergence { id: 7, gridPos: gridPos(12, 17, 12, 7) },
 
-    // Blocked processes count
-    forensicPanels.blockedProcesses {
-      id: 3,
-      gridPos: gridPos(12, 0, 12, 6),
-    },
+    row('Memory — who is holding it', 24, 41),
+    sympathy.memByProcess { id: 34, gridPos: gridPos(0, 25, 8, 9) },
+    sympathy.memByContainer { id: 35, gridPos: gridPos(8, 25, 8, 9) },
+    sympathy.memTrend { id: 36, gridPos: gridPos(16, 25, 8, 9) },
 
-    // ========== ROW 2: PRIMARY SUSPECTS - WHO DUNNIT ==========
+    row('Disk — who is filling and hitting it', 34, 42),
+    sympathy.diskSpace { id: 37, gridPos: gridPos(0, 35, 8, 9) },
+    sympathy.ioByProcess { id: 38, gridPos: gridPos(8, 35, 8, 9) },
+    sympathy.diskTrend { id: 39, gridPos: gridPos(16, 35, 8, 9) },
 
-    // Top CPU offenders table
-    forensicPanels.topCpuOffenders {
-      id: 4,
-      gridPos: gridPos(0, 6, 8, 8),
-    },
-
-    // Top memory consumers
-    forensicPanels.topMemoryConsumers {
-      id: 5,
-      gridPos: gridPos(8, 6, 8, 8),
-    },
-
-    // Top I/O bandwidth criminals
-    forensicPanels.topIoOffenders {
-      id: 6,
-      gridPos: gridPos(16, 6, 8, 8),
-    },
-
-    // ========== ROW 3: SYSTEM CORRELATION MATRIX ==========
-
-    // Load vs CPU divergence - primary hang indicator
-    forensicPanels.loadVsCpuDivergence {
-      id: 7,
-      gridPos: gridPos(0, 14, 12, 6),
-    },
-
-    // Process state distribution
-    forensicPanels.processStates {
-      id: 8,
-      gridPos: gridPos(12, 14, 12, 6),
-    },
-
-    // ========== ROW 4: CONTAINER EVIDENCE ==========
-
-    // Container CPU usage with service highlighting
-    forensicPanels.containerCpuUsage {
-      id: 9,
-      gridPos: gridPos(0, 20, 8, 6),
-    },
-
-    // Container memory pressure vs limits
-    forensicPanels.containerMemoryPressure {
-      id: 10,
-      gridPos: gridPos(8, 20, 8, 6),
-    },
-
-    // Container process count vs limits
-    forensicPanels.containerProcessLimits {
-      id: 11,
-      gridPos: gridPos(16, 20, 8, 6),
-    },
-
-    // ========== ROW 5: FORENSIC EVIDENCE - RESOURCE BEHAVIOR ==========
-
-    // Context switches storm detection
-    forensicPanels.contextSwitches {
-      id: 12,
-      gridPos: gridPos(0, 26, 8, 6),
-    },
-
-    // Major page faults (swap thrashing)
-    forensicPanels.majorPageFaults {
-      id: 13,
-      gridPos: gridPos(8, 26, 8, 6),
-    },
-
-    // Thread explosion detection
-    forensicPanels.threadExplosion {
-      id: 14,
-      gridPos: gridPos(16, 26, 8, 6),
-    },
-
-    // ========== ROW 6: RESOURCE LEAKS AND EXHAUSTION ==========
-
-    // File descriptor usage ratios
-    forensicPanels.fileDescriptorUsage {
-      id: 15,
-      gridPos: gridPos(0, 32, 12, 6),
-    },
-
-    // Container I/O bandwidth
-    forensicPanels.containerIoBandwidth {
-      id: 16,
-      gridPos: gridPos(12, 32, 12, 6),
-    },
-
-    // ========== ROW 7: SYSTEM-WIDE HEALTH INDICATORS ==========
-
-    // Disk I/O queue depth and bottlenecks
-    forensicPanels.diskIoQueue {
-      id: 17,
-      gridPos: gridPos(0, 38, 12, 6),
-    },
-
-    // Swap usage and thrashing indicators
-    forensicPanels.swapThrashing {
-      id: 18,
-      gridPos: gridPos(12, 38, 12, 6),
-    },
-
-    // #219: if this goes grey for a given job, that job's exporter isn't
-    // being scraped — every forensic panel above would otherwise read as
-    // "system quiet" instead of "instrumentation dark".
-    panelDefaults.livenessPanel('Exporter liveness', ['node', 'process_exporter', 'cadvisor'], 19, gridPos(0, 44, 24, 2)),
+    collapsedRow('Forensics — the host hung, what was it doing?', 44, 43, [
+      forensicPanels.systemHangDetector { id: 1, gridPos: gridPos(0, 45, 12, 5) },
+      forensicPanels.blockedProcesses { id: 3, gridPos: gridPos(12, 45, 12, 5) },
+      forensicPanels.topCpuOffenders { id: 4, gridPos: gridPos(0, 50, 8, 8) },
+      forensicPanels.topMemoryConsumers { id: 5, gridPos: gridPos(8, 50, 8, 8) },
+      forensicPanels.topIoOffenders { id: 6, gridPos: gridPos(16, 50, 8, 8) },
+      forensicPanels.processStates { id: 8, gridPos: gridPos(0, 58, 12, 6) },
+      forensicPanels.containerProcessLimits { id: 11, gridPos: gridPos(12, 58, 12, 6) },
+      forensicPanels.containerCpuUsage { id: 9, gridPos: gridPos(0, 64, 8, 6) },
+      forensicPanels.containerMemoryPressure { id: 10, gridPos: gridPos(8, 64, 8, 6) },
+      forensicPanels.containerIoBandwidth { id: 16, gridPos: gridPos(16, 64, 8, 6) },
+      forensicPanels.contextSwitches { id: 12, gridPos: gridPos(0, 70, 8, 6) },
+      forensicPanels.majorPageFaults { id: 13, gridPos: gridPos(8, 70, 8, 6) },
+      forensicPanels.threadExplosion { id: 14, gridPos: gridPos(16, 70, 8, 6) },
+      forensicPanels.fileDescriptorUsage { id: 15, gridPos: gridPos(0, 76, 8, 6) },
+      forensicPanels.diskIoQueue { id: 17, gridPos: gridPos(8, 76, 8, 6) },
+      forensicPanels.swapThrashing { id: 18, gridPos: gridPos(16, 76, 8, 6) },
+    ]),
   ]),
   refresh: '5s',
   schemaVersion: 38,
@@ -296,7 +233,7 @@ local dashboard = {
     time_options: ['5m', '15m', '1h', '6h', '12h', '24h', '2d', '7d', '30d'],
   },
   timezone: '',
-  title: '🕵️ WHO DUNNIT - System Forensic Dashboard',
+  title: '🕵️ WHO DUNNIT — mechanical sympathy',
   uid: 'who-dunnit-forensic',
   version: 1,
   weekStart: '',

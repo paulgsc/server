@@ -2,191 +2,23 @@ local config = import 'config.libsonnet';
 local utils = import 'utils.libsonnet';
 
 {
-  uptimeOverallStatus: {
+  // The blackbox WS handshake probe's own round trip (infra/blackbox.yml's
+  // `ws_handshake`). Its up/down is the "file_host /ws" lane of the SERVICES
+  // timeline (overview-panels.libsonnet); this is the how-long, for when that
+  // lane flickers. The panels that used to live here — a combined TCP×HTTP
+  // uptime stat, a 30-day SLA, a 7-day trend — were built on the old
+  // `http_2xx` probe, which could never succeed (see blackbox.yml), and are
+  // replaced by AVAILABILITY and the SERVICES timeline.
+  probeDuration: {
     datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'thresholds' },
-        mappings: [],
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'red', value: 0 },
-            { color: 'green', value: 1 },
-          ],
-        },
-        unit: 'none',
-      },
-    },
-    id: 1,
-    options: utils.statOptions { graphMode: 'none' },
-    pluginVersion: '9.2.0',
-    targets: [
-      {
-        datasource: config.prometheusDataSource,
-        expr: 'probe_success{job="websocket_blackbox_tcp"} * on(service) probe_success{job="websocket_blackbox_http"}',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '✅ Overall Uptime Status',
-    type: 'stat',
-  },
-
-  uptimeSLA30d: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'thresholds' },
-        decimals: 3,
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'red', value: 0 },
-            { color: 'orange', value: 99.0 },
-            { color: 'yellow', value: 99.9 },
-            { color: 'green', value: 99.95 },
-          ],
-        },
-        unit: 'percent',
-      },
-    },
-    id: 2,
-    options: utils.statOptions { graphMode: 'area' },
-    pluginVersion: '9.2.0',
-    targets: [
-      {
-        datasource: config.prometheusDataSource,
-        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * on(service)  probe_success{job="websocket_blackbox_http"})[30d:]) * 100',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🎯 30-Day Uptime SLA',
-    type: 'stat',
-  },
-
-  uptimeTrend7d: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: utils.timeSeriesFieldConfig('percent', 99.9),
-    id: 3,
+    description: 'How long the blackbox WebSocket handshake probe takes, TCP connect through the 101 response. Normally a few milliseconds; the probe fails at 5s.',
+    fieldConfig: utils.timeSeriesFieldConfig('s', 1),
     options: utils.timeSeriesOptions,
     targets: [
-      {
-        datasource: config.prometheusDataSource,
-        expr: 'avg_over_time((probe_success{job="websocket_blackbox_tcp"} * on(service) probe_success{job="websocket_blackbox_http"})[1h:]) * 100',
-        legendFormat: 'Combined Uptime %',
-        range: true,
-        refId: 'A',
-      },
+      { expr: 'probe_duration_seconds{job="websocket_blackbox_http"}', legendFormat: 'ws handshake', refId: 'A' },
+      { expr: 'probe_duration_seconds{job="websocket_blackbox_tcp"}', legendFormat: 'tcp connect', refId: 'B' },
     ],
-    title: '📈 7-Day Uptime Trend',
-    type: 'timeseries',
-  },
-
-  // =============== DIAGNOSTIC PANELS ===============
-
-  tcpConnectivity: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'thresholds' },
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'red', value: 0 },
-            { color: 'green', value: 1 },
-          ],
-        },
-        unit: 'none',
-      },
-    },
-    id: 4,
-    options: utils.statOptions { graphMode: 'none' },
-    targets: [
-      {
-        expr: 'probe_success{job="websocket_blackbox_tcp"}',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🔌 TCP Connectivity (Port 3000)',
-    type: 'stat',
-  },
-
-  httpWebSocketProbe: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'thresholds' },
-        thresholds: {
-          mode: 'absolute',
-          steps: [
-            { color: 'red', value: 0 },
-            { color: 'green', value: 1 },
-          ],
-        },
-        unit: 'none',
-      },
-    },
-    id: 5,
-    options: utils.statOptions { graphMode: 'none' },
-    targets: [
-      {
-        expr: 'probe_success{job="websocket_blackbox_http"}',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '💬 WS Handshake Probe (101)',
-    type: 'stat',
-  },
-
-  probeDiagnostics: {
-    datasource: config.prometheusDataSource,
-    fieldConfig: {
-      defaults: {
-        unit: 's',
-        decimals: 3,
-        color: { mode: 'palette-classic' },
-      },
-      overrides: [
-        {
-          matcher: { id: 'byRegexp', options: '.*Failures.*' },
-          properties: [
-            { id: 'unit', value: 'short' },
-            { id: 'custom.axisPlacement', value: 'right' },
-          ],
-        },
-      ],
-    },
-    id: 6,
-    options: utils.timeSeriesOptions {
-      legend: { showLegend: true },
-    },
-    targets: [
-      {
-        expr: 'probe_duration_seconds{job="websocket_blackbox_tcp"}',
-        legendFormat: 'TCP P90 Duration',
-        refId: 'A',
-      },
-      {
-        expr: 'probe_duration_seconds{job="websocket_blackbox_http"}',
-        legendFormat: 'HTTP P90 Duration',
-        refId: 'B',
-      },
-      {
-        expr: 'sum(rate(probe_success{job="websocket_blackbox_tcp"} == 0)[5m:])',
-        legendFormat: 'TCP Failures',
-        refId: 'C',
-      },
-      {
-        expr: 'sum(rate(probe_success{job="websocket_blackbox_http"} == 0)[5m:])',
-        legendFormat: 'HTTP Failures',
-        refId: 'D',
-      },
-    ],
-    title: '🔍 Probe Diagnostics (Duration & Failures)',
+    title: 'WS Handshake Probe Duration',
     type: 'timeseries',
   },
 

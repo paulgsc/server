@@ -5,6 +5,14 @@ local health = import 'lib/health-panels.libsonnet';
 local clients = import 'lib/clients-panels.libsonnet';
 local nudge = import 'lib/nudge-panels.libsonnet';
 local abuse = import 'lib/abuse-panels.libsonnet';
+local overview = import 'lib/overview-panels.libsonnet';
+
+local row(title, y, id) = { type: 'row', title: title, id: id, collapsed: false, gridPos: utils.gridPos(0, y, 24, 1), panels: [] };
+
+// A collapsed row carries its panels inside itself (that's how Grafana
+// stores one); `hardenAll` is applied to them here because the dashboard-level
+// `hardenAll` below only walks the top-level list.
+local collapsedRow(title, y, id, children) = row(title, y, id) { collapsed: true, panels: panelDefaults.hardenAll(children) };
 
 local dashboard = {
   annotations: {
@@ -29,7 +37,9 @@ local dashboard = {
         // restart, the instant it jumps to the new start time.
         datasource: { type: 'prometheus', uid: 'prometheus' },
         enable: true,
-        expr: 'changes(process_start_time_seconds[$__interval]) > 0',
+        // Scoped to file_host: every exporter exports this gauge too, so
+        // unscoped it annotated each exporter's restart as file_host's.
+        expr: 'changes(process_start_time_seconds{job="file_host"}[$__interval]) > 0',
         iconColor: 'purple',
         name: 'Restarts',
         step: '60s',
@@ -44,6 +54,12 @@ local dashboard = {
   id: 1,
   links: [],
   liveNow: false,
+  // Top to bottom in the order an operator asks: is it broken (HEALTH), how
+  // is it doing (GOLDEN SIGNALS), are the other services up and were they
+  // (SERVICES) — all on the first screen, no scrolling. Below that, one
+  // uncollapsed section each for traffic/latency/errors, the metal and
+  // realtime; the drill-downs nobody needs at a glance are collapsed rows,
+  // which Grafana doesn't even query until opened.
   panels: panelDefaults.hardenAll([
     // =============== HEALTH (#213/#225) ===============
     // Six conditions, six panels, ordered by diagnostic precedence — UP
@@ -57,90 +73,115 @@ local dashboard = {
     health.loops { gridPos: utils.gridPos(16, 0, 4, 4) },
     health.signal { gridPos: utils.gridPos(20, 0, 4, 4) },
 
-    // Which build this is, and how long it's been running — see
-    // health-panels.libsonnet's own comment on `buildInfo`/`uptime`.
-    health.buildInfo { gridPos: utils.gridPos(0, 4, 18, 2) },
-    health.uptime { gridPos: utils.gridPos(18, 4, 6, 2) },
+    // =============== GOLDEN SIGNALS ===============
+    overview.traffic { gridPos: utils.gridPos(0, 4, 4, 4), id: 940 },
+    overview.wsClients { gridPos: utils.gridPos(4, 4, 4, 4), id: 941 },
+    overview.latencyP95 { gridPos: utils.gridPos(8, 4, 4, 4), id: 942 },
+    overview.availability { gridPos: utils.gridPos(12, 4, 4, 4), id: 943 },
+    overview.restarts { gridPos: utils.gridPos(16, 4, 4, 4), id: 944 },
+    overview.upFor { gridPos: utils.gridPos(20, 4, 4, 4), id: 945 },
 
-    health.requestRateByOutcome { gridPos: utils.gridPos(0, 6, 24, 6) },
-    health.httpLatencyByRoute { gridPos: utils.gridPos(0, 12, 24, 6) },
+    // =============== SERVICES ===============
+    overview.serviceTimeline { gridPos: utils.gridPos(0, 8, 24, 6), id: 946 },
 
-    // =============== CLIENTS (#214/#229) ===============
-    // Is anybody there, and is anyone holding a socket for nothing. WS
-    // CONNS/LIVE/SUBSCRIBED are read as a triple, and DEVICE CONNS/PROBE
-    // split WS CONNS a second way — see clients-panels.libsonnet's header —
-    // so all six sit adjacent rather than in separate rows the way HEALTH's
-    // independent conditions do.
-    clients.wsConns { gridPos: utils.gridPos(0, 18, 4, 4), id: 910 },
-    clients.deviceConns { gridPos: utils.gridPos(4, 18, 4, 4), id: 929 },
-    clients.probeConns { gridPos: utils.gridPos(8, 18, 4, 4), id: 930 },
-    clients.live { gridPos: utils.gridPos(12, 18, 4, 4), id: 911 },
-    clients.subscribed { gridPos: utils.gridPos(16, 18, 4, 4), id: 912 },
-    clients.reqPerMin { gridPos: utils.gridPos(20, 18, 4, 4), id: 913 },
+    row('Traffic, latency & errors', 14, 960),
+    health.requestRateByOutcome { gridPos: utils.gridPos(0, 15, 8, 8) },
+    health.httpLatencyByRoute { gridPos: utils.gridPos(8, 15, 8, 8) },
+    panels.tracingErrors { gridPos: utils.gridPos(16, 15, 8, 8) },
 
-    clients.churn { gridPos: utils.gridPos(0, 22, 12, 6), id: 914 },
-    clients.closesByReason { gridPos: utils.gridPos(12, 22, 12, 6), id: 915 },
+    row('Metal — what the services cost the host', 23, 961),
+    overview.cpuVsLimit { gridPos: utils.gridPos(0, 24, 6, 7), id: 947 },
+    overview.memVsLimit { gridPos: utils.gridPos(6, 24, 6, 7), id: 948 },
+    overview.diskIo { gridPos: utils.gridPos(12, 24, 6, 7), id: 949 },
+    overview.diskSpace { gridPos: utils.gridPos(18, 24, 6, 7), id: 950 },
 
-    clients.cacheHitMissByNamespace { gridPos: utils.gridPos(0, 28, 12, 6), id: 916 },
-    clients.sqlitePool { gridPos: utils.gridPos(12, 28, 12, 6), id: 917 },
-
+    // =============== REALTIME (#214/#229) ===============
     // WS internals — see clients-panels.libsonnet's own comment: readers
-    // for the families #226 kept but that didn't make the epic's own
-    // mock-up, reclaimed from `parked/ws-panels.libsonnet`.
-    clients.guardOccupancy { gridPos: utils.gridPos(0, 34, 12, 6), id: 918 },
-    clients.clientTypeDistribution { gridPos: utils.gridPos(12, 34, 12, 6), id: 919 },
-    clients.messageRate { gridPos: utils.gridPos(0, 40, 12, 6), id: 920 },
-    clients.connectionErrors { gridPos: utils.gridPos(12, 40, 12, 6), id: 921 },
+    // for the families #226 kept, reclaimed from `parked/ws-panels.libsonnet`.
+    row('Realtime — WebSocket', 31, 962),
+    clients.clientTypeDistribution { gridPos: utils.gridPos(0, 32, 12, 6), id: 919 },
+    clients.guardOccupancy { gridPos: utils.gridPos(12, 32, 12, 6), id: 918 },
+    clients.messageRate { gridPos: utils.gridPos(0, 38, 12, 6), id: 920 },
+    clients.connectionErrors { gridPos: utils.gridPos(12, 38, 12, 6), id: 921 },
 
-    // =============== NUDGE ===============
+    // =============== DRILL-DOWNS (collapsed) ===============
+    // Connection lifecycle: WS CONNS / LIVE / SUBSCRIBED are read as a
+    // triple, and DEVICE CONNS / PROBE split WS CONNS a second way — see
+    // clients-panels.libsonnet's header. LEAKED ENTRIES is what the gap
+    // between those two splits means.
+    collapsedRow('WebSocket connection lifecycle', 44, 963, [
+      overview.leakedEntries { gridPos: utils.gridPos(0, 45, 4, 4), id: 951 },
+      clients.wsConns { gridPos: utils.gridPos(4, 45, 4, 4), id: 910 },
+      clients.deviceConns { gridPos: utils.gridPos(8, 45, 4, 4), id: 929 },
+      clients.probeConns { gridPos: utils.gridPos(12, 45, 4, 4), id: 930 },
+      clients.live { gridPos: utils.gridPos(16, 45, 4, 4), id: 911 },
+      clients.subscribed { gridPos: utils.gridPos(20, 45, 4, 4), id: 912 },
+      clients.churn { gridPos: utils.gridPos(0, 49, 12, 6), id: 914 },
+      clients.closesByReason { gridPos: utils.gridPos(12, 49, 12, 6), id: 915 },
+    ]),
+
+    // ABUSE (#215/#232): "are we abusing resources — do we close sockets,
+    // is the rate limiter doing its job." See abuse-panels.libsonnet.
+    collapsedRow('Rate limiting & refusals', 45, 964, [
+      abuse.rateLimited { gridPos: utils.gridPos(0, 46, 6, 4), id: 922 },
+      abuse.shed { gridPos: utils.gridPos(6, 46, 6, 4), id: 923 },
+      abuse.timedOut { gridPos: utils.gridPos(12, 46, 6, 4), id: 924 },
+      abuse.wsRefused { gridPos: utils.gridPos(18, 46, 6, 4), id: 925 },
+      abuse.refusalsByReason { gridPos: utils.gridPos(0, 50, 12, 6), id: 926 },
+      abuse.tokensAvailable { gridPos: utils.gridPos(12, 50, 12, 6), id: 927 },
+      abuse.invariant { gridPos: utils.gridPos(0, 56, 24, 4), id: 928 },
+    ]),
+
     // Is the engagement waker's tick (LOOPS, above) actually landing
-    // notifications, and if not, why not. See nudge-panels.libsonnet's own
-    // header for why this is a breakdown rather than a red/green invariant.
-    nudge.due { gridPos: utils.gridPos(0, 46, 4, 4), id: 931 },
-    nudge.configErrors { gridPos: utils.gridPos(4, 46, 5, 4), id: 933 },
-    nudge.outcomesByVerdict { gridPos: utils.gridPos(9, 46, 15, 4), id: 932 },
-    nudge.passDuration { gridPos: utils.gridPos(0, 50, 24, 4), id: 934 },
+    // notifications, and if not, why not. See nudge-panels.libsonnet.
+    collapsedRow('Nudge waker', 46, 965, [
+      nudge.due { gridPos: utils.gridPos(0, 47, 4, 4), id: 931 },
+      nudge.configErrors { gridPos: utils.gridPos(4, 47, 5, 4), id: 933 },
+      nudge.outcomesByVerdict { gridPos: utils.gridPos(9, 47, 15, 4), id: 932 },
+      nudge.passDuration { gridPos: utils.gridPos(0, 51, 24, 4), id: 934 },
+    ]),
 
-    // =============== ABUSE (#215/#232) ===============
-    // "Are we abusing resources — do we close sockets, is the rate limiter
-    // doing its job." Rebuilds `dashboards/parked/rate-limit.jsonnet`'s
-    // "Proof of Failure (By Contradiction)" idea on premises that now exist
-    // — see abuse-panels.libsonnet's own header.
-    abuse.rateLimited { gridPos: utils.gridPos(0, 54, 6, 4), id: 922 },
-    abuse.shed { gridPos: utils.gridPos(6, 54, 6, 4), id: 923 },
-    abuse.timedOut { gridPos: utils.gridPos(12, 54, 6, 4), id: 924 },
-    abuse.wsRefused { gridPos: utils.gridPos(18, 54, 6, 4), id: 925 },
-
-    abuse.refusalsByReason { gridPos: utils.gridPos(0, 58, 12, 6), id: 926 },
-    abuse.tokensAvailable { gridPos: utils.gridPos(12, 58, 12, 6), id: 927 },
-
-    abuse.invariant { gridPos: utils.gridPos(0, 64, 24, 4), id: 928 },
-
-    // =============== ROW 1: UPTIME SLA ===============
-    panels.uptimeOverallStatus { gridPos: utils.gridPos(0, 68, 6, 4) },
-    panels.uptimeSLA30d { gridPos: utils.gridPos(6, 68, 6, 4) },
-    panels.tcpConnectivity { gridPos: utils.gridPos(12, 68, 6, 4) },
-    panels.httpWebSocketProbe { gridPos: utils.gridPos(18, 68, 6, 4) },
-
-    // =============== ROW 2: UPTIME TRENDS & DIAGNOSTICS ===============
-    panels.uptimeTrend7d { gridPos: utils.gridPos(0, 72, 12, 8) },
-    panels.probeDiagnostics { gridPos: utils.gridPos(12, 72, 12, 8) },
-
-    // =============== ROW 3: APPLICATION METRICS ===============
-    // The standalone liveness stat this row used to carry (#212/G3) is
-    // superseded by the HEALTH row's UP panel above, which is the same
-    // `up{job="file_host"}` query — no need for both.
-    panels.operationDuration { gridPos: utils.gridPos(0, 80, 12, 8) },
-    panels.tracingErrors { gridPos: utils.gridPos(12, 80, 12, 8) },
+    collapsedRow('Cache, storage & operations', 47, 966, [
+      clients.cacheHitMissByNamespace { gridPos: utils.gridPos(0, 48, 12, 6), id: 916 },
+      clients.sqlitePool { gridPos: utils.gridPos(12, 48, 12, 6), id: 917 },
+      panels.operationDuration { gridPos: utils.gridPos(0, 54, 12, 6) },
+      panels.probeDuration { gridPos: utils.gridPos(12, 54, 12, 6), id: 11 },
+    ]),
   ]),
   refresh: '5s',
   schemaVersion: 38,
   tags: ['rust', 'axum', 'prometheus', 'sla', 'health'],
-  templating: { list: [] },
+  // Which build is running, as header pickers rather than a panel: always
+  // visible, one line, and out of the way. Read from `service_info`'s
+  // labels (build_info.rs) with `query_result`, which is an instant query at
+  // the end of the time range — the build running *now*. `label_values`
+  // would list every build seen anywhere in the range, so across a deploy
+  // the header could keep showing the previous one.
+  templating: {
+    list: [
+      {
+        name: v.name,
+        label: v.name,
+        type: 'query',
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        definition: 'query_result(max by (%s) (service_info{job="file_host"}))' % v.label,
+        query: { query: 'query_result(max by (%s) (service_info{job="file_host"}))' % v.label, refId: 'StandardVariableQuery' },
+        regex: '/%s="([^"]+)"/' % v.label,
+        refresh: 2,
+        hide: 0,
+        includeAll: false,
+        multi: false,
+        sort: 0,
+        options: [],
+        current: {},
+      }
+      for v in [{ name: 'build', label: 'git_sha' }, { name: 'built', label: 'built_at' }]
+    ],
+  },
   time: { from: 'now-1h', to: 'now' },
   timepicker: {},
   timezone: '',
-  title: '🩺 file_host Operational Dashboard',
+  title: '🩺 file_host',
   uid: 'file-host-dashboard',
   version: 1,
 };

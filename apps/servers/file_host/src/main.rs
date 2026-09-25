@@ -207,7 +207,9 @@ async fn main() -> Result<()> {
 			Err(err) => tracing::error!(error = %err, "first-contact backfill failed; existing subscribers may stay ungated until next boot"),
 		}
 		nudge::waker::spawn(&app_state, Duration::from_secs(config.nudge_waker_seconds.max(30)));
+		file_host::metrics::waker::record_enabled(true);
 	} else {
+		file_host::metrics::waker::record_enabled(false);
 		tracing::info!("engagement waker is not running; /api/v1/push and /api/v1/signals still work");
 	}
 
