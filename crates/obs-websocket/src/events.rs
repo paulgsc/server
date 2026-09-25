@@ -20,9 +20,10 @@ pub fn to_obs_event(event: Event) -> Option<ObsEvent> {
 			timecode: stopped_timecode(active),
 			output_state: output_state_name(state),
 		}),
-		Event::RecordStateChanged { active, .. } => ObsEvent::RecordStateChanged(RecordStateData {
+		Event::RecordStateChanged { active, state, .. } => ObsEvent::RecordStateChanged(RecordStateData {
 			recording: active,
 			timecode: stopped_timecode(active),
+			output_state: output_state_name(state),
 		}),
 		Event::CurrentProgramSceneChanged { id } => ObsEvent::CurrentProgramSceneChanged(CurrentProgramSceneData { scene_name: id.name }),
 		Event::SceneItemEnableStateChanged { scene, item_id, enabled } => ObsEvent::SceneItemEnableStateChanged(SceneItemEnableStateData {

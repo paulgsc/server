@@ -241,7 +241,7 @@ async fn input_list(client: &Client) -> Result<ObsEvent, obws::error::Error> {
 }
 
 /// Formats as OBS does in `outputTimecode`: `HH:MM:SS.mmm`.
-fn timecode(elapsed: Duration) -> String {
+pub fn timecode(elapsed: Duration) -> String {
 	let secs = elapsed.as_secs();
 	let mut out = String::with_capacity(12);
 	let _ = write!(out, "{:02}:{:02}:{:02}.{:03}", secs / 3600, secs / 60 % 60, secs % 60, elapsed.subsec_millis());

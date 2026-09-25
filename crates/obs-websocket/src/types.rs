@@ -1,23 +1,28 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Everything that can be done to OBS during a stream, one variant per intent.
+///
+/// Sources, scenes, inputs, filters and transitions are addressed by the names
+/// OBS shows, since that is what a spoken command carries. Resolving a loose
+/// name ("mic") to an exact one ("Mic/Aux") is the caller's job; the names that
+/// exist come from [`ObsCommand::GetStudio`]. An unknown name fails with OBS's
+/// own "not found" reason.
+///
+/// On the wire: `{"type": "setMute", "data": {"input": "Mic/Aux", "muted": true}}`;
+/// variants without fields omit `data`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ObsCommand {
+	// -- Streaming
 	StartStream,
 	StopStream,
-	StartRecording,
-	StopRecording,
-	SwitchScene(String),
-	SetInputMute(String, bool),
-	SetInputVolume(String, f64),
-	ToggleStudioMode(bool),
-	StartVirtualCamera,
-	StopVirtualCamera,
-	StartReplayBuffer,
-	StopReplayBuffer,
-	GetInputMute(String),
-	GetInputVolume(String),
+	/// Replies `{"outputActive": bool}` with the new state.
+	ToggleStream,
+	/// Sends a CEA-608 caption over the running stream.
+	SendStreamCaption {
+		text: String,
+	},
 	/// Point OBS's stream output at the `YouTube` RTMP ingest using `stream_key`.
 	///
 	/// This only configures where OBS pushes video. A broadcast's title,
@@ -26,10 +31,219 @@ pub enum ObsCommand {
 	SetYouTubeStream {
 		stream_key: StreamKey,
 	},
-	/// No longer supported: `obws` exposes only typed requests. Kept so older
-	/// payloads still deserialize and get an explicit error reply; add a typed
-	/// variant for whatever request this was carrying.
-	Custom(Value),
+
+	// -- Recording
+	StartRecording,
+	/// Replies `{"outputPath": string}`, the finished file.
+	StopRecording,
+	/// Replies `{"outputActive": bool}` with the new state.
+	ToggleRecording,
+	PauseRecording,
+	ResumeRecording,
+	/// Replies `{"outputPaused": bool}` with the new state.
+	TogglePauseRecording,
+	/// Finishes the current file and keeps recording into a new one.
+	SplitRecording,
+	/// Marks a chapter; OBS supports this only when recording to Hybrid MP4.
+	AddRecordingChapter {
+		name: Option<String>,
+	},
+
+	// -- Replay buffer and virtual camera
+	StartReplayBuffer,
+	StopReplayBuffer,
+	/// Saves the last N seconds the replay buffer holds.
+	SaveReplay,
+	StartVirtualCamera,
+	StopVirtualCamera,
+
+	// -- Scenes and transitions
+	/// Makes `scene` live (the program scene).
+	SwitchScene {
+		scene: String,
+	},
+	/// In studio mode, stages `scene` in the preview.
+	SetPreviewScene {
+		scene: String,
+	},
+	SetStudioMode {
+		enabled: bool,
+	},
+	/// In studio mode, transitions the preview scene to program.
+	TriggerTransition,
+	SetTransition {
+		transition: String,
+	},
+	SetTransitionDuration {
+		millis: u64,
+	},
+
+	// -- Sources within a scene
+	/// Shows or hides `source` in `scene`, or in the live scene when omitted.
+	SetSourceVisible {
+		source: String,
+		scene: Option<String>,
+		visible: bool,
+	},
+	/// Replies `{"sceneItemEnabled": bool}` with the new state.
+	ToggleSourceVisible {
+		source: String,
+		scene: Option<String>,
+	},
+
+	// -- Audio
+	SetMute {
+		input: String,
+		muted: bool,
+	},
+	/// Replies `{"inputMuted": bool}` with the new state.
+	ToggleMute {
+		input: String,
+	},
+	/// Sets the volume in dB: `0.0` is unity, OBS's range is `-100.0..=26.0`.
+	SetVolume {
+		input: String,
+		db: f64,
+	},
+	/// Changes the volume by `delta_db`, clamped to OBS's range. Replies
+	/// `{"inputVolumeDb": number}` with the new level.
+	AdjustVolume {
+		input: String,
+		delta_db: f64,
+	},
+
+	// -- Media sources (music, clips)
+	Media {
+		input: String,
+		action: MediaAction,
+	},
+
+	// -- Filters, text, hotkeys
+	SetFilterEnabled {
+		source: String,
+		filter: String,
+		enabled: bool,
+	},
+	/// Replaces the text of a text source.
+	SetText {
+		input: String,
+		text: String,
+	},
+	/// Presses an OBS hotkey by its internal name, as listed in
+	/// [`StudioSnapshot::hotkeys`]: reaches anything bound to a hotkey in OBS,
+	/// including plugins.
+	TriggerHotkey {
+		name: String,
+	},
+
+	// -- Query
+	/// Replies with a [`StudioSnapshot`]: the current state and every name the
+	/// other commands accept.
+	GetStudio,
+}
+
+/// A playback action on a media source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaAction {
+	Play,
+	Pause,
+	Stop,
+	Restart,
+	Next,
+	Previous,
+}
+
+/// OBS's current state plus every name [`ObsCommand`] variants accept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioSnapshot {
+	pub stream: StreamState,
+	pub recording: RecordingState,
+	/// `None` when the replay buffer is disabled in OBS's output settings.
+	pub replay_buffer_active: Option<bool>,
+	pub virtual_camera_active: bool,
+	pub studio_mode: bool,
+	pub program_scene: String,
+	/// Set only in studio mode.
+	pub preview_scene: Option<String>,
+	pub scenes: Vec<SceneState>,
+	/// Every input with audio.
+	pub audio: Vec<AudioState>,
+	/// Every media source (`ffmpeg_source`, `vlc_source`).
+	pub media: Vec<MediaState>,
+	pub filters: Vec<FilterState>,
+	pub transitions: Vec<String>,
+	pub current_transition: Option<String>,
+	pub hotkeys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamState {
+	pub active: bool,
+	pub reconnecting: bool,
+	/// `HH:MM:SS.mmm` since the stream started.
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingState {
+	pub active: bool,
+	pub paused: bool,
+	/// `HH:MM:SS.mmm` of recorded time.
+	pub timecode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneState {
+	pub name: String,
+	/// In OBS's layer order, bottom layer first (the Sources panel shows it last).
+	pub sources: Vec<SceneSourceState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceState {
+	pub name: String,
+	pub visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioState {
+	pub input: String,
+	pub muted: bool,
+	pub volume_db: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaState {
+	pub input: String,
+	pub playback: MediaPlayback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaPlayback {
+	Idle,
+	Loading,
+	Playing,
+	Paused,
+	Stopped,
+	Ended,
+	Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterState {
+	pub source: String,
+	pub filter: String,
+	pub enabled: bool,
 }
 
 /// A stream key: anyone holding one can publish to the channel it belongs to,
@@ -281,6 +495,10 @@ pub struct StreamStateData {
 pub struct RecordStateData {
 	pub recording: bool,
 	pub timecode: Option<String>,
+	/// OBS's `outputState`; pausing shows up here as
+	/// `OBS_WEBSOCKET_OUTPUT_PAUSED` while `recording` stays `true`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,5 +723,38 @@ mod tests {
 		};
 		let rendered = std::fmt::format(format_args!("{command:?}"));
 		assert!(!rendered.contains("abcd-efgh"), "{rendered}");
+	}
+
+	#[test]
+	fn commands_use_named_fields_on_the_wire() {
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setMute",
+			"data": { "input": "Mic/Aux", "muted": true }
+		}))
+		.unwrap();
+		assert!(matches!(command, ObsCommand::SetMute { ref input, muted: true } if input == "Mic/Aux"));
+
+		let media: ObsCommand = serde_json::from_value(json!({
+			"type": "media",
+			"data": { "input": "Intro music", "action": "play" }
+		}))
+		.unwrap();
+		assert!(matches!(media, ObsCommand::Media { action: MediaAction::Play, .. }));
+	}
+
+	#[test]
+	fn fieldless_commands_need_no_data() {
+		let command: ObsCommand = serde_json::from_value(json!({ "type": "pauseRecording" })).unwrap();
+		assert!(matches!(command, ObsCommand::PauseRecording));
+	}
+
+	#[test]
+	fn source_visibility_defaults_to_the_live_scene() {
+		let command: ObsCommand = serde_json::from_value(json!({
+			"type": "setSourceVisible",
+			"data": { "source": "Terminal", "visible": true }
+		}))
+		.unwrap();
+		assert!(matches!(command, ObsCommand::SetSourceVisible { scene: None, visible: true, .. }));
 	}
 }

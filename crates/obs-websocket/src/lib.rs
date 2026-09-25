@@ -6,7 +6,7 @@
 //! and runs [`ObsCommand`]s against it.
 
 pub mod types;
-pub use types::{ObsCommand, ObsEvent, StreamKey, UnknownEventData};
+pub use types::{MediaAction, ObsCommand, ObsEvent, StreamKey, StudioSnapshot, UnknownEventData};
 
 #[cfg(feature = "websocket")]
 mod commands;
@@ -18,6 +18,8 @@ mod events;
 mod manager;
 #[cfg(feature = "websocket")]
 mod polling;
+#[cfg(feature = "websocket")]
+mod studio;
 
 #[cfg(feature = "websocket")]
 pub use config::{ObsConfig, RetryConfig};

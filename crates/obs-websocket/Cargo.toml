@@ -13,7 +13,7 @@ edition.workspace = true
 
 [features]
 default = []
-websocket = ["dep:obws", "dep:futures-util", "dep:tracing", "tokio/time", "tokio/rt", "tokio/macros"]
+websocket = ["dep:obws", "dep:futures-util", "dep:time", "dep:tracing", "tokio/time", "tokio/rt", "tokio/macros"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["sync"] }
 
 futures-util = { version = "0.3", optional = true }
 obws = { version = "0.15", features = ["events"], optional = true }
+time = { version = "0.3", optional = true }
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]

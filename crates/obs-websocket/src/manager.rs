@@ -25,8 +25,10 @@ pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Buffered events per subscriber before the slowest one starts losing the oldest.
 const EVENT_CAPACITY: usize = 256;
 
-/// The categories holding every event [`to_obs_event`] maps, plus General and
-/// Filters. Leaves out OBS's high-volume categories such as input meters.
+/// Every category a stream operator acts on, so each [`ObsCommand`]'s effect
+/// comes back as an event: the ones [`to_obs_event`] maps, plus General,
+/// Filters and media playback (forwarded as `UnknownEvent`). Leaves out OBS's
+/// high-volume categories such as input meters.
 const EVENT_SUBSCRIPTIONS: EventSubscription = EventSubscription::GENERAL
 	.union(EventSubscription::SCENES)
 	.union(EventSubscription::INPUTS)
@@ -34,6 +36,7 @@ const EVENT_SUBSCRIPTIONS: EventSubscription = EventSubscription::GENERAL
 	.union(EventSubscription::FILTERS)
 	.union(EventSubscription::OUTPUTS)
 	.union(EventSubscription::SCENE_ITEMS)
+	.union(EventSubscription::MEDIA_INPUTS)
 	.union(EventSubscription::UI);
 
 #[derive(Debug, Error)]
@@ -53,9 +56,6 @@ pub enum CommandError {
 	/// e.g. "The stream output is already running."
 	#[error("OBS rejected {request_type} (code {code}): {comment}")]
 	Rejected { request_type: String, code: u64, comment: String },
-
-	#[error("{0} is not supported")]
-	Unsupported(&'static str),
 
 	#[error("Not connected to OBS")]
 	NotConnected,
@@ -211,9 +211,6 @@ impl ObsWebSocketManager {
 	/// refuses the request. Also fails when not connected, when the connection
 	/// drops first, or after [`COMMAND_TIMEOUT`] with no response.
 	pub async fn execute_command(&self, command: ObsCommand) -> Result<Option<Value>, ObsWebsocketError> {
-		if matches!(command, ObsCommand::Custom(_)) {
-			return Err(CommandError::Unsupported("Custom (raw JSON) requests").into());
-		}
 		let client = self.client().await.ok_or(CommandError::NotConnected)?;
 
 		match tokio::time::timeout(COMMAND_TIMEOUT, commands::execute(&client, command)).await {
