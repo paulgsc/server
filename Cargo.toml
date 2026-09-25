@@ -39,6 +39,13 @@ members = [
 
 exclude = [".github/scripts"]
 
+[workspace.lints.rust]
+# A `pub` item in a library crate is exempt from `dead_code`, because another
+# crate might import it. That exemption is only earned when the item is
+# actually reachable from the crate root. This lint flags `pub` that isn't, so
+# it can narrow to `pub(crate)`, where `dead_code` sees it again.
+unreachable_pub = "warn"
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = 2 }
 pedantic = { level = "deny", priority = 2 }
@@ -52,6 +59,13 @@ cargo = { level = "deny", priority = 2 }
 # workspace for a fact none of them can act on, so it is off deliberately
 # rather than by accident. The rest of the `cargo` group still applies.
 multiple_crate_versions = { level = "allow", priority = 3 }
+
+# Contradicts rustc's `unreachable_pub` (see [workspace.lints.rust]). For a
+# `pub` item in a private module, that lint asks for `pub(crate)`, and this one
+# then flags `pub(crate)` inside a private module as redundant. Clippy's own
+# docs name that conflict. `unreachable_pub` is the one that feeds `dead_code`,
+# so it wins.
+redundant_pub_crate = { level = "allow", priority = 3 }
 
 
 [workspace.package]

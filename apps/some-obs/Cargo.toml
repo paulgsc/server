@@ -22,8 +22,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry", "tracing-log" ] }
 thiserror = { workspace = true }
-chrono.workspace = true
-prost = "0.14.1"
 
 [lints]
 workspace = true

@@ -15,9 +15,10 @@
 //!     code path ever drives `ConnectionState` through those transitions
 //!     (`ConnectionCommand::MarkStale`/`Disconnect` have no caller — the
 //!     only "monitor" that would have sent them, `ws-connection`'s
-//!     `core/monitor.rs`, references a `crate::websocket` module tree that
-//!     doesn't exist in this crate and isn't declared in `lib.rs`, so it
-//!     has never compiled into anything). Keeping those event values would
+//!     `core/monitor.rs`, referenced a `crate::websocket` module tree that
+//!     didn't exist in that crate and was never declared in its `lib.rs`, so
+//!     it never compiled into anything and has since been deleted as an
+//!     orphan). Keeping those event values would
 //!     have meant a counter that reads real but is structurally unable to
 //!     move.
 //!   - `ws_client_connections{client_type}` — kept, paired with lifecycle.
