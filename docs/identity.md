@@ -96,9 +96,11 @@ nowhere is marked as such and belongs to review.
    `ConnectionGuard`'s permit accounting, and fail if an address, or the
    process-stable admission key, appears anywhere in them.
 
-3. **Fingerprinting headers are read only in `net.rs`.** These are
-   `User-Agent`, `X-Forwarded-For`, `X-Real-IP`, `Forwarded` and the CDN
-   variants.
+3. **Fingerprinting headers are named only in `net.rs`,** other than as a
+   write that puts one on a request, which is how tests prove they're ignored.
+   These are `User-Agent`, `X-Forwarded-For`, `X-Real-IP`, `Forwarded` and the
+   CDN variants. The check matches any mention rather than a list of read
+   methods, because every such list turned out to have another way through.
    *Enforced by* `scripts/check_privacy.py`, whose `--self-test` also runs in CI.
    Clippy cannot express this one, because its `disallowed-*` lints match paths,
    never arguments.
