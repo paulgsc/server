@@ -72,13 +72,11 @@ pub enum Event {
 }
 
 impl Event {
-	pub fn get_type(&self) -> Option<EventType> {
+	#[must_use]
+	pub const fn get_type(&self) -> Option<EventType> {
 		match self {
-			Self::Ping => Some(EventType::Ping),
-			Self::Pong => Some(EventType::Pong),
+			Self::Ping | Self::Pong | Self::Subscribe { .. } | Self::Unsubscribe { .. } => Some(EventType::Ping),
 			Self::Error { .. } => Some(EventType::Error),
-			Self::Subscribe { .. } => Some(EventType::Ping), // These are control messages
-			Self::Unsubscribe { .. } => Some(EventType::Ping),
 			Self::ClientCount { .. } => Some(EventType::ClientCount),
 			Self::ObsStatus { .. } => Some(EventType::ObsStatus),
 			Self::ObsCmd { .. } => Some(EventType::ObsCommand),
@@ -89,19 +87,19 @@ impl Event {
 			Self::AudioChunk { .. } => Some(EventType::AudioChunk),
 			Self::Subtitle { .. } => Some(EventType::Subtitle),
 			// System events don't have EventTypes
-			_ => None,
+			Self::System(_) => None,
 		}
 	}
 }
 
 impl From<NowPlaying> for Event {
 	fn from(data: NowPlaying) -> Self {
-		Event::TabMetaData { data }
+		Self::TabMetaData { data }
 	}
 }
 
 impl From<UtterancePrompt> for Event {
 	fn from(UtterancePrompt { text, metadata }: UtterancePrompt) -> Self {
-		Event::Utterance { text, metadata }
+		Self::Utterance { text, metadata }
 	}
 }

@@ -1,8 +1,8 @@
 use crate::events::{OrchestratorCommandData, OrchestratorConfigData, OrchestratorMode, OrchestratorState};
 use prost::Message;
 
-/// Prost-compatible OrchestratorCommandData message
-#[derive(Clone, PartialEq, Message)]
+/// Prost-compatible `OrchestratorCommandData` message
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct TickCommandMessage {
 	#[prost(string, tag = "1")]
 	pub stream_id: String,
@@ -11,9 +11,9 @@ pub struct TickCommandMessage {
 }
 
 pub mod tick_command_message {
-	use super::*;
+	use super::Message;
 
-	#[derive(Clone, PartialEq, prost::Oneof)]
+	#[derive(Clone, PartialEq, Eq, prost::Oneof)]
 	pub enum Command {
 		#[prost(message, tag = "2")]
 		Start(StartCommand),
@@ -35,31 +35,31 @@ pub mod tick_command_message {
 		Configure(ConfigureCommand),
 	}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct StartCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct StopCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct PauseCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct ResumeCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct ResetCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct ForceSceneCommand {
 		#[prost(string, tag = "1")]
 		pub scene_name: String,
 	}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct SkipCurrentSceneCommand {}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct UpdateStreamStatusCommand {
 		#[prost(bool, tag = "1")]
 		pub is_streaming: bool,
@@ -69,9 +69,9 @@ pub mod tick_command_message {
 		pub timecode: String,
 	}
 
-	#[derive(Clone, PartialEq, Message)]
+	#[derive(Clone, PartialEq, Eq, Message)]
 	pub struct ConfigureCommand {
-		/// JSON-encoded OrchestratorConfigData
+		/// JSON-encoded `OrchestratorConfigData`
 		#[prost(bytes, tag = "1")]
 		pub config_json: Vec<u8>,
 	}
@@ -79,7 +79,9 @@ pub mod tick_command_message {
 
 impl TickCommandMessage {
 	pub fn from_tick_command(stream_id: String, cmd: OrchestratorCommandData) -> Result<Self, String> {
-		use tick_command_message::*;
+		use tick_command_message::{
+			Command, ConfigureCommand, ForceSceneCommand, PauseCommand, ResetCommand, ResumeCommand, SkipCurrentSceneCommand, StartCommand, StopCommand, UpdateStreamStatusCommand,
+		};
 
 		let command = match cmd {
 			OrchestratorCommandData::Start => Some(Command::Start(StartCommand {})),
@@ -99,12 +101,12 @@ impl TickCommandMessage {
 				timecode,
 			})),
 			OrchestratorCommandData::Configure(config_data) => {
-				let config_json = serde_json::to_vec(&config_data).map_err(|e| format!("Failed to serialize config: {}", e))?;
+				let config_json = crate::events::to_json_vec(&config_data).map_err(|e| owned_format!("Failed to serialize config: {e}"))?;
 				Some(Command::Configure(ConfigureCommand { config_json }))
 			}
 		};
 
-		Ok(TickCommandMessage { stream_id, command })
+		Ok(Self { stream_id, command })
 	}
 
 	pub fn to_tick_command(&self) -> Result<(String, OrchestratorCommandData), String> {
@@ -124,7 +126,7 @@ impl TickCommandMessage {
 				timecode: cmd.timecode.clone(),
 			},
 			Some(Command::Configure(cmd)) => {
-				let config_data: OrchestratorConfigData = serde_json::from_slice(&cmd.config_json).map_err(|e| format!("Failed to deserialize config: {}", e))?;
+				let config_data: OrchestratorConfigData = serde_json::from_slice(&cmd.config_json).map_err(|e| owned_format!("Failed to deserialize config: {e}"))?;
 				OrchestratorCommandData::Configure(config_data)
 			}
 			None => return Err("TickCommandMessage has no command variant".to_string()),
@@ -134,7 +136,7 @@ impl TickCommandMessage {
 	}
 }
 
-/// Prost-compatible OrchestratorState message
+/// Prost-compatible `OrchestratorState` message
 #[derive(Clone, PartialEq, Message)]
 pub struct OrchestratorStateMessage {
 	#[prost(string, tag = "1")]
@@ -157,7 +159,7 @@ pub struct OrchestratorStateMessage {
 	pub stream_status_json: Vec<u8>,
 }
 
-/// Protobuf enum for OrchestratorMode
+/// Protobuf enum for `OrchestratorMode`
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
 #[repr(i32)]
 pub enum OrchestratorModeProto {
@@ -173,13 +175,13 @@ pub enum OrchestratorModeProto {
 impl From<OrchestratorMode> for OrchestratorModeProto {
 	fn from(mode: OrchestratorMode) -> Self {
 		match mode {
-			OrchestratorMode::Unconfigured => OrchestratorModeProto::Unconfigured,
-			OrchestratorMode::Idle => OrchestratorModeProto::Idle,
-			OrchestratorMode::Running => OrchestratorModeProto::Running,
-			OrchestratorMode::Paused => OrchestratorModeProto::Paused,
-			OrchestratorMode::Finished => OrchestratorModeProto::Finished,
-			OrchestratorMode::Stopped => OrchestratorModeProto::Stopped,
-			OrchestratorMode::Error => OrchestratorModeProto::Error,
+			OrchestratorMode::Unconfigured => Self::Unconfigured,
+			OrchestratorMode::Idle => Self::Idle,
+			OrchestratorMode::Running => Self::Running,
+			OrchestratorMode::Paused => Self::Paused,
+			OrchestratorMode::Finished => Self::Finished,
+			OrchestratorMode::Stopped => Self::Stopped,
+			OrchestratorMode::Error => Self::Error,
 		}
 	}
 }
@@ -187,22 +189,22 @@ impl From<OrchestratorMode> for OrchestratorModeProto {
 impl From<OrchestratorModeProto> for OrchestratorMode {
 	fn from(mode: OrchestratorModeProto) -> Self {
 		match mode {
-			OrchestratorModeProto::Unconfigured => OrchestratorMode::Unconfigured,
-			OrchestratorModeProto::Idle => OrchestratorMode::Idle,
-			OrchestratorModeProto::Running => OrchestratorMode::Running,
-			OrchestratorModeProto::Paused => OrchestratorMode::Paused,
-			OrchestratorModeProto::Finished => OrchestratorMode::Finished,
-			OrchestratorModeProto::Stopped => OrchestratorMode::Stopped,
-			OrchestratorModeProto::Error => OrchestratorMode::Error,
+			OrchestratorModeProto::Unconfigured => Self::Unconfigured,
+			OrchestratorModeProto::Idle => Self::Idle,
+			OrchestratorModeProto::Running => Self::Running,
+			OrchestratorModeProto::Paused => Self::Paused,
+			OrchestratorModeProto::Finished => Self::Finished,
+			OrchestratorModeProto::Stopped => Self::Stopped,
+			OrchestratorModeProto::Error => Self::Error,
 		}
 	}
 }
 
 impl OrchestratorStateMessage {
 	pub fn from_orchestrator_state(stream_id: String, state: &OrchestratorState) -> Result<Self, String> {
-		let stream_status_json = serde_json::to_vec(&state.stream_status).map_err(|e| format!("Failed to serialize stream_status: {}", e))?;
+		let stream_status_json = crate::events::to_json_vec(&state.stream_status).map_err(|e| owned_format!("Failed to serialize stream_status: {e}"))?;
 
-		let active_lifetimes_json = serde_json::to_vec(&state.active_lifetimes).map_err(|e| format!("Failed to serialize active_lifetimes: {}", e))?;
+		let active_lifetimes_json = crate::events::to_json_vec(&state.active_lifetimes).map_err(|e| owned_format!("Failed to serialize active_lifetimes: {e}"))?;
 
 		Ok(Self {
 			stream_id,
@@ -218,11 +220,11 @@ impl OrchestratorStateMessage {
 	}
 
 	pub fn to_orchestrator_state(&self) -> Result<(String, OrchestratorState), String> {
-		let stream_status = serde_json::from_slice(&self.stream_status_json).map_err(|e| format!("Failed to deserialize stream_status: {}", e))?;
+		let stream_status = serde_json::from_slice(&self.stream_status_json).map_err(|e| owned_format!("Failed to deserialize stream_status: {e}"))?;
 
-		let active_lifetimes = serde_json::from_slice(&self.active_lifetimes_json).map_err(|e| format!("Failed to deserialize active_lifetimes: {}", e))?;
+		let active_lifetimes = serde_json::from_slice(&self.active_lifetimes_json).map_err(|e| owned_format!("Failed to deserialize active_lifetimes: {e}"))?;
 
-		let mode = OrchestratorModeProto::try_from(self.mode).map_err(|_| format!("Invalid mode value: {}", self.mode))?;
+		let mode = OrchestratorModeProto::try_from(self.mode).map_err(|_| owned_format!("Invalid mode value: {}", self.mode))?;
 
 		let state = OrchestratorState {
 			mode: mode.into(),

@@ -1,7 +1,7 @@
 use crate::events::NowPlaying;
 use prost::Message;
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct TabMetaDataMessage {
 	#[prost(string, tag = "1")]
 	pub title: String,
@@ -18,7 +18,7 @@ pub struct TabMetaDataMessage {
 }
 
 impl TabMetaDataMessage {
-	/// Create from NowPlaying
+	/// Create from `NowPlaying`
 	pub fn from_now_playing(np: NowPlaying) -> Self {
 		Self {
 			title: np.title,
@@ -30,7 +30,7 @@ impl TabMetaDataMessage {
 		}
 	}
 
-	/// Convert to NowPlaying
+	/// Convert to `NowPlaying`
 	pub fn to_now_playing(&self) -> NowPlaying {
 		NowPlaying {
 			title: self.title.clone(),
