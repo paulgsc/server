@@ -1,709 +1,2302 @@
 {
   "<outside the workspace>": {
-    "clippy::disallowed_macros": 1
+    "clippy::disallowed_macros": {
+      "$crate::Error::msg($crate::__private::format!($fmt, $($arg)*))": 1
+    }
   },
   "apps/orchestrator/src/lib.rs": {
-    "clippy::ignored_unit_patterns": 2,
-    "clippy::missing_errors_doc": 3,
-    "clippy::must_use_candidate": 4,
-    "clippy::needless_pass_by_value": 1,
-    "clippy::redundant_clone": 1,
-    "clippy::significant_drop_in_scrutinee": 1,
-    "clippy::uninlined_format_args": 1
+    "clippy::ignored_unit_patterns": {
+      "_ = cancel_token.cancelled() => {": 1,
+      "_ = self.cancel_token.cancelled() => {": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn run(&self) -> anyhow::Result<()> {": 1,
+      "pub async fn send_command(&self, cmd: OrchestratorCommandData) -> anyhow::Result<()> {": 1,
+      "pub fn new(parent_token: &CancellationToken) -> anyhow::Result<Self> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn get_state(&self, stream_id: &str) -> Option<OrchestratorState> {": 1,
+      "pub fn list_streams(&self) -> Vec<String> {": 1,
+      "pub fn new(transport: NatsTransport<UnifiedEvent>) -> Self {": 1,
+      "pub fn orchestrator_count(&self) -> usize {": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "stream_id: StreamId,": 1
+    },
+    "clippy::redundant_clone": {
+      "let stream_id_clone = stream_id.clone();": 1
+    },
+    "clippy::significant_drop_in_scrutinee": {
+      "if let Some(handle) = self.state_publisher_handle.lock().await.take() {": 1
+    },
+    "clippy::uninlined_format_args": {
+      "let event: Event = Result::<Event, String>::from(unified_event).map_err(|e| anyhow::anyhow!(\"Failed to convert event: {}\", e))?;": 1
+    }
   },
   "apps/servers/file_host/examples/random_rows_2d.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::uninlined_format_args": 1
+    "clippy::disallowed_macros": {
+      "println!(\"Sampled rows (2D): {:?}\", result);": 1
+    },
+    "clippy::uninlined_format_args": {
+      "println!(\"Sampled rows (2D): {:?}\", result);": 1
+    }
   },
   "apps/servers/file_host/src/config.rs": {
-    "clippy::must_use_candidate": 2,
-    "clippy::new_without_default": 1,
-    "clippy::struct_excessive_bools": 1
+    "clippy::must_use_candidate": {
+      "pub fn as_cache_config(&self) -> some_cache::CacheConfig {": 1,
+      "pub fn new() -> Self {": 1
+    },
+    "clippy::new_without_default": {
+      "pub fn new() -> Self { Self::parse() }": 1
+    },
+    "clippy::struct_excessive_bools": {
+      "pub struct Config { /// Use JSON formatting for tracing #[arg(long, env = \"LOG_JSON\", default_value = \"false\")] pub log_json: bool, /// Log level #[arg(long, env = \"RUST_LOG\")] pub rust_log: Option<String>, /// Database connection timeout in seconds #[arg(long, env = \"CONNECTION_TIMEOUT\", default_value = \"30\")] pub connection_timeout: u64, /// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded. #[arg(long, env = \"MAX_IN_FLIGHT\", default_value = \"256\")] pub max_in_flight: u64, /// Server host #[arg(long, env = \"HOST\", default_value = \"127.0.0.1\")] pub host: String, /// Server port #[arg(long, env = \"PORT\", default_value = \"8080\")] pub port: u16, /// Number of worker threads #[arg(long, env = \"WORKERS\", default_value = \"4\")] pub workers: usize, /// HMAC signing key for JWT tokens #[arg(long, env = \"HMAC_KEY\")] pub hmac_key: String, /// JWT token expiration time in seconds #[arg(long, env = \"TOKEN_EXPIRATION\", default_value = \"3600\")] pub token_expiration: u64, /// API version #[arg(long, env = \"API_VERSION\", default_value = \"v1\")] pub api_version: String, /// Rate limit, in requests per minute, per client (`main.rs`'s /// `rate_limit_middleware` partitions by peer IP). See #215/#231: this /// field previously declared the right unit but was unread \u2014 the /// limiter's capacity was `max_request_size` (megabytes of upload /// payload) instead. #[arg(long, env = \"RATE_LIMIT\", default_value = \"60\")] pub rate_limit: u32, /// Enable CORS #[arg(long, env = \"ENABLE_CORS\")] pub enable_cors: bool, /// Comma-separated list of allowed CORS origins for browser-facing read routes /// (push and sessions). Other routes deliberately allow any origin /// (extensions, etc.) and are unaffected by this setting. /// /// The default carries three entries rather than one because the study app is /// not on `:6006` \u2014 that is Storybook. Service workers, `Notification`, and /// `PushManager` are all gated on a secure context, so the origin a /// subscription is actually posted from is an HTTPS one, and a list that only /// admits the Storybook origin blocks it. #[arg( long, env = \"ALLOWED_ORIGINS\", value_delimiter = ',', default_value = \"https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006\" )] pub allowed_origins: Vec<String>, /// Log level #[arg(long, env = \"LOG_LEVEL\", default_value = \"info\")] pub log_level: LogLevel, /// Log file path #[arg(long, env = \"LOG_FILE\")] pub log_file: Option<String>, /// Enable user registration #[arg(long, env = \"ENABLE_USER_REGISTRATION\")] pub enable_user_registration: bool, /// Enable email verification #[arg(long, env = \"ENABLE_EMAIL_VERIFICATION\")] pub enable_email_verification: bool, /// Enable two-factor authentication #[arg(long, env = \"ENABLE_TWO_FACTOR_AUTH\")] pub enable_two_factor_auth: bool, /// SMS service URL #[arg(long, env = \"SMS_SERVICE_URL\")] pub sms_service_url: Option<String>, /// Redis URL for caching #[arg(long, env = \"REDIS_URL\")] pub redis_url: Option<String>, /// NATS URL for broker messaging #[arg(long, env = \"NATS_URL\")] pub nats_url: Option<String>, /// Cache TTL in seconds #[arg(long, env = \"CACHE_TTL\", default_value = \"600\")] pub cache_ttl: u64, /// Enable Prometheus metrics #[arg(long, env = \"ENABLE_PROMETHEUS\")] pub enable_prometheus: bool, /// Prometheus metrics port #[arg(long, env = \"PROMETHEUS_PORT\", default_value = \"9090\")] pub prometheus_port: u16, /// Enable development mode #[arg(long, env = \"DEV_MODE\")] pub dev_mode: bool, /// Streaming Chunk Size #[arg(long, env = \"BUFFER_SIZE\", default_value = \"65536\")] pub chunk_size: usize, /// Individual request payload lmit in MB #[arg(long, env = \"MAX_REQUEST_SIZE_MB\", default_value = \"10\")] pub max_request_size: usize, /// Active request limit #[arg(long, env = \"MAX_CONCURRENT_REQUESTS\", default_value = \"100\")] pub max_concurrent_req: usize, /// Hard timeout for any operation #[arg(long, env = \"TASK_TIMEOUT_MS\", default_value = \"15000\")] pub task_timeout_ms: u64, /// Streaming Max Chunk Size #[arg(long, env = \"MAX_CHUNKS_IN_FLIGHT\", default_value = \"5\")] pub max_chunks: usize, /// OBS Websocket Server IP Address #[arg(long, env = \"OBS_WEBSOCKET_IP\")] pub obs_host: String, /// OBS Websocket Server Password #[arg(long, env = \"OBS_WEBSOCKET_PWD\")] pub obs_password: String, /// DATABASE URL #[arg(long, env = \"DATABASE_URL\")] pub database_url: String, // \u2500\u2500 Study nudge \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 // // See `docs/study-nudge.md`. Everything below is off by default: this is a // feature that speaks without being spoken to, and one that turns itself on // because a container happened to have a database is worse than one that // never runs. /// Whether the daily nudge tick runs at all. /// /// With this off, the `/push` routes still work \u2014 a browser can subscribe and /// a manual send can be triggered \u2014 but nothing fires on a schedule. #[arg(long, env = \"NUDGE_ENABLED\", default_value = \"false\")] pub nudge_enabled: bool, /// VAPID public key, base64url, uncompressed P-256 point. /// /// Handed to the browser as `applicationServerKey`. It is baked into every /// subscription made with it, so changing it does not re-key them \u2014 it /// silently invalidates all of them. #[arg(long, env = \"VAPID_PUBLIC_KEY\")] pub vapid_public_key: Option<String>, /// VAPID private key, base64url, the raw 32-byte P-256 scalar. Secret. #[arg(long, env = \"VAPID_PRIVATE_KEY\")] pub vapid_private_key: Option<String>, /// The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender. /// Push services reject or deprioritise senders without one. #[arg(long, env = \"VAPID_SUBJECT\", default_value = \"mailto:admin@maishatu.com\")] pub vapid_subject: String, /// IANA timezone name deciding when a day starts and when quiet hours apply. /// /// Deliberately an `Option` with no default. A container is UTC unless told /// otherwise, and a silent UTC fallback is how an evening reminder arrives at /// 3am; leaving this unset is allowed but is logged as the choice it is. #[arg(long, env = \"NUDGE_TIMEZONE\")] pub nudge_timezone: Option<String>, /// Local hour, 0-23, at which nudges stop. #[arg(long, env = \"NUDGE_QUIET_HOURS_START\", default_value = \"22\")] pub nudge_quiet_hours_start: u32, /// Local hour, 0-23, at which nudges resume. May be less than the start hour; /// the range wraps midnight. Equal bounds mean no quiet hours at all. #[arg(long, env = \"NUDGE_QUIET_HOURS_END\", default_value = \"8\")] pub nudge_quiet_hours_end: u32, /// How often the waker picks up work the engine already decided. /// /// Not a schedule. Eligibility instants are solved when signals arrive and /// written to an index; this is the resolution at which they are noticed, so /// shortening it lands interventions closer to their computed instant /// without changing which ones happen. #[arg(long, env = \"NUDGE_WAKER_SECONDS\", default_value = \"300\")] pub nudge_waker_seconds: u64, /// How long one push delivery may take before it counts as a failure /// (#264, SLI3). /// /// A push service that accepts answers in well under a second; one that /// has not answered in ten is not going to, and every second past that is /// a second the rest of the batch waits in the serial loop. Long enough /// that a slow-but-working provider on a bad day is not misread as down, /// short enough that one black-holed endpoint costs a pass seconds rather /// than the transport's own (unbounded) patience. A timed-out delivery is /// recorded as a failure \u2014 never a prune, never `Accepted` \u2014 and does not /// hand the claim back: see `nudge::waker::actuate`. #[arg(long, env = \"PUSH_DELIVERY_TIMEOUT_MS\", default_value = \"10000\")] pub push_delivery_timeout_ms: u64, /// How long one waker pass may run before it stops taking on new subjects /// (#264, SLI3). /// /// Two minutes: well inside `NUDGE_WAKER_SECONDS`' default of five, so a /// pass that hits it still leaves the next tick to start on time rather /// than be delayed by `MissedTickBehavior::Delay`, and long enough for a /// full `BATCH` of 32 subjects at typical sub-second delivery latency to /// finish many times over. A pass that runs out starts no further subject /// and tries no further device \u2014 each delivery's timeout is also capped at /// what the pass has left \u2014 but never cancels a subject part-way, so a /// claim already written stands. Subjects it did not reach are still due on /// the next pass, the property `BATCH` already relies on. #[arg(long, env = \"WAKER_PASS_DEADLINE_MS\", default_value = \"120000\")] pub waker_pass_deadline_ms: u64, /// Whether the recommender ranks a provisioned session with this subject's /// outcome history (#289, TEL4). **Off by default, and meant to stay off /// until someone has looked at real data** \u2014 see `docs/study-nudge.md`, /// \"Outcome stats and the flag that gates them\", for what would justify /// turning it on. Off, the recommender sees every activity as unplayed, /// exactly as it did before `activity_outcome` existed. #[arg(long, env = \"RECOMMENDER_USES_OUTCOMES\", default_value = \"false\")] pub recommender_uses_outcomes: bool, /// How long a client-written presence lease stays fresh before a due /// subject's notification is sent as though nobody were looking. /// /// Renamed from `NUDGE_PRESENCE_FRESHNESS_SECONDS` (default `120`) when /// presence stopped being a WebSocket connection's staleness window and /// became a lease TTL: same shape of question, a different mechanism /// underneath, and a smaller default \u2014 a client renewing roughly every /// 45s while visible only needs a TTL wide enough to absorb timer /// throttling and scheduling jitter, not two minutes of slack. #[arg(long, env = \"NUDGE_PRESENCE_LEASE_TTL_SECONDS\", default_value = \"75\")] pub nudge_presence_lease_ttl_seconds: u64, /// Base URL of the study app, used to build the notification's deep link. /// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and /// the server has to produce the same shape or clicks land on the dashboard. #[arg(long, env = \"APP_BASE_URL\", default_value = \"https://nixos.local:5173/\")] pub app_base_url: String, /// Perform health check and exit #[arg(long, help = \"Perform health check against running server\")] pub health_check: bool, /// Port for health check (defaults to 3000) #[arg(long, default_value = \"3000\", help = \"Port to check for health endpoint\")] pub health_check_port: u16, /// Host for health check (defaults to localhost) #[arg(long, default_value = \"127.0.0.1\", help = \"Host to check for health endpoint\")] pub health_check_host: String, }": 1
+    }
   },
   "apps/servers/file_host/src/error.rs": {
-    "clippy::match_same_arms": 1,
-    "clippy::missing_const_for_fn": 3
+    "clippy::match_same_arms": {
+      "Self::Forbidden => StatusCode::FORBIDDEN,": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "fn code(&self) -> &'static str { match self { Self::Unauthorized => \"unauthorized\", Self::Forbidden => \"forbidden\", Self::NotFound => \"not_found\", Self::InvalidData => \"invalid_data\", Self::InvalidMimeType(_) => \"invalid_mime_type\", Self::InvalidEncodedDate(_) => \"invalid_encoded_date\", Self::UnprocessableEntity { .. } => \"unprocessable_entity\", Self::MaxRecordLimitExceeded => \"max_record_limit_exceeded\", Self::Conflict(_) => \"conflict\", Self::NonSerializableData(_) => \"serialization_error\", Self::IntegerConversionError(_) => \"integer_conversion_error\", Self::ResponseBuildError(_) => \"response_build_error\", Self::IoError(_) => \"io_error\", Self::TowerError(_) => \"tower_error\", Self::NatsTransportError(_) => \"nats_transport_error\", Self::BroadcastError(_) => \"broadcast_error\", Self::Upstream(_) => \"upstream_error\", Self::Cache(_) => \"cache_error\", Self::Sqlite(_) => \"database_error\", Self::OperationError(_) => \"operation_error\", Self::UnexpectedSinglePair => \"unexpected_single_pair\", Self::RequestTimeout => \"request_timeout\", Self::ServiceOverloaded => \"service_overloaded\", Self::FeatureNotConfigured(_) => \"feature_not_configured\", } }": 1,
+      "fn message(&self) -> &'static str { match self { Self::Unauthorized => \"authentication required\", Self::Forbidden => \"user may not perform that action\", Self::NotFound => \"request path not found\", Self::InvalidData => \"invalid data schema\", Self::InvalidMimeType(_) => \"invalid mime type\", Self::InvalidEncodedDate(_) => \"invalid encoded date\", Self::UnprocessableEntity { .. } => \"error in request body\", Self::MaxRecordLimitExceeded => \"maximum record limit exceeded\", Self::Conflict(reason) => reason, Self::RequestTimeout => \"request timeout\", Self::ServiceOverloaded => \"service temporarily overloaded\", Self::FeatureNotConfigured(_) => \"feature not configured on this deployment\", _ => \"internal server error\", } }": 1,
+      "fn status_code(&self) -> StatusCode { match self { Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY, Self::Unauthorized => StatusCode::UNAUTHORIZED, Self::Forbidden => StatusCode::FORBIDDEN, Self::NotFound => StatusCode::NOT_FOUND, Self::Conflict(_) => StatusCode::CONFLICT, Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN, Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST, Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT, Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE, Self::Cache(e) => match e { DedupCacheError::NotFound => StatusCode::NOT_FOUND, DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST, _ => StatusCode::INTERNAL_SERVER_ERROR, }, _ => StatusCode::INTERNAL_SERVER_ERROR, } }": 1
+    }
   },
   "apps/servers/file_host/src/handlers/db/activities.rs": {
-    "clippy::expect_used": 1,
-    "clippy::missing_errors_doc": 2
+    "clippy::expect_used": {
+      "headers.insert(IF_NONE_MATCH, HeaderValue::from_str(raw).expect(\"a valid test header value\"));": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn get_activity(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {": 1,
+      "pub async fn list_activities(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, FileHostError> {": 1
+    }
   },
   "apps/servers/file_host/src/handlers/db/hopium.rs": {
-    "clippy::disallowed_macros": 7,
-    "clippy::manual_let_else": 1,
-    "clippy::missing_errors_doc": 11,
-    "clippy::option_if_let_else": 1,
-    "clippy::similar_names": 1,
-    "clippy::uninlined_format_args": 7,
-    "clippy::use_self": 1
+    "clippy::disallowed_macros": {
+      "let cache_key = format!(\"mood_event_{}\", id);": 5,
+      "let cache_key = format!(\"mood_events_team_{}\", team);": 1,
+      "let cache_key = format!(\"mood_events_week_{}\", week);": 1
+    },
+    "clippy::manual_let_else": {
+      "let result = match result_opt { Some(event) => event, None => return Err(MoodEventError::NotFound.into()), };": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn batch_create_mood_events(State(state): State<AppState>, Json(request): Json<BatchCreateRequest>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {": 1,
+      "pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(request): Json<BatchDeleteRequest>) -> Result<Json<BatchDeleteResponse>, FileHostError> {": 1,
+      "pub async fn batch_update_mood_events(State(state): State<AppState>, Json(request): Json<BatchUpdateRequest>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {": 1,
+      "pub async fn create_mood_event(State(state): State<AppState>, Json(event): Json<CreateMoodEvent>) -> Result<Json<MoodEvent>, FileHostError> {": 1,
+      "pub async fn delete_mood_event(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, FileHostError> {": 1,
+      "pub async fn get_all_mood_events(State(state): State<AppState>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {": 1,
+      "pub async fn get_mood_event_by_id(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Json<MoodEvent>, FileHostError> {": 1,
+      "pub async fn get_mood_events_by_team(State(state): State<AppState>, Path(team): Path<String>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {": 1,
+      "pub async fn get_mood_events_by_week(State(state): State<AppState>, Path(week): Path<i64>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {": 1,
+      "pub async fn get_mood_stats(State(state): State<AppState>) -> Result<Json<MoodStats>, FileHostError> {": 1,
+      "pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64>, Json(update): Json<UpdateMoodEvent>) -> Result<Json<MoodEvent>, FileHostError> {": 1
+    },
+    "clippy::option_if_let_else": {
+      "match event_opt { Some(event) => Ok(Json(event)), None => Err(MoodEventError::NotFound.into()), }": 1
+    },
+    "clippy::similar_names": {
+      "let (stats, was_cached) = state": 1
+    },
+    "clippy::uninlined_format_args": {
+      "let cache_key = format!(\"mood_event_{}\", id);": 5,
+      "let cache_key = format!(\"mood_events_team_{}\", team);": 1,
+      "let cache_key = format!(\"mood_events_week_{}\", week);": 1
+    },
+    "clippy::use_self": {
+      "FileHostError::OperationError(err.to_string())": 1
+    }
   },
   "apps/servers/file_host/src/handlers/db/session.rs": {
-    "clippy::disallowed_macros": 2,
-    "clippy::missing_errors_doc": 8
+    "clippy::disallowed_macros": {
+      "format!(\"session-{}\", uuid::Uuid::new_v4())": 1,
+      "name: format!(\"{} (copy)\", source.name),": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn create_session(State(state): State<AppState>, subject: SubjectId, Json(input): Json<CreateSession>) -> Result<Json<SessionRecord>, FileHostError> {": 1,
+      "pub async fn delete_session(State(state): State<AppState>, subject: SubjectId, Path(id): Path<String>) -> Result<Json<serde_json::Value>, FileHostError> {": 1,
+      "pub async fn delete_sessions(State(state): State<AppState>, subject: SubjectId, Json(request): Json<RemoveManyRequest>) -> Result<Json<serde_json::Value>, FileHostError> {": 1,
+      "pub async fn duplicate_session(State(state): State<AppState>, subject: SubjectId, Path(id): Path<String>) -> Result<Json<SessionRecord>, FileHostError> {": 1,
+      "pub async fn get_session(State(state): State<AppState>, subject: SubjectId, Path(id): Path<String>) -> Result<Json<SessionRecord>, FileHostError> {": 1,
+      "pub async fn list_sessions(State(state): State<AppState>, subject: SubjectId) -> Result<Json<Vec<SessionRecord>>, FileHostError> {": 1,
+      "pub async fn set_status(State(state): State<AppState>, subject: SubjectId, Json(request): Json<StatusManyRequest>) -> Result<Json<Vec<SessionRecord>>, FileHostError> {": 1,
+      "pub async fn update_session( State(state): State<AppState>, subject: SubjectId, Path(id): Path<String>, Json(patch): Json<UpdateSession>, ) -> Result<Json<SessionRecord>, FileHostError> {": 1
+    }
   },
   "apps/servers/file_host/src/handlers/db/tab.rs": {
-    "clippy::disallowed_macros": 2,
-    "clippy::doc_markdown": 15,
-    "clippy::missing_const_for_fn": 2,
-    "clippy::missing_errors_doc": 10,
-    "clippy::option_if_let_else": 1,
-    "clippy::uninlined_format_args": 1,
-    "clippy::use_self": 1
+    "clippy::disallowed_macros": {
+      "format!(\"tab_{}\", tab_id)": 1,
+      "let session_id = format!(\"tabs-{}\", captured_at.timestamp());": 1
+    },
+    "clippy::doc_markdown": {
+      "/// - No CaptureSession wrapper (pipeline receives Vec<TabCapture> directly)": 1,
+      "/// - No pipeline_store on AppState (Store is daemon-internal)": 2,
+      "/// Carried in the JobEnvelope; pipeline uses it as an artifact key prefix.": 1,
+      "/// DELETE /tabs/:tab_id \u2014 explicit close signal from extension.": 1,
+      "/// GET /tabs/:tab_id": 1,
+      "/// POST /tabs/reconcile \u2014 extension reports currently known tab_ids;": 1,
+      "/// The Axum server is the authority on tab data (SQLite).": 1,
+      "/// This handler publishes a JobEnvelope to NATS; the daemon worker receives": 1,
+      "/// Used by the extension to report which tab_ids are currently known.": 1,
+      "/// it returns StageError::Retryable \u2192 NAK \u2192 JetStream redelivers. The": 2,
+      "/// session_id is stable for the lifetime of the envelope so artifact keys": 1,
+      "/// session_id scopes the Redis artifacts written by the pipeline daemon": 1,
+      "/// tab_ids in DB that the extension did not report as active.": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "fn all_key() -> &'static str { \"tabs_all\" }": 1,
+      "fn summaries_key() -> &'static str { \"tab_summaries\" }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn batch_delete_tabs(State(state): State<AppState>, Json(request): Json<BatchDeleteRequest>) -> Result<Json<BatchDeleteResponse>, FileHostError> {": 1,
+      "pub async fn batch_upsert_tabs(State(state): State<AppState>, Json(request): Json<BatchUpsertRequest>) -> Result<Json<BatchUpsertResponse>, FileHostError> {": 1,
+      "pub async fn delete_tab(State(state): State<AppState>, Path(tab_id): Path<String>) -> Result<StatusCode, FileHostError> {": 1,
+      "pub async fn get_all_tabs(State(state): State<AppState>) -> Result<Json<Vec<TabCapture>>, FileHostError> {": 1,
+      "pub async fn get_tab(State(state): State<AppState>, Path(tab_id): Path<String>) -> Result<Json<TabCapture>, FileHostError> {": 1,
+      "pub async fn get_tab_summaries(State(state): State<AppState>) -> Result<Json<Vec<TabSummary>>, FileHostError> {": 1,
+      "pub async fn prune_tabs(State(state): State<AppState>, Json(request): Json<PruneRequest>) -> Result<Json<PruneResponse>, FileHostError> {": 1,
+      "pub async fn reconcile_tabs(State(state): State<AppState>, Json(request): Json<ReconcileRequest>) -> Result<Json<ReconcileResponse>, FileHostError> {": 1,
+      "pub async fn trigger_pipeline(State(state): State<AppState>) -> Result<Json<PipelineResponse>, FileHostError> {": 1,
+      "pub async fn upsert_tab(State(state): State<AppState>, Json(tab): Json<TabCapture>) -> Result<Json<TabCapture>, FileHostError> {": 1
+    },
+    "clippy::option_if_let_else": {
+      "match tab_opt { Some(t) => Ok(Json(t)), None => Err(TabError::NotFound.into()), }": 1
+    },
+    "clippy::uninlined_format_args": {
+      "format!(\"tab_{}\", tab_id)": 1
+    },
+    "clippy::use_self": {
+      "FileHostError::OperationError(err.to_string())": 1
+    }
   },
   "apps/servers/file_host/src/handlers/pipeline.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::future_not_send": 1,
-    "clippy::missing_errors_doc": 1,
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::doc_markdown": {
+      "/// Shared \"cache-key \u2192 timer \u2192 dedup_cache.get_or_fetch \u2192 record_cache_hit\"": 2
+    },
+    "clippy::future_not_send": {
+      "pub async fn fetch_cached<T, F, Fut>(state: &AppState, operation: &'static str, cache_key: &str, fetch: F) -> Result<(T, bool), FileHostError>": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn fetch_cached<T, F, Fut>(state: &AppState, operation: &'static str, cache_key: &str, fetch: F) -> Result<(T, bool), FileHostError> where T: Serialize + for<'de> Deserialize<'de>, F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<T, DedupCacheError>> + Send,": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// Shared \"cache-key \u2192 timer \u2192 dedup_cache.get_or_fetch \u2192 record_cache_hit\" /// shape used by every read handler that fronts an upstream fetch (Sheets or /// Drive) with the dedup cache. This only removes that wrapping boilerplate \u2014 /// callers still own the fetch closure, including any transform that needs /// to happen inside it (so it's covered by the cache) or after the call /// returns (so it re-runs on every request, cache hit or not).": 1
+    }
   },
   "apps/servers/file_host/src/handlers/presence.rs": {
-    "clippy::missing_errors_doc": 1,
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn observe_lease(State(state): State<AppState>, subject: SubjectId, Json(request): Json<ObserveLeaseRequest>) -> Result<Json<ObserveLeaseResponse>, FileHostError> {": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// What the client is looking at. `nudge::presence` matches this against /// `StudyAction::session_id()`, so for every action but `GetStarted` this is /// the session id the dashboard currently has open \u2014 see `docs/study-nudge.md` /// for why `GetStarted` (no session yet) is never suppressible by a lease at /// all, whatever context key is posted here.": 1
+    }
   },
   "apps/servers/file_host/src/handlers/push.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::missing_errors_doc": 4
+    "clippy::disallowed_macros": {
+      "outcomes.push(format!(\"{}: {}\", stored.subscription.endpoint, outcome.label()));": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn send_test(State(state): State<AppState>, subject: SubjectId) -> Result<Json<Vec<String>>, FileHostError> {": 1,
+      "pub async fn subscribe(State(state): State<AppState>, subject: SubjectId, Json(request): Json<SubscribeRequest>) -> Result<Json<SubscribeResponse>, FileHostError> {": 1,
+      "pub async fn unsubscribe(State(state): State<AppState>, Json(request): Json<UnsubscribeRequest>) -> Result<Json<DeleteResponse>, FileHostError> {": 1,
+      "pub async fn vapid_key(State(state): State<AppState>) -> Result<Json<VapidKeyResponse>, FileHostError> {": 1
+    }
   },
   "apps/servers/file_host/src/handlers/signals.rs": {
-    "clippy::missing_errors_doc": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn observe(State(state): State<AppState>, subject: SubjectId, Json(signal): Json<StudySignal>) -> Result<Json<SignalAccepted>, FileHostError> {": 1
+    }
   },
   "apps/servers/file_host/src/handlers/tab_metadata.rs": {
-    "clippy::ignored_unit_patterns": 2,
-    "clippy::let_unit_value": 2,
-    "clippy::missing_errors_doc": 1,
-    "clippy::redundant_closure": 1
+    "clippy::ignored_unit_patterns": {
+      "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1,
+      "let _ = state.realtime.ws.broadcast_event(transport, event).await?;": 1
+    },
+    "clippy::let_unit_value": {
+      "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1,
+      "let _ = state.realtime.ws.broadcast_event(transport, event).await?;": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn now_playing(State(state): State<AppState>, Json(payload): Json<NowPlaying>) -> Result<StatusCode, FileHostError> {": 1
+    },
+    "clippy::redundant_closure": {
+      "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1
+    }
   },
   "apps/servers/file_host/src/handlers/utterance.rs": {
-    "clippy::derive_partial_eq_without_eq": 1
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]": 1
+    }
   },
   "apps/servers/file_host/src/health.rs": {
-    "clippy::disallowed_macros": 4,
-    "clippy::missing_errors_doc": 1,
-    "clippy::too_long_first_doc_paragraph": 1,
-    "clippy::uninlined_format_args": 1
+    "clippy::disallowed_macros": {
+      "eprintln!(\"Readiness check failed: HTTP {}\", response.status());": 1,
+      "eprintln!(\"Readiness check failed: {}\", e);": 1,
+      "let url = format!(\"http://{}:{}/ready\", config.health_check_host, config.health_check_port);": 1,
+      "println!(\"Readiness check passed\");": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn perform_health_check(config: &Config) -> Result<()> {": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// The `--health-check` CLI flag's target, invoked by `infra/compose/file_host.yml`'s /// container healthcheck (`file_host --health-check`). Deliberately `/ready`, /// not `/health` \u2014 see #213 (F1). This is what `depends_on: condition: /// service_healthy` gates on elsewhere in the compose stack, so it needs to /// mean \"can serve\", not merely \"the process answers a socket\". The flag /// keeps its name (external scripts and this compose file already invoke it) /// even though its target moved; only the request behind it changed.": 1
+    },
+    "clippy::uninlined_format_args": {
+      "eprintln!(\"Readiness check failed: {}\", e);": 1
+    }
   },
   "apps/servers/file_host/src/lib.rs": {
-    "clippy::clone_on_copy": 1,
-    "clippy::missing_errors_doc": 1,
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::clone_on_copy": {
+      "let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// Base path all versioned HTTP routers are nested under in `main.rs`. /// `/health` is the deliberate exception: it stays unversioned so load /// balancers and orchestrators don't need to track API version bumps.": 1
+    }
   },
   "apps/servers/file_host/src/main.rs": {
-    "clippy::await_holding_lock": 1,
-    "clippy::ignored_unit_patterns": 1,
-    "clippy::significant_drop_in_scrutinee": 1,
-    "clippy::too_many_lines": 1,
-    "clippy::unused_async": 1,
-    "clippy::unwrap_used": 1
+    "clippy::await_holding_lock": {
+      "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
+    },
+    "clippy::ignored_unit_patterns": {
+      "Ok(_) => tracing::info!(\"Graceful shutdown completed\"),": 1
+    },
+    "clippy::significant_drop_in_scrutinee": {
+      "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
+    },
+    "clippy::too_many_lines": {
+      "async fn main() -> Result<()> {": 1
+    },
+    "clippy::unused_async": {
+      "async fn handle_tower_error(error: BoxError) -> FileHostError { if error.is::<tower::timeout::error::Elapsed>() { tracing::warn!(\"Request timeout: {}\", error); refusals::record_http(\"timeout\"); FileHostError::RequestTimeout } else if error.is::<tower::load_shed::error::Overloaded>() { tracing::warn!(\"Service overloaded: {}\", error); refusals::record_http(\"load_shed\"); FileHostError::ServiceOverloaded } else { tracing::error!(\"Unhandled tower error: {}\", error); FileHostError::TowerError(error) } }": 1
+    },
+    "clippy::unwrap_used": {
+      "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
+    }
   },
   "apps/servers/file_host/src/metrics/instruments.rs": {
-    "clippy::cast_precision_loss": 1,
-    "clippy::doc_markdown": 2,
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::cast_precision_loss": {
+      ".record(size_bytes as f64);": 1
+    },
+    "clippy::doc_markdown": {
+      "//! OTel in this crate is tracing-only from here on; see": 1,
+      "/// Records operation metrics - replaces timed_operation! macro": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "//! Application-level counters and histograms, recorded through the //! `metrics` facade per [#139][issue-139] (P1) rather than OpenTelemetry \u2014 //! OTel in this crate is tracing-only from here on; see //! `metrics::observability` for the span pipeline that remains. //! //! [issue-139]: https://github.com/paulgsc/server/issues/139": 1
+    }
   },
   "apps/servers/file_host/src/metrics/observability.rs": {
-    "clippy::missing_errors_doc": 2,
-    "clippy::significant_drop_tightening": 1,
-    "clippy::too_long_first_doc_paragraph": 1,
-    "clippy::unused_async": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn shutdown(self) -> Result<(), ObservabilityError> {": 1,
+      "pub fn new() -> Result<Self, ObservabilityError> {": 1
+    },
+    "clippy::significant_drop_tightening": {
+      "let trace_exporter = opentelemetry_otlp::SpanExporter::builder()": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// Tracing-only. Per #139 (P1), application measurements go through the /// `metrics` facade and a Prometheus scrape (see `metrics::instruments` /// and the `some-metrics` seam crate), not OTLP \u2014 this guard no longer /// carries a meter provider.": 1
+    },
+    "clippy::unused_async": {
+      "pub async fn shutdown(self) -> Result<(), ObservabilityError> { self.tracer_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?; Ok(()) }": 1
+    }
   },
   "apps/servers/file_host/src/metrics/periodic.rs": {
-    "clippy::doc_markdown": 1
+    "clippy::doc_markdown": {
+      "//! SQLite pool gauges are cheap synchronous reads, but sampling them here": 1
+    }
   },
   "apps/servers/file_host/src/metrics/pool.rs": {
-    "clippy::doc_markdown": 1
+    "clippy::doc_markdown": {
+      "//! The shared SQLite pool (`main.rs`) is `max_connections(5)`, split across": 1
+    }
   },
   "apps/servers/file_host/src/metrics/waker.rs": {
-    "clippy::too_long_first_doc_paragraph": 2
+    "clippy::too_long_first_doc_paragraph": {
+      "/// How many subjects `due` returned this pass, including zero. Paired with /// `record_verdict`'s `\"sent\"` outcome so a dashboard can compare them /// directly: subjects due with nothing landing as `\"sent\"`, sustained, is /// exactly the silence this feature exists to prevent for whoever needs it /// most.": 1,
+      "/// The terminal outcome one due subject reached this pass, and \u2014 for /// `verdict == \"suppressed\"` only \u2014 which `nudge::constraints::Suppressed` /// reason it was. `reason` is `\"n/a\"` for every other verdict so the label /// set stays fixed regardless of which branch fired, rather than growing an /// optional label Prometheus would show as absent on some series and /// present on others. /// /// This is the gap LOOPS (`nudge_waker_last_attempt_timestamp_seconds`) cannot": 1
+    }
   },
   "apps/servers/file_host/src/models/utils.rs": {
-    "clippy::disallowed_macros": 2,
-    "clippy::missing_errors_doc": 2,
-    "clippy::non_std_lazy_statics": 2,
-    "clippy::uninlined_format_args": 2,
-    "clippy::unwrap_used": 2
+    "clippy::disallowed_macros": {
+      "Err(format!(\"Invalid COLOR: {}\", color))": 1,
+      "Err(format!(\"Invalid URL: {}\", url))": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub fn deserialize_color<'de, D>(deserializer: D) -> Result<String, D::Error> where D: Deserializer<'de>,": 1,
+      "pub fn deserialize_url<'de, D>(deserializer: D) -> Result<String, D::Error> where D: Deserializer<'de>,": 1
+    },
+    "clippy::non_std_lazy_statics": {
+      "lazy_static::lazy_static! { static ref COLOR_REGEX: Regex = Regex::new( r\"^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$\" ).unwrap(); }": 1,
+      "lazy_static::lazy_static! { static ref URL_REGEX: Regex = Regex::new( r\"^(https?://)([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})(/.*)?$\" ).unwrap(); }": 1
+    },
+    "clippy::uninlined_format_args": {
+      "Err(format!(\"Invalid COLOR: {}\", color))": 1,
+      "Err(format!(\"Invalid URL: {}\", url))": 1
+    },
+    "clippy::unwrap_used": {
+      "static ref COLOR_REGEX: Regex = Regex::new( r\"^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$\" ).unwrap();": 1,
+      "static ref URL_REGEX: Regex = Regex::new( r\"^(https?://)([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})(/.*)?$\" ).unwrap();": 1
+    }
   },
   "apps/servers/file_host/src/nudge/constraints.rs": {
-    "clippy::disallowed_macros": 1
+    "clippy::disallowed_macros": {
+      "crate::nudge::clock::parse_timestamp(&format!(\"2026-08-05T{hour:02}:00:00Z\")).unwrap()": 1
+    }
   },
   "apps/servers/file_host/src/nudge/payload.rs": {
-    "clippy::disallowed_macros": 2,
-    "clippy::option_if_let_else": 1
+    "clippy::disallowed_macros": {
+      "format!(\"{base_url}/\")": 1,
+      "url: format!(\"{}sessions/{session_id}\", Self::normalize_base(base_url)),": 1
+    },
+    "clippy::option_if_let_else": {
+      "match action.session_id() { Some(session_id) => Self::for_session(base_url, session_id, title.to_owned(), body.to_owned()), None => Self::for_base(base_url, title.to_owned(), body.to_owned()), }": 1
+    }
   },
   "apps/servers/file_host/src/nudge/presence.rs": {
-    "clippy::expect_used": 3
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "ws.add_connection(&headers, &addr, &CancellationToken::new()) .await .expect(\"the probe's connection is accepted like any other\");": 1
+    }
   },
   "apps/servers/file_host/src/nudge/waker.rs": {
-    "clippy::expect_used": 21,
-    "clippy::must_use_candidate": 1,
-    "clippy::too_long_first_doc_paragraph": 1,
-    "clippy::too_many_lines": 2
+    "clippy::expect_used": {
+      "EngagementRepository::new(pool.clone()) .seed_if_absent(&subject_id, &[], &now_str, &past) .await .expect(\"seed a due subject's gate row\");": 1,
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 2,
+      "engagement .save(subject_id, &levels, &now_str, &now_str) .await .expect(\"seed a due, nothing-prepared subject\");": 1,
+      "let all_sessions = sessions.list(subject_id).await.expect(\"list this subject's sessions\");": 1,
+      "let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()) .await .expect(\"a pass over a freshly-seeded subject should not error\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 2,
+      "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\")": 1,
+      "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\") .expect(\"consider should have written a findable session even though admission later refused\");": 1,
+      "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\")": 1,
+      "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\") .expect(\"the id first_prepared returned should resolve to a real row\");": 1,
+      "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 2,
+      "let second_pass = consider(&pool, &nudge, &engagement, subject_id, far_deadline()) .await .expect(\"a second pass should not error\");": 1,
+      "let still_the_same = sessions.first_prepared(subject_id).await.expect(\"read back again\").expect(\"still findable\");": 2,
+      "let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), \"mailto:test@example.com\").expect(\"the fixed test keypair validates\");": 2,
+      "run_once(&pool, &nudge) .await .expect(\"a pass over freshly-drafted sessions and unconsented subjects should not error\");": 1,
+      "sessions_repo.upsert(&subject_id, &record).await.expect(\"seed a session row owned by this due subject\");": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: &[ActivityRecord], inputs: &RankingInputs, now: DateTime<Utc>) -> SessionRecord {": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// A provisioned session, fully materialised \u2014 #282 (RCM5), the story that /// closes out what #279 (RCM2) deliberately left empty. `recommend()` (#280, /// RCM3) picks the activities; `provision()` (#281, RCM4) sets each one's /// floor duration; this function's own naming and duration logic /// (`activity_repo::naming`, `activity_repo::provisioning::total_duration_ms`) /// fill in everything else #282's issue table asks for. /// /// **`status: Scheduled`, not `Draft`.** A deliberate change from what this": 1
+    },
+    "clippy::too_many_lines": {
+      "async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str, deadline: tokio::time::Instant) -> Result<bool, sqlx::Error> {": 1,
+      "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop() {": 1
+    }
   },
   "apps/servers/file_host/src/routes/inventory.rs": {
-    "clippy::doc_markdown": 1
+    "clippy::doc_markdown": {
+      "//! would require a fully built `AppState` (SQLite and NATS), which": 1
+    }
   },
   "apps/servers/file_host/src/routes/ts_emitter.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::expect_used": 2
+    "clippy::disallowed_macros": {
+      "assert!(rendered.contains(&format!(\"export const API_BASE_PATH = \\\"{}\\\";\", snapshot.api_base_path)));": 1
+    },
+    "clippy::expect_used": {
+      "let server_route_start = rendered.find(\"export type ServerRoute\").expect(\"render_ts always emits a ServerRoute union\");": 1,
+      "let unversioned_start = rendered.find(\"export type UnversionedRoute\").expect(\"render_ts always emits an UnversionedRoute union\");": 1
+    }
   },
   "apps/servers/file_host/src/utils.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::cloned_instead_of_copied": 1,
-    "clippy::disallowed_macros": 3,
-    "clippy::manual_midpoint": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_panics_doc": 2,
-    "clippy::must_use_candidate": 3,
-    "clippy::should_panic_without_expect": 1,
-    "clippy::uninlined_format_args": 4,
-    "clippy::unreadable_literal": 2,
-    "clippy::unwrap_used": 2
+    "clippy::cast_possible_truncation": {
+      "let mut rng_seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;": 1
+    },
+    "clippy::cloned_instead_of_copied": {
+      "let expected_rows: std::collections::HashSet<u64> = [1, 2, 3, 5, 6, 7].iter().cloned().collect();": 1
+    },
+    "clippy::disallowed_macros": {
+      "let now_str = format!(\"{:x}\", now);": 1,
+      "let pid_str = format!(\"{:x}\", pid);": 1,
+      "println!(\"random_value: {}\", random_value);": 1
+    },
+    "clippy::manual_midpoint": {
+      "let mid = (low + high) / 2;": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "fn lcg(seed: &mut u64) -> u64 { // Constants for the LCG (values commonly used and known to have good properties) const A: u64 = 63689; const C: u64 = 95070899; const M: u64 = 4294967296; // 2^32 *seed = (A.wrapping_mul(*seed).wrapping_add(C)) % M; *seed }": 1
+    },
+    "clippy::missing_panics_doc": {
+      "pub fn generate_uuid() -> [u8; 32] {": 1,
+      "pub fn sample_random_rows(ranges: &[Range2D], k: usize) -> Vec<[u64; 2]> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn generate_uuid() -> [u8; 32] {": 1,
+      "pub fn sample_random_rows(ranges: &[Range2D], k: usize) -> Vec<[u64; 2]> {": 1,
+      "pub fn string_to_buffer(input: &str) -> [u8; 32] {": 1
+    },
+    "clippy::should_panic_without_expect": {
+      "#[should_panic]": 1
+    },
+    "clippy::uninlined_format_args": {
+      "assert!(seen.insert(row), \"Duplicate row found: {}\", row);": 1,
+      "let now_str = format!(\"{:x}\", now);": 1,
+      "let pid_str = format!(\"{:x}\", pid);": 1,
+      "println!(\"random_value: {}\", random_value);": 1
+    },
+    "clippy::unreadable_literal": {
+      "const C: u64 = 95070899;": 1,
+      "const M: u64 = 4294967296; // 2^32": 1
+    },
+    "clippy::unwrap_used": {
+      "let mut rng_seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;": 1,
+      "let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();": 1
+    }
   },
   "apps/servers/file_host/src/utils/retry.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::missing_errors_doc": 1
+    "clippy::cast_possible_truncation": {
+      "let backoff = base_delay * factor.pow((attempt - 1) as u32);": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn retry_async<F, Fut, T, E>(mut operation: F, max_attempts: usize, base_delay: Duration, factor: u32) -> Result<T, E> where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<T, E>>,": 1
+    }
   },
   "apps/servers/file_host/src/websocket.rs": {
-    "clippy::doc_markdown": 1,
-    "clippy::enum_glob_use": 1,
-    "clippy::expect_used": 5,
-    "clippy::ignored_unit_patterns": 1,
-    "clippy::manual_let_else": 1,
-    "clippy::must_use_candidate": 1,
-    "clippy::new_without_default": 1,
-    "clippy::too_long_first_doc_paragraph": 1,
-    "clippy::unwrap_used": 2
+    "clippy::doc_markdown": {
+      "/// Creates a new WebSocketFsm instance - only responsible for initialization": 1
+    },
+    "clippy::enum_glob_use": {
+      "use AcquireErrorKind::*;": 1
+    },
+    "clippy::expect_used": {
+      "find(&snapshot, \"ws_connection_duration_seconds\", &[(\"end_reason\", \"client_disconnect\")]).expect(\"duration recorded under a real end_reason\")": 1,
+      "fsm.remove_connection(&key, \"test teardown\".to_string()).await.expect(\"remove_connection\");": 1,
+      "let addr: SocketAddr = \"127.0.0.1:9999\".parse().expect(\"valid socket addr\");": 1,
+      "let key = fsm.add_connection(&headers, &addr, &cancel).await.expect(\"add_connection\");": 1,
+      "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1
+    },
+    "clippy::ignored_unit_patterns": {
+      "_ = cancel_token.cancelled() => \"cleanup\",": 1
+    },
+    "clippy::manual_let_else": {
+      "let conn_key = match establish_connection(&ws_fsm, &headers, &addr, &cancel_token).await { Ok(connection) => connection, Err(_) => { return; } };": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new() -> Self {": 1
+    },
+    "clippy::new_without_default": {
+      "pub fn new() -> Self { let store = Arc::new(ConnectionStore::<EventType>::new()); Self { store } }": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// How long a connection's message-processing loop will let it sit without /// inbound activity before treating it as stale \u2014 see /// `message::handlers::process_incoming_messages`. Also the \"freshness\" /// window `connection_gauges` uses for `live`, read by the periodic gauge /// sweep for the CLIENTS dashboard row (#214/#227). `nudge::presence` no /// longer shares this window: presence moved to a client-written lease with /// its own TTL (`NUDGE_PRESENCE_LEASE_TTL_SECONDS`), because a WebSocket /// connection's staleness was never actually the same question as \"does this /// subject have a fresh presence lease\" \u2014 the old code sharing one constant /// for both was a coincidence of implementation, not a real invariant.": 1
+    },
+    "clippy::unwrap_used": {
+      "_ = cleanup.forward_task.as_mut().unwrap() => \"client_disconnect\",": 1,
+      "result = cleanup.message_task.as_mut().unwrap() => match result {": 1
+    }
   },
   "apps/servers/file_host/src/websocket/broadcast.rs": {
-    "clippy::missing_errors_doc": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn broadcast_event(&self, transport: NatsTransport<UnifiedEvent>, event: Event) -> Result<(), BroadcastError> {": 1
+    }
   },
   "apps/servers/file_host/src/websocket/broadcast/errors.rs": {
-    "clippy::use_self": 1
+    "clippy::use_self": {
+      "BroadcastError::Other(s)": 1
+    }
   },
   "apps/servers/file_host/src/websocket/broadcast/handlers.rs": {
-    "clippy::disallowed_macros": 2,
-    "clippy::disallowed_methods": 2,
-    "clippy::ignored_unit_patterns": 2,
-    "clippy::manual_is_multiple_of": 2,
-    "clippy::needless_borrow": 1,
-    "clippy::needless_continue": 1,
-    "clippy::redundant_pub_crate": 1,
-    "clippy::semicolon_if_nothing_returned": 2,
-    "clippy::unused_unit": 2
+    "clippy::disallowed_macros": {
+      "sender.send_with_backpressure_warn(event.clone(), &format!(\"NATS {}\", event_type.subject())).await": 1,
+      "sender.try_send_graceful(event.clone(), &format!(\"NATS {}\", event_type.subject()))": 1
+    },
+    "clippy::disallowed_methods": {
+      "let json = serde_json::to_string(event).map_err(|e| {": 1,
+      "let msg = match serde_json::to_string(&ping_event) {": 1
+    },
+    "clippy::ignored_unit_patterns": {
+      "_ = cancel_token.cancelled() => break,": 1,
+      "_ = cancel_token.cancelled() => {": 1
+    },
+    "clippy::manual_is_multiple_of": {
+      "if count % 100 == 0 {": 1,
+      "if count % 1000 == 0 {": 1
+    },
+    "clippy::needless_borrow": {
+      "let mut rx = transport.subscribe_to_subject(&event_type.subject()).await;": 1
+    },
+    "clippy::needless_continue": {
+      "continue;": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) fn spawn_event_forwarder(": 1
+    },
+    "clippy::semicolon_if_nothing_returned": {
+      "()": 2
+    },
+    "clippy::unused_unit": {
+      "()": 2
+    }
   },
   "apps/servers/file_host/src/websocket/connection.rs": {
-    "clippy::disallowed_macros": 3,
-    "clippy::doc_markdown": 1,
-    "clippy::expect_used": 1,
-    "clippy::map_unwrap_or": 1,
-    "clippy::missing_errors_doc": 3,
-    "clippy::must_use_candidate": 1,
-    "clippy::redundant_closure": 2,
-    "clippy::redundant_closure_for_method_calls": 1,
-    "clippy::single_match_else": 1,
-    "clippy::uninlined_format_args": 2,
-    "clippy::unused_async": 1
+    "clippy::disallowed_macros": {
+      "ClientId::new(format!(\"direct:{}:{:x}\", addr.ip(), user_agent_hash))": 1,
+      "return ClientId::new(format!(\"auth:{}\", client_id));": 1,
+      "return ClientId::new(format!(\"proxy:{}:{:x}\", client_ip, user_agent_hash));": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Generate a ClientId from request headers and socket address": 1
+    },
+    "clippy::expect_used": {
+      "\"127.0.0.1:9999\".parse().expect(\"valid socket addr\")": 1
+    },
+    "clippy::map_unwrap_or": {
+      "let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false);": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {": 1,
+      "pub async fn handle_subscription_update(&self, connection_id: &str, add_types: Vec<EventType>, remove_types: Vec<EventType>) -> Result<(), ConnectionError> {": 1,
+      "pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), ConnectionError> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn client_id_from_request(&self, headers: &HeaderMap, addr: &SocketAddr) -> ClientId {": 1
+    },
+    "clippy::redundant_closure": {
+      "handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1,
+      "handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1
+    },
+    "clippy::redundant_closure_for_method_calls": {
+      "if let Some(client_ip) = forwarded_for.split(',').next().map(|s| s.trim()) {": 1
+    },
+    "clippy::single_match_else": {
+      "match self.store.remove(client_key).await { Some(handle) => { let connection_id = handle.connection.id.clone(); let client_id = handle.connection.client_id.clone(); let duration = handle.connection.get_duration(); let state = handle.get_state().await.ok(); let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false); if let Err(e) = handle.shutdown().await { warn!( connection_id = %connection_id, error = %e, \"Failed to gracefully shutdown connection actor\" ); } let elapsed = start.elapsed(); info!( connection_id = %connection_id, client_id = %client_id, lifetime_ms = duration.as_millis(), was_active = was_active, reason = %reason, cleanup_duration_ms = elapsed.as_millis(), \"Connection removed\" ); // `ws_connection_lifecycle_total{event=\"removed\"}` and the // duration histogram are recorded once per socket at // `ConnectionCleanup::drop` (websocket.rs), not here \u2014 this // function is called from several places that Drop still // runs after (stale timeout, client close, forwarder end), // and double-instrumenting both would double-count. Only // `connected` \u2014 cheap, and this store entry genuinely just // left \u2014 is refreshed here for immediacy. instrument::set_connected(self.store.len()); Ok(()) } None => { warn!( connection_key = client_key, reason = %reason, \"Attempted to remove non-existent connection\" ); Ok(()) } }": 1
+    },
+    "clippy::uninlined_format_args": {
+      "return ClientId::new(format!(\"auth:{}\", client_id));": 1,
+      "return ClientId::new(format!(\"proxy:{}:{:x}\", client_ip, user_agent_hash));": 1
+    },
+    "clippy::unused_async": {
+      "pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> { let start = Instant::now(); let connections: Vec<String> = self .store .keys() .into_iter() .filter(|key| { if let Some(handle) = self.store.get(key) { &handle.connection.client_id == client_id } else { false } }) .collect(); let elapsed = start.elapsed(); if !connections.is_empty() { info!( client_id = %client_id, connection_count = connections.len(), query_duration_ms = elapsed.as_millis(), \"Retrieved client connections\" ); } connections }": 1
+    }
   },
   "apps/servers/file_host/src/websocket/connection/errors.rs": {
-    "clippy::use_self": 1
+    "clippy::use_self": {
+      "ConnectionError::WebSocketSendError(err.to_string())": 1
+    }
   },
   "apps/servers/file_host/src/websocket/connection/handlers.rs": {
-    "clippy::disallowed_methods": 1,
-    "clippy::redundant_pub_crate": 3
+    "clippy::disallowed_methods": {
+      "let msg = serde_json::to_string(&ping_event)?;": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {": 1,
+      "pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {": 1,
+      "pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>) -> Result<(), ConnectionError> {": 1
+    }
   },
   "apps/servers/file_host/src/websocket/connection/instrument.rs": {
-    "clippy::too_long_first_doc_paragraph": 2
+    "clippy::too_long_first_doc_paragraph": {
+      "/// `ConnectionGuard`'s configured global capacity (`ws_conn_manager::MAX_GLOBAL`). /// Set once at startup, the same \"fixed value, dashboarded so it doesn't /// have to be memorised\" shape as `metrics::build_info::record`.": 1,
+      "/// `connected` / `live` / `subscribed` \u2014 see #227. `connected` is cheap /// (a `DashMap::len()`) and is also set synchronously from /// `add_connection`/`remove_connection`; `live` and `subscribed` require /// awaiting every connection actor and are refreshed only by /// `metrics::periodic`'s background sweep, never from the request or scrape /// path.": 1
+    }
   },
   "apps/servers/file_host/src/websocket/heartbeat.rs": {
-    "clippy::missing_const_for_fn": 3,
-    "clippy::must_use_candidate": 3,
-    "clippy::return_self_not_must_use": 3
+    "clippy::missing_const_for_fn": {
+      "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self { self.remove_after_stale = timeout; self }": 1,
+      "pub fn with_scan_interval(mut self, interval: Duration) -> Self { self.scan_interval = interval; self }": 1,
+      "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self { self.stale_after = timeout; self }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self {": 1,
+      "pub fn with_scan_interval(mut self, interval: Duration) -> Self {": 1,
+      "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self {": 1
+    },
+    "clippy::return_self_not_must_use": {
+      "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self { self.remove_after_stale = timeout; self }": 1,
+      "pub fn with_scan_interval(mut self, interval: Duration) -> Self { self.scan_interval = interval; self }": 1,
+      "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self { self.stale_after = timeout; self }": 1
+    }
   },
   "apps/servers/file_host/src/websocket/message.rs": {
-    "clippy::disallowed_macros": 4,
-    "clippy::match_same_arms": 1,
-    "clippy::needless_pass_by_value": 1,
-    "clippy::needless_return": 1,
-    "clippy::semicolon_if_nothing_returned": 1,
-    "clippy::uninlined_format_args": 4,
-    "clippy::unnecessary_semicolon": 1,
-    "clippy::unused_async": 1,
-    "clippy::unused_self": 1
+    "clippy::disallowed_macros": {
+      "\"unsubscribed\": event_types.iter().map(|t| format!(\"{:?}\", t)).collect::<Vec<_>>(),": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Invalid JSON: {}\", e));": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Subscription failed: {}\", e));": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Unsubscription failed: {}\", e));": 1
+    },
+    "clippy::match_same_arms": {
+      "Event::ObsCmd { .. } => { let _ = self.broadcast_event(transport, client_message).await; }": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "fn send_error_to_client(&self, ws_tx: UnboundedSender<Event>, error: &str) {": 1
+    },
+    "clippy::needless_return": {
+      "return;": 1
+    },
+    "clippy::semicolon_if_nothing_returned": {
+      "self.send_unsubscription_ack(ws_tx, conn_key, event_types).await": 1
+    },
+    "clippy::uninlined_format_args": {
+      "\"unsubscribed\": event_types.iter().map(|t| format!(\"{:?}\", t)).collect::<Vec<_>>(),": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Invalid JSON: {}\", e));": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Subscription failed: {}\", e));": 1,
+      "self.send_error_to_client(ws_tx, &format!(\"Unsubscription failed: {}\", e));": 1
+    },
+    "clippy::unnecessary_semicolon": {
+      "};": 1
+    },
+    "clippy::unused_async": {
+      "async fn send_unsubscription_ack(&self, ws_tx: UnboundedSender<Event>, conn_key: &str, event_types: Vec<EventType>) { let ack = Event::System(SystemEvent::ConnectionStateChanged { connection_id: conn_key.to_owned(), from: \"subscribed\".to_owned(), to: \"subscribed\".to_owned(), metadata: serde_json::json!({ \"unsubscribed\": event_types.iter().map(|t| format!(\"{:?}\", t)).collect::<Vec<_>>(), }), }); let context = \"subscription_ack\"; ws_tx.send_graceful(ack, context); }": 1
+    },
+    "clippy::unused_self": {
+      "fn send_error_to_client(&self, ws_tx: UnboundedSender<Event>, error: &str) {": 1
+    }
   },
   "apps/servers/file_host/src/websocket/message/handlers.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::ignored_unit_patterns": 1,
-    "clippy::map_unwrap_or": 1,
-    "clippy::redundant_pub_crate": 1,
-    "clippy::too_many_lines": 1
+    "clippy::disallowed_macros": {
+      ".map(|f| format!(\"{}: {}\", f.code, f.reason))": 1
+    },
+    "clippy::ignored_unit_patterns": {
+      "_ = cancel_token.cancelled() => {": 1
+    },
+    "clippy::map_unwrap_or": {
+      "let reason_str = reason .as_ref() .map(|f| format!(\"{}: {}\", f.code, f.reason)) .unwrap_or_else(|| \"No reason provided\".to_string());": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) fn spawn_process_incoming_messages(": 1
+    },
+    "clippy::too_many_lines": {
+      "async fn process_incoming_messages( mut receiver: SplitStream<WebSocket>, state: WebSocketFsm, transport: NatsTransport<UnifiedEvent>, ws_tx: UnboundedSender<Event>, conn_key: String, cancel_token: CancellationToken, ) -> (u64, &'static str) {": 1
+    }
   },
   "apps/servers/file_host/src/websocket/shutdown.rs": {
-    "clippy::wildcard_imports": 1
+    "clippy::wildcard_imports": {
+      "use super::*;": 1
+    }
   },
   "apps/some-obs/src/config.rs": {
-    "clippy::missing_errors_doc": 1,
-    "clippy::result_large_err": 1
+    "clippy::missing_errors_doc": {
+      "pub fn from_env() -> Result<Self> {": 1
+    },
+    "clippy::result_large_err": {
+      "pub fn from_env() -> Result<Self> {": 1
+    }
   },
   "apps/some-obs/src/error.rs": {
-    "clippy::use_self": 1
+    "clippy::use_self": {
+      "Error::Other(s)": 1
+    }
   },
   "apps/some-obs/src/service.rs": {
-    "clippy::missing_errors_doc": 2
+    "clippy::missing_errors_doc": {
+      "pub async fn new(config: Config) -> Result<Self> {": 1,
+      "pub async fn run(self) -> Result<()> {": 1
+    }
   },
   "apps/some-obs/src/service/command.rs": {
-    "clippy::ignored_unit_patterns": 1,
-    "clippy::missing_panics_doc": 1,
-    "clippy::must_use_candidate": 1,
-    "clippy::needless_continue": 1
+    "clippy::ignored_unit_patterns": {
+      "_ = self.cancel_token.cancelled() => {": 1
+    },
+    "clippy::missing_panics_doc": {
+      "pub fn spawn_command_handler(self: Arc<Self>) -> tokio::task::JoinHandle<()> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn spawn_command_handler(self: Arc<Self>) -> tokio::task::JoinHandle<()> {": 1
+    },
+    "clippy::needless_continue": {
+      "_ => continue,": 1
+    }
   },
   "apps/some-obs/src/service/events.rs": {
-    "clippy::ignored_unit_patterns": 3,
-    "clippy::must_use_candidate": 1,
-    "clippy::needless_borrow": 1,
-    "clippy::needless_continue": 1
+    "clippy::ignored_unit_patterns": {
+      "_ = self.cancel_token.cancelled() => {": 2,
+      "_ = tokio::time::sleep(delay) => {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn spawn_event_bridge(self: Arc<Self>) -> tokio::task::JoinHandle<()> {": 1
+    },
+    "clippy::needless_borrow": {
+      "if let Err(e) = transport.send_to_subject(&subject, unified_event).await {": 1
+    },
+    "clippy::needless_continue": {
+      "continue;": 1
+    }
   },
   "apps/some-obs/src/service/heartbeat.rs": {
-    "clippy::ignored_unit_patterns": 1,
-    "clippy::must_use_candidate": 2
+    "clippy::ignored_unit_patterns": {
+      "_ = self.cancel_token.cancelled() => {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn calculate_retry_delay(&self) -> Duration {": 1,
+      "pub fn spawn_health_checker(self: Arc<Self>) -> tokio::task::JoinHandle<()> {": 1
+    }
   },
   "crates/cursorium/examples/demo.rs": {
-    "clippy::disallowed_macros": 17,
-    "clippy::single_component_path_imports": 1,
-    "clippy::uninlined_format_args": 2
+    "clippy::disallowed_macros": {
+      "println!(\" \u2192 [{}] id: {:?}, age: {}ms\", name, lt.id, state.current_time - lt.started_at);": 1,
+      "println!(\"\\n\u23f1\ufe0f Demo 5: Sparse Timeline with Gaps\");": 1,
+      "println!(\"\\n\u2705 All demos completed!\\n\");": 1,
+      "println!(\"\\n\ud83c\udf0a Demo 2: Overlapping Event Lifetimes\");": 1,
+      "println!(\"\\n\ud83c\udf10 Demo 6: Complete Client Workflow\");": 1,
+      "println!(\"\\n\ud83c\udfac Stream Orchestrator Demo\\n\");": 1,
+      "println!(\"\\n\ud83d\udcc8 Demo 7: Event Density Analysis\");": 1,
+      "println!(\"\\n\ud83d\udd04 Demo 4: Dynamic Configuration Pipeline\");": 1,
+      "println!(\"\\n\ud83d\udd0d Demo 3: Active Lifetime Inspection\");": 1,
+      "println!(\"\u23f8 Paused...\");": 1,
+      "println!(\"\u25b6 Resumed...\");": 1,
+      "println!(\"\u26a1 t={}ms: Active lifetimes count: {}\", state.current_time, state.active_lifetimes.len());": 1,
+      "println!(\"\ud83c\udfad Demo 1: Parallel Scene Execution\");": 1,
+      "println!(\"\ud83d\udce5 Client Reconfiguring mid-stream...\");": 1,
+      "println!(\"\ud83d\uded1 Stopped.\");": 1,
+      "scene_name: format!(\"Layer {}\", i),": 1,
+      "ui: create_demo_ui_list(&format!(\"Layer {}\", i), 2000),": 1
+    },
+    "clippy::single_component_path_imports": {
+      "use tracing_subscriber;": 1
+    },
+    "clippy::uninlined_format_args": {
+      "scene_name: format!(\"Layer {}\", i),": 1,
+      "ui: create_demo_ui_list(&format!(\"Layer {}\", i), 2000),": 1
+    }
   },
   "crates/cursorium/src/core.rs": {
-    "clippy::collection_is_never_read": 1,
-    "clippy::disallowed_macros": 2,
-    "clippy::stable_sort_primitive": 1,
-    "clippy::uninlined_format_args": 6
+    "clippy::collection_is_never_read": {
+      "let mut first_phase = Vec::new();": 1
+    },
+    "clippy::disallowed_macros": {
+      "unique_check.dedup_by(|a, b| format!(\"{:?}\", a) == format!(\"{:?}\", b));": 2
+    },
+    "clippy::stable_sort_primitive": {
+      "expected_sorted.sort();": 1
+    },
+    "clippy::uninlined_format_args": {
+      "assert!( second_phase.iter().all(|&t| t > 1000), \"Expected all second phase events to be > 1000ms, got: {:?}\", second_phase );": 1,
+      "assert_eq!( ComparableState::from(&state_tick.state), ComparableState::from(&state_seek.state), \"Natural playback and seeking produced different internal states at {}ms\", target_time );": 1,
+      "assert_eq!( active_scenes, expected_scenes, \"At time {}, expected {:?} but got {:?}\", time, expected_scenes, active_scenes );": 1,
+      "assert_eq!( active_scenes, expected_sorted, \"At time {}, expected {:?} but got {:?}\", time, expected_sorted, active_scenes );": 1,
+      "unique_check.dedup_by(|a, b| format!(\"{:?}\", a) == format!(\"{:?}\", b));": 2
+    }
   },
   "crates/cursorium/src/core/commands.rs": {
-    "clippy::expect_used": 6,
-    "clippy::use_self": 9
+    "clippy::expect_used": {
+      "response: response.expect(\"FSM command requires response channel\"),": 6
+    },
+    "clippy::use_self": {
+      "OrchestratorCommandData::Configure(config) => OrchestratorCommand::Configure {": 1,
+      "OrchestratorCommandData::ForceScene(scene) => OrchestratorCommand::ForceScene(scene),": 1,
+      "OrchestratorCommandData::Pause => OrchestratorCommand::Pause {": 1,
+      "OrchestratorCommandData::Reset => OrchestratorCommand::Reset {": 1,
+      "OrchestratorCommandData::Resume => OrchestratorCommand::Resume {": 1,
+      "OrchestratorCommandData::SkipCurrentScene => OrchestratorCommand::SkipCurrentScene,": 1,
+      "OrchestratorCommandData::Start => OrchestratorCommand::Start {": 1,
+      "OrchestratorCommandData::Stop => OrchestratorCommand::Stop {": 1,
+      "} => OrchestratorCommand::UpdateStreamStatus {": 1
+    }
   },
   "crates/cursorium/src/core/config.rs": {
-    "clippy::clone_on_copy": 1,
-    "clippy::disallowed_macros": 2,
-    "clippy::explicit_counter_loop": 1,
-    "clippy::missing_const_for_fn": 5,
-    "clippy::missing_errors_doc": 1,
-    "clippy::must_use_candidate": 8,
-    "clippy::return_self_not_must_use": 4
+    "clippy::clone_on_copy": {
+      "duration: scene.duration.clone(),": 1
+    },
+    "clippy::disallowed_macros": {
+      "format!(\"scene_{}\", self.scene_name)": 1,
+      "return Err(format!(\"Scene '{}' has invalid duration\", scene.scene_name));": 1
+    },
+    "clippy::explicit_counter_loop": {
+      "for scene in &self.scenes {": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn new(scenes: Vec<SceneConfig>) -> Self { Self { scenes, tick_interval_ms: 100, loop_scenes: false, } }": 1,
+      "pub fn starting_at(mut self, start: TimeMs) -> Self { self.start_time = Some(start); self }": 1,
+      "pub fn tick_interval(&self) -> Duration { Duration::from_millis(self.tick_interval_ms) }": 1,
+      "pub fn with_loop(mut self, enable: bool) -> Self { self.loop_scenes = enable; self }": 1,
+      "pub fn with_tick_interval(mut self, ms: u64) -> Self { self.tick_interval_ms = ms; self }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub fn validate(&self) -> Result<(), String> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn compile_timeline(&self) -> Timeline {": 1,
+      "pub fn id(&self) -> SceneId {": 1,
+      "pub fn new(scenes: Vec<SceneConfig>) -> Self {": 1,
+      "pub fn starting_at(mut self, start: TimeMs) -> Self {": 1,
+      "pub fn tick_interval(&self) -> Duration {": 1,
+      "pub fn with_loop(mut self, enable: bool) -> Self {": 1,
+      "pub fn with_tick_interval(mut self, ms: u64) -> Self {": 1,
+      "pub fn with_ui(mut self, ui: Vec<UILayoutIntentData>) -> Self {": 1
+    },
+    "clippy::return_self_not_must_use": {
+      "pub fn starting_at(mut self, start: TimeMs) -> Self { self.start_time = Some(start); self }": 1,
+      "pub fn with_loop(mut self, enable: bool) -> Self { self.loop_scenes = enable; self }": 1,
+      "pub fn with_tick_interval(mut self, ms: u64) -> Self { self.tick_interval_ms = ms; self }": 1,
+      "pub fn with_ui(mut self, ui: Vec<UILayoutIntentData>) -> Self { self.ui = ui; self }": 1
+    }
   },
   "crates/cursorium/src/core/engine.rs": {
-    "clippy::enum_glob_use": 2,
-    "clippy::ignored_unit_patterns": 2,
-    "clippy::implicit_clone": 1,
-    "clippy::match_same_arms": 6,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::must_use_candidate": 2,
-    "clippy::needless_pass_by_value": 1,
-    "clippy::new_without_default": 1,
-    "clippy::redundant_clone": 1
+    "clippy::enum_glob_use": {
+      "use OrchestratorCommand::*;": 1,
+      "use OrchestratorMode::*;": 1
+    },
+    "clippy::ignored_unit_patterns": {
+      "_ = async {": 1,
+      "_ = cancel.cancelled() => {": 1
+    },
+    "clippy::implicit_clone": {
+      "config.validate().map_err(|e| OrchestratorError::InvalidSceneConfig(e.to_string()))?;": 1
+    },
+    "clippy::match_same_arms": {
+      "(Finished | Stopped | Error, Start { .. }) => return Err(OrchestratorError::TerminalState),": 1,
+      "(Idle, Start { .. }) => Running,": 1,
+      "(Running, Pause { .. }) => Paused,": 1,
+      "(Unconfigured | Idle, Pause { .. }) => return Err(OrchestratorError::NotRunning),": 1,
+      "(Unconfigured | Idle, Stop { .. }) => mode, // Idempotent": 1,
+      "(_, Configure { .. }) => Idle,": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "fn transition(mode: OrchestratorMode, cmd: &OrchestratorCommand) -> Result<OrchestratorMode> { use OrchestratorCommand::*; use OrchestratorMode::*; Ok(match (mode, cmd) { // Configure always creates session and moves to Idle (_, Configure { .. }) => Idle, // Start only from Idle (Idle, Start { .. }) => Running, (Unconfigured, Start { .. }) => return Err(OrchestratorError::NotConfigured), (Running | Paused, Start { .. }) => return Err(OrchestratorError::AlreadyRunning), (Finished | Stopped | Error, Start { .. }) => return Err(OrchestratorError::TerminalState), // Pause only from Running (Running, Pause { .. }) => Paused, (Paused, Pause { .. }) => Paused, // Idempotent (Unconfigured | Idle, Pause { .. }) => return Err(OrchestratorError::NotRunning), (Finished | Stopped | Error, Pause { .. }) => return Err(OrchestratorError::TerminalState), // Resume only from Paused (Paused, Resume { .. }) => Running, (Running, Resume { .. }) => Running, // Idempotent (Unconfigured | Idle, Resume { .. }) => return Err(OrchestratorError::NotRunning), (Finished | Stopped | Error, Resume { .. }) => return Err(OrchestratorError::TerminalState), // Stop from Running or Paused \u2192 Terminal Stopped state (Running | Paused, Stop { .. }) => Stopped, (Unconfigured | Idle, Stop { .. }) => mode, // Idempotent (Finished | Stopped | Error, Stop { .. }) => mode, // Already terminal // Reset from active states \u2192 Idle (can recover from terminal states) (Idle | Running | Paused | Finished | Stopped | Error, Reset { .. }) => Idle, (Unconfigured, Reset { .. }) => Unconfigured, // Can't reset without config // Non-FSM commands don't affect mode (_, ForceScene(_) | SkipCurrentScene | UpdateStreamStatus { .. }) => mode, }) }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn current_state(&self) -> OrchestratorState {": 1,
+      "pub fn subscribe(&self) -> watch::Receiver<OrchestratorState> {": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "fn from_config(config: OrchestratorConfig) -> Result<Self> {": 1
+    },
+    "clippy::new_without_default": {
+      "pub fn new() -> Self { let (state_tx, state_rx) = watch::channel(OrchestratorState::default()); info!(\"OrchestratorEngine created (unconfigured)\"); Self { state_tx, state_rx } }": 1
+    },
+    "clippy::redundant_clone": {
+      "config.validate().map_err(|e| OrchestratorError::InvalidSceneConfig(e.to_string()))?;": 1
+    }
   },
   "crates/cursorium/src/core/error.rs": {
-    "clippy::missing_const_for_fn": 1,
-    "clippy::must_use_candidate": 1
+    "clippy::missing_const_for_fn": {
+      "pub fn is_recoverable(&self) -> bool { matches!(self, Self::NotRunning | Self::Paused | Self::StreamNotActive) }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn is_recoverable(&self) -> bool {": 1
+    }
   },
   "crates/cursorium/src/core/orchestrator.rs": {
-    "clippy::missing_errors_doc": 9,
-    "clippy::must_use_candidate": 2,
-    "clippy::significant_drop_in_scrutinee": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn configure(&self, config: OrchestratorCommandData) -> Result<()> {": 1,
+      "pub async fn pause(&self) -> Result<()> {": 1,
+      "pub async fn reset(&self) -> Result<()> {": 1,
+      "pub async fn resume(&self) -> Result<()> {": 1,
+      "pub async fn start(&self) -> Result<()> {": 1,
+      "pub async fn stop(&self) -> Result<()> {": 1,
+      "pub fn force_scene(&self, scene: impl Into<String>) -> Result<()> {": 1,
+      "pub fn new(config: Option<OrchestratorConfig>) -> Result<Self> {": 1,
+      "pub fn skip_current_scene(&self) -> Result<()> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn current_state(&self) -> OrchestratorState {": 1,
+      "pub fn subscribe(&self) -> watch::Receiver<OrchestratorState> {": 1
+    },
+    "clippy::significant_drop_in_scrutinee": {
+      "if let Some(handle) = self.task_handle.lock().await.take() {": 1
+    }
   },
   "crates/cursorium/src/core/state.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::cast_sign_loss": 1,
-    "clippy::doc_markdown": 1,
-    "clippy::option_if_let_else": 1,
-    "clippy::redundant_pub_crate": 1,
-    "clippy::unchecked_time_subtraction": 1
+    "clippy::cast_possible_truncation": {
+      "let elapsed = start.elapsed().as_millis() as TimeMs;": 1
+    },
+    "clippy::cast_sign_loss": {
+      "self.start_instant = Some(std::time::Instant::now() - std::time::Duration::from_millis(time as u64));": 1
+    },
+    "clippy::doc_markdown": {
+      "/// - `active_lifetimes` is a **set** (SmallVec), not a single value": 1
+    },
+    "clippy::option_if_let_else": {
+      "if let Some(start) = self.start_instant { let elapsed = start.elapsed().as_millis() as TimeMs; elapsed.saturating_sub(self.accumulated_pause_duration) } else { 0 }": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) struct EngineState {": 1
+    },
+    "clippy::unchecked_time_subtraction": {
+      "self.start_instant = Some(std::time::Instant::now() - std::time::Duration::from_millis(time as u64));": 1
+    }
   },
   "crates/cursorium/src/core/timeline.rs": {
-    "clippy::map_unwrap_or": 1,
-    "clippy::missing_const_for_fn": 4,
-    "clippy::unused_self": 1
+    "clippy::map_unwrap_or": {
+      "let total_duration = events.last().map(|e| e.at).unwrap_or(0);": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn applied_frontier(&self) -> usize { self.frontier }": 1,
+      "pub fn new() -> Self { Self { frontier: 0 } }": 1,
+      "pub fn reset(&mut self) { self.frontier = 0; }": 1,
+      "pub fn total_duration(&self) -> TimeMs { self.total_duration }": 1
+    },
+    "clippy::unused_self": {
+      "pub fn cursor(&self) -> Cursor {": 1
+    }
   },
   "crates/cursorium/tests/orchestrator_fsm.rs": {
-    "clippy::missing_errors_doc": 8,
-    "clippy::missing_panics_doc": 1,
-    "clippy::must_use_candidate": 2,
-    "clippy::new_without_default": 1,
-    "clippy::redundant_clone": 1,
-    "clippy::unwrap_used": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn configure(&self, config: OrchestratorConfigData) -> Result<()> {": 1,
+      "pub async fn pause(&self) -> Result<()> {": 1,
+      "pub async fn reset(&self) -> Result<()> {": 1,
+      "pub async fn resume(&self) -> Result<()> {": 1,
+      "pub async fn start(&self) -> Result<()> {": 1,
+      "pub async fn stop(&self) -> Result<()> {": 1,
+      "pub fn force_scene(&self, scene: impl Into<String>) -> Result<()> {": 1,
+      "pub fn skip_current_scene(&self) -> Result<()> {": 1
+    },
+    "clippy::missing_panics_doc": {
+      "pub fn new() -> Self {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new() -> Self {": 1,
+      "pub fn state(&self) -> OrchestratorState {": 1
+    },
+    "clippy::new_without_default": {
+      "pub fn new() -> Self { let orchestrator = StreamOrchestrator::new(None).unwrap(); Self { orchestrator } }": 1
+    },
+    "clippy::redundant_clone": {
+      "let pre_scene = engine.state().current_active_scene.clone();": 1
+    },
+    "clippy::unwrap_used": {
+      "let orchestrator = StreamOrchestrator::new(None).unwrap();": 1
+    }
   },
   "crates/db/activity/src/duration.rs": {
-    "clippy::doc_markdown": 1
+    "clippy::doc_markdown": {
+      "/// the 300_000 the seed migration claims for it.": 1
+    }
   },
   "crates/db/activity/src/lib.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::expect_used": 7
+    "clippy::doc_markdown": {
+      "/// Uses a synthetic id/registry_key rather than a real catalogued one": 1,
+      "/// test that inserts its own row must pick an id and registry_key that isn't": 1
+    },
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "let row = sqlx::query!( r#\" SELECT id as \"id!\", name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio FROM activities WHERE id = ?1 \"#, \"test-round-trip-row\" ) .fetch_one(&pool) .await .expect(\"read the row back\");": 1,
+      "let row = sqlx::query!(\"SELECT min_duration_ms, audio FROM activities WHERE id = ?1\", \"no-duration-yet\") .fetch_one(&pool) .await .expect(\"read the row back\");": 1,
+      "sqlx::query!( r#\" INSERT INTO activities ( id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio ) VALUES ('first', 'n', 'd', 'i', 'shared-key', 'study', 'ready', NULL, '2026-08-22T00:00:00Z', 1, '[]', '{}', NULL) \"# ) .execute(&pool) .await .expect(\"the first row with this registry_key succeeds\");": 1,
+      "sqlx::query!( r#\" INSERT INTO activities ( id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \"#, \"test-round-trip-row\", \"Test Round Trip Row\", \"A synthetic row, not one of the seeded catalogue entries.\", \"hexagon\", \"test-round-trip-registry-key\", \"study\", \"ready\", 300_000_i64, \"2026-08-01T00:00:00Z\", 1_i64, r#\"[{\"kind\":\"select\",\"key\":\"mode\"}]\"#, r#\"{\"mode\":\"completion\"}\"#, r#\"{\"channels\":[\"effects\"],\"blurb\":\"Uses game sound effects\"}\"#, ) .execute(&pool) .await .expect(\"insert a fully-populated activity row\");": 1,
+      "sqlx::query!( r#\" INSERT INTO activities ( id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, NULL) \"#, \"no-duration-yet\", \"Placeholder\", \"An activity with no duration field.\", \"keyboard\", \"placeholder\", \"drama\", \"preview\", \"2026-08-22T00:00:00Z\", 1_i64, \"[]\", \"{}\", ) .execute(&pool) .await .expect(\"insert a row with no duration field\");": 1
+    }
   },
   "crates/db/activity/src/model.rs": {
-    "clippy::expect_used": 1
+    "clippy::expect_used": {
+      "let wire = serde_json::to_value(&record).expect(\"serialize the record\");": 1
+    }
   },
   "crates/db/activity/src/repository.rs": {
-    "clippy::expect_used": 16
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history, including #270's seed\");": 1,
+      "assert!(repo.get(\"no-such-activity\").await.expect(\"query should not fail\").is_none());": 1,
+      "let activities = repo.list().await.expect(\"list the seeded catalogue\");": 3,
+      "let after = repo.fingerprint().await.expect(\"compute the fingerprint after a removal\");": 1,
+      "let before = repo.fingerprint().await.expect(\"compute the fingerprint\");": 1,
+      "let fetched = repo.get(&first.id).await.expect(\"query should not fail\").expect(\"the id exists\");": 2,
+      "let first = repo.fingerprint().await.expect(\"compute the fingerprint\");": 1,
+      "let mut tx = pool.begin().await.expect(\"open a transaction\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "let second = repo.fingerprint().await.expect(\"compute the fingerprint again\");": 1,
+      "sqlx::query!( r#\" INSERT INTO activities ( id, name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, published_at, version, fields, default_config, audio ) VALUES (?1, 'n', 'd', 'i', ?2, 'study', 'ready', NULL, '2026-08-24T00:00:00Z', 1, '[]', '{}', NULL) \"#, id, registry_key, ) .execute(&mut *tx) .await .expect(\"insert a synthetic row to cross the ceiling\");": 1,
+      "sqlx::query!(\"DELETE FROM activities WHERE id = ?\", activities[0].id) .execute(&pool) .await .expect(\"remove one row\");": 1,
+      "tx.commit().await.expect(\"commit the synthetic rows\");": 1
+    }
   },
   "crates/db/activity/tests/catalog_parity.rs": {
-    "clippy::expect_used": 8
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history, including #270's seed\");": 1,
+      "let fixture: Vec<FixtureActivity> = serde_json::from_str(include_str!(\"../testdata/activity_catalog.snapshot.json\")).expect(\"parse the checked-in fixture as valid JSON\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "let row = sqlx::query!( r#\" SELECT name, description, icon, registry_key, layout_tree, maturity, min_duration_ms, fields, default_config, audio FROM activities WHERE id = ?1 \"#, activity.id ) .fetch_optional(&pool) .await .expect(\"query the seeded row\")": 1,
+      "let seeded_audio: Option<Value> = row.audio.as_deref().map(|raw| serde_json::from_str(raw).expect(\"seeded audio column is valid JSON\"));": 1,
+      "let seeded_default_config: Value = serde_json::from_str(&row.default_config).expect(\"seeded default_config column is valid JSON\");": 1,
+      "let seeded_fields: Vec<Value> = serde_json::from_str(&row.fields).expect(\"seeded fields column is valid JSON\");": 1,
+      "let seeded_ids: Vec<String> = sqlx::query_scalar!(r#\"SELECT id as \"id!\" FROM activities\"#) .fetch_all(&pool) .await .expect(\"list seeded ids\");": 1
+    }
   },
   "crates/db/activity/tests/session_activity_shape.rs": {
-    "clippy::expect_used": 3
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history, including #270's seed\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "let rows = sqlx::query!(r#\"SELECT id as \"id!\", default_config FROM activities\"#) .fetch_all(&pool) .await .expect(\"list every seeded activity's default_config\");": 1
+    }
   },
   "crates/db/capture/src/repository/tab.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 9,
-    "clippy::must_use_candidate": 1,
-    "clippy::use_self": 1
+    "clippy::doc_markdown": {
+      "/// Reconciliation: given the set of tab_ids currently known to the": 1,
+      "/// Upsert a single tab. On conflict (same tab_id) \u2192 full replace.": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn new(pool: SqlitePool) -> Self { Self { pool } }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn batch_delete(&self, urls_hash: Vec<String>) -> Result<u64, sqlx::Error> {": 1,
+      "pub async fn batch_upsert(&self, tabs: Vec<TabCapture>) -> Result<u64, sqlx::Error> {": 1,
+      "pub async fn delete_by_tab_id(&self, url_hash: String) -> Result<bool, sqlx::Error> {": 1,
+      "pub async fn find_absent(&self, active_tab_ids: &[i64]) -> Result<Vec<i64>, sqlx::Error> {": 1,
+      "pub async fn get_all(&self) -> Result<Vec<TabCapture>, sqlx::Error> {": 1,
+      "pub async fn get_by_tab_id(&self, url_hash: String) -> Result<Option<TabCapture>, sqlx::Error> {": 1,
+      "pub async fn get_summaries(&self) -> Result<Vec<TabSummary>, sqlx::Error> {": 1,
+      "pub async fn prune_stale(&self, older_than_days: i64) -> Result<u64, sqlx::Error> {": 1,
+      "pub async fn upsert(&self, tab: TabCapture) -> Result<TabCapture, sqlx::Error> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(pool: SqlitePool) -> Self {": 1
+    },
+    "clippy::use_self": {
+      "TabCapture {": 1
+    }
   },
   "crates/db/mood_event/src/core/model.rs": {
-    "clippy::derive_partial_eq_without_eq": 1
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]": 1
+    }
   },
   "crates/db/mood_event/src/core/queries.rs": {
-    "clippy::missing_errors_doc": 8
+    "clippy::missing_errors_doc": {
+      "pub async fn fetch_all_mood_events(pool: &SqlitePool) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn fetch_by_team(pool: &SqlitePool, team: &str) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn fetch_by_week(pool: &SqlitePool, week: i64) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn fetch_mood_event_by_id(pool: &SqlitePool, id: i64) -> Result<Option<MoodEvent>, Error> {": 1,
+      "pub async fn get_next_index(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, Error> {": 1,
+      "pub async fn get_previous_mood(tx: &mut Transaction<'_, Sqlite>, index: i64) -> Result<i64, Error> {": 1,
+      "pub async fn insert_mood_event(tx: &mut Transaction<'_, Sqlite>, index_pos: i64, event: CreateMoodEvent, mood: i64) -> Result<i64, Error> {": 1,
+      "pub async fn recalculate_moods_from_index(tx: &mut Transaction<'_, Sqlite>, start_index: i64) -> Result<(), Error> {": 1
+    }
   },
   "crates/db/mood_event/src/core/repository.rs": {
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 12,
-    "clippy::must_use_candidate": 1
+    "clippy::missing_const_for_fn": {
+      "pub fn new(pool: SqlitePool) -> Self { Self { pool } }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn batch_create(&self, events: Vec<CreateMoodEvent>) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn batch_delete(&self, ids: Vec<i64>) -> Result<u64, Error> {": 1,
+      "pub async fn batch_update(&self, updates: HashMap<i64, UpdateMoodEvent>) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn create(&self, event: CreateMoodEvent) -> Result<MoodEvent, Error> {": 1,
+      "pub async fn create_with_transaction(&self, tx: &mut Transaction<'_, Sqlite>, event: CreateMoodEvent) -> Result<MoodEvent, Error> {": 1,
+      "pub async fn delete(&self, id: i64) -> Result<bool, Error> {": 1,
+      "pub async fn get_all(&self) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn get_by_id(&self, id: i64) -> Result<Option<MoodEvent>, Error> {": 1,
+      "pub async fn get_by_team(&self, team: &str) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn get_by_week(&self, week: i64) -> Result<Vec<MoodEvent>, Error> {": 1,
+      "pub async fn get_mood_stats(&self) -> Result<super::model::MoodStats, Error> {": 1,
+      "pub async fn update(&self, id: i64, update: UpdateMoodEvent) -> Result<Option<MoodEvent>, Error> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(pool: SqlitePool) -> Self {": 1
+    }
   },
   "crates/db/presence/src/repository.rs": {
-    "clippy::cast_possible_truncation": 2,
-    "clippy::disallowed_macros": 3,
-    "clippy::expect_used": 16
+    "clippy::cast_possible_truncation": {
+      "let cap = MAX_LEASES_PER_SUBJECT as usize;": 1,
+      "let flood = MAX_LEASES_PER_SUBJECT as usize * 2;": 1
+    },
+    "clippy::disallowed_macros": {
+      "assert!(survivors.contains(&format!(\"session-{}\", flood - 1)), \"the most recent context must survive the trim\");": 1,
+      "let context_key = format!(\"session-{i}\");": 1,
+      "let observed_at = format!(\"2026-08-26T12:{i:02}:00Z\");": 1
+    },
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
+      "assert_eq!(repo.for_subject(\"subject-1\").await.expect(\"read leases\"), Vec::new());": 1,
+      "let leases = repo.for_subject(\"subject-1\").await.expect(\"read leases\");": 3,
+      "let leases = repo.for_subject(\"subject-1\").await.expect(\"read subject-1's leases\");": 1,
+      "let mut leases = repo.for_subject(\"subject-1\").await.expect(\"read leases\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "repo.observe(\"subject-1\", \"session-a\", \"2026-08-26T12:00:00Z\").await.expect(\"first observation\");": 1,
+      "repo.observe(\"subject-1\", \"session-a\", \"2026-08-26T12:00:00Z\").await.expect(\"lease on session-a\");": 1,
+      "repo.observe(\"subject-1\", \"session-a\", \"2026-08-26T12:00:00Z\").await.expect(\"record a lease\");": 1,
+      "repo.observe(\"subject-1\", \"session-a\", \"2026-08-26T12:00:00Z\").await.expect(\"subject-1's lease\");": 1,
+      "repo.observe(\"subject-1\", \"session-a\", \"2026-08-26T12:01:00Z\").await.expect(\"renewal\");": 1,
+      "repo.observe(\"subject-1\", \"session-b\", \"2026-08-26T12:00:05Z\").await.expect(\"lease on session-b\");": 1,
+      "repo.observe(\"subject-1\", &context_key, &observed_at).await.expect(\"write one more distinct context\");": 1,
+      "repo.observe(\"subject-2\", \"session-a\", \"2026-08-26T12:00:00Z\").await.expect(\"subject-2's lease\");": 1
+    }
   },
   "crates/db/session/src/repository.rs": {
-    "clippy::expect_used": 35
+    "clippy::expect_used": {
+      "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
+      "assert_eq!(repo.first_prepared(\"subject-a\").await.expect(\"query should not fail\"), None);": 1,
+      "let a_sessions = repo.list(\"subject-a\").await.expect(\"list subject-a's sessions\");": 1,
+      "let deleted = repo .delete_many(\"subject-a\", &[\"session-a\".to_owned(), \"session-b\".to_owned()]) .await .expect(\"query should not fail\");": 1,
+      "let foreign_after = repo .get(\"subject-b\", \"session-b\") .await .expect(\"query should not fail\")": 1,
+      "let foreign_after = repo .get(\"subject-b\", \"session-b\") .await .expect(\"query should not fail\") .expect(\"subject-b's session still exists\");": 1,
+      "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
+      "let prepared = repo.first_prepared(\"subject-a\").await.expect(\"query should not fail\");": 2,
+      "let removed = repo.delete(\"subject-b\", \"session-1\").await.expect(\"query should not fail\");": 1,
+      "let updated = repo .set_status_many( \"subject-a\", &[\"session-a\".to_owned(), \"session-b\".to_owned()], SessionStatus::Scheduled, \"2026-01-02T00:00:00Z\", ) .await .expect(\"query should not fail\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-completed\", SessionStatus::Completed, \"2026-01-05T00:00:00Z\")) .await .expect(\"seed a completed session, touched most recently of all four\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-done\", SessionStatus::Completed, \"2026-01-01T00:00:00Z\")) .await .expect(\"seed a completed session, which is not a candidate\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-draft\", SessionStatus::Draft, \"2026-01-04T00:00:00Z\")) .await .expect(\"seed a draft session\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-newer\", SessionStatus::Draft, \"2026-01-02T00:00:00Z\")) .await .expect(\"seed the more recently touched draft\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-older\", SessionStatus::Draft, \"2026-01-01T00:00:00Z\")) .await .expect(\"seed the older draft\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-paused\", SessionStatus::Paused, \"2026-01-01T00:00:00Z\")) .await .expect(\"seed a paused session, touched least recently of the three\");": 1,
+      "repo .upsert(\"subject-a\", &fixture_with_status(\"session-scheduled\", SessionStatus::Scheduled, \"2026-01-03T00:00:00Z\")) .await .expect(\"seed a scheduled session\");": 1,
+      "repo .upsert(\"subject-b\", &fixture_with_status(\"session-b\", SessionStatus::Paused, \"2026-01-01T00:00:00Z\")) .await .expect(\"seed subject-b's paused session\");": 1,
+      "repo.first_prepared(\"subject-a\").await.expect(\"query should not fail\"),": 1,
+      "repo.get(\"subject-a\", \"session-1\").await.expect(\"query should not fail\").is_some(),": 3,
+      "repo.get(\"subject-b\", \"session-1\").await.expect(\"query should not fail\").is_none(),": 2,
+      "repo.get(\"subject-b\", \"session-b\").await.expect(\"query should not fail\").is_some(),": 1,
+      "repo.upsert(\"subject-a\", &fixture(\"session-1\")).await.expect(\"seed subject-a's session\");": 3,
+      "repo.upsert(\"subject-a\", &fixture(\"session-a\")).await.expect(\"seed subject-a's session\");": 3,
+      "repo.upsert(\"subject-b\", &fixture(\"session-b\")).await.expect(\"seed subject-b's session\");": 3
+    }
   },
   "crates/enum-name-derive/src/lib.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::expect_fun_call": 1,
-    "clippy::expect_used": 1,
-    "clippy::manual_let_else": 1,
-    "clippy::missing_panics_doc": 1
+    "clippy::disallowed_macros": {
+      ".expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
+    },
+    "clippy::expect_fun_call": {
+      ".expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
+    },
+    "clippy::expect_used": {
+      "variant .attrs .iter() .find(|attr| attr.path.is_ident(\"filename\")) .and_then(|attr| { if let Ok(Meta::NameValue(meta)) = attr.parse_meta() { if let Lit::Str(lit) = meta.lit { Some(lit.value()) } else { None } } else { None } }) .expect(&format!(\"Missing filename attribute for variant {}\", variant.ident))": 1
+    },
+    "clippy::manual_let_else": {
+      "let data = if let syn::Data::Enum(data) = input.data { data } else { panic!(\"EnumFilenameAndFromString can only be derived for enums\"); };": 1
+    },
+    "clippy::missing_panics_doc": {
+      "pub fn derive_enum_filename_and_from_string(input: TokenStream) -> TokenStream {": 1
+    }
   },
   "crates/obs-websocket/examples/commands.rs": {
-    "clippy::explicit_iter_loop": 3,
-    "clippy::future_not_send": 2,
-    "clippy::missing_errors_doc": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::explicit_iter_loop": {
+      "for &volume in volumes.iter() {": 1,
+      "for scene_name in test_scenes.iter() {": 1,
+      "for source in audio_sources.iter() {": 1
+    },
+    "clippy::future_not_send": {
+      "async fn demonstrate_commands(obs_manager: &ObsWebSocketManager, cancel_token: &CancellationToken) -> Result<(), Box<dyn std::error::Error>> {": 1,
+      "pub async fn showcase_obs_commands() -> Result<(), Box<dyn std::error::Error>> {": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn showcase_obs_commands() -> Result<(), Box<dyn std::error::Error>> {": 1
+    },
+    "clippy::wildcard_imports": {
+      "use obs_websocket::*;": 1
+    }
   },
   "crates/obs-websocket/examples/daemon.rs": {
-    "clippy::disallowed_macros": 3,
-    "clippy::uninlined_format_args": 2,
-    "clippy::wildcard_imports": 1
+    "clippy::disallowed_macros": {
+      "eprintln!(\"Error: {}\", e);": 1,
+      "println!(\"OBS Event: {:?}\", event);": 1,
+      "println!(\"is connection alive: {}\", obs_client.is_healthy().await?);": 1
+    },
+    "clippy::uninlined_format_args": {
+      "eprintln!(\"Error: {}\", e);": 1,
+      "println!(\"OBS Event: {:?}\", event);": 1
+    },
+    "clippy::wildcard_imports": {
+      "use obs_websocket::*;": 1
+    }
   },
   "crates/obs-websocket/examples/stream.rs": {
-    "clippy::ignored_unit_patterns": 3,
-    "clippy::must_use_candidate": 1
+    "clippy::ignored_unit_patterns": {
+      "_ = cancel_token.cancelled() => {": 2,
+      "_ = tokio::time::sleep(Duration::from_secs(5)) => {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn bridge_obs_events() -> tokio::task::JoinHandle<()> {": 1
+    }
   },
   "crates/obs-websocket/examples/youtube.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::future_not_send": 2,
-    "clippy::missing_errors_doc": 1,
-    "clippy::uninlined_format_args": 1,
-    "clippy::unwrap_used": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::disallowed_macros": {
+      "title: format!(\"{} - Live Now!\", title_prefix),": 1
+    },
+    "clippy::future_not_send": {
+      "async fn demonstrate_youtube_streaming(obs_manager: &ObsWebSocketManager, cancel_token: &CancellationToken) -> Result<(), Box<dyn std::error::Error>> {": 1,
+      "pub async fn showcase_youtube_streaming() -> Result<(), Box<dyn std::error::Error>> {": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn showcase_youtube_streaming() -> Result<(), Box<dyn std::error::Error>> {": 1
+    },
+    "clippy::uninlined_format_args": {
+      "title: format!(\"{} - Live Now!\", title_prefix),": 1
+    },
+    "clippy::unwrap_used": {
+      "let current_hour = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / 3600 % 24;": 1
+    },
+    "clippy::wildcard_imports": {
+      "use obs_websocket::*;": 1
+    }
   },
   "crates/obs-websocket/src/auth.rs": {
-    "clippy::disallowed_macros": 4,
-    "clippy::manual_let_else": 1,
-    "clippy::single_match": 1
+    "clippy::disallowed_macros": {
+      "Some(Err(e)) => return Err(format!(\"WebSocket error: {e}\").into()),": 2,
+      "return Err(format!(\"Authentication failed: {response:?}\").into());": 1,
+      "return Err(format!(\"Identification failed: {response:?}\").into());": 1
+    },
+    "clippy::manual_let_else": {
+      "let text = match identify_response { TungsteniteMessage::Text(t) => t, _ => return Err(\"Expected text message for identify response\".into()), };": 1
+    },
+    "clippy::single_match": {
+      "match msg? { TungsteniteMessage::Text(text) => { let json: Value = serde_json::from_str(&text)?; if json.get(\"op\").and_then(Value::as_u64) == Some(0) { return Ok(json); } } _ => {} }": 1
+    }
   },
   "crates/obs-websocket/src/core/commands.rs": {
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 2,
-    "clippy::must_use_candidate": 1,
-    "clippy::result_large_err": 1
+    "clippy::missing_const_for_fn": {
+      "pub fn new(state_handle: StateHandle) -> Self { Self { state_handle } }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn execute(&self, command: ObsCommand) -> Result<(), StateError> {": 1,
+      "pub fn build_request(&self, command: &ObsCommand) -> Result<JsonValue, PollingError> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(state_handle: StateHandle) -> Self {": 1
+    },
+    "clippy::result_large_err": {
+      "pub fn build_request(&self, command: &ObsCommand) -> Result<JsonValue, PollingError> {": 1
+    }
   },
   "crates/obs-websocket/src/core/connection.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 7,
-    "clippy::must_use_candidate": 3,
-    "clippy::significant_drop_tightening": 1,
-    "clippy::type_complexity": 1,
-    "clippy::unused_async": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::disallowed_macros": {
+      "let url = format!(\"ws://{}:{}\", config.host, config.port);": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn is_active(&self) -> bool { matches!(self.state, ConnectionState::Connected { .. }) }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn connect(&self, config: PollingConfig) -> Result<(), ConnectionError> {": 1,
+      "pub async fn connection_info(&self) -> Result<ConnectionInfo, ConnectionError> {": 1,
+      "pub async fn disconnect(&self) -> Result<(), ConnectionError> {": 1,
+      "pub async fn execute_command(&self, command: ObsCommand) -> Result<(), ConnectionError> {": 1,
+      "pub async fn is_healthy(&self) -> Result<bool, ConnectionError> {": 1,
+      "pub async fn next_event(&self) -> Result<ObsEvent, ConnectionError> {": 1,
+      "pub async fn stream_events<F>(&self, handler: F) -> Result<(), ConnectionError> where F: FnMut(ObsEvent) -> future::BoxFuture<'static, ()>,": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn is_active(&self) -> bool {": 1,
+      "pub fn new(state_handle: StateHandle) -> Self {": 1,
+      "pub fn uptime(&self) -> Option<Duration> {": 1
+    },
+    "clippy::significant_drop_tightening": {
+      "let mut sink_guard = sink.lock().await;": 1
+    },
+    "clippy::type_complexity": {
+      "sink: &Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>>>,": 1
+    },
+    "clippy::unused_async": {
+      "async fn start_connection_tasks( &self, sink: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, TungsteniteMessage>>>, stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, cmd_rx: mpsc::Receiver<InternalCommand>, event_tx: async_broadcast::Sender<ObsEvent>, config: PollingConfig, ) -> JoinHandle<()> { let message_processor = self.msg_handler.processor(); let state_handle = self.state_handle.clone(); let command_executor = CommandExecutor::new(self.state_handle.clone()); let polling_manager = ObsPollingManager::new(config, command_executor, sink.clone()); let polling_task = tokio::spawn(async move { let _ = polling_manager.start_polling_loop(cmd_rx).await; }); let message_task = tokio::spawn(async move { message_processing_loop(stream, sink, event_tx, state_handle, message_processor).await; }); tokio::spawn(async move { tokio::select! { _ = polling_task => { tracing::error!(\"Polling task ended unexpectedly\"); } _ = message_task => { tracing::error!(\"Message processing task ended unexpectedly\"); } } }) }": 1
+    },
+    "clippy::wildcard_imports": {
+      "use super::*;": 1
+    }
   },
   "crates/obs-websocket/src/core/events.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::manual_let_else": 2,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 5,
-    "clippy::must_use_candidate": 1,
-    "clippy::needless_continue": 1
+    "clippy::disallowed_macros": {
+      "Err(StateError::ChannelOverflow(format!(\"Skipped {n} messages\")))": 1
+    },
+    "clippy::manual_let_else": {
+      "let mut receiver = match self.state_handle.take_event_receiver().await? { Some(receiver) => receiver, None => return Err(StateError::NoReceivers), };": 1,
+      "let mut receiver = match self.state_handle.take_event_receiver().await? { Some(receiver) => receiver, None => return Err(StateError::NotConnected), };": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn new(state_handle: StateHandle) -> Self { Self { state_handle } }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn connection_state(&self) -> Result<ConnectionState, StateError> {": 1,
+      "pub async fn is_healthy(&self) -> Result<bool, StateError> {": 1,
+      "pub async fn next_event(&self) -> Result<ObsEvent, StateError> {": 1,
+      "pub async fn next_events_batch(&self, max_events: usize, timeout: Duration) -> Result<Vec<ObsEvent>, StateError> {": 1,
+      "pub async fn stream_events<F>(&self, mut handler: F) -> Result<(), StateError> where F: FnMut(ObsEvent) -> future::BoxFuture<'static, ()>,": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(state_handle: StateHandle) -> Self {": 1
+    },
+    "clippy::needless_continue": {
+      "continue;": 1
+    }
   },
   "crates/obs-websocket/src/core/retry.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::cast_precision_loss": 1,
-    "clippy::cast_sign_loss": 1,
-    "clippy::missing_const_for_fn": 2,
-    "clippy::must_use_candidate": 1
+    "clippy::cast_possible_truncation": {
+      "self.current_delay = Duration::from_millis((self.current_delay.as_millis() as f64 * self.config.backoff_multiplier) as u64).min(self.config.max_delay);": 1
+    },
+    "clippy::cast_precision_loss": {
+      "self.current_delay = Duration::from_millis((self.current_delay.as_millis() as f64 * self.config.backoff_multiplier) as u64).min(self.config.max_delay);": 1
+    },
+    "clippy::cast_sign_loss": {
+      "self.current_delay = Duration::from_millis((self.current_delay.as_millis() as f64 * self.config.backoff_multiplier) as u64).min(self.config.max_delay);": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn new(config: RetryConfig) -> Self { let current_delay = config.initial_delay; Self { config, consecutive_failures: 0, current_delay, circuit_breaker_opened_at: None, } }": 1,
+      "pub fn reset(&mut self) { self.consecutive_failures = 0; self.current_delay = self.config.initial_delay; self.circuit_breaker_opened_at = None; }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(config: RetryConfig) -> Self {": 1
+    }
   },
   "crates/obs-websocket/src/core/state.rs": {
-    "clippy::doc_markdown": 1,
-    "clippy::enum_glob_use": 3,
-    "clippy::match_same_arms": 2,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 20,
-    "clippy::must_use_candidate": 1,
-    "clippy::needless_pass_by_value": 1,
-    "clippy::unused_async": 1,
-    "clippy::unused_self": 1
+    "clippy::doc_markdown": {
+      "/// The state actor that owns and manages the ObsState": 1
+    },
+    "clippy::enum_glob_use": {
+      "use ConnectionState::*;": 1,
+      "use StateTransition::*;": 2
+    },
+    "clippy::match_same_arms": {
+      "(Connected { .. }, ConnectionLost) => Disconnected,": 1,
+      "(Disconnected, StartConnecting) => Connecting { started_at: Instant::now() },": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn is_connected(&self) -> bool { matches!(self.connection_state, ConnectionState::Connected { .. }) }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn can_execute_commands(&self) -> Result<bool, StateError> {": 1,
+      "pub async fn command_sender(&self) -> Result<Option<tokio::sync::mpsc::Sender<InternalCommand>>, StateError> {": 1,
+      "pub async fn config(&self) -> Result<ObsConfig, StateError> {": 1,
+      "pub async fn connection_state(&self) -> Result<ConnectionState, StateError> {": 1,
+      "pub async fn execute_command(&self, command: ObsCommand) -> Result<(), StateError> {": 1,
+      "pub async fn is_connected(&self) -> Result<bool, StateError> {": 1,
+      "pub async fn set_command_sender(&self, sender: tokio::sync::mpsc::Sender<InternalCommand>) -> Result<(), StateError> {": 1,
+      "pub async fn set_connection_handle(&self, handle: tokio::task::JoinHandle<()>) -> Result<(), StateError> {": 1,
+      "pub async fn set_event_receiver(&self, receiver: async_broadcast::Receiver<ObsEvent>) -> Result<(), StateError> {": 1,
+      "pub async fn set_event_sender(&self, sender: async_broadcast::Sender<ObsEvent>) -> Result<(), StateError> {": 1,
+      "pub async fn take_command_sender(&self) -> Result<Option<tokio::sync::mpsc::Sender<InternalCommand>>, StateError> {": 1,
+      "pub async fn take_connection_handle(&self) -> Result<Option<tokio::task::JoinHandle<()>>, StateError> {": 1,
+      "pub async fn take_event_receiver(&self) -> Result<Option<async_broadcast::Receiver<ObsEvent>>, StateError> {": 1,
+      "pub async fn transition(&self, transition: StateTransition) -> Result<(), StateError> {": 1,
+      "pub async fn transition_to_connected(&self) -> Result<(), StateError> {": 1,
+      "pub async fn transition_to_connecting(&self) -> Result<(), StateError> {": 1,
+      "pub async fn transition_to_disconnected(&self) -> Result<(), StateError> {": 1,
+      "pub async fn transition_to_disconnecting(&self) -> Result<(), StateError> {": 1,
+      "pub async fn transition_to_failed(&self, error: String) -> Result<(), StateError> {": 1,
+      "pub async fn update_config(&self, config: ObsConfig) -> Result<(), StateError> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(config: ObsConfig) -> (Self, StateHandle) {": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "fn transition(&mut self, transition: StateTransition) -> Result<(), StateError> {": 1
+    },
+    "clippy::unused_async": {
+      "async fn execute_command_internal(&self, command: ObsCommand) -> Result<(), StateError> { if !self.state.can_execute_commands() { return Err(StateError::NotConnected); } let sender = self.state.command_sender.as_ref().ok_or(StateError::NotConnected)?; sender.try_send(InternalCommand::Execute(command)).map_err(|e| StateError::CommandFailed(e.to_string()))?; Ok(()) }": 1
+    },
+    "clippy::unused_self": {
+      "fn expected_state_for_transition(&self, transition: &StateTransition) -> ConnectionState {": 1
+    }
   },
   "crates/obs-websocket/src/lib.rs": {
-    "clippy::missing_errors_doc": 8,
-    "clippy::must_use_candidate": 2
+    "clippy::missing_errors_doc": {
+      "pub async fn connect(&self, config: PollingConfig) -> Result<(), ObsWebsocketError> {": 1,
+      "pub async fn connection_info(&self) -> Result<ConnectionInfo, ObsWebsocketError> {": 1,
+      "pub async fn current_state(&self) -> Result<ConnectionState, ObsWebsocketError> {": 1,
+      "pub async fn disconnect(&self) -> Result<(), ObsWebsocketError> {": 1,
+      "pub async fn execute_command(&self, command: ObsCommand) -> Result<(), ObsWebsocketError> {": 1,
+      "pub async fn is_healthy(&self) -> Result<bool, ObsWebsocketError> {": 1,
+      "pub async fn next_event(&self) -> Result<ObsEvent, ObsWebsocketError> {": 1,
+      "pub async fn stream_events<F>(&self, handler: F) -> Result<(), ObsWebsocketError> where F: FnMut(ObsEvent) -> futures_util::future::BoxFuture<'static, ()>,": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn create_obs_manager(config: ObsConfig) -> ObsWebSocketManager {": 1,
+      "pub fn new(config: ObsConfig, retry_config: RetryConfig) -> Self {": 1
+    }
   },
   "crates/obs-websocket/src/messages.rs": {
-    "clippy::must_use_candidate": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::must_use_candidate": {
+      "pub const fn new(config: InitializationConfig) -> Self {": 1
+    },
+    "clippy::wildcard_imports": {
+      "use crate::types::*;": 1
+    }
   },
   "crates/obs-websocket/src/messages/extractor.rs": {
-    "clippy::result_large_err": 3
+    "clippy::result_large_err": {
+      "fn get_u64(&self, field: &str) -> Result<u64> {": 1,
+      "pub fn get_object(&self, field: &str) -> Result<&serde_json::Map<String, Value>> {": 1,
+      "pub fn get_string(&self, field: &str) -> Result<&str> {": 1
+    }
   },
   "crates/obs-websocket/src/messages/parsers.rs": {
-    "clippy::redundant_pub_crate": 3
+    "clippy::redundant_pub_crate": {
+      "pub(crate) use event::EventMessageParser;": 1,
+      "pub(crate) use hello::HelloMessageParser;": 1,
+      "pub(crate) use response::ResponseMessageParser;": 1
+    }
   },
   "crates/obs-websocket/src/messages/parsers/event.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::match_wildcard_for_single_variants": 1,
-    "clippy::redundant_pub_crate": 1,
-    "clippy::result_large_err": 13,
-    "clippy::unnecessary_wraps": 11,
-    "clippy::wildcard_imports": 1
+    "clippy::cast_possible_truncation": {
+      "let item_id = d.get(\"sceneItemId\").and_then(Value::as_u64).unwrap_or(0) as u32;": 1
+    },
+    "clippy::match_wildcard_for_single_variants": {
+      "_ => {": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) struct EventMessageParser;": 1
+    },
+    "clippy::result_large_err": {
+      "fn parse_input_mute_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_input_volume(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_record_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_replay_buffer_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_change(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_item_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_stream_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_studio_mode_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_change(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_ended(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_started(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_virtualcam_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "pub fn parse(json: &Value) -> Result<ObsEvent> {": 1
+    },
+    "clippy::unnecessary_wraps": {
+      "fn parse_input_mute_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_input_volume(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_record_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_replay_buffer_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_item_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_stream_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_studio_mode_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_change(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_ended(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_started(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1,
+      "fn parse_virtualcam_state(d: &serde_json::Map<String, Value>) -> Result<ObsEvent> {": 1
+    },
+    "clippy::wildcard_imports": {
+      "use crate::types::*;": 1
+    }
   },
   "crates/obs-websocket/src/messages/parsers/hello.rs": {
-    "clippy::redundant_pub_crate": 1,
-    "clippy::result_large_err": 1
+    "clippy::redundant_pub_crate": {
+      "pub(crate) struct HelloMessageParser;": 1
+    },
+    "clippy::result_large_err": {
+      "pub fn parse(json: &Value) -> Result<ObsEvent> {": 1
+    }
   },
   "crates/obs-websocket/src/messages/parsers/response.rs": {
-    "clippy::cast_possible_truncation": 3,
-    "clippy::redundant_pub_crate": 1,
-    "clippy::result_large_err": 22,
-    "clippy::unnecessary_wraps": 21,
-    "clippy::unwrap_used": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::cast_possible_truncation": {
+      "index: f.get(\"filterIndex\").and_then(Value::as_u64).unwrap_or(0) as u32,": 1,
+      "index: s.get(\"sceneIndex\").and_then(Value::as_u64).map(|i| i as u32),": 1,
+      "let transition_duration = data.get(\"transitionDuration\").and_then(Value::as_u64).unwrap_or(0) as u32;": 1
+    },
+    "clippy::redundant_pub_crate": {
+      "pub(crate) struct ResponseMessageParser;": 1
+    },
+    "clippy::result_large_err": {
+      "fn parse_current_collection_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_profile_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_scene_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_transition_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_filter_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_hotkey_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_mute_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_volume_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_profile_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_record_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_replay_buffer_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_collection_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_sources_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_stats_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_stream_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_studio_mode_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_version_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_virtual_cam_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "pub fn parse(json: &Value) -> Result<ObsEvent> {": 1
+    },
+    "clippy::unnecessary_wraps": {
+      "fn parse_current_collection_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_profile_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_scene_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_current_transition_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_filter_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_hotkey_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_mute_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_input_volume_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_profile_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_record_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_replay_buffer_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_collection_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_scene_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_sources_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_stats_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_stream_status_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_studio_mode_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_transition_list_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_version_response(data: &Value) -> Result<ObsEvent> {": 1,
+      "fn parse_virtual_cam_status_response(data: &Value) -> Result<ObsEvent> {": 1
+    },
+    "clippy::unwrap_used": {
+      "let response_data = response_data.unwrap();": 1
+    },
+    "clippy::wildcard_imports": {
+      "use crate::types::*;": 1
+    }
   },
   "crates/obs-websocket/src/messages/processor.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::option_if_let_else": 1,
-    "clippy::result_large_err": 1,
-    "clippy::single_match_else": 1,
-    "clippy::unused_self": 1
+    "clippy::disallowed_macros": {
+      "let op_key = format!(\"op_{op_code}\");": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn get_message_stats(&self) -> &HashMap<String, u64> { &self.message_stats }": 1
+    },
+    "clippy::option_if_let_else": {
+      "match json.get(\"op\") { Some(op_value) => op_value.as_u64().ok_or_else(|| { error!(\"Invalid 'op' field type in message: expected number, got {:?}\", op_value); trace!(\"Message content: {}\", original_text); ObsMessagesError::InvalidFieldType { field: \"op\".to_string(), expected: \"number\".to_string(), } }), None => { error!(\"Missing 'op' field in OBS message\"); trace!(\"Message content: {}\", original_text); Err(ObsMessagesError::MissingField { field: \"op\".to_string(), message_type: \"OBS message\".to_string(), }) } }": 1
+    },
+    "clippy::result_large_err": {
+      "fn extract_operation_code(&self, json: &Value, original_text: &str) -> Result<u64> {": 1
+    },
+    "clippy::single_match_else": {
+      "match json.get(\"op\") { Some(op_value) => op_value.as_u64().ok_or_else(|| { error!(\"Invalid 'op' field type in message: expected number, got {:?}\", op_value); trace!(\"Message content: {}\", original_text); ObsMessagesError::InvalidFieldType { field: \"op\".to_string(), expected: \"number\".to_string(), } }), None => { error!(\"Missing 'op' field in OBS message\"); trace!(\"Message content: {}\", original_text); Err(ObsMessagesError::MissingField { field: \"op\".to_string(), message_type: \"OBS message\".to_string(), }) } }": 1
+    },
+    "clippy::unused_self": {
+      "fn extract_operation_code(&self, json: &Value, original_text: &str) -> Result<u64> {": 1
+    }
   },
   "crates/obs-websocket/src/polling/config.rs": {
-    "clippy::result_large_err": 2
+    "clippy::result_large_err": {
+      "fn create_request_from_type(request_type: &ObsRequestType) -> Result<serde_json::Value> {": 1,
+      "pub fn generate_requests_for_frequency(&self, frequency: PollingFrequency) -> FResult {": 1
+    }
   },
   "crates/obs-websocket/src/polling/manager.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::disallowed_methods": 2
+    "clippy::disallowed_macros": {
+      "reason: format!(\"Command queue failure on command #{}: {e}\", counters.cmd_counter),": 1
+    },
+    "clippy::disallowed_methods": {
+      "if let Ok(request_text) = serde_json::to_string(&cmd) {": 1,
+      "if let Ok(request_text) = serde_json::to_string(&req) {": 1
+    }
   },
   "crates/obs-websocket/src/polling/request_builder.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::doc_markdown": 1,
-    "clippy::result_large_err": 21,
-    "clippy::wildcard_imports": 1
+    "clippy::disallowed_macros": {
+      "format!(\"{}-{}\", prefix, Uuid::new_v4().simple())": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Set YouTube stream settings": 1
+    },
+    "clippy::result_large_err": {
+      ") -> Result<serde_json::Value> {": 1,
+      "pub fn create_request<T>(request_type: ObsRequestType, params: Option<T>) -> Result<serde_json::Value>": 1,
+      "pub fn get_current_scene() -> Result<serde_json::Value> {": 1,
+      "pub fn get_input_mute(input_name: &str) -> Result<serde_json::Value> {": 1,
+      "pub fn get_input_volume(input_name: &str) -> Result<serde_json::Value> {": 1,
+      "pub fn get_record_status() -> Result<serde_json::Value> {": 1,
+      "pub fn get_scene_list() -> Result<serde_json::Value> {": 1,
+      "pub fn get_stream_service_settings() -> Result<serde_json::Value> {": 1,
+      "pub fn get_stream_status() -> Result<serde_json::Value> {": 1,
+      "pub fn set_input_mute(input_name: &str, muted: bool) -> Result<serde_json::Value> {": 1,
+      "pub fn set_input_volume(input_name: &str, volume: f64) -> Result<serde_json::Value> {": 1,
+      "pub fn start_recording() -> Result<serde_json::Value> {": 1,
+      "pub fn start_replay_buffer() -> Result<serde_json::Value> {": 1,
+      "pub fn start_stream() -> Result<serde_json::Value> {": 1,
+      "pub fn start_virtual_camera() -> Result<serde_json::Value> {": 1,
+      "pub fn stop_recording() -> Result<serde_json::Value> {": 1,
+      "pub fn stop_replay_buffer() -> Result<serde_json::Value> {": 1,
+      "pub fn stop_stream() -> Result<serde_json::Value> {": 1,
+      "pub fn stop_virtual_camera() -> Result<serde_json::Value> {": 1,
+      "pub fn switch_scene(scene_name: &str) -> Result<serde_json::Value> {": 1,
+      "pub fn toggle_studio_mode(enabled: bool) -> Result<serde_json::Value> {": 1
+    },
+    "clippy::wildcard_imports": {
+      "use crate::types::*;": 1
+    }
   },
   "crates/some-cache/src/config.rs": {
-    "clippy::missing_const_for_fn": 2,
-    "clippy::must_use_candidate": 1,
-    "clippy::return_self_not_must_use": 2
+    "clippy::missing_const_for_fn": {
+      "pub fn with_compression(mut self, enabled: bool, threshold: usize) -> Self { self.enable_compression = enabled; self.compression_threshold = threshold; self }": 1,
+      "pub fn with_ttl(mut self, ttl: u64) -> Self { self.default_ttl = ttl; self }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn with_compression(mut self, enabled: bool, threshold: usize) -> Self {": 1
+    },
+    "clippy::return_self_not_must_use": {
+      "pub fn with_compression(mut self, enabled: bool, threshold: usize) -> Self { self.enable_compression = enabled; self.compression_threshold = threshold; self }": 1,
+      "pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self { self.key_prefix = prefix.into(); self }": 1
+    }
   },
   "crates/some-cache/src/dedup.rs": {
-    "clippy::disallowed_methods": 2,
-    "clippy::doc_markdown": 1,
-    "clippy::future_not_send": 2,
-    "clippy::missing_errors_doc": 6,
-    "clippy::must_use_candidate": 2,
-    "clippy::type_complexity": 2
+    "clippy::disallowed_methods": {
+      "let bytes: Arc<[u8]> = serde_json::to_vec(&(&data, &content_type)).map_err(|e| e.to_string())?.into();": 1,
+      "let bytes: Arc<[u8]> = serde_json::to_vec(&value).map_err(|e| e.to_string())?.into();": 1
+    },
+    "clippy::doc_markdown": {
+      "/// moka::get_with guarantees the init closure runs once per key across": 1
+    },
+    "clippy::future_not_send": {
+      "pub async fn get_or_fetch<T, F, Fut>(&self, id: &str, fetcher: F) -> Result<(T, bool), DedupCacheError>": 1,
+      "pub async fn get_or_fetch_with_ttl<T, F, Fut>(&self, id: &str, ttl: Option<u64>, fetcher: F) -> Result<(T, bool), DedupCacheError>": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn delete(&self, key: &str) -> Result<bool, DedupCacheError> {": 1,
+      "pub async fn flush_all(&self) -> Result<u64, DedupCacheError> {": 1,
+      "pub async fn get_or_fetch<T, F, Fut>(&self, id: &str, fetcher: F) -> Result<(T, bool), DedupCacheError> where T: Serialize + for<'de> Deserialize<'de>, F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<T, DedupCacheError>> + Send,": 1,
+      "pub async fn get_or_fetch_binary<F, Fut>(&self, id: &str, fetcher: F) -> Result<((Vec<u8>, Option<String>), bool), DedupCacheError> where F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<(Vec<u8>, Option<String>), DedupCacheError>> + Send,": 1,
+      "pub async fn get_or_fetch_binary_with_ttl<F, Fut>(&self, id: &str, ttl: Option<u64>, fetcher: F) -> Result<((Vec<u8>, Option<String>), bool), DedupCacheError> where F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<(Vec<u8>, Option<String>), DedupCacheError>> + Send,": 1,
+      "pub async fn get_or_fetch_with_ttl<T, F, Fut>(&self, id: &str, ttl: Option<u64>, fetcher: F) -> Result<(T, bool), DedupCacheError> where T: Serialize + for<'de> Deserialize<'de>, F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<T, DedupCacheError>> + Send,": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(store: Arc<CacheStore>, max_in_flight: u64) -> Self {": 1,
+      "pub fn store(&self) -> Arc<CacheStore> {": 1
+    },
+    "clippy::type_complexity": {
+      "pub async fn get_or_fetch_binary<F, Fut>(&self, id: &str, fetcher: F) -> Result<((Vec<u8>, Option<String>), bool), DedupCacheError>": 1,
+      "pub async fn get_or_fetch_binary_with_ttl<F, Fut>(&self, id: &str, ttl: Option<u64>, fetcher: F) -> Result<((Vec<u8>, Option<String>), bool), DedupCacheError>": 1
+    }
   },
   "crates/some-cache/src/entry.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::missing_const_for_fn": 2,
-    "clippy::must_use_candidate": 1
+    "clippy::doc_markdown": {
+      "/// Original TTL in seconds. Age = original_ttl \u2212 ttl_remaining (Redis TTL command).": 2
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn new(data: T, ttl: u64) -> Self { Self { data, ttl } }": 1,
+      "pub fn new(data: Vec<u8>, content_type: Option<String>, ttl: u64) -> Self { Self { data, content_type, ttl } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(data: Vec<u8>, content_type: Option<String>, ttl: u64) -> Self {": 1
+    }
   },
   "crates/some-cache/src/metrics.rs": {
-    "clippy::disallowed_macros": 1,
-    "clippy::option_if_let_else": 1
+    "clippy::disallowed_macros": {
+      "assert_eq!(namespace_of(&format!(\"capture:session:{id}\")), \"capture:session\");": 1
+    },
+    "clippy::option_if_let_else": {
+      "match key.rfind(':') { Some(pos) => &key[..pos], None => key, }": 1
+    }
   },
   "crates/some-cache/src/store.rs": {
-    "clippy::cast_lossless": 1,
-    "clippy::cast_sign_loss": 3,
-    "clippy::disallowed_macros": 2,
-    "clippy::disallowed_methods": 2,
-    "clippy::doc_markdown": 3,
-    "clippy::future_not_send": 1,
-    "clippy::missing_const_for_fn": 2,
-    "clippy::missing_errors_doc": 10,
-    "clippy::must_use_candidate": 2,
-    "clippy::type_complexity": 1,
-    "clippy::unused_self": 1,
-    "clippy::unwrap_used": 1
+    "clippy::cast_lossless": {
+      "let backoff_ms = self.config.retry_delay_ms * (attempt as u64 + 1);": 1
+    },
+    "clippy::cast_sign_loss": {
+      "Result::<_, CacheError>::Ok(deleted as u64)": 1,
+      "entry.ttl.saturating_sub(ttl_remaining as u64)": 1,
+      "let age = if ttl_remaining > 0 { entry.ttl.saturating_sub(ttl_remaining as u64) } else { 0 };": 1
+    },
+    "clippy::disallowed_macros": {
+      "format!(\"{}{}\", self.config.key_prefix, key)": 1,
+      "let pattern = format!(\"{}*\", self.config.key_prefix);": 1
+    },
+    "clippy::disallowed_methods": {
+      "let serialized = serde_json::to_vec(&entry)?;": 2
+    },
+    "clippy::doc_markdown": {
+      "/// Redis is the sole clock. No SystemTime involved.": 1,
+      "/// age = original_ttl \u2212 ttl_remaining": 2
+    },
+    "clippy::future_not_send": {
+      "pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), CacheError> {": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn config(&self) -> &CacheConfig { &self.config }": 1,
+      "pub fn redis_client(&self) -> &Client { &self.redis_client }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn delete(&self, key: &str) -> Result<bool, CacheError> {": 1,
+      "pub async fn flush_all(&self) -> Result<u64, CacheError> {": 1,
+      "pub async fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, CacheError> {": 1,
+      "pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, CacheError> {": 1,
+      "pub async fn get_raw_payload(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {": 1,
+      "pub async fn get_with_age<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<(Option<T>, u64), CacheError> {": 1,
+      "pub async fn set<T: Serialize>(&self, key: &str, data: &T, ttl: Option<u64>) -> Result<(), CacheError> {": 1,
+      "pub async fn set_binary(&self, key: &str, data: &[u8], content_type: Option<String>, ttl: Option<u64>) -> Result<(), CacheError> {": 1,
+      "pub fn deserialize_payload<T: for<'de> serde::Deserialize<'de>>(&self, bytes: &[u8]) -> Result<T, CacheError> {": 1,
+      "pub fn new(config: CacheConfig) -> Result<Self, CacheError> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn config(&self) -> &CacheConfig {": 1,
+      "pub fn redis_client(&self) -> &Client {": 1
+    },
+    "clippy::type_complexity": {
+      "pub async fn get_binary(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, CacheError> {": 1
+    },
+    "clippy::unused_self": {
+      "fn decode_payload(&self, data: &[u8]) -> Result<Vec<u8>, CacheError> {": 1
+    },
+    "clippy::unwrap_used": {
+      "Err(last_error.unwrap())": 1
+    }
   },
   "crates/some-cache/src/stream.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::manual_let_else": 5,
-    "clippy::missing_errors_doc": 5
+    "clippy::doc_markdown": {
+      "/// in the PEL was delivered before the crash but never ACKed; re-reading": 1,
+      "/// not yet ACKed by this consumer.": 1
+    },
+    "clippy::manual_let_else": {
+      "let entries = match parts.into_iter().nth(1) { Some(redis::Value::Array(e)) => e, _ => continue, };": 1,
+      "let entry_parts = match entry { redis::Value::Array(v) => v, _ => continue, };": 1,
+      "let fields = match entry_parts.into_iter().nth(1) { Some(redis::Value::Array(f)) => f, _ => continue, };": 1,
+      "let parts = match stream { redis::Value::Array(v) => v, _ => continue, };": 1,
+      "let streams = match val { redis::Value::Array(v) => v, _ => return out, };": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn ack(&self, entry_ids: &[String]) -> Result<(), CacheError> {": 1,
+      "pub async fn ensure_group(&self, start_from_beginning: bool) -> Result<(), CacheError> {": 1,
+      "pub async fn publish_completed(&self, session_id: &str) -> Result<String, CacheError> {": 1,
+      "pub async fn read_new(&self, batch: usize, block_ms: u64) -> Result<Vec<(String, String)>, CacheError> {": 1,
+      "pub async fn read_pending(&self, batch: usize) -> Result<Vec<(String, String)>, CacheError> {": 1
+    }
   },
   "crates/some-metrics/src/lib.rs": {
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::too_long_first_doc_paragraph": {
+      "/// Install the global `metrics` recorder from a caller-configured builder \u2014 /// for a service that needs its own histogram buckets (default buckets top /// out at 10s; a request-duration histogram sitting behind a 15s timeout /// needs a bucket above it, or timeouts fall off the end of the histogram) /// or quantiles. `PrometheusBuilder` and [`Matcher`] are re-exported from /// this crate so a caller never needs its own direct /// `metrics-exporter-prometheus` dependency. /// /// Otherwise identical to [`install`] \u2014 same one-call-per-process rule, same": 1
+    }
   },
   "crates/some-transport/src/mpsc_utils/traits.rs": {
-    "clippy::doc_markdown": 2,
-    "clippy::ignored_unit_patterns": 2,
-    "clippy::option_if_let_else": 4,
-    "clippy::single_match_else": 4
+    "clippy::doc_markdown": {
+      "/// * `context` - A context string for logging (e.g., \"worker_pool\", \"event_handler\")": 2
+    },
+    "clippy::ignored_unit_patterns": {
+      "Ok(Ok(_)) => SendResult::Sent,": 1,
+      "Ok(_) => {": 1
+    },
+    "clippy::option_if_let_else": {
+      "match self.recv().await { Some(msg) => RecvResult::Message(msg), None => { debug!(context = context, \"Channel closed: sender dropped\"); RecvResult::SenderDropped } }": 2,
+      "match self.recv().await { Some(msg) => RecvResult::Message(msg), None => { handler(); RecvResult::SenderDropped } }": 2
+    },
+    "clippy::single_match_else": {
+      "match self.recv().await { Some(msg) => RecvResult::Message(msg), None => { debug!(context = context, \"Channel closed: sender dropped\"); RecvResult::SenderDropped } }": 2,
+      "match self.recv().await { Some(msg) => RecvResult::Message(msg), None => { handler(); RecvResult::SenderDropped } }": 2
+    }
   },
   "crates/some-transport/src/mpsc_utils/types.rs": {
-    "clippy::missing_const_for_fn": 5
+    "clippy::missing_const_for_fn": {
+      "pub fn is_channel_full(&self) -> bool { matches!(self, Self::ChannelFull(_)) }": 1,
+      "pub fn is_closed(&self) -> bool { matches!(self, Self::SenderDropped) }": 1,
+      "pub fn is_message(&self) -> bool { matches!(self, Self::Message(_)) }": 1,
+      "pub fn is_ok(&self) -> bool { matches!(self, Self::Sent) }": 1,
+      "pub fn is_receiver_dropped(&self) -> bool { matches!(self, Self::ReceiverDropped(_)) }": 1
+    }
   },
   "crates/some-transport/src/nats/jetstream.rs": {
-    "clippy::cast_sign_loss": 1,
-    "clippy::disallowed_macros": 1,
-    "clippy::doc_markdown": 2,
-    "clippy::missing_errors_doc": 10,
-    "clippy::must_use_candidate": 1,
-    "clippy::too_long_first_doc_paragraph": 1
+    "clippy::cast_sign_loss": {
+      "if msg.payload.len() > self.config.max_message_size as usize {": 1
+    },
+    "clippy::disallowed_macros": {
+      "return Err(TransportError::NatsError(format!(\"payload too large: {} bytes\", msg.payload.len())));": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Postcondition: stream `pipeline` exists with WorkQueue retention.": 1,
+      "/// Pull-based JetStream consumer generic over `T: prost::Message + Default`.": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn ack(self) -> Result<()> {": 1,
+      "pub async fn bind(client: Client, config: JetStreamConfig) -> Result<Self> {": 1,
+      "pub async fn connect(config: JetStreamConfig) -> Result<Self> {": 1,
+      "pub async fn connect(nats_url: &str) -> Result<Self> {": 1,
+      "pub async fn heartbeat(&self) -> Result<()> {": 1,
+      "pub async fn nak(self) -> Result<()> {": 1,
+      "pub async fn next_msg(&mut self, deadline: Duration) -> Result<Option<(T, AckHandle)>> {": 1,
+      "pub async fn publish(&self, msg: &T) -> Result<()> {": 1,
+      "pub async fn publish_dlq_raw(&self, payload: prost::bytes::Bytes) -> Result<()> {": 1,
+      "pub async fn term(self) -> Result<()> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn from_client(client: Client) -> Self {": 1
+    },
+    "clippy::too_long_first_doc_paragraph": {
+      "/// Invariant: exactly one of `ack`, `nak`, `term` must be called per handle. /// For stages that may exceed `ack_wait`, call `heartbeat` at intervals /// shorter than `ack_wait` to prevent server-side lease expiration and /// concurrent redelivery. /// /// Failure: dropping without settling is treated as NAK by the server": 1
+    }
   },
   "crates/some-transport/src/nats/pool.rs": {
-    "clippy::missing_errors_doc": 1,
-    "clippy::must_use_candidate": 5,
-    "clippy::redundant_clone": 1
+    "clippy::missing_errors_doc": {
+      "pub async fn get_or_connect(&self, url: impl Into<String>) -> Result<Client> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn has_connection(&self, url: &str) -> bool {": 1,
+      "pub fn is_empty(&self) -> bool {": 1,
+      "pub fn len(&self) -> usize {": 1,
+      "pub fn new() -> Self {": 1,
+      "pub fn remove(&self, url: &str) -> Option<Client> {": 1
+    },
+    "clippy::redundant_clone": {
+      "Ok::<_, TransportError>(client.clone())": 1
+    }
   },
   "crates/some-transport/src/nats/receiver.rs": {
-    "clippy::empty_line_after_doc_comments": 1,
-    "clippy::missing_const_for_fn": 3,
-    "clippy::must_use_candidate": 3
+    "clippy::empty_line_after_doc_comments": {
+      "/// ```": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn inner(&self) -> &Subscriber { &self.subscription }": 1,
+      "pub fn inner_mut(&mut self) -> &mut Subscriber { &mut self.subscription }": 1,
+      "pub fn new(subscription: Subscriber) -> Self { Self { subscription, _marker: PhantomData, } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn inner(&self) -> &Subscriber {": 1,
+      "pub fn into_inner(self) -> Subscriber {": 1,
+      "pub fn new(subscription: Subscriber) -> Self {": 1
+    }
   },
   "crates/some-transport/src/nats/transport.rs": {
-    "clippy::disallowed_macros": 21,
-    "clippy::doc_markdown": 2,
-    "clippy::expect_used": 14,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::missing_errors_doc": 4,
-    "clippy::must_use_candidate": 3,
-    "clippy::similar_names": 6,
-    "clippy::stable_sort_primitive": 1,
-    "clippy::uninlined_format_args": 1
+    "clippy::disallowed_macros": {
+      "format!(\"channel.{connection_key}\")": 1,
+      "message: format!(\"Message {}\", i),": 1,
+      "println!(\"Skipping test: NATS not available\");": 19
+    },
+    "clippy::doc_markdown": {
+      "/// The async_nats client automatically handles reconnection when network": 1,
+      "/// wasted work. The async_nats client will automatically reconnect": 1
+    },
+    "clippy::expect_used": {
+      "let msg = timeout(Duration::from_secs(2), receiver.recv()).await.expect(\"Timeout\").expect(\"Failed to receive\");": 1,
+      "let received = timeout(Duration::from_secs(2), receiver.recv()) .await .expect(\"Timeout waiting for message\") .expect(\"Failed to receive message\");": 1,
+      "let received = timeout(Duration::from_secs(2), receiver.recv()).await.expect(\"Timeout\").expect(\"Failed to receive\");": 5,
+      "let received1 = timeout(Duration::from_secs(2), r1.recv()).await.expect(\"Timeout on r1\").expect(\"Failed to receive on r1\");": 2,
+      "let received2 = timeout(Duration::from_secs(2), r2.recv()).await.expect(\"Timeout on r2\").expect(\"Failed to receive on r2\");": 2,
+      "let subscription = self.client.subscribe(Self::BROADCAST_SUBJECT.to_string()).await.expect(\"Failed to subscribe to broadcast\");": 1,
+      "let subscription = self.client.subscribe(subject).await.expect(\"Failed to subscribe to channel\");": 1,
+      "let subscription = self.client.subscribe(subject.to_owned()).await.expect(\"Failed to subscribe to broadcast\");": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn client(&self) -> &Client { &self.client }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub async fn connect(url: impl Into<String>) -> Result<Self> {": 1,
+      "pub async fn connect_pooled(url: impl Into<String>) -> Result<Self> {": 1,
+      "pub async fn connect_pooled_with_receiver(url: impl Into<String>) -> Result<(Self, TransportReceiver<E, NatsReceiver<E>>)> {": 1,
+      "pub async fn connect_with_receiver(url: impl Into<String>) -> Result<(Self, TransportReceiver<E, NatsReceiver<E>>)> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn client(&self) -> &Client {": 1,
+      "pub fn from_client(client: Client) -> Self {": 1,
+      "pub fn new(client: Client) -> Self {": 1
+    },
+    "clippy::similar_names": {
+      "let received = timeout(Duration::from_secs(2), receiver.recv())": 1,
+      "let received = timeout(Duration::from_secs(2), receiver.recv()).await.expect(\"Timeout\").expect(\"Failed to receive\");": 5
+    },
+    "clippy::stable_sort_primitive": {
+      "received_ids.sort();": 1
+    },
+    "clippy::uninlined_format_args": {
+      "message: format!(\"Message {}\", i),": 1
+    }
   },
   "crates/ws-conn-manager/benches/connection_guard.rs": {
-    "clippy::cast_sign_loss": 4,
-    "clippy::collection_is_never_read": 1,
-    "clippy::disallowed_macros": 5,
-    "clippy::expect_used": 2,
-    "clippy::explicit_iter_loop": 6,
-    "clippy::redundant_closure_for_method_calls": 1,
-    "clippy::significant_drop_tightening": 5,
-    "clippy::uninlined_format_args": 5,
-    "clippy::unwrap_used": 7,
-    "clippy::used_underscore_binding": 1
+    "clippy::cast_sign_loss": {
+      "group.throughput(Throughput::Elements(*clients as u64));": 1,
+      "group.throughput(Throughput::Elements(*concurrent as u64));": 1,
+      "group.throughput(Throughput::Elements(*connections as u64));": 1,
+      "group.throughput(Throughput::Elements(*ops as u64));": 1
+    },
+    "clippy::collection_is_never_read": {
+      "let mut _permits = Vec::new();": 1
+    },
+    "clippy::disallowed_macros": {
+      "group.bench_with_input(BenchmarkId::new(\"clients_ops\", format!(\"{}_{}\", clients, ops)), params, |b, &(num_clients, num_ops)| {": 1,
+      "handles.push(tokio::spawn(async move { g.acquire(format!(\"client-{}\", i)).await.ok() }));": 1,
+      "if let Ok(permit) = g.acquire(format!(\"client-{}\", client_id)).await {": 1,
+      "let mut stream = (0..50).map(|i| guard.acquire(format!(\"client-{}\", i))).collect::<futures::stream::FuturesUnordered<_>>();": 1,
+      "let permit = guard.acquire(format!(\"client-{}\", i)).await.expect(\"should acquire\");": 1
+    },
+    "clippy::expect_used": {
+      "let permit = guard.acquire(\"test-client\".to_string()).await.expect(\"should acquire\");": 1,
+      "let permit = guard.acquire(format!(\"client-{}\", i)).await.expect(\"should acquire\");": 1
+    },
+    "clippy::explicit_iter_loop": {
+      "for clients in [10, 50, 100, 500].iter() {": 1,
+      "for concurrent in [10, 20, 50].iter() {": 1,
+      "for concurrent in [5, 10, 20, 50].iter() {": 1,
+      "for connections in [1, 5, 10, 50].iter() {": 1,
+      "for hold_ms in [0, 1, 10, 50].iter() {": 1,
+      "for params in [(10, 100), (50, 200), (100, 500)].iter() {": 1
+    },
+    "clippy::redundant_closure_for_method_calls": {
+      "let results: Vec<_> = futures::future::join_all(handles).await.into_iter().filter_map(|r| r.ok()).collect();": 1
+    },
+    "clippy::significant_drop_tightening": {
+      "let mut _permits = Vec::new();": 1,
+      "let mut handles = Vec::new();": 3,
+      "let mut permits = Vec::new();": 1
+    },
+    "clippy::uninlined_format_args": {
+      "group.bench_with_input(BenchmarkId::new(\"clients_ops\", format!(\"{}_{}\", clients, ops)), params, |b, &(num_clients, num_ops)| {": 1,
+      "handles.push(tokio::spawn(async move { g.acquire(format!(\"client-{}\", i)).await.ok() }));": 1,
+      "if let Ok(permit) = g.acquire(format!(\"client-{}\", client_id)).await {": 1,
+      "let mut stream = (0..50).map(|i| guard.acquire(format!(\"client-{}\", i))).collect::<futures::stream::FuturesUnordered<_>>();": 1,
+      "let permit = guard.acquire(format!(\"client-{}\", i)).await.expect(\"should acquire\");": 1
+    },
+    "clippy::unwrap_used": {
+      "let rt = Runtime::new().unwrap();": 7
+    },
+    "clippy::used_underscore_binding": {
+      "_permits.push(permit);": 1
+    }
   },
   "crates/ws-connection/tests/conn_tests.rs": {
-    "clippy::disallowed_macros": 1
+    "clippy::disallowed_macros": {
+      "let debug_str = format!(\"{conn:?}\");": 1
+    }
   },
   "crates/ws-connection/tests/subscriptions.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::cast_possible_wrap": 1,
-    "clippy::disallowed_macros": 5,
-    "clippy::invalid_upcast_comparisons": 1,
-    "clippy::manual_string_new": 2,
-    "clippy::redundant_clone": 6,
-    "clippy::uninlined_format_args": 5
+    "clippy::cast_possible_truncation": {
+      "assert!(mgr.count() as i32 >= 0);": 1
+    },
+    "clippy::cast_possible_wrap": {
+      "assert!(mgr.count() as i32 >= 0);": 1
+    },
+    "clippy::disallowed_macros": {
+      "let debug_str = format!(\"{:?}\", change);": 1,
+      "let debug_str = format!(\"{:?}\", mgr);": 1,
+      "let keys: Vec<String> = (0..100).map(|i| format!(\"e{}\", i)).collect();": 1,
+      "let keys: Vec<String> = (0..10_000).map(|i| format!(\"event_{}\", i)).collect();": 1,
+      "let to_remove: Vec<String> = (0..50).map(|i| format!(\"e{}\", i)).collect();": 1
+    },
+    "clippy::invalid_upcast_comparisons": {
+      "assert!(mgr.count() as i32 >= 0);": 1
+    },
+    "clippy::manual_string_new": {
+      "assert!(mgr.is_subscribed_to(&\"\".to_string()));": 1,
+      "mgr.subscribe(vec![\"\".to_string()]);": 1
+    },
+    "clippy::redundant_clone": {
+      "let change = mgr.subscribe(keys.clone());": 1,
+      "let change2 = change1.clone();": 1,
+      "let mut mgr = SubscriptionManager::with_subscriptions(keys.clone());": 1,
+      "mgr.subscribe(keys.clone());": 1,
+      "mgr.subscribe(vec![key.clone()]);": 1,
+      "mgr.unsubscribe(vec![key.clone()]);": 1
+    },
+    "clippy::uninlined_format_args": {
+      "let debug_str = format!(\"{:?}\", change);": 1,
+      "let debug_str = format!(\"{:?}\", mgr);": 1,
+      "let keys: Vec<String> = (0..100).map(|i| format!(\"e{}\", i)).collect();": 1,
+      "let keys: Vec<String> = (0..10_000).map(|i| format!(\"event_{}\", i)).collect();": 1,
+      "let to_remove: Vec<String> = (0..50).map(|i| format!(\"e{}\", i)).collect();": 1
+    }
   },
   "crates/ws-events/src/events/common.rs": {
-    "clippy::match_same_arms": 1,
-    "clippy::match_wildcard_for_single_variants": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::must_use_candidate": 1,
-    "clippy::use_self": 2
+    "clippy::match_same_arms": {
+      "Self::Ping => Some(EventType::Ping),": 1
+    },
+    "clippy::match_wildcard_for_single_variants": {
+      "_ => None,": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn get_type(&self) -> Option<EventType> { match self { Self::Ping => Some(EventType::Ping), Self::Pong => Some(EventType::Pong), Self::Error { .. } => Some(EventType::Error), Self::Subscribe { .. } => Some(EventType::Ping), // These are control messages Self::Unsubscribe { .. } => Some(EventType::Ping), Self::ClientCount { .. } => Some(EventType::ClientCount), Self::ObsStatus { .. } => Some(EventType::ObsStatus), Self::ObsCmd { .. } => Some(EventType::ObsCommand), Self::TabMetaData { .. } => Some(EventType::TabMetaData), Self::Utterance { .. } => Some(EventType::Utterance), Self::OrchestratorCommandData { .. } => Some(EventType::OrchestratorCommandData), Self::OrchestratorState { .. } => Some(EventType::OrchestratorState), Self::AudioChunk { .. } => Some(EventType::AudioChunk), Self::Subtitle { .. } => Some(EventType::Subtitle), // System events don't have EventTypes _ => None, } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn get_type(&self) -> Option<EventType> {": 1
+    },
+    "clippy::use_self": {
+      "Event::TabMetaData { data }": 1,
+      "Event::Utterance { text, metadata }": 1
+    }
   },
   "crates/ws-events/src/events/common/event_type.rs": {
-    "clippy::derivable_impls": 1,
-    "clippy::disallowed_macros": 2,
-    "clippy::match_same_arms": 6,
-    "clippy::missing_const_for_fn": 2,
-    "clippy::must_use_candidate": 3,
-    "clippy::uninlined_format_args": 1,
-    "clippy::use_self": 33
+    "clippy::derivable_impls": {
+      "impl Default for EventType { fn default() -> Self { EventType::Pong } }": 1
+    },
+    "clippy::disallowed_macros": {
+      "_ => Err(format!(\"Unknown event type: {}\", s)),": 1,
+      "format!(\"{}.{}\", self.subject(), connection_id)": 1
+    },
+    "clippy::match_same_arms": {
+      "\"obs.command\" => Ok(EventType::ObsCommand),": 1,
+      "\"obs.status\" => Ok(EventType::ObsStatus),": 1,
+      "\"system.client_count\" => Ok(EventType::ClientCount),": 1,
+      "\"system.error\" => Ok(EventType::Error),": 1,
+      "\"system.ping\" => Ok(EventType::Ping),": 1,
+      "\"tab.metadata\" => Ok(EventType::TabMetaData),": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn is_transportable(&self) -> bool { !matches!(self, EventType::Ping | EventType::Pong) }": 1,
+      "pub fn subject(&self) -> &'static str { match self { EventType::ObsStatus => \"obs.status\", EventType::ObsCommand => \"obs.command\", EventType::TabMetaData => \"tab.metadata\", EventType::ClientCount => \"system.client_count\", EventType::Error => \"system.error\", EventType::Utterance => \"utterance\", EventType::OrchestratorCommandData => \"orchestrator.command\", EventType::OrchestratorState => \"orchestrator.state\", EventType::SystemEvent => \"system\", EventType::AudioChunk => \"audio.chunk\", EventType::Subtitle => \"audio.subtitle\", // These don't have subjects as they're not transported EventType::Ping | EventType::Pong => \"system.ping\", } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn connection_subject(&self, connection_id: &str) -> String {": 1,
+      "pub fn is_transportable(&self) -> bool {": 1,
+      "pub fn subject(&self) -> &'static str {": 1
+    },
+    "clippy::uninlined_format_args": {
+      "_ => Err(format!(\"Unknown event type: {}\", s)),": 1
+    },
+    "clippy::use_self": {
+      "!matches!(self, EventType::Ping | EventType::Pong)": 2,
+      "\"clientCount\" => Ok(EventType::ClientCount),": 1,
+      "\"error\" => Ok(EventType::Error),": 1,
+      "\"obs.command\" => Ok(EventType::ObsCommand),": 1,
+      "\"obs.status\" => Ok(EventType::ObsStatus),": 1,
+      "\"obsCommand\" => Ok(EventType::ObsCommand),": 1,
+      "\"obsStatus\" => Ok(EventType::ObsStatus),": 1,
+      "\"orchestrator.command\" => Ok(EventType::OrchestratorCommandData),": 1,
+      "\"orchestrator.state\" => Ok(EventType::OrchestratorState),": 1,
+      "\"ping\" => Ok(EventType::Ping),": 1,
+      "\"pong\" => Ok(EventType::Pong),": 1,
+      "\"system.client_count\" => Ok(EventType::ClientCount),": 1,
+      "\"system.error\" => Ok(EventType::Error),": 1,
+      "\"system.ping\" => Ok(EventType::Ping),": 1,
+      "\"systemEvent\" => Ok(EventType::SystemEvent),": 1,
+      "\"tab.metadata\" => Ok(EventType::TabMetaData),": 1,
+      "\"tabMetaData\" => Ok(EventType::TabMetaData),": 1,
+      "\"utterance\" => Ok(EventType::Utterance),": 1,
+      "EventType::AudioChunk => \"audio.chunk\",": 1,
+      "EventType::ClientCount => \"system.client_count\",": 1,
+      "EventType::Error => \"system.error\",": 1,
+      "EventType::ObsCommand => \"obs.command\",": 1,
+      "EventType::ObsStatus => \"obs.status\",": 1,
+      "EventType::OrchestratorCommandData => \"orchestrator.command\",": 1,
+      "EventType::OrchestratorState => \"orchestrator.state\",": 1,
+      "EventType::Ping | EventType::Pong => \"system.ping\",": 2,
+      "EventType::Pong": 1,
+      "EventType::Subtitle => \"audio.subtitle\",": 1,
+      "EventType::SystemEvent => \"system\",": 1,
+      "EventType::TabMetaData => \"tab.metadata\",": 1,
+      "EventType::Utterance => \"utterance\",": 1
+    }
   },
   "crates/ws-events/src/events/common/message.rs": {
-    "clippy::derivable_impls": 1,
-    "clippy::missing_const_for_fn": 3,
-    "clippy::must_use_candidate": 3,
-    "clippy::should_implement_trait": 1
+    "clippy::derivable_impls": {
+      "impl Default for ProcessResult { fn default() -> Self { Self { delivered: 0, failed: 0, duration: 0, } } }": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn as_u64(&self) -> u64 { self.0 }": 1,
+      "pub fn failure(failed: u64, duration: u64) -> Self { Self { delivered: 0, failed, duration } }": 1,
+      "pub fn success(delivered: u64, duration: u64) -> Self { Self { delivered, failed: 0, duration } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn as_u64(&self) -> u64 {": 1,
+      "pub fn failure(failed: u64, duration: u64) -> Self {": 1,
+      "pub fn success(delivered: u64, duration: u64) -> Self {": 1
+    },
+    "clippy::should_implement_trait": {
+      "pub fn from_str(s: &str) -> Option<Self> { s.strip_prefix(\"msg-\").and_then(|n| n.parse::<u64>().ok()).map(Self) }": 1
+    }
   },
   "crates/ws-events/src/events/common/orchestrator/state.rs": {
-    "clippy::missing_const_for_fn": 3,
-    "clippy::must_use_candidate": 9,
-    "clippy::use_self": 6
+    "clippy::missing_const_for_fn": {
+      "pub fn is_active(&self) -> bool { matches!(self, OrchestratorMode::Idle | OrchestratorMode::Running | OrchestratorMode::Paused) }": 1,
+      "pub fn is_complete(&self) -> bool { self.current_time >= self.total_duration }": 1,
+      "pub fn is_terminal(&self) -> bool { matches!(self, OrchestratorMode::Finished | OrchestratorMode::Stopped | OrchestratorMode::Error) }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn current_timecode(&self) -> Timecode {": 1,
+      "pub fn is_active(&self) -> bool {": 1,
+      "pub fn is_complete(&self) -> bool {": 1,
+      "pub fn is_paused(&self) -> bool {": 1,
+      "pub fn is_running(&self) -> bool {": 1,
+      "pub fn is_terminal(&self) -> bool {": 2,
+      "pub fn new(total_duration: TimeMs) -> Self {": 1,
+      "pub fn scene_name(&self) -> Option<&str> {": 1
+    },
+    "clippy::use_self": {
+      "matches!(self, OrchestratorMode::Finished | OrchestratorMode::Stopped | OrchestratorMode::Error)": 3,
+      "matches!(self, OrchestratorMode::Idle | OrchestratorMode::Running | OrchestratorMode::Paused)": 3
+    }
   },
   "crates/ws-events/src/events/common/orchestrator/types.rs": {
-    "clippy::cast_precision_loss": 2,
-    "clippy::disallowed_macros": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::must_use_candidate": 3,
-    "clippy::uninlined_format_args": 1
+    "clippy::cast_precision_loss": {
+      "Self((current as f64 / total as f64).clamp(0.0, 1.0))": 2
+    },
+    "clippy::disallowed_macros": {
+      "Self(format!(\"{:02}:{:02}:{:02}.{:03}\", hours, minutes, seconds, milliseconds))": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn value(&self) -> f64 { self.0 }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn new(current: TimeMs, total: TimeMs) -> Self {": 1,
+      "pub fn percentage(&self) -> f64 {": 1,
+      "pub fn value(&self) -> f64 {": 1
+    },
+    "clippy::uninlined_format_args": {
+      "Self(format!(\"{:02}:{:02}:{:02}.{:03}\", hours, minutes, seconds, milliseconds))": 1
+    }
   },
   "crates/ws-events/src/events/common/utterance.rs": {
-    "clippy::derive_partial_eq_without_eq": 1
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]": 1
+    }
   },
   "crates/ws-events/src/events/unified.rs": {
-    "clippy::cast_possible_truncation": 1,
-    "clippy::disallowed_macros": 3,
-    "clippy::disallowed_methods": 1,
-    "clippy::doc_markdown": 5,
-    "clippy::map_unwrap_or": 1,
-    "clippy::missing_const_for_fn": 1,
-    "clippy::must_use_candidate": 3,
-    "clippy::or_fun_call": 1,
-    "clippy::uninlined_format_args": 3,
-    "clippy::use_self": 1,
-    "clippy::wildcard_imports": 1
+    "clippy::cast_possible_truncation": {
+      "Some(unified_event::Event::ClientCount(msg)) => Ok(Event::ClientCount { count: msg.count as usize }),": 1
+    },
+    "clippy::disallowed_macros": {
+      ".map_err(|e| format!(\"Failed to deserialize SystemEvent: {}\", e)),": 1,
+      "Option::<UnifiedEvent>::from(event).ok_or_else(|| format!(\"Event type '{}' cannot be converted to UnifiedEvent (should not be sent to nats)\", event_type))": 1,
+      "let samples = msg.decode_samples().map_err(|e| format!(\"Failed to decode audio samples: {}\", e))?;": 1
+    },
+    "clippy::disallowed_methods": {
+      "Event::System(sys_event) => serde_json::to_vec(&sys_event).ok().map(|payload| {": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Convert UnifiedEvent to Result<Event, String>": 1,
+      "/// Get the EventType for this unified event": 1,
+      "/// TryFrom implementation for conversation with error handling": 1,
+      "/// TryFrom<Event> for UnifiedEvent (fallible): transportable events -> Ok(UnifiedEvent), otherwise Err(String)": 2
+    },
+    "clippy::map_unwrap_or": {
+      "let event_type = event.get_type().map(|et| et.to_string()).unwrap_or(\"SystemEvent\".to_string());": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn event_type(&self) -> Option<EventType> { match &self.event { Some(unified_event::Event::ObsStatus(_)) => Some(EventType::ObsStatus), Some(unified_event::Event::ObsCommand(_)) => Some(EventType::ObsCommand), Some(unified_event::Event::TabMetaData(_)) => Some(EventType::TabMetaData), Some(unified_event::Event::ClientCount(_)) => Some(EventType::ClientCount), Some(unified_event::Event::Error(_)) => Some(EventType::Error), Some(unified_event::Event::Utterance(_)) => Some(EventType::Utterance), Some(unified_event::Event::SystemEvent(_)) => Some(EventType::SystemEvent), Some(unified_event::Event::OrchestratorCommandData(_)) => Some(EventType::OrchestratorCommandData), Some(unified_event::Event::OrchestratorState(_)) => Some(EventType::OrchestratorState), Some(unified_event::Event::AudioChunk(_)) => Some(EventType::AudioChunk), Some(unified_event::Event::Subtitle(_)) => Some(EventType::Subtitle), None => None, } }": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn connection_subject(&self, connection_id: &str) -> Option<String> {": 1,
+      "pub fn event_type(&self) -> Option<EventType> {": 1,
+      "pub fn subject(&self) -> Option<String> {": 1
+    },
+    "clippy::or_fun_call": {
+      "let event_type = event.get_type().map(|et| et.to_string()).unwrap_or(\"SystemEvent\".to_string());": 1
+    },
+    "clippy::uninlined_format_args": {
+      ".map_err(|e| format!(\"Failed to deserialize SystemEvent: {}\", e)),": 1,
+      "Option::<UnifiedEvent>::from(event).ok_or_else(|| format!(\"Event type '{}' cannot be converted to UnifiedEvent (should not be sent to nats)\", event_type))": 1,
+      "let samples = msg.decode_samples().map_err(|e| format!(\"Failed to decode audio samples: {}\", e))?;": 1
+    },
+    "clippy::use_self": {
+      "Option::<UnifiedEvent>::from(event).ok_or_else(|| format!(\"Event type '{}' cannot be converted to UnifiedEvent (should not be sent to nats)\", event_type))": 1
+    },
+    "clippy::wildcard_imports": {
+      "use super::*;": 1
+    }
   },
   "crates/ws-events/src/events/unified/audio.rs": {
-    "clippy::cast_lossless": 1,
-    "clippy::cast_precision_loss": 1,
-    "clippy::derive_partial_eq_without_eq": 1,
-    "clippy::doc_markdown": 1,
-    "clippy::manual_is_multiple_of": 1,
-    "clippy::missing_const_for_fn": 4,
-    "clippy::missing_errors_doc": 1,
-    "clippy::must_use_candidate": 6
+    "clippy::cast_lossless": {
+      "Some((frame_count as f64 / sample_rate as f64) * 1000.0)": 1
+    },
+    "clippy::cast_precision_loss": {
+      "Some((frame_count as f64 / sample_rate as f64) * 1000.0)": 1
+    },
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Get duration in milliseconds (requires sample_rate)": 1
+    },
+    "clippy::manual_is_multiple_of": {
+      "if self.samples.len() % 4 != 0 {": 1
+    },
+    "clippy::missing_const_for_fn": {
+      "pub fn has_format_info(&self) -> bool { self.sample_rate.is_some() && self.channels.is_some() }": 1,
+      "pub fn new(text: String, timestamp: u64) -> Self { Self { text, timestamp, confidence: None, } }": 1,
+      "pub fn sample_count(&self) -> usize { self.samples.len() / 4 // Each f32 is 4 bytes }": 1,
+      "pub fn with_confidence(text: String, timestamp: u64, confidence: f32) -> Self { Self { text, timestamp, confidence: Some(confidence), } }": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub fn decode_samples(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn duration_ms(&self) -> Option<f64> {": 1,
+      "pub fn has_format_info(&self) -> bool {": 1,
+      "pub fn new(sample_rate: u32, channels: u32, samples: Vec<f32>) -> Self {": 1,
+      "pub fn new(text: String, timestamp: u64) -> Self {": 1,
+      "pub fn sample_count(&self) -> usize {": 1,
+      "pub fn with_confidence(text: String, timestamp: u64, confidence: f32) -> Self {": 1
+    }
   },
   "crates/ws-events/src/events/unified/now_playing.rs": {
-    "clippy::derive_partial_eq_without_eq": 1,
-    "clippy::doc_markdown": 2
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Convert to NowPlaying": 1,
+      "/// Create from NowPlaying": 1
+    }
   },
   "crates/ws-events/src/events/unified/obs.rs": {
-    "clippy::derive_partial_eq_without_eq": 2,
-    "clippy::disallowed_methods": 3,
-    "clippy::doc_markdown": 5,
-    "clippy::missing_errors_doc": 6,
-    "clippy::must_use_candidate": 1,
-    "clippy::needless_pass_by_value": 3,
-    "clippy::return_self_not_must_use": 1
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 2
+    },
+    "clippy::disallowed_methods": {
+      "let command_data = serde_json::to_vec(&command)?;": 1,
+      "let event_data = serde_json::to_vec(&event)?;": 1,
+      "self.metadata = Some(serde_json::to_vec(&metadata)?);": 1
+    },
+    "clippy::doc_markdown": {
+      "/// Create a new command message from an ObsCommand": 1,
+      "/// Create a new status message from an ObsEvent": 1,
+      "/// Deserialize the command back to ObsCommand": 1,
+      "/// Deserialize the event back to ObsEvent": 1,
+      "/// Set the reply_to field": 1
+    },
+    "clippy::missing_errors_doc": {
+      "pub fn get_metadata(&self) -> Result<Option<Value>, serde_json::Error> {": 1,
+      "pub fn new(event: ObsEvent) -> Result<Self, serde_json::Error> {": 1,
+      "pub fn new(request_id: String, command: ObsCommand) -> Result<Self, serde_json::Error> {": 1,
+      "pub fn to_obs_command(&self) -> Result<ObsCommand, serde_json::Error> {": 1,
+      "pub fn to_obs_event(&self) -> Result<ObsEvent, serde_json::Error> {": 1,
+      "pub fn with_metadata(mut self, metadata: Value) -> Result<Self, serde_json::Error> {": 1
+    },
+    "clippy::must_use_candidate": {
+      "pub fn with_reply_to(mut self, reply_to: String) -> Self {": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "pub fn new(event: ObsEvent) -> Result<Self, serde_json::Error> {": 1,
+      "pub fn new(request_id: String, command: ObsCommand) -> Result<Self, serde_json::Error> {": 1,
+      "pub fn with_metadata(mut self, metadata: Value) -> Result<Self, serde_json::Error> {": 1
+    },
+    "clippy::return_self_not_must_use": {
+      "pub fn with_reply_to(mut self, reply_to: String) -> Self { self.reply_to = Some(reply_to); self }": 1
+    }
   },
   "crates/ws-events/src/events/unified/orchestrator.rs": {
-    "clippy::derive_partial_eq_without_eq": 9,
-    "clippy::disallowed_macros": 7,
-    "clippy::disallowed_methods": 3,
-    "clippy::doc_markdown": 4,
-    "clippy::uninlined_format_args": 6,
-    "clippy::use_self": 15,
-    "clippy::wildcard_imports": 2
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 9
+    },
+    "clippy::disallowed_macros": {
+      "let active_lifetimes = serde_json::from_slice(&self.active_lifetimes_json).map_err(|e| format!(\"Failed to deserialize active_lifetimes: {}\", e))?;": 1,
+      "let active_lifetimes_json = serde_json::to_vec(&state.active_lifetimes).map_err(|e| format!(\"Failed to serialize active_lifetimes: {}\", e))?;": 1,
+      "let config_data: OrchestratorConfigData = serde_json::from_slice(&cmd.config_json).map_err(|e| format!(\"Failed to deserialize config: {}\", e))?;": 1,
+      "let config_json = serde_json::to_vec(&config_data).map_err(|e| format!(\"Failed to serialize config: {}\", e))?;": 1,
+      "let mode = OrchestratorModeProto::try_from(self.mode).map_err(|_| format!(\"Invalid mode value: {}\", self.mode))?;": 1,
+      "let stream_status = serde_json::from_slice(&self.stream_status_json).map_err(|e| format!(\"Failed to deserialize stream_status: {}\", e))?;": 1,
+      "let stream_status_json = serde_json::to_vec(&state.stream_status).map_err(|e| format!(\"Failed to serialize stream_status: {}\", e))?;": 1
+    },
+    "clippy::disallowed_methods": {
+      "let active_lifetimes_json = serde_json::to_vec(&state.active_lifetimes).map_err(|e| format!(\"Failed to serialize active_lifetimes: {}\", e))?;": 1,
+      "let config_json = serde_json::to_vec(&config_data).map_err(|e| format!(\"Failed to serialize config: {}\", e))?;": 1,
+      "let stream_status_json = serde_json::to_vec(&state.stream_status).map_err(|e| format!(\"Failed to serialize stream_status: {}\", e))?;": 1
+    },
+    "clippy::doc_markdown": {
+      "/// JSON-encoded OrchestratorConfigData": 1,
+      "/// Prost-compatible OrchestratorCommandData message": 1,
+      "/// Prost-compatible OrchestratorState message": 1,
+      "/// Protobuf enum for OrchestratorMode": 1
+    },
+    "clippy::uninlined_format_args": {
+      "let active_lifetimes = serde_json::from_slice(&self.active_lifetimes_json).map_err(|e| format!(\"Failed to deserialize active_lifetimes: {}\", e))?;": 1,
+      "let active_lifetimes_json = serde_json::to_vec(&state.active_lifetimes).map_err(|e| format!(\"Failed to serialize active_lifetimes: {}\", e))?;": 1,
+      "let config_data: OrchestratorConfigData = serde_json::from_slice(&cmd.config_json).map_err(|e| format!(\"Failed to deserialize config: {}\", e))?;": 1,
+      "let config_json = serde_json::to_vec(&config_data).map_err(|e| format!(\"Failed to serialize config: {}\", e))?;": 1,
+      "let stream_status = serde_json::from_slice(&self.stream_status_json).map_err(|e| format!(\"Failed to deserialize stream_status: {}\", e))?;": 1,
+      "let stream_status_json = serde_json::to_vec(&state.stream_status).map_err(|e| format!(\"Failed to serialize stream_status: {}\", e))?;": 1
+    },
+    "clippy::use_self": {
+      "Ok(TickCommandMessage { stream_id, command })": 1,
+      "OrchestratorMode::Error => OrchestratorModeProto::Error,": 1,
+      "OrchestratorMode::Finished => OrchestratorModeProto::Finished,": 1,
+      "OrchestratorMode::Idle => OrchestratorModeProto::Idle,": 1,
+      "OrchestratorMode::Paused => OrchestratorModeProto::Paused,": 1,
+      "OrchestratorMode::Running => OrchestratorModeProto::Running,": 1,
+      "OrchestratorMode::Stopped => OrchestratorModeProto::Stopped,": 1,
+      "OrchestratorMode::Unconfigured => OrchestratorModeProto::Unconfigured,": 1,
+      "OrchestratorModeProto::Error => OrchestratorMode::Error,": 1,
+      "OrchestratorModeProto::Finished => OrchestratorMode::Finished,": 1,
+      "OrchestratorModeProto::Idle => OrchestratorMode::Idle,": 1,
+      "OrchestratorModeProto::Paused => OrchestratorMode::Paused,": 1,
+      "OrchestratorModeProto::Running => OrchestratorMode::Running,": 1,
+      "OrchestratorModeProto::Stopped => OrchestratorMode::Stopped,": 1,
+      "OrchestratorModeProto::Unconfigured => OrchestratorMode::Unconfigured,": 1
+    },
+    "clippy::wildcard_imports": {
+      "use super::*;": 1,
+      "use tick_command_message::*;": 1
+    }
   },
   "crates/ws-events/src/events/unified/system.rs": {
-    "clippy::derive_partial_eq_without_eq": 3
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 3
+    }
   },
   "crates/ws-events/src/events/unified/utterance.rs": {
-    "clippy::derive_partial_eq_without_eq": 1,
-    "clippy::disallowed_methods": 1,
-    "clippy::needless_pass_by_value": 1
+    "clippy::derive_partial_eq_without_eq": {
+      "#[derive(Clone, PartialEq, Message)]": 1
+    },
+    "clippy::disallowed_methods": {
+      "let metadata_bytes = serde_json::to_vec(&metadata)?;": 1
+    },
+    "clippy::needless_pass_by_value": {
+      "pub fn new(text: String, metadata: UtteranceMetadata) -> Result<Self, serde_json::Error> {": 1
+    }
   },
   "crates/ws-events/src/tabsched/common.rs": {
-    "clippy::doc_markdown": 2
+    "clippy::doc_markdown": {
+      "/// ISO-8601 origination time (from CaptureSession).": 1,
+      "/// The message published onto the NATS JetStream subject": 1
+    }
   }
 }

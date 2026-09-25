@@ -125,5 +125,28 @@ jobs:
           cargo clippy --workspace --all-targets --keep-going --message-format=json \
             -- --cap-lints=warn -A unknown-lints > clippy.json || true
 
+      # `--base` is what stops a PR from recording its own new findings: the
+      # committed baseline may only shrink relative to the base branch's.
+      # The one exception is a toolchain bump (the `toolchain:` pin above
+      # differs from the base branch's), since a new clippy brings new lints —
+      # that PR's baseline diff is then the thing to review.
       - name: Check clippy findings against the baseline
-        run: python3 scripts/check_clippy_baseline.py clippy.json
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          args=()
+          if git show FETCH_HEAD:scripts/clippy_baseline.json > base_baseline.json 2>/dev/null; then
+            args+=(--base base_baseline.json)
+          else
+            echo "the base branch has no baseline yet; skipping the growth-vs-base comparison"
+          fi
+          pin() { grep -m1 -E '^\s*toolchain:' | tr -d '[:space:]'; }
+          base_pin=$(git show FETCH_HEAD:.github/workflows/lint.yml | pin || true)
+          head_pin=$(pin < .github/workflows/lint.yml)
+          if [ -n "$base_pin" ] && [ "$base_pin" != "$head_pin" ]; then
+            echo "clippy toolchain bumped ($base_pin -> $head_pin): new findings may be recorded"
+            args+=(--allow-growth)
+          fi
+          python3 scripts/check_clippy_baseline.py clippy.json "${args[@]}"

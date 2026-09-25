@@ -20,8 +20,12 @@ database, not be unset.
 (1,242 findings across 124 files when the ratchet landed, mostly pedantic doc lints), so a
 plain `cargo clippy --workspace -- -D warnings` can never pass regardless of what you changed.
 `lint.yml` instead compares every finding against `scripts/clippy_baseline.json`, a count per
-(file, lint): a new finding fails, and so does a *fixed* one until the baseline is regenerated.
-Run exactly what CI runs, before every push that touches Rust:
+(file, lint, the source text it points at): a new finding fails, and so does a *fixed* one until
+the baseline is regenerated. The source text is part of the identity, so **editing a line that
+carries recorded debt means fixing it** — the edited line is a new finding. `--update` refuses to
+record growth, and CI also fails if the committed baseline exceeds the base branch's, so recording
+your own findings is not a way through; only a clippy toolchain bump may grow it. Run exactly
+what CI runs, before every push that touches Rust:
 
 ```sh
 cargo clippy --workspace --all-targets --keep-going --message-format=json \
