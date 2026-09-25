@@ -9,6 +9,12 @@ use ws_events::{
 
 impl ObsNatsService {
 	/// Spawn task to handle incoming commands from NATS
+	///
+	/// # Panics
+	///
+	/// The spawned task panics if a non-command event arrives on the OBS command
+	/// subject, which is a protocol violation.
+	#[must_use]
 	pub fn spawn_command_handler(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			tracing::info!("🎮 Starting command handler");
@@ -17,7 +23,7 @@ impl ObsNatsService {
 
 			loop {
 				tokio::select! {
-					_ = self.cancel_token.cancelled() => {
+					() = self.cancel_token.cancelled() => {
 						tracing::info!("🛑 Command handler shutting down");
 						break;
 					}
@@ -39,10 +45,8 @@ impl ObsNatsService {
 									}
 								}
 							},
-							Err(e) => match e {
-								TransportError::Closed => break,
-								_ => continue,
-							}
+							Err(TransportError::Closed) => break,
+							Err(_) => {}
 						}
 					}
 				}

@@ -37,6 +37,6 @@ pub enum Error {
 
 impl From<String> for Error {
 	fn from(s: String) -> Self {
-		Error::Other(s)
+		Self::Other(s)
 	}
 }

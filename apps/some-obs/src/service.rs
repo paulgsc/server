@@ -1,5 +1,5 @@
 use crate::{Config, Result};
-use obs_websocket::{ObsConfig, ObsWebSocketManager, RetryConfig};
+use obs_websocket::{ObsConfig, ObsWebSocketManager};
 use some_transport::NatsTransport;
 use std::sync::Arc;
 use tokio::time::timeout;
@@ -20,11 +20,15 @@ pub struct ObsNatsService {
 
 impl ObsNatsService {
 	/// Create a new OBS NATS service
+	///
+	/// # Errors
+	///
+	/// Fails when NATS at `config.nats_url` is unreachable.
 	pub async fn new(config: Config) -> Result<Self> {
 		tracing::info!("🔌 Initializing OBS NATS Service");
 
-		// Create OBS manager
-		let obs_manager = Arc::new(ObsWebSocketManager::new(ObsConfig::default(), RetryConfig::default()));
+		// Create OBS manager (OBS_HOST / OBS_PORT / OBS_PASSWORD)
+		let obs_manager = Arc::new(ObsWebSocketManager::new(ObsConfig::from_env()));
 
 		// Create NATS transports using pooled connections
 		tracing::info!("📡 Connecting to NATS at {}", config.nats_url);
@@ -42,6 +46,10 @@ impl ObsNatsService {
 	}
 
 	/// Run the service until shutdown
+	///
+	/// # Errors
+	///
+	/// None at present: task failures are logged and retried, not returned.
 	pub async fn run(self) -> Result<()> {
 		let service = Arc::new(self);
 
@@ -76,9 +84,7 @@ impl ObsNatsService {
 		.await;
 
 		// Disconnect from OBS
-		if let Err(e) = service.obs_manager.disconnect().await {
-			tracing::warn!("⚠️ Error disconnecting from OBS: {}", e);
-		}
+		service.obs_manager.disconnect().await;
 
 		tracing::info!("✅ Graceful shutdown complete");
 		Ok(())

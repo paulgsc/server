@@ -5,6 +5,7 @@ use tokio::time::{interval, Duration};
 
 impl ObsNatsService {
 	/// Spawn task for periodic health checks
+	#[must_use]
 	pub fn spawn_health_checker(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			tracing::info!("💓 Starting health checker");
@@ -14,21 +15,15 @@ impl ObsNatsService {
 
 			loop {
 				tokio::select! {
-						_ = self.cancel_token.cancelled() => {
+						() = self.cancel_token.cancelled() => {
 								tracing::info!("🛑 Health checker shutting down");
 								break;
 						}
 						_ = check_interval.tick() => {
-								match self.obs_manager.is_healthy().await {
-										Ok(true) => {
-												tracing::debug!("💚 OBS connection healthy");
-										}
-										Ok(false) => {
-												tracing::warn!("💔 OBS connection unhealthy");
-										}
-										Err(e) => {
-												tracing::error!("❌ Health check failed: {}", e);
-										}
+								if self.obs_manager.is_healthy() {
+										tracing::debug!("💚 OBS connection healthy");
+								} else {
+										tracing::warn!("💔 OBS connection unhealthy");
 								}
 						}
 				}
@@ -39,6 +34,7 @@ impl ObsNatsService {
 	}
 
 	/// Calculate retry delay with exponential backoff
+	#[must_use]
 	pub fn calculate_retry_delay(&self) -> Duration {
 		// Simple exponential backoff - could be enhanced with jitter
 		let retry_config = RetryConfig::default();

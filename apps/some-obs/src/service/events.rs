@@ -9,13 +9,14 @@ use ws_events::{
 
 impl ObsNatsService {
 	/// Spawn task to bridge OBS events to NATS
+	#[must_use]
 	pub fn spawn_event_bridge(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			tracing::info!("🌉 Starting event bridge");
 
 			loop {
 				tokio::select! {
-					_ = self.cancel_token.cancelled() => {
+					() = self.cancel_token.cancelled() => {
 						tracing::info!("🛑 Event bridge shutting down");
 						break;
 					}
@@ -30,20 +31,18 @@ impl ObsNatsService {
 						}
 
 						// Disconnect cleanly
-						let _ = self.obs_manager.disconnect().await;
+						self.obs_manager.disconnect().await;
 
 						// Retry with exponential backoff
 						let delay = self.calculate_retry_delay();
 						tracing::info!("⏳ Retrying connection in {:?}", delay);
 
 						tokio::select! {
-							_ = self.cancel_token.cancelled() => {
+							() = self.cancel_token.cancelled() => {
 								tracing::info!("🛑 Shutdown during retry delay");
 								break;
 							}
-							_ = tokio::time::sleep(delay) => {
-								continue;
-							}
+							() = tokio::time::sleep(delay) => {}
 						}
 					}
 				}
@@ -82,7 +81,7 @@ impl ObsNatsService {
 							let unified_event = UnifiedEvent {
 								event: Some(unified_event::Event::ObsStatus(message)),
 							};
-							if let Err(e) = transport.send_to_subject(&subject, unified_event).await {
+							if let Err(e) = transport.send_to_subject(subject, unified_event).await {
 								tracing::error!("❌ Failed to publish event: {}", e);
 							}
 						}
@@ -92,7 +91,7 @@ impl ObsNatsService {
 					}
 				})
 			})
-			.await?;
+			.await;
 
 		Ok(())
 	}

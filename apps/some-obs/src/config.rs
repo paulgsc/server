@@ -15,6 +15,10 @@ pub struct Config {
 
 impl Config {
 	/// Load configuration from environment variables with sensible defaults
+	///
+	/// # Errors
+	///
+	/// None at present: unset or unparsable variables fall back to defaults.
 	pub fn from_env() -> Result<Self> {
 		Ok(Self {
 			nats_url: std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string()),
