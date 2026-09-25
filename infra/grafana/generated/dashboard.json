@@ -2717,7 +2717,7 @@
           },
           "targets": [
             {
-              "expr": "(\n  sum(rate(http_requests_total[1m])) > bool (max(rate_limit_capacity_per_minute) / 60)\n)\n*\n(\n  (sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[1m])) or vector(0)) == bool 0\n)\n",
+              "expr": "(\n  sum(rate(http_requests_total[1m])) > bool (rate_limit_capacity_per_minute / 60)\n)\n*\n(\n  sum(rate(rate_limit_decisions_total{outcome=\"rejected\"}[1m])) == bool 0\n)\n",
               "instant": true,
               "refId": "A"
             }
