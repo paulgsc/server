@@ -23,18 +23,38 @@ use axum::http::request::Parts;
 pub const SINGLETON_SUBJECT: &str = "subject-local";
 
 /// Who a request is acting for.
+///
+/// Only this module can make one (#372). The extractor below is the single
+/// place a request's subject is decided, and the day auth lands it is the
+/// single place a token is checked — which only holds if nothing else can
+/// construct a `SubjectId` and hand it to a repository. Code outside this
+/// module that tries does not compile. (The first example does compile, so a
+/// `compile_fail` below can only be failing on the constructor, not on a
+/// wrong path.)
+///
+/// ```
+/// fn accepts(subject: &file_host::subject::SubjectId) -> &str {
+///     subject.as_str()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// let _ = file_host::subject::SubjectId::singleton();
+/// ```
+///
+/// ```compile_fail
+/// let _ = file_host::subject::SubjectId("subject-forged".to_owned());
+/// ```
+///
+/// Background work that already holds a stored subject id (the waker reads
+/// them back from `engagement_gate`) works with that `&str` directly; it is
+/// not deciding who a request is for, so it has no reason to mint one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubjectId(String);
 
 impl SubjectId {
-	#[must_use]
-	pub fn new(id: impl Into<String>) -> Self {
-		Self(id.into())
-	}
-
 	/// The one this deployment has until accounts exist.
-	#[must_use]
-	pub fn singleton() -> Self {
+	fn singleton() -> Self {
 		Self(SINGLETON_SUBJECT.to_owned())
 	}
 

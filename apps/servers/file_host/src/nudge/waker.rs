@@ -22,7 +22,6 @@
 //! interventions land closer to their solved instant without changing which
 //! ones happen.
 
-use crate::handlers::db::session::new_id;
 use crate::nudge::constraints::{StudyConstraints, Suppressed};
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
@@ -37,7 +36,7 @@ use outcome_repo::{ActivityStats, OutcomeRepository, ACTIVITY_OUTCOME_RETENTION_
 use publication_repo::{Publication, PublicationRepository};
 use push_kit::SendOutcome;
 use push_repo::{PushSubscriptionRepository, Topic};
-use session_repo::{LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
+use session_repo::{new_session_id, LayoutMode, SessionOrigin, SessionRecord, SessionRepository, SessionStatus};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -959,7 +958,7 @@ async fn propose_a_session(db: &SqlitePool, nudge: &NudgeContext, sessions: &Ses
 			retry_in: Some(chrono::Duration::hours(1)),
 		};
 	};
-	let provisioned = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
+	let provisioned = materialize_provisioned_session(new_session_id(), subject_id, &catalogue, &inputs, now);
 	if provisioned.activities.is_empty() {
 		// A real Codex review finding on server#322 (P2): every one of
 		// `recommend()`'s picks was dropped by `provision()` -- a `NULL`
@@ -1155,7 +1154,7 @@ async fn refresh_stale_proposal(db: &SqlitePool, nudge: &NudgeContext, sessions:
 		// than replace it with one ranked on no history.
 		return;
 	};
-	let refreshed = materialize_provisioned_session(new_id(), subject_id, &catalogue, &inputs, now);
+	let refreshed = materialize_provisioned_session(new_session_id(), subject_id, &catalogue, &inputs, now);
 	if refreshed.activities.is_empty() {
 		// Same trap #322 (P2) named for the original provisioning path: a
 		// catalogue with nothing currently timeable must not clobber a real

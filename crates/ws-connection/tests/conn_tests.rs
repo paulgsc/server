@@ -7,25 +7,21 @@
 
 #[cfg(test)]
 mod connection_metadata {
-	use std::net::SocketAddr;
 	use std::thread::sleep;
 	use std::time::{Duration, Instant};
 	use ws_connection::core::conn::Connection;
 	use ws_connection::types::ClientId;
 
 	fn test_connection() -> Connection {
-		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-		Connection::new(ClientId::new("test-client"), addr)
+		Connection::new(ClientId::new("test-client"))
 	}
 
 	#[test]
-	fn new_records_the_client_and_address_it_was_given() {
+	fn new_records_the_client_it_was_given() {
 		let client_id = ClientId::new("test-client");
-		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-		let conn = Connection::new(client_id.clone(), addr);
+		let conn = Connection::new(client_id.clone());
 
 		assert_eq!(conn.client_id, client_id);
-		assert_eq!(conn.source_addr, addr);
 	}
 
 	#[test]
@@ -38,9 +34,8 @@ mod connection_metadata {
 
 	#[test]
 	fn distinct_clients_stay_distinct() {
-		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-		let conn1 = Connection::new(ClientId::new("client1"), addr);
-		let conn2 = Connection::new(ClientId::new("client2"), addr);
+		let conn1 = Connection::new(ClientId::new("client1"));
+		let conn2 = Connection::new(ClientId::new("client2"));
 
 		assert_ne!(conn1.id, conn2.id);
 		assert_ne!(conn1.client_id, conn2.client_id);
@@ -74,7 +69,6 @@ mod connection_metadata {
 
 		assert_eq!(conn.id, clone.id);
 		assert_eq!(conn.client_id, clone.client_id);
-		assert_eq!(conn.source_addr, clone.source_addr);
 	}
 
 	#[test]
@@ -239,7 +233,6 @@ mod connection_state {
 
 #[cfg(test)]
 mod connection_actor {
-	use std::net::SocketAddr;
 	use std::time::Duration;
 	use tokio_util::sync::CancellationToken;
 	use ws_connection::actor::ConnectionHandle;
@@ -260,8 +253,7 @@ mod connection_actor {
 	where
 		K: ws_connection::core::subscription::EventKey,
 	{
-		let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-		let connection = Connection::new(ClientId::new("test-client"), addr);
+		let connection = Connection::new(ClientId::new("test-client"));
 		let parent = CancellationToken::new();
 		let (handle, actor, _token) = ConnectionHandle::new(connection, 16, &parent);
 
@@ -284,7 +276,6 @@ mod connection_actor {
 		let (handle, _parent) = spawn_handle::<String>();
 
 		assert_eq!(handle.connection.client_id, ClientId::new("test-client"));
-		assert_eq!(handle.connection.source_addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
 	}
 
 	#[tokio::test]

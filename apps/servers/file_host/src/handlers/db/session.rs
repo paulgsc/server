@@ -32,7 +32,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use session_repo::{total_duration_of, CreateSession, SessionOrigin, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
+use session_repo::{new_session_id, total_duration_of, CreateSession, SessionOrigin, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
 use tracing::instrument;
 
 #[derive(Debug, Deserialize)]
@@ -44,17 +44,6 @@ pub struct RemoveManyRequest {
 pub struct StatusManyRequest {
 	pub ids: Vec<String>,
 	pub status: SessionStatus,
-}
-
-/// `session-<uuid>`, mirroring the client's `generateId("session")`.
-///
-/// `pub(crate)` rather than private: `nudge::waker` (#279/RCM2) reuses this
-/// for the sessions it provisions, so ids stay indistinguishable between a
-/// session the client created and one the waker did — `#283` (RCM6) is what
-/// makes that distinction real, through `SessionRecord::origin` rather than
-/// through the id.
-pub(crate) fn new_id() -> String {
-	format!("session-{}", uuid::Uuid::new_v4())
 }
 
 fn repo(state: &AppState) -> SessionRepository {
@@ -94,7 +83,7 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 	let now = Utc::now().to_rfc3339();
 
 	let record = SessionRecord {
-		id: new_id(),
+		id: new_session_id(),
 		name: input.name,
 		// Everything starts as a draft. The client's `create` did the same, and
 		// a session that could be born `scheduled` would be one the nudge could
@@ -246,7 +235,7 @@ pub async fn duplicate_session(State(state): State<AppState>, subject: SubjectId
 	let now = Utc::now().to_rfc3339();
 
 	let copy = SessionRecord {
-		id: new_id(),
+		id: new_session_id(),
 		name: format!("{} (copy)", source.name),
 		status: SessionStatus::Draft,
 		origin: SessionOrigin::User,
@@ -259,16 +248,4 @@ pub async fn duplicate_session(State(state): State<AppState>, subject: SubjectId
 
 	sessions.upsert(subject.as_str(), &copy).await.map_err(|err| to_http(&err))?;
 	Ok(Json(copy))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::new_id;
-
-	#[test]
-	fn ids_match_the_shape_the_client_minted() {
-		let id = new_id();
-		assert!(id.starts_with("session-"), "got {id}");
-		assert!(uuid::Uuid::parse_str(id.trim_start_matches("session-")).is_ok());
-	}
 }

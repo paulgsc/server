@@ -1,5 +1,18 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// `session-<uuid>`, mirroring the client's `generateId("session")`.
+///
+/// Lives with the record rather than with either of its two callers — the
+/// `/sessions` handlers and the waker (#279/RCM2), which provisions sessions
+/// of its own — so that ids stay indistinguishable between a session the
+/// client created and one the waker did (`#283`/RCM6 makes that distinction
+/// real, through [`SessionRecord::origin`], not through the id), and so the
+/// waker does not have to depend on the HTTP layer to mint one (#372).
+#[must_use]
+pub fn new_session_id() -> String {
+	String::from("session-") + &uuid::Uuid::new_v4().to_string()
+}
+
 /// The five statuses `SessionStatus` admits in the client. Not four, not six —
 /// the vocabulary is fixed, and the policy's candidate ranking is written
 /// against exactly these names.
@@ -275,8 +288,15 @@ pub fn total_duration_of(scenes: &[serde_json::Value]) -> i64 {
 
 #[cfg(test)]
 mod tests {
-	use super::{session_abandonment_is_real, total_duration_of, SessionOrigin, SessionRecord};
+	use super::{new_session_id, session_abandonment_is_real, total_duration_of, SessionOrigin, SessionRecord};
 	use serde_json::json;
+
+	#[test]
+	fn ids_match_the_shape_the_client_minted() {
+		let id = new_session_id();
+		assert!(id.starts_with("session-"), "got {id}");
+		assert!(uuid::Uuid::parse_str(id.trim_start_matches("session-")).is_ok());
+	}
 
 	#[test]
 	fn total_duration_is_the_latest_scene_end() {

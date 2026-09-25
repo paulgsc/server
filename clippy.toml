@@ -20,3 +20,13 @@ disallowed-macros = [
   { path = "std::eprintln", reason = "use tracing macros instead" },
   { path = "std::dbg", reason = "use tracing::debug!(?value) or allow only in tests (see allow-dbg-in-tests)" },
 ]
+
+# --- Privacy (#371/#372) ---
+
+# The peer's address reaches file_host only through `net::Peer`, which turns
+# it into a keyed, daily-rotating `PeerKey` before anything else sees it. That
+# one reader carries an `#[allow]`; anywhere else, holding the raw address is
+# a lint error. See docs/identity.md.
+disallowed-types = [
+  { path = "axum::extract::ConnectInfo", reason = "privacy: use file_host::net::Peer, which yields a keyed PeerKey instead of the address (docs/identity.md)" },
+]

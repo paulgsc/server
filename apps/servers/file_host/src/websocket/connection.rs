@@ -1,6 +1,5 @@
-use crate::WebSocketFsm;
+use crate::{net::PeerKey, WebSocketFsm};
 use axum::http::HeaderMap;
-use std::net::SocketAddr;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -16,14 +15,15 @@ pub(crate) use handlers::{clear_connection, establish_connection, send_initial_h
 
 /// `client_type` label for [`instrument::record_created`]/[`instrument::record_removed`]
 /// and `ConnectionCleanup`'s own decrement in `websocket.rs` — the same
-/// `probe:`/`auth:`/`proxy:`/`direct:` prefix convention `client_id_from_request`
+/// `probe:`/`proxy:`/`direct:` prefix convention `client_id_from_request`
 /// writes, read back out. A free function rather than a method so
 /// `websocket.rs` can derive the label without going through the store.
+///
+/// There is no `auth` label any more: it came from a client-supplied
+/// `X-Client-ID` header that nothing authenticated (#372).
 pub(crate) fn client_type_label(client_id: &ClientId) -> &'static str {
 	if client_id.as_str().starts_with("probe:") {
 		"probe"
-	} else if client_id.as_str().starts_with("auth:") {
-		"auth"
 	} else if client_id.as_str().starts_with("proxy:") {
 		"proxy"
 	} else {
@@ -33,9 +33,19 @@ pub(crate) fn client_type_label(client_id: &ClientId) -> &'static str {
 
 // Connection management operations
 impl WebSocketFsm {
-	/// Generate a ClientId from request headers and socket address
-	pub fn client_id_from_request(&self, headers: &HeaderMap, addr: &SocketAddr) -> ClientId {
-		// 0. The blackbox WS liveness probe (infra/blackbox.yml's
+	/// Which client a connection belongs to, for grouping and metric labels.
+	///
+	/// A `ClientId` is **not an identity** (#372): it is derived from the
+	/// peer's keyed, daily-rotating [`PeerKey`](crate::net::PeerKey), never
+	/// from the raw address, and never from anything the client asserts
+	/// about itself. Identity is `SubjectId`'s alone — see
+	/// `docs/identity.md`. The user-agent hash this used to mix in is gone
+	/// too: reading a fingerprinting header to tell two browsers on one
+	/// address apart is exactly the tracking the privacy invariants rule out,
+	/// and nothing reads `ClientId` finely enough to need it.
+	#[must_use]
+	pub fn client_id_from_request(&self, headers: &HeaderMap, peer: &PeerKey) -> ClientId {
+		// The blackbox WS liveness probe (infra/blackbox.yml's
 		// `websocket_blackbox_http` job) completes a real upgrade against
 		// `/ws` on every scrape and then hangs up without ever sending a
 		// frame — self-identified via this header so it lands in
@@ -47,41 +57,28 @@ impl WebSocketFsm {
 			return ClientId::new("probe:blackbox");
 		}
 
-		// Priority order:
-		// 1. X-Client-ID
-		if let Some(client_id) = headers.get("x-client-id").and_then(|v| v.to_str().ok()) {
-			if !client_id.is_empty() && client_id.len() <= 64 {
-				return ClientId::new(format!("auth:{}", client_id));
-			}
+		// Behind a proxy every socket peer is the proxy; the first forwarded
+		// hop is the only thing that tells its clients apart.
+		if let Some(forwarded) = crate::net::forwarded_peer_key(headers) {
+			return ClientId::new(String::from("proxy:") + forwarded.as_str());
 		}
 
-		let user_agent = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
-
-		let user_agent_hash = {
-			use std::hash::{Hash, Hasher};
-			let mut hasher = std::collections::hash_map::DefaultHasher::new();
-			user_agent.hash(&mut hasher);
-			hasher.finish()
-		};
-
-		// Check for forwarded IP (behind proxy/load balancer)
-		if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-			if let Some(client_ip) = forwarded_for.split(',').next().map(|s| s.trim()) {
-				return ClientId::new(format!("proxy:{}:{:x}", client_ip, user_agent_hash));
-			}
-		}
-
-		// Fallback: direct IP + user agent hash
-		ClientId::new(format!("direct:{}:{:x}", addr.ip(), user_agent_hash))
+		ClientId::new(String::from("direct:") + peer.as_str())
 	}
 
 	/// Adds a connection to the store with comprehensive observability
-	pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
+	///
+	/// # Errors
+	///
+	/// Returns `ConnectionError::SubscriptionFailed` when the new connection's
+	/// actor can't take its default subscriptions; the store entry is removed
+	/// again before returning, so nothing strands.
+	pub async fn add_connection(&self, headers: &HeaderMap, peer: &PeerKey, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
 		let start = Instant::now();
-		let client_id = self.client_id_from_request(headers, addr);
+		let client_id = self.client_id_from_request(headers, peer);
 		let client_type = client_type_label(&client_id);
 
-		let domain_conn = Connection::new(client_id.clone(), *addr);
+		let domain_conn = Connection::new(client_id.clone());
 
 		let connection_id = domain_conn.id.clone();
 		let client_key = connection_id.as_string();
@@ -113,7 +110,6 @@ impl WebSocketFsm {
 		info!(
 			connection_id = %connection_id,
 			client_id = %client_id,
-			addr = %addr,
 			setup_duration_ms = elapsed.as_millis(),
 			"Connection added successfully"
 		);
@@ -228,34 +224,64 @@ impl WebSocketFsm {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::net::peer_key;
 
-	fn addr() -> SocketAddr {
-		"127.0.0.1:9999".parse().expect("valid socket addr")
+	fn peer() -> PeerKey {
+		peer_key("127.0.0.1:9999".parse().unwrap())
 	}
 
 	/// The blackbox WS liveness probe's self-identifying header must win
-	/// over every other branch, including `X-Client-ID` — a probe hitting
-	/// `/ws` should never be able to land in `client_type="auth"` just
-	/// because it also happens to carry a stray header.
+	/// over every other branch — a probe hitting `/ws` through a proxy should
+	/// still land in `client_type="probe"`, not be counted as a device.
 	#[test]
 	fn a_probe_header_is_tagged_probe_regardless_of_other_headers() {
 		let fsm = WebSocketFsm::new();
 		let mut headers = HeaderMap::new();
 		headers.insert("x-probe-source", "blackbox-exporter".parse().unwrap());
-		headers.insert("x-client-id", "someone".parse().unwrap());
+		headers.insert("x-forwarded-for", "10.0.0.9".parse().unwrap());
 
-		let client_id = fsm.client_id_from_request(&headers, &addr());
+		let client_id = fsm.client_id_from_request(&headers, &peer());
 		assert!(client_id.as_str().starts_with("probe:"), "got {client_id:?}");
 		assert_eq!(client_type_label(&client_id), "probe");
 	}
 
+	/// #372: nothing a client asserts about itself becomes its `ClientId`.
+	/// `X-Client-ID` used to be read verbatim and labelled `auth`, although
+	/// nothing authenticated it.
 	#[test]
-	fn a_real_client_id_without_the_probe_header_is_tagged_auth() {
+	fn a_self_asserted_client_id_header_is_ignored() {
 		let fsm = WebSocketFsm::new();
 		let mut headers = HeaderMap::new();
 		headers.insert("x-client-id", "someone".parse().unwrap());
 
-		let client_id = fsm.client_id_from_request(&headers, &addr());
-		assert_eq!(client_type_label(&client_id), "auth");
+		let client_id = fsm.client_id_from_request(&headers, &peer());
+		assert_eq!(client_id, fsm.client_id_from_request(&HeaderMap::new(), &peer()));
+		assert!(!client_id.as_str().contains("someone"), "got {client_id:?}");
+		assert_eq!(client_type_label(&client_id), "direct");
+	}
+
+	#[test]
+	fn a_forwarded_client_is_tagged_proxy_and_keyed_by_its_first_hop() {
+		let fsm = WebSocketFsm::new();
+		let mut headers = HeaderMap::new();
+		headers.insert("x-forwarded-for", "10.0.0.9, 172.16.0.1".parse().unwrap());
+
+		let client_id = fsm.client_id_from_request(&headers, &peer());
+		assert_eq!(client_type_label(&client_id), "proxy");
+		assert_eq!(client_id.as_str(), String::from("proxy:") + peer_key("10.0.0.9:1".parse().unwrap()).as_str());
+	}
+
+	/// Neither the socket peer's address nor a forwarded one survives into
+	/// the `ClientId`, which is logged on every connection.
+	#[test]
+	fn no_client_id_contains_an_address() {
+		let fsm = WebSocketFsm::new();
+		let mut forwarded = HeaderMap::new();
+		forwarded.insert("x-forwarded-for", "10.0.0.9".parse().unwrap());
+
+		for client_id in [fsm.client_id_from_request(&HeaderMap::new(), &peer()), fsm.client_id_from_request(&forwarded, &peer())] {
+			assert!(!client_id.as_str().contains("127.0.0.1"), "got {client_id:?}");
+			assert!(!client_id.as_str().contains("10.0.0.9"), "got {client_id:?}");
+		}
 	}
 }

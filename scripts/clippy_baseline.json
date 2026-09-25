@@ -233,9 +233,6 @@
     "clippy::disallowed_macros": {
       "fn duplicate_session": {
         "name: format!(\"{} (copy)\", source.name),": 1
-      },
-      "fn new_id": {
-        "format!(\"session-{}\", uuid::Uuid::new_v4())": 1
       }
     },
     "clippy::missing_errors_doc": {
@@ -657,8 +654,7 @@
     "clippy::expect_used": {
       "fn the_blackbox_prober_firing_with_zero_real_users_present_yields_no_fresh_lease": {
         "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
-        "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
-        "ws.add_connection(&headers, &addr, &CancellationToken::new()) .await .expect(\"the probe's connection is accepted like any other\");": 1
+        "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1
       }
     }
   },
@@ -836,19 +832,12 @@
       "fn opening_and_closing_a_connection_moves_the_lifecycle_counters": {
         "find(&snapshot, \"ws_connection_duration_seconds\", &[(\"end_reason\", \"client_disconnect\")]).expect(\"duration recorded under a real end_reason\")": 1,
         "fsm.remove_connection(&key, \"test teardown\".to_string()).await.expect(\"remove_connection\");": 1,
-        "let addr: SocketAddr = \"127.0.0.1:9999\".parse().expect(\"valid socket addr\");": 1,
-        "let key = fsm.add_connection(&headers, &addr, &cancel).await.expect(\"add_connection\");": 1,
         "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1
       }
     },
     "clippy::ignored_unit_patterns": {
       "fn handle_socket": {
         "_ = cancel_token.cancelled() => \"cleanup\",": 1
-      }
-    },
-    "clippy::manual_let_else": {
-      "fn handle_socket": {
-        "let conn_key = match establish_connection(&ws_fsm, &headers, &addr, &cancel_token).await { Ok(connection) => connection, Err(_) => { return; } };": 1
       }
     },
     "clippy::must_use_candidate": {
@@ -943,42 +932,17 @@
     }
   },
   "apps/servers/file_host/src/websocket/connection.rs": {
-    "clippy::disallowed_macros": {
-      "fn client_id_from_request": {
-        "ClientId::new(format!(\"direct:{}:{:x}\", addr.ip(), user_agent_hash))": 1,
-        "return ClientId::new(format!(\"auth:{}\", client_id));": 1,
-        "return ClientId::new(format!(\"proxy:{}:{:x}\", client_ip, user_agent_hash));": 1
-      }
-    },
-    "clippy::doc_markdown": {
-      "impl WebSocketFsm": {
-        "/// Generate a ClientId from request headers and socket address": 1
-      }
-    },
-    "clippy::expect_used": {
-      "fn addr": {
-        "\"127.0.0.1:9999\".parse().expect(\"valid socket addr\")": 1
-      }
-    },
     "clippy::map_unwrap_or": {
       "fn remove_connection": {
         "let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false);": 1
       }
     },
     "clippy::missing_errors_doc": {
-      "fn add_connection": {
-        "pub async fn add_connection(&self, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {": 1
-      },
       "fn handle_subscription_update": {
         "pub async fn handle_subscription_update(&self, connection_id: &str, add_types: Vec<EventType>, remove_types: Vec<EventType>) -> Result<(), ConnectionError> {": 1
       },
       "fn remove_connection": {
         "pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), ConnectionError> {": 1
-      }
-    },
-    "clippy::must_use_candidate": {
-      "fn client_id_from_request": {
-        "pub fn client_id_from_request(&self, headers: &HeaderMap, addr: &SocketAddr) -> ClientId {": 1
       }
     },
     "clippy::redundant_closure": {
@@ -987,20 +951,9 @@
         "handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1
       }
     },
-    "clippy::redundant_closure_for_method_calls": {
-      "fn client_id_from_request": {
-        "if let Some(client_ip) = forwarded_for.split(',').next().map(|s| s.trim()) {": 1
-      }
-    },
     "clippy::single_match_else": {
       "fn remove_connection": {
         "match self.store.remove(client_key).await { Some(handle) => { let connection_id = handle.connection.id.clone(); let client_id = handle.connection.client_id.clone(); let duration = handle.connection.get_duration(); let state = handle.get_state().await.ok(); let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false); if let Err(e) = handle.shutdown().await { warn!( connection_id = %connection_id, error = %e, \"Failed to gracefully shutdown connection actor\" ); } let elapsed = start.elapsed(); info!( connection_id = %connection_id, client_id = %client_id, lifetime_ms = duration.as_millis(), was_active = was_active, reason = %reason, cleanup_duration_ms = elapsed.as_millis(), \"Connection removed\" ); // `ws_connection_lifecycle_total{event=\"removed\"}` and the // duration histogram are recorded once per socket at // `ConnectionCleanup::drop` (websocket.rs), not here \u2014 this // function is called from several places that Drop still // runs after (stale timeout, client close, forwarder end), // and double-instrumenting both would double-count. Only // `connected` \u2014 cheap, and this store entry genuinely just // left \u2014 is refreshed here for immediacy. instrument::set_connected(self.store.len()); Ok(()) } None => { warn!( connection_key = client_key, reason = %reason, \"Attempted to remove non-existent connection\" ); Ok(()) } }": 1
-      }
-    },
-    "clippy::uninlined_format_args": {
-      "fn client_id_from_request": {
-        "return ClientId::new(format!(\"auth:{}\", client_id));": 1,
-        "return ClientId::new(format!(\"proxy:{}:{:x}\", client_ip, user_agent_hash));": 1
       }
     },
     "clippy::unused_async": {
@@ -1025,9 +978,6 @@
     "clippy::redundant_pub_crate": {
       "fn clear_connection": {
         "pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {": 1
-      },
-      "fn establish_connection": {
-        "pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, addr: &SocketAddr, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {": 1
       },
       "fn send_initial_handshake": {
         "pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Message>) -> Result<(), ConnectionError> {": 1
