@@ -4,8 +4,8 @@ use crate::commands;
 use crate::config::ObsConfig;
 use crate::events::to_obs_event;
 use crate::polling::{self, PollingConfig};
-use crate::studio;
-use crate::types::ObsEvent;
+use crate::studio::{self, LatestStudio};
+use crate::types::{ObsEvent, StudioSnapshot};
 use crate::ObsCommand;
 use futures_util::future::BoxFuture;
 use futures_util::StreamExt;
@@ -116,6 +116,7 @@ pub struct ObsWebSocketManager {
 	connection: Mutex<Option<Connection>>,
 	state: Arc<watch::Sender<ConnectionState>>,
 	events: broadcast::Sender<ObsEvent>,
+	latest_studio: Arc<LatestStudio>,
 }
 
 impl ObsWebSocketManager {
@@ -127,6 +128,7 @@ impl ObsWebSocketManager {
 			connection: Mutex::new(None),
 			state: Arc::new(watch::Sender::new(ConnectionState::Disconnected)),
 			events,
+			latest_studio: Arc::new(LatestStudio::new(None)),
 		}
 	}
 
@@ -142,6 +144,8 @@ impl ObsWebSocketManager {
 		if let Some(previous) = slot.take() {
 			close(previous).await;
 		}
+		// A snapshot of an earlier connection must not be replayed for this one.
+		self.latest_studio.send_replace(None);
 
 		self.state.send_replace(ConnectionState::Connecting);
 		let client = match Client::connect_with_config(self.connect_config()).await {
@@ -162,7 +166,7 @@ impl ObsWebSocketManager {
 		let studio_changed = Arc::new(Notify::new());
 		let pump = start_event_pump(obs_events, Arc::clone(&self.state), self.events.clone(), Arc::clone(&studio_changed));
 		let poller = tokio::spawn(polling::run(Arc::clone(&client), polling, self.events.clone()));
-		let publisher = tokio::spawn(studio::publish(Arc::clone(&client), studio_changed, self.events.clone()));
+		let publisher = tokio::spawn(studio::publish(Arc::clone(&client), studio_changed, Arc::clone(&self.latest_studio), self.events.clone()));
 
 		*slot = Some(Connection {
 			client,
@@ -179,6 +183,7 @@ impl ObsWebSocketManager {
 		if let Some(previous) = previous {
 			close(previous).await;
 		}
+		self.latest_studio.send_replace(None);
 		self.state.send_replace(ConnectionState::Disconnected);
 	}
 
@@ -220,14 +225,33 @@ impl ObsWebSocketManager {
 		self.events.subscribe()
 	}
 
-	/// Calls `handler` for every published event until the connection ends.
-	/// A handler slower than OBS's event rate loses the oldest events, logged.
+	/// The latest whole-studio snapshot of the current connection, if one has
+	/// been taken yet.
+	#[must_use]
+	pub fn studio(&self) -> Option<StudioSnapshot> {
+		self.latest_studio.borrow().as_deref().cloned()
+	}
+
+	/// Calls `handler` for every published event until the connection ends,
+	/// starting with the latest [`ObsEvent::StudioChanged`] when one exists, so a
+	/// subscriber arriving after it was published still starts from the whole
+	/// studio. A handler slower than OBS's event rate loses the oldest events,
+	/// logged.
 	pub async fn stream_events<F>(&self, mut handler: F)
 	where
 		F: FnMut(ObsEvent) -> BoxFuture<'static, ()>,
 	{
+		// Subscribe before reading the retained snapshot: anything published
+		// after this point is also queued, so nothing falls between the two.
 		let mut events = self.events.subscribe();
 		let mut state = self.state.subscribe();
+
+		let latest = self.latest_studio.borrow().clone();
+		if let Some(studio) = latest {
+			if matches!(*state.borrow(), ConnectionState::Connected { .. }) {
+				handler(ObsEvent::StudioChanged(studio)).await;
+			}
+		}
 
 		while matches!(*state.borrow_and_update(), ConnectionState::Connected { .. }) {
 			tokio::select! {
@@ -316,5 +340,27 @@ mod tests {
 		pump.await.unwrap();
 
 		assert!(matches!(*state.borrow(), ConnectionState::Disconnected));
+	}
+
+	#[tokio::test]
+	async fn stream_events_starts_with_the_retained_studio() {
+		let manager = ObsWebSocketManager::new(ObsConfig::default());
+		manager.state.send_replace(ConnectionState::Connected { since: Instant::now() });
+		// Published before anyone subscribed, so only `latest_studio` holds it.
+		manager.latest_studio.send_replace(Some(Box::new(crate::studio::tests::empty_studio())));
+
+		let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+		let record = Arc::clone(&seen);
+		let state = Arc::clone(&manager.state);
+		let streamed = manager.stream_events(move |event| {
+			record.lock().unwrap().push(matches!(event, ObsEvent::StudioChanged(_)));
+			// End the stream after the first event.
+			state.send_replace(ConnectionState::Disconnected);
+			Box::pin(async {})
+		});
+		// Without the replay nothing would ever arrive and this would hang.
+		tokio::time::timeout(Duration::from_secs(5), streamed).await.unwrap();
+
+		assert_eq!(*seen.lock().unwrap(), vec![true]);
 	}
 }

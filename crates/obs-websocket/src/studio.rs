@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, watch, Notify};
 
 type Result<T> = std::result::Result<T, obws::error::Error>;
 
@@ -28,19 +28,31 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// OBS events signalled through `changed`, until aborted with its connection.
 /// A change that lands while a snapshot is being taken triggers exactly one
 /// more, so the last published snapshot always reflects the last change.
-pub async fn publish(client: Arc<Client>, changed: Arc<Notify>, events: broadcast::Sender<ObsEvent>) {
-	publish_with(|| snapshot(&client), &changed, &events).await;
+///
+/// Each snapshot is also kept in `latest`, since a broadcast only reaches
+/// subscribers that already exist: the first snapshot can be taken before
+/// anyone subscribes, and a studio that then sits unchanged would never send
+/// another. [`crate::ObsWebSocketManager::stream_events`] replays it.
+pub async fn publish(client: Arc<Client>, changed: Arc<Notify>, latest: Arc<LatestStudio>, events: broadcast::Sender<ObsEvent>) {
+	publish_with(|| snapshot(&client), &changed, &latest, &events).await;
 }
 
-async fn publish_with<F, Fut>(mut take_snapshot: F, changed: &Notify, events: &broadcast::Sender<ObsEvent>)
+/// The most recent snapshot of the current connection, if one has been taken.
+pub type LatestStudio = watch::Sender<Option<Box<StudioSnapshot>>>;
+
+async fn publish_with<F, Fut>(mut take_snapshot: F, changed: &Notify, latest: &LatestStudio, events: &broadcast::Sender<ObsEvent>)
 where
 	F: FnMut() -> Fut,
 	Fut: Future<Output = Result<StudioSnapshot>>,
 {
 	loop {
 		match take_snapshot().await {
-			// No subscribers is not an error; nobody is listening yet.
-			Ok(studio) => drop(events.send(ObsEvent::StudioChanged(Box::new(studio)))),
+			Ok(studio) => {
+				let studio = Box::new(studio);
+				latest.send_replace(Some(studio.clone()));
+				// No subscribers is not an error; `latest` covers late ones.
+				drop(events.send(ObsEvent::StudioChanged(studio)));
+			}
 			Err(e) => tracing::debug!(error = %e, "studio snapshot failed"),
 		}
 		changed.notified().await;
@@ -216,11 +228,11 @@ fn collect<T>(results: Vec<Result<T>>) -> Result<Vec<T>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
 	use super::*;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	fn empty_studio() -> StudioSnapshot {
+	pub fn empty_studio() -> StudioSnapshot {
 		StudioSnapshot {
 			stream: StreamState {
 				active: false,
@@ -261,6 +273,7 @@ mod tests {
 					async { Ok(empty_studio()) }
 				},
 				&notify,
+				&LatestStudio::new(None),
 				&events,
 			)
 			.await;
@@ -306,6 +319,7 @@ mod tests {
 					}
 				},
 				&notify,
+				&LatestStudio::new(None),
 				&events,
 			)
 			.await;
@@ -318,5 +332,22 @@ mod tests {
 		publisher.abort();
 
 		assert_eq!(taken.load(Ordering::SeqCst), 2);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn the_latest_snapshot_is_kept_for_late_subscribers() {
+		// No subscriber exists when the first snapshot is taken.
+		let (events, receiver) = broadcast::channel(4);
+		drop(receiver);
+		let latest = Arc::new(LatestStudio::new(None));
+		let kept = Arc::clone(&latest);
+		let publisher = tokio::spawn(async move {
+			publish_with(|| async { Ok(empty_studio()) }, &Notify::new(), &kept, &events).await;
+		});
+
+		tokio::time::sleep(SETTLE).await;
+		publisher.abort();
+
+		assert!(latest.borrow().is_some());
 	}
 }
