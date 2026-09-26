@@ -1,4 +1,4 @@
-use super::{LifetimeId, LifetimeKind, Progress, TimeMs, Timecode};
+use super::{LifetimeId, LifetimeKind, Progress, TimeMs};
 use serde::{Deserialize, Serialize};
 
 /// An active lifetime in the current state
@@ -110,10 +110,6 @@ impl OrchestratorState {
 	/// Returns true if paused
 	pub fn is_paused(&self) -> bool {
 		self.mode == OrchestratorMode::Paused
-	}
-
-	pub fn current_timecode(&self) -> Timecode {
-		Timecode::from_ms(self.current_time)
 	}
 }
 

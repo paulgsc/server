@@ -209,6 +209,7 @@ fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
 
 /// #372: this middleware logged `client_id = <ip>` on every rejection.
 #[tokio::test]
+#[allow(clippy::disallowed_methods)] // a throwaway test router, not a served route
 async fn a_rate_limited_request_logs_no_address() {
 	let (captured, _guard) = capture();
 	let limiter = Arc::new(PartitionedTokenBucketLimiter::new(1, DEFAULT_REFILL_PERIOD_MS));

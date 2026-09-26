@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, OrchestratorError>;
+pub(super) type Result<T> = std::result::Result<T, OrchestratorError>;
 
 #[derive(Debug, Error)]
 pub enum OrchestratorError {

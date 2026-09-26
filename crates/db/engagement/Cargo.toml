@@ -17,3 +17,7 @@ sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uu
 
 [lints]
 workspace = true
+
+[lib]
+test = false
+doctest = false

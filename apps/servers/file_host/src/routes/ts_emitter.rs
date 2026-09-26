@@ -7,7 +7,7 @@
 //! calls [`super::inventory::snapshot`] exactly once per run, then either
 //! `serde_json`-serialises the result or hands it to [`render_ts`]. There is
 //! no second list of paths anywhere in this crate for the two to disagree
-//! about — a route added to `ROUTES` in `inventory.rs` shows up in both
+//! about — a route registered on any module in `inventory::modules` shows up in both
 //! artefacts on the next run, or in neither. [`render_ts`] reads
 //! `RouteEntry::full_path` rather than recomputing it, for the same reason
 //! `full_path` itself exists: so nothing outside `RouteDescriptor::full_path`
@@ -99,7 +99,7 @@ fn render_union(name: &str, doc: Option<&str>, members: &BTreeSet<&str>) -> Stri
 #[cfg(test)]
 mod tests {
 	use super::{render_ts, GENERATED_BANNER};
-	use crate::routes::inventory::{self, RouteDescriptor, ROUTES};
+	use crate::routes::inventory::{self, RouteDescriptor};
 	use regex::Regex;
 	use std::collections::BTreeSet;
 
@@ -108,7 +108,7 @@ mod tests {
 	}
 
 	fn expected_paths(versioned: bool) -> BTreeSet<String> {
-		ROUTES
+		inventory::routes()
 			.iter()
 			.filter(|route: &&RouteDescriptor| route.versioned == versioned)
 			.map(RouteDescriptor::full_path)
@@ -128,7 +128,7 @@ mod tests {
 
 	/// The load-bearing test #266 asks for: run the emitter, parse its
 	/// output, and catch a malformed or wrong union here rather than in the
-	/// client's `tsc`. Checked independently against `ROUTES`, not by calling
+	/// client's `tsc`. Checked independently against `inventory::routes()`, not by calling
 	/// `render_ts` twice, so a bug inside `render_ts` itself cannot hide.
 	#[test]
 	fn server_route_union_names_every_versioned_path_exactly_once() {

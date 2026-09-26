@@ -16,9 +16,7 @@ async-broadcast = { version =  "0.7.2", optional = true }
 async-trait.workspace = true
 dashmap = { version =  "6.1.0", optional = true }
 thiserror.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
 
-serde_json = { workspace = true, optional = true }
 # `default-features = false` + explicit list is async-nats's own `default` set minus
 # `websockets` -- our nats/*.rs uses plain TCP NATS only (no ws:// or wss://), and
 # `websockets` pulls `tokio-websockets` -> `webpki-roots`, which carries a
@@ -53,6 +51,6 @@ workspace = true
 [features]
 default = []              # features enabled by default
 inmem = ["async-broadcast", "dashmap"]
-nats = ["async-nats", "serde", "dashmap", "tokio/sync", "tokio/time", "futures", "prost"]
+nats = ["async-nats", "dashmap", "tokio/sync", "tokio/time", "futures", "prost"]
 mpsc_utils = ["tokio/sync", "tracing"]
 

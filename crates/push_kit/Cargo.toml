@@ -31,3 +31,6 @@ reqwest-transport = ["dep:reqwest"]
 
 [lints]
 workspace = true
+
+[lib]
+doctest = false

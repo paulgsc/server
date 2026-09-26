@@ -10,5 +10,6 @@ pub mod readiness;
 pub mod signals;
 pub mod subjects;
 pub mod tab_metadata;
+pub mod table;
 pub mod ts_emitter;
 pub mod utterance;

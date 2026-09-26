@@ -42,21 +42,3 @@ impl Default for Progress {
 		Self(0.0)
 	}
 }
-
-/// Timecode in HH:MM:SS.mmm format
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Timecode(String);
-
-impl Timecode {
-	pub fn from_ms(ms: TimeMs) -> Self {
-		let hours = ms / (3600 * 1000);
-		let minutes = (ms % (3600 * 1000)) / (60 * 1000);
-		let seconds = (ms % (60 * 1000)) / 1000;
-		let milliseconds = ms % 1000;
-		Self(format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, milliseconds))
-	}
-
-	pub fn as_str(&self) -> &str {
-		&self.0
-	}
-}

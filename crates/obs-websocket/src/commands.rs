@@ -30,7 +30,7 @@ struct RtmpCustom<'a> {
 
 /// Runs `command`, returning what OBS's `responseData` would hold for it:
 /// `None` for requests that return nothing.
-pub async fn execute(client: &Client, command: ObsCommand) -> Result<Option<Value>, CommandError> {
+pub(crate) async fn execute(client: &Client, command: ObsCommand) -> Result<Option<Value>, CommandError> {
 	let request = request_name(&command);
 	run(client, command).await.map_err(|e| CommandError::from_obws(request, e))
 }
@@ -209,7 +209,7 @@ const fn media_action(action: MediaAction) -> obws::common::MediaAction {
 
 /// The obs-websocket request a command maps to, for error messages. Commands
 /// built from several requests name the one that makes the change.
-pub const fn request_name(command: &ObsCommand) -> &'static str {
+pub(crate) const fn request_name(command: &ObsCommand) -> &'static str {
 	match command {
 		ObsCommand::StartStream => "StartStream",
 		ObsCommand::StopStream => "StopStream",

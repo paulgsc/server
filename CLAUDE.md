@@ -10,11 +10,11 @@ side compiles, passes clippy, or has an up-to-date `.sqlx/` cache — run
 `cargo check --workspace`, `cargo test --workspace`, **`cargo clippy` on every package your
 diff actually touches or adds** (see flags below — this is not optional; `cargo check` passing
 is not evidence `cargo clippy` will, verified directly: `cargo check -p enum-name-derive`
-succeeds while `cargo clippy -p enum-name-derive --keep-going --no-deps` reports real
-denied-lint errors in that crate's own non-test code), and `cargo sqlx prepare --workspace`
-yourself before every push, regardless of environment. `sqlx::query!`/`query_as!` verify SQL
-against a real database at compile time, so `DATABASE_URL` must point at a migrated throwaway
-database, not be unset.
+succeeded while `cargo clippy -p enum-name-derive --keep-going --no-deps` reported real
+denied-lint errors in that crate's own non-test code, before #375 deleted the crate), and
+`cargo sqlx prepare --workspace` yourself before every push, regardless of environment.
+`sqlx::query!`/`query_as!` verify SQL against a real database at compile time, so
+`DATABASE_URL` must point at a migrated throwaway database, not be unset.
 
 **Clippy is a ratchet, not a clean gate.** The workspace carries pre-existing clippy debt
 (1,255 findings across 127 files when the ratchet landed, mostly pedantic doc lints), so a
@@ -54,10 +54,19 @@ and `packages/server-routes/src/generated/routes.ts` — both are copies of an a
 repo generates about itself, not files `some-ui` owns the content of. `RouteDescriptor` only
 carries method, path, the versioning flag, and module — it proves a route exists and where,
 nothing about its request/response shape. When a change here adds, removes, renames, or moves
-a route, regenerate and hand off the new snapshot so `some-ui`'s contract harness catches the
-diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
+a route, the snapshot changes with it and CI hands it off (below) so `some-ui`'s contract
+harness catches the diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
 route-snapshot diff as proof a payload change made it across — see that repo's own `CLAUDE.md`
 for how it consumes the snapshot.
+
+The hand-off is CI's job, not yours: `.github/workflows/routes.yml` runs `some-ui`'s
+`scripts/sync-server-routes.sh --verify` against every PR that touches `file_host` (so a route
+change that breaks a `some-ui` contract goes red *here*), and opens the sync PR in `some-ui` on
+merge. A red `Routes / Check some-ui against it` is a real client break, not a flake: fix the
+route, or, if the break is intended, label the PR `client-breaking-route` and say so. Routes are
+registered on a `RouteTable` (`src/routes/table.rs`), never with `Router::route` directly — that
+is a `clippy::disallowed_methods` error, because a route registered any other way would be served
+but missing from the snapshot.
 
 ## Drift is loud, not silent
 

@@ -11,6 +11,10 @@ enum-variant-size-threshold = 200
 disallowed-methods = [
   { path = "serde_json::to_string", reason = "expensive before tracing; prefer tracing!(?value)" },
   { path = "serde_json::to_vec", reason = "expensive before tracing; prefer tracing!(?value)" },
+  # file_host's route inventory is recorded as routes are registered, so a
+  # route registered any other way is served but missing from the client's
+  # snapshot. See apps/servers/file_host/src/routes/table.rs.
+  { path = "axum::routing::Router::route", reason = "register on file_host::routes::table::RouteTable so the route inventory records it" },
 ]
 
 # Ban std logging macros (enforce tracing-only)

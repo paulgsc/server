@@ -3,7 +3,7 @@
 //!
 //! `route` is always the axum-matched path *pattern* (`/api/v1/foo/:id`),
 //! never the raw request path — that keeps the label's cardinality bounded
-//! to the checked route inventory (`routes::inventory::ROUTES`) rather than
+//! to the checked route inventory (`routes::inventory::routes()`) rather than
 //! unbounded by whatever a client happened to request. A path nothing
 //! matched labels as `"unmatched"`; see [`unmatched`], the router's
 //! `.fallback(...)` handler that is the only other place this metric is
@@ -90,7 +90,7 @@ pub async fn unmatched(req: Request) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::routes::inventory::{RouteDescriptor, ROUTES};
+	use crate::routes::inventory::{routes, RouteDescriptor};
 	use axum::{
 		body::Body,
 		http::Request as HttpRequest,
@@ -111,14 +111,14 @@ mod tests {
 			"PUT" => put(stub),
 			"PATCH" => patch(stub),
 			"DELETE" => delete(stub),
-			other => panic!("unhandled method in ROUTES: {other}"),
+			other => panic!("unhandled method in the route inventory: {other}"),
 		}
 	}
 
 	/// #222's acceptance criteria: "the `route` label values are a subset of
 	/// the inventory". A bare router (no `AppState`, no handlers with real
 	/// bodies — `routes/inventory.rs`'s own tests avoid needing a fully built
-	/// `AppState` for exactly this reason) carrying every `ROUTES` path under
+	/// `AppState` for exactly this reason) carrying every inventoried path under
 	/// the same middleware this app installs, then asserting the
 	/// `MatchedPath` this middleware would label with is *exactly*
 	/// `route.full_path()` for every declared route. Catches, at compile+test
@@ -126,12 +126,16 @@ mod tests {
 	/// path syntax doesn't actually match what axum resolves (e.g. a stray
 	/// `{name}` where axum expects `:name`, or a `/api/v1` nesting mismatch).
 	#[tokio::test]
+	// Stub handlers on raw `Router::route` calls, deliberately: the real
+	// tables need an `AppState` to answer a request.
+	#[allow(clippy::disallowed_methods)]
 	async fn matched_path_equals_route_inventory_full_path() {
-		let versioned: Router = ROUTES
+		let inventory = routes();
+		let versioned: Router = inventory
 			.iter()
 			.filter(|r| r.versioned)
 			.fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
-		let unversioned: Router = ROUTES
+		let unversioned: Router = inventory
 			.iter()
 			.filter(|r| !r.versioned)
 			.fold(Router::new(), |r, route| r.route(route.path, method_router(route.method)));
@@ -140,9 +144,9 @@ mod tests {
 			.merge(unversioned)
 			.layer(axum::middleware::from_fn(record_matched_path));
 
-		let inventory_paths: BTreeSet<String> = ROUTES.iter().map(RouteDescriptor::full_path).collect();
+		let inventory_paths: BTreeSet<String> = inventory.iter().map(RouteDescriptor::full_path).collect();
 
-		for route in ROUTES {
+		for route in &inventory {
 			// `/ws` upgrades the connection rather than resolving as a plain
 			// handler call; a bare GET against it is expected to fail the
 			// upgrade, not the routing, so it is exempt from being driven

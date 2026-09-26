@@ -14,11 +14,11 @@ use std::time::Duration;
 
 // ── Subject constants ──────────────────────────────────────────────────────
 
-pub struct PipelineSubjects;
+pub(super) struct PipelineSubjects;
 
 impl PipelineSubjects {
-	pub const JOBS: &'static str = "pipeline.jobs";
-	pub const DLQ: &'static str = "pipeline.dlq";
+	pub(super) const JOBS: &'static str = "pipeline.jobs";
+	pub(super) const DLQ: &'static str = "pipeline.dlq";
 }
 
 // ── Config ─────────────────────────────────────────────────────────────────

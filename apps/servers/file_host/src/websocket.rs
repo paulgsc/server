@@ -1,5 +1,6 @@
 use crate::{
 	net::{Peer, PeerKey},
+	routes::table::{Module, RouteTable},
 	AppState,
 };
 use axum::{
@@ -9,8 +10,6 @@ use axum::{
 	},
 	http::{HeaderMap, StatusCode},
 	response::IntoResponse,
-	routing::get,
-	Router,
 };
 use futures::stream::StreamExt;
 use std::sync::Arc;
@@ -44,6 +43,19 @@ use message::spawn_process_incoming_messages;
 /// for both was a coincidence of implementation, not a real invariant.
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// `GET /ws`, the upgrade. Unversioned: clients hold the socket across API versions.
+///
+/// A free function rather than a method on [`WebSocketFsm`]: the
+/// handler reaches the FSM through `State<AppState>`, so building the route
+/// needs no instance, and `dump-routes` has none to give it.
+pub fn routes<S>() -> Module<S>
+where
+	S: Clone + Send + Sync + 'static,
+	AppState: FromRef<S>,
+{
+	Module::unversioned("websocket", RouteTable::new().get("/ws", websocket_handler))
+}
+
 // Enhanced WebSocket FSM with comprehensive observability
 #[derive(Clone)]
 pub struct WebSocketFsm {
@@ -56,14 +68,6 @@ impl WebSocketFsm {
 	pub fn new() -> Self {
 		let store = Arc::new(ConnectionStore::<EventType>::new());
 		Self { store }
-	}
-
-	pub fn router<S>(self) -> Router<S>
-	where
-		S: Clone + Send + Sync + 'static,
-		AppState: FromRef<S>,
-	{
-		Router::new().route("/ws", get(websocket_handler))
 	}
 
 	/// `connected` / `live` / `subscribed` — see #227. Awaits every

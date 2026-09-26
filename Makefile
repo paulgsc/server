@@ -95,9 +95,12 @@ check: ## Check if image exists locally
 # server's HTTP surface and diffs its contracts against it. Regenerate the
 # snapshot whenever a route is added, renamed, or removed.
 #
-# `dump-routes` reads a compile-time constant, so it needs no config, no
-# database and no network — but building it does require DATABASE_URL to point
-# at a migrated SQLite file, because sqlx checks queries at compile time.
+# `dump-routes` reads the route tables without building an `AppState` or a
+# `Config`, so it needs no config, no database and no network at run time; but
+# building it does require DATABASE_URL to point at a migrated SQLite file,
+# because sqlx checks queries at compile time. CI (.github/workflows/routes.yml)
+# runs this on every PR and merge and delivers the result to the client repo,
+# so running it by hand is only for looking.
 
 ROUTES_JSON ?= routes.server.json
 ROUTES_TS ?= routes.server.ts
@@ -108,7 +111,7 @@ routes: ## Emit the HTTP route inventory as JSON and TypeScript (override paths 
 	@cargo run -q --bin dump-routes > $(ROUTES_JSON)
 	@cargo run -q --bin dump-routes -- --ts > $(ROUTES_TS)
 	@echo "Wrote $(ROUTES_JSON) ($$(grep -c '"method"' $(ROUTES_JSON)) routes) and $(ROUTES_TS)"
-	@echo "Copy both to the client repo at packages/contract-harness/"
+	@echo "CI syncs these to the client repo; see .github/workflows/routes.yml"
 
-routes-check: ## Assert the declared inventory still matches the actual routers
+routes-check: ## Run the route inventory's own tests (duplicates, nesting, assembly)
 	@cargo test -p file_host --lib routes::inventory
