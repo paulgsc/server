@@ -74,6 +74,24 @@ homepage = "https://maishatu.com/"
 license = "MIT"
 edition = "2021"
 
+# The one home for release codegen (#205). These used to live in each
+# Dockerfile's RUSTFLAGS, set *after* `cargo chef cook` — so cook compiled
+# every dependency with default flags and the final `cargo build` threw that
+# away and compiled all of them again (402 crates, then 413, in file_host's
+# CI build). In the profile, cook and build agree by construction, and a
+# local `cargo build --release` gets the same binary CI ships.
+#
+# `panic = "abort"` is a decision, not a default (#205 deferred it to #204):
+# a panic in any `tokio::spawn`ed task takes the whole process down instead
+# of surfacing as a `JoinError`. Nothing in the workspace uses
+# `catch_unwind` or inspects `JoinError::is_panic`, so no code path depends
+# on unwinding. Tests and benches ignore this setting and still unwind.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
 [workspace.dependencies]
 
 obs-websocket = { path = "crates/obs-websocket" }

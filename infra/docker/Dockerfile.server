@@ -5,7 +5,13 @@
 #   - Install native build dependencies required by workspace crates
 #
 # This stage is shared by planner and builder to avoid duplication.
-FROM rustlang/rust:nightly-slim AS chef
+#
+# Pinned, not `rustlang/rust:nightly-slim`: a floating tag moves daily, and
+# every move invalidates every layer below it — cargo-chef's dependency layer
+# included. Same version as lint.yml's clippy pin; bookworm to match the
+# debian:12-slim runtime's glibc. Nothing in the workspace needs nightly (the
+# one nightly-only thing was `-Z dylib-lto`, a no-op for a binary).
+FROM rust:1.94.1-slim-bookworm AS chef
 
 WORKDIR /app
 
@@ -50,18 +56,8 @@ RUN cargo chef prepare --recipe-path recipe.json --bin file_host
 #   3. Build only the target binary
 FROM chef AS builder
 
-# Populated by CI via --build-arg (see .github/actions/docker-build). Not
-# just OCI LABEL metadata (below) — apps/servers/file_host/build.rs reads
-# these same names to stamp the `service_info` metric the binary itself
-# reports (#213/F4), since `.git` isn't in this build context for it to
-# derive them from directly. Defaulted so a local `docker build` with no
-# --build-arg still produces a working, honestly-"unknown"-labelled image.
-ARG VCS_REF=unknown
-ARG BUILD_DATE=unknown
-ENV VCS_REF=${VCS_REF}
-ENV BUILD_DATE=${BUILD_DATE}
-
-# Step 1: build dependency layer
+# Step 1: build dependency layer. Nothing that varies per run may appear
+# above this line — see VCS_REF/BUILD_DATE below.
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
@@ -74,15 +70,38 @@ COPY .sqlx/ .sqlx/
 # migrations the runtime database hasn't applied yet.
 COPY migrations/ migrations/
 
-# Build configuration
-ENV CARGO_INCREMENTAL=0
-ENV RUSTFLAGS="-C opt-level=3 -C panic=abort -C codegen-units=1 -C lto=thin -C embed-bitcode=yes -Z dylib-lto"
+# Build configuration. Codegen flags live in the workspace's
+# `[profile.release]`, not RUSTFLAGS here: RUSTFLAGS is part of every crate's
+# fingerprint, so setting it only after cook made the final build recompile
+# every dependency cook had just compiled.
 ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
 ENV SQLX_OFFLINE=true
 
-# Step 3: build the binary
-RUN cargo build --release --bin file_host
+# Populated by CI via --build-arg (see .github/actions/docker-build). Not
+# just OCI LABEL metadata (below) — apps/servers/file_host/build.rs reads
+# these same names to stamp the `service_info` metric the binary itself
+# reports (#213/F4), since `.git` isn't in this build context for it to
+# derive them from directly. Defaulted so a local `docker build` with no
+# --build-arg still produces a working, honestly-"unknown"-labelled image.
+#
+# Declared here, after cook, deliberately: BUILD_DATE differs on every run,
+# and a changed ARG/ENV invalidates every layer after it. Above cook it made
+# the dependency layer a guaranteed cache miss. Only file_host's own build.rs
+# reads them, and file_host is compiled in the step below either way.
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+ENV VCS_REF=${VCS_REF}
+ENV BUILD_DATE=${BUILD_DATE}
+
+# Step 3: build the binary.
+# `-p` as well as `--bin`: `--bin` picks a target, not a package, so cargo
+# still unifies features across every workspace member. The recipe (`prepare
+# --bin`) holds only this binary's dependency closure, so cook resolves
+# features for that closure alone, and without `-p` the two disagree:
+# file_host's build recompiled 42 crates cook had built or skipped (obws and
+# everything some-obs's `obs-websocket/websocket` feature touches).
+RUN cargo build --release -p file_host --bin file_host
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/file_host
