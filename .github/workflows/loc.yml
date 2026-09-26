@@ -1,0 +1,54 @@
+# How a pull request changes the amount of hand-written code (#379): code
+# lines per language and per workspace member, merge base against head,
+# written to the job summary. Report-only by design, so it never turns a PR
+# red over size; see scripts/loc_report.py for what is counted and excluded.
+name: Lines of code
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Report the line-count change
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The merge base, not just the head, has to be in the clone.
+          fetch-depth: 0
+
+      # Pinned, installed locked and never cached, for the same trust-boundary
+      # reason as test.yml's sqlx-cli and cargo-shear.
+      - name: Install tokei
+        run: cargo install tokei --version 15.0.0 --locked
+
+      - name: Test the report's own arithmetic
+        run: python3 scripts/loc_report.py --self-test
+
+      # The merge base rather than the base branch's tip, so commits that
+      # landed on main after this PR branched aren't counted as this PR's.
+      # `git archive` extracts tracked files only, so nothing untracked or
+      # built is ever counted.
+      - name: Count the merge base and the head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/head"
+          git archive "$merge_base" | tar -x -C "$RUNNER_TEMP/base"
+          git archive "$HEAD_SHA" | tar -x -C "$RUNNER_TEMP/head"
+          python3 scripts/loc_report.py "$RUNNER_TEMP/base" "$RUNNER_TEMP/head" > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          cat report.md
