@@ -48,6 +48,8 @@ EXCLUDED = [
 	"*.snapshot.json",
 	# `dump-routes` output, also copied into paulgsc/some-ui.
 	"apps/servers/file_host/docs/route-inventory.md",
+	# Image changesets, written by detect.yml and merged by its bot PRs.
+	".github/docker-changesets",
 ]
 
 OUTSIDE = "(outside the workspace)"
