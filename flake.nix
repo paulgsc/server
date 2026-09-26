@@ -3,6 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    # sqlx-cli only (#385). nixos-24.05 ships 0.7.4, but the workspace is on
+    # sqlx 0.8.6 (#351), and `sqlx prepare` must match the macros' version.
+    # A second input, rather than moving `nixpkgs`, keeps every other tool in
+    # the devshell where it is. nixos-26.05's sqlx-cli is exactly 0.8.6 and
+    # prebuilt on cache.nixos.org; prepare-sqlx asserts the version, so a
+    # `nix flake update` that moves it fails CI instead of drifting.
+    nixpkgs-sqlx.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,6 +20,7 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgs-sqlx,
     rust-overlay,
     flake-utils,
   }:
@@ -26,6 +34,7 @@
       # Import submodules with CI flag
       rustEnv = import ./nix/rust-env {
         inherit pkgs isCI;
+        sqlx-cli = nixpkgs-sqlx.legacyPackages.${system}.sqlx-cli;
       };
 
       whisperManager = import ./nix/whisper-manager {
