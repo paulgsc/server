@@ -1,5 +1,24 @@
 # CLAUDE.md
 
+## First, every session: sweep `priority: high`
+
+Before starting on the task, list this repo's open issues labelled `priority: high` (GitHub MCP
+`list_issues` on `paulgsc/server` with `labels: ["priority: high"]` and `state: OPEN`). If any
+are open, name each one in a line (number, title, and why it's high) and ask the user one
+question: fix them first, fold the relevant ones into this task, or leave them. Don't start on
+them unasked, and don't let the sweep hold up the task the user brought. If none are open, say
+nothing.
+
+**What earns the label:** a finding that is cheap to fix but costs something silently each time
+it's left, such as a flaky check on `main` or a process gap that loses work between sessions.
+Not "important" in general: a large feature is not `priority: high` however much it matters.
+The label is `priority: high` rather than `P1` because issue titles here already use `P0.1`,
+`P4.2` and so on for delivery phases.
+
+This is an instruction, not a SessionStart hook, because cloud sessions reach GitHub only
+through the MCP tools, which a hook can't call. The sweep reads back what
+`.claude/skills/steward/SKILL.md`'s "File an issue for every non-trivial finding" rule files.
+
 ## Pre-commit verification
 
 `.husky/pre-commit` runs `pnpm dlx lint-staged` unconditionally (no `CLAUDE_CODE_REMOTE`
@@ -89,6 +108,10 @@ also count as drift and should be raised the same way:
   fan-out, then the cursor, then the audience snapshot) mean the shape is wrong, not that
   another fix is due. Check them against the invariants before the next push, not only when
   `steward/SKILL.md`'s review cap forces the question.
+
+If the decision on a raised break is to defer it, it also gets an issue, per
+`steward/SKILL.md`'s "File an issue for every non-trivial finding" rule: a comment alone is lost
+when the session ends.
 
 If you notice you're relying on an invariant a subsystem doesn't have written down, write it in
 that subsystem's doc as part of the change. An invariant that exists only in someone's head
