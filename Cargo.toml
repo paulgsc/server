@@ -87,10 +87,16 @@ edition = "2021"
 # `catch_unwind` or inspects `JoinError::is_panic`, so no code path depends
 # on unwinding. Tests and benches ignore this setting and still unwind.
 [profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-panic = "abort"
+opt-level = 3        # cargo's release default, stated so the section reads whole
+lto = "thin"         # cross-crate inlining across the 14 member crates, at a fraction of fat LTO's link time
+codegen-units = 1    # maximises intra-crate inlining; costs per-crate build parallelism, not the binding CI cost (#205)
+panic = "abort"      # decided, not defaulted: see above
+
+# `cargo bench` (criterion in ws-conn-manager/benches) measures the code as
+# it ships, so benches inherit the release codegen above.
+[profile.bench]
+inherits = "release"
+debug = 1            # line tables: usable flamegraph/perf stacks for bench runs, which nothing strips
 
 [workspace.dependencies]
 
