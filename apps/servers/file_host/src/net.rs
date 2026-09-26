@@ -251,6 +251,11 @@ mod tests {
 
 	/// The property the whole module exists for: nothing that leaves it
 	/// contains the address, in any rendering.
+	///
+	/// The needles are whole renderings of the address, never fragments: a key
+	/// is random hex, so a two-digit fragment like `77` turns up in about 6% of
+	/// keys by chance (#377). The dotted forms contain a `.`, which hex never
+	/// does. The 8-digit byte encodings turn up by chance about once in 10^9.
 	#[test]
 	fn a_key_never_contains_the_address_it_came_from() {
 		use std::fmt::Write;
@@ -258,8 +263,9 @@ mod tests {
 		let mut debug = String::new();
 		write!(debug, "{key:?}").unwrap();
 		for rendering in [key.to_string(), debug, key.as_str().to_owned()] {
-			assert!(!rendering.contains("192.168"), "{rendering}");
-			assert!(!rendering.contains("77"), "{rendering}");
+			for needle in ["192.168.1.77", "192.168.", "c0a8014d", "C0A8014D"] {
+				assert!(!rendering.contains(needle), "{rendering} contains {needle}");
+			}
 		}
 	}
 
