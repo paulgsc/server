@@ -12,19 +12,7 @@ use clap::Parser;
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
-use file_host::routes::{
-	db::{activities, curriculum, mood_events, sessions, tabs},
-	health::get_health,
-	metrics::get_metrics,
-	outcomes::outcomes,
-	presence::presence,
-	push::push,
-	readiness::get_readiness,
-	signals::signals,
-	subjects::subjects,
-	tab_metadata::post_now_playing,
-	utterance::post_utterance,
-};
+use file_host::routes::{inventory, metrics::get_metrics};
 use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -128,19 +116,10 @@ async fn main() -> Result<()> {
 		Err(err) => tracing::error!(database_url = %config.database_url, error = %err, "could not read the database's applied migrations"),
 	}
 
-	let mut versioned_routes = Router::new()
-		.merge(mood_events(&config))
-		.merge(tabs(&config))
-		.merge(sessions(&config))
-		.merge(activities(&config))
-		.merge(curriculum(&config))
-		.merge(push(&config))
-		.merge(presence(&config))
-		.merge(signals(&config))
-		.merge(outcomes(&config))
-		.merge(subjects(&config))
-		.merge(post_now_playing())
-		.merge(post_utterance());
+	// Every route module comes from `inventory::modules`, the same list
+	// `dump-routes` reads, so what is served here and what the client's
+	// snapshot says is served cannot differ. See `routes::table`.
+	let (mut versioned_routes, unversioned_routes) = inventory::routers(&config);
 
 	// #215 (A1/A2): capacity is `config.rate_limit` — documented as requests
 	// per minute — never `max_request_size`, which is megabytes of payload
@@ -154,10 +133,10 @@ async fn main() -> Result<()> {
 
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
-		.merge(get_health())
-		.merge(get_readiness())
+		.merge(unversioned_routes)
+		// Outside the inventory on purpose: a scrape target built on its own
+		// state in `some_metrics`, not a route the client calls.
 		.merge(get_metrics(metrics_handle))
-		.merge(app_state.realtime.ws.clone().router())
 		.with_state(app_state.clone());
 
 	// #213 (F2): applied to the fully merged router so `MatchedPath` covers

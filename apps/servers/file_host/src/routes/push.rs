@@ -1,5 +1,6 @@
 use crate::handlers::push as handlers;
 use crate::routes::cors::allowlisted_cors;
+use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
 	extract::FromRef,
@@ -7,9 +8,8 @@ use axum::{
 		header::{AUTHORIZATION, CONTENT_TYPE},
 		Method,
 	},
-	routing::{delete, get, post},
-	Router,
 };
+use tower_http::cors::CorsLayer;
 
 /// Paths are declared relative: `main.rs` nests this under `API_V1_BASE_PATH`.
 ///
@@ -19,22 +19,25 @@ use axum::{
 /// subscription posted from the real HTTPS study origin matches none of them.
 /// That is precisely the failure this route cannot afford, since a service
 /// worker only exists on a secure context in the first place.
-pub fn push<S>(config: &Config) -> Router<S>
+pub fn push<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = allowlisted_cors(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION]);
-
-	Router::new()
+	let table = RouteTable::new()
 		// GET    /push/vapid-key     → applicationServerKey + the topics on offer
 		// POST   /push/subscriptions → the browser's shape plus what they agreed to
 		// DELETE /push/subscriptions → withdrawing consent, idempotent
-		.route("/push/vapid-key", get(handlers::vapid_key))
-		.route("/push/subscriptions", post(handlers::subscribe))
-		.route("/push/subscriptions", delete(handlers::unsubscribe))
+		.get("/push/vapid-key", handlers::vapid_key)
+		.post("/push/subscriptions", handlers::subscribe)
+		.delete("/push/subscriptions", handlers::unsubscribe)
 		// POST /push/test → send now, without waiting for engagement to decay.
 		// The only honest end-to-end check is a human watching their desktop.
-		.route("/push/test", post(handlers::send_test))
-		.layer(cors)
+		.post("/push/test", handlers::send_test);
+
+	Module::versioned("push", table).with_cors(cors)
+}
+
+fn cors(config: &Config) -> CorsLayer {
+	allowlisted_cors(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
 }

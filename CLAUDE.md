@@ -54,10 +54,19 @@ and `packages/server-routes/src/generated/routes.ts` — both are copies of an a
 repo generates about itself, not files `some-ui` owns the content of. `RouteDescriptor` only
 carries method, path, the versioning flag, and module — it proves a route exists and where,
 nothing about its request/response shape. When a change here adds, removes, renames, or moves
-a route, regenerate and hand off the new snapshot so `some-ui`'s contract harness catches the
-diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
+a route, the snapshot changes with it and CI hands it off (below) so `some-ui`'s contract
+harness catches the diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
 route-snapshot diff as proof a payload change made it across — see that repo's own `CLAUDE.md`
 for how it consumes the snapshot.
+
+The hand-off is CI's job, not yours: `.github/workflows/routes.yml` runs `some-ui`'s
+`scripts/sync-server-routes.sh --verify` against every PR that touches `file_host` (so a route
+change that breaks a `some-ui` contract goes red *here*), and opens the sync PR in `some-ui` on
+merge. A red `Routes / Check some-ui against it` is a real client break, not a flake: fix the
+route, or, if the break is intended, label the PR `client-breaking-route` and say so. Routes are
+registered on a `RouteTable` (`src/routes/table.rs`), never with `Router::route` directly — that
+is a `clippy::disallowed_methods` error, because a route registered any other way would be served
+but missing from the snapshot.
 
 ## Drift is loud, not silent
 
