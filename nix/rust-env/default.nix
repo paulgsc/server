@@ -1,6 +1,8 @@
 {
   pkgs,
   isCI ? false,
+  # From the flake's `nixpkgs-sqlx` input, not `pkgs` — see flake.nix (#385).
+  sqlx-cli,
 }: let
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
     extensions =
@@ -20,7 +22,7 @@
     llvmPackages.libclang
     llvmPackages.bintools
     cmake
-    sqlx-cli # need this in ci as well for migrations and prepare
+    sqlx-cli # need this in ci as well for migrations and prepare (0.8.6, see flake.nix)
     sqlite # need this in ci as well for migrations and prepare
   ];
 
