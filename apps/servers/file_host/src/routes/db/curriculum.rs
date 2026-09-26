@@ -25,6 +25,7 @@
 
 use crate::handlers::db::curriculum as handlers;
 use crate::routes::cors::allowlisted_cors;
+use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
 	extract::FromRef,
@@ -32,20 +33,22 @@ use axum::{
 		header::{ACCEPT, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
 		Method,
 	},
-	routing::get,
-	Router,
 };
+use tower_http::cors::CorsLayer;
 
-pub fn curriculum<S>(config: &Config) -> Router<S>
+pub fn curriculum<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = allowlisted_cors(config, vec![Method::GET, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, IF_NONE_MATCH]).expose_headers([ETAG]);
+	let table = RouteTable::new()
+		.get("/curriculum/manifest", handlers::get_manifest)
+		.get("/curriculum/manifest.json", handlers::get_manifest)
+		.get("/curriculum/:key", handlers::get_lesson);
 
-	Router::new()
-		.route("/curriculum/manifest", get(handlers::get_manifest))
-		.route("/curriculum/manifest.json", get(handlers::get_manifest))
-		.route("/curriculum/:key", get(handlers::get_lesson))
-		.layer(cors)
+	Module::versioned("curriculum", table).with_cors(cors)
+}
+
+fn cors(config: &Config) -> CorsLayer {
+	allowlisted_cors(config, vec![Method::GET, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, IF_NONE_MATCH]).expose_headers([ETAG])
 }

@@ -1,5 +1,6 @@
 use crate::handlers::db::session as handlers;
 use crate::routes::cors::allowlisted_cors;
+use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
 	extract::FromRef,
@@ -7,9 +8,8 @@ use axum::{
 		header::{AUTHORIZATION, CONTENT_TYPE},
 		Method,
 	},
-	routing::{delete, get, patch, post},
-	Router,
 };
+use tower_http::cors::CorsLayer;
 
 /// One route per `SessionsRepository` method, no more and no fewer.
 ///
@@ -18,28 +18,31 @@ use axum::{
 /// captures, so this is belt-and-braces rather than load-bearing, but the
 /// grouping is the thing a reader checks first when a batch call starts
 /// 404-ing with `"status"` as an id.
-pub fn sessions<S>(config: &Config) -> Router<S>
+pub fn sessions<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = allowlisted_cors(
+	let table = RouteTable::new()
+		// ── Batch ───────────────────────────────────────────────────────────
+		.patch("/sessions/status", handlers::set_status)
+		// ── Collection ──────────────────────────────────────────────────────
+		.get("/sessions", handlers::list_sessions)
+		.post("/sessions", handlers::create_session)
+		.delete("/sessions", handlers::delete_sessions)
+		// ── Single ──────────────────────────────────────────────────────────
+		.get("/sessions/:id", handlers::get_session)
+		.patch("/sessions/:id", handlers::update_session)
+		.delete("/sessions/:id", handlers::delete_session)
+		.post("/sessions/:id/duplicate", handlers::duplicate_session);
+
+	Module::versioned("sessions", table).with_cors(cors)
+}
+
+fn cors(config: &Config) -> CorsLayer {
+	allowlisted_cors(
 		config,
 		vec![Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS],
 		vec![CONTENT_TYPE, AUTHORIZATION],
-	);
-
-	Router::new()
-		// ── Batch ───────────────────────────────────────────────────────────
-		.route("/sessions/status", patch(handlers::set_status))
-		// ── Collection ──────────────────────────────────────────────────────
-		.route("/sessions", get(handlers::list_sessions))
-		.route("/sessions", post(handlers::create_session))
-		.route("/sessions", delete(handlers::delete_sessions))
-		// ── Single ──────────────────────────────────────────────────────────
-		.route("/sessions/:id", get(handlers::get_session))
-		.route("/sessions/:id", patch(handlers::update_session))
-		.route("/sessions/:id", delete(handlers::delete_session))
-		.route("/sessions/:id/duplicate", post(handlers::duplicate_session))
-		.layer(cors)
+	)
 }

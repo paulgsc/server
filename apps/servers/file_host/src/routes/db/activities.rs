@@ -19,6 +19,7 @@
 
 use crate::handlers::db::activities as handlers;
 use crate::routes::cors::allowlisted_cors;
+use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
 	extract::FromRef,
@@ -26,19 +27,21 @@ use axum::{
 		header::{ACCEPT, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
 		Method,
 	},
-	routing::get,
-	Router,
 };
+use tower_http::cors::CorsLayer;
 
-pub fn activities<S>(config: &Config) -> Router<S>
+pub fn activities<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 {
-	let cors = allowlisted_cors(config, vec![Method::GET, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, IF_NONE_MATCH]).expose_headers([ETAG]);
+	let table = RouteTable::new()
+		.get("/activities", handlers::list_activities)
+		.get("/activities/:id", handlers::get_activity);
 
-	Router::new()
-		.route("/activities", get(handlers::list_activities))
-		.route("/activities/:id", get(handlers::get_activity))
-		.layer(cors)
+	Module::versioned("activities", table).with_cors(cors)
+}
+
+fn cors(config: &Config) -> CorsLayer {
+	allowlisted_cors(config, vec![Method::GET, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, IF_NONE_MATCH]).expose_headers([ETAG])
 }

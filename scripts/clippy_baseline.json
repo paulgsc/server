@@ -507,11 +507,6 @@
         "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
       }
     },
-    "clippy::too_many_lines": {
-      "fn main": {
-        "async fn main() -> Result<()> {": 1
-      }
-    },
     "clippy::unused_async": {
       "fn handle_tower_error": {
         "async fn handle_tower_error(error: BoxError) -> FileHostError { if error.is::<tower::timeout::error::Elapsed>() { tracing::warn!(\"Request timeout: {}\", error); refusals::record_http(\"timeout\"); FileHostError::RequestTimeout } else if error.is::<tower::load_shed::error::Overloaded>() { tracing::warn!(\"Service overloaded: {}\", error); refusals::record_http(\"load_shed\"); FileHostError::ServiceOverloaded } else { tracing::error!(\"Unhandled tower error: {}\", error); FileHostError::TowerError(error) } }": 1
@@ -701,13 +696,6 @@
       },
       "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop": {
         "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop() {": 1
-      }
-    }
-  },
-  "apps/servers/file_host/src/routes/inventory.rs": {
-    "clippy::doc_markdown": {
-      "<file scope>": {
-        "//! would require a fully built `AppState` (SQLite and NATS), which": 1
       }
     }
   },

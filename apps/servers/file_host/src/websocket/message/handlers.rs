@@ -280,6 +280,7 @@ mod tests {
 	/// the client side without a close frame, and returns how the server's
 	/// first `recv` classified that: `Some(true)` for "the peer went away",
 	/// `Some(false)` for a real stream error, `None` if it wasn't an error.
+	#[allow(clippy::disallowed_methods)] // a throwaway test router, not a served route
 	async fn server_view_of(hang_up: impl FnOnce(TcpStream)) -> Option<bool> {
 		let (tx, rx) = oneshot::channel();
 		let tx = Arc::new(Mutex::new(Some(tx)));

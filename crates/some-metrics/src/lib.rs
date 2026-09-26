@@ -93,7 +93,12 @@ pub fn route<S>(handle: MetricsHandle) -> Router<S>
 where
 	S: Clone + Send + Sync + 'static,
 {
-	Router::new().route("/metrics", get(render)).layer(Extension(handle))
+	// `/metrics` is a scrape target, not part of file_host's client-facing
+	// route inventory, so it is registered directly rather than through that
+	// crate's `RouteTable`.
+	#[allow(clippy::disallowed_methods)]
+	let router = Router::new().route("/metrics", get(render));
+	router.layer(Extension(handle))
 }
 
 /// Stand up a bare listener whose only job is `/metrics`, for a service with

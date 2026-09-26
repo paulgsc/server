@@ -1,0 +1,220 @@
+# The route snapshot `paulgsc/some-ui` consumes: checked against that repo on
+# every PR here, and delivered to it on every merge.
+#
+# `dump-routes` emits this server's HTTP surface
+# (apps/servers/file_host/docs/route-inventory.md). some-ui keeps two copies of
+# it, `routes.server.json` for its contract harness and `routes.ts` for the
+# `ServerRoute` union. Until this workflow, both were copied across by hand, so
+# a moved route surfaced in some-ui whenever someone next remembered to copy,
+# far from the change that moved it. The day this landed, some-ui's copy was
+# missing five routes this server already served.
+#
+#   snapshot  builds both files and uploads them as the `route-snapshot` artifact.
+#   client    (PRs) runs some-ui's own `scripts/sync-server-routes.sh --verify`
+#             against some-ui's main. A route change that leaves a some-ui
+#             contract pointing at nothing fails here, on the PR that caused it.
+#             When the break is intended, label the PR `client-breaking-route`:
+#             the check still runs and reports, but no longer fails, and the
+#             matching some-ui change lands with the sync PR below.
+#   sync      (main) opens or updates one PR in some-ui carrying the snapshot.
+#             Needs the `SOME_UI_SYNC_TOKEN` secret: a fine-grained token on
+#             paulgsc/some-ui with Contents and Pull requests read/write. A PR
+#             opened with the default GITHUB_TOKEN cannot reach another repo,
+#             and one opened by it would not trigger some-ui's own CI. Without
+#             the secret the job warns and does nothing else.
+#
+# The copy destinations live in some-ui's script, not here, so moving either
+# file is a change to that repo alone.
+name: Routes
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - main
+    paths:
+      - 'apps/servers/file_host/**'
+      - '.github/workflows/routes.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/servers/file_host/**'
+      - '.github/workflows/routes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: Emit the route snapshot
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite://${{ github.workspace }}/routes.db
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # The same pin as lint.yml, so the binary that emits the snapshot is
+      # built by the toolchain the rest of CI checks.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.1
+
+      # `sqlx::query!` checks SQL against a migrated schema at compile time, and
+      # `dump-routes` links the whole crate. Same setup as test.yml, for the
+      # same reasons: pinned, locked, never cached.
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features sqlite
+
+      - name: Create the database and run every crate's migrations
+        run: |
+          set -euo pipefail
+          staged="${GITHUB_WORKSPACE}/.migrations"
+          rm -rf "$staged" && mkdir -p "$staged"
+
+          find . -path '*/migrations/*.up.sql' -type f | sort | while read -r migration; do
+            cp "$migration" "$staged/$(basename "$migration" .up.sql).sql"
+          done
+
+          sqlx database create
+          sqlx migrate run --source "$staged"
+          rm -rf "$staged"
+
+      - name: Emit JSON and TypeScript
+        run: |
+          set -euo pipefail
+          mkdir -p route-snapshot
+          cargo run -q --bin dump-routes > route-snapshot/routes.server.json
+          cargo run -q --bin dump-routes -- --ts > route-snapshot/routes.server.ts
+          echo "$(grep -c '"method"' route-snapshot/routes.server.json) routes"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: route-snapshot
+          path: route-snapshot/
+          if-no-files-found: error
+
+  client:
+    name: Check some-ui against it
+    needs: snapshot
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # Public repository, so no token: this job only reads some-ui.
+      - uses: actions/checkout@v5
+        with:
+          repository: paulgsc/some-ui
+          path: some-ui
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: route-snapshot
+          path: route-snapshot
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: some-ui/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: some-ui/.nvmrc
+
+      # Only the two packages the check reads, and what they depend on. The
+      # full some-ui install is far larger than this job needs.
+      - name: Install the two packages the check reads
+        working-directory: some-ui
+        run: pnpm install --frozen-lockfile --filter "@some-ui/contract-harness..." --filter "@some-ui/server-routes..."
+
+      - name: Sync and verify
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'client-breaking-route') }}
+        run: |
+          set -euo pipefail
+          script=some-ui/scripts/sync-server-routes.sh
+          if [ ! -f "$script" ]; then
+            echo "::error::$script does not exist on some-ui's main yet; it lands with the some-ui change that pairs with this workflow."
+            exit 1
+          fi
+          bash "$script" route-snapshot/routes.server.json route-snapshot/routes.server.ts --verify
+
+      # What this PR would change in some-ui, on the run page, whether or not
+      # the check above passed.
+      - name: Summarise the snapshot change
+        if: always()
+        working-directory: some-ui
+        run: |
+          set -euo pipefail
+          {
+            echo "## Route snapshot vs. some-ui main"
+            if git diff --quiet; then
+              echo "No change: some-ui's copy already matches this PR."
+            else
+              echo '```diff'
+              git --no-pager diff -- packages/server-routes/src/generated/routes.ts
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sync:
+    name: Open the sync PR in some-ui
+    needs: snapshot
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for the sync token
+        id: token
+        env:
+          SOME_UI_SYNC_TOKEN: ${{ secrets.SOME_UI_SYNC_TOKEN }}
+        run: |
+          if [ -z "$SOME_UI_SYNC_TOKEN" ]; then
+            echo "::warning title=Route snapshot not synced::SOME_UI_SYNC_TOKEN is not set, so no PR was opened in paulgsc/some-ui. See the header of .github/workflows/routes.yml."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        if: steps.token.outputs.present == 'true'
+        with:
+          repository: paulgsc/some-ui
+          path: some-ui
+          token: ${{ secrets.SOME_UI_SYNC_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          name: route-snapshot
+          path: route-snapshot
+
+      # No --verify: the PR this opens runs some-ui's own CI, contract drift
+      # included, and a red check there is the report.
+      - name: Sync
+        if: steps.token.outputs.present == 'true'
+        run: bash some-ui/scripts/sync-server-routes.sh route-snapshot/routes.server.json route-snapshot/routes.server.ts
+
+      # One standing branch: each merge here updates the same PR rather than
+      # stacking a new one, and a merge that changes no route leaves it alone.
+      - uses: peter-evans/create-pull-request@v7
+        if: steps.token.outputs.present == 'true'
+        with:
+          path: some-ui
+          token: ${{ secrets.SOME_UI_SYNC_TOKEN }}
+          branch: bot/server-route-snapshot
+          delete-branch: true
+          add-paths: |
+            packages/contract-harness/routes.server.json
+            packages/server-routes/src/generated/routes.ts
+          commit-message: 'chore(server-routes): sync route snapshot from paulgsc/server@${{ steps.token.outputs.short_sha }}'
+          title: 'chore(server-routes): sync route snapshot from paulgsc/server@${{ steps.token.outputs.short_sha }}'
+          body: |
+            The route snapshot as of paulgsc/server@${{ github.sha }}, written by `scripts/sync-server-routes.sh`.
+
+            Generated by paulgsc/server's `.github/workflows/routes.yml` ([run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})). Both files are `dump-routes` output, copied verbatim; do not edit them here. If `Contract drift` fails on this PR, a contract in `packages/contract-harness/contracts` targets a route the server no longer serves.

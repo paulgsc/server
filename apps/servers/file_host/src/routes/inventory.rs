@@ -13,23 +13,23 @@
 //! renamed or dropped route shows up as a reviewable diff instead of a runtime
 //! surprise.
 //!
-//! # The declaration is checked, not trusted
+//! # Recorded, not declared
 //!
-//! A hand-maintained list of routes rots exactly as fast as the thing it
-//! describes, so this one is not taken on faith. The test at the bottom of this
-//! file parses the sibling `routes/*.rs` sources at compile time (via
-//! `include_str!`) and asserts set equality with what is declared here, in both
-//! directions. Adding a `.route(...)` call without adding it here fails the
-//! test, and so does the reverse.
+//! There is no second list of routes to keep in step with the first. Each
+//! route module registers its routes on a [`RouteTable`](super::table::RouteTable),
+//! which hands each one to axum and records it in the same call, and
+//! [`modules`] lists the modules. `main.rs` serves the routers built from that
+//! list; [`snapshot`] reads the records from the same list. A route cannot be
+//! served and missing from the snapshot, or in the snapshot and not served.
 //!
-//! That check is source-level on purpose: verifying against a live `Router`
-//! would require a fully built `AppState` (SQLite and NATS), which
-//! would make the cheapest invariant in the crate the most expensive one to
-//! run.
+//! Building the tables needs no `AppState` and no `Config`: handlers are
+//! registered, never called, and CORS (the one thing that reads `Config`) is
+//! applied only when `main.rs` asks for the router. So `dump-routes` still
+//! runs without a provisioned environment.
 //!
 //! # Why no route carries a subject
 //!
-//! None of the paths below look like `/subjects/:id/sessions`, and that is not
+//! None of the paths this inventory lists look like `/subjects/:id/sessions`, and that is not
 //! an oversight this inventory should flag. Whose request this is gets
 //! resolved once, by the [`SubjectId`](crate::subject::SubjectId) extractor
 //! every subject-scoped handler takes — an extractor concern, not a routing
@@ -38,7 +38,10 @@
 //! refactored; putting it in the extractor means this file, and the surface it
 //! describes, never changes when that happens.
 
-use crate::API_V1_BASE_PATH;
+use super::table::Module;
+use super::{db, health, outcomes, presence, push, readiness, signals, subjects, tab_metadata, utterance};
+use crate::{websocket, AppState, Config, API_V1_BASE_PATH};
+use axum::{extract::FromRef, Router};
 use serde::Serialize;
 
 /// Bump when the emitted JSON shape changes in a way consumers must react to.
@@ -83,309 +86,81 @@ impl RouteDescriptor {
 	}
 }
 
-/// The complete surface. Every `.route(...)` call reachable from `main.rs`
-/// appears here exactly once; the source-parity test enforces it.
+/// Every route module `main.rs` serves, in one list.
 ///
-/// Ordering is irrelevant — [`snapshot`] sorts before emitting so the JSON is
-/// stable across edits to this list.
-pub const ROUTES: &[RouteDescriptor] = &[
-	// ── unversioned ─────────────────────────────────────────────────────────
-	// Load balancers and orchestrators track these, so they must not move when
-	// the API version bumps. See the doc comment on `API_V1_BASE_PATH`.
-	RouteDescriptor {
-		method: "GET",
-		path: "/health",
-		versioned: false,
-		module: "health",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/ready",
-		versioned: false,
-		module: "readiness",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/ws",
-		versioned: false,
-		module: "websocket",
-	},
-	// ── mood events ─────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/mood_events",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/mood_events",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/mood_events/:id",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "PATCH",
-		path: "/mood_events/:id",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/mood_events/:id",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/mood_events/batch",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "PATCH",
-		path: "/mood_events/batch",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/mood_events/batch",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/mood_events/week/:week",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/mood_events/team/:team",
-		versioned: true,
-		module: "mood_events",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/mood_events/stats",
-		versioned: true,
-		module: "mood_events",
-	},
-	// ── tabs ────────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/tabs",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/tabs",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/tabs/:tab_id",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/tabs/:tab_id",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/tabs/batch",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/tabs/batch",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/tabs/prune",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/tabs/reconcile",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/tabs/summaries",
-		versioned: true,
-		module: "tabs",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/tabs/pipeline",
-		versioned: true,
-		module: "tabs",
-	},
-	// ── sessions ────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "PATCH",
-		path: "/sessions/status",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/sessions",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/sessions",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/sessions",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/sessions/:id",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "PATCH",
-		path: "/sessions/:id",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/sessions/:id",
-		versioned: true,
-		module: "sessions",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/sessions/:id/duplicate",
-		versioned: true,
-		module: "sessions",
-	},
-	// ── activities ──────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/activities",
-		versioned: true,
-		module: "activities",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/activities/:id",
-		versioned: true,
-		module: "activities",
-	},
-	// ── curriculum ──────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/curriculum/manifest",
-		versioned: true,
-		module: "curriculum",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/curriculum/manifest.json",
-		versioned: true,
-		module: "curriculum",
-	},
-	RouteDescriptor {
-		method: "GET",
-		path: "/curriculum/:key",
-		versioned: true,
-		module: "curriculum",
-	},
-	// ── push ────────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/push/vapid-key",
-		versioned: true,
-		module: "push",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/push/subscriptions",
-		versioned: true,
-		module: "push",
-	},
-	RouteDescriptor {
-		method: "DELETE",
-		path: "/push/subscriptions",
-		versioned: true,
-		module: "push",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/push/test",
-		versioned: true,
-		module: "push",
-	},
-	// ── presence ────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/presence/lease",
-		versioned: true,
-		module: "presence",
-	},
-	// ── signals ─────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/signals",
-		versioned: true,
-		module: "signals",
-	},
-	// ── outcomes ────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/outcomes",
-		versioned: true,
-		module: "outcomes",
-	},
-	// ── subjects ────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "GET",
-		path: "/subjects/me/stats",
-		versioned: true,
-		module: "subjects",
-	},
-	// ── misc ────────────────────────────────────────────────────────────────
-	RouteDescriptor {
-		method: "POST",
-		path: "/now-playing",
-		versioned: true,
-		module: "tab_metadata",
-	},
-	RouteDescriptor {
-		method: "POST",
-		path: "/utter",
-		versioned: true,
-		module: "utterance",
-	},
-];
+/// `main.rs` builds its router from this and [`snapshot`] builds the inventory
+/// from it, so a module is either on both or on neither. Adding a route module
+/// means adding it here; forgetting to means it is not served, which is loud,
+/// rather than served but missing from the snapshot, which is not.
+///
+/// `S` is the router state. `main.rs` passes [`AppState`]; so does
+/// [`snapshot`], which builds the tables without ever constructing one.
+///
+/// Not here: `GET /metrics`. It is built inside `some_metrics` on its own
+/// state and merged separately in `main.rs`, and it is a Prometheus scrape
+/// target rather than anything the client calls, so it has never been part
+/// of the client-facing inventory.
+#[must_use]
+pub fn modules<S>() -> Vec<Module<S>>
+where
+	S: Clone + Send + Sync + 'static,
+	AppState: FromRef<S>,
+{
+	vec![
+		// ── unversioned ─────────────────────────────────────────────────────
+		// Load balancers and orchestrators track these, so they must not move
+		// when the API version bumps. See the doc comment on `API_V1_BASE_PATH`.
+		health::get_health(),
+		readiness::get_readiness(),
+		websocket::routes(),
+		// ── versioned ───────────────────────────────────────────────────────
+		db::mood_events(),
+		db::tabs(),
+		db::sessions(),
+		db::activities(),
+		db::curriculum(),
+		push::push(),
+		presence::presence(),
+		signals::signals(),
+		outcomes::outcomes(),
+		subjects::subjects(),
+		tab_metadata::post_now_playing(),
+		utterance::post_utterance(),
+	]
+}
+
+/// The routers `main.rs` serves, built from [`modules`].
+///
+/// Returns the versioned half, which the caller nests under
+/// [`API_V1_BASE_PATH`] after adding its own layers, and the unversioned
+/// half, which it merges at the root.
+pub fn routers<S>(config: &Config) -> (Router<S>, Router<S>)
+where
+	S: Clone + Send + Sync + 'static,
+	AppState: FromRef<S>,
+{
+	split(|module| module.into_router(config))
+}
+
+fn split<S>(build: impl Fn(Module<S>) -> Router<S>) -> (Router<S>, Router<S>)
+where
+	S: Clone + Send + Sync + 'static,
+	AppState: FromRef<S>,
+{
+	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
+		if module.is_versioned() {
+			(versioned.merge(build(module)), unversioned)
+		} else {
+			(versioned, unversioned.merge(build(module)))
+		}
+	})
+}
+
+/// Every route [`modules`] registers, unsorted.
+#[must_use]
+pub fn routes() -> Vec<RouteDescriptor> {
+	modules::<AppState>().iter().flat_map(Module::descriptors).collect()
+}
 
 /// One route in the emitted JSON. Carries `full_path` already resolved so
 /// consumers never have to reimplement the `/api/v1` nesting rule.
@@ -412,8 +187,8 @@ pub struct RouteInventory {
 /// changing any route produces a byte-identical file.
 #[must_use]
 pub fn snapshot() -> RouteInventory {
-	let mut routes: Vec<RouteEntry> = ROUTES
-		.iter()
+	let mut routes: Vec<RouteEntry> = routes()
+		.into_iter()
 		.map(|route| RouteEntry {
 			method: route.method.to_owned(),
 			path: route.path.to_owned(),
@@ -435,119 +210,15 @@ pub fn snapshot() -> RouteInventory {
 
 #[cfg(test)]
 mod tests {
-	use super::{RouteDescriptor, ROUTES};
-	use regex::Regex;
+	use super::{modules, routes};
+	use crate::routes::table::Module;
+	use crate::{AppState, API_V1_BASE_PATH};
+	use axum::Router;
 	use std::collections::BTreeSet;
-
-	/// Every source file that registers routes, paired with the module name
-	/// used in [`ROUTES`] and whether `main.rs` nests it under `/api/v1`.
-	///
-	/// Adding a new `routes/*.rs` module means adding it here too — otherwise
-	/// its routes are unaudited. The `module_coverage` test below catches the
-	/// half of that mistake it can see.
-	const SOURCES: &[(&str, &str, bool)] = &[
-		("health", include_str!("health.rs"), false),
-		("readiness", include_str!("readiness.rs"), false),
-		("websocket", include_str!("../websocket.rs"), false),
-		("mood_events", include_str!("db/hopium.rs"), true),
-		("tabs", include_str!("db/tab.rs"), true),
-		("sessions", include_str!("db/session.rs"), true),
-		("activities", include_str!("db/activities.rs"), true),
-		("curriculum", include_str!("db/curriculum.rs"), true),
-		("push", include_str!("push.rs"), true),
-		("presence", include_str!("presence.rs"), true),
-		("signals", include_str!("signals.rs"), true),
-		("outcomes", include_str!("outcomes.rs"), true),
-		("subjects", include_str!("subjects.rs"), true),
-		("tab_metadata", include_str!("tab_metadata.rs"), true),
-		("utterance", include_str!("utterance.rs"), true),
-	];
-
-	/// A route as recovered from source: `(module, METHOD, path, versioned)`.
-	type ParsedRoute = (String, String, String, bool);
-
-	/// Recovers every `.route("<path>", <method>(...))` registration from the
-	/// sources above.
-	///
-	/// This reads the literal text rather than the built router, which means it
-	/// sees what a reviewer sees. The one thing it cannot see is a route
-	/// registered somewhere not listed in `SOURCES` — hence `module_coverage`.
-	fn parse_sources() -> BTreeSet<ParsedRoute> {
-		let pattern = Regex::new(r#"\.route\(\s*"([^"]+)"\s*,\s*(get|post|put|patch|delete)\("#).unwrap();
-
-		let mut found = BTreeSet::new();
-		for (module, source, versioned) in SOURCES {
-			for capture in pattern.captures_iter(source) {
-				let path = capture.get(1).unwrap().as_str().to_owned();
-				let method = capture.get(2).unwrap().as_str().to_uppercase();
-				found.insert(((*module).to_owned(), method, path, *versioned));
-			}
-		}
-		found
-	}
-
-	fn declared() -> BTreeSet<ParsedRoute> {
-		ROUTES
-			.iter()
-			.map(|route: &RouteDescriptor| ((route.module).to_owned(), (route.method).to_owned(), (route.path).to_owned(), route.versioned))
-			.collect()
-	}
-
-	/// The load-bearing invariant: the declaration and the router agree.
-	///
-	/// Both directions matter. A route in source but not declared means the
-	/// client harness is blind to it. A route declared but not in source means
-	/// the harness is testing something that no longer exists, and will report
-	/// a 404 as a client bug.
-	#[test]
-	fn inventory_matches_route_sources() {
-		let in_source = parse_sources();
-		let in_inventory = declared();
-
-		let undeclared: Vec<_> = in_source.difference(&in_inventory).collect();
-		let phantom: Vec<_> = in_inventory.difference(&in_source).collect();
-
-		assert!(
-			undeclared.is_empty(),
-			"routes registered in source but missing from ROUTES — add them, or the contract harness cannot see them: {undeclared:#?}"
-		);
-		assert!(
-			phantom.is_empty(),
-			"routes declared in ROUTES but absent from source — they were renamed or removed; update ROUTES and regenerate the client snapshot: {phantom:#?}"
-		);
-	}
-
-	/// Guards the blind spot in `parse_sources`: a `routes/*.rs` module that
-	/// nobody added to `SOURCES` would silently contribute zero routes and the
-	/// parity test would still pass.
-	#[test]
-	fn module_coverage() {
-		let source_modules: BTreeSet<&str> = SOURCES.iter().map(|(module, _, _)| *module).collect();
-		let declared_modules: BTreeSet<&str> = ROUTES.iter().map(|route| route.module).collect();
-
-		assert_eq!(
-			source_modules, declared_modules,
-			"SOURCES and ROUTES disagree about which modules exist; a whole route module is probably unaudited"
-		);
-	}
-
-	/// Each `SOURCES` entry must actually yield routes. Catches a stale
-	/// `include_str!` path that still compiles but points at a file which no
-	/// longer registers anything.
-	#[test]
-	fn every_source_contributes_routes() {
-		let parsed = parse_sources();
-		for (module, _, _) in SOURCES {
-			assert!(
-				parsed.iter().any(|(parsed_module, _, _, _)| parsed_module == module),
-				"source module `{module}` parsed to zero routes — wrong include_str! path, or the routes moved"
-			);
-		}
-	}
 
 	#[test]
 	fn versioned_routes_carry_the_api_prefix() {
-		for route in ROUTES {
+		for route in routes() {
 			let full = route.full_path();
 			if route.versioned {
 				assert!(full.starts_with("/api/v1/"), "versioned route {} did not resolve under /api/v1: {full}", route.path);
@@ -557,16 +228,45 @@ mod tests {
 		}
 	}
 
-	/// `main.rs` merges these routers into one `Router`; axum panics at startup
-	/// on a duplicate method+path. Catching it here turns a boot-time crash into
-	/// a test failure.
+	/// Two modules registering the same method and path each build fine on
+	/// their own; axum only panics when `main.rs` merges them, at boot.
 	#[test]
 	fn no_duplicate_method_path_pairs() {
 		let mut seen = BTreeSet::new();
-		for route in ROUTES {
+		for route in routes() {
 			let key = (route.method, route.full_path());
 			assert!(seen.insert(key), "duplicate route registration: {} {}", route.method, route.full_path());
 		}
+	}
+
+	/// The snapshot groups routes by module name, so two modules sharing one
+	/// would read as a single surface in the client's diff.
+	#[test]
+	fn module_names_are_unique() {
+		let mut seen = BTreeSet::new();
+		for module in modules::<AppState>() {
+			assert!(seen.insert(module.name()), "two route modules are both named `{}`", module.name());
+		}
+	}
+
+	/// A module with an empty table is a registry entry whose routes went
+	/// somewhere else.
+	#[test]
+	fn every_module_registers_a_route() {
+		for module in modules::<AppState>() {
+			assert!(module.descriptors().next().is_some(), "route module `{}` registers no routes", module.name());
+		}
+	}
+
+	/// Merges and nests every table through the same [`super::split`]
+	/// `main.rs` reaches via [`super::routers`]. Anything axum rejects only
+	/// once routers are combined (a duplicate registration, two captures with
+	/// different names in one position) panics here instead of at boot. CORS
+	/// is left off: it needs a `Config`, and a layer cannot conflict.
+	#[test]
+	fn the_surface_assembles_like_main_does() {
+		let (versioned, unversioned) = super::split::<AppState>(Module::into_table_router);
+		let _app: Router<AppState> = Router::new().nest(API_V1_BASE_PATH, versioned).merge(unversioned);
 	}
 
 	#[test]
