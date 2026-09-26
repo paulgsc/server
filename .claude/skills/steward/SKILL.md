@@ -34,7 +34,38 @@ is real: fix it, reply on the *specific* review comment/thread (not a general PR
 naming the fix and its commit SHA, then resolve that thread. When a finding is real but
 genuinely out of scope for this PR: reply explaining why and where the real fix is routed (a
 follow-up issue, a named future story), and leave the thread **open** — don't resolve away
-feedback that's still true just because fixing it isn't this PR's job.
+feedback that's still true just because fixing it isn't this PR's job. If no issue or story
+exists to route it to yet, file one (next section) and link it from the reply.
+
+## File an issue for every non-trivial finding you surface and don't fix
+
+A finding that ends as a chat message, a PR comment or one line in a PR description is lost
+when the session ends. While driving #375, a session found a ~6%-flaky test on `main` (#377)
+and proposed two follow-ups (#378, #379). All three were only tracked because the user asked
+for issues. So before standing down on a PR, file an issue for every non-trivial finding you
+surfaced and deliberately didn't fix in it:
+
+- a real bot review finding judged out of scope, linked from the thread you leave open, so
+  "where the fix is routed" points somewhere;
+- a CI failure judged not to be this PR's, such as a flaky test or a check red on the base
+  branch;
+- adjacent debt or a follow-up you proposed and the user deferred.
+
+Not trivial nits (they ride the next push or are dropped under the optional-finding rules), and
+not anything this PR already fixes. For each one:
+
+- **Search first.** If an issue already covers it, comment there with the new evidence instead
+  of opening a duplicate.
+- **Make it self-contained:** what fails or is missing, the evidence (a log excerpt, a SHA, a
+  `file:line`), and a proposed fix. A future session must be able to act on it cold, like a
+  handoff.
+- **Link it from where you found it** (the PR description, the review thread, or your
+  standing-down comment), and list it in your final message to the user.
+- **Label it `priority: high`** when it meets the definition in `CLAUDE.md`'s first section,
+  so the start-of-session sweep finds it.
+
+This applies to an invariant break raised under `CLAUDE.md`'s "Drift is loud" as well: once
+the decision is to defer it, it gets an issue, not only the comment.
 
 ## Cap the review-fix cycle — a diff has no upper bound on how many findings it can surface
 
