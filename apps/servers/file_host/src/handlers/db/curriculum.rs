@@ -83,8 +83,10 @@ pub async fn get_manifest(State(state): State<AppState>, headers: HeaderMap) -> 
 /// One lesson's stored bytes, verbatim, and its `ETag` — or `NotFound`.
 ///
 /// `key` may carry the `.json` the client's file names have (`beginner.json`
-/// for the lesson `beginner`): the exact key is tried first, so a key that
-/// genuinely ends in `.json` still resolves to itself.
+/// for the lesson `beginner`). No lesson key ends in `.json`
+/// (`curriculum_repo::is_plain_key`, enforced on every write), so the suffix
+/// always means the file name and each request names exactly one lesson. The
+/// exact key is still tried first, for a row written before that rule.
 pub(crate) async fn lesson(db: &SqlitePool, key: &str) -> Result<(String, String), FileHostError> {
 	let lessons = CurriculumRepository::new(db.clone());
 	if let Some(found) = lessons.body(key).await? {

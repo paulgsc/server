@@ -27,7 +27,7 @@
 //! behind it. Later imports leave new and changed lessons for #277 to announce.
 //! Nobody has to remember a flag.
 
-use crate::model::ManifestEntry;
+use crate::model::{is_plain_key, ManifestEntry};
 use crate::repository::{Change, CurriculumRepository};
 use publication_repo::PublicationRepository;
 use serde::Deserialize;
@@ -178,7 +178,7 @@ fn position_label(position: usize) -> String {
 /// identifier — the client passes those through to fetch from elsewhere, and
 /// an offline importer has no business following them.
 fn read_lesson(dir: &Path, key: &str) -> Result<Vec<u8>, String> {
-	if key.is_empty() || key.contains('/') || key.contains('\\') || key.starts_with("http") || key.starts_with('.') {
+	if !is_plain_key(key) {
 		return Err("not a plain lesson key; paths and URLs are not imported".to_owned());
 	}
 	let mut file = String::from(key);

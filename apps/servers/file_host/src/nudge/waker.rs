@@ -3911,6 +3911,87 @@ mod tests {
 		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 1, "changed bytes are new material again");
 	}
 
+	/// The operator's weekly batch: a retired lesson is not in the manifest, so
+	/// it is news to nobody. Retiring and restoring move no version and
+	/// announce nothing; a version a lesson gained while retired is announced
+	/// when it is restored, because nobody has seen it; and a lesson retired
+	/// after it was detected but before a subject is caught up applies to them
+	/// no more than a deleted one would.
+	#[tokio::test]
+	async fn a_retired_lesson_is_news_to_nobody() {
+		use curriculum_repo::{import_dir, CurriculumRepository, ManifestEntry};
+
+		let pool = migrated_pool().await;
+		let nudge = nudge_context();
+		let learner = "subject-plays-topik";
+		first_contact(&pool, learner).await.unwrap();
+		played(&pool, learner, "topik", "completed").await;
+		let now = Utc::now().to_rfc3339();
+		let dir = tempfile::tempdir().unwrap();
+		write_topiks(dir.path(), &[("beginner", "Beginner", b"{}")]);
+		import_dir(&pool, dir.path(), "topik", &now, false).await.unwrap();
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "the baseline");
+
+		let entry = |key: &str| ManifestEntry {
+			key: key.to_owned(),
+			display_name: key.to_owned(),
+			description: "d".to_owned(),
+			batch_count: 1,
+			total_questions: 1,
+			total_messages: 1,
+			difficulty: None,
+			tags: None,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::retire(&mut conn, "beginner", &now).await.unwrap();
+		drop(conn);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "retiring is not a publication");
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::restore(&mut conn, "beginner").await.unwrap();
+		drop(conn);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "nor is restoring unchanged content");
+
+		// Written and retired before any pass saw it, then edited while retired.
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::upsert(&mut conn, "topik", &entry("week-40"), b"{\"v\":1}", &now, false)
+			.await
+			.unwrap();
+		CurriculumRepository::retire(&mut conn, "week-40", &now).await.unwrap();
+		drop(conn);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "a retired lesson is not detected");
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::upsert(&mut conn, "topik", &entry("week-40"), b"{\"v\":2}", &now, false)
+			.await
+			.unwrap();
+		drop(conn);
+		assert_eq!(run_once(&pool, &nudge).await.unwrap().caught_up, 0, "nor is a version it gains while retired");
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::restore(&mut conn, "week-40").await.unwrap();
+		drop(conn);
+		assert_eq!(
+			run_once(&pool, &nudge).await.unwrap().caught_up,
+			1,
+			"until it is listed: then that version is new to everyone"
+		);
+
+		// Detected, then retired before this subject is caught up.
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::upsert(&mut conn, "topik", &entry("week-41"), b"{}", &now, false).await.unwrap();
+		drop(conn);
+		PublicationRepository::new(pool.clone()).detect_curriculum_publications(&now).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::retire(&mut conn, "week-41", &now).await.unwrap();
+		drop(conn);
+		assert_eq!(
+			run_once(&pool, &nudge).await.unwrap().caught_up,
+			0,
+			"a lesson retired since it was published applies to nobody"
+		);
+		let epoch = PublicationRepository::new(pool.clone()).newest().await.unwrap().unwrap().id;
+		let gate = EngagementRepository::new(pool.clone()).gate(learner).await.unwrap().unwrap();
+		assert_eq!(gate.curriculum_epoch, epoch, "and the watermark still moves past it");
+	}
+
 	/// #277 (CUR4): a catch-up that chose its publication from a stale
 	/// watermark — another pass drained that publication since — advances
 	/// without draining it again (from a `chatgpt-codex-connector` finding on

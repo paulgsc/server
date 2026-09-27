@@ -9,7 +9,27 @@ use sqlx::{SqliteConnection, SqlitePool};
 /// hundred bytes of metadata per entry this is well under a megabyte, and a
 /// corpus that outgrows it needs a paginated manifest, which the client's
 /// `TopikManifestSchema` does not describe yet.
+///
+/// It bounds the **listed** lessons — the ones the manifest serves — not the
+/// table: retired rows accumulate, and are the operator listing's to bound
+/// ([`OPERATOR_LISTING_CEILING`]). The write route refuses to list a lesson
+/// past it, so the manifest refusing is a backstop, not the operator's first
+/// sign.
 pub const MANIFEST_CEILING: i64 = 1_000;
+
+/// The most lessons, listed and retired, one operator listing returns.
+///
+/// Retiring never deletes, so the table only grows — by the few lessons of a
+/// weekly batch at a time. Over this the listing is refused, never truncated,
+/// like the manifest; a corpus that reaches it needs a paginated listing.
+pub const OPERATOR_LISTING_CEILING: i64 = 5_000;
+
+/// The largest lesson file the write route accepts, in bytes.
+///
+/// A lesson is a few conversations and their probes — tens of kilobytes. The
+/// ceiling is on the one input this server stores without reading, so a
+/// mistaken paste of something else is refused rather than kept forever.
+pub const LESSON_BYTES_CEILING: usize = 1024 * 1024;
 
 /// What [`CurriculumRepository::upsert`] did to one lesson.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +64,16 @@ impl CurriculumRepository {
 	/// Propagates any `sqlx` failure.
 	pub async fn count(conn: &mut SqliteConnection) -> Result<i64, sqlx::Error> {
 		sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum"#).fetch_one(&mut *conn).await
+	}
+
+	/// How many lessons are listed — served by the manifest, not retired.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn listed_count(conn: &mut SqliteConnection) -> Result<i64, sqlx::Error> {
+		sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM curriculum WHERE retired_at IS NULL"#)
+			.fetch_one(&mut *conn)
+			.await
 	}
 
 	/// The stored hash, activity, and manifest fields for `key`, if it exists.
@@ -215,45 +245,139 @@ impl CurriculumRepository {
 		)
 	}
 
-	/// Every lesson's manifest-facing row, by key, without bodies.
+	/// Every **listed** lesson's row, by key, without bodies — what the
+	/// manifest serves. Retired lessons are not in it.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
 	pub async fn entries(&self, limit: i64) -> Result<Vec<CurriculumEntry>, sqlx::Error> {
-		let rows = sqlx::query!(
+		sqlx::query_as!(
+			EntryRow,
 			r#"
 			SELECT key AS "key!", activity_id, level, display_name, description, batch_count, total_questions, total_messages, tags,
-			       published_at, version, content_hash
+			       published_at, version, content_hash, retired_at
+			FROM curriculum WHERE retired_at IS NULL ORDER BY key LIMIT ?
+			"#,
+			limit
+		)
+		.fetch_all(&self.pool)
+		.await?
+		.into_iter()
+		.map(EntryRow::into_entry)
+		.collect()
+	}
+
+	/// Every lesson's row, listed and retired, by key, without bodies — the
+	/// operator's view.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn all_entries(&self, limit: i64) -> Result<Vec<CurriculumEntry>, sqlx::Error> {
+		sqlx::query_as!(
+			EntryRow,
+			r#"
+			SELECT key AS "key!", activity_id, level, display_name, description, batch_count, total_questions, total_messages, tags,
+			       published_at, version, content_hash, retired_at
 			FROM curriculum ORDER BY key LIMIT ?
 			"#,
 			limit
 		)
 		.fetch_all(&self.pool)
-		.await?;
+		.await?
+		.into_iter()
+		.map(EntryRow::into_entry)
+		.collect()
+	}
 
-		rows
-			.into_iter()
-			.map(|row| {
-				Ok(CurriculumEntry {
-					key: row.key,
-					activity_id: row.activity_id,
-					level: row.level.as_deref().and_then(Level::parse),
-					display_name: row.display_name,
-					description: row.description,
-					batch_count: row.batch_count,
-					total_questions: row.total_questions,
-					total_messages: row.total_messages,
-					tags: row
-						.tags
-						.as_deref()
-						.map(serde_json::from_str::<Vec<String>>)
-						.transpose()
-						.map_err(|err| sqlx::Error::Decode(Box::new(err)))?,
-					published_at: row.published_at,
-					version: row.version,
-					content_hash: row.content_hash,
-				})
-			})
-			.collect()
+	/// One lesson's row, listed or retired, without its body.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn entry(conn: &mut SqliteConnection, key: &str) -> Result<Option<CurriculumEntry>, sqlx::Error> {
+		sqlx::query_as!(
+			EntryRow,
+			r#"
+			SELECT key AS "key!", activity_id, level, display_name, description, batch_count, total_questions, total_messages, tags,
+			       published_at, version, content_hash, retired_at
+			FROM curriculum WHERE key = ?
+			"#,
+			key
+		)
+		.fetch_optional(&mut *conn)
+		.await?
+		.map(EntryRow::into_entry)
+		.transpose()
+	}
+
+	/// Take `key` out of the manifest, as of `now`, and report whether the
+	/// table holds it.
+	///
+	/// Idempotent: retiring a retired lesson keeps the time it was first
+	/// retired. Moves no `version` and no `published_at`, so it is never a
+	/// publication — see `20260927000100_add_curriculum_retired_at.up.sql`.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn retire(conn: &mut SqliteConnection, key: &str, now: &str) -> Result<bool, sqlx::Error> {
+		let updated = sqlx::query!("UPDATE curriculum SET retired_at = COALESCE(retired_at, ?2) WHERE key = ?1", key, now)
+			.execute(&mut *conn)
+			.await?;
+		Ok(updated.rows_affected() == 1)
+	}
+
+	/// Put `key` back in the manifest, and report whether the table holds it.
+	///
+	/// Idempotent, and like [`Self::retire`] moves no `version`: restoring
+	/// unchanged content announces nothing. The caller owns the
+	/// [`MANIFEST_CEILING`] check, in the same transaction.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn restore(conn: &mut SqliteConnection, key: &str) -> Result<bool, sqlx::Error> {
+		let updated = sqlx::query!("UPDATE curriculum SET retired_at = NULL WHERE key = ?", key).execute(&mut *conn).await?;
+		Ok(updated.rows_affected() == 1)
+	}
+}
+
+/// One `curriculum` row as `query_as!` reads it, before `level` and `tags`
+/// are decoded.
+struct EntryRow {
+	key: String,
+	activity_id: String,
+	level: Option<String>,
+	display_name: String,
+	description: String,
+	batch_count: i64,
+	total_questions: i64,
+	total_messages: i64,
+	tags: Option<String>,
+	published_at: String,
+	version: i64,
+	content_hash: String,
+	retired_at: Option<String>,
+}
+
+impl EntryRow {
+	fn into_entry(self) -> Result<CurriculumEntry, sqlx::Error> {
+		Ok(CurriculumEntry {
+			key: self.key,
+			activity_id: self.activity_id,
+			level: self.level.as_deref().and_then(Level::parse),
+			display_name: self.display_name,
+			description: self.description,
+			batch_count: self.batch_count,
+			total_questions: self.total_questions,
+			total_messages: self.total_messages,
+			tags: self
+				.tags
+				.as_deref()
+				.map(serde_json::from_str::<Vec<String>>)
+				.transpose()
+				.map_err(|err| sqlx::Error::Decode(Box::new(err)))?,
+			published_at: self.published_at,
+			version: self.version,
+			content_hash: self.content_hash,
+			retired_at: self.retired_at,
+		})
 	}
 }

@@ -119,6 +119,7 @@ where
 		db::sessions(),
 		db::activities(),
 		db::curriculum(),
+		db::curriculum_operator(),
 		push::push(),
 		presence::presence(),
 		signals::signals(),

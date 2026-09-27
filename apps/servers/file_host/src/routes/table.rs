@@ -24,7 +24,7 @@ use super::inventory::RouteDescriptor;
 use crate::Config;
 use axum::{
 	handler::Handler,
-	routing::{delete, get, patch, post, MethodRouter},
+	routing::{delete, get, patch, post, put, MethodRouter},
 	Router,
 };
 use tower_http::cors::CorsLayer;
@@ -35,6 +35,7 @@ use tower_http::cors::CorsLayer;
 enum Verb {
 	Get,
 	Post,
+	Put,
 	Patch,
 	Delete,
 }
@@ -44,6 +45,7 @@ impl Verb {
 		match self {
 			Self::Get => "GET",
 			Self::Post => "POST",
+			Self::Put => "PUT",
 			Self::Patch => "PATCH",
 			Self::Delete => "DELETE",
 		}
@@ -58,6 +60,7 @@ impl Verb {
 		match self {
 			Self::Get => get(handler),
 			Self::Post => post(handler),
+			Self::Put => put(handler),
 			Self::Patch => patch(handler),
 			Self::Delete => delete(handler),
 		}
@@ -101,6 +104,15 @@ where
 		T: 'static,
 	{
 		self.on(Verb::Post, path, handler)
+	}
+
+	#[must_use]
+	pub fn put<H, T>(self, path: &'static str, handler: H) -> Self
+	where
+		H: Handler<T, S>,
+		T: 'static,
+	{
+		self.on(Verb::Put, path, handler)
 	}
 
 	#[must_use]

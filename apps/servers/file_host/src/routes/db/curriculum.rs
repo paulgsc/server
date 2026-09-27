@@ -18,8 +18,11 @@
 //! The static `manifest.json` route wins over `:key` in axum's router, so
 //! the manifest is never looked up as a lesson key.
 //!
-//! No write route: lessons arrive through `import-curriculum` (#275). No
-//! `SubjectId`: a lesson is corpus-wide, not owned by whoever studies it.
+//! Read-only: lessons arrive through `import-curriculum` (#275) or the
+//! operator's routes (`routes::db::curriculum_operator`). The manifest lists
+//! only lessons the operator has not retired; a retired lesson is still served
+//! by key, because a learner may be part-way through it. No `SubjectId`: a
+//! lesson is corpus-wide, not owned by whoever studies it.
 //! `ETag` is exposed and `If-None-Match` allowed cross-origin for the same
 //! reason `routes::db::activities` gives.
 

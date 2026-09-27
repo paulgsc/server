@@ -161,6 +161,22 @@ Local dependencies (Redis, NATS, Prometheus/Grafana, `file_host`,
 `orchestrator`) are composed via [`docker-compose.yml`](./docker-compose.yml)
 and [`infra/compose`](./infra/compose).
 
+To run `file_host` from source while that container keeps port 3000:
+
+```bash
+make dev   # takes the next free port from 3000 and records it for some-ui's vite dev
+```
+
+It moves up to the next free port only because `make dev` asks it to
+(`FILE_HOST_PORT_FALLBACK`); run any other way, a taken port is a startup
+failure, as production needs. It records the port it got in
+`$XDG_RUNTIME_DIR/file_host/dev-port.json` (`/tmp/...` without one), and
+`paulgsc/some-ui`'s `vite dev` proxies there while it runs and back to the
+container when it stops, reloading the page either way. The listen address
+itself is `FILE_HOST_BIND`/`FILE_HOST_PORT` (default `0.0.0.0:3000`). `make dev`
+reads the same environment as `cargo run`: pointed at the container's database
+and VAPID keys, it runs a second nudge waker beside the container's.
+
 ---
 
 ## Documentation
