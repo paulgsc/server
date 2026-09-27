@@ -124,14 +124,21 @@ cargo check --workspace
 cargo test --workspace
 ```
 
-Clippy isn't part of that workflow. `.github/workflows/lint.yml` runs
-`cargo clippy --workspace -- -D warnings --no-deps` but is currently paused
-(scoped to a `foo` branch, not `main`). As a local check before pushing,
-this repo's own `CLAUDE.md` recommends scoping it to whatever package
-you're touching, with flags `lint.yml` doesn't pass:
+Clippy runs in its own workflow, [`.github/workflows/lint.yml`](./.github/workflows/lint.yml),
+on every pull request to `main`, alongside `rustfmt` and the repo's own policy
+scripts. `.cargo/config.toml` enables the `all`, `pedantic`, and `nursery`
+groups, and the workspace does not yet meet that bar, so clippy runs as a
+ratchet rather than a clean gate: every finding is compared against a committed
+baseline, [`scripts/clippy_baseline.json`](./scripts/clippy_baseline.json). A new
+finding fails the PR, a fixed one fails until the baseline is regenerated, and
+the baseline may only shrink relative to `main`.
+[`scripts/check_clippy_baseline.py`](./scripts/check_clippy_baseline.py)
+explains the mechanism. To run what CI runs:
 
 ```bash
-cargo clippy -p <changed-package> --all-targets --keep-going --no-deps
+cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
+  -- --cap-lints=warn -A unknown-lints > clippy.json
+python3 scripts/check_clippy_baseline.py clippy.json   # add --update after fixing debt
 ```
 
 The generated HTTP route inventory that [`paulgsc/some-ui`](https://github.com/paulgsc/some-ui)'s
