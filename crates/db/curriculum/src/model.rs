@@ -39,8 +39,8 @@ impl Level {
 ///
 /// Serialises (camelCase) to exactly a `TopikMetadata` manifest entry for the
 /// fields that type has, via [`CurriculumEntry::manifest_entry`]; the server's
-/// own bookkeeping (`activity_id`, `published_at`, `version`, `content_hash`)
-/// is not part of that shape.
+/// own bookkeeping (`activity_id`, `published_at`, `version`, `content_hash`,
+/// `retired_at`) is not part of that shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurriculumEntry {
 	pub key: String,
@@ -55,6 +55,9 @@ pub struct CurriculumEntry {
 	pub published_at: String,
 	pub version: i64,
 	pub content_hash: String,
+	/// When the operator retired it (ISO-8601 UTC), or `None` while it is
+	/// listed — see `20260927000100_add_curriculum_retired_at.up.sql`.
+	pub retired_at: Option<String>,
 }
 
 /// A `TopikMetadata` manifest entry, field for field.
@@ -90,6 +93,17 @@ impl CurriculumEntry {
 	}
 }
 
+/// Whether `key` names a lesson rather than a path or URL — the one rule the
+/// importer (#275) and the operator's write route share.
+///
+/// The client passes a path or URL key through to fetch from elsewhere; the
+/// importer reads `<key>.json` from disk, and neither an offline command nor
+/// a write route has any business following one.
+#[must_use]
+pub fn is_plain_key(key: &str) -> bool {
+	!(key.is_empty() || key.contains('/') || key.contains('\\') || key.starts_with("http") || key.starts_with('.'))
+}
+
 /// **The** definition of a lesson's content hash: lowercase hex SHA-256 over
 /// the lesson file's exact bytes, as read from disk — no parsing, no
 /// normalisation, no manifest metadata.
@@ -106,7 +120,7 @@ pub fn content_hash(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::{content_hash, Level};
+	use super::{content_hash, is_plain_key, Level};
 
 	#[test]
 	fn level_round_trips_and_an_unknown_one_is_refused() {
@@ -114,6 +128,16 @@ mod tests {
 			assert_eq!(Level::parse(level.as_str()), Some(level));
 		}
 		assert_eq!(Level::parse("expert"), None);
+	}
+
+	#[test]
+	fn a_plain_key_is_an_identifier_not_a_path_or_url() {
+		for key in ["beginner", "week-39.a", "lesson.json"] {
+			assert!(is_plain_key(key), "{key}");
+		}
+		for key in ["", "a/b", "a\\b", "https://example.test/x", "../x", ".hidden"] {
+			assert!(!is_plain_key(key), "{key}");
+		}
 	}
 
 	#[test]

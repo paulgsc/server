@@ -1281,6 +1281,10 @@ raise a notification.
 |---|---|---|
 | `GET` | `/curriculum/manifest` | `{ version, topiks: TopikMetadata[] }` — the manifest `@some-ui/topik` reads, from the `curriculum` table (#276) |
 | `GET` | `/curriculum/:key` | One lesson file, verbatim, or a JSON `404` |
+| `GET` | `/curriculum/operator/lessons` | Every lesson's manifest entry plus `activityId`, `publishedAt`, `version`, `contentHash` and `retiredAt`, retired lessons included — the operator's view |
+| `PUT` | `/curriculum/operator/lessons/:key` | Write one lesson, `{ activityId, metadata: TopikMetadata, body }`; answers `{ change, lesson }` |
+| `POST` | `/curriculum/operator/lessons/:key/retire` | Take a lesson out of the manifest, without deleting it |
+| `POST` | `/curriculum/operator/lessons/:key/restore` | Put it back |
 
 The same two files `apps/www` fetches from `/topiks/` today, with the one
 difference the route exists for: a lesson that does not exist is a real `404`
@@ -1291,7 +1295,28 @@ Both answer `If-None-Match` with `304`: a lesson's `ETag` is its `content_hash`
 its `version` — so one notion of "changed" serves the importer, the cache, and
 #277. The manifest is bounded (`MANIFEST_CEILING`) and refused, never
 truncated, above it. A lesson keyed `manifest` would be shadowed by the listing
-route; the importer's corpus has none.
+route; the importer's corpus has none, and the write route refuses one.
+
+**The manifest is the operator's weekly batch** (canon Cor. 8.3 in
+`paulgsc/some-ui`): it lists only lessons that are not **retired**
+(`curriculum.retired_at`). Retiring unlists a lesson without deleting it, since a
+learner's resume point or survey may still name it, so `GET /curriculum/:key`
+keeps serving it. Retiring and restoring move no version, so neither is a
+publication; a version a lesson gains while retired is announced when it is
+restored (see "New material is one epoch, not a fan-out").
+
+The operator routes are what the LAN lesson CRM in `paulgsc/some-ui` calls. A
+write goes through the same `CurriculumRepository::upsert` as the importer, so
+`change` is one of `inserted`, `contentChanged`, `metadataChanged` and
+`unchanged` with the same meanings, and the body is stored byte for byte. The
+server checks only what it depends on: a plain key that no static route shadows,
+`metadata.key` equal to it, a non-empty `activityId`, and a `body` that is JSON
+within `LESSON_BYTES_CEILING` (1 MiB). Each is a `422` naming the field. What a
+lesson *is* stays the client's to check (`intakeLesson`). Adding or restoring a
+lesson past `MANIFEST_CEILING` listed is a `400`, so the manifest never starts
+refusing because of a write. The listing is bounded by
+`OPERATOR_LISTING_CEILING` and refused, never truncated, over it. These routes
+change what everyone is served under the trust model below.
 
 ### Subject stats
 
@@ -1427,7 +1452,8 @@ invariant `#253` argues for elsewhere applies to this new surface too.
 
 These routes carry **no authentication** beyond the CORS origin allowlist.
 Anyone who can reach the LAN can register a push subscription — and would then
-receive this person's study reminders — or read and write sessions. That is the
+receive this person's study reminders — or read and write sessions, or rewrite
+and retire the lessons everyone is served. That is the
 same trust model as the rest of `file_host`. It is written down here so it stays
 a conscious acceptance rather than an oversight.
 
@@ -1612,14 +1638,15 @@ whether they were known. The accepted cost: someone who subscribed but never
 studied is drained too.
 
 **Lessons append to the same log (#277, CUR4)** — a second producer, not a
-second mechanism. A lesson `(key, version)` not seen before is a publication
+second mechanism. A *listed* lesson `(key, version)` not seen before is a publication
 with `source = 'curriculum'`, and its version only moves when the file's bytes
 do (#275), so re-importing unchanged content or renaming a lesson publishes
 nothing; the importer's first import writes `baseline` rows, which are seen but
 are not an epoch. A lesson's audience is narrower,
 `study_domain::LESSON_AUDIENCE`: subjects who had **played its activity** (a
 completed or abandoned block in `activity_outcome`) by the time it was
-detected. That rule is applied per subject **at catch-up**, not as an audience
+detected, and that is still listed — a lesson the operator has retired since is
+news to nobody, as a deleted one would be. That rule is applied per subject **at catch-up**, not as an audience
 query at publish time: `PublicationRepository::relevant_since` walks the
 publications a subject missed, newest first, and stops at the first that
 applies to them — O(publications missed), a point lookup each. If none does,
@@ -1648,7 +1675,14 @@ SHA-256 over the exact bytes) is not written and does not look new; changed
 bytes are a version bump with a new `published_at`; a manifest rename alone is
 written without either. A malformed or missing lesson fails alone and is named
 in the report — except on the first import, which is all or nothing (below);
-the exit code is `1` if anything failed, `2` if the run could not start. It never deletes a lesson missing from the directory.
+the exit code is `1` if anything failed, `2` if the run could not start. It never deletes a lesson missing from the directory,
+and never retires or restores one: a lesson the operator retired stays retired
+through a re-import.
+
+To change one lesson without a shell, use the operator routes (see
+[Curriculum](#curriculum)) through the LAN lesson CRM. A write there is never a
+baseline, so bring an existing corpus across with the importer first: once the
+table is non-empty, the importer's first run no longer counts as the baseline.
 
 **The first import is a baseline.** Into an empty table, what is imported is
 what the app has served all along, so every lesson is written to
