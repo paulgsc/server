@@ -1,8 +1,8 @@
 //! `/api/v1/subjects/me/stats` — the numbers the recommender's second axis
 //! refers to (#289, TEL4).
 //!
-//! `me` rather than an id in the path, so the day auth lands this URL does not
-//! change: whose stats these are is the `SubjectId` extractor's question, the
+//! `me` rather than an id in the path, so passkey auth landing did not change
+//! this URL: whose stats these are is the `SubjectId` extractor's question, the
 //! same reasoning #261 gave for the session routes.
 //!
 //! The payload maps onto the client's `RankingSignals`

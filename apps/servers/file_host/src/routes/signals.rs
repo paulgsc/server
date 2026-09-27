@@ -20,6 +20,7 @@ pub fn signals<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	crate::auth::AuthContext: FromRef<S>,
 {
 	Module::versioned("signals", RouteTable::new().post("/signals", handlers::observe)).with_cors(cors)
 }

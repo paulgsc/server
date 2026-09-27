@@ -19,6 +19,7 @@ pub fn outcomes<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	crate::auth::AuthContext: FromRef<S>,
 {
 	Module::versioned("outcomes", RouteTable::new().post("/outcomes", handlers::record)).with_cors(cors)
 }

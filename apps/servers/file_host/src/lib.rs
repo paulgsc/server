@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use ws_conn_manager::ConnectionGuard;
 use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod error;
@@ -20,6 +21,7 @@ pub mod nudge;
 #[cfg(test)]
 mod privacy;
 pub mod rate_limiter;
+pub mod redacted;
 pub mod routes;
 pub mod schema;
 pub mod subject;
@@ -95,6 +97,10 @@ pub struct AppState {
 	/// failing: a deployment that does not want notifications should not have
 	/// to configure them to boot.
 	pub nudge: Option<NudgeContext>,
+	/// Passkey auth: sessions, ceremonies, and the relying party. Always
+	/// present; unconfigured, it refuses every ceremony with `503` (see
+	/// `auth::AuthContext::from_config`).
+	pub auth: auth::AuthContext,
 }
 
 impl AppState {
@@ -130,8 +136,9 @@ impl AppState {
 		};
 
 		let nudge = Self::build_nudge(&config)?;
+		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
 
-		Ok(Self { core, realtime, nudge })
+		Ok(Self { core, realtime, nudge, auth })
 	}
 
 	/// Validate the nudge's configuration once, at startup.
@@ -201,6 +208,12 @@ impl AppState {
 impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
 		state.realtime.dedup_cache.clone()
+	}
+}
+
+impl FromRef<AppState> for auth::AuthContext {
+	fn from_ref(state: &AppState) -> Self {
+		state.auth.clone()
 	}
 }
 

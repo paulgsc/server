@@ -1039,9 +1039,9 @@ consent that cannot be read is not consent.
 the permission modal renders the options the sender will actually honour rather
 than a list maintained separately in the frontend.
 
-Auth has not landed. `file_host::subject::SubjectId` is the seam: an extractor
-that returns a singleton today and reads a validated token later, with every
-table downstream already keyed by subject.
+Every route here is scoped by `file_host::subject::SubjectId`, whose extractor
+resolves the request's passkey session to its subject and refuses a request
+without one (see `docs/identity.md`, "Passkey auth").
 
 ---
 
@@ -1908,14 +1908,13 @@ silently reinterpreted — but the stored level is dropped on the floor. A relea
 that retires a class needs a migration, and there is no mechanism that would
 notice if it forgot.
 
-**One subject.** `SubjectId` is a singleton until auth lands. Every table the
-study policy reads carries a `subject_id` column as of #259, and every
-repository that reads or writes one — including `SessionRepository`, as of
-#260 — filters and writes it. What's still singleton is the *value*: every
-session route extracts its `SubjectId` via `SubjectId::from_request_parts`
-(#261), rather than a handler passing a raw constant, but that extractor still
-returns `SubjectId::singleton()` until real auth lands, so nothing has been
-exercised with two genuinely different subjects regardless.
+**Many subjects, recently.** Every table the study policy reads carries a
+`subject_id` column as of #259, and every repository that reads or writes one —
+including `SessionRepository`, as of #260 — filters and writes it. Until passkey
+auth landed, the *value* was always the singleton `subject-local`; the first
+account a deployment creates inherits that id and its rows (see
+`docs/identity.md`). The waker's per-subject logic is tested with several
+subjects, but has run in production with one.
 
 **The tag constant lives in three places.** `NUDGE_TAG` (`some-ui.study-nudge`)
 is hand-maintained in `file_host::nudge::payload`, in `public/sw.js`, and in

@@ -17,7 +17,6 @@ services:
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
       - SQLX_OFFLINE=false
-      - HMAC_KEY=${HMAC_KEY:-placeholder}
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:

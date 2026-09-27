@@ -80,6 +80,8 @@ chrono.workspace = true
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
 rand = "0.9.2"
+base64 = { workspace = true }
+webauthn-rs = { workspace = true }
 
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
@@ -96,6 +98,7 @@ metrics = { workspace = true }
 some-cache.workspace = true
 some-metrics.workspace = true
 activity_repo = { workspace = true }
+auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
 push_repo = { workspace = true }
@@ -122,6 +125,9 @@ metrics-util = { workspace = true }
 # A real on-disk database for the waker's lock-classification test: two
 # connections to `:memory:` would be two databases, not one contended one.
 tempfile = { workspace = true }
+# Real passkey ceremonies in `handlers::auth`'s tests; see the workspace
+# manifest.
+webauthn-authenticator-rs = { workspace = true }
 
 [lints]
 workspace = true

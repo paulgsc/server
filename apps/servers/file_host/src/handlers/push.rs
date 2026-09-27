@@ -16,9 +16,11 @@
 //!
 //! ## Trust model, stated rather than assumed
 //!
-//! No authentication beyond the origin allowlist. Anyone who can reach the LAN
-//! can register a subscription. `SubjectId` exists so that the day auth lands,
-//! it lands at one boundary — see [`crate::subject`].
+//! A subscription belongs to the signed-in subject: `SubjectId` refuses a
+//! request without a live passkey session, so only an account holder can
+//! register one, and only for their own account — see [`crate::subject`] and
+//! `crate::auth`. The VAPID key itself stays public: it is handed to every
+//! browser anyway.
 
 use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};

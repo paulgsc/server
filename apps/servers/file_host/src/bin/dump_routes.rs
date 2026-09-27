@@ -13,7 +13,7 @@
 //! `[[bin]]`, and why the two outputs can never disagree with each other.
 //!
 //! Deliberately does not touch [`file_host::Config`]: the real server requires
-//! `HMAC_KEY` and a database before it will start, and needing a provisioned
+//! a database and several environment variables before it will start, and needing a provisioned
 //! environment just to ask "what paths do you serve?" would make this too
 //! annoying to run, which would make the snapshot stale, which would make the
 //! whole check worthless.

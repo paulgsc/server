@@ -19,6 +19,7 @@ pub fn subjects<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	crate::auth::AuthContext: FromRef<S>,
 {
 	Module::versioned("subjects", RouteTable::new().get("/subjects/me/stats", handlers::stats)).with_cors(cors)
 }

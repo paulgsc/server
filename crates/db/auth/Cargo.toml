@@ -1,0 +1,24 @@
+[package]
+name = "auth_repo"
+description = "Passkey accounts and sign-in sessions: a random subject, its passkeys, and hashed session tokens"
+categories = ["database"]
+keywords = ["passkey", "webauthn", "sqlite", "repository"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite", "uuid", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

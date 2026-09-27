@@ -22,6 +22,7 @@ pub fn presence<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	crate::auth::AuthContext: FromRef<S>,
 {
 	let table = RouteTable::new()
 		// POST /presence/lease → "I am looking at this, right now."

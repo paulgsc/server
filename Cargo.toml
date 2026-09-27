@@ -13,6 +13,7 @@ members = [
   # crates (transitive deps of the apps above)
   "crates/cursorium",
   "crates/db/activity",
+  "crates/db/auth",
   "crates/db/capture",
   "crates/db/curriculum",
   "crates/db/mood_event",
@@ -111,6 +112,7 @@ cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
 activity_repo = { path = "crates/db/activity" }
+auth_repo = { path = "crates/db/auth" }
 capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }
 push_repo = { path = "crates/db/push" }
@@ -157,6 +159,18 @@ tower-http = { version = "0.5.0", features = [
 tracing = "0.1.37"
 regex = "1.7.0"
 base64 = "0.22"
+# Passkey (WebAuthn) ceremonies for file_host. Default features off: the
+# `attestation` feature exists to verify authenticator models, which
+# docs/identity.md invariant 7 says this server never asks for.
+# `conditional-ui` is what provides discoverable (username-less) sign-in.
+# `danger-credential-internals` exposes a stored passkey's fields, which is
+# how file_host strips attestation data a client sent unasked before storing
+# it (see `auth::passkey`). The name is the library's; nothing here reaches
+# into the ceremony's verification.
+webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui", "danger-credential-internals"] }
+# A software authenticator, for file_host's tests only: real WebAuthn
+# ceremonies against the real routes, with no browser.
+webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = ["softpasskey"] }
 reqwest = { version = "0.12.23", features = ["json"] }
 web-push = { version = "0.11", default-features = false }
 
