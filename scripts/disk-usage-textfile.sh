@@ -37,52 +37,70 @@ TARGETS=(
 	"cargo_target:/mnt/workspace-target"
 )
 
+# Prints the directory's size, or 0 when it doesn't exist (an unset
+# CARGO_HOME_PATH, or no git dependencies: see example.env). Fails, printing
+# nothing, when `du` can't measure a directory that does exist.
 dir_size_bytes() {
 	local path="$1"
 	local size
-	if [ -d "$path" ]; then
-		# `-B1` (block-size 1, no `--apparent-size`), not `-b` — `-b` is GNU
-		# du's shorthand for `--apparent-size --block-size=1`, which reports
-		# a sparse file's logical length rather than the disk blocks it
-		# actually occupies. A disk-usage panel should track the same
-		# "space consumed" a filesystem would run out of, not a number that
-		# can overstate it.
-		#
-		# The `||` guards the *assignment*, not a bare pipeline followed by
-		# its own `echo 0` — `du` can observe a file vanish mid-traversal
-		# (a concurrent `cargo build`/`cargo clean` touching these same
-		# directories is the realistic case here) and exit nonzero under
-		# pipefail despite awk already
-		# having printed a usable total; a fallback appended as a separate
-		# statement would land *after* that already-emitted line instead of
-		# replacing it, producing two lines for one metric and corrupting
-		# the whole textfile. Capturing into a variable first means a
-		# failed assignment simply reassigns `size` to 0 — nothing printed
-		# by the failed attempt survives into the final value. The blank
-		# check covers `du` succeeding but printing nothing, same reason.
-		size="$(du -s -B1 "$path" 2>/dev/null | awk '{print $1}')" || size=0
-		[ -n "$size" ] || size=0
-	else
-		size=0
+	if [ ! -d "$path" ]; then
+		echo 0
+		return 0
 	fi
+	# `-B1` (block-size 1, no `--apparent-size`), not `-b` — `-b` is GNU
+	# du's shorthand for `--apparent-size --block-size=1`, which reports
+	# a sparse file's logical length rather than the disk blocks it
+	# actually occupies. A disk-usage panel should track the same
+	# "space consumed" a filesystem would run out of, not a number that
+	# can overstate it.
+	#
+	# Captured into a variable so nothing a failed `du` printed escapes into
+	# the textfile. A failure (a file vanishing under a concurrent `cargo
+	# build`/`cargo clean`, an I/O or permission error) is reported as a
+	# failure, not as 0: a 0 would read on the dashboard as "empty".
+	size="$(du -s -B1 "$path" 2>/dev/null | awk '{print $1}')" || return 1
+	[ -n "$size" ] || return 1
 	echo "$size"
+}
+
+# The previous pass's value of a line, for when this pass can't measure it.
+previous() {
+	[ -f "$OUTPUT_FILE" ] || return 0
+	awk -v key="$1" '$1 == key { print $2 }' "$OUTPUT_FILE"
 }
 
 # Written to a per-run tmp file and renamed into place — a `mv` on the same
 # filesystem is atomic, so node_exporter's textfile collector never reads a
 # half-written scrape.
+#
+# A target `du` couldn't measure keeps its last measured value (or no line
+# at all if it has never been measured), and the pass doesn't count as
+# complete: hostdir_usage_last_run_timestamp_seconds keeps the last complete
+# pass's time. So a directory that keeps failing shows its last good size
+# while hostDirUsageStaleness climbs to red, instead of reading as empty
+# beside a green scan age.
+complete=1
 {
 	echo "# HELP hostdir_usage_bytes Bytes used by a tracked host directory (du -s -B1), refreshed periodically by scripts/disk-usage-textfile.sh."
 	echo "# TYPE hostdir_usage_bytes gauge"
 	for entry in "${TARGETS[@]}"; do
 		name="${entry%%:*}"
 		path="${entry#*:}"
-		size="$(dir_size_bytes "$path")"
-		echo "hostdir_usage_bytes{target=\"${name}\"} ${size}"
+		key="hostdir_usage_bytes{target=\"${name}\"}"
+		if ! size="$(dir_size_bytes "$path")"; then
+			complete=0
+			size="$(previous "$key")"
+		fi
+		[ -z "$size" ] || echo "$key $size"
 	done
-	echo "# HELP hostdir_usage_last_run_timestamp_seconds Unix time this script last completed a full pass."
+	if [ "$complete" = 1 ]; then
+		last_run="$(date +%s)"
+	else
+		last_run="$(previous hostdir_usage_last_run_timestamp_seconds)"
+	fi
+	echo "# HELP hostdir_usage_last_run_timestamp_seconds Unix time this script last measured every tracked directory."
 	echo "# TYPE hostdir_usage_last_run_timestamp_seconds gauge"
-	echo "hostdir_usage_last_run_timestamp_seconds $(date +%s)"
+	[ -z "$last_run" ] || echo "hostdir_usage_last_run_timestamp_seconds $last_run"
 	# Read from the same env var the compose service's own sleep loop
 	# uses (infra/compose/monitoring.yml), not hardcoded here too — so
 	# hostDirUsageStaleness can judge staleness relative to whatever

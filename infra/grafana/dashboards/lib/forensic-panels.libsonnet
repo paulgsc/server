@@ -878,7 +878,10 @@ local leftNames = { options+: { namePlacement: 'left', sizing: 'auto' } };
   // Distinguishes "the sidecar is fine, cargo just isn't that big" from
   // "the sidecar died three days ago" — a stat panel can't tell staleness
   // from a gauge value alone, so this measures the scan's own age directly
-  // rather than trusting hostdir_usage_bytes to look wrong when it's stuck.
+  // rather than trusting hostdir_usage_bytes to look wrong when it is stuck.
+  // It also turns red when `du` keeps failing on one directory: the script
+  // then holds that directory at its last measured size and stops advancing
+  // the timestamp this reads (see scripts/disk-usage-textfile.sh).
   hostDirUsageStaleness:: {
     datasource: { type: 'prometheus', uid: 'prometheus' },
     fieldConfig: {
@@ -930,7 +933,7 @@ local leftNames = { options+: { namePlacement: 'left', sizing: 'auto' } };
       },
     ],
     title: 'Cargo scan age (× interval)',
-    description: 'How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey "no data" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from "just started, give it one interval."',
+    description: 'How many scan intervals since the last pass that measured every directory. Red means the sidecar stopped, or `du` keeps failing on a directory (the cargo panel then holds its last measured size). Grey "no data" means no pass has ever measured every directory: dead on arrival, same severity as red. The one thing it cannot tell apart is that from "just started, give it one interval."',
     type: 'stat',
   },
 }
