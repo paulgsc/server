@@ -1,6 +1,9 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+// One bool per command-line switch is what a clap `Parser` is; grouping them
+// into enums would change every flag and env var the deployment sets.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
 pub struct Config {
@@ -20,13 +23,34 @@ pub struct Config {
 	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256")]
 	pub max_in_flight: u64,
 
-	/// Server host
-	#[arg(long, env = "HOST", default_value = "127.0.0.1")]
+	/// Address to listen on.
+	///
+	/// `FILE_HOST_BIND`, not `HOST`: zsh exports `HOST` as the machine's name.
+	/// These two were once `HOST`/`PORT` and read by nothing (the listener was
+	/// hard-coded to `0.0.0.0:3000`); the defaults are that address, so honouring
+	/// them changes nothing for a server started without them.
+	#[arg(long = "bind", env = "FILE_HOST_BIND", default_value = "0.0.0.0")]
 	pub host: String,
 
-	/// Server port
-	#[arg(long, env = "PORT", default_value = "8080")]
+	/// Port to listen on.
+	///
+	/// `FILE_HOST_PORT`, not `PORT`: the container reads the repo's `.env`, and
+	/// a bare `PORT` there meant for another service would move this one.
+	#[arg(long, env = "FILE_HOST_PORT", default_value = "3000")]
 	pub port: u16,
+
+	/// Dev only: when the port is taken, listen on the next free one instead
+	/// of failing (`listen::bind`). `make dev` sets it, so a server run from
+	/// source can sit beside the production container. Never set it in
+	/// production: its published port and healthcheck assume `FILE_HOST_PORT`.
+	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", default_value = "false")]
+	pub port_fallback: bool,
+
+	/// Where to record the port actually listened on, as `{ port, pid }`, for
+	/// `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on
+	/// shutdown. `make dev` sets it.
+	#[arg(long, env = "FILE_HOST_PORT_FILE")]
+	pub port_file: Option<std::path::PathBuf>,
 
 	/// Number of worker threads
 	#[arg(long, env = "WORKERS", default_value = "4")]

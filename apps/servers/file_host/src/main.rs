@@ -17,7 +17,7 @@ use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Con
 use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
-use tokio::{net::TcpListener, time::Duration};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -201,8 +201,9 @@ async fn main() -> Result<()> {
 	// what "recent" means.
 	file_host::metrics::periodic::spawn(app_state.clone(), rate_limiter, file_host::websocket::STALE_TIMEOUT, Duration::from_secs(10));
 
-	let listener = TcpListener::bind("0.0.0.0:3000").await?;
-	tracing::debug!("listening on {}", listener.local_addr()?);
+	// `_port_file` is held to the end of `main`: dropping it removes the file,
+	// so a reader never finds the port of a server that has stopped.
+	let (listener, _port_file) = file_host::listen::from_config(&config).await?;
 
 	// Spawn signal handler task with proper shutdown coordination
 	let signal_shutdown_token = shutdown_token.clone();

@@ -115,3 +115,23 @@ routes: ## Emit the HTTP route inventory as JSON and TypeScript (override paths 
 
 routes-check: ## Run the route inventory's own tests (duplicates, nesting, assembly)
 	@cargo test -p file_host --lib routes::inventory
+
+# ── file_host from source, beside the production container ──────────────────
+#
+# The container holds 3000. `make dev` runs the server from source anyway: it
+# starts at 3000, moves up to the next free port when that is taken, and
+# records the port it got in DEV_PORT_FILE. paulgsc/some-ui's `vite dev` reads
+# that file and proxies to this server while it runs, and back to the
+# container once it stops - see apps/servers/file_host/src/listen.rs. The path
+# is agreed with apps/www/vite.config.ts there; change both together.
+#
+# It reads the same environment `cargo run` would (DATABASE_URL, VAPID_*, ...).
+# Pointed at the container's database and VAPID keys, it runs a second nudge
+# waker beside the container's.
+
+DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
+
+.PHONY: dev
+
+dev: ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
+	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
