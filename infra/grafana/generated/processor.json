@@ -1816,12 +1816,220 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Writable-layer size per running container (cadvisor container_fs_usage_bytes). Image layers and named volumes are not counted.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 0,
+        "y": 44
+      },
+      "id": 44,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (name) (container_fs_usage_bytes{name!=\"\", name=~\"$container\"}))",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Who is filling the disk — containers",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "du -s -B1 over the cargo registry and git caches and the workspace target/ dir, every DISK_USAGE_SCAN_INTERVAL seconds (scripts/disk-usage-textfile.sh). cargo_registry and cargo_git read 0 until CARGO_HOME_PATH is set in .env.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 10,
+        "y": 44
+      },
+      "id": 45,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(hostdir_usage_bytes)",
+          "instant": true,
+          "legendFormat": "{{target}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Who is filling the disk — cargo",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey \"no data\" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from \"just started, give it one interval.\"",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 6
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 44
+      },
+      "id": 46,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cargo scan age (× interval)",
+      "type": "stat"
+    },
+    {
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "id": 43,
       "panels": [
@@ -1880,7 +2088,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 45
+            "y": 53
           },
           "id": 1,
           "options": {
@@ -1954,7 +2162,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 45
+            "y": 53
           },
           "id": 3,
           "options": {
@@ -2043,7 +2251,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 50
+            "y": 58
           },
           "id": 4,
           "options": {
@@ -2136,7 +2344,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 50
+            "y": 58
           },
           "id": 5,
           "options": {
@@ -2215,7 +2423,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 50
+            "y": 58
           },
           "id": 6,
           "options": {
@@ -2328,7 +2536,7 @@
             "h": 6,
             "w": 12,
             "x": 0,
-            "y": 58
+            "y": 66
           },
           "id": 8,
           "options": {
@@ -2392,7 +2600,7 @@
             "h": 6,
             "w": 12,
             "x": 12,
-            "y": 58
+            "y": 66
           },
           "id": 11,
           "options": {
@@ -2506,7 +2714,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 64
+            "y": 72
           },
           "id": 9,
           "options": {
@@ -2572,7 +2780,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 64
+            "y": 72
           },
           "id": 10,
           "options": {
@@ -2616,7 +2824,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 64
+            "y": 72
           },
           "id": 16,
           "options": {
@@ -2680,7 +2888,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 70
+            "y": 78
           },
           "id": 12,
           "options": {
@@ -2750,7 +2958,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 70
+            "y": 78
           },
           "id": 13,
           "options": {
@@ -2831,7 +3039,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 70
+            "y": 78
           },
           "id": 14,
           "options": {
@@ -2893,7 +3101,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 76
+            "y": 84
           },
           "id": 15,
           "options": {
@@ -2970,7 +3178,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 76
+            "y": 84
           },
           "id": 17,
           "options": {
@@ -3052,7 +3260,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 76
+            "y": 84
           },
           "id": 18,
           "options": {

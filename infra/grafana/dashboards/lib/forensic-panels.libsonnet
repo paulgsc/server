@@ -2,6 +2,11 @@
 // Forensic monitoring panels for "Who Dunnit" system hang detection
 // Designed for docker-compose stack with process-exporter and cAdvisor
 
+local glance = import 'glance.libsonnet';
+
+// Names beside the bar, as sympathy-panels.libsonnet's processBars.
+local leftNames = { options+: { namePlacement: 'left', sizing: 'auto' } };
+
 {
   // ========== CRITICAL INVARIANT VIOLATIONS ==========
 
@@ -45,14 +50,6 @@
     targets: [
       {
         datasource: { type: 'prometheus', uid: 'prometheus' },
-        // Both sides use `> bool`/`< bool` — a bare comparison *filters out*
-        // non-matching series instead of returning 0, so on a healthy
-        // system (the common case) this used to go empty forever instead
-        // of resolving to 0/"System Healthy". Same reasoning as LOOPS in
-        // health-panels.libsonnet. Multiplying the two bool results (not
-        // `and`, which does label-set matching rather than logical AND)
-        // is correct here since both sides already carry identical
-        // job/instance labels from the same single node_exporter target.
         expr: |||
           (
             (node_load1 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"})) > bool 3
@@ -827,12 +824,6 @@
             instance: true,
             id: true,
             image: true,
-            // Whitelisted on cadvisor (infra/compose/monitoring.yml's
-            // --whitelisted_container_labels) but never set on a
-            // docker-compose stack — always empty, so hide rather than
-            // show a junk column.
-            container_label_io_kubernetes_container_name: true,
-            container_label_io_kubernetes_pod_name: true,
           },
           renameByName: {
             name: 'Container Name',
@@ -845,102 +836,44 @@
   },
 
   // ========== DISK SPACE CULPRITS ==========
-  // The CPU/Memory/IO trio above never had a disk-space sibling — the
-  // sys-dashboard's disk panels show *which mount* is filling, never
-  // *which container*. container_fs_usage_bytes is cadvisor's own
-  // writable-layer size, same job as containerIoBandwidth above.
-  topDiskSpaceOffenders:: {
-    datasource: { type: 'prometheus', uid: 'prometheus' },
-    fieldConfig: {
-      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
-      overrides: [
-        {
-          matcher: { id: 'byName', options: 'Container Name' },
-          properties: [{ id: 'custom.width', value: 300 }],
-        },
-      ],
-    },
-    options: {
-      frameIndex: 0,
-      showHeader: true,
-      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
-    },
-    targets: [
-      {
-        datasource: { type: 'prometheus', uid: 'prometheus' },
-        expr: |||
-          topk(10,
-            sum by (name) (
-              container_fs_usage_bytes{name!="", name=~"$container"}
-            )
-          )
-        |||,
-        format: 'table',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🗄️ TOP DISK SPACE OFFENDERS (containers)',
-    description: 'Writable-layer disk usage per container — cadvisor container_fs_usage_bytes',
-    transformations: [
-      {
-        id: 'organize',
-        options: {
-          excludeByName: { Time: true, __name__: true, job: true, instance: true },
-          renameByName: { name: 'Container Name', Value: 'Disk Usage' },
-        },
-      },
-    ],
-    type: 'table',
-  },
+  // "Who is filling the disk" for the two things sympathy-panels.libsonnet's
+  // diskSpace (% used per filesystem) can't name: containers, from cadvisor's
+  // writable-layer size, and the cargo toolchain's host directories, which no
+  // container's own usage covers. Ranked bars in that file's style, since
+  // they sit in its Disk band.
+  topDiskSpaceOffenders:: glance.barGauge(
+    'Who is filling the disk — containers',
+    'Writable-layer size per running container (cadvisor container_fs_usage_bytes). Image layers and named volumes are not counted.',
+    [{
+      expr: 'topk(10, sum by (name) (container_fs_usage_bytes{name!="", name=~"$container"}))',
+      legendFormat: '{{name}}',
+      instant: true,
+      refId: 'A',
+    }],
+    'bytes',
+    glance.informational,
+  ) + leftNames,
 
-  // Cargo's registry/git caches and the workspace target/ dir don't live in
-  // any container cadvisor can see — they're host paths a periodic `du`
-  // (scripts/disk-usage-textfile.sh, run by the disk-usage-exporter sidecar
-  // in infra/compose/monitoring.yml) feeds into node_exporter's textfile
-  // collector as hostdir_usage_bytes. Doesn't cover Docker's own data-root
-  // (build cache, dangling images/volumes) — see that script's own header
-  // comment for why measuring it safely needs a scoped Docker API call
-  // rather than raw filesystem access to a tree holding every other
+  // Cargo's registry/git caches and the workspace target/ dir are host paths
+  // a periodic `du` (scripts/disk-usage-textfile.sh, run by the
+  // disk-usage-exporter sidecar in infra/compose/monitoring.yml) feeds into
+  // node_exporter's textfile collector as hostdir_usage_bytes. Doesn't cover
+  // Docker's own data-root (build cache, dangling images/volumes) — see that
+  // script's header for why measuring it safely needs a scoped Docker API
+  // call rather than raw filesystem access to a tree holding every other
   // container's secrets.
-  hostDirDiskUsage:: {
-    datasource: { type: 'prometheus', uid: 'prometheus' },
-    fieldConfig: {
-      defaults: { custom: { align: 'auto', displayMode: 'auto' }, unit: 'bytes' },
-      overrides: [
-        {
-          matcher: { id: 'byName', options: 'Target' },
-          properties: [{ id: 'custom.width', value: 220 }],
-        },
-      ],
-    },
-    options: {
-      frameIndex: 0,
-      showHeader: true,
-      sortBy: [{ desc: true, displayName: 'Disk Usage' }],
-    },
-    targets: [
-      {
-        datasource: { type: 'prometheus', uid: 'prometheus' },
-        expr: 'hostdir_usage_bytes',
-        format: 'table',
-        instant: true,
-        refId: 'A',
-      },
-    ],
-    title: '🦀 CARGO HOST DIRECTORY USAGE',
-    description: 'du -s -B1 over the cargo registry/git caches and the workspace target/ dir — see scripts/disk-usage-textfile.sh',
-    transformations: [
-      {
-        id: 'organize',
-        options: {
-          excludeByName: { Time: true, __name__: true, job: true, instance: true },
-          renameByName: { target: 'Target', Value: 'Disk Usage' },
-        },
-      },
-    ],
-    type: 'table',
-  },
+  hostDirDiskUsage:: glance.barGauge(
+    'Who is filling the disk — cargo',
+    'du -s -B1 over the cargo registry and git caches and the workspace target/ dir, every DISK_USAGE_SCAN_INTERVAL seconds (scripts/disk-usage-textfile.sh). cargo_registry and cargo_git read 0 until CARGO_HOME_PATH is set in .env.',
+    [{
+      expr: 'sort_desc(hostdir_usage_bytes)',
+      legendFormat: '{{target}}',
+      instant: true,
+      refId: 'A',
+    }],
+    'bytes',
+    glance.informational,
+  ) + leftNames,
 
   // Distinguishes "the sidecar is fine, cargo just isn't that big" from
   // "the sidecar died three days ago" — a stat panel can't tell staleness
@@ -973,7 +906,7 @@
         // script off DISK_USAGE_SCAN_INTERVAL) rather than raw seconds
         // against a threshold hardcoded to one assumed interval — an
         // operator raising that interval to reduce du's traversal cost
-        // against a large Docker data-root would otherwise make a
+        // would otherwise make a
         // perfectly healthy sidecar read as stopped between every scan.
         //
         // A sidecar that never completes even one scan (never created at
@@ -996,7 +929,7 @@
         refId: 'A',
       },
     ],
-    title: 'Disk Usage Scan Age (× configured interval)',
+    title: 'Cargo scan age (× interval)',
     description: 'How many scan intervals old the last successful pass is. Red means the sidecar stopped after running at least once; grey "no data" means it never completed a single scan (dead on arrival, same investigate-this severity as red) — the one thing this panel cannot tell apart is that from "just started, give it one interval."',
     type: 'stat',
   },
