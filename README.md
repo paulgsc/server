@@ -132,7 +132,9 @@ the `all`, `pedantic`, and `nursery` groups, and the workspace does not yet
 meet that bar, so clippy runs as a ratchet rather than a clean gate: every finding is compared against a committed
 baseline, [`scripts/clippy_baseline.json`](./scripts/clippy_baseline.json). A new
 finding fails the PR, a fixed one fails until the baseline is regenerated, and
-the baseline may only shrink relative to `main`.
+the baseline may only shrink relative to `main`, except in a PR that bumps
+`lint.yml`'s pinned clippy toolchain, where it may grow by the new release's
+lints (the workflow passes `--allow-growth` only then).
 [`scripts/check_clippy_baseline.py`](./scripts/check_clippy_baseline.py)
 explains the mechanism. The baseline is specific to one clippy release, so
 `lint.yml` pins its toolchain (1.94.1 at the time of writing; the pin in that
