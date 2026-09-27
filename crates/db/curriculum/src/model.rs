@@ -106,10 +106,17 @@ impl CurriculumEntry {
 /// 404 (a real `chatgpt-codex-connector` finding on #393). So its characters
 /// are RFC 3986's unreserved set (`A-Z a-z 0-9 - . _ ~`), the ones a path
 /// segment carries without encoding.
+///
+/// And no key ends in `.json`: that suffix is the client's file name for a
+/// lesson (`/curriculum/<key>.json`), which the read route strips. With both
+/// `foo` and `foo.json` stored, the request for `foo` would find `foo.json`
+/// first and serve the wrong lesson (a real `chatgpt-codex-connector` finding
+/// on #393); with no key ending in `.json`, every request names exactly one.
 #[must_use]
 pub fn is_plain_key(key: &str) -> bool {
 	let unreserved = key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'));
-	unreserved && !key.is_empty() && !key.starts_with("http") && !key.starts_with('.')
+	let json_suffixed = std::path::Path::new(key).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+	unreserved && !key.is_empty() && !key.starts_with("http") && !key.starts_with('.') && !json_suffixed
 }
 
 /// **The** definition of a lesson's content hash: lowercase hex SHA-256 over
@@ -140,9 +147,12 @@ mod tests {
 
 	#[test]
 	fn a_plain_key_is_an_identifier_not_a_path_or_url() {
-		for key in ["beginner", "week-39.a", "lesson.json"] {
+		for key in ["beginner", "week-39.a", "lesson.v2"] {
 			assert!(is_plain_key(key), "{key}");
 		}
+		// `.json` is the client's file suffix, which the read route strips.
+		assert!(!is_plain_key("lesson.json"), "a key never ends in .json");
+		assert!(!is_plain_key("lesson.JSON"), "in any case");
 		for key in ["", "a/b", "a\\b", "https://example.test/x", "../x", ".hidden"] {
 			assert!(!is_plain_key(key), "{key}");
 		}

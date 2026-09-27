@@ -1295,7 +1295,9 @@ Both answer `If-None-Match` with `304`: a lesson's `ETag` is its `content_hash`
 its `version` — so one notion of "changed" serves the importer, the cache, and
 #277. The manifest is bounded (`MANIFEST_CEILING`) and refused, never
 truncated, above it. A lesson keyed `manifest` would be shadowed by the listing
-route; the importer's corpus has none, and the write route refuses one.
+route; the importer's corpus has none, and the write route refuses one. No key
+may end in `.json` either: that is the client's file suffix, which the read
+route strips, and a `foo.json` beside `foo` would answer the request for `foo`.
 
 **The manifest is the operator's weekly batch** (canon Cor. 8.3 in
 `paulgsc/some-ui`): it lists only lessons that are not **retired**
@@ -1309,7 +1311,8 @@ The operator routes are what the LAN lesson CRM in `paulgsc/some-ui` calls. A
 write goes through the same `CurriculumRepository::upsert` as the importer, so
 `change` is one of `inserted`, `contentChanged`, `metadataChanged` and
 `unchanged` with the same meanings, and the body is stored byte for byte. The
-server checks only what it depends on: a plain key that no static route shadows,
+server checks only what it depends on: a plain key (URL-unreserved characters,
+no `.json` suffix) that no static route shadows,
 `metadata.key` equal to it, a non-empty `activityId`, and a `body` that is JSON
 within `LESSON_BYTES_CEILING` (1 MiB). Each is a `422` naming the field. What a
 lesson *is* stays the client's to check (`intakeLesson`). Adding or restoring a

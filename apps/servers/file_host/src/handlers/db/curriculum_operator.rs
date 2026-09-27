@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
 
-/// Keys the read routes' static paths shadow: `GET /curriculum/manifest` and
-/// `/curriculum/manifest.json` win over `/curriculum/:key`, so a lesson with
-/// either key could be written and never read back.
-const SHADOWED_KEYS: [&str; 2] = ["manifest", "manifest.json"];
+/// The key the read routes' static paths shadow: `GET /curriculum/manifest`
+/// and `/curriculum/manifest.json` win over `/curriculum/:key`, so a lesson
+/// keyed `manifest` could be written and never read back. (`manifest.json`
+/// is already refused: no key ends in `.json`, `curriculum_repo::is_plain_key`.)
+const SHADOWED_KEYS: [&str; 1] = ["manifest"];
 
 /// What the operator's tool sends to write one lesson.
 ///
@@ -109,7 +110,7 @@ pub(crate) async fn listing(db: &SqlitePool) -> Result<OperatorListing, FileHost
 fn validate(key: &str, request: &LessonWrite) -> Result<(), FileHostError> {
 	let mut errors: Vec<(&'static str, &'static str)> = Vec::new();
 	if !is_plain_key(key) {
-		errors.push(("key", "must be letters, digits, - . _ or ~, and not a path or URL"));
+		errors.push(("key", "must be letters, digits, - . _ or ~, not end in .json, and not be a path or URL"));
 	} else if SHADOWED_KEYS.contains(&key) {
 		errors.push(("key", "is shadowed by the manifest route"));
 	}
@@ -313,9 +314,10 @@ mod tests {
 		};
 		let mut no_activity = request("a", "A", "{}");
 		no_activity.activity_id = " ".to_owned();
-		let cases: [(&str, LessonWrite, &[&str]); 7] = [
+		let cases: [(&str, LessonWrite, &[&str]); 8] = [
 			("a/b", request("a/b", "A", "{}"), &["key"]),
 			("a?b", request("a?b", "A", "{}"), &["key"]),
+			("foo.json", request("foo.json", "A", "{}"), &["key"]),
 			("manifest", request("manifest", "M", "{}"), &["key"]),
 			("a", request("b", "B", "{}"), &["metadata.key"]),
 			("a", no_activity, &["activityId"]),
