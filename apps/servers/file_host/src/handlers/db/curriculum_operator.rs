@@ -109,7 +109,7 @@ pub(crate) async fn listing(db: &SqlitePool) -> Result<OperatorListing, FileHost
 fn validate(key: &str, request: &LessonWrite) -> Result<(), FileHostError> {
 	let mut errors: Vec<(&'static str, &'static str)> = Vec::new();
 	if !is_plain_key(key) {
-		errors.push(("key", "must be a lesson key, not a path or URL"));
+		errors.push(("key", "must be letters, digits, - . _ or ~, and not a path or URL"));
 	} else if SHADOWED_KEYS.contains(&key) {
 		errors.push(("key", "is shadowed by the manifest route"));
 	}
@@ -313,8 +313,9 @@ mod tests {
 		};
 		let mut no_activity = request("a", "A", "{}");
 		no_activity.activity_id = " ".to_owned();
-		let cases: [(&str, LessonWrite, &[&str]); 6] = [
+		let cases: [(&str, LessonWrite, &[&str]); 7] = [
 			("a/b", request("a/b", "A", "{}"), &["key"]),
+			("a?b", request("a?b", "A", "{}"), &["key"]),
 			("manifest", request("manifest", "M", "{}"), &["key"]),
 			("a", request("b", "B", "{}"), &["metadata.key"]),
 			("a", no_activity, &["activityId"]),

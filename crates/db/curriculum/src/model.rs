@@ -99,9 +99,17 @@ impl CurriculumEntry {
 /// The client passes a path or URL key through to fetch from elsewhere; the
 /// importer reads `<key>.json` from disk, and neither an offline command nor
 /// a write route has any business following one.
+///
+/// A key is also a URL path segment: learners fetch
+/// `/curriculum/<key>.json`, and a `?`, `#`, `%` or space in it would change
+/// the request rather than name the lesson - listed in the manifest, then a
+/// 404 (a real `chatgpt-codex-connector` finding on #393). So its characters
+/// are RFC 3986's unreserved set (`A-Z a-z 0-9 - . _ ~`), the ones a path
+/// segment carries without encoding.
 #[must_use]
 pub fn is_plain_key(key: &str) -> bool {
-	!(key.is_empty() || key.contains('/') || key.contains('\\') || key.starts_with("http") || key.starts_with('.'))
+	let unreserved = key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'));
+	unreserved && !key.is_empty() && !key.starts_with("http") && !key.starts_with('.')
 }
 
 /// **The** definition of a lesson's content hash: lowercase hex SHA-256 over
@@ -138,6 +146,11 @@ mod tests {
 		for key in ["", "a/b", "a\\b", "https://example.test/x", "../x", ".hidden"] {
 			assert!(!is_plain_key(key), "{key}");
 		}
+		// A key is a URL path segment: nothing that would change the request.
+		for key in ["a?b", "a#b", "a%2Fb", "a b", "caf\u{e9}", "a:b", "a+b"] {
+			assert!(!is_plain_key(key), "{key}");
+		}
+		assert!(is_plain_key("week_40~a"), "the rest of the unreserved set");
 	}
 
 	#[test]
