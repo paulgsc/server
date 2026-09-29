@@ -1,5 +1,5 @@
 use crate::handlers::push as handlers;
-use crate::routes::cors::allowlisted_cors;
+use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
@@ -40,5 +40,5 @@ where
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
 }

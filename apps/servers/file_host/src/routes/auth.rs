@@ -1,6 +1,6 @@
 use crate::auth::AuthContext;
 use crate::handlers::auth as handlers;
-use crate::routes::cors::allowlisted_cors;
+use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::Config;
 use axum::{
@@ -15,10 +15,12 @@ use tower_http::cors::CorsLayer;
 /// Bounded on `AuthContext: FromRef<S>` alone, not `AppState`, so the whole
 /// surface can be assembled and driven in a test with a pool and nothing else.
 ///
-/// The session travels in a `SameSite=Strict` cookie, and the app reaches
-/// these routes through its own origin's `/api/file-host` proxy, so no request
-/// here is cross-origin in a deployment. CORS is the usual allowlist, with no
-/// credentialed grant: a cross-origin caller gets no cookie to send anyway.
+/// The session travels in a `SameSite=Strict` cookie. The app reaches these
+/// routes through its own origin's `/api/file-host` proxy, or, in development,
+/// on `file_host`'s published port: same-site, but cross-origin. That second
+/// path needs the credentialed allowlist (the app's transport sends
+/// `credentials: "include"`), as does every subject-scoped module it calls.
+/// State-changing requests are also held to `auth::csrf`'s origin check.
 pub fn auth<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
@@ -45,5 +47,5 @@ where
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE])
 }

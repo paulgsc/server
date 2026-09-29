@@ -45,38 +45,21 @@ impl AuthRepository {
 		Self { pool }
 	}
 
-	/// Create an account with its first passkey, and say which subject id it
-	/// got.
+	/// Create an account with its first passkey.
 	///
-	/// `if_first` is used when no account exists yet, `otherwise` when one
-	/// does. The check and the insert are one statement, so two first
-	/// registrations racing each other cannot both take `if_first`: the loser
-	/// sees the winner's row and falls through to `otherwise`.
+	/// Which subject id it gets is the caller's decision. A subject id that
+	/// already has an account is a unique violation, which is what refuses a
+	/// second claim on the same one.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure, including a unique violation if the
-	/// user handle or credential id is already stored.
-	pub async fn create_account(&self, if_first: &str, otherwise: &str, user_handle: &[u8], passkey: &StoredPasskey) -> Result<String, sqlx::Error> {
+	/// subject id, user handle or credential id is already stored.
+	pub async fn create_account(&self, subject_id: &str, user_handle: &[u8], passkey: &StoredPasskey) -> Result<(), sqlx::Error> {
 		let mut tx = self.pool.begin().await?;
 
-		let claimed = sqlx::query!(
-			"INSERT INTO account (subject_id, user_handle)
-			 SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM account)",
-			if_first,
-			user_handle
-		)
-		.execute(&mut *tx)
-		.await?
-		.rows_affected();
-
-		let subject_id = if claimed == 1 {
-			if_first
-		} else {
-			sqlx::query!("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)", otherwise, user_handle)
-				.execute(&mut *tx)
-				.await?;
-			otherwise
-		};
+		sqlx::query!("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)", subject_id, user_handle)
+			.execute(&mut *tx)
+			.await?;
 
 		sqlx::query!(
 			"INSERT INTO passkey (credential_id, subject_id, passkey) VALUES (?1, ?2, ?3)",
@@ -87,8 +70,18 @@ impl AuthRepository {
 		.execute(&mut *tx)
 		.await?;
 
-		tx.commit().await?;
-		Ok(subject_id.to_owned())
+		tx.commit().await
+	}
+
+	/// Whether a subject id has an account.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn has_account(&self, subject_id: &str) -> Result<bool, sqlx::Error> {
+		let count = sqlx::query_scalar!("SELECT COUNT(*) FROM account WHERE subject_id = ?1", subject_id)
+			.fetch_one(&self.pool)
+			.await?;
+		Ok(count > 0)
 	}
 
 	/// The account a WebAuthn user handle belongs to, if any.
@@ -181,25 +174,35 @@ impl AuthRepository {
 		Ok(())
 	}
 
-	/// Start a session: store the token's hash, and, in the same transaction,
-	/// drop every expired session (anyone's) and trim this subject to
+	/// Start a session, if the subject still has an account, and say whether
+	/// it did: store the token's hash, and, in the same transaction, drop
+	/// every expired session (anyone's) and trim this subject to
 	/// [`MAX_SESSIONS_PER_SUBJECT`], ending the ones closest to expiring.
+	///
+	/// The account check and the insert are one statement. A sign-in that
+	/// verified a passkey just before the account was deleted therefore gets
+	/// no session, rather than an orphan one that outlives the account.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn create_session(&self, token_hash: &[u8], subject_id: &str, expires_at: i64, now: i64) -> Result<(), sqlx::Error> {
+	pub async fn create_session(&self, token_hash: &[u8], subject_id: &str, expires_at: i64, now: i64) -> Result<bool, sqlx::Error> {
 		let mut tx = self.pool.begin().await?;
 
 		sqlx::query!("DELETE FROM auth_session WHERE expires_at <= ?1", now).execute(&mut *tx).await?;
 
-		sqlx::query!(
-			"INSERT INTO auth_session (token_hash, subject_id, expires_at) VALUES (?1, ?2, ?3)",
+		let created = sqlx::query!(
+			"INSERT INTO auth_session (token_hash, subject_id, expires_at)
+			 SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?2)",
 			token_hash,
 			subject_id,
 			expires_at
 		)
 		.execute(&mut *tx)
-		.await?;
+		.await?
+		.rows_affected();
+		if created == 0 {
+			return Ok(false);
+		}
 
 		sqlx::query!(
 			"DELETE FROM auth_session
@@ -216,7 +219,8 @@ impl AuthRepository {
 		.execute(&mut *tx)
 		.await?;
 
-		tx.commit().await
+		tx.commit().await?;
+		Ok(true)
 	}
 
 	/// The session a token hash names, if it has not expired by `now`.
@@ -286,23 +290,27 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn the_first_account_claims_the_placeholder_and_every_later_one_does_not() {
+	async fn an_account_is_found_by_its_user_handle_and_a_subject_holds_one() {
 		let repo = repo().await;
 
-		let first = repo.create_account("subject-local", "subject-a", &[1; 16], &passkey(1)).await.unwrap();
-		let second = repo.create_account("subject-local", "subject-b", &[2; 16], &passkey(2)).await.unwrap();
+		repo.create_account("subject-a", &[1; 16], &passkey(1)).await.unwrap();
+		repo.create_account("subject-b", &[2; 16], &passkey(2)).await.unwrap();
 
-		assert_eq!(first, "subject-local");
-		assert_eq!(second, "subject-b");
 		assert_eq!(repo.subject_for_user_handle(&[2; 16]).await.unwrap().as_deref(), Some("subject-b"));
-		assert_eq!(repo.user_handle("subject-local").await.unwrap(), Some(vec![1; 16]));
+		assert_eq!(repo.user_handle("subject-a").await.unwrap(), Some(vec![1; 16]));
 		assert_eq!(repo.passkeys("subject-b").await.unwrap(), vec![passkey(2)]);
+		assert!(repo.has_account("subject-a").await.unwrap());
+		assert!(!repo.has_account("subject-c").await.unwrap());
+
+		let taken = repo.create_account("subject-a", &[3; 16], &passkey(3)).await.unwrap_err();
+		assert!(taken.as_database_error().unwrap().is_unique_violation(), "a subject id holds one account");
+		assert!(repo.subject_for_user_handle(&[3; 16]).await.unwrap().is_none(), "and the refused one left nothing behind");
 	}
 
 	#[tokio::test]
 	async fn a_passkey_past_the_cap_is_refused_not_evicted() {
 		let repo = repo().await;
-		repo.create_account("subject-local", "unused", &[1; 16], &passkey(0)).await.unwrap();
+		repo.create_account("subject-local", &[1; 16], &passkey(0)).await.unwrap();
 
 		for id in 1..MAX_PASSKEYS_PER_SUBJECT {
 			let id = u8::try_from(id).unwrap();
@@ -316,7 +324,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_update_cannot_reach_another_subjects_passkey() {
 		let repo = repo().await;
-		repo.create_account("subject-local", "unused", &[1; 16], &passkey(1)).await.unwrap();
+		repo.create_account("subject-local", &[1; 16], &passkey(1)).await.unwrap();
 
 		let rewritten = StoredPasskey {
 			credential_id: vec![1; 16],
@@ -332,8 +340,13 @@ mod tests {
 	#[tokio::test]
 	async fn sessions_expire_and_a_subject_holds_a_bounded_number() {
 		let repo = repo().await;
+		repo.create_account("subject-a", &[1; 16], &passkey(1)).await.unwrap();
+		repo.create_account("subject-b", &[2; 16], &passkey(2)).await.unwrap();
 
-		repo.create_session(b"old", "subject-a", 100, 50).await.unwrap();
+		assert!(!repo.create_session(b"orphan", "subject-gone", 100, 50).await.unwrap(), "no account, no session");
+		assert!(repo.live_session(b"orphan", 60).await.unwrap().is_none());
+
+		assert!(repo.create_session(b"old", "subject-a", 100, 50).await.unwrap());
 		assert!(repo.live_session(b"old", 99).await.unwrap().is_some());
 		assert!(repo.live_session(b"old", 100).await.unwrap().is_none(), "expiry is exclusive");
 

@@ -295,6 +295,13 @@ pub struct Config {
 	#[arg(long, env = "AUTH_NEW_ACCOUNTS_PER_DAY", default_value = "100")]
 	pub auth_new_accounts_per_day: u32,
 
+	/// A one-time secret that lets one new account take over the data saved
+	/// before auth existed (the `subject-local` rows). Unset, nobody can: every
+	/// new account starts empty. Set it, open `/auth#claim=<token>` in the app
+	/// and create a passkey there; then unset it. Never logged.
+	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true)]
+	pub auth_legacy_claim_token: Option<String>,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

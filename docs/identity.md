@@ -86,10 +86,15 @@ is the cost of holding nothing that could recover it.
 Nothing records when an account or a passkey was made or last used. The
 per-day cap on new accounts is counted in memory for the same reason.
 
-The **first** account a deployment creates is given the pre-auth placeholder
-subject, `subject-local`, and so inherits every row written before auth
-existed. Later accounts get random subject ids. Deleting that first account
-deletes those rows like any other account's.
+Every new account gets a random subject id, the first one included. The rows
+written before auth existed carry the placeholder subject `subject-local`, and
+an account takes them over only with the operator's one-time
+`AUTH_LEGACY_CLAIM_TOKEN`: set it on the server, open the app at
+`/auth#claim=<token>`, create a passkey there, then unset it. The token travels
+in the registration body (a URL fragment never reaches a server, so no access
+log sees it), is compared as a digest, and works once. "Whoever registers
+first" is not an owner: on a reachable server, first is whoever gets there.
+Deleting that account deletes those rows like any other account's.
 
 ### The ceremonies
 
@@ -118,9 +123,19 @@ A session is 32 random bytes, base64url in a `__Host-session` cookie:
 so a copy of the database opens no session. It lasts `AUTH_SESSION_DAYS` (30)
 and slides: `GET /auth/session` past the halfway point renews it to a full term.
 
-`SameSite=Strict` is the CSRF defence, and it is why the supported topology is
-same-origin: the app reaches `file_host` through its own origin's
-`/api/file-host` proxy. A cross-origin caller gets no cookie to send.
+`SameSite=Strict` keeps the cookie off cross-*site* requests, but a page on a
+sibling subdomain is same-site, and its form posts carry the cookie. So every
+state-changing, cookie-authenticated request is also held to an origin check
+(`auth::csrf`, applied in `SubjectId`'s extractor and by `/auth/sign-out`):
+`Sec-Fetch-Site: same-origin` passes, and otherwise the `Origin` must be in
+`ALLOWED_ORIGINS` or `WEBAUTHN_ORIGINS`, or the request is refused with `403`.
+
+The app reaches `file_host` through its own origin's `/api/file-host` proxy,
+or in development on its published port: same-site but cross-origin, so the
+app's transport sends `credentials: "include"` and the modules it calls use
+the credentialed CORS allowlist. A session is created only if its account
+still exists, in the same statement, so a sign-in racing an account deletion
+gets no session rather than an orphan one.
 
 ### Who can make an account
 

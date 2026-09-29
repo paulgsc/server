@@ -1,6 +1,6 @@
 use crate::{
 	handlers::presence as handlers,
-	routes::cors::allowlisted_cors,
+	routes::cors::allowlisted_cors_with_credentials,
 	routes::table::{Module, RouteTable},
 	AppState, Config,
 };
@@ -32,5 +32,5 @@ where
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors(config, vec![Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
 }

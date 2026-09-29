@@ -12,6 +12,10 @@
 //!   authenticator model is kept (invariant 7).
 //! - A session is a 32-byte random token in an `HttpOnly; Secure;
 //!   SameSite=Strict` cookie. Only its SHA-256 is stored ([`cookie`]).
+//! - A state-changing, cookie-authenticated request must come from a trusted
+//!   origin ([`csrf`]): `SameSite=Strict` alone admits same-site siblings.
+//! - The pre-auth subject goes to a new account only with the operator's
+//!   one-time `AUTH_LEGACY_CLAIM_TOKEN`, never to whoever registers first.
 //! - [`crate::subject::SubjectId`]'s extractor is the one place a request's
 //!   session becomes a subject. Everything downstream is unchanged by auth.
 //!
@@ -21,13 +25,15 @@
 
 pub mod ceremony;
 pub mod cookie;
+pub mod csrf;
 pub mod passkey;
 
-use crate::{Config, FileHostError};
+use crate::{redacted::Redacted, Config, FileHostError};
 use auth_repo::AuthRepository;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method};
 use ceremony::CeremonyStore;
 use cookie::SessionToken;
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
 use webauthn_rs::prelude::{Url, Webauthn, WebauthnBuilder};
@@ -53,8 +59,20 @@ struct Inner {
 	/// subject-scoped route answers `401`.
 	relying_party: Option<Webauthn>,
 	ceremonies: CeremonyStore,
-	session_ttl_seconds: i64,
+	settings: Settings,
 	signups: SignupCap,
+}
+
+/// What `from_config` reads, gathered so tests can build one directly.
+struct Settings {
+	session_ttl_seconds: i64,
+	new_accounts_per_day: u32,
+	/// Origins a state-changing, cookie-authenticated request may come from:
+	/// `ALLOWED_ORIGINS` and `WEBAUTHN_ORIGINS` together. See [`csrf`].
+	trusted_origins: Vec<String>,
+	/// `AUTH_LEGACY_CLAIM_TOKEN`: the one-time secret that lets a new account
+	/// take the pre-auth subject. `None` means nobody can.
+	legacy_claim: Option<Redacted<String>>,
 }
 
 /// A ceiling on accounts created per UTC day, across the whole server.
@@ -127,37 +145,63 @@ impl AuthContext {
 			tracing::warn!("passkey auth is not configured (WEBAUTHN_RP_ID is unset); nobody can sign in, and subject-scoped routes will answer 401");
 			None
 		};
+		let trusted_origins = config
+			.allowed_origins
+			.iter()
+			.chain(&config.webauthn_origins)
+			.map(|origin| origin.trim().to_owned())
+			.collect();
 		Ok(Self::new(
 			pool,
 			relying_party,
-			i64::from(config.auth_session_days) * 86_400,
-			config.auth_new_accounts_per_day,
+			Settings {
+				session_ttl_seconds: i64::from(config.auth_session_days) * 86_400,
+				new_accounts_per_day: config.auth_new_accounts_per_day,
+				trusted_origins,
+				legacy_claim: config.auth_legacy_claim_token.clone().filter(|token| !token.is_empty()).map(Redacted::new),
+			},
 		))
 	}
 
-	fn new(pool: SqlitePool, relying_party: Option<Webauthn>, session_ttl_seconds: i64, new_accounts_per_day: u32) -> Self {
+	fn new(pool: SqlitePool, relying_party: Option<Webauthn>, settings: Settings) -> Self {
 		Self {
 			inner: Arc::new(Inner {
 				pool,
 				relying_party,
 				ceremonies: CeremonyStore::default(),
-				session_ttl_seconds,
-				signups: SignupCap::new(new_accounts_per_day),
+				signups: SignupCap::new(settings.new_accounts_per_day),
+				settings,
 			}),
+		}
+	}
+
+	#[cfg(test)]
+	fn test_settings(new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Settings {
+		Settings {
+			session_ttl_seconds: 30 * 86_400,
+			new_accounts_per_day,
+			trusted_origins: vec![String::from("https://app.test")],
+			legacy_claim: legacy_claim.map(|token| Redacted::new(token.to_owned())),
 		}
 	}
 
 	/// A context for tests, configured for `https://app.test`.
 	#[cfg(test)]
 	pub(crate) fn for_tests(pool: SqlitePool, new_accounts_per_day: u32) -> Self {
+		Self::for_tests_with_claim(pool, new_accounts_per_day, None)
+	}
+
+	/// A context for tests whose `AUTH_LEGACY_CLAIM_TOKEN` is `legacy_claim`.
+	#[cfg(test)]
+	pub(crate) fn for_tests_with_claim(pool: SqlitePool, new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
-		Self::new(pool, Some(relying_party), 30 * 86_400, new_accounts_per_day)
+		Self::new(pool, Some(relying_party), Self::test_settings(new_accounts_per_day, legacy_claim))
 	}
 
 	/// A context for tests, with `WEBAUTHN_RP_ID` unset.
 	#[cfg(test)]
 	pub(crate) fn unconfigured_for_tests(pool: SqlitePool) -> Self {
-		Self::new(pool, None, 30 * 86_400, 100)
+		Self::new(pool, None, Self::test_settings(100, None))
 	}
 
 	pub(crate) fn repository(&self) -> AuthRepository {
@@ -177,7 +221,29 @@ impl AuthContext {
 	}
 
 	pub(crate) fn session_ttl_seconds(&self) -> i64 {
-		self.inner.session_ttl_seconds
+		self.inner.settings.session_ttl_seconds
+	}
+
+	/// Refuse a state-changing request a trusted origin did not make.
+	///
+	/// # Errors
+	/// `403` for a cross-origin request from an untrusted origin; see [`csrf`].
+	pub(crate) fn check_origin(&self, method: &Method, headers: &HeaderMap) -> Result<(), FileHostError> {
+		if csrf::allowed(method, headers, &self.inner.settings.trusted_origins) {
+			Ok(())
+		} else {
+			Err(FileHostError::Forbidden)
+		}
+	}
+
+	/// Whether `offered` is this deployment's legacy claim token. Always false
+	/// when none is configured.
+	pub(crate) fn legacy_claim_matches(&self, offered: &str) -> bool {
+		self.inner.settings.legacy_claim.as_ref().is_some_and(|token| {
+			// Compared as digests, so the comparison's timing says nothing
+			// about how much of the token a guess got right.
+			Sha256::digest(token.expose().as_bytes()) == Sha256::digest(offered.as_bytes())
+		})
 	}
 
 	pub(crate) fn signups_have_room(&self, now: i64) -> bool {

@@ -4,7 +4,8 @@
 //! intervention log, study sessions — is keyed by subject, and this is the one
 //! place a request's subject is decided: [`SubjectId::from_request_parts`]
 //! reads the session cookie and looks it up. A request with no live session is
-//! refused with `401`; there is no fallback subject. Passkey auth changed this
+//! refused with `401`, and a state-changing one from an untrusted origin with
+//! `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
 //! module's extractor body and nothing downstream of it, as the seam was built
 //! to allow (#252, #261, #372). See docs/identity.md.
 
@@ -15,9 +16,10 @@ use rand::RngCore;
 
 /// The subject every request acted for before auth existed.
 ///
-/// Rows written then carry it, so the first account a deployment creates is
-/// given this id and inherits them ([`new_account_subjects`]). After that it
-/// is an ordinary subject id, and no request is assigned it by default.
+/// Rows written then carry it. A new account takes it over only with the
+/// operator's one-time `AUTH_LEGACY_CLAIM_TOKEN` ([`legacy_subject`]), never
+/// by being first: on a reachable server, first is whoever gets there. It is
+/// otherwise an ordinary subject id, and no request is assigned it by default.
 pub const SINGLETON_SUBJECT: &str = "subject-local";
 
 /// Tables whose rows belong to one subject, and what they hold.
@@ -78,19 +80,20 @@ impl SubjectId {
 	}
 }
 
-/// The two subject ids a new account can get.
-///
-/// `if_first` when it is the first account on this deployment, `otherwise`
-/// when it is not. The repository makes that choice atomically; this decides
-/// only what the two candidates are.
-///
-/// `otherwise` is `subject-` and 32 random hex digits. Nothing about the
-/// person, the request, or the time goes into it.
+/// The subject id for a new account: `subject-` and 32 random hex digits.
+/// Nothing about the person, the request, or the time goes into it.
 #[must_use]
-pub fn new_account_subjects() -> (&'static str, String) {
+pub fn new_account_subject() -> String {
 	let mut bytes = [0_u8; 16];
 	rand::rng().fill_bytes(&mut bytes);
-	(SINGLETON_SUBJECT, String::from("subject-") + &hex::encode(bytes))
+	String::from("subject-") + &hex::encode(bytes)
+}
+
+/// The subject a new account takes when it presents the operator's
+/// `AUTH_LEGACY_CLAIM_TOKEN`: the one the pre-auth rows were written under.
+#[must_use]
+pub const fn legacy_subject() -> &'static str {
+	SINGLETON_SUBJECT
 }
 
 // `axum-core` 0.4 still defines this trait through `async_trait`, so the impl
@@ -104,23 +107,23 @@ where
 	type Rejection = FileHostError;
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-		AuthContext::from_ref(state)
-			.session_subject(&parts.headers)
-			.await?
-			.map(Self)
-			.ok_or(FileHostError::Unauthorized)
+		let auth = AuthContext::from_ref(state);
+		// A same-site sibling page can make the browser attach the cookie to
+		// a form post; see `auth::csrf`.
+		auth.check_origin(&parts.method, &parts.headers)?;
+		auth.session_subject(&parts.headers).await?.map(Self).ok_or(FileHostError::Unauthorized)
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::new_account_subjects;
+	use super::{legacy_subject, new_account_subject};
 
 	#[test]
 	fn a_new_subject_is_random_and_names_nothing() {
-		let (first, a) = new_account_subjects();
-		let (_, b) = new_account_subjects();
-		assert_eq!(first, "subject-local");
+		let a = new_account_subject();
+		let b = new_account_subject();
+		assert_eq!(legacy_subject(), "subject-local");
 		assert_ne!(a, b);
 		assert_eq!(a.len(), "subject-".len() + 32);
 		assert!(a.strip_prefix("subject-").unwrap().bytes().all(|byte| byte.is_ascii_hexdigit()));

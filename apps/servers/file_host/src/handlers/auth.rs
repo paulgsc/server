@@ -15,14 +15,14 @@ use crate::auth::{
 	cookie::{clear_cookie, SessionToken},
 	now, passkey, AuthContext, PRODUCT_NAME,
 };
-use crate::subject::{new_account_subjects, SubjectId, SUBJECT_SCOPED_TABLES};
+use crate::subject::{legacy_subject, new_account_subject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
 use auth_repo::{AddPasskey, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
 	extract::State,
 	http::{
 		header::{HeaderName, SET_COOKIE},
-		HeaderMap, HeaderValue,
+		HeaderMap, HeaderValue, Method,
 	},
 	response::{AppendHeaders, IntoResponse, Response},
 	Json,
@@ -43,9 +43,14 @@ pub struct CeremonyStarted {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FinishRegistration {
 	pub ceremony: String,
 	pub credential: RegisterPublicKeyCredential,
+	/// The operator's `AUTH_LEGACY_CLAIM_TOKEN`, to take over the pre-auth
+	/// data. Absent for every ordinary account.
+	#[serde(default)]
+	pub legacy_claim: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,9 +98,15 @@ pub async fn start_registration(State(auth): State<AuthContext>) -> Result<Json<
 /// `POST /auth/register/finish`: verify the new passkey, create the account,
 /// and sign it in.
 ///
+/// A new account gets a random subject. With `legacyClaim` equal to the
+/// operator's `AUTH_LEGACY_CLAIM_TOKEN`, it takes the pre-auth subject and
+/// its rows instead, once.
+///
 /// # Errors
 /// 422 for an unknown or expired ceremony, or a passkey that does not
-/// verify; 409 for a passkey already registered; 503 as for `start`.
+/// verify; 403 for a claim that does not match the configured token; 409 for
+/// a passkey already registered, or pre-auth data already claimed; 503 as
+/// for `start`.
 #[instrument(name = "auth_register_finish", skip_all, fields(otel.kind = "server"))]
 pub async fn finish_registration(State(auth): State<AuthContext>, Json(request): Json<FinishRegistration>) -> Result<WithCookie<SessionView>, FileHostError> {
 	let relying_party = auth.relying_party()?;
@@ -109,16 +120,26 @@ pub async fn finish_registration(State(auth): State<AuthContext>, Json(request):
 	};
 	let verified = relying_party.finish_passkey_registration(&request.credential, &state).map_err(|_| unverified())?;
 
+	let repository = auth.repository();
+	let subject = match request.legacy_claim.as_deref() {
+		None => new_account_subject(),
+		Some(claim) if auth.legacy_claim_matches(claim) => {
+			if repository.has_account(legacy_subject()).await? {
+				return Err(already_claimed());
+			}
+			legacy_subject().to_owned()
+		}
+		Some(_) => return Err(FileHostError::Forbidden),
+	};
+
 	let now = now();
 	if !auth.take_signup(now) {
 		return Err(FileHostError::ServiceOverloaded);
 	}
-	let (if_first, otherwise) = new_account_subjects();
-	let subject = auth
-		.repository()
-		.create_account(if_first, &otherwise, user_handle.as_bytes(), &passkey::for_storage(verified)?)
+	repository
+		.create_account(&subject, user_handle.as_bytes(), &passkey::for_storage(verified)?)
 		.await
-		.map_err(already_registered)?;
+		.map_err(|err| if subject == legacy_subject() { claim_conflict(err) } else { already_registered(err) })?;
 	start_session(&auth, &subject, now).await
 }
 
@@ -271,9 +292,12 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 /// so a client can always call it.
 ///
 /// # Errors
-/// 500 for a storage failure.
+/// 403 from an untrusted origin (`auth::csrf`); 500 for a storage failure.
 #[instrument(name = "auth_sign_out", skip_all, fields(otel.kind = "server"))]
-pub async fn sign_out(State(auth): State<AuthContext>, headers: HeaderMap) -> Result<Response, FileHostError> {
+pub async fn sign_out(State(auth): State<AuthContext>, method: Method, headers: HeaderMap) -> Result<Response, FileHostError> {
+	// No `SubjectId` here, so the origin check its extractor makes is made
+	// directly: a sibling page must not be able to sign this browser out.
+	auth.check_origin(&method, &headers)?;
 	if let Some(token) = SessionToken::from_headers(&headers) {
 		auth.repository().end_session(&token.hash()).await?;
 	}
@@ -319,7 +343,10 @@ pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<
 async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
 	let token = SessionToken::mint();
 	let ttl = auth.session_ttl_seconds();
-	auth.repository().create_session(&token.hash(), subject, now + ttl, now).await?;
+	// False when the account was deleted while this sign-in was in flight.
+	if !auth.repository().create_session(&token.hash(), subject, now + ttl, now).await? {
+		return Err(FileHostError::Unauthorized);
+	}
 	Ok(with_cookie(token.set_cookie(ttl), now + ttl))
 }
 
@@ -366,6 +393,18 @@ fn unverified() -> FileHostError {
 
 const fn too_many_passkeys() -> FileHostError {
 	FileHostError::Conflict("this account already holds the most passkeys it may")
+}
+
+const fn already_claimed() -> FileHostError {
+	FileHostError::Conflict("the data saved before auth has already been claimed")
+}
+
+fn claim_conflict(err: sqlx::Error) -> FileHostError {
+	if err.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {
+		already_claimed()
+	} else {
+		FileHostError::Sqlite(err)
+	}
 }
 
 fn already_registered(err: sqlx::Error) -> FileHostError {
@@ -432,7 +471,14 @@ mod tests {
 	}
 
 	async fn call(app: &Router, method: Method, path: &str, cookie: Option<&str>, body: Option<Value>) -> (StatusCode, Option<String>, Value) {
+		call_with(app, method, path, cookie, body, &[]).await
+	}
+
+	async fn call_with(app: &Router, method: Method, path: &str, cookie: Option<&str>, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, Option<String>, Value) {
 		let mut request = Request::builder().method(method).uri(path);
+		for (name, value) in headers {
+			request = request.header(*name, *value);
+		}
 		if let Some(cookie) = cookie {
 			request = request.header(COOKIE, cookie);
 		}
@@ -537,18 +583,63 @@ mod tests {
 		assert_eq!(options["rp"]["id"], "app.test");
 	}
 
+	/// Registers with `legacyClaim` in the finish body.
+	async fn register_claiming(app: &Router, claim: &str) -> (StatusCode, Option<String>, Value) {
+		let (_, _, started) = call(app, Method::POST, "/auth/register/start", None, None).await;
+		let credential = authenticator().do_registration(origin(), for_soft_authenticator(started["options"].clone())).unwrap();
+		let body = json!({ "ceremony": started["ceremony"], "credential": serde_json::to_value(&credential).unwrap(), "legacyClaim": claim });
+		call(app, Method::POST, "/auth/register/finish", None, Some(body)).await
+	}
+
 	#[tokio::test]
-	async fn the_first_account_inherits_the_placeholder_and_later_ones_are_random() {
-		let pool = pool().await;
-		let app = app(AuthContext::for_tests(pool.clone(), 100));
+	async fn being_first_does_not_inherit_the_pre_auth_data() {
+		let app = app(AuthContext::for_tests_with_claim(pool().await, 100, Some("operator-secret")));
 
 		let first = register(&app, &mut authenticator()).await;
-		let second = register(&app, &mut authenticator()).await;
-
-		assert_eq!(whoami(&app, &first.cookie).await, (StatusCode::OK, json!("subject-local")));
-		let (status, subject) = whoami(&app, &second.cookie).await;
+		let (status, subject) = whoami(&app, &first.cookie).await;
 		assert_eq!(status, StatusCode::OK);
 		assert!(subject.as_str().unwrap().starts_with("subject-") && subject != "subject-local", "{subject}");
+	}
+
+	#[tokio::test]
+	async fn only_the_operators_claim_token_inherits_the_pre_auth_data_and_only_once() {
+		let app = app(AuthContext::for_tests_with_claim(pool().await, 100, Some("operator-secret")));
+
+		let (status, _, _) = register_claiming(&app, "a-guess").await;
+		assert_eq!(status, StatusCode::FORBIDDEN, "a wrong token claims nothing");
+
+		let (status, set_cookie, body) = register_claiming(&app, "operator-secret").await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(whoami(&app, &cookie_pair(&set_cookie.unwrap())).await, (StatusCode::OK, json!("subject-local")));
+
+		let (status, set_cookie, _) = register_claiming(&app, "operator-secret").await;
+		assert_eq!(status, StatusCode::CONFLICT, "the token works once");
+		assert!(set_cookie.is_none());
+	}
+
+	#[tokio::test]
+	async fn with_no_claim_token_configured_nobody_can_claim() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let (status, _, _) = register_claiming(&app, "").await;
+		assert_eq!(status, StatusCode::FORBIDDEN);
+	}
+
+	#[tokio::test]
+	async fn a_sibling_origin_cannot_sign_a_browser_out() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let sibling = [("origin", "https://evil.app.test"), ("sec-fetch-site", "same-site")];
+
+		for path in ["/auth/sign-out-everywhere", "/auth/sign-out"] {
+			let (status, set_cookie, _) = call_with(&app, Method::POST, path, Some(&browser.cookie), None, &sibling).await;
+			assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+			assert!(set_cookie.is_none(), "{path}");
+		}
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "still signed in");
+
+		let own = [("origin", "https://app.test"), ("sec-fetch-site", "same-site")];
+		let (status, _, _) = call_with(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None, &own).await;
+		assert_eq!(status, StatusCode::OK, "the app's own origin may");
 	}
 
 	#[tokio::test]
@@ -569,6 +660,7 @@ mod tests {
 		let app = app(AuthContext::for_tests(pool().await, 100));
 		let mut authenticator = authenticator();
 		let browser = register(&app, &mut authenticator).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
 
 		let (status, set_cookie, _) = call(&app, Method::POST, "/auth/sign-out", Some(&browser.cookie), None).await;
 		assert_eq!(status, StatusCode::OK);
@@ -579,7 +671,7 @@ mod tests {
 		assert_eq!(status, StatusCode::OK, "{body}");
 		let cookie = cookie_pair(&set_cookie.unwrap());
 		assert_ne!(cookie, browser.cookie, "a new session, not the old one back");
-		assert_eq!(whoami(&app, &cookie).await, (StatusCode::OK, json!("subject-local")));
+		assert_eq!(whoami(&app, &cookie).await, (StatusCode::OK, subject));
 	}
 
 	#[tokio::test]
@@ -653,6 +745,7 @@ mod tests {
 	async fn an_added_passkey_opens_the_same_account() {
 		let app = app(AuthContext::for_tests(pool().await, 100));
 		let browser = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
 		let mut laptop = authenticator();
 
 		let (status, set_cookie, body, user_handle, credential_id) = create_passkey(&app, &mut laptop, "/auth/passkeys", Some(&browser.cookie)).await;
@@ -662,7 +755,7 @@ mod tests {
 
 		let (status, set_cookie, _) = sign_in(&app, &mut laptop, &credential_id, &user_handle).await;
 		assert_eq!(status, StatusCode::OK);
-		assert_eq!(whoami(&app, &cookie_pair(&set_cookie.unwrap())).await, (StatusCode::OK, json!("subject-local")));
+		assert_eq!(whoami(&app, &cookie_pair(&set_cookie.unwrap())).await, (StatusCode::OK, subject));
 	}
 
 	#[tokio::test]
@@ -699,10 +792,11 @@ mod tests {
 		let app = app(AuthContext::for_tests(pool.clone(), 100));
 		let mut phone = authenticator();
 		let me = register(&app, &mut phone).await;
+		let (_, my_subject) = whoami(&app, &me.cookie).await;
 		let stranger = register(&app, &mut authenticator()).await;
 		let (_, stranger_subject) = whoami(&app, &stranger.cookie).await;
 
-		for subject in ["subject-local", stranger_subject.as_str().unwrap()] {
+		for subject in [my_subject.as_str().unwrap(), stranger_subject.as_str().unwrap()] {
 			sqlx::query(
 				"INSERT INTO sessions (id, subject_id, name, status, origin, layout_mode, total_duration_ms, created_at, updated_at, activities, scenes)
 				 VALUES (?1, ?2, 'n', 'draft', 'authored', 'basic', 0, 'now', 'now', '[]', '[]')",
@@ -724,7 +818,8 @@ mod tests {
 		assert!(set_cookie.unwrap().contains("Max-Age=0"));
 
 		for (table, _) in SUBJECT_SCOPED_TABLES {
-			let mine: i64 = sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table + " WHERE subject_id = 'subject-local'"))
+			let mine: i64 = sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table + " WHERE subject_id = ?1"))
+				.bind(my_subject.as_str().unwrap())
 				.fetch_one(&pool)
 				.await
 				.unwrap();
