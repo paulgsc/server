@@ -284,6 +284,21 @@ nowhere is marked as such and belongs to review.
     `the_auth_tables_hold_exactly_their_listed_columns`. A new column there
     fails it until someone decides what it tells the server and says why.
 
+11. **The learner shelf holds content only** (#387). `learner_shelf` is the
+    one subject-scoped table that stores something the learner wrote rather
+    than something the server observed: items they generated and chose to
+    keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf").
+    A row is the subject, the activity, the item's key, its content hash, when
+    it was kept, and the body verbatim: what storing and listing it needs, and
+    no survey, flag, outcome, title or anything derived from play. It is
+    capped at 20 items per activity, readable only by its own subject, written
+    only when the learner asks, and deleted with the account like every other
+    subject-scoped table.
+    *Enforced by* `learner_shelf_repo`'s
+    `the_table_holds_exactly_its_described_columns`, which fails on a new
+    column until someone decides what it tells the server and says why, and
+    by `handlers::shelf`'s `one_subject_can_neither_list_read_nor_delete_anothers_items`.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -304,6 +319,13 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   a dishonest deployment could ship code that reads anything JavaScript can
   reach. A passkey's private key stays in the authenticator even then. Keys kept
   in IndexedDB, and WebAuthn PRF outputs, do not.
+- **The learner shelf's contents and times.** A kept body is whatever the
+  learner's own model wrote from a prompt that included their recent survey
+  digest, so its text can say something about them; the server stores it
+  verbatim and never reads it. Each item's `saved_at` says when the learner
+  last kept those bytes, to the millisecond, which is a partial timeline of
+  use: the price of listing the shelf in the order it was filled. Deleting an
+  item or the account removes both.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its

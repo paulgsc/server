@@ -106,6 +106,7 @@ auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
+learner_shelf_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }
 outcome_repo = { workspace = true }

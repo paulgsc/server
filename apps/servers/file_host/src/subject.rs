@@ -37,6 +37,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("engagement_charge", "engagement model state"),
 	("engagement_gate", "the waker's due index"),
 	("intervention_log", "what the waker decided and when"),
+	(
+		"learner_shelf",
+		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
+	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),
 	(

@@ -895,6 +895,11 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
+			sqlx::query("INSERT INTO learner_shelf (subject_id, activity_id, key, content_hash, saved_at, body) VALUES (?1, 'topik', 'k', 'h', 'now', '{}')")
+				.bind(subject)
+				.execute(&pool)
+				.await
+				.unwrap();
 		}
 
 		let (status, set_cookie, _) = call(&app, Method::DELETE, "/auth/account", Some(&me.cookie), None).await;
@@ -909,7 +914,7 @@ mod tests {
 				.unwrap();
 			assert_eq!(mine, 0, "{table} kept a deleted account's row");
 		}
-		for table in ["account", "passkey", "auth_session", "sessions", "presence_leases"] {
+		for table in ["account", "passkey", "auth_session", "sessions", "presence_leases", "learner_shelf"] {
 			let theirs: i64 = sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table + " WHERE subject_id = ?1"))
 				.bind(stranger_subject.as_str().unwrap())
 				.fetch_one(&pool)

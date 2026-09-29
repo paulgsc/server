@@ -1404,6 +1404,58 @@ retires or restores a round. `crates/db/leetype_round/tests/round_corpus_parity.
 imports a checked-in copy of that export and fails if any body would be stored
 differently from its file, or any round refused.
 
+### Learner shelf
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/shelf/:activity` | `{ items: [{ key, contentHash, savedAt }], cap }` — this subject's kept items, oldest first, never a body (#387) |
+| `GET` | `/shelf/:activity/:key` | One kept body, verbatim (`application/json`), or a JSON `404` |
+| `PUT` | `/shelf/:activity/:key` | Keep the request body itself (raw JSON, not wrapped); answers `{ change, item }` |
+| `DELETE` | `/shelf/:activity/:key` | Remove it; `204` whether or not it was kept |
+
+Content a learner generated themselves, from a prompt the app hands them, and
+**chose** to keep on the server so another device can replay it: TOPIK lessons
+(#387) and LeetType rounds (`paulgsc/some-ui#1598`). `:activity` is `topik` or
+`leetype`, and the two shelves never collide. The client keeps these in
+`localStorage` and works with an empty shelf; this is a convenience copy, with
+no backup or retention promise, and `DELETE` really deletes. The design, point
+by point against #387, is recorded in
+`20260929000200_create_learner_shelf.up.sql`.
+
+**Per person, and nowhere near the corpus.** A subject route (see the trust
+model below): `401` without a passkey session, `403` for a write from an
+untrusted origin, and every read and write is the session subject's own.
+Another subject's key is a `404`, the same answer as a key nobody kept, so
+whether someone else kept something is not observable. The table is
+`learner_shelf`, not `curriculum`, `curriculum_publication` or
+`leetype_round`: a kept lesson is never served to anyone else, and #277's
+detection never sees it, so it is never announced as new material and no
+epoch or watermark moves (`handlers::shelf`'s
+`a_shelf_write_moves_no_epoch_and_touches_no_other_table`). Nothing but these
+routes writes the table; there is no background sync.
+
+**A shelf, not a library.** At most `SHELF_CAP` (20) items per subject per
+activity, matching the client's `MAX_LOCAL_LESSONS`. A new key on a full shelf
+is a `409` (`conflict`, "the shelf is full…"), never an eviction: the client
+decides what to delete. Replacing a kept key is always allowed. The cap is a
+condition of the insert itself, so concurrent writes cannot exceed it.
+
+**Content only, never parsed.** A row is the body verbatim, its key, its
+content hash (SHA-256 over the exact bytes, as for the corpus) and when it was
+kept. The server checks only that the body is one JSON object or array, UTF-8,
+within `SHELF_BODY_CEILING` (256 KiB); what a lesson or round *is* stays the
+client's to check. A `PUT` of the bytes already kept is `unchanged` and moves
+nothing, including `savedAt`; different bytes are `replaced`; a new key is
+`kept`.
+
+**Refusals.** A read aimed at something that cannot be on a shelf, an unknown
+activity or a key that is not a plain key (the corpus's rule: URL-unreserved
+characters, no `.json` suffix), is a `404`: nothing can be stored there. A
+write (`PUT` or `DELETE`) aimed there is a `422` naming `activity` or `key`,
+because a misspelt activity answered `204` would hide a client bug. A refused
+body is a `422` on `body`. A body over the server's global request limit is
+refused before any of this, with a `413`.
+
 ### Subject stats
 
 | Method | Path | Purpose |
@@ -1539,7 +1591,7 @@ invariant `#253` argues for elsewhere applies to this new surface too.
 Three tiers, and every route above is in exactly one:
 
 - **Subject routes** (push, signals, outcomes, presence, sessions, subject
-  stats) need a passkey session (`docs/identity.md`, "Passkey auth"). Without
+  stats, the learner shelf) need a passkey session (`docs/identity.md`, "Passkey auth"). Without
   one they answer `401`; a state-changing request from an untrusted origin is a
   `403`. Each acts only for the session's subject, so one person cannot read
   another's sessions or receive their reminders.

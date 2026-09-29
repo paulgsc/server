@@ -8,6 +8,7 @@ pub mod outcomes;
 pub mod presence;
 pub mod push;
 pub mod readiness;
+pub mod shelf;
 pub mod signals;
 pub mod subjects;
 pub mod tab_metadata;
