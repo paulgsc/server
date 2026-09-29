@@ -106,9 +106,9 @@ pub enum RecordError {
 	Toolchain(PathBuf, std::io::Error),
 	/// The temporary directory, or a program's file in it.
 	Io(std::io::Error),
-	/// A compiled program could not be started or supervised: an argument
-	/// the OS refuses (a NUL in a dimension, say), or a descendant that
-	/// escaped its process group. The round's fault, not the machine's: the
+	/// A compiled program could not be started or supervised, for a reason
+	/// that is the program's: an argument the OS refuses (a NUL in a
+	/// dimension, say), or a descendant that escaped its process group. The round's fault, not the machine's: the
 	/// recorder marks this round failed and goes on (review, #399).
 	Run(std::io::Error),
 }
@@ -309,7 +309,14 @@ impl Runner {
 		}
 		command.current_dir(dir).env_clear();
 		let Finished { ending, elapsed, stdout, stderr } =
-			supervise(command, self.limits.run_ceiling, self.limits.output_ceiling, self.limits.logs_ceiling).map_err(RecordError::Run)?;
+			supervise(command, self.limits.run_ceiling, self.limits.output_ceiling, self.limits.logs_ceiling).map_err(|err| match err.kind() {
+				// What the program asked for: an argument the OS refuses, or a
+				// descendant that escaped its group. Anything else (no
+				// processes or descriptors left, a noexec TMPDIR) is the
+				// machine's, and stops the recording as before (review, #399).
+				std::io::ErrorKind::InvalidInput | std::io::ErrorKind::TimedOut => RecordError::Run(err),
+				_ => RecordError::Io(err),
+			})?;
 
 		Ok(match ending {
 			Ending::Exited(status) if status.success() => {

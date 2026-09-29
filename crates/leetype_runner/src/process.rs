@@ -174,7 +174,11 @@ fn joined(handle: Option<JoinHandle<std::io::Result<Captured>>>, deadline: Insta
 		if Instant::now() >= deadline {
 			// The reader thread is left blocked on the pipe; it holds only
 			// its buffer, and ends when the stray descendant does.
-			return Err(std::io::Error::other("a process outside the program's process group kept its output open after it ended"));
+			// `TimedOut`, which the runner reads as the round's fault.
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::TimedOut,
+				"a process outside the program's process group kept its output open after it ended",
+			));
 		}
 		std::thread::sleep(POLL);
 	}
