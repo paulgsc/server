@@ -62,12 +62,14 @@ struct Inner {
 	ceremonies: CeremonyStore,
 	settings: Settings,
 	signups: SignupCap,
-	/// Orders account deletion against requests acting for a subject.
+	/// Orders account deletion against everything that writes subject-scoped
+	/// rows (`docs/identity.md` invariant 9).
 	///
 	/// A request holds a read guard from before its session is looked up
-	/// until it finishes, and a deletion holds the write guard. A write can
-	/// therefore never land for a subject whose account was deleted after
-	/// that request resolved it. The subject tables have no foreign key to
+	/// until it finishes, a waker pass holds one for the whole pass
+	/// (`nudge::waker::pass`), and a deletion holds the write guard. A write
+	/// can therefore never land for a subject whose account was deleted after
+	/// its writer read that subject. The subject tables have no foreign key to
 	/// `account` to refuse such a write, so this lock is what refuses it.
 	/// Deletions are rare and short, and the lock is fair, so no request
 	/// waits behind more than one deletion.
@@ -236,14 +238,15 @@ impl AuthContext {
 		self.inner.settings.session_ttl_seconds
 	}
 
-	/// Held by a request acting for a subject, for as long as it runs.
-	/// See `Inner::deletion`.
+	/// Held by whatever writes subject-scoped rows (a request acting for a
+	/// subject, a waker pass) for as long as it runs. See `Inner::deletion`.
 	pub(crate) async fn hold_against_deletion(&self) -> OwnedRwLockReadGuard<()> {
 		Arc::clone(&self.inner.deletion).read_owned().await
 	}
 
-	/// Held by an account deletion: waits for every request already acting
-	/// for a subject to finish, and holds off new ones until it commits.
+	/// Held by an account deletion: waits for every writer already holding
+	/// [`Self::hold_against_deletion`] to finish, and holds off new ones until
+	/// it commits.
 	pub(crate) async fn exclude_requests(&self) -> OwnedRwLockWriteGuard<()> {
 		Arc::clone(&self.inner.deletion).write_owned().await
 	}

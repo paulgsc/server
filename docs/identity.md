@@ -115,9 +115,10 @@ once).
 - **Leave.** `/auth/sign-out` ends this session, `/auth/sign-out-everywhere`
   ends all of them, and `DELETE /auth/account` deletes the subject's rows from
   every table in `subject::SUBJECT_SCOPED_TABLES`, in one transaction. The
-  deletion first waits for every request already acting for a subject to
-  finish, and holds new ones off until it commits (`AuthContext`'s deletion
-  lock, held by `SubjectId` for the whole request). So a write resolved
+  deletion first waits for every request already acting for a subject, and
+  any running waker pass, to finish. It holds new ones off until it commits
+  (`AuthContext`'s deletion lock, held by `SubjectId` for the whole request
+  and by `waker::pass` for the whole pass). So a write resolved
   before the deletion is deleted with the rest, and one after it finds no
   session. Nothing in the subject tables references `account`, so the lock is
   what stops a write outliving its account.
@@ -239,11 +240,19 @@ nowhere is marked as such and belongs to review.
    `DELETE /auth/account` walks and the list invariant 1's schema test holds
    every table with a `subject_id` to, and by
    `deleting_an_account_removes_its_rows_from_every_subject_scoped_table_and_nobody_elses`.
-   The in-flight writes are covered by `SubjectId` holding the deletion lock
-   for the whole request, and by
-   `a_write_already_in_flight_does_not_outlive_the_account_it_was_for`. The
-   waker needs no lock: its log insert shares a transaction with a claim on
-   the subject's `engagement_gate` row, which a deletion removes.
+   In-flight writes are covered by one rule: **every writer of subject-scoped
+   rows holds `AuthContext`'s deletion lock while it runs**. There are two
+   such writers today:
+   - requests, through `SubjectId`, which holds the lock for the whole
+     request (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
+   - the nudge waker, through `waker::pass`, which holds it for a whole pass
+     (`a_pass_waits_out_an_account_deletion`). A pass writes for subjects it
+     read earlier, and `provision_if_absent` checks nothing about the
+     account.
+
+   A deletion takes the lock exclusively. A new background task that writes
+   subject-scoped rows must take the lock too (`hold_against_deletion`), or
+   its rows can outlive a deleted account.
 
 10. **The auth tables keep no timeline.** `account`, `passkey` and
     `auth_session` hold exactly the columns listed under "What an account is":

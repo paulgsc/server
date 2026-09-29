@@ -25,7 +25,7 @@
 use crate::nudge::constraints::{StudyConstraints, Suppressed};
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
-use crate::{AppState, NudgeContext};
+use crate::{auth::AuthContext, AppState, NudgeContext};
 use activity_repo::{
 	default_session_name, provision, recommend, total_duration_ms, ActivityHistory, ActivityOutcome, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT,
 };
@@ -66,6 +66,7 @@ pub fn spawn(state: &AppState, interval: Duration) {
 	};
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let auth = state.auth.clone();
 	crate::metrics::waker::record_interval(interval);
 	crate::metrics::waker::record_pass_deadline(nudge.pass_deadline);
 
@@ -83,7 +84,7 @@ pub fn spawn(state: &AppState, interval: Duration) {
 				_ = ticker.tick() => {
 					crate::metrics::waker::record_pass_started();
 					let started = tokio::time::Instant::now();
-					let result = run_once(&db, &nudge).await;
+					let result = pass(&db, &nudge, &auth).await;
 					crate::metrics::waker::record_pass_duration(started.elapsed());
 					match result {
 						Ok(_) => crate::metrics::waker::record_successful_pass(),
@@ -164,6 +165,24 @@ pub struct PassReport {
 	pub pruned: u64,
 }
 
+/// One [`run_once`], holding off account deletion for as long as it runs.
+///
+/// A pass reads its due subjects, then writes for them: a gate claim, an
+/// intervention log entry, and a provisioned `sessions` draft
+/// (`provision_if_absent`, which checks nothing about the account). If an
+/// account were deleted between those reads and writes, the draft would
+/// outlive it. So the pass holds the same deletion lock a request acting for
+/// a subject holds (`AuthContext::hold_against_deletion`; `docs/identity.md`
+/// invariant 9). A deletion waits for at most one pass, which `BATCH` and the
+/// pass deadline already bound, and adds no bound of its own.
+///
+/// # Errors
+/// As [`run_once`].
+pub async fn pass(db: &SqlitePool, nudge: &NudgeContext, auth: &AuthContext) -> Result<PassReport, sqlx::Error> {
+	let _hold = auth.hold_against_deletion().await;
+	run_once(db, nudge).await
+}
+
 /// One pass. Public so a debug endpoint can force it without waiting.
 ///
 /// Takes the database pool and a proven-present `&NudgeContext` — the
@@ -174,6 +193,9 @@ pub struct PassReport {
 /// anymore: presence is a DB-backed lease now, not a WebSocket connection
 /// count, so the waker has no reason to know the WS layer exists at all —
 /// see `nudge::presence`.
+///
+/// `spawn` runs this through [`pass`], which holds off account deletion
+/// while it runs.
 ///
 /// **Bounded by `NudgeContext::pass_deadline` (#264, SLI3).** The loop below
 /// is serial on purpose — a burst that would notify a whole userbase at once
@@ -3548,6 +3570,29 @@ mod tests {
 			.into_iter()
 			.find(|row| row.class == 4)
 			.map(|row| row.level)
+	}
+
+	/// A pass writes for subjects it read earlier (a provisioned `sessions`
+	/// draft checks nothing about the account), so it must not run beside an
+	/// account deletion. `docs/identity.md` invariant 9.
+	#[tokio::test]
+	async fn a_pass_waits_out_an_account_deletion() {
+		let pool = migrated_pool().await;
+		let auth = crate::auth::AuthContext::for_tests(pool.clone(), 1);
+		// Warmed up, a pass on this empty database takes milliseconds, so
+		// one still running half a second later is waiting on the lock.
+		super::pass(&pool, &nudge_context(), &auth).await.unwrap();
+		let deleting = auth.exclude_requests().await;
+
+		let running = tokio::spawn({
+			let (pool, auth) = (pool.clone(), auth.clone());
+			async move { super::pass(&pool, &nudge_context(), &auth).await.map(|_| ()) }
+		});
+		tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+		assert!(!running.is_finished(), "the pass waits for the deletion to commit");
+
+		drop(deleting);
+		running.await.unwrap().unwrap();
 	}
 
 	async fn migrated_pool() -> SqlitePool {
