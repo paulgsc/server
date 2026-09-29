@@ -299,6 +299,19 @@ nowhere is marked as such and belongs to review.
     column until someone decides what it tells the server and says why, and
     by `handlers::shelf`'s `one_subject_can_neither_list_read_nor_delete_anothers_items`.
 
+12. **Account deletion holds across a rollback.** `schema::drift` accepts a
+    database ahead of the binary, so an image rollback runs a binary whose
+    `SUBJECT_SCOPED_TABLES` predates newer tables. Every binary that serves
+    `DELETE /auth/account` deletes the `account` row, so every subject-scoped
+    table created after account deletion shipped (#395) also carries a trigger
+    `AFTER DELETE ON account` that deletes the subject's rows. `learner_shelf`
+    is the first (#398). A new subject-scoped table adds its own trigger, in
+    the migration that creates it, and drops it first in the down migration.
+    *Enforced by* `file_host::privacy`'s
+    `every_table_newer_than_account_deletion_leaves_with_the_account`, which
+    fails on a subject-scoped table outside the #395 list with no such
+    trigger.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.

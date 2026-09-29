@@ -15,7 +15,9 @@
 --    passkey session resolves to), and listed in
 --    `subject::SUBJECT_SCOPED_TABLES`, so `DELETE /auth/account` removes it
 --    and the privacy schema test covers it. No columns beyond what storing
---    and listing an item needs.
+--    and listing an item needs. The trigger at the end of this file deletes
+--    the rows with the subject's `account` row too, so account deletion
+--    holds on a rolled-back binary whose list predates this table.
 -- 3. CAPPED PER SUBJECT. At most `learner_shelf_repo::SHELF_CAP` (20) items
 --    per subject per activity, matching the client's `MAX_LOCAL_LESSONS`, and
 --    at most `SHELF_BODY_CEILING` (256 KiB) per body. Over the cap a new key
@@ -75,3 +77,20 @@ CREATE TABLE learner_shelf (
     body         TEXT NOT NULL,   -- verbatim; owned by the client
     PRIMARY KEY (subject_id, activity_id, key)
 );
+
+-- Account deletion, on every binary that can run against this schema.
+-- `schema::drift` accepts a database ahead of the binary (an image rollback
+-- is the ordinary case), and a binary older than this migration sweeps an
+-- older `SUBJECT_SCOPED_TABLES` that does not name `learner_shelf`: without
+-- this, `DELETE /auth/account` there would succeed and leave the learner's
+-- items behind (Codex, #398). Every binary that serves account deletion
+-- deletes the `account` row (it is on the list since #395), so the rows go
+-- with it, in the same transaction. On the current binary the sweep deletes
+-- them itself as well; whichever runs second finds nothing.
+-- docs/identity.md invariant 12; pinned by `privacy`'s
+-- `every_table_newer_than_account_deletion_leaves_with_the_account`.
+CREATE TRIGGER learner_shelf_leaves_with_account
+AFTER DELETE ON account
+BEGIN
+    DELETE FROM learner_shelf WHERE subject_id = OLD.subject_id;
+END;

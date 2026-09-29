@@ -26,7 +26,9 @@
 //! - **No background sync.** The only writers of `learner_shelf` are [`put`]
 //!   and [`delete`], and their only callers are `file_host`'s
 //!   `handlers::shelf` (`PUT` / `DELETE /api/v1/shelf/:activity/:key`) plus
-//!   account deletion's generic sweep of `SUBJECT_SCOPED_TABLES`. A
+//!   account deletion: its generic sweep of `SUBJECT_SCOPED_TABLES`, and
+//!   the migration's trigger on `account` for a rolled-back binary whose
+//!   list predates this table (docs/identity.md invariant 12). A
 //!   `git grep -n learner_shelf -- '*.rs'` shows no other writer: no waker
 //!   pass, importer or binary touches it.
 
