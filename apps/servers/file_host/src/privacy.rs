@@ -55,6 +55,8 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("activities", "the activity catalogue — corpus-wide"),
 	("curriculum", "lesson content — corpus-wide"),
 	("curriculum_publication", "curriculum release ledger"),
+	("leetype_round", "LeetType round content — corpus-wide"),
+	("leetype_round_witness", "each round's μ into the canon register, derived from its body — corpus-wide"),
 	("mood_events", "editorial content, not per-person"),
 	(
 		"tabs",

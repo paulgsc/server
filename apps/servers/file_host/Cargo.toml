@@ -40,6 +40,10 @@ path = "src/bin/dump_provisioned_session.rs"
 name = "import-curriculum"
 path = "src/bin/import_curriculum.rs"
 
+[[bin]]
+name = "import-leetype-rounds"
+path = "src/bin/import_leetype_rounds.rs"
+
 [dependencies]
 # path crates
 mood_event = { workspace = true }
@@ -101,6 +105,7 @@ activity_repo = { workspace = true }
 auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
+leetype_round_repo = { workspace = true }
 push_repo = { workspace = true }
 engagement_repo = { workspace = true }
 outcome_repo = { workspace = true }

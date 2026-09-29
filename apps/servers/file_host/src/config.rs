@@ -302,6 +302,15 @@ pub struct Config {
 	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true)]
 	pub auth_legacy_claim_token: Option<String>,
 
+	/// Comma-separated subject ids allowed to use the operator routes: the
+	/// ones that rewrite, retire and restore what everyone is served (lessons,
+	/// `leetype` rounds). Whitespace around an entry is trimmed and empty
+	/// entries are ignored. Unset or empty, nobody is an operator and those
+	/// routes answer 403 to every signed-in subject. Anyone can make an
+	/// account, so being signed in is not enough; see `auth::operator`.
+	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',')]
+	pub operator_subjects: Vec<String>,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

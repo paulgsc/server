@@ -42,6 +42,7 @@ use super::{auth, db, health, outcomes, presence, push, readiness, signals, subj
 use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
 use serde::Serialize;
+use sqlx::SqlitePool;
 
 /// Bump when the emitted JSON shape changes in a way consumers must react to.
 /// The client harness refuses a snapshot it does not know how to read rather
@@ -105,6 +106,7 @@ where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
+	SqlitePool: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -121,6 +123,8 @@ where
 		db::activities(),
 		db::curriculum(),
 		db::curriculum_operator(),
+		db::leetype(),
+		db::leetype_operator(),
 		push::push(),
 		presence::presence(),
 		signals::signals(),
@@ -141,6 +145,7 @@ where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
+	SqlitePool: FromRef<S>,
 {
 	split(|module| module.into_router(config))
 }
@@ -150,6 +155,7 @@ where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
+	SqlitePool: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

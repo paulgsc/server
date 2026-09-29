@@ -1319,7 +1319,90 @@ lesson *is* stays the client's to check (`intakeLesson`). Adding or restoring a
 lesson past `MANIFEST_CEILING` listed is a `400`, so the manifest never starts
 refusing because of a write. The listing is bounded by
 `OPERATOR_LISTING_CEILING` and refused, never truncated, over it. These routes
-change what everyone is served under the trust model below.
+change what everyone is served, so they answer only a subject listed in
+`OPERATOR_SUBJECTS` (see the trust model below).
+
+### LeetType rounds
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/leetype/rounds` | `{ version, rounds: [{ id, version, publishedAt, contentHash, witnesses: [{ propositionId, admissible }] }] }` — the listed rounds, by id (#327) |
+| `GET` | `/leetype/rounds/:id` | One round, verbatim, or a JSON `404` |
+| `GET` | `/leetype/operator/rounds` | Every round's manifest entry plus `retiredAt`, retired rounds included — the operator's view |
+| `PUT` | `/leetype/operator/rounds/:id` | Write one round, `{ body }` (the round's JSON as text); answers `{ change, round }` |
+| `POST` | `/leetype/operator/rounds/:id/retire` | Take a round out of the manifest, without deleting it; answers the round |
+| `POST` | `/leetype/operator/rounds/:id/restore` | Put it back; answers the round |
+
+LeetType's round corpus, moved off the client bundle (#324) the way lessons
+were. A **round** is the object `@some-ui/leetype`'s `RoundSchema` describes: a
+program, a constraint diff, a budget, a cost graph, and an option set of diffs,
+each mapped (`μ`) to the `CW-P` proposition it witnesses, exactly one of them
+admissible.
+
+**Stored as a blob plus an edge table** (#325; the decision is recorded in
+`20260929000100_create_leetype_round.up.sql`). `leetype_round.body` is the
+round's JSON, verbatim: programs, graphs and hunks change shape with the
+client, and this server never reasons about them. `leetype_round_witness` holds
+one row per option — the round, the option's position, its proposition, and
+whether it is the admissible one — because "which rounds witness `CW-P5`" is
+the one question two client consumers (the learner ledger and the round
+sampler) ask that a blob could answer only by reading every round. It is
+derived from the body on every write, in the same transaction, and never
+written on its own. `RoundRepository::rounds_witnessing` is that query, a range
+read of `idx_leetype_round_witness_proposition`. No route serves it yet; the
+manifest's `witnesses` already give a client every edge of every listed round.
+
+**What the server checks** (`leetype_round_repo::parse_round`, the only reading
+of a body it does): a JSON object within `ROUND_BYTES_CEILING` (256 KiB), a
+string `id` equal to the key, `algorithm.language` equal to `rust`, and a
+`diffOptions` array of two to five members (five is the most a phone
+presents, and it bounds each round's witness rows), each with a
+`member.propositionId`
+of the form `CW-P<n>` (1–999, no leading zero) and a boolean
+`member.admissible`, exactly one of them true. The key is held to the same
+URL-segment rule as a lesson key. On the write route each is a `422` naming its
+field (`key`, `body`, `body.id`, `body.algorithm.language`, `body.diffOptions`,
+`body.diffOptions[i].member.propositionId`, `…admissible`). Whether a
+`CW-P` number is one the canon's register defines, and #324's whole-corpus
+lints (distractor coverage, `0 < |C| ≤ |D|`), stay the client's corpus lint:
+the register is the canon's, and a copy here would drift.
+
+Everything else follows [Curriculum](#curriculum): a round's `ETag` is its
+content hash (SHA-256 over the body's exact bytes) and the manifest's is the
+hash of its listing, which is also its `version`, both answering
+`If-None-Match` with `304`; the manifest is bounded by `MANIFEST_CEILING`
+(1,000 listed rounds) and refused above it, and the write and restore routes
+refuse to list a round past it; the operator listing is bounded by
+`OPERATOR_LISTING_CEILING` (5,000). Retiring unlists a round without deleting
+it, and `GET /leetype/rounds/:id` keeps serving it. A write's `change` is
+`inserted`, `contentChanged` or `unchanged` — there is no metadata outside the
+body, so no `metadataChanged`. The operator routes answer only a subject in
+`OPERATOR_SUBJECTS` (see the trust model below).
+
+**Rounds do not feed the publication log.** Nothing about a round reaches
+`curriculum_publication` or the waker, so a new or edited round is never
+announced as new material and there is no first-import baseline to protect.
+Whether LeetType should announce new rounds is left for later, and would be its
+own change. Also not here yet: an execution transcript per round, which needs
+an execution route (`paulgsc/some-ui#1226`) this server does not have.
+
+To bring the client's export across (`packages/ui/leetype/corpus/rounds/` in
+`paulgsc/some-ui`: `manifest.json`, `{ "rounds": ["<id>", …] }`, plus one
+`<id>.json` per round), offline:
+
+```sh
+DATABASE_URL=sqlite:///path/to/file_host.db \
+  cargo run -q --bin import-leetype-rounds -- path/to/corpus/rounds --dry-run
+# then, if the report looks right, without --dry-run
+```
+
+It is idempotent in the same way as `import-curriculum`: unchanged bytes are
+not written and do not move `published_at`, changed bytes are a version bump.
+A missing, malformed or refused round fails alone and is named; the exit code
+is `1` if anything failed, `2` if the run could not start. It never deletes,
+retires or restores a round. `crates/db/leetype_round/tests/round_corpus_parity.rs`
+imports a checked-in copy of that export and fails if any body would be stored
+differently from its file, or any round refused.
 
 ### Subject stats
 
@@ -1453,12 +1536,32 @@ invariant `#253` argues for elsewhere applies to this new surface too.
 
 ### Trust model, stated plainly
 
-These routes carry **no authentication** beyond the CORS origin allowlist.
-Anyone who can reach the LAN can register a push subscription — and would then
-receive this person's study reminders — or read and write sessions, or rewrite
-and retire the lessons everyone is served. That is the
-same trust model as the rest of `file_host`. It is written down here so it stays
-a conscious acceptance rather than an oversight.
+Three tiers, and every route above is in exactly one:
+
+- **Subject routes** (push, signals, outcomes, presence, sessions, subject
+  stats) need a passkey session (`docs/identity.md`, "Passkey auth"). Without
+  one they answer `401`; a state-changing request from an untrusted origin is a
+  `403`. Each acts only for the session's subject, so one person cannot read
+  another's sessions or receive their reminders.
+- **Operator routes** (`/curriculum/operator/*`, `/leetype/operator/*`) change
+  what *everyone* is served. They need a session **whose subject is listed in
+  `OPERATOR_SUBJECTS`**, and answer `403` to every other subject
+  (`auth::operator`). Anyone who can reach the server can make an account, so a
+  session alone would gate nothing. With `OPERATOR_SUBJECTS` unset nobody is an
+  operator, the routes refuse everyone, and startup logs a warning saying so.
+  A refused subject is logged by id at `info`: that log line is how an operator
+  finds the id to list (see `example.env`).
+- **Public routes** carry no authentication beyond the CORS origin allowlist.
+  The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`,
+  `/leetype/rounds`, `/leetype/rounds/:id`) and `GET /push/vapid-key` serve the
+  same thing to everyone and hold nothing about whoever asks.
+  `DELETE /push/subscriptions` takes no session either: it removes the
+  subscription whose endpoint URL the request names, which in practice only the
+  browser holding it knows.
+
+The CORS allowlist is not an access control on any of them: it only decides
+which pages a browser lets read the answer. It is written down here so each tier
+stays a conscious choice rather than an oversight.
 
 ---
 

@@ -1,0 +1,260 @@
+{
+  "id": "count-at-least-max-hoist",
+  "algorithm": {
+    "source": "pub fn count_at_least_max(values: &[i64], queries: &[i64]) -> usize {\n    let mut count = 0;\n    for q in queries {\n        let mut best = i64::MIN;\n        for v in values {\n            if *v > best {\n                best = *v;\n            }\n        }\n        if *q >= best {\n            count += 1;\n        }\n    }\n    count\n}\n",
+    "language": "rust",
+    "entryPoint": "count_at_least_max(values: &[i64], queries: &[i64]) -> usize",
+    "inputAlphabet": "Two slices of i64. n is values.len() and q is queries.len(); the result counts the queries at least as large as every value."
+  },
+  "constraintDiff": {
+    "before": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 1000
+      },
+      {
+        "dimension": "q",
+        "operator": "<=",
+        "bound": 1000
+      }
+    ],
+    "after": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 100000
+      },
+      {
+        "dimension": "q",
+        "operator": "<=",
+        "bound": 100000
+      }
+    ]
+  },
+  "budget": {
+    "operations": 100000000,
+    "wallClock": "about a second"
+  },
+  "graph": {
+    "kind": "loop",
+    "repetition": [
+      {
+        "kind": "pow",
+        "dimension": "q",
+        "exponent": 1
+      }
+    ],
+    "body": {
+      "kind": "loop",
+      "repetition": [
+        {
+          "kind": "pow",
+          "dimension": "n",
+          "exponent": 1
+        }
+      ],
+      "body": {
+        "kind": "work",
+        "cost": 1
+      }
+    }
+  },
+  "diffOptions": [
+    {
+      "member": {
+        "hunk": {
+          "path": "src/count_at_least_max.rs",
+          "oldStart": 2,
+          "newStart": 2,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "    let mut count = 0;\n"
+            },
+            {
+              "kind": "addition",
+              "text": "    let mut best = i64::MIN;\n    for v in values {\n        if *v > best {\n            best = *v;\n        }\n    }\n"
+            },
+            {
+              "kind": "context",
+              "text": "    for q in queries {\n"
+            },
+            {
+              "kind": "deletion",
+              "text": "        let mut best = i64::MIN;\n        for v in values {\n            if *v > best {\n                best = *v;\n            }\n        }\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P2",
+        "admissible": true,
+        "propositionGloss": "The maximum does not depend on the query, so it moves out of the loop. Inside, the scan was multiplied by q; outside, it runs once."
+      },
+      "graph": {
+        "kind": "seq",
+        "children": [
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "q",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          }
+        ]
+      },
+      "rescueCandidates": [],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/count_at_least_max.rs",
+          "oldStart": 10,
+          "newStart": 10,
+          "segments": [
+            {
+              "kind": "deletion",
+              "text": "        if *q >= best {\n            count += 1;\n        }\n"
+            },
+            {
+              "kind": "addition",
+              "text": "        count += usize::from(*q >= best);\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P11",
+        "admissible": false,
+        "distractorStatement": "Counts without a branch. The branch was never the cost: the scan for the maximum still runs once per query.",
+        "propositionGloss": "The rewrite touches the count, which is off the path that scans every value for every query."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "q",
+            "exponent": 1
+          }
+        ],
+        "body": {
+          "kind": "loop",
+          "repetition": [
+            {
+              "kind": "pow",
+              "dimension": "n",
+              "exponent": 1
+            }
+          ],
+          "body": {
+            "kind": "work",
+            "cost": 1
+          }
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 500
+            },
+            {
+              "dimension": "q",
+              "operator": "<=",
+              "bound": 100000
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/count_at_least_max.rs",
+          "oldStart": 6,
+          "newStart": 6,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "            if *v > best {\n                best = *v;\n"
+            },
+            {
+              "kind": "addition",
+              "text": "                if best == i64::MAX {\n                    break;\n                }\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P8",
+        "admissible": false,
+        "distractorStatement": "Stops scanning once the largest possible value turns up. Unless it does, every query still scans every value.",
+        "propositionGloss": "The exit fires only on i64::MAX, so the worst case still costs n per query."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "q",
+            "exponent": 1
+          }
+        ],
+        "body": {
+          "kind": "loop",
+          "repetition": [
+            {
+              "kind": "pow",
+              "dimension": "n",
+              "exponent": 1
+            }
+          ],
+          "body": {
+            "kind": "work",
+            "cost": 1
+          }
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 100000
+            },
+            {
+              "dimension": "q",
+              "operator": "<=",
+              "bound": 500
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    }
+  ]
+}

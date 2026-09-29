@@ -1,0 +1,239 @@
+{
+  "id": "min-gap-sort-adjacent",
+  "algorithm": {
+    "source": "pub fn min_gap(values: &[i64]) -> i64 {\n    let mut best = i64::MAX;\n    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j {\n                let gap = (values[i] - values[j]).abs();\n                if gap < best {\n                    best = gap;\n                }\n            }\n        }\n    }\n    best\n}\n",
+    "language": "rust",
+    "entryPoint": "min_gap(values: &[i64]) -> i64",
+    "inputAlphabet": "One slice of i64 of length n with values small enough that differences fit in i64; the result is the smallest distance between two entries, or i64::MAX for fewer than two."
+  },
+  "constraintDiff": {
+    "before": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 1000
+      }
+    ],
+    "after": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 100000
+      }
+    ]
+  },
+  "budget": {
+    "operations": 100000000,
+    "wallClock": "about a second"
+  },
+  "graph": {
+    "kind": "loop",
+    "repetition": [
+      {
+        "kind": "pow",
+        "dimension": "n",
+        "exponent": 1
+      }
+    ],
+    "body": {
+      "kind": "loop",
+      "repetition": [
+        {
+          "kind": "pow",
+          "dimension": "n",
+          "exponent": 1
+        }
+      ],
+      "body": {
+        "kind": "work",
+        "cost": 1
+      }
+    }
+  },
+  "diffOptions": [
+    {
+      "member": {
+        "hunk": {
+          "path": "src/min_gap.rs",
+          "oldStart": 2,
+          "newStart": 2,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "    let mut best = i64::MAX;\n"
+            },
+            {
+              "kind": "deletion",
+              "text": "    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j {\n                let gap = (values[i] - values[j]).abs();\n                if gap < best {\n                    best = gap;\n                }\n            }\n        }\n    }\n"
+            },
+            {
+              "kind": "addition",
+              "text": "    let mut sorted = values.to_vec();\n    sorted.sort_unstable();\n    for i in 1..sorted.len() {\n        let gap = sorted[i] - sorted[i - 1];\n        if gap < best {\n            best = gap;\n        }\n    }\n"
+            },
+            {
+              "kind": "context",
+              "text": "    best\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P7",
+        "admissible": true,
+        "propositionGloss": "In sorted order the closest pair is always two neighbours, so one pass over neighbours replaces comparing every pair."
+      },
+      "graph": {
+        "kind": "seq",
+        "children": [
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "log",
+                "dimension": "n",
+                "exponent": 1
+              },
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          }
+        ]
+      },
+      "rescueCandidates": [],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/min_gap.rs",
+          "oldStart": 3,
+          "newStart": 3,
+          "segments": [
+            {
+              "kind": "deletion",
+              "text": "    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j {\n                let gap = (values[i] - values[j]).abs();\n                if gap < best {\n                    best = gap;\n                }\n            }\n        }\n    }\n"
+            },
+            {
+              "kind": "addition",
+              "text": "    let n = values.len();\n    for k in 0..n * n {\n        let (i, j) = (k / n, k % n);\n        if i != j {\n            let gap = (values[i] - values[j]).abs();\n            if gap < best {\n                best = gap;\n            }\n        }\n    }\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P12",
+        "admissible": false,
+        "distractorStatement": "Flattens the two loops into one loop over every index pair. One loop instead of two, and still n times n iterations.",
+        "propositionGloss": "The nesting is gone, but the single loop runs n squared times: the exponent comes from the repetition, not the depth."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "n",
+            "exponent": 2
+          }
+        ],
+        "body": {
+          "kind": "work",
+          "cost": 1
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 5000
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/min_gap.rs",
+          "oldStart": 4,
+          "newStart": 4,
+          "segments": [
+            {
+              "kind": "deletion",
+              "text": "        for j in 0..values.len() {\n            if i != j {\n"
+            },
+            {
+              "kind": "addition",
+              "text": "        for j in (i + 1)..values.len() {\n            if i < j {\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P9",
+        "admissible": false,
+        "distractorStatement": "Visits each pair once instead of twice. That halves the comparisons, and their number still grows with the square of n.",
+        "propositionGloss": "The inner loop now covers only the upper triangle: about half of n squared comparisons."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "n",
+            "exponent": 2
+          }
+        ],
+        "body": {
+          "kind": "work",
+          "cost": 0.5
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 14000
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    }
+  ]
+}

@@ -1430,6 +1430,7 @@ dependencies = [
  "hex",
  "intervention",
  "lazy_static",
+ "leetype_round_repo",
  "metrics",
  "metrics-util",
  "mood_event",
@@ -2388,6 +2389,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "leetype_round_repo"
+version = "0.0.0"
+dependencies = [
+ "curriculum_repo",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

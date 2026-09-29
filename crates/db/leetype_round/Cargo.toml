@@ -1,0 +1,33 @@
+[package]
+name = "leetype_round_repo"
+description = "LeetType's server-owned round corpus — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["leetype", "rounds", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+curriculum_repo = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "uuid",
+  "time",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

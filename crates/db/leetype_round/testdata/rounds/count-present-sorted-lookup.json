@@ -1,0 +1,228 @@
+{
+  "id": "count-present-sorted-lookup",
+  "algorithm": {
+    "source": "pub fn count_present(items: &[u32], queries: &[u32]) -> usize {\n    let mut count = 0;\n    for q in queries {\n        let mut found = false;\n        for x in items {\n            if x == q {\n                found = true;\n            }\n        }\n        if found {\n            count += 1;\n        }\n    }\n    count\n}\n",
+    "language": "rust",
+    "entryPoint": "count_present(items: &[u32], queries: &[u32]) -> usize",
+    "inputAlphabet": "Two slices of u32. n is queries.len() and m is items.len(); the result counts the queries that appear in items."
+  },
+  "constraintDiff": {
+    "before": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 1000
+      },
+      {
+        "dimension": "m",
+        "operator": "<=",
+        "bound": 1000
+      }
+    ],
+    "after": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 100000
+      },
+      {
+        "dimension": "m",
+        "operator": "<=",
+        "bound": 100000
+      }
+    ]
+  },
+  "budget": {
+    "operations": 100000000,
+    "wallClock": "about a second"
+  },
+  "graph": {
+    "kind": "loop",
+    "repetition": [
+      {
+        "kind": "pow",
+        "dimension": "n",
+        "exponent": 1
+      }
+    ],
+    "body": {
+      "kind": "loop",
+      "repetition": [
+        {
+          "kind": "pow",
+          "dimension": "m",
+          "exponent": 1
+        }
+      ],
+      "body": {
+        "kind": "work",
+        "cost": 1
+      }
+    }
+  },
+  "diffOptions": [
+    {
+      "member": {
+        "hunk": {
+          "path": "src/count_present.rs",
+          "oldStart": 1,
+          "newStart": 1,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "pub fn count_present(items: &[u32], queries: &[u32]) -> usize {\n"
+            },
+            {
+              "kind": "addition",
+              "text": "    let mut sorted = items.to_vec();\n    sorted.sort_unstable();\n"
+            },
+            {
+              "kind": "context",
+              "text": "    let mut count = 0;\n    for q in queries {\n"
+            },
+            {
+              "kind": "deletion",
+              "text": "        let mut found = false;\n        for x in items {\n            if x == q {\n                found = true;\n            }\n        }\n        if found {\n"
+            },
+            {
+              "kind": "addition",
+              "text": "        if sorted.binary_search(q).is_ok() {\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P6",
+        "admissible": true,
+        "propositionGloss": "Sorting items once costs m log m. Each of the n queries then costs log m instead of m."
+      },
+      "graph": {
+        "kind": "seq",
+        "children": [
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "m",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "log",
+                "dimension": "m",
+                "exponent": 1
+              },
+              {
+                "kind": "pow",
+                "dimension": "m",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "loop",
+              "repetition": [
+                {
+                  "kind": "log",
+                  "dimension": "m",
+                  "exponent": 1
+                }
+              ],
+              "body": {
+                "kind": "work",
+                "cost": 1
+              }
+            }
+          }
+        ]
+      },
+      "rescueCandidates": [],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/count_present.rs",
+          "oldStart": 6,
+          "newStart": 6,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "            if x == q {\n                found = true;\n"
+            },
+            {
+              "kind": "addition",
+              "text": "                break;\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P8",
+        "admissible": false,
+        "distractorStatement": "Stops scanning items at the first match. A query that is absent still scans every item, so the worst case is unchanged.",
+        "propositionGloss": "The break fires only on a match, so every absent query still costs m."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "n",
+            "exponent": 1
+          }
+        ],
+        "body": {
+          "kind": "loop",
+          "repetition": [
+            {
+              "kind": "pow",
+              "dimension": "m",
+              "exponent": 1
+            }
+          ],
+          "body": {
+            "kind": "work",
+            "cost": 1
+          }
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 1000
+            },
+            {
+              "dimension": "m",
+              "operator": "<=",
+              "bound": 100000
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    }
+  ]
+}

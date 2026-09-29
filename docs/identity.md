@@ -153,6 +153,23 @@ bounds one client, and `AUTH_NEW_ACCOUNTS_PER_DAY` (100) bounds the server,
 which also covers a client forging `X-Forwarded-For` to get fresh rate-limit
 buckets. An account with nothing in it costs a few hundred bytes.
 
+### Who is an operator
+
+A subject listed in `OPERATOR_SUBJECTS`, and nobody else. The operator routes
+(`/curriculum/operator/*`, `/leetype/operator/*`) rewrite what everyone is
+served, and since anyone can make an account, a session alone cannot be what
+gates them. `auth::operator::Operator` extracts a `SubjectId` first, so
+the `401`, the origin check and the hold against deletion are the same as on any
+subject-scoped route, then answers `403` unless the subject is on the list.
+Unset, nobody is an operator.
+
+The subject id is never returned to the browser. `GET /auth/session` answers
+only `{ expiresAt }`: page script has never needed a stable id that follows the
+account across devices, and handing it one for a one-time setup step would be a
+new exposure. Instead a refused subject is logged by id at `info`, and the
+operator, who configures the server and reads its log, copies it from there.
+Subject ids are random and name nobody; the nudge waker logs them already.
+
 ### Conventions
 
 - **Auth is its own context.** Its state is an `AuthContext` whose extractor is
