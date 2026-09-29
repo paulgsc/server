@@ -15,6 +15,15 @@ pub const ROUND_BYTES_CEILING: usize = 256 * 1024;
 /// member and at least one distractor, or there is nothing to select between.
 pub const MIN_DIFF_OPTIONS: usize = 2;
 
+/// The most members `D` may have: five, as a phone presents.
+///
+/// `MAX_PRESENTABLE_DIFFS` in the client's corpus lint. It also bounds the edge table:
+/// each member is a witness row, and the manifest and operator listing load
+/// every listed round's witnesses, so without it a compact body under
+/// [`ROUND_BYTES_CEILING`] could carry thousands of rows per round and the
+/// listing ceilings would bound rounds but not the response.
+pub const MAX_DIFF_OPTIONS: usize = 5;
+
 /// One member of a round's option set, as the edge table holds it: `μ` of
 /// that member, and whether it is the admissible one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,8 +81,8 @@ pub fn is_proposition_id(id: &str) -> bool {
 /// Read a round body: the **only** validation this server does on one.
 ///
 /// A JSON object no larger than [`ROUND_BYTES_CEILING`], with a string `id`,
-/// `algorithm.language` equal to `rust`, and a `diffOptions` array of at least
-/// [`MIN_DIFF_OPTIONS`] members whose `member.propositionId` is a register
+/// `algorithm.language` equal to `rust`, and a `diffOptions` array of
+/// [`MIN_DIFF_OPTIONS`] to [`MAX_DIFF_OPTIONS`] members whose `member.propositionId` is a register
 /// identifier ([`is_proposition_id`]) and `member.admissible` a boolean, true
 /// for exactly one of them. Nothing else is read: programs, constraint sets,
 /// budgets, cost graphs and hunks are `@some-ui/leetype`'s, and a new field
@@ -104,6 +113,7 @@ pub fn parse_round(body: &[u8]) -> Result<ParsedRound, Vec<Problem>> {
 	match round.get("diffOptions").and_then(Value::as_array) {
 		None => problems.push((String::from("body.diffOptions"), "must be an array")),
 		Some(options) if options.len() < MIN_DIFF_OPTIONS => problems.push((String::from("body.diffOptions"), "must have at least two members")),
+		Some(options) if options.len() > MAX_DIFF_OPTIONS => problems.push((String::from("body.diffOptions"), "must have at most five members")),
 		Some(options) => {
 			for (index, option) in options.iter().enumerate() {
 				if let Some(witness) = witness(option.get("member").and_then(Value::as_object), index, &mut problems) {
@@ -237,7 +247,8 @@ mod tests {
 
 	#[test]
 	fn every_problem_is_named_by_its_field() {
-		let cases: [(Vec<u8>, &[&str]); 9] = [
+		let six: Vec<serde_json::Value> = (0..6).map(|index| option("CW-P6", index == 0)).collect();
+		let cases: [(Vec<u8>, &[&str]); 10] = [
 			(b"not json".to_vec(), &["body"]),
 			(b"[1, 2]".to_vec(), &["body"]),
 			(
@@ -246,6 +257,7 @@ mod tests {
 			),
 			(round(&json!("nope")), &["body.diffOptions"]),
 			(round(&json!([option("CW-P6", true)])), &["body.diffOptions"]),
+			(round(&json!(six)), &["body.diffOptions"]),
 			(round(&json!([option("CW-P6", true), option("CW-P7", true)])), &["body.diffOptions"]),
 			(round(&json!([option("CW-P6", false), option("CW-P7", false)])), &["body.diffOptions"]),
 			(

@@ -15,7 +15,8 @@ pub mod repository;
 
 pub use importer::{import_dir, ImportError, ImportReport};
 pub use model::{
-	content_hash, is_plain_key, is_proposition_id, parse_round, validate_round, ParsedRound, Problem, RoundEntry, Witness, MIN_DIFF_OPTIONS, ROUND_BYTES_CEILING,
+	content_hash, is_plain_key, is_proposition_id, parse_round, validate_round, ParsedRound, Problem, RoundEntry, Witness, MAX_DIFF_OPTIONS, MIN_DIFF_OPTIONS,
+	ROUND_BYTES_CEILING,
 };
 pub use repository::{Change, RoundRepository, WitnessingRound, WriteError, MANIFEST_CEILING, OPERATOR_LISTING_CEILING};
 

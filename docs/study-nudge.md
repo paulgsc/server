@@ -1355,7 +1355,9 @@ manifest's `witnesses` already give a client every edge of every listed round.
 **What the server checks** (`leetype_round_repo::parse_round`, the only reading
 of a body it does): a JSON object within `ROUND_BYTES_CEILING` (256 KiB), a
 string `id` equal to the key, `algorithm.language` equal to `rust`, and a
-`diffOptions` array of at least two members, each with a `member.propositionId`
+`diffOptions` array of two to five members (five is the most a phone
+presents, and it bounds each round's witness rows), each with a
+`member.propositionId`
 of the form `CW-P<n>` (1–999, no leading zero) and a boolean
 `member.admissible`, exactly one of them true. The key is held to the same
 URL-segment rule as a lesson key. On the write route each is a `422` naming its
