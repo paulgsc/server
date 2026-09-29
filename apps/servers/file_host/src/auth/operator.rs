@@ -112,7 +112,7 @@ mod tests {
 	}
 
 	fn operator_modules() -> Vec<Module<TestState>> {
-		vec![crate::routes::db::curriculum_operator()]
+		vec![crate::routes::db::curriculum_operator(), crate::routes::db::leetype_operator()]
 	}
 
 	async fn state(operators: &[&str]) -> TestState {
