@@ -86,6 +86,9 @@ pub struct NudgeContext {
 	/// #289 (TEL4): whether provisioning ranks with this subject's outcome
 	/// history — see `Config::recommender_uses_outcomes`.
 	pub recommender_uses_outcomes: bool,
+	/// Account deletion's lock, shared with `AppState::auth`, which the waker
+	/// holds around its writes (`docs/identity.md` invariant 9).
+	pub deletion: auth::DeletionLock,
 }
 
 #[derive(Clone)]
@@ -135,8 +138,8 @@ impl AppState {
 			pipeline_publisher,
 		};
 
-		let nudge = Self::build_nudge(&config)?;
 		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
+		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 
 		Ok(Self { core, realtime, nudge, auth })
 	}
@@ -156,7 +159,7 @@ impl AppState {
 	/// fuse: every subscription is made with one public key, and signing with
 	/// the other returns `403` on all of them, forever, until every browser
 	/// re-subscribes.
-	fn build_nudge(config: &Config) -> anyhow::Result<Option<NudgeContext>> {
+	fn build_nudge(config: &Config, deletion: auth::DeletionLock) -> anyhow::Result<Option<NudgeContext>> {
 		use push_kit::VapidIdentity;
 
 		let identity = VapidIdentity::from_config(config.vapid_private_key.as_deref(), config.vapid_public_key.as_deref(), &config.vapid_subject);
@@ -200,6 +203,7 @@ impl AppState {
 			delivery_timeout: std::time::Duration::from_millis(config.push_delivery_timeout_ms),
 			pass_deadline: std::time::Duration::from_millis(config.waker_pass_deadline_ms),
 			recommender_uses_outcomes: config.recommender_uses_outcomes,
+			deletion,
 		}))
 	}
 }

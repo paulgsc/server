@@ -62,18 +62,38 @@ struct Inner {
 	ceremonies: CeremonyStore,
 	settings: Settings,
 	signups: SignupCap,
-	/// Orders account deletion against everything that writes subject-scoped
-	/// rows (`docs/identity.md` invariant 9).
-	///
-	/// A request holds a read guard from before its session is looked up
-	/// until it finishes, a waker pass holds one for the whole pass
-	/// (`nudge::waker::pass`), and a deletion holds the write guard. A write
-	/// can therefore never land for a subject whose account was deleted after
-	/// its writer read that subject. The subject tables have no foreign key to
-	/// `account` to refuse such a write, so this lock is what refuses it.
-	/// Deletions are rare and short, and the lock is fair, so no request
-	/// waits behind more than one deletion.
-	deletion: Arc<RwLock<()>>,
+	deletion: DeletionLock,
+}
+
+/// Orders account deletion against everything that writes subject-scoped
+/// rows (`docs/identity.md` invariant 9).
+///
+/// The subject tables have no foreign key to `account` to refuse a write for
+/// a deleted subject, so this lock is what refuses it. A deletion holds the
+/// write guard for its one transaction. A writer holds a read guard across
+/// its check that the subject still exists and its write:
+/// - a request, from before its session is looked up until it finishes
+///   (`subject::SubjectId`);
+/// - the nudge waker, around each write plus a re-check of the subject's gate
+///   row (`nudge::waker::unless_deleted`), never across a push delivery.
+///
+/// Every hold is short, and the lock is fair, so nothing waits behind more
+/// than one deletion, and a deletion never waits for more than the writes in
+/// flight.
+#[derive(Clone, Default)]
+pub struct DeletionLock(Arc<RwLock<()>>);
+
+impl DeletionLock {
+	/// A writer's hold. See the type's docs.
+	pub(crate) async fn hold(&self) -> OwnedRwLockReadGuard<()> {
+		Arc::clone(&self.0).read_owned().await
+	}
+
+	/// A deletion's hold: waits for every writer in flight, and holds off
+	/// new ones until it is dropped.
+	pub(crate) async fn exclude(&self) -> OwnedRwLockWriteGuard<()> {
+		Arc::clone(&self.0).write_owned().await
+	}
 }
 
 /// What `from_config` reads, gathered so tests can build one directly.
@@ -184,7 +204,7 @@ impl AuthContext {
 				ceremonies: CeremonyStore::default(),
 				signups: SignupCap::new(settings.new_accounts_per_day),
 				settings,
-				deletion: Arc::new(RwLock::new(())),
+				deletion: DeletionLock::default(),
 			}),
 		}
 	}
@@ -238,17 +258,22 @@ impl AuthContext {
 		self.inner.settings.session_ttl_seconds
 	}
 
-	/// Held by whatever writes subject-scoped rows (a request acting for a
-	/// subject, a waker pass) for as long as it runs. See `Inner::deletion`.
-	pub(crate) async fn hold_against_deletion(&self) -> OwnedRwLockReadGuard<()> {
-		Arc::clone(&self.inner.deletion).read_owned().await
+	/// The lock account deletion shares with every writer of subject-scoped
+	/// rows; the nudge waker gets its copy from here.
+	#[must_use]
+	pub fn deletion_lock(&self) -> DeletionLock {
+		self.inner.deletion.clone()
 	}
 
-	/// Held by an account deletion: waits for every writer already holding
-	/// [`Self::hold_against_deletion`] to finish, and holds off new ones until
-	/// it commits.
+	/// Held by a request acting for a subject, for as long as it runs. See
+	/// [`DeletionLock`].
+	pub(crate) async fn hold_against_deletion(&self) -> OwnedRwLockReadGuard<()> {
+		self.inner.deletion.hold().await
+	}
+
+	/// Held by an account deletion. See [`DeletionLock::exclude`].
 	pub(crate) async fn exclude_requests(&self) -> OwnedRwLockWriteGuard<()> {
-		Arc::clone(&self.inner.deletion).write_owned().await
+		self.inner.deletion.exclude().await
 	}
 
 	/// Whether `GET /auth/session` may extend the session it reports.
