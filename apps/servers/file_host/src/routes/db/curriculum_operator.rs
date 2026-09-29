@@ -21,20 +21,25 @@
 //! The paths sit a segment below `/curriculum/:key` so they shadow no lesson
 //! key, the way `/curriculum/manifest` shadows `manifest`.
 //!
-//! **Trust model:** `file_host`'s own, and no more — the CORS origin allowlist,
-//! no authentication (`docs/study-nudge.md`, "Trust model, stated plainly").
-//! Anyone who can reach the LAN can rewrite the lessons everyone is served.
-//! The client puts its CRM in a LAN-only build, which is a bundling choice and
-//! not an access control. No `SubjectId`: a lesson is corpus-wide.
+//! **Trust model:** an operator only. Every handler takes
+//! `auth::operator::Operator`: a passkey session (`401` without one, the
+//! origin check on writes) whose subject is listed in `OPERATOR_SUBJECTS`
+//! (`403` otherwise, and for everyone while that is unset). Anyone can make an
+//! account, so a session alone would gate nothing (`docs/study-nudge.md`,
+//! "Trust model, stated plainly"). The client puts its CRM in a LAN-only
+//! build too, which is a bundling choice and not an access control. The
+//! subject is who may write, never whose the lesson is: a lesson is
+//! corpus-wide.
 //!
 //! The server stays blind to what a lesson is: `body` is stored verbatim and
 //! checked only for being JSON under `curriculum_repo::LESSON_BYTES_CEILING`.
 //! The client checks the lesson itself before it writes (`intakeLesson`).
 
+use crate::auth::AuthContext;
 use crate::handlers::db::curriculum_operator as handlers;
 use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
-use crate::{AppState, Config};
+use crate::Config;
 use axum::{
 	extract::FromRef,
 	http::{
@@ -42,12 +47,14 @@ use axum::{
 		Method,
 	},
 };
+use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 
 pub fn curriculum_operator<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
-	AppState: FromRef<S>,
+	SqlitePool: FromRef<S>,
+	AuthContext: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.get("/curriculum/operator/lessons", handlers::get_lessons)

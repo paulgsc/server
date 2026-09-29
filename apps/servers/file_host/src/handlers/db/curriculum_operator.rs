@@ -1,7 +1,12 @@
 //! Handlers for `routes::db::curriculum_operator`. See that module's doc
 //! comment for the surface; this is the validate-and-write half.
+//!
+//! Every handler takes an [`Operator`]: a signed-in subject listed in
+//! `OPERATOR_SUBJECTS` (`auth::operator`). Each takes the pool alone rather
+//! than `AppState`, so the gate can be tested through the real router.
 
-use crate::{AppState, FileHostError};
+use crate::auth::operator::Operator;
+use crate::FileHostError;
 use axum::{
 	extract::{Path, State},
 	Json,
@@ -184,43 +189,51 @@ pub(crate) async fn set_listed(db: &SqlitePool, key: &str, listed: bool, now: &s
 /// `GET /curriculum/operator/lessons`
 ///
 /// # Errors
-/// 400 for a table over the listing ceiling; 500 for a storage failure.
-#[axum::debug_handler]
+/// 401 without a session, 403 for a subject that is not an operator, 400 for
+/// a table over the listing ceiling, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "curriculum_operator_listing", skip_all, fields(otel.kind = "server"))]
-pub async fn get_lessons(State(state): State<AppState>) -> Result<Json<OperatorListing>, FileHostError> {
-	listing(&state.core.shared_db).await.map(Json)
+pub async fn get_lessons(_operator: Operator, State(db): State<SqlitePool>) -> Result<Json<OperatorListing>, FileHostError> {
+	listing(&db).await.map(Json)
 }
 
 /// `PUT /curriculum/operator/lessons/:key`
 ///
 /// # Errors
-/// 422 for a body that fails validation, 400 for a new lesson past the
-/// manifest ceiling, and 500 for a storage failure.
-#[axum::debug_handler]
+/// 401/403 as for every operator route, 422 for a body that fails
+/// validation, 400 for a new lesson past the manifest ceiling, and 500 for a
+/// storage failure.
+#[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "curriculum_operator_write", skip_all, fields(otel.kind = "server"))]
-pub async fn put_lesson(State(state): State<AppState>, Path(key): Path<String>, Json(request): Json<LessonWrite>) -> Result<Json<LessonWritten>, FileHostError> {
-	write(&state.core.shared_db, &key, &request, &Utc::now().to_rfc3339()).await.map(Json)
+pub async fn put_lesson(
+	_operator: Operator,
+	State(db): State<SqlitePool>,
+	Path(key): Path<String>,
+	Json(request): Json<LessonWrite>,
+) -> Result<Json<LessonWritten>, FileHostError> {
+	write(&db, &key, &request, &Utc::now().to_rfc3339()).await.map(Json)
 }
 
 /// `POST /curriculum/operator/lessons/:key/retire`
 ///
 /// # Errors
-/// 404 for an unknown key; 500 for a storage failure.
-#[axum::debug_handler]
+/// 401/403 as for every operator route, 404 for an unknown key, and 500 for
+/// a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "curriculum_operator_retire", skip_all, fields(otel.kind = "server"))]
-pub async fn retire_lesson(State(state): State<AppState>, Path(key): Path<String>) -> Result<Json<OperatorLesson>, FileHostError> {
-	set_listed(&state.core.shared_db, &key, false, &Utc::now().to_rfc3339()).await.map(Json)
+pub async fn retire_lesson(_operator: Operator, State(db): State<SqlitePool>, Path(key): Path<String>) -> Result<Json<OperatorLesson>, FileHostError> {
+	set_listed(&db, &key, false, &Utc::now().to_rfc3339()).await.map(Json)
 }
 
 /// `POST /curriculum/operator/lessons/:key/restore`
 ///
 /// # Errors
-/// 404 for an unknown key, 400 past the manifest ceiling, and 500 for a
-/// storage failure.
-#[axum::debug_handler]
+/// 401/403 as for every operator route, 404 for an unknown key, 400 past the
+/// manifest ceiling, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "curriculum_operator_restore", skip_all, fields(otel.kind = "server"))]
-pub async fn restore_lesson(State(state): State<AppState>, Path(key): Path<String>) -> Result<Json<OperatorLesson>, FileHostError> {
-	set_listed(&state.core.shared_db, &key, true, &Utc::now().to_rfc3339()).await.map(Json)
+pub async fn restore_lesson(_operator: Operator, State(db): State<SqlitePool>, Path(key): Path<String>) -> Result<Json<OperatorLesson>, FileHostError> {
+	set_listed(&db, &key, true, &Utc::now().to_rfc3339()).await.map(Json)
 }
 
 #[cfg(test)]

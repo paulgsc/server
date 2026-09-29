@@ -1319,7 +1319,8 @@ lesson *is* stays the client's to check (`intakeLesson`). Adding or restoring a
 lesson past `MANIFEST_CEILING` listed is a `400`, so the manifest never starts
 refusing because of a write. The listing is bounded by
 `OPERATOR_LISTING_CEILING` and refused, never truncated, over it. These routes
-change what everyone is served under the trust model below.
+change what everyone is served, so they answer only a subject listed in
+`OPERATOR_SUBJECTS` (see the trust model below).
 
 ### Subject stats
 
@@ -1453,12 +1454,32 @@ invariant `#253` argues for elsewhere applies to this new surface too.
 
 ### Trust model, stated plainly
 
-These routes carry **no authentication** beyond the CORS origin allowlist.
-Anyone who can reach the LAN can register a push subscription — and would then
-receive this person's study reminders — or read and write sessions, or rewrite
-and retire the lessons everyone is served. That is the
-same trust model as the rest of `file_host`. It is written down here so it stays
-a conscious acceptance rather than an oversight.
+Three tiers, and every route above is in exactly one:
+
+- **Subject routes** (push, signals, outcomes, presence, sessions, subject
+  stats) need a passkey session (`docs/identity.md`, "Passkey auth"). Without
+  one they answer `401`; a state-changing request from an untrusted origin is a
+  `403`. Each acts only for the session's subject, so one person cannot read
+  another's sessions or receive their reminders.
+- **Operator routes** (`/curriculum/operator/*`, `/leetype/operator/*`) change
+  what *everyone* is served. They need a session **whose subject is listed in
+  `OPERATOR_SUBJECTS`**, and answer `403` to every other subject
+  (`auth::operator`). Anyone who can reach the server can make an account, so a
+  session alone would gate nothing. With `OPERATOR_SUBJECTS` unset nobody is an
+  operator, the routes refuse everyone, and startup logs a warning saying so.
+  A refused subject is logged by id at `info`: that log line is how an operator
+  finds the id to list (see `example.env`).
+- **Public routes** carry no authentication beyond the CORS origin allowlist.
+  The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`,
+  `/leetype/rounds`, `/leetype/rounds/:id`) and `GET /push/vapid-key` serve the
+  same thing to everyone and hold nothing about whoever asks.
+  `DELETE /push/subscriptions` takes no session either: it removes the
+  subscription whose endpoint URL the request names, which in practice only the
+  browser holding it knows.
+
+The CORS allowlist is not an access control on any of them: it only decides
+which pages a browser lets read the answer. It is written down here so each tier
+stays a conscious choice rather than an oversight.
 
 ---
 

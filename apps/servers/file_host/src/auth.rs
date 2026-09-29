@@ -18,6 +18,9 @@
 //!   one-time `AUTH_LEGACY_CLAIM_TOKEN`, never to whoever registers first.
 //! - [`crate::subject::SubjectId`]'s extractor is the one place a request's
 //!   session becomes a subject. Everything downstream is unchanged by auth.
+//! - An operator is a subject listed in `OPERATOR_SUBJECTS`, nothing more
+//!   ([`operator::Operator`]). Signing in makes nobody an operator: anyone can
+//!   make an account.
 //!
 //! [`AuthContext`] is its own state, bounded on `AuthContext: FromRef<S>` only,
 //! per the convention docs/identity.md records: the auth routes and their tests
@@ -26,6 +29,7 @@
 pub mod ceremony;
 pub mod cookie;
 pub mod csrf;
+pub mod operator;
 pub mod passkey;
 
 use crate::{redacted::Redacted, Config, FileHostError};
@@ -106,6 +110,9 @@ struct Settings {
 	/// `AUTH_LEGACY_CLAIM_TOKEN`: the one-time secret that lets a new account
 	/// take the pre-auth subject. `None` means nobody can.
 	legacy_claim: Option<Redacted<String>>,
+	/// `OPERATOR_SUBJECTS`, trimmed, empties dropped. Empty means nobody is an
+	/// operator. See [`operator`].
+	operators: Vec<String>,
 }
 
 /// A ceiling on accounts created per UTC day, across the whole server.
@@ -178,6 +185,12 @@ impl AuthContext {
 			tracing::warn!("passkey auth is not configured (WEBAUTHN_RP_ID is unset); nobody can sign in, and subject-scoped routes will answer 401");
 			None
 		};
+		let operators = operator::parse_subjects(&config.operator_subjects);
+		if operators.is_empty() {
+			tracing::warn!("OPERATOR_SUBJECTS is unset; the operator routes (lesson and LeetType round writes) are disabled and answer 403 to everyone");
+		} else {
+			tracing::info!(operators = operators.len(), "operator routes are enabled for the subjects in OPERATOR_SUBJECTS");
+		}
 		let trusted_origins = config
 			.allowed_origins
 			.iter()
@@ -192,6 +205,7 @@ impl AuthContext {
 				new_accounts_per_day: config.auth_new_accounts_per_day,
 				trusted_origins,
 				legacy_claim: config.auth_legacy_claim_token.clone().filter(|token| !token.is_empty()).map(Redacted::new),
+				operators,
 			},
 		))
 	}
@@ -216,6 +230,7 @@ impl AuthContext {
 			new_accounts_per_day,
 			trusted_origins: vec![String::from("https://app.test")],
 			legacy_claim: legacy_claim.map(|token| Redacted::new(token.to_owned())),
+			operators: Vec::new(),
 		}
 	}
 
@@ -230,6 +245,15 @@ impl AuthContext {
 	pub(crate) fn for_tests_with_claim(pool: SqlitePool, new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
 		Self::new(pool, Some(relying_party), Self::test_settings(new_accounts_per_day, legacy_claim))
+	}
+
+	/// A context for tests whose `OPERATOR_SUBJECTS` is `operators`.
+	#[cfg(test)]
+	pub(crate) fn for_tests_with_operators(pool: SqlitePool, operators: &[&str]) -> Self {
+		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
+		let mut settings = Self::test_settings(100, None);
+		settings.operators = operators.iter().map(|&subject| subject.to_owned()).collect();
+		Self::new(pool, Some(relying_party), settings)
 	}
 
 	/// A context for tests, with `WEBAUTHN_RP_ID` unset.
@@ -306,6 +330,12 @@ impl AuthContext {
 			// about how much of the token a guess got right.
 			Sha256::digest(token.expose().as_bytes()) == Sha256::digest(offered.as_bytes())
 		})
+	}
+
+	/// Whether `subject` is listed in `OPERATOR_SUBJECTS`. Always false when
+	/// none is configured.
+	pub(crate) fn is_operator(&self, subject: &str) -> bool {
+		self.inner.settings.operators.iter().any(|operator| operator == subject)
 	}
 
 	pub(crate) fn signups_have_room(&self, now: i64) -> bool {
