@@ -114,7 +114,13 @@ once).
   first passkey's sync ecosystem.
 - **Leave.** `/auth/sign-out` ends this session, `/auth/sign-out-everywhere`
   ends all of them, and `DELETE /auth/account` deletes the subject's rows from
-  every table in `subject::SUBJECT_SCOPED_TABLES`, in one transaction.
+  every table in `subject::SUBJECT_SCOPED_TABLES`, in one transaction. The
+  deletion first waits for every request already acting for a subject to
+  finish, and holds new ones off until it commits (`AuthContext`'s deletion
+  lock, held by `SubjectId` for the whole request). So a write resolved
+  before the deletion is deleted with the rest, and one after it finds no
+  session. Nothing in the subject tables references `account`, so the lock is
+  what stops a write outliving its account.
 
 ### The session
 
@@ -122,6 +128,9 @@ A session is 32 random bytes, base64url in a `__Host-session` cookie:
 `Path=/`, `HttpOnly`, `Secure`, `SameSite=Strict`. Only its SHA-256 is stored,
 so a copy of the database opens no session. It lasts `AUTH_SESSION_DAYS` (30)
 and slides: `GET /auth/session` past the halfway point renews it to a full term.
+Renewal changes state, so it is held to the origin check below even though it
+is a GET. A sibling page embedding the URL as an image learns nothing and
+extends nothing.
 
 `SameSite=Strict` keeps the cookie off cross-*site* requests, but a page on a
 sibling subdomain is same-site, and its form posts carry the cookie. So every
@@ -224,11 +233,17 @@ nowhere is marked as such and belongs to review.
    `auth::loggable`. A companion test proves that filter is needed.
 
 9. **An account takes all its rows with it.** Deleting an account deletes the
-   subject's rows from every subject-scoped table.
+   subject's rows from every subject-scoped table, including a row a request
+   that was already running when the deletion began writes.
    *Enforced by* `subject::SUBJECT_SCOPED_TABLES` being both the list
    `DELETE /auth/account` walks and the list invariant 1's schema test holds
    every table with a `subject_id` to, and by
    `deleting_an_account_removes_its_rows_from_every_subject_scoped_table_and_nobody_elses`.
+   The in-flight writes are covered by `SubjectId` holding the deletion lock
+   for the whole request, and by
+   `a_write_already_in_flight_does_not_outlive_the_account_it_was_for`. The
+   waker needs no lock: its log insert shares a transaction with a claim on
+   the subject's `engagement_gate` row, which a deletion removes.
 
 10. **The auth tables keep no timeline.** `account`, `passkey` and
     `auth_session` hold exactly the columns listed under "What an account is":

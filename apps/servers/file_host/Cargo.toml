@@ -71,7 +71,7 @@ sqlx = { workspace = true, features = [
 ] }
 regex = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tower = { workspace = true, features = ["limit", "load-shed"] }
 tower-http = { workspace = true, features = ["fs", "limit"] }
 hex = "0.4.3"

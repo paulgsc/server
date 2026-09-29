@@ -36,6 +36,7 @@ use cookie::SessionToken;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use webauthn_rs::prelude::{Url, Webauthn, WebauthnBuilder};
 
 /// What the relying party calls itself in a passkey prompt.
@@ -61,6 +62,16 @@ struct Inner {
 	ceremonies: CeremonyStore,
 	settings: Settings,
 	signups: SignupCap,
+	/// Orders account deletion against requests acting for a subject.
+	///
+	/// A request holds a read guard from before its session is looked up
+	/// until it finishes, and a deletion holds the write guard. A write can
+	/// therefore never land for a subject whose account was deleted after
+	/// that request resolved it. The subject tables have no foreign key to
+	/// `account` to refuse such a write, so this lock is what refuses it.
+	/// Deletions are rare and short, and the lock is fair, so no request
+	/// waits behind more than one deletion.
+	deletion: Arc<RwLock<()>>,
 }
 
 /// What `from_config` reads, gathered so tests can build one directly.
@@ -171,6 +182,7 @@ impl AuthContext {
 				ceremonies: CeremonyStore::default(),
 				signups: SignupCap::new(settings.new_accounts_per_day),
 				settings,
+				deletion: Arc::new(RwLock::new(())),
 			}),
 		}
 	}
@@ -222,6 +234,28 @@ impl AuthContext {
 
 	pub(crate) fn session_ttl_seconds(&self) -> i64 {
 		self.inner.settings.session_ttl_seconds
+	}
+
+	/// Held by a request acting for a subject, for as long as it runs.
+	/// See `Inner::deletion`.
+	pub(crate) async fn hold_against_deletion(&self) -> OwnedRwLockReadGuard<()> {
+		Arc::clone(&self.inner.deletion).read_owned().await
+	}
+
+	/// Held by an account deletion: waits for every request already acting
+	/// for a subject to finish, and holds off new ones until it commits.
+	pub(crate) async fn exclude_requests(&self) -> OwnedRwLockWriteGuard<()> {
+		Arc::clone(&self.inner.deletion).write_owned().await
+	}
+
+	/// Whether `GET /auth/session` may extend the session it reports.
+	///
+	/// Extending changes state, and a GET is exempt from [`Self::check_origin`].
+	/// Without this check a sibling page could keep a session alive forever by
+	/// embedding the URL as an image. So renewal is held to the same test a
+	/// state-changing request passes.
+	pub(crate) fn may_renew(&self, headers: &HeaderMap) -> bool {
+		csrf::allowed(&Method::POST, headers, &self.inner.settings.trusted_origins)
 	}
 
 	/// Refuse a state-changing request a trusted origin did not make.

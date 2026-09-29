@@ -258,7 +258,8 @@ pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: Sub
 /// `GET /auth/session`: is this browser signed in, and until when?
 ///
 /// Also where a session slides: past the half of its lifetime, it is
-/// extended to a full one and the cookie is re-issued. The app calls this
+/// extended to a full one and the cookie is re-issued, when the request
+/// comes from a trusted origin (`AuthContext::may_renew`). The app calls this
 /// when it opens, so a session lasts as long as the app keeps being used.
 ///
 /// # Errors
@@ -275,7 +276,8 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	};
 
 	let ttl = auth.session_ttl_seconds();
-	if live.expires_at - now < ttl / 2 {
+	// Reporting is open to any GET; extending is not (`AuthContext::may_renew`).
+	if live.expires_at - now < ttl / 2 && auth.may_renew(&headers) {
 		let expires_at = now + ttl;
 		repository.extend_session(&token.hash(), expires_at).await?;
 		return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
@@ -325,11 +327,19 @@ pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: Subje
 /// 401 without a session.
 #[instrument(name = "auth_delete_account", skip_all, fields(otel.kind = "server"))]
 pub async fn delete_account(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
-	delete_subject(&auth, subject.as_str()).await?;
+	// This request's own hold goes first, or the exclusive hold below would
+	// wait for it forever.
+	let subject = subject.release();
+	delete_subject(&auth, &subject).await?;
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
 
+/// Delete every row `subject` owns, once no request acting for a subject is
+/// still running (`AuthContext::exclude_requests`). A write such a request
+/// makes either lands first and is deleted here, or comes after a session
+/// lookup that finds nothing.
 pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<(), FileHostError> {
+	let _exclusive = auth.exclude_requests().await;
 	let mut tx = auth.pool().begin().await?;
 	for (table, _) in SUBJECT_SCOPED_TABLES {
 		// Table names come from a constant list, never from a request.
@@ -784,6 +794,80 @@ mod tests {
 		assert_eq!(whoami(&app, &first.cookie).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(whoami(&app, &second).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(whoami(&app, &stranger.cookie).await.0, StatusCode::OK);
+	}
+
+	#[tokio::test]
+	async fn a_sibling_page_cannot_keep_a_session_alive() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests(pool.clone(), 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let week_left = crate::auth::now() + 7 * 86_400;
+		sqlx::query("UPDATE auth_session SET expires_at = ?1").bind(week_left).execute(&pool).await.unwrap();
+
+		// What an `<img src=…/auth/session>` on a sibling origin sends: the
+		// cookie, `Sec-Fetch-Site: same-site`, and no `Origin`.
+		let image = [("sec-fetch-site", "same-site")];
+		let (status, set_cookie, _) = call_with(&app, Method::GET, "/auth/session", Some(&browser.cookie), None, &image).await;
+		assert_eq!(status, StatusCode::OK, "it may still read that the session is live");
+		assert!(set_cookie.is_none(), "but not re-issue it");
+		let stored: i64 = sqlx::query_scalar("SELECT expires_at FROM auth_session").fetch_one(&pool).await.unwrap();
+		assert_eq!(stored, week_left, "or extend it");
+
+		let own = [("sec-fetch-site", "same-origin")];
+		let (_, set_cookie, _) = call_with(&app, Method::GET, "/auth/session", Some(&browser.cookie), None, &own).await;
+		assert!(set_cookie.is_some(), "the app itself still slides it");
+	}
+
+	#[tokio::test]
+	async fn a_write_already_in_flight_does_not_outlive_the_account_it_was_for() {
+		use std::sync::Arc;
+		use tokio::sync::Notify;
+
+		let pool = pool().await;
+		let resolved = Arc::new(Notify::new());
+		let go = Arc::new(Notify::new());
+		// A subject-scoped write that stalls between resolving its subject
+		// and writing, which is where a deletion could otherwise slip in.
+		let write = {
+			let (pool, resolved, go) = (pool.clone(), Arc::clone(&resolved), Arc::clone(&go));
+			move |subject: SubjectId| async move {
+				resolved.notify_one();
+				go.notified().await;
+				sqlx::query("INSERT INTO presence_leases (subject_id, context_key, observed_at) VALUES (?1, 'k', 'now')")
+					.bind(subject.as_str())
+					.execute(&pool)
+					.await
+					.unwrap();
+			}
+		};
+		// A throwaway probe, not a served route, so it is not on a RouteTable.
+		#[allow(clippy::disallowed_methods)]
+		let probe = Router::new().route("/write", axum::routing::post(write));
+		let app = crate::routes::auth::auth::<AuthContext>()
+			.into_table_router()
+			.merge(probe)
+			.with_state(AuthContext::for_tests(pool.clone(), 100));
+		let browser = register(&app, &mut authenticator()).await;
+
+		let in_flight = tokio::spawn({
+			let (app, cookie) = (app.clone(), browser.cookie.clone());
+			async move { call(&app, Method::POST, "/write", Some(&cookie), None).await }
+		});
+		resolved.notified().await;
+		let deletion = tokio::spawn({
+			let (app, cookie) = (app.clone(), browser.cookie.clone());
+			async move { call(&app, Method::DELETE, "/auth/account", Some(&cookie), None).await }
+		});
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		assert!(!deletion.is_finished(), "the deletion waits for the write it would otherwise race");
+
+		go.notify_one();
+		assert_eq!(in_flight.await.unwrap().0, StatusCode::OK);
+		assert_eq!(deletion.await.unwrap().0, StatusCode::OK);
+		let leftover: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM presence_leases").fetch_one(&pool).await.unwrap();
+		assert_eq!(leftover, 0, "the write landed first, so the deletion took it too");
+		let (status, _, _) = call(&app, Method::POST, "/write", Some(&browser.cookie), None).await;
+		assert_eq!(status, StatusCode::UNAUTHORIZED, "and a write after it finds no session");
 	}
 
 	#[tokio::test]

@@ -13,6 +13,8 @@ use crate::{auth::AuthContext, FileHostError};
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use rand::RngCore;
+use std::sync::Arc;
+use tokio::sync::OwnedRwLockReadGuard;
 
 /// The subject every request acted for before auth existed.
 ///
@@ -64,21 +66,51 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 /// ```
 ///
 /// ```compile_fail
-/// let _ = file_host::subject::SubjectId("subject-forged".to_owned());
+/// let _ = file_host::subject::SubjectId { id: "subject-forged".to_owned(), _hold: todo!() };
 /// ```
+///
+/// It also carries the request's hold against the account being deleted
+/// while the request runs (`AuthContext::hold_against_deletion`), so a write
+/// a handler makes through it cannot outlive the account.
 ///
 /// Background work that already holds a stored subject id (the waker reads
 /// them back from `engagement_gate`) works with that `&str` directly; it is
 /// not deciding who a request is for, so it has no reason to mint one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubjectId(String);
+#[derive(Debug, Clone)]
+pub struct SubjectId {
+	id: String,
+	_hold: Hold,
+}
+
+/// A request's hold against its account being deleted while it runs
+/// (`AuthContext::hold_against_deletion`). Released when the last clone of
+/// the `SubjectId` carrying it is dropped.
+#[derive(Debug, Clone)]
+struct Hold {
+	_guard: Arc<OwnedRwLockReadGuard<()>>,
+}
 
 impl SubjectId {
 	#[must_use]
 	pub fn as_str(&self) -> &str {
-		&self.0
+		&self.id
+	}
+
+	/// The subject id, with this request's hold against deletion released.
+	/// Only an account deletion needs this, before it waits for every other
+	/// hold to be released.
+	pub(crate) fn release(self) -> String {
+		self.id
 	}
 }
+
+impl PartialEq for SubjectId {
+	fn eq(&self, other: &Self) -> bool {
+		self.id == other.id
+	}
+}
+
+impl Eq for SubjectId {}
 
 /// The subject id for a new account: `subject-` and 32 random hex digits.
 /// Nothing about the person, the request, or the time goes into it.
@@ -111,7 +143,13 @@ where
 		// A same-site sibling page can make the browser attach the cookie to
 		// a form post; see `auth::csrf`.
 		auth.check_origin(&parts.method, &parts.headers)?;
-		auth.session_subject(&parts.headers).await?.map(Self).ok_or(FileHostError::Unauthorized)
+		// Taken before the session is looked up: once a deletion has
+		// committed, a request that gets a hold afterwards finds no session.
+		let hold = Hold {
+			_guard: Arc::new(auth.hold_against_deletion().await),
+		};
+		let subject = auth.session_subject(&parts.headers).await?.ok_or(FileHostError::Unauthorized)?;
+		Ok(Self { id: subject, _hold: hold })
 	}
 }
 
