@@ -260,5 +260,8 @@
       ],
       "explanationPropositionId": "CW-P16"
     }
-  ]
+  ],
+  "harness": {
+    "source": "fn main() {\n    let mut n = 0usize;\n    let mut q = 0usize;\n    for arg in std::env::args().skip(1) {\n        let (dimension, value) = arg.split_once('=').expect(\"dimension=value\");\n        let value: usize = value.parse().expect(\"a size\");\n        match dimension {\n            \"n\" => n = value,\n            \"q\" => q = value,\n            other => panic!(\"unknown dimension {other}\"),\n        }\n    }\n    // Worst case: every range spans the whole slice.\n    let values: Vec<i64> = (0..n as i64).map(|i| i % 7 - 3).collect();\n    let queries: Vec<(usize, usize)> = vec![(0, n); q];\n    let sums = range_sums(&values, &queries);\n    println!(\"{} {}\", sums.len(), sums.iter().fold(0i64, |a, b| a.wrapping_add(*b)));\n}\n"
+  }
 }

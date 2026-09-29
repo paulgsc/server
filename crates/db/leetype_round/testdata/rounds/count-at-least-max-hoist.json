@@ -256,5 +256,8 @@
       ],
       "explanationPropositionId": "CW-P16"
     }
-  ]
+  ],
+  "harness": {
+    "source": "fn main() {\n    let mut n = 0usize;\n    let mut q = 0usize;\n    for arg in std::env::args().skip(1) {\n        let (dimension, value) = arg.split_once('=').expect(\"dimension=value\");\n        let value: usize = value.parse().expect(\"a size\");\n        match dimension {\n            \"n\" => n = value,\n            \"q\" => q = value,\n            other => panic!(\"unknown dimension {other}\"),\n        }\n    }\n    // Worst case: i64::MAX never appears, so no scan stops early.\n    let values: Vec<i64> = (0..n as i64).collect();\n    let queries: Vec<i64> = (0..q as i64).collect();\n    println!(\"{}\", count_at_least_max(&values, &queries));\n}\n"
+  }
 }
