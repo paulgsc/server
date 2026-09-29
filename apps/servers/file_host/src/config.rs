@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
-#[expect(
-	clippy::struct_excessive_bools,
-	reason = "each bool is an independent on/off flag read from the environment, not a state machine"
-)]
 pub struct Config {
 	/// Use JSON formatting for tracing
 	#[arg(long, env = "LOG_JSON", default_value = "false")]
