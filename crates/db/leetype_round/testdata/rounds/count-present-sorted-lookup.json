@@ -224,5 +224,8 @@
       ],
       "explanationPropositionId": "CW-P16"
     }
-  ]
+  ],
+  "harness": {
+    "source": "fn main() {\n    let mut n = 0usize;\n    let mut m = 0usize;\n    for arg in std::env::args().skip(1) {\n        let (dimension, value) = arg.split_once('=').expect(\"dimension=value\");\n        let value: usize = value.parse().expect(\"a size\");\n        match dimension {\n            \"n\" => n = value,\n            \"m\" => m = value,\n            other => panic!(\"unknown dimension {other}\"),\n        }\n    }\n    // Worst case: no query is present, so no scan stops early.\n    let items: Vec<u32> = (0..m as u32).map(|i| i * 2).collect();\n    let queries: Vec<u32> = (0..n as u32).map(|i| i * 2 + 1).collect();\n    println!(\"{}\", count_present(&items, &queries));\n}\n"
+  }
 }

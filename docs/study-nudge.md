@@ -1328,6 +1328,7 @@ change what everyone is served, so they answer only a subject listed in
 |---|---|---|
 | `GET` | `/leetype/rounds` | `{ version, rounds: [{ id, version, publishedAt, contentHash, witnesses: [{ propositionId, admissible }] }] }` — the listed rounds, by id (#327) |
 | `GET` | `/leetype/rounds/:id` | One round, verbatim, or a JSON `404` |
+| `GET` | `/leetype/rounds/:id/runs` | `{ roundId, contentHash, runs: [{ variant, bounds, sizes, result }] }` — the round's recorded `RunResult`s for its current version, or a JSON `404` (#381) |
 | `GET` | `/leetype/operator/rounds` | Every round's manifest entry plus `retiredAt`, retired rounds included — the operator's view |
 | `PUT` | `/leetype/operator/rounds/:id` | Write one round, `{ body }` (the round's JSON as text); answers `{ change, round }` |
 | `POST` | `/leetype/operator/rounds/:id/retire` | Take a round out of the manifest, without deleting it; answers the round |
@@ -1383,8 +1384,21 @@ body, so no `metadataChanged`. The operator routes answer only a subject in
 `curriculum_publication` or the waker, so a new or edited round is never
 announced as new material and there is no first-import baseline to protect.
 Whether LeetType should announce new rounds is left for later, and would be its
-own change. Also not here yet: an execution transcript per round, which needs
-an execution route (`paulgsc/some-ui#1226`) this server does not have.
+own change.
+
+**Runs are recorded, not executed on request** (#381, LTY-EXEC). Each round's
+execution transcript — for `A` and each `A + d`, at the bounds of
+`constraintDiff.before` and of `constraintDiff.after`, the client's
+`RunResult` — is produced offline by `record-leetype-runs` (the one caller of
+`leetype_runner`, which compiles the round's programs with its `harness` using
+`rustc`), stored in `leetype_round_run` against the round's content hash, and
+served by `GET /leetype/rounds/:id/runs` for the current hash only: an edited
+round answers `runs: []` until it is recorded again. The server itself compiles
+and executes nothing. `dump-leetype-snapshot` writes the listed rounds and
+their runs as static files for the GitHub Pages build (#328). Nothing about a
+run reaches the ledger, the sampler or the waker. The design, its limits and
+the options rejected are in
+[`apps/servers/file_host/docs/leetype-execution.md`](../apps/servers/file_host/docs/leetype-execution.md).
 
 To bring the client's export across (`packages/ui/leetype/corpus/rounds/` in
 `paulgsc/some-ui`: `manifest.json`, `{ "rounds": ["<id>", …] }`, plus one
@@ -1394,6 +1408,8 @@ To bring the client's export across (`packages/ui/leetype/corpus/rounds/` in
 DATABASE_URL=sqlite:///path/to/file_host.db \
   cargo run -q --bin import-leetype-rounds -- path/to/corpus/rounds --dry-run
 # then, if the report looks right, without --dry-run
+# and then, on a machine with rustc, record the new versions' runs
+DATABASE_URL=sqlite:///path/to/file_host.db cargo run -q --bin record-leetype-runs
 ```
 
 It is idempotent in the same way as `import-curriculum`: unchanged bytes are

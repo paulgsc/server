@@ -1,0 +1,29 @@
+[package]
+name = "leetype_runner"
+description = "Compiles and runs a LeetType round's programs offline, recording one RunResult per variant and constraint set"
+readme = "README.md"
+categories = ["development-tools"]
+keywords = ["leetype", "rounds", "runner", "rustc"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+leetype_round_repo = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
+# A fresh directory per round, removed when the round is done.
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
