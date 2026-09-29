@@ -1,0 +1,6 @@
+{
+  "rounds": [
+    "count-present-sorted-lookup",
+    "has-duplicate-sort-adjacent"
+  ]
+}

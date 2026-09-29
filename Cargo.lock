@@ -1430,6 +1430,7 @@ dependencies = [
  "hex",
  "intervention",
  "lazy_static",
+ "leetype_round_repo",
  "metrics",
  "metrics-util",
  "mood_event",

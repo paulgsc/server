@@ -1,0 +1,189 @@
+{
+  "id": "has-duplicate-sort-adjacent",
+  "algorithm": {
+    "language": "rust",
+    "entryPoint": "has_duplicate(values: &[i64]) -> bool",
+    "inputAlphabet": "One slice of i64 of length n; the result is whether any value occurs twice.",
+    "source": "pub fn has_duplicate(values: &[i64]) -> bool {\n    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j && values[i] == values[j] {\n                return true;\n            }\n        }\n    }\n    false\n}\n"
+  },
+  "constraintDiff": {
+    "before": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 1000
+      }
+    ],
+    "after": [
+      {
+        "dimension": "n",
+        "operator": "<=",
+        "bound": 100000
+      }
+    ]
+  },
+  "budget": {
+    "operations": 100000000,
+    "wallClock": "about a second"
+  },
+  "graph": {
+    "kind": "loop",
+    "repetition": [
+      {
+        "kind": "pow",
+        "dimension": "n",
+        "exponent": 1
+      }
+    ],
+    "body": {
+      "kind": "loop",
+      "repetition": [
+        {
+          "kind": "pow",
+          "dimension": "n",
+          "exponent": 1
+        }
+      ],
+      "body": {
+        "kind": "work",
+        "cost": 1
+      }
+    }
+  },
+  "diffOptions": [
+    {
+      "member": {
+        "hunk": {
+          "path": "src/has_duplicate.rs",
+          "oldStart": 1,
+          "newStart": 1,
+          "segments": [
+            {
+              "kind": "context",
+              "text": "pub fn has_duplicate(values: &[i64]) -> bool {\n"
+            },
+            {
+              "kind": "deletion",
+              "text": "    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j && values[i] == values[j] {\n                return true;\n            }\n        }\n    }\n"
+            },
+            {
+              "kind": "addition",
+              "text": "    let mut sorted = values.to_vec();\n    sorted.sort_unstable();\n    for i in 1..sorted.len() {\n        if sorted[i - 1] == sorted[i] {\n            return true;\n        }\n    }\n"
+            },
+            {
+              "kind": "context",
+              "text": "    false\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P7",
+        "admissible": true,
+        "propositionGloss": "Sorting puts equal values next to each other, so one pass over neighbours replaces comparing every pair."
+      },
+      "graph": {
+        "kind": "seq",
+        "children": [
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "log",
+                "dimension": "n",
+                "exponent": 1
+              },
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          },
+          {
+            "kind": "loop",
+            "repetition": [
+              {
+                "kind": "pow",
+                "dimension": "n",
+                "exponent": 1
+              }
+            ],
+            "body": {
+              "kind": "work",
+              "cost": 1
+            }
+          }
+        ]
+      },
+      "rescueCandidates": [],
+      "explanationPropositionId": "CW-P16"
+    },
+    {
+      "member": {
+        "hunk": {
+          "path": "src/has_duplicate.rs",
+          "oldStart": 3,
+          "newStart": 3,
+          "segments": [
+            {
+              "kind": "deletion",
+              "text": "        for j in 0..values.len() {\n            if i != j && values[i] == values[j] {\n"
+            },
+            {
+              "kind": "addition",
+              "text": "        for j in (i + 1)..values.len() {\n            if values[i] == values[j] {\n"
+            }
+          ]
+        },
+        "propositionId": "CW-P9",
+        "admissible": false,
+        "distractorStatement": "Compares each pair once instead of twice. That halves the work, and the work still grows with the square of n.",
+        "propositionGloss": "The inner loop now covers only the upper triangle: about half of n squared comparisons."
+      },
+      "graph": {
+        "kind": "loop",
+        "repetition": [
+          {
+            "kind": "pow",
+            "dimension": "n",
+            "exponent": 2
+          }
+        ],
+        "body": {
+          "kind": "work",
+          "cost": 0.5
+        }
+      },
+      "rescueCandidates": [
+        {
+          "constraints": [
+            {
+              "dimension": "n",
+              "operator": "<=",
+              "bound": 14000
+            }
+          ],
+          "propositionId": "CW-P4"
+        }
+      ],
+      "explanationPropositionId": "CW-P16"
+    }
+  ]
+}
