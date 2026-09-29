@@ -1,10 +1,10 @@
 {
   "id": "has-duplicate-sort-adjacent",
   "algorithm": {
+    "source": "pub fn has_duplicate(values: &[i64]) -> bool {\n    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j && values[i] == values[j] {\n                return true;\n            }\n        }\n    }\n    false\n}\n",
     "language": "rust",
     "entryPoint": "has_duplicate(values: &[i64]) -> bool",
-    "inputAlphabet": "One slice of i64 of length n; the result is whether any value occurs twice.",
-    "source": "pub fn has_duplicate(values: &[i64]) -> bool {\n    for i in 0..values.len() {\n        for j in 0..values.len() {\n            if i != j && values[i] == values[j] {\n                return true;\n            }\n        }\n    }\n    false\n}\n"
+    "inputAlphabet": "One slice of i64 of length n; the result is whether any value occurs twice."
   },
   "constraintDiff": {
     "before": [

@@ -1,10 +1,10 @@
 {
   "id": "count-present-sorted-lookup",
   "algorithm": {
+    "source": "pub fn count_present(items: &[u32], queries: &[u32]) -> usize {\n    let mut count = 0;\n    for q in queries {\n        let mut found = false;\n        for x in items {\n            if x == q {\n                found = true;\n            }\n        }\n        if found {\n            count += 1;\n        }\n    }\n    count\n}\n",
     "language": "rust",
     "entryPoint": "count_present(items: &[u32], queries: &[u32]) -> usize",
-    "inputAlphabet": "Two slices of u32. n is queries.len() and m is items.len(); the result counts the queries that appear in items.",
-    "source": "pub fn count_present(items: &[u32], queries: &[u32]) -> usize {\n    let mut count = 0;\n    for q in queries {\n        let mut found = false;\n        for x in items {\n            if x == q {\n                found = true;\n            }\n        }\n        if found {\n            count += 1;\n        }\n    }\n    count\n}\n"
+    "inputAlphabet": "Two slices of u32. n is queries.len() and m is items.len(); the result counts the queries that appear in items."
   },
   "constraintDiff": {
     "before": [
