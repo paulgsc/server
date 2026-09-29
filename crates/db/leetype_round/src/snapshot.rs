@@ -261,11 +261,9 @@ mod tests {
 		for ids in [&["manifest"][..], &["Pair", "pair"][..]] {
 			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 			MIGRATOR.run(&pool).await.unwrap();
-			let template = std::fs::read_dir(fixture())
-				.unwrap()
-				.map(|entry| entry.unwrap().path())
-				.find(|path| path.extension().is_some_and(|ext| ext == "json"))
-				.unwrap();
+			// A named round, not the directory's first file: `read_dir` order
+			// is the filesystem's, and the fixture also holds its manifest.
+			let template = fixture().join("has-duplicate-sort-adjacent.json");
 			let mut round: serde_json::Value = serde_json::from_slice(&std::fs::read(template).unwrap()).unwrap();
 			let mut conn = pool.acquire().await.unwrap();
 			for id in ids {
