@@ -1432,6 +1432,7 @@ dependencies = [
  "lazy_static",
  "learner_shelf_repo",
  "leetype_round_repo",
+ "leetype_runner",
  "metrics",
  "metrics-util",
  "mood_event",
@@ -2408,6 +2409,18 @@ name = "leetype_round_repo"
 version = "0.0.0"
 dependencies = [
  "curriculum_repo",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "leetype_runner"
+version = "0.0.0"
+dependencies = [
+ "leetype_round_repo",
  "serde",
  "serde_json",
  "sqlx",

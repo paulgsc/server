@@ -1,5 +1,6 @@
-//! Handlers for `routes::db::leetype` (#327, LTY-SRV3). See that module's doc
-//! comment for the surface; this is the query-and-respond half.
+//! Handlers for `routes::db::leetype` (#327, LTY-SRV3; #381, LTY-EXEC). See
+//! that module's doc comment for the surface; this is the query-and-respond
+//! half.
 
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
 use crate::FileHostError;
@@ -13,7 +14,7 @@ use axum::{
 	response::{IntoResponse, Response},
 	Json,
 };
-use leetype_round_repo::{content_hash, RoundEntry, RoundRepository, Witness, MANIFEST_CEILING};
+use leetype_round_repo::{content_hash, RoundEntry, RoundRepository, RoundRuns, Witness, MANIFEST_CEILING};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tracing::instrument;
@@ -118,6 +119,48 @@ pub async fn get_round(State(db): State<SqlitePool>, headers: HeaderMap, Path(id
 	Ok(response)
 }
 
+/// One round's recorded runs for its current version — or `NotFound`.
+/// Retired rounds included, as [`round`] does.
+pub(crate) async fn round_runs(db: &SqlitePool, id: &str) -> Result<RoundRuns, FileHostError> {
+	RoundRepository::new(db.clone()).runs(id).await?.ok_or(FileHostError::NotFound)
+}
+
+/// `GET /leetype/rounds/:id/runs`
+///
+/// The round's execution transcript (#381): for `A` and each `A + d`, at the
+/// bounds of `constraintDiff.before` and of `constraintDiff.after`, the
+/// client's `RunResult`, as `leetype_runner` recorded it offline for the
+/// round's **current** content hash. A run recorded for an older body is
+/// never served; a round with nothing recorded for this version answers
+/// `runs: []`. The `ETag` is the hash of the serialised body.
+///
+/// **Its only input is the path's round id** (#381's never #1, by
+/// construction): the extractors are `State`, the headers (read for
+/// `If-None-Match` alone) and `Path<String>` — no `Json`, no `Form`, no
+/// `Query`, no body — and the route is registered for `GET` only, so any other
+/// method on the path is a `405`. There is no field a caller could put source
+/// in. Nothing is compiled or executed here; the handler reads rows.
+///
+/// # Errors
+/// 404 for an unknown id; 500 for a storage failure.
+#[axum::debug_handler]
+#[instrument(name = "leetype_round_runs", skip_all, fields(otel.kind = "server"))]
+pub async fn get_round_runs(State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
+	let runs = round_runs(&db, &id).await?;
+	// Disallowed for tracing; this is the response body itself, hashed for
+	// its tag.
+	#[allow(clippy::disallowed_methods)]
+	let body = serde_json::to_vec(&runs)?;
+	let etag = etag_value(&content_hash(&body))?;
+	if if_none_match_hits(&headers, &etag) {
+		return Ok(not_modified(etag));
+	}
+	let mut response = Response::new(Body::from(body));
+	response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+	response.headers_mut().insert(ETAG, etag);
+	Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
 	//! The logic functions over a migrated pool, and the real routes through
@@ -129,14 +172,16 @@ mod tests {
 		body::Body,
 		http::{
 			header::{CONTENT_TYPE, ETAG, IF_NONE_MATCH},
-			Request, StatusCode,
+			Method, Request, StatusCode,
 		},
 		Router,
 	};
+	use leetype_round_repo::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RoundRuns, RunResult, Variant};
 	use leetype_round_repo::{Change, RoundRepository, MANIFEST_CEILING};
 	use serde_json::{json, Value};
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqlitePool;
+	use std::collections::{BTreeMap, BTreeSet};
 	use tower::ServiceExt;
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -269,5 +314,251 @@ mod tests {
 		let error: Value = serde_json::from_str(&text).unwrap();
 		assert_eq!(error["error"]["code"], "not_found");
 		assert!(!text.contains("<html"), "an error shape, not a page");
+	}
+
+	/// A transcript with one run of each kind: `A` finished at `C`, and the
+	/// three ways a run fails.
+	fn transcript() -> Vec<RecordedRun> {
+		let error = |variant, bounds, error_class| RecordedRun {
+			variant,
+			bounds,
+			sizes: BTreeMap::from([(String::from("n"), 100_000), (String::from("q"), 100_000)]),
+			result: RunResult::Error {
+				input_size: 100_000,
+				error: ExecutionError {
+					error_class,
+					message: String::from("detail"),
+				},
+			},
+		};
+		vec![
+			RecordedRun {
+				variant: Variant::Algorithm,
+				bounds: Bounds::Before,
+				sizes: BTreeMap::from([(String::from("n"), 1_000), (String::from("q"), 1_000)]),
+				result: RunResult::Ok {
+					input_size: 1_000,
+					observation: Observation {
+						output: String::from("false"),
+						logs: vec![String::from("a note")],
+						elapsed: Elapsed { milliseconds: 4 },
+					},
+				},
+			},
+			error(Variant::Algorithm, Bounds::After, ErrorClass::BudgetExceeded),
+			error(Variant::Diff(0), Bounds::Before, ErrorClass::Compile),
+			error(Variant::Diff(1), Bounds::After, ErrorClass::Runtime),
+		]
+	}
+
+	async fn record(pool: &SqlitePool, id: &str, runs: &[RecordedRun]) {
+		let repository = RoundRepository::new(pool.clone());
+		let (hash, _) = repository.body(id).await.unwrap().unwrap();
+		assert!(repository.replace_runs(id, &hash, runs, T0).await.unwrap());
+	}
+
+	async fn send(app: &Router, method: Method, path: &str) -> StatusCode {
+		let request = Request::builder()
+			.method(method)
+			.uri(path)
+			.header(CONTENT_TYPE, "application/json")
+			.body(Body::from(r#"{"source":"fn main() {}"}"#))
+			.unwrap();
+		app.clone().oneshot(request).await.unwrap().status()
+	}
+
+	/// Through the router: an unknown round is a JSON 404; a known one with
+	/// nothing recorded is `runs: []`; a recorded one is its transcript, in
+	/// order, as JSON with the body's hash as its `ETag`, answering the tag
+	/// with `304`; and after the round's body changes, the old transcript is
+	/// not served.
+	#[tokio::test]
+	async fn the_runs_route_serves_the_current_versions_transcript() {
+		let pool = pool().await;
+		let app = app(pool.clone());
+
+		let (status, _, _, text) = get(&app, "/leetype/rounds/no-such-round/runs", None).await;
+		assert_eq!(status, StatusCode::NOT_FOUND);
+		assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["error"]["code"], "not_found");
+
+		put(&pool, "a", "CW-P6", T0).await;
+		let hash = leetype_round_repo::content_hash(body("a", "CW-P6").as_bytes());
+		let (status, etag, content_type, text) = get(&app, "/leetype/rounds/a/runs", None).await;
+		assert_eq!((status, content_type.as_deref()), (StatusCode::OK, Some("application/json")));
+		assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({ "roundId": "a", "contentHash": hash, "runs": [] }));
+		let empty_etag = etag.unwrap();
+
+		let mut shuffled = transcript();
+		shuffled.reverse();
+		record(&pool, "a", &shuffled).await;
+		let (status, etag, _, text) = get(&app, "/leetype/rounds/a/runs", None).await;
+		assert_eq!(status, StatusCode::OK);
+		let served: RoundRuns = serde_json::from_str(&text).unwrap();
+		assert_eq!(
+			served,
+			RoundRuns {
+				round_id: String::from("a"),
+				content_hash: hash,
+				runs: transcript()
+			},
+			"A first, then d0, d1; before then after"
+		);
+		let etag = etag.unwrap();
+		assert_ne!(etag, empty_etag, "the tag moves with the transcript");
+		assert_eq!(etag, String::from("\"") + &leetype_round_repo::content_hash(text.as_bytes()) + "\"");
+		let (status, again, _, text) = get(&app, "/leetype/rounds/a/runs", Some(&etag)).await;
+		assert_eq!((status, again.as_deref(), text.as_str()), (StatusCode::NOT_MODIFIED, Some(etag.as_str()), ""));
+
+		put(&pool, "a", "CW-P5", "2026-09-30T00:00:00+00:00").await;
+		let (status, _, _, text) = get(&app, "/leetype/rounds/a/runs", Some(&etag)).await;
+		assert_eq!(status, StatusCode::OK, "a new version is a new body");
+		let served: Value = serde_json::from_str(&text).unwrap();
+		assert_eq!(served["runs"], json!([]), "runs recorded for the old body are not served for the new one");
+		assert_eq!(served["contentHash"], leetype_round_repo::content_hash(body("a", "CW-P5").as_bytes()));
+	}
+
+	/// Never #1, by construction: the route answers `GET` alone, so there is
+	/// no request a caller could put source in — any other method with a
+	/// body carrying `source` is a `405` — and a `GET` with a query or a body
+	/// answers exactly what the bare path does.
+	#[tokio::test]
+	async fn the_runs_route_takes_no_input_but_the_round_id() {
+		let pool = pool().await;
+		put(&pool, "a", "CW-P6", T0).await;
+		record(&pool, "a", &transcript()).await;
+		let app = app(pool.clone());
+		for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+			assert_eq!(send(&app, method.clone(), "/leetype/rounds/a/runs").await, StatusCode::METHOD_NOT_ALLOWED, "{method}");
+		}
+		let bare = get(&app, "/leetype/rounds/a/runs", None).await;
+		let with_query = get(&app, "/leetype/rounds/a/runs?source=fn%20main()%20%7B%7D&variant=d0", None).await;
+		assert_eq!(bare, with_query);
+		let with_body = app
+			.clone()
+			.oneshot(Request::builder().uri("/leetype/rounds/a/runs").body(Body::from(r#"{"source":"fn main() {}"}"#)).unwrap())
+			.await
+			.unwrap();
+		let bytes = axum::body::to_bytes(with_body.into_body(), usize::MAX).await.unwrap();
+		assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), bare.3);
+	}
+
+	/// Never #3: every key a runs response can carry, walked through a
+	/// sample with each branch of `RunResult`, is on this list — none of them
+	/// a class, a Θ, an "admissible", or any other claim. A new field fails
+	/// here and has to be argued for. (`sizes`' keys are dimension names from
+	/// the round, not fields, and are not walked.)
+	#[test]
+	fn a_runs_response_carries_no_complexity_claim() {
+		const ALLOWED: [&str; 17] = [
+			"roundId",
+			"contentHash",
+			"runs",
+			"variant",
+			"bounds",
+			"sizes",
+			"result",
+			"kind",
+			"inputSize",
+			"observation",
+			"output",
+			"logs",
+			"elapsed",
+			"milliseconds",
+			"error",
+			"errorClass",
+			"message",
+		];
+		fn keys(value: &Value, found: &mut BTreeSet<String>) {
+			match value {
+				Value::Object(map) => {
+					for (key, value) in map {
+						found.insert(key.clone());
+						if key != "sizes" {
+							keys(value, found);
+						}
+					}
+				}
+				Value::Array(items) => items.iter().for_each(|item| keys(item, found)),
+				_ => {}
+			}
+		}
+		let sample = RoundRuns {
+			round_id: String::from("a"),
+			content_hash: String::from("h"),
+			runs: transcript(),
+		};
+		let mut found = BTreeSet::new();
+		keys(&serde_json::to_value(&sample).unwrap(), &mut found);
+		let allowed: BTreeSet<String> = ALLOWED.iter().map(|key| (*key).to_owned()).collect();
+		assert_eq!(found, allowed, "every allowed key is exercised, and nothing else appears");
+		let kinds: BTreeSet<&str> = sample
+			.runs
+			.iter()
+			.map(|run| if matches!(run.result, RunResult::Ok { .. }) { "ok" } else { "error" })
+			.collect();
+		assert_eq!(kinds.len(), 2, "both branches walked");
+	}
+
+	/// The code lines of `source` (comments dropped), and of the handler's
+	/// own file only what precedes its tests, so this test's list is not
+	/// found in itself.
+	fn code(source: &str) -> String {
+		let source = source.split(concat!("#[cfg(", "test)]")).next().unwrap_or_default();
+		source.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+	}
+
+	/// Never #5, and "no execution in the request path", as checks over the
+	/// source:
+	///
+	/// - the runs surface — this handler, its route module, and both
+	///   commands — names nothing that produces or carries a `StudySignal`
+	///   (`study_domain`, `handlers::signals`, the nudge, outcomes, sessions,
+	///   engagement). `leetype_runner`'s own closure is checked by its
+	///   `tests/nevers.rs`;
+	/// - no file of the server but `record-leetype-runs` names the runner, so
+	///   nothing the server serves can compile or execute a program.
+	#[test]
+	fn the_runs_surface_reaches_neither_a_study_signal_nor_the_runner() {
+		let surface = [
+			("handlers/db/leetype.rs", include_str!("leetype.rs")),
+			("routes/db/leetype.rs", include_str!("../../routes/db/leetype.rs")),
+			("bin/record_leetype_runs.rs", include_str!("../../bin/record_leetype_runs.rs")),
+		];
+		let forbidden = [
+			["Study", "Signal"].concat(),
+			["study", "_domain"].concat(),
+			["handlers::", "signals"].concat(),
+			["crate::", "nudge"].concat(),
+			["file_host::", "nudge"].concat(),
+			["outcome", "_repo"].concat(),
+			["session", "_repo"].concat(),
+			["engagement", "_repo"].concat(),
+			["intervention", "::"].concat(),
+		];
+		for (file, source) in surface {
+			let code = code(source);
+			for word in &forbidden {
+				assert!(!code.contains(word.as_str()), "{file} names {word}");
+			}
+		}
+
+		let runner = ["leetype", "_runner"].concat();
+		let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+		let mut stack = vec![root.clone()];
+		let mut scanned = 0;
+		while let Some(dir) = stack.pop() {
+			for entry in std::fs::read_dir(&dir).unwrap() {
+				let path = entry.unwrap().path();
+				if path.is_dir() {
+					stack.push(path);
+				} else if path.extension().is_some_and(|extension| extension == "rs") {
+					scanned += 1;
+					let relative = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
+					let names_runner = code(&std::fs::read_to_string(&path).unwrap()).contains(runner.as_str());
+					assert_eq!(names_runner, relative == "bin/record_leetype_runs.rs", "{relative}");
+				}
+			}
+		}
+		assert!(scanned > 50, "the tree was walked: {scanned} files");
 	}
 }

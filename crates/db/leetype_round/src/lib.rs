@@ -8,10 +8,15 @@
 //! and [`content_hash`] (shared with `curriculum_repo`) the one definition of
 //! "did this round change" the importer, the operator's write route and the
 //! `ETag` share.
+//!
+//! [`runs`] holds each round's recorded runs (#381): `RunResult`s that
+//! `leetype_runner` produced offline, stored per round version and served by
+//! `GET /leetype/rounds/:id/runs`.
 
 pub mod importer;
 pub mod model;
 pub mod repository;
+pub mod runs;
 
 pub use importer::{import_dir, ImportError, ImportReport};
 pub use model::{
@@ -19,6 +24,7 @@ pub use model::{
 	ROUND_BYTES_CEILING,
 };
 pub use repository::{Change, RoundRepository, WitnessingRound, WriteError, MANIFEST_CEILING, OPERATOR_LISTING_CEILING};
+pub use runs::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RoundRuns, RunResult, Variant};
 
 #[cfg(test)]
 mod tests {

@@ -72,7 +72,7 @@ pub struct WitnessingRound {
 }
 
 pub struct RoundRepository {
-	pool: SqlitePool,
+	pub(crate) pool: SqlitePool,
 }
 
 impl RoundRepository {
