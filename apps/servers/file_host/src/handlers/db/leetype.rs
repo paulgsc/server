@@ -523,6 +523,7 @@ mod tests {
 			("handlers/db/leetype.rs", include_str!("leetype.rs")),
 			("routes/db/leetype.rs", include_str!("../../routes/db/leetype.rs")),
 			("bin/record_leetype_runs.rs", include_str!("../../bin/record_leetype_runs.rs")),
+			("bin/dump_leetype_snapshot.rs", include_str!("../../bin/dump_leetype_snapshot.rs")),
 		];
 		let forbidden = [
 			["Study", "Signal"].concat(),

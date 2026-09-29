@@ -46,10 +46,15 @@ path = "src/bin/import_leetype_rounds.rs"
 
 # `record-leetype-runs` is the one target in this package that compiles and
 # runs programs (through `leetype_runner`, with `rustc` on the machine it runs
-# on); the server binary never links it. See docs/leetype-execution.md.
+# on); the server binary never links it. `dump-leetype-snapshot` writes the
+# static build's round and run files. See docs/leetype-execution.md.
 [[bin]]
 name = "record-leetype-runs"
 path = "src/bin/record_leetype_runs.rs"
+
+[[bin]]
+name = "dump-leetype-snapshot"
+path = "src/bin/dump_leetype_snapshot.rs"
 
 [dependencies]
 # path crates
