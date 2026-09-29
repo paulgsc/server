@@ -135,6 +135,81 @@ async fn the_migrated_schema_stores_nothing_that_singles_a_person_out() {
 	assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// `SUBJECT_SCOPED_TABLES` as it stood when account deletion first shipped
+/// (#395): what the oldest binary that serves `DELETE /auth/account` sweeps.
+/// Never add to this: a table created since needs the trigger below instead.
+const SWEPT_SINCE_ACCOUNT_DELETION: &[&str] = &[
+	"account",
+	"activity_outcome",
+	"auth_session",
+	"engagement_charge",
+	"engagement_gate",
+	"intervention_log",
+	"passkey",
+	"presence_leases",
+	"push_subscriptions",
+	"sessions",
+];
+
+/// docs/identity.md invariant 12: account deletion removes every
+/// subject-scoped row on any binary that can run against this schema,
+/// including one rolled back past the migration that made the table, which
+/// `schema::drift` accepts as healthy. Such a binary still deletes the
+/// `account` row, so a table newer than account deletion must leave with it
+/// by a trigger `AFTER DELETE ON account` (Codex, #398).
+#[tokio::test]
+async fn every_table_newer_than_account_deletion_leaves_with_the_account() {
+	let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+	MIGRATOR.run(&pool).await.unwrap();
+
+	let triggers: Vec<String> = sqlx::query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'account'")
+		.fetch_all(&pool)
+		.await
+		.unwrap()
+		.iter()
+		.map(|row| row.get::<String, _>("sql").split_whitespace().collect::<Vec<_>>().join(" "))
+		.collect();
+	let mut problems: Vec<String> = Vec::new();
+	for (table, _) in SUBJECT_SCOPED_TABLES.iter().filter(|(table, _)| !SWEPT_SINCE_ACCOUNT_DELETION.contains(table)) {
+		let statement = String::from("DELETE FROM ") + table + " WHERE subject_id = OLD.subject_id;";
+		if !triggers.iter().any(|sql| sql.contains("AFTER DELETE ON account") && sql.contains(&statement)) {
+			problems.push(String::from(*table) + " is newer than account deletion but no trigger AFTER DELETE ON account deletes its rows");
+		}
+	}
+	assert!(problems.is_empty(), "{problems:#?}");
+
+	// What the trigger text claims, done: an older binary's sweep, which
+	// names `account` but not `learner_shelf`, still empties the shelf.
+	for subject in ["gone", "stays"] {
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+			.bind(subject)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO learner_shelf (subject_id, activity_id, key, content_hash, saved_at, body) VALUES (?1, 'topik', 'k', 'h', 'now', '{}')")
+			.bind(subject)
+			.execute(&pool)
+			.await
+			.unwrap();
+	}
+	let mut tx = pool.begin().await.unwrap();
+	for table in SWEPT_SINCE_ACCOUNT_DELETION {
+		sqlx::query(&(String::from("DELETE FROM ") + table + " WHERE subject_id = ?1"))
+			.bind("gone")
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let kept = |subject: &'static str| {
+		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM learner_shelf WHERE subject_id = ?1")
+			.bind(subject)
+			.fetch_one(&pool)
+	};
+	assert_eq!(kept("gone").await.unwrap(), 0, "an older binary's account deletion left the shelf behind");
+	assert_eq!(kept("stays").await.unwrap(), 1, "the trigger reached another subject's shelf");
+}
+
 /// docs/identity.md invariant 10: the auth tables hold what a sign-in needs
 /// and nothing that would make a timeline of someone's use. A new column here
 /// is a decision about what the server learns, so it fails until made.
