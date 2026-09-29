@@ -4,7 +4,9 @@
 //! `std::process` only, no `unsafe`: the child is put in a process group of
 //! its own (`process_group(0)`), polled with `try_wait`, and on the ceiling
 //! the whole group is sent `SIGKILL` (through `kill`, which is how a safe
-//! program signals a group) before the child is reaped. stdout and stderr are
+//! program signals a group) before the child is reaped. The group is killed
+//! again once the child has ended, however it ended, so nothing it spawned
+//! outlives the run. stdout and stderr are
 //! drained by a thread each, so a chatty child never blocks on a full pipe,
 //! but only the first `cap` bytes (and, for the error tail, the last `cap`)
 //! are kept.
@@ -79,8 +81,14 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 	let stdout = child.stdout.take().map(|stream| drain(stream, stdout_cap));
 	let stderr = child.stderr.take().map(|stream| drain(stream, stderr_cap));
 	let ending = loop {
-		if let Some(status) = child.try_wait()? {
-			break Ending::Exited(status);
+		match child.try_wait() {
+			Ok(Some(status)) => break Ending::Exited(status),
+			Ok(None) => {}
+			Err(err) => {
+				kill_group(&mut child);
+				let _ = child.wait();
+				return Err(err);
+			}
 		}
 		if started.elapsed() >= ceiling {
 			kill_group(&mut child);
@@ -90,13 +98,23 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 		std::thread::sleep(POLL);
 	};
 	let elapsed = started.elapsed();
+	// Whatever the child left behind in its group goes too, however it
+	// ended: a descendant still holding stdout would otherwise outlive the
+	// ceiling, and keep the readers below waiting for it (review, #399).
+	kill_group(&mut child);
+	let deadline = Instant::now() + READER_GRACE;
 	Ok(Finished {
 		ending,
 		elapsed,
-		stdout: joined(stdout)?,
-		stderr: joined(stderr)?,
+		stdout: joined(stdout, deadline)?,
+		stderr: joined(stderr, deadline)?,
 	})
 }
+
+/// How long the output readers get to see end-of-file once the child's
+/// group is gone. Only a descendant that left the group (`setsid`) can still
+/// hold a pipe then; past this the run is an error rather than a hang.
+const READER_GRACE: Duration = Duration::from_secs(1);
 
 /// `SIGKILL` the child's whole process group — a compile's linker, say, as
 /// well as `rustc` — and the child itself in case `kill` is not to be had.
@@ -148,11 +166,19 @@ fn drain<R: Read + Send + 'static>(mut stream: R, cap: usize) -> JoinHandle<std:
 	})
 }
 
-fn joined(handle: Option<JoinHandle<std::io::Result<Captured>>>) -> std::io::Result<Captured> {
-	match handle {
-		None => Ok(Captured::default()),
-		Some(handle) => handle.join().map_err(|_| std::io::Error::other("an output reader panicked"))?,
+fn joined(handle: Option<JoinHandle<std::io::Result<Captured>>>, deadline: Instant) -> std::io::Result<Captured> {
+	let Some(handle) = handle else {
+		return Ok(Captured::default());
+	};
+	while !handle.is_finished() {
+		if Instant::now() >= deadline {
+			// The reader thread is left blocked on the pipe; it holds only
+			// its buffer, and ends when the stray descendant does.
+			return Err(std::io::Error::other("a process outside the program's process group kept its output open after it ended"));
+		}
+		std::thread::sleep(POLL);
 	}
+	handle.join().map_err(|_| std::io::Error::other("an output reader panicked"))?
 }
 
 /// `program` as an absolute path: itself if it names a directory, else the

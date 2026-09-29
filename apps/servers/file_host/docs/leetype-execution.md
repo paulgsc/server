@@ -236,11 +236,15 @@ settles each one with a single check against a hunk.
     other binaries in `src/bin/` could legitimately spawn processes, and no
     handler does today.
 - **EX2: runs are keyed to the bytes they ran.**
-  - _Claim:_ every read of `leetype_round_run` filters on the round's current
-    `content_hash`, and every write goes through `replace_runs`.
+  - _Claim:_ every read of `leetype_round_run` that serves runs filters on
+    the round's current `content_hash`, and every write goes through
+    `replace_runs`. One reader is exempt by name: `RoundRepository::has_runs`
+    answers "is this exact hash recorded?" for the recorder, which passes the
+    hash it just read; it serves nothing.
   - _Falsified by_ a hunk that queries `leetype_round_run` without joining or
-    filtering on `leetype_round.content_hash`, or that inserts into it outside
-    `RoundRepository::replace_runs`.
+    filtering on `leetype_round.content_hash` (other than `has_runs`), that
+    serves `has_runs`' answer or a row it selects to a client, or that
+    inserts into it outside `RoundRepository::replace_runs`.
   - _Why not enforced mechanically:_ SQL text is not linted. The tests cover
     the two readers that exist, not ones added later.
 

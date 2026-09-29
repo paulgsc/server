@@ -121,6 +121,80 @@ fn a_program_past_the_ceiling_is_budget_exceeded_and_killed() {
 	assert!(!PathBuf::from("/proc").join(pid.trim()).exists(), "pid {pid} is still running");
 }
 
+/// A program that exits while something it spawned still holds its stdout
+/// neither outlives the ceiling nor leaves that process running: the whole
+/// group is killed however the program ended (review, #399: this took the
+/// descendant's full lifetime, and left it running).
+#[test]
+fn a_descendant_is_killed_with_the_program_and_holds_nothing_open() {
+	let scratch = tempfile::tempdir().unwrap();
+	let pid_file: PathBuf = scratch.path().join("pid");
+	let source = String::from("fn main() {\n    let child = std::process::Command::new(\"/bin/sleep\").arg(\"30\").spawn().unwrap();\n    std::fs::write(r\"")
+		+ &pid_file.display().to_string()
+		+ "\", child.id().to_string()).unwrap();\n    println!(\"bye\");\n}\n";
+	let limits = Limits {
+		run_ceiling: Duration::from_millis(500),
+		..Limits::default()
+	};
+
+	let started = Instant::now();
+	let result = runner(limits).run_source(&source, &n(1)).unwrap();
+	assert!(started.elapsed() < Duration::from_secs(20), "took {:?}: waited on the descendant", started.elapsed());
+	let RunResult::Ok { observation, .. } = result else {
+		panic!("{result:?}");
+	};
+	assert_eq!(observation.output, "bye");
+	let pid = std::fs::read_to_string(&pid_file).unwrap();
+	// Orphaned by the program's exit, the killed descendant is reaped by
+	// whatever adopted it, so it may linger a moment as a zombie: dead, but
+	// still listed in /proc.
+	let running = || {
+		std::fs::read_to_string(PathBuf::from("/proc").join(pid.trim()).join("status")).is_ok_and(|status| {
+			status
+				.lines()
+				.any(|line| line.starts_with("State:") && !line.contains("Z (zombie)") && !line.contains("X (dead)"))
+		})
+	};
+	let deadline = Instant::now() + Duration::from_secs(2);
+	while running() && Instant::now() < deadline {
+		std::thread::sleep(Duration::from_millis(20));
+	}
+	assert!(!running(), "the descendant {pid} is still running");
+}
+
+/// The same failure records the same bytes, and no message names the
+/// runner's temporary directory (review, #399): rustc is handed paths
+/// relative to it, and a panic header's thread id is dropped.
+#[test]
+fn a_failure_records_the_same_bytes_twice_and_names_no_temporary_directory() {
+	let runner = runner(Limits::default());
+	let panics = program("fn main() { let (n, _) = sizes(); if n > 3 { panic!(\"too big: {n}\"); } }");
+	let first = runner.run_source(&panics, &n(4)).unwrap();
+	assert_eq!(first, runner.run_source(&panics, &n(4)).unwrap());
+	let (_, message) = failed(&first);
+	assert!(message.contains("thread 'main' panicked at program.rs:"), "{message}");
+
+	let broken = "fn main() { let x: u8 = \"no\"; }";
+	let compile = runner.run_source(broken, &n(1)).unwrap();
+	assert_eq!(compile, runner.run_source(broken, &n(1)).unwrap());
+	for result in [&first, &compile] {
+		let (_, message) = failed(result);
+		assert!(!message.contains("leetype-run-") && !message.contains("/tmp"), "{message}");
+	}
+}
+
+/// An argument the OS will not pass is this round's failure, not the
+/// machine's: the recorder marks the round failed and goes on (review, #399).
+#[test]
+fn a_program_that_cannot_be_started_fails_its_round_not_the_recording() {
+	let constraints = vec![Constraint {
+		dimension: String::from("n\0"),
+		bound: 1,
+	}];
+	let err = runner(Limits::default()).run_source("fn main() {}", &constraints).unwrap_err();
+	assert!(matches!(err, RecordError::Run(_)) && !err.is_toolchain(), "{err}");
+}
+
 /// Output past the ceiling is cut to it, and the cut is noted in the logs:
 /// the runner keeps the ceiling's worth and drains the rest without keeping
 /// it.

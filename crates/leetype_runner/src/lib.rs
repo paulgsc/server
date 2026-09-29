@@ -106,6 +106,11 @@ pub enum RecordError {
 	Toolchain(PathBuf, std::io::Error),
 	/// The temporary directory, or a program's file in it.
 	Io(std::io::Error),
+	/// A compiled program could not be started or supervised: an argument
+	/// the OS refuses (a NUL in a dimension, say), or a descendant that
+	/// escaped its process group. The round's fault, not the machine's: the
+	/// recorder marks this round failed and goes on (review, #399).
+	Run(std::io::Error),
 }
 
 impl RecordError {
@@ -126,6 +131,7 @@ impl std::fmt::Display for RecordError {
 			Self::Program(err) => err.fmt(f),
 			Self::Toolchain(rustc, err) => write!(f, "could not run {}: {err}", rustc.display()),
 			Self::Io(err) => write!(f, "could not prepare the programs: {err}"),
+			Self::Run(err) => write!(f, "could not run a program: {err}"),
 		}
 	}
 }
@@ -248,8 +254,12 @@ impl Runner {
 				"round",
 				"-o",
 			])
-			.arg(&binary)
-			.arg(&file)
+			// Relative to `dir`, the child's working directory, so no message
+			// rustc or the program prints names the random temporary
+			// directory: a re-recording of an unchanged failure is then the
+			// same bytes, and the host's paths reach no route (review, #399).
+			.arg(name)
+			.arg(String::from(name) + ".rs")
 			.current_dir(dir)
 			.env_clear()
 			.env("TMPDIR", dir);
@@ -299,7 +309,7 @@ impl Runner {
 		}
 		command.current_dir(dir).env_clear();
 		let Finished { ending, elapsed, stdout, stderr } =
-			supervise(command, self.limits.run_ceiling, self.limits.output_ceiling, self.limits.logs_ceiling).map_err(RecordError::Io)?;
+			supervise(command, self.limits.run_ceiling, self.limits.output_ceiling, self.limits.logs_ceiling).map_err(RecordError::Run)?;
 
 		Ok(match ending {
 			Ending::Exited(status) if status.success() => {
@@ -329,7 +339,7 @@ impl Runner {
 			Ending::Exited(status) => {
 				let mut message = String::from("the program ");
 				message.push_str(&describe(status));
-				let tail = String::from_utf8_lossy(stderr.end());
+				let tail = without_thread_ids(&String::from_utf8_lossy(stderr.end()));
 				if !tail.trim().is_empty() {
 					message.push('\n');
 					if stderr.truncated() {
@@ -347,6 +357,33 @@ impl Runner {
 			}
 		})
 	}
+}
+
+/// `text` with each panic header's thread id dropped: `thread 'main'
+/// (3072) panicked` reads `thread 'main' panicked`, as it did before
+/// toolchains added the id, so the same failure records the same bytes.
+fn without_thread_ids(text: &str) -> String {
+	let mut out = String::with_capacity(text.len());
+	let mut rest = text;
+	while let Some(at) = rest.find("thread '") {
+		let (before, from) = rest.split_at(at);
+		out.push_str(before);
+		let name_start = "thread '".len();
+		let Some(name_len) = from[name_start..].find('\'') else {
+			out.push_str(from);
+			return out;
+		};
+		let header_end = name_start + name_len + 1;
+		out.push_str(&from[..header_end]);
+		let after = &from[header_end..];
+		let id = after.strip_prefix(" (").and_then(|inner| {
+			let digits = inner.find(|c: char| !c.is_ascii_digit())?;
+			(digits > 0 && inner[digits..].starts_with(')')).then_some(2 + digits + 1)
+		});
+		rest = id.map_or(after, |skip| &after[skip..]);
+	}
+	out.push_str(rest);
+	out
 }
 
 /// `\n<stream> truncated: kept the first K of N bytes`, when it was.
@@ -375,5 +412,21 @@ fn error(constraints: &[Constraint], error_class: ErrorClass, message: String) -
 	RunResult::Error {
 		input_size: input_size(constraints),
 		error: ExecutionError { error_class, message },
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::without_thread_ids;
+
+	#[test]
+	fn a_panic_headers_thread_id_is_dropped_and_nothing_else() {
+		assert_eq!(
+			without_thread_ids("\nthread 'main' (3072) panicked at program.rs:1:13:\nboom"),
+			"\nthread 'main' panicked at program.rs:1:13:\nboom"
+		);
+		assert_eq!(without_thread_ids("thread 'main' panicked"), "thread 'main' panicked");
+		assert_eq!(without_thread_ids("thread 'w' (12x) and thread 'unterminated"), "thread 'w' (12x) and thread 'unterminated");
+		assert_eq!(without_thread_ids("thread 'a' (1) then thread 'b' (22)"), "thread 'a' then thread 'b'");
 	}
 }

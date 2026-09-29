@@ -47,6 +47,11 @@ pub enum SnapshotError {
 	OverCeiling,
 	/// A round changed between reading its body and reading its runs.
 	Changed(String),
+	/// A round id whose file would collide with the manifest or, on a
+	/// case-insensitive filesystem, with another round's: `manifest`, or two
+	/// ids equal but for case. Refused before anything is written (review,
+	/// #399).
+	Collides(String),
 	Io(PathBuf, std::io::Error),
 	Json(serde_json::Error),
 	Storage(sqlx::Error),
@@ -57,6 +62,7 @@ impl std::fmt::Display for SnapshotError {
 		match self {
 			Self::OverCeiling => f.write_str("more listed rounds than the manifest ceiling"),
 			Self::Changed(id) => write!(f, "round {id} changed while it was being dumped; run the dump again"),
+			Self::Collides(id) => write!(f, "round id {id} collides with the manifest or another round's file; rename it"),
 			Self::Io(path, err) => write!(f, "{}: {err}", path.display()),
 			Self::Json(err) => write!(f, "could not serialise: {err}"),
 			Self::Storage(err) => write!(f, "database error: {err}"),
@@ -112,6 +118,13 @@ pub async fn dump_snapshot(repository: &RoundRepository, out: &Path, mode: Snaps
 		rounds: entries.into_iter().map(|entry| entry.id).collect(),
 		..SnapshotReport::default()
 	};
+
+	let mut files = BTreeSet::from([String::from("manifest")]);
+	for id in &report.rounds {
+		if !files.insert(id.to_lowercase()) {
+			return Err(SnapshotError::Collides(id.clone()));
+		}
+	}
 
 	let rounds_dir = out.join("rounds");
 	let runs_dir = out.join("runs");
@@ -237,6 +250,33 @@ mod tests {
 					elapsed: Elapsed { milliseconds: 4 },
 				},
 			},
+		}
+	}
+
+	/// A round named `manifest` would overwrite the manifest, and two ids
+	/// equal but for case would share a file on a case-insensitive disk:
+	/// refused before anything is written (review, #399).
+	#[tokio::test]
+	async fn a_round_id_that_collides_with_a_file_is_refused_before_writing() {
+		for ids in [&["manifest"][..], &["Pair", "pair"][..]] {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+			let template = std::fs::read_dir(fixture())
+				.unwrap()
+				.map(|entry| entry.unwrap().path())
+				.find(|path| path.extension().is_some_and(|ext| ext == "json"))
+				.unwrap();
+			let mut round: serde_json::Value = serde_json::from_slice(&std::fs::read(template).unwrap()).unwrap();
+			let mut conn = pool.acquire().await.unwrap();
+			for id in ids {
+				round["id"] = serde_json::Value::from(*id);
+				RoundRepository::upsert(&mut conn, id, round.to_string().as_bytes(), T0, false).await.unwrap();
+			}
+			drop(conn);
+			let out = tempfile::tempdir().unwrap();
+			let err = dump_snapshot(&RoundRepository::new(pool), out.path(), SnapshotMode::Write).await.unwrap_err();
+			assert!(matches!(err, super::SnapshotError::Collides(_)), "{err}");
+			assert!(!out.path().join("rounds").exists(), "nothing written");
 		}
 	}
 
