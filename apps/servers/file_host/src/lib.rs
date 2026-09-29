@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use ws_conn_manager::ConnectionGuard;
 use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod error;
@@ -20,6 +21,7 @@ pub mod nudge;
 #[cfg(test)]
 mod privacy;
 pub mod rate_limiter;
+pub mod redacted;
 pub mod routes;
 pub mod schema;
 pub mod subject;
@@ -84,6 +86,9 @@ pub struct NudgeContext {
 	/// #289 (TEL4): whether provisioning ranks with this subject's outcome
 	/// history — see `Config::recommender_uses_outcomes`.
 	pub recommender_uses_outcomes: bool,
+	/// Account deletion's lock, shared with `AppState::auth`, which the waker
+	/// holds around its writes (`docs/identity.md` invariant 9).
+	pub deletion: auth::DeletionLock,
 }
 
 #[derive(Clone)]
@@ -95,6 +100,10 @@ pub struct AppState {
 	/// failing: a deployment that does not want notifications should not have
 	/// to configure them to boot.
 	pub nudge: Option<NudgeContext>,
+	/// Passkey auth: sessions, ceremonies, and the relying party. Always
+	/// present; unconfigured, it refuses every ceremony with `503` (see
+	/// `auth::AuthContext::from_config`).
+	pub auth: auth::AuthContext,
 }
 
 impl AppState {
@@ -129,9 +138,10 @@ impl AppState {
 			pipeline_publisher,
 		};
 
-		let nudge = Self::build_nudge(&config)?;
+		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
+		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 
-		Ok(Self { core, realtime, nudge })
+		Ok(Self { core, realtime, nudge, auth })
 	}
 
 	/// Validate the nudge's configuration once, at startup.
@@ -149,7 +159,7 @@ impl AppState {
 	/// fuse: every subscription is made with one public key, and signing with
 	/// the other returns `403` on all of them, forever, until every browser
 	/// re-subscribes.
-	fn build_nudge(config: &Config) -> anyhow::Result<Option<NudgeContext>> {
+	fn build_nudge(config: &Config, deletion: auth::DeletionLock) -> anyhow::Result<Option<NudgeContext>> {
 		use push_kit::VapidIdentity;
 
 		let identity = VapidIdentity::from_config(config.vapid_private_key.as_deref(), config.vapid_public_key.as_deref(), &config.vapid_subject);
@@ -193,6 +203,7 @@ impl AppState {
 			delivery_timeout: std::time::Duration::from_millis(config.push_delivery_timeout_ms),
 			pass_deadline: std::time::Duration::from_millis(config.waker_pass_deadline_ms),
 			recommender_uses_outcomes: config.recommender_uses_outcomes,
+			deletion,
 		}))
 	}
 }
@@ -201,6 +212,12 @@ impl AppState {
 impl FromRef<AppState> for Arc<DedupCache> {
 	fn from_ref(state: &AppState) -> Self {
 		state.realtime.dedup_cache.clone()
+	}
+}
+
+impl FromRef<AppState> for auth::AuthContext {
+	fn from_ref(state: &AppState) -> Self {
+		state.auth.clone()
 	}
 }
 

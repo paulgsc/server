@@ -56,14 +56,6 @@ pub struct Config {
 	#[arg(long, env = "WORKERS", default_value = "4")]
 	pub workers: usize,
 
-	/// HMAC signing key for JWT tokens
-	#[arg(long, env = "HMAC_KEY")]
-	pub hmac_key: String,
-
-	/// JWT token expiration time in seconds
-	#[arg(long, env = "TOKEN_EXPIRATION", default_value = "3600")]
-	pub token_expiration: u64,
-
 	/// API version
 	#[arg(long, env = "API_VERSION", default_value = "v1")]
 	pub api_version: String,
@@ -104,22 +96,6 @@ pub struct Config {
 	/// Log file path
 	#[arg(long, env = "LOG_FILE")]
 	pub log_file: Option<String>,
-
-	/// Enable user registration
-	#[arg(long, env = "ENABLE_USER_REGISTRATION")]
-	pub enable_user_registration: bool,
-
-	/// Enable email verification
-	#[arg(long, env = "ENABLE_EMAIL_VERIFICATION")]
-	pub enable_email_verification: bool,
-
-	/// Enable two-factor authentication
-	#[arg(long, env = "ENABLE_TWO_FACTOR_AUTH")]
-	pub enable_two_factor_auth: bool,
-
-	/// SMS service URL
-	#[arg(long, env = "SMS_SERVICE_URL")]
-	pub sms_service_url: Option<String>,
 
 	/// Redis URL for caching
 	#[arg(long, env = "REDIS_URL")]
@@ -288,6 +264,43 @@ pub struct Config {
 	/// the server has to produce the same shape or clicks land on the dashboard.
 	#[arg(long, env = "APP_BASE_URL", default_value = "https://nixos.local:5173/")]
 	pub app_base_url: String,
+
+	// ── Passkey auth ──────────────────────────────────────────────────────────
+	//
+	// See docs/identity.md, "Passkey auth". A passkey is the only way in, so
+	// there is nothing else to configure: no mail server, no token signing key.
+	// Unset, the server still boots; nobody can sign in, and every
+	// subject-scoped route answers 401.
+	/// The WebAuthn relying party id: the registrable domain the app is served
+	/// from (`nixos.local`, `example.com`), with no scheme or port. A passkey is
+	/// bound to it for good, so changing it strands every passkey made under
+	/// the old one.
+	#[arg(long, env = "WEBAUTHN_RP_ID")]
+	pub webauthn_rp_id: Option<String>,
+
+	/// Comma-separated origins the app is served from, scheme and port
+	/// included (`https://nixos.local:5173`). A passkey ceremony from any
+	/// other origin fails verification. Required when `WEBAUTHN_RP_ID` is set.
+	#[arg(long, env = "WEBAUTHN_ORIGINS", value_delimiter = ',')]
+	pub webauthn_origins: Vec<String>,
+
+	/// How long a sign-in lasts, in days. It slides: opening the app past the
+	/// halfway point renews it to a full term.
+	#[arg(long, env = "AUTH_SESSION_DAYS", default_value = "30")]
+	pub auth_session_days: u32,
+
+	/// How many accounts may be created per UTC day, across the server. A
+	/// backstop against a flood of empty accounts; the per-client rate limit
+	/// already bounds any one client.
+	#[arg(long, env = "AUTH_NEW_ACCOUNTS_PER_DAY", default_value = "100")]
+	pub auth_new_accounts_per_day: u32,
+
+	/// A one-time secret that lets one new account take over the data saved
+	/// before auth existed (the `subject-local` rows). Unset, nobody can: every
+	/// new account starts empty. Set it, open `/auth#claim=<token>` in the app
+	/// and create a passkey there; then unset it. Never logged.
+	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true)]
+	pub auth_legacy_claim_token: Option<String>,
 
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]

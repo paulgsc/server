@@ -19,7 +19,7 @@
 //! (`disallowed-types`: `ConnectInfo`) and `scripts/check_privacy.py`
 //! (fingerprinting headers).
 
-use crate::{net::peer_key, rate_limiter::token_bucket::rate_limit_middleware, schema::MIGRATOR, WebSocketFsm};
+use crate::{net::peer_key, rate_limiter::token_bucket::rate_limit_middleware, schema::MIGRATOR, subject::SUBJECT_SCOPED_TABLES, WebSocketFsm};
 use axum::{
 	body::Body,
 	extract::connect_info::MockConnectInfo,
@@ -43,25 +43,11 @@ use tracing::{
 	span, Event, Subscriber,
 };
 use tracing_subscriber::{
+	filter::filter_fn,
 	layer::{Context, SubscriberExt},
 	registry::LookupSpan,
 	Layer, Registry,
 };
-
-/// Tables whose rows belong to one subject. A new one is a decision: what it
-/// stores about a person, and why that is not identifying.
-const SUBJECT_SCOPED: &[(&str, &str)] = &[
-	("activity_outcome", "per-block study outcomes"),
-	("engagement_charge", "engagement model state"),
-	("engagement_gate", "the waker's due index"),
-	("intervention_log", "what the waker decided and when"),
-	("presence_leases", "which session a subject is looking at, right now"),
-	(
-		"push_subscriptions",
-		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
-	),
-	("sessions", "study sessions"),
-];
 
 /// Tables with no subject at all, and why.
 const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
@@ -107,7 +93,7 @@ async fn the_migrated_schema_stores_nothing_that_singles_a_person_out() {
 		.map(|row| row.get("name"))
 		.collect();
 
-	let scoped: BTreeSet<&str> = SUBJECT_SCOPED.iter().map(|(table, _)| *table).collect();
+	let scoped: BTreeSet<&str> = SUBJECT_SCOPED_TABLES.iter().map(|(table, _)| *table).collect();
 	let unscoped: BTreeSet<&str> = NOT_SUBJECT_SCOPED.iter().map(|(table, _)| *table).collect();
 	let mut problems: Vec<String> = Vec::new();
 
@@ -127,13 +113,13 @@ async fn the_migrated_schema_stores_nothing_that_singles_a_person_out() {
 		let has_subject = columns.iter().any(|column| column == "subject_id");
 		match (scoped.contains(table.as_str()), unscoped.contains(table.as_str())) {
 			(false, false) => {
-				problems.push(String::new() + table + " is not classified: add it to SUBJECT_SCOPED or NOT_SUBJECT_SCOPED, with why");
+				problems.push(String::new() + table + " is not classified: add it to subject::SUBJECT_SCOPED_TABLES or NOT_SUBJECT_SCOPED, with why");
 			}
 			(false, true) if has_subject => {
 				problems.push(String::new() + table + " has a subject_id but is classified NOT_SUBJECT_SCOPED");
 			}
 			(true, _) if !has_subject => {
-				problems.push(String::new() + table + " is classified SUBJECT_SCOPED but has no subject_id");
+				problems.push(String::new() + table + " is in subject::SUBJECT_SCOPED_TABLES but has no subject_id");
 			}
 			_ => {}
 		}
@@ -147,12 +133,37 @@ async fn the_migrated_schema_stores_nothing_that_singles_a_person_out() {
 	assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// docs/identity.md invariant 10: the auth tables hold what a sign-in needs
+/// and nothing that would make a timeline of someone's use. A new column here
+/// is a decision about what the server learns, so it fails until made.
+#[tokio::test]
+async fn the_auth_tables_hold_exactly_their_listed_columns() {
+	let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+	MIGRATOR.run(&pool).await.unwrap();
+
+	for (table, expected) in [
+		("account", &["subject_id", "user_handle"][..]),
+		("passkey", &["credential_id", "subject_id", "passkey"][..]),
+		("auth_session", &["token_hash", "subject_id", "expires_at"][..]),
+	] {
+		let columns: Vec<String> = sqlx::query("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+			.bind(table)
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+			.iter()
+			.map(|row| row.get("name"))
+			.collect();
+		assert_eq!(columns, expected, "{table}'s columns changed: say in docs/identity.md what the new one tells the server");
+	}
+}
+
 /// Every field of every event and span, rendered.
 #[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<String>>>);
+pub(crate) struct Captured(Arc<Mutex<Vec<String>>>);
 
 impl Captured {
-	fn lines(&self) -> Vec<String> {
+	pub(crate) fn lines(&self) -> Vec<String> {
 		self.0.lock().unwrap().clone()
 	}
 
@@ -201,9 +212,33 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Captured {
 	}
 }
 
-fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
+/// Holds a capture open. Two dispatchers, not one: while exactly one is
+/// registered, tracing-core decides a newly registered callsite's interest from
+/// the *registering thread's* default dispatcher (`Rebuilder::JustOne`). A
+/// parallel test on another thread, with no subscriber, would then cache that
+/// callsite as never-enabled for every thread, and this capture would silently
+/// see nothing. A second live dispatcher makes tracing-core ask all of them.
+pub(crate) struct CaptureGuard {
+	_default: tracing::subscriber::DefaultGuard,
+	_second: tracing::Dispatch,
+}
+
+pub(crate) fn capture() -> (Captured, CaptureGuard) {
+	capture_where(|_| true)
+}
+
+/// A capture of only what `keep` passes: the production subscriber's own
+/// filters (`auth::loggable`), and not a test client's logging (a software
+/// authenticator tracing the credential it made is not this server logging
+/// it).
+pub(crate) fn capture_where(keep: fn(&tracing::Metadata<'_>) -> bool) -> (Captured, CaptureGuard) {
 	let captured = Captured::default();
-	let guard = tracing::subscriber::set_default(Registry::default().with(captured.clone()));
+	let layer = || captured.clone().with_filter(filter_fn(keep));
+	let second = tracing::Dispatch::new(Registry::default().with(layer()));
+	let guard = CaptureGuard {
+		_default: tracing::subscriber::set_default(Registry::default().with(layer())),
+		_second: second,
+	};
 	(captured, guard)
 }
 

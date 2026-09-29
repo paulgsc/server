@@ -29,7 +29,8 @@ allow = [
   "MIT",
   "MIT-0",
   # File-level copyleft, satisfied by not modifying the crates themselves:
-  # cssparser, selectors, ece, webpki-roots and three of their helpers.
+  # cssparser, selectors, ece, webpki-roots and three of their helpers, and
+  # the webauthn-rs family (passkey auth) with base64urlsafedata.
   "MPL-2.0",
   "Unicode-3.0",
   "Unlicense",

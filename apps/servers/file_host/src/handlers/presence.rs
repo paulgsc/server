@@ -13,11 +13,12 @@
 //!
 //! ## Trust model
 //!
-//! Same as `/push`: no authentication beyond the CORS origin allowlist, and
-//! [`SubjectId`] is the seam auth lands on later. A lease is not itself a
-//! secret — at most it tells another caller which session this subject was
-//! looking at — but it is a write to state this deployment keeps, so it
-//! carries the same trust caveats as everything else `SubjectId`-scoped.
+//! Same as `/push`: a lease is written for the signed-in subject, and
+//! [`SubjectId`] refuses a request without a live passkey session (see
+//! `crate::auth`). A lease is not itself a secret — at most it says which
+//! session this subject was looking at — but it is a write to state this
+//! deployment keeps about a subject, so it is scoped like everything else
+//! `SubjectId`-scoped.
 
 use crate::{subject::SubjectId, AppState, FileHostError};
 use axum::{extract::State, Json};

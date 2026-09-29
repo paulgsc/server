@@ -1,5 +1,5 @@
 use crate::handlers::outcomes as handlers;
-use crate::routes::cors::allowlisted_cors;
+use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::{AppState, Config};
 use axum::{
@@ -19,10 +19,11 @@ pub fn outcomes<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	crate::auth::AuthContext: FromRef<S>,
 {
 	Module::versioned("outcomes", RouteTable::new().post("/outcomes", handlers::record)).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors(config, vec![Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, AUTHORIZATION])
 }

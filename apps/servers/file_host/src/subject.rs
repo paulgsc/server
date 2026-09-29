@@ -1,32 +1,55 @@
-//! Whose engagement is this?
+//! Whose request is this?
 //!
-//! Auth has not landed. Everything downstream — the charge ledger, the
-//! subscription table, the intervention log — is keyed by subject anyway,
-//! because retrofitting an owner onto rows that never had one means guessing,
-//! and because the alternative is a schema that quietly assumes one person and
-//! has to be migrated the day that stops being true.
-//!
-//! So this is the seam, and it is deliberately one type and one extractor. When
-//! auth arrives, [`SubjectId::from_request_parts`] starts reading a validated
-//! token instead of returning the singleton, and nothing else in the codebase
-//! changes.
+//! Everything per-person — the charge ledger, the subscription table, the
+//! intervention log, study sessions — is keyed by subject, and this is the one
+//! place a request's subject is decided: [`SubjectId::from_request_parts`]
+//! reads the session cookie and looks it up. A request with no live session is
+//! refused with `401`, and a state-changing one from an untrusted origin with
+//! `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
+//! module's extractor body and nothing downstream of it, as the seam was built
+//! to allow (#252, #261, #372). See docs/identity.md.
 
-use crate::FileHostError;
-use axum::extract::FromRequestParts;
+use crate::{auth::AuthContext, FileHostError};
+use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
+use rand::RngCore;
+use std::sync::Arc;
+use tokio::sync::OwnedRwLockReadGuard;
 
-/// The single subject this deployment serves until auth exists.
+/// The subject every request acted for before auth existed.
 ///
-/// A constant rather than an empty string or a zero: it is greppable, it is
-/// obviously a placeholder in a database someone is looking at, and it cannot
-/// be confused with a real identifier.
+/// Rows written then carry it. A new account takes it over only with the
+/// operator's one-time `AUTH_LEGACY_CLAIM_TOKEN` ([`legacy_subject`]), never
+/// by being first: on a reachable server, first is whoever gets there. It is
+/// otherwise an ordinary subject id, and no request is assigned it by default.
 pub const SINGLETON_SUBJECT: &str = "subject-local";
+
+/// Tables whose rows belong to one subject, and what they hold.
+///
+/// Each is keyed by a `subject_id` column. Deleting an account deletes the subject's rows
+/// from every one of them (`handlers::auth::delete_account`), and the privacy
+/// schema test fails if a migrated table has a `subject_id` and is missing
+/// here, so a new per-person table cannot outlive its account by omission.
+pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
+	("account", "the account itself: a subject id and its WebAuthn user handle"),
+	("activity_outcome", "per-block study outcomes"),
+	("auth_session", "hashes of the account's sign-in sessions, and when they expire"),
+	("engagement_charge", "engagement model state"),
+	("engagement_gate", "the waker's due index"),
+	("intervention_log", "what the waker decided and when"),
+	("passkey", "the account's passkeys: public keys and counters, no attestation"),
+	("presence_leases", "which session a subject is looking at, right now"),
+	(
+		"push_subscriptions",
+		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
+	),
+	("sessions", "study sessions"),
+];
 
 /// Who a request is acting for.
 ///
 /// Only this module can make one (#372). The extractor below is the single
-/// place a request's subject is decided, and the day auth lands it is the
-/// single place a token is checked — which only holds if nothing else can
+/// place a request's subject is decided, which only holds if nothing else can
 /// construct a `SubjectId` and hand it to a repository. Code outside this
 /// module that tries does not compile. (The first example does compile, so a
 /// `compile_fail` below can only be failing on the constructor, not on a
@@ -39,41 +62,108 @@ pub const SINGLETON_SUBJECT: &str = "subject-local";
 /// ```
 ///
 /// ```compile_fail
-/// let _ = file_host::subject::SubjectId::singleton();
+/// let _: file_host::subject::SubjectId = serde_json::from_str("\"subject-forged\"").unwrap();
 /// ```
 ///
 /// ```compile_fail
-/// let _ = file_host::subject::SubjectId("subject-forged".to_owned());
+/// let _ = file_host::subject::SubjectId { id: "subject-forged".to_owned(), _hold: todo!() };
 /// ```
+///
+/// It also carries the request's hold against the account being deleted
+/// while the request runs (`AuthContext::hold_against_deletion`), so a write
+/// a handler makes through it cannot outlive the account.
 ///
 /// Background work that already holds a stored subject id (the waker reads
 /// them back from `engagement_gate`) works with that `&str` directly; it is
 /// not deciding who a request is for, so it has no reason to mint one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubjectId(String);
+#[derive(Debug, Clone)]
+pub struct SubjectId {
+	id: String,
+	_hold: Hold,
+}
+
+/// A request's hold against its account being deleted while it runs
+/// (`AuthContext::hold_against_deletion`). Released when the last clone of
+/// the `SubjectId` carrying it is dropped.
+#[derive(Debug, Clone)]
+struct Hold {
+	_guard: Arc<OwnedRwLockReadGuard<()>>,
+}
 
 impl SubjectId {
-	/// The one this deployment has until accounts exist.
-	fn singleton() -> Self {
-		Self(SINGLETON_SUBJECT.to_owned())
-	}
-
 	#[must_use]
 	pub fn as_str(&self) -> &str {
-		&self.0
+		&self.id
+	}
+
+	/// The subject id, with this request's hold against deletion released.
+	/// Only an account deletion needs this, before it waits for every other
+	/// hold to be released.
+	pub(crate) fn release(self) -> String {
+		self.id
 	}
 }
 
+impl PartialEq for SubjectId {
+	fn eq(&self, other: &Self) -> bool {
+		self.id == other.id
+	}
+}
+
+impl Eq for SubjectId {}
+
+/// The subject id for a new account: `subject-` and 32 random hex digits.
+/// Nothing about the person, the request, or the time goes into it.
+#[must_use]
+pub fn new_account_subject() -> String {
+	let mut bytes = [0_u8; 16];
+	rand::rng().fill_bytes(&mut bytes);
+	String::from("subject-") + &hex::encode(bytes)
+}
+
+/// The subject a new account takes when it presents the operator's
+/// `AUTH_LEGACY_CLAIM_TOKEN`: the one the pre-auth rows were written under.
+#[must_use]
+pub const fn legacy_subject() -> &'static str {
+	SINGLETON_SUBJECT
+}
+
 // `axum-core` 0.4 still defines this trait through `async_trait`, so the impl
-// has to be written the same way even though the body has nothing to await.
+// has to be written the same way.
 #[axum::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for SubjectId {
+impl<S> FromRequestParts<S> for SubjectId
+where
+	AuthContext: FromRef<S>,
+	S: Send + Sync,
+{
 	type Rejection = FileHostError;
 
-	async fn from_request_parts(_parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-		// The whole of "auth" today. An extractor rather than a constant read
-		// at each call site so that the day it becomes a token check, it is one
-		// function body and not a search-and-replace.
-		Ok(Self::singleton())
+	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+		let auth = AuthContext::from_ref(state);
+		// A same-site sibling page can make the browser attach the cookie to
+		// a form post; see `auth::csrf`.
+		auth.check_origin(&parts.method, &parts.headers)?;
+		// Taken before the session is looked up: once a deletion has
+		// committed, a request that gets a hold afterwards finds no session.
+		let hold = Hold {
+			_guard: Arc::new(auth.hold_against_deletion().await),
+		};
+		let subject = auth.session_subject(&parts.headers).await?.ok_or(FileHostError::Unauthorized)?;
+		Ok(Self { id: subject, _hold: hold })
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{legacy_subject, new_account_subject};
+
+	#[test]
+	fn a_new_subject_is_random_and_names_nothing() {
+		let a = new_account_subject();
+		let b = new_account_subject();
+		assert_eq!(legacy_subject(), "subject-local");
+		assert_ne!(a, b);
+		assert_eq!(a.len(), "subject-".len() + 32);
+		assert!(a.strip_prefix("subject-").unwrap().bytes().all(|byte| byte.is_ascii_hexdigit()));
 	}
 }

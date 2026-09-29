@@ -33,14 +33,13 @@
 //! an oversight this inventory should flag. Whose request this is gets
 //! resolved once, by the [`SubjectId`](crate::subject::SubjectId) extractor
 //! every subject-scoped handler takes — an extractor concern, not a routing
-//! one. Putting the subject in the path would mean every route in this list
-//! grows a segment the day auth lands and shrinks back the day it is
-//! refactored; putting it in the extractor means this file, and the surface it
-//! describes, never changes when that happens.
+//! one. Putting the subject in the path would have meant every route in this
+//! list growing a segment the day auth landed; with it in the extractor, passkey
+//! auth added its own `/auth/*` routes and changed no other path here.
 
 use super::table::Module;
-use super::{db, health, outcomes, presence, push, readiness, signals, subjects, tab_metadata, utterance};
-use crate::{websocket, AppState, Config, API_V1_BASE_PATH};
+use super::{auth, db, health, outcomes, presence, push, readiness, signals, subjects, tab_metadata, utterance};
+use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
 use serde::Serialize;
 
@@ -105,6 +104,7 @@ pub fn modules<S>() -> Vec<Module<S>>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	AuthContext: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -114,6 +114,7 @@ where
 		readiness::get_readiness(),
 		websocket::routes(),
 		// ── versioned ───────────────────────────────────────────────────────
+		auth::auth(),
 		db::mood_events(),
 		db::tabs(),
 		db::sessions(),
@@ -139,6 +140,7 @@ pub fn routers<S>(config: &Config) -> (Router<S>, Router<S>)
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	AuthContext: FromRef<S>,
 {
 	split(|module| module.into_router(config))
 }
@@ -147,6 +149,7 @@ fn split<S>(build: impl Fn(Module<S>) -> Router<S>) -> (Router<S>, Router<S>)
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	AuthContext: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

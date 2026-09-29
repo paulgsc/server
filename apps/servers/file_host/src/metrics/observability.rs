@@ -101,6 +101,9 @@ impl OtelGuard {
 
 		tracing_subscriber::registry()
 			.with(env_filter)
+			// Whatever RUST_LOG says: the WebAuthn library's own debug spans
+			// record whole credentials. See `auth::loggable`.
+			.with(tracing_subscriber::filter::filter_fn(crate::auth::loggable))
 			.with(ErrorEventMetricsLayer)
 			.with(telemetry_layer)
 			.with(tracing_subscriber::fmt::layer().with_target(true))

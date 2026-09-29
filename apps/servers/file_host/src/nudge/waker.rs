@@ -25,7 +25,7 @@
 use crate::nudge::constraints::{StudyConstraints, Suppressed};
 use crate::nudge::payload::NudgePayload;
 use crate::nudge::presence;
-use crate::{AppState, NudgeContext};
+use crate::{auth::DeletionLock, AppState, NudgeContext};
 use activity_repo::{
 	default_session_name, provision, recommend, total_duration_ms, ActivityHistory, ActivityOutcome, ActivityRecord, ActivityRepository, DEFAULT_RECOMMENDATION_COUNT,
 };
@@ -599,7 +599,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 					if let Some(retry_in) = retry_in {
 						let retry = now + retry_in;
 						let (levels, as_of) = charge.to_storage();
-						save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
+						save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
 					}
 					return Ok(false);
 				}
@@ -622,14 +622,14 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Push the gate out so this subject stops being returned by `due`.
 			// Without it the waker would re-read the same row every pass.
 			let (levels, as_of) = charge.to_storage();
-			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, until).await?;
+			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, until).await?;
 			return Ok(false);
 		}
 		Verdict::Suppressed { reason, retry_at } => {
 			info!(subject = %subject_id, reason = reason.as_str(), "warranted but not admissible");
 			crate::metrics::waker::record_verdict("suppressed", reason.as_str());
 			let (levels, as_of) = charge.to_storage();
-			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry_at).await?;
+			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry_at).await?;
 			return Ok(false);
 		}
 		Verdict::NothingToSay => {
@@ -656,7 +656,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			crate::metrics::waker::record_verdict("nothing_to_say", "n/a");
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();
-			save_unless_superseded(engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
+			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
 			return Ok(false);
 		}
 	};
@@ -737,6 +737,31 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	Ok(true)
 }
 
+/// Run `write` for `subject_id` only if the subject still has its gate row,
+/// holding off account deletion between that check and the write
+/// (`docs/identity.md` invariant 9). `None` when the subject is gone.
+///
+/// A pass reads its subjects well before it writes for them, with push
+/// deliveries in between, and some of its writes (a provisioned `sessions`
+/// draft, a first charge) check nothing that a deletion removes. Holding the
+/// lock only here, around one check and one statement, keeps a deletion from
+/// ever waiting on a pass's deliveries.
+///
+/// # Errors
+/// The existence check's storage failure.
+pub(crate) async fn unless_deleted<T>(
+	engagement: &EngagementRepository,
+	deletion: &DeletionLock,
+	subject_id: &str,
+	write: impl std::future::Future<Output = T>,
+) -> Result<Option<T>, sqlx::Error> {
+	let _hold = deletion.hold().await;
+	if engagement.gate(subject_id).await?.is_none() {
+		return Ok(None);
+	}
+	Ok(Some(write.await))
+}
+
 /// Write the waker's verdict for a subject unless a signal folded in since it
 /// read their charge (#360).
 ///
@@ -748,6 +773,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 /// claim itself (`EngagementRepository::claim`), so a signal that lands first
 /// refuses the claim rather than letting a stale action be sent.
 async fn save_unless_superseded(
+	deletion: &DeletionLock,
 	engagement: &EngagementRepository,
 	subject_id: &str,
 	read_as_of: Option<&str>,
@@ -755,10 +781,16 @@ async fn save_unless_superseded(
 	as_of: DateTime<Utc>,
 	eligible_at: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-	if !engagement
-		.save_if_unchanged(subject_id, read_as_of, levels, &as_of.to_rfc3339(), &eligible_at.to_rfc3339())
-		.await?
-	{
+	// A subject with no charge yet (`read_as_of` `None`) has nothing for the
+	// version check to find missing, so a deletion is checked for directly.
+	let saved = unless_deleted(
+		engagement,
+		deletion,
+		subject_id,
+		engagement.save_if_unchanged(subject_id, read_as_of, levels, &as_of.to_rfc3339(), &eligible_at.to_rfc3339()),
+	)
+	.await?;
+	if !saved.transpose()?.unwrap_or(true) {
 		// Not a verdict of its own: the caller has already recorded this
 		// subject's terminal outcome for the pass, and the breakdown counts
 		// exactly one per subject.
@@ -979,7 +1011,29 @@ async fn propose_a_session(db: &SqlitePool, nudge: &NudgeContext, sessions: &Ses
 		};
 	}
 
-	if let Err(err) = sessions.provision_if_absent(subject_id, &provisioned).await {
+	let provisioned_write = unless_deleted(
+		&EngagementRepository::new(db.clone()),
+		&nudge.deletion,
+		subject_id,
+		sessions.provision_if_absent(subject_id, &provisioned),
+	)
+	.await;
+	let Ok(provisioned_write) = provisioned_write else {
+		error!(subject = %subject_id, "could not check the subject still exists before provisioning; skipping this subject");
+		return Proposal::Unavailable {
+			label: "storage_error",
+			retry_in: None,
+		};
+	};
+	let Some(provisioned_write) = provisioned_write else {
+		// The account was deleted after this pass read the subject, so there
+		// is no one left to provision for, and no gate row to retry from.
+		return Proposal::Unavailable {
+			label: "nothing_to_provision",
+			retry_in: None,
+		};
+	};
+	if let Err(err) = provisioned_write {
 		error!(subject = %subject_id, error = %err, "could not write a provisioned session; skipping this subject rather than notifying about one that doesn't exist");
 		// Per-subject, unlike the catalogue failures above: the gate stays
 		// where it is so the very next pass tries this subject again.
@@ -1644,6 +1698,7 @@ mod tests {
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
 					recommender_uses_outcomes: false,
+					deletion: crate::auth::DeletionLock::default(),
 				};
 
 				run_once(&pool, &nudge)
@@ -1753,6 +1808,7 @@ mod tests {
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
 					recommender_uses_outcomes: false,
+					deletion: crate::auth::DeletionLock::default(),
 				};
 
 				let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline())
@@ -1913,6 +1969,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			// First pass: nothing prepared, provisions a real session.
@@ -2041,6 +2098,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			// First pass: nothing prepared, provisions a real proposal.
@@ -2156,6 +2214,7 @@ mod tests {
 					delivery_timeout: std::time::Duration::from_secs(10),
 					pass_deadline: std::time::Duration::from_secs(120),
 					recommender_uses_outcomes: false,
+					deletion: crate::auth::DeletionLock::default(),
 				};
 
 				// First pass: provisions the proposal.
@@ -2284,6 +2343,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			// First pass: provisions a real proposal, exactly as the sibling
@@ -2385,6 +2445,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			// First pass: provisions the proposal.
@@ -2480,6 +2541,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
@@ -2559,6 +2621,7 @@ mod tests {
 				delivery_timeout: std::time::Duration::from_secs(10),
 				pass_deadline: std::time::Duration::from_secs(120),
 				recommender_uses_outcomes: false,
+				deletion: crate::auth::DeletionLock::default(),
 			};
 
 			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
@@ -2926,6 +2989,7 @@ mod tests {
 			delivery_timeout: std::time::Duration::from_secs(10),
 			pass_deadline: std::time::Duration::from_secs(120),
 			recommender_uses_outcomes: false,
+			deletion: crate::auth::DeletionLock::default(),
 		}
 	}
 
@@ -3550,6 +3614,43 @@ mod tests {
 			.map(|row| row.level)
 	}
 
+	/// A pass writes for subjects it read earlier, with push deliveries in
+	/// between (a provisioned `sessions` draft checks nothing about the
+	/// account). `unless_deleted` makes the write wait out a deletion in
+	/// progress and skips it for a subject the deletion removed.
+	/// `docs/identity.md` invariant 9.
+	#[tokio::test]
+	async fn a_write_for_a_deleted_subject_is_skipped_and_waits_out_a_deletion() {
+		use crate::auth::DeletionLock;
+
+		let pool = migrated_pool().await;
+		let engagement = EngagementRepository::new(pool.clone());
+		let deletion = DeletionLock::default();
+		sqlx::query("INSERT INTO engagement_gate (subject_id, eligible_at, intervention_count, curriculum_epoch) VALUES ('subject-kept', 'now', 0, 0)")
+			.execute(&pool)
+			.await
+			.unwrap();
+
+		assert_eq!(super::unless_deleted(&engagement, &deletion, "subject-kept", async { 1 }).await.unwrap(), Some(1));
+		assert_eq!(
+			super::unless_deleted(&engagement, &deletion, "subject-deleted", async { 1 }).await.unwrap(),
+			None,
+			"no gate row: the account is gone"
+		);
+
+		let deleting = deletion.exclude().await;
+		let waiting = tokio::spawn({
+			let (engagement, deletion) = (EngagementRepository::new(pool.clone()), deletion.clone());
+			async move { super::unless_deleted(&engagement, &deletion, "subject-kept", async { 1 }).await.unwrap() }
+		});
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		assert!(!waiting.is_finished(), "the write waits for the deletion to commit");
+		// The deletion removes the gate row before it lets go.
+		sqlx::query("DELETE FROM engagement_gate").execute(&pool).await.unwrap();
+		drop(deleting);
+		assert_eq!(waiting.await.unwrap(), None, "and then finds the subject gone");
+	}
+
 	async fn migrated_pool() -> SqlitePool {
 		use sqlx::sqlite::SqlitePoolOptions;
 
@@ -4060,9 +4161,17 @@ mod tests {
 		// The waker's verdict, from its stale read: "full, wait a year".
 		let stale = Charge::<StudyV1>::full::<StudyCalibration>(Utc::now());
 		let (levels, as_of) = stale.to_storage();
-		save_unless_superseded(&engagement, subject_id, read_as_of.as_deref(), &levels, as_of, Utc::now() + Duration::days(365))
-			.await
-			.unwrap();
+		save_unless_superseded(
+			&crate::auth::DeletionLock::default(),
+			&engagement,
+			subject_id,
+			read_as_of.as_deref(),
+			&levels,
+			as_of,
+			Utc::now() + Duration::days(365),
+		)
+		.await
+		.unwrap();
 
 		let mastery = engagement.charge(subject_id).await.unwrap().into_iter().find(|row| row.class == 3).unwrap().level;
 		assert!(mastery < 90.0, "the poor score's drain survives: mastery is {mastery}");
@@ -4072,7 +4181,9 @@ mod tests {
 		// With nothing folded in since its read, the waker's save still lands.
 		let fresh = engagement.charge(subject_id).await.unwrap().first().map(|row| row.as_of.clone());
 		let later = Utc::now() + Duration::days(2);
-		save_unless_superseded(&engagement, subject_id, fresh.as_deref(), &levels, as_of, later).await.unwrap();
+		save_unless_superseded(&crate::auth::DeletionLock::default(), &engagement, subject_id, fresh.as_deref(), &levels, as_of, later)
+			.await
+			.unwrap();
 		assert_eq!(engagement.gate(subject_id).await.unwrap().unwrap().eligible_at, later.to_rfc3339());
 	}
 
