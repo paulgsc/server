@@ -10,7 +10,8 @@ runs, so each run's copy stays until it expires. So the rule (CLAUDE.md,
 longer period explicitly with a `Retention:` line in the unbroken `#` comment
 block directly above the step, saying who reads it after that day. A step with
 no `retention-days` fails either way: a stated reason belongs next to the
-number it justifies.
+number it justifies. So does one whose value is not a literal number of days
+(`0`, empty, a `${{ }}` expression): each can resolve to the default.
 
 Scans `.github/workflows/*.y(a)ml` and `.github/actions/**/action.y(a)ml`. It
 reads `uses:` lines, so an upload wrapped in a local composite action is seen
@@ -37,6 +38,7 @@ UPLOAD_STEP = re.compile(r"^(\s*)(-\s+)?uses:\s*[\"']?actions/upload-(?:pages-)?
 SEQUENCE_ITEM = re.compile(r"^(\s*)-(\s+)\S")
 RETENTION = re.compile(r"^\s*retention-days:\s*(.*)$")
 RETENTION_TAG = re.compile(r"^#+\s*Retention:\s*\S")
+DAYS = re.compile(r"^[1-9][0-9]*$")
 
 
 def indent_of(line: str) -> int:
@@ -93,6 +95,9 @@ def violations(text: str) -> list[tuple[int, str]]:
 			continue
 		if value == "1":
 			continue
+		if not DAYS.match(value):
+			found.append((start + 1, f"sets retention-days to {value!r}, not a literal number of days: 0, empty or an expression can mean the repository default, so no `Retention:` line can justify it"))
+			continue
 
 		tagged = False
 		for above in reversed(lines[:start]):
@@ -146,6 +151,11 @@ NONCOMPLIANT = [
 	steps("      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 90"),
 	steps("      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 0"),
 	steps("      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: ${{ inputs.days }}"),
+	# Not a literal number of days: can mean the default, so a tag does not excuse it.
+	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 0"),
+	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days:"),
+	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: ${{ inputs.days }}"),
+	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 7d"),
 	# A tag cut off by a blank line, a code line, or with no reason after it.
 	steps("      # Retention: 30 days.", "", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),
 	steps("      # Retention: 30 days.", "      - run: echo", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),

@@ -97,11 +97,12 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
   as an explicit number with a `Retention:` line in the unbroken `#` comment block
   directly above the step, saying who reads the artifact after that day and why that
   path is one we want taken. A step with no `retention-days` fails either way: the repo
-  default (90 days) is not a period anyone chose. The one artifact here, `routes.yml`'s
-  `route-snapshot`, keeps one day, and the comment above it names the recovery for a
-  run whose artifact has expired: that is the shape to follow. Artifacts cannot be
-  overwritten across runs, so a short `retention-days` is how a recreated one leaves no
-  tail.
+  default (90 days) is not a period anyone chose. So does a value that is not a literal
+  number of days (`0`, empty, a `${{ }}` expression), since each can resolve to that
+  default. The one artifact here, `routes.yml`'s `route-snapshot`, keeps one day, and the
+  comment above it names the recovery for a run whose artifact has expired: that is the
+  shape to follow. Artifacts cannot be overwritten across runs, so a short
+  `retention-days` is how a recreated one leaves no tail.
 - **Enforced by `scripts/check_artifact_retention.py`** (stdlib, with `--self-test`),
   the `Artifact retention` job in `lint.yml`, which runs on every PR. It reads `uses:`
   lines, so another publisher's upload action is not seen: add it to the rule when one
@@ -109,9 +110,9 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
 - **What stays, and why** (not artifacts, so no `retention-days` applies):
   - Actions caches: the detector binary (`detect.yml`), pnpm (`deny.yml`), and the
     Docker `type=gha,mode=max` layer caches in `.github/actions/docker-build` (every PR
-    and `main` push that touches an image) and `docker-push`. GitHub evicts an entry unused for 7 days
-    and caps the repo at 10 GB; keys that change with their inputs churn that cap but
-    cannot grow past it.
+    and `main` push that touches an image) and `docker-push`. GitHub evicts an entry
+    unused for 7 days and caps the repo at 10 GB; keys that change with their inputs
+    churn that cap but cannot grow past it.
   - Docker Hub images: each publish pushes `:latest` and `:<sha>`, and nothing prunes old
     SHA tags. That is Docker Hub's storage, not this repo's.
   - `.github/docker-changesets/<sha>.json`: one per image-affecting merge, consumed by
