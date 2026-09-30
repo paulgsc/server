@@ -22,6 +22,10 @@
 #             opened with the default GITHUB_TOKEN cannot reach another repo,
 #             and one opened by it would not trigger some-ui's own CI. Without
 #             the secret the job warns and does nothing else.
+#             It is the PR's only writer, and it closes the PR when some-ui's
+#             main already carries the snapshot. some-ui's
+#             `server-route-snapshot.yml` re-runs it (`workflow_dispatch`)
+#             when that main moves, or on a `/resync` comment on the PR.
 #
 # The copy destinations live in some-ui's script, not here, so moving either
 # file is a change to that repo alone.
@@ -96,11 +100,18 @@ jobs:
           cargo run -q --bin dump-routes -- --ts > route-snapshot/routes.server.ts
           echo "$(grep -c '"method"' route-snapshot/routes.server.json) routes"
 
+      # Read only by the jobs below, in this same run, so a day is plenty;
+      # the default would keep every run's copy for 90. Past that day,
+      # "Re-run failed jobs" finds no artifact: use "Re-run all jobs", which
+      # rebuilds it. For `sync`, run a fresh sync instead (a manual run, or
+      # `/resync` on the some-ui PR): a day-old run would push a day-old
+      # snapshot over whatever changed since.
       - uses: actions/upload-artifact@v4
         with:
           name: route-snapshot
           path: route-snapshot/
           if-no-files-found: error
+          retention-days: 1
 
   client:
     name: Check some-ui against it
