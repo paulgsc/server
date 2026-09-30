@@ -87,6 +87,49 @@ registered on a `RouteTable` (`src/routes/table.rs`), never with `Router::route`
 is a `clippy::disallowed_methods` error, because a route registered any other way would be served
 but missing from the snapshot.
 
+## Workflow storage
+
+Everything a workflow stores costs GitHub space for as long as it lives, so the default is
+the shortest life that works, and nothing recreated leaves its old copy behind.
+
+- **Artifacts live one day.** Every `actions/upload-artifact` and
+  `actions/upload-pages-artifact` step sets `retention-days: 1`. Anything else is written
+  as an explicit number with a `Retention:` line in the unbroken `#` comment block
+  directly above the step, saying who reads the artifact after that day and why that
+  path is one we want taken. A step with no `retention-days` fails either way: the repo
+  default (90 days) is not a period anyone chose. So does a value that is not a literal
+  number of days (`0`, empty, a `${{ }}` expression), since each can resolve to that
+  default. The one artifact here, `routes.yml`'s `route-snapshot`, keeps one day, and the
+  comment above it names the recovery for a run whose artifact has expired: that is the
+  shape to follow. Artifacts cannot be overwritten across runs, so a short
+  `retention-days` is how a recreated one leaves no tail.
+- **Enforced by `scripts/check_artifact_retention.py`** (stdlib, with `--self-test`),
+  the `Artifact retention` job in `lint.yml`, which runs on every PR. It reads the value
+  only as a direct child of the step's block-style `with:` map, where the action gets it;
+  anywhere else it does not count, and a flow-style `with: {...}` or `- {uses: ...}` step
+  fails as unreadable. It finds steps by their `uses:` line, so another publisher's
+  upload action is not seen: add it to the rule when one appears. `paulgsc/some-ui` runs
+  the same rule as `pnpm check:workflows`.
+- **What stays, and why** (not artifacts, so no `retention-days` applies):
+  - Actions caches: the detector binary (`detect.yml`), pnpm (`deny.yml`), and the
+    Docker `type=gha,mode=max` layer caches in `.github/actions/docker-build` (every PR
+    and `main` push that touches an image) and `docker-push`. GitHub evicts an entry
+    unused for 7 days and caps the repo at 10 GB; keys that change with their inputs
+    churn that cap but cannot grow past it.
+  - Docker Hub images: each publish pushes `:latest` and `:<sha>`, and nothing prunes old
+    SHA tags. That is Docker Hub's storage, not this repo's.
+  - `.github/docker-changesets/<sha>.json`: one per image-affecting merge, consumed by
+    `publish-image-changesets.yml` and never deleted afterwards, so they accumulate on
+    `main` (54 files, 220 KB when this was written). Small, but a tail; removing
+    consumed ones would add a writer to `main`, so it is left as it is until that is
+    decided.
+  - Bot branches (`bot/server-route-snapshot` in some-ui,
+    `automation/docker-image-changesets` here) are opened with `create-pull-request`'s
+    `delete-branch: true`, so each deletes itself once its base carries the content.
+- **Repo setting, not code:** Settings → Actions → General → "Artifact and log
+  retention" sets the default for any upload without `retention-days` and caps any
+  explicit value above it. It also sets how long run logs are kept.
+
 ## Drift is loud, not silent
 
 Before implementing a story, and again before fixing any review finding, check the change
