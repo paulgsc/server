@@ -101,7 +101,11 @@ jobs:
           echo "$(grep -c '"method"' route-snapshot/routes.server.json) routes"
 
       # Read only by the jobs below, in this same run, so a day is plenty;
-      # the default would keep every run's copy for 90.
+      # the default would keep every run's copy for 90. Past that day,
+      # "Re-run failed jobs" finds no artifact: use "Re-run all jobs", which
+      # rebuilds it. For `sync`, run a fresh sync instead (a manual run, or
+      # `/resync` on the some-ui PR): a day-old run would push a day-old
+      # snapshot over whatever changed since.
       - uses: actions/upload-artifact@v4
         with:
           name: route-snapshot
