@@ -17,9 +17,13 @@ Scans `.github/workflows/*.y(a)ml` and `.github/actions/**/action.y(a)ml`. It
 reads `uses:` lines, so an upload wrapped in a local composite action is seen
 there, in the action, not at its call site.
 
-Deliberately lexical, like scripts/check_instrument_skip.py: every shape the
-rule reads is one line (`uses:`, `retention-days:`, a `#` line), and a YAML
-parser would be a dependency for the one check in lint.yml that needs none.
+Deliberately lexical, like scripts/check_instrument_skip.py: a YAML parser
+would be a dependency for the one check in lint.yml that needs none. So it
+accepts one closed shape rather than listing the ones it rejects: the value is
+read only as a direct child of the step's block-style `with:` map, which is
+the only place the action receives it. A `retention-days` anywhere else in the
+step (under `env:`, say) does not count, and a flow-style `with: {...}` fails
+with a message asking for block style, since the check cannot read it.
 `--self-test` runs the rule against known-compliant and known-noncompliant
 steps first, so a regex edit that stops matching fails instead of passing
 every scan silently. paulgsc/some-ui runs the same rule
@@ -37,6 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 UPLOAD_STEP = re.compile(r"^(\s*)(-\s+)?uses:\s*[\"']?actions/upload-(?:pages-)?artifact@")
 SEQUENCE_ITEM = re.compile(r"^(\s*)-(\s+)\S")
 RETENTION = re.compile(r"^\s*retention-days:\s*(.*)$")
+WITH_KEY = re.compile(r"^\s*with:(.*)$")
 RETENTION_TAG = re.compile(r"^#+\s*Retention:\s*\S")
 DAYS = re.compile(r"^[1-9][0-9]*$")
 
@@ -72,6 +77,40 @@ def step_start(lines: list[str], uses_line: int) -> int:
 	return uses_line
 
 
+def step_body(lines: list[str], start: int, key_column: int) -> list[str]:
+	"""The step's lines, its `- ` marker blanked so every key sits at `key_column`."""
+	first = lines[start]
+	body = [" " * key_column + first[key_column:]] if SEQUENCE_ITEM.match(first) else [first]
+	for following in lines[start + 1 :]:
+		if not is_blank_or_comment(following) and indent_of(following) < key_column:
+			break
+		body.append(following)
+	return body
+
+
+def with_retention(body: list[str], key_column: int) -> tuple[str, str | None]:
+	"""("value", v) for `retention-days` directly under a block `with:`, else ("missing"|"flow", None)."""
+	for index, line in enumerate(body):
+		key = WITH_KEY.match(line)
+		if not key or indent_of(line) != key_column:
+			continue
+		if re.sub(r"(^|\s+)#.*$", "", key.group(1)).strip():
+			return ("flow", None)
+		child_column = None
+		for child in body[index + 1 :]:
+			if is_blank_or_comment(child):
+				continue
+			if indent_of(child) <= key_column:
+				break
+			if child_column is None:
+				child_column = indent_of(child)
+			retention = RETENTION.match(child)
+			if retention and indent_of(child) == child_column:
+				return ("value", scalar_value(retention.group(1)))
+		return ("missing", None)
+	return ("missing", None)
+
+
 def violations(text: str) -> list[tuple[int, str]]:
 	"""(1-based line of the step, what is wrong) for every noncompliant upload."""
 	lines = text.split("\n")
@@ -83,15 +122,12 @@ def violations(text: str) -> list[tuple[int, str]]:
 		key_column = len(upload.group(1)) + len(upload.group(2) or "")
 		start = index if upload.group(2) else step_start(lines, index)
 
-		value = None
-		for following in lines[start + 1 :]:
-			if not is_blank_or_comment(following) and indent_of(following) < key_column:
-				break
-			retention = RETENTION.match(following)
-			if retention:
-				value = scalar_value(retention.group(1))
+		shape, value = with_retention(step_body(lines, start, key_column), key_column)
+		if shape == "flow":
+			found.append((start + 1, "has a flow-style `with: {...}` this check cannot read: write `with:` as a block mapping, with `retention-days` on its own line"))
+			continue
 		if value is None:
-			found.append((start + 1, "sets no retention-days: set `retention-days: 1`, or a longer period with a `# Retention: <why>` line directly above the step"))
+			found.append((start + 1, "sets no retention-days in its `with:` map: set `retention-days: 1`, or a longer period with a `# Retention: <why>` line directly above the step"))
 			continue
 		if value == "1":
 			continue
@@ -140,6 +176,7 @@ COMPLIANT = [
 		"          retention-days: 30",
 	),
 	steps("      - uses: actions/download-artifact@v4", "      - uses: someone/upload-artifact@v1", "      - run: echo actions/upload-artifact@v4"),
+	steps("      - with: # inputs first", "          retention-days: 1", "        uses: actions/upload-artifact@v4"),
 ]
 NONCOMPLIANT = [
 	# No retention-days, tagged or not.
@@ -156,6 +193,13 @@ NONCOMPLIANT = [
 	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days:"),
 	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: ${{ inputs.days }}"),
 	steps("      # Retention: tagged.", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 7d"),
+	# Only a direct child of the block `with:` map is the action's input.
+	steps("      - uses: actions/upload-artifact@v4", "        env:", "          retention-days: 1"),
+	steps("      - uses: actions/upload-artifact@v4", "        with:", "          name: a", "        env:", "          retention-days: 1"),
+	steps("      - uses: actions/upload-artifact@v4", "        with:", "          nested:", "            retention-days: 1"),
+	steps("      - uses: actions/upload-artifact@v4", "        retention-days: 1"),
+	# Flow style is not read, so it fails and says so.
+	steps("      - uses: actions/upload-artifact@v4", "        with: {path: dist, retention-days: 1}"),
 	# A tag cut off by a blank line, a code line, or with no reason after it.
 	steps("      # Retention: 30 days.", "", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),
 	steps("      # Retention: 30 days.", "      - run: echo", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),

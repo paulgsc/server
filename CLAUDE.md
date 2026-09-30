@@ -104,9 +104,11 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
   shape to follow. Artifacts cannot be overwritten across runs, so a short
   `retention-days` is how a recreated one leaves no tail.
 - **Enforced by `scripts/check_artifact_retention.py`** (stdlib, with `--self-test`),
-  the `Artifact retention` job in `lint.yml`, which runs on every PR. It reads `uses:`
-  lines, so another publisher's upload action is not seen: add it to the rule when one
-  appears. `paulgsc/some-ui` runs the same rule as `pnpm check:workflows`.
+  the `Artifact retention` job in `lint.yml`, which runs on every PR. It reads the value
+  only as a direct child of the step's block-style `with:` map, where the action gets it;
+  anywhere else it does not count, and a flow-style `with: {...}` fails as unreadable. It
+  finds steps by their `uses:` line, so another publisher's upload action is not seen:
+  add it to the rule when one appears. `paulgsc/some-ui` runs the same rule as `pnpm check:workflows`.
 - **What stays, and why** (not artifacts, so no `retention-days` applies):
   - Actions caches: the detector binary (`detect.yml`), pnpm (`deny.yml`), and the
     Docker `type=gha,mode=max` layer caches in `.github/actions/docker-build` (every PR
