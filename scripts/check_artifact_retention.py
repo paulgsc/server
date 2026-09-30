@@ -22,8 +22,9 @@ would be a dependency for the one check in lint.yml that needs none. So it
 accepts one closed shape rather than listing the ones it rejects: the value is
 read only as a direct child of the step's block-style `with:` map, which is
 the only place the action receives it. A `retention-days` anywhere else in the
-step (under `env:`, say) does not count, and a flow-style `with: {...}` fails
-with a message asking for block style, since the check cannot read it.
+step (under `env:`, say) does not count, and a flow-style `with: {...}`, or
+a whole step written as `- {uses: ...}`, fails with a message asking for block
+style, since the check cannot read it.
 `--self-test` runs the rule against known-compliant and known-noncompliant
 steps first, so a regex edit that stops matching fails instead of passing
 every scan silently. paulgsc/some-ui runs the same rule
@@ -39,6 +40,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 UPLOAD_STEP = re.compile(r"^(\s*)(-\s+)?uses:\s*[\"']?actions/upload-(?:pages-)?artifact@")
+# The same reference anywhere else on a line (`- {uses: actions/upload-artifact@v4, ...}`)
+# is a step this check cannot read, so it fails rather than being skipped.
+UPLOAD_ANYWHERE = re.compile(r"uses:\s*[\"']?actions/upload-(?:pages-)?artifact@")
 SEQUENCE_ITEM = re.compile(r"^(\s*)-(\s+)\S")
 RETENTION = re.compile(r"^\s*retention-days:\s*(.*)$")
 WITH_KEY = re.compile(r"^\s*with:(.*)$")
@@ -118,6 +122,8 @@ def violations(text: str) -> list[tuple[int, str]]:
 	for index, line in enumerate(lines):
 		upload = UPLOAD_STEP.match(line)
 		if not upload:
+			if not line.strip().startswith("#") and UPLOAD_ANYWHERE.search(line):
+				found.append((index + 1, "is written in a form this check cannot read (a flow-style step?): write the step as a block mapping, `uses:` and `with:` each on their own line"))
 			continue
 		key_column = len(upload.group(1)) + len(upload.group(2) or "")
 		start = index if upload.group(2) else step_start(lines, index)
@@ -177,6 +183,7 @@ COMPLIANT = [
 	),
 	steps("      - uses: actions/download-artifact@v4", "      - uses: someone/upload-artifact@v1", "      - run: echo actions/upload-artifact@v4"),
 	steps("      - with: # inputs first", "          retention-days: 1", "        uses: actions/upload-artifact@v4"),
+	steps("      # e.g. - {uses: actions/upload-artifact@v4}", "      - run: echo"),
 ]
 NONCOMPLIANT = [
 	# No retention-days, tagged or not.
@@ -200,6 +207,8 @@ NONCOMPLIANT = [
 	steps("      - uses: actions/upload-artifact@v4", "        retention-days: 1"),
 	# Flow style is not read, so it fails and says so.
 	steps("      - uses: actions/upload-artifact@v4", "        with: {path: dist, retention-days: 1}"),
+	steps("      - {uses: actions/upload-artifact@v4, with: {path: dist}}"),
+	steps("      - {uses: actions/upload-artifact@v4, with: {path: dist, retention-days: 1}}"),
 	# A tag cut off by a blank line, a code line, or with no reason after it.
 	steps("      # Retention: 30 days.", "", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),
 	steps("      # Retention: 30 days.", "      - run: echo", "      - uses: actions/upload-artifact@v4", "        with:", "          retention-days: 30"),
