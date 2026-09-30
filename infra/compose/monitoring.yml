@@ -192,8 +192,13 @@ services:
     restart: unless-stopped
     command:
       - '--path.rootfs=/host'
+      # Re-exposes whatever disk-usage-exporter (below) writes to the
+      # shared textfile_collector volume as ordinary scraped metrics —
+      # host-directory sizes cadvisor's per-container view can't see.
+      - '--collector.textfile.directory=/textfile-collector'
     volumes:
       - '/:/host:ro,rslave'
+      - textfile_collector:/textfile-collector:ro
     mem_limit: 128M
     cpus: 0.25
     pids_limit: 20
@@ -291,3 +296,128 @@ services:
           cpus: '0.5'
           memory: 512M
           pids: 30
+  # Answers "who's eating the disk that cadvisor and node_exporter's mount
+  # panels can only show the aggregate of" for the two things a *running*
+  # container's own container_fs_usage_bytes can't see: cargo's
+  # registry/git caches and the workspace target/ dir, both host paths.
+  # Runs scripts/disk-usage-textfile.sh on a loop and writes into the
+  # textfile_collector volume node_exporter re-exposes above.
+  #
+  # Deliberately does NOT also track Docker's own data-root total (build
+  # cache, dangling images/volumes) the way the first version of this
+  # sidecar did — getting that number via `du` needs read access to
+  # /var/lib/docker's full tree, which holds every *other* container's
+  # config.v2.json (their complete `environment:` blocks — Grafana's admin
+  # password, this repo's HMAC/VAPID keys, anything any service was ever
+  # given) and every named volume's raw on-disk data. `:ro` only blocks
+  # writes; a root process in this sidecar could still read all of it. The
+  # per-container disk-usage table (forensic-panels.libsonnet's
+  # topDiskSpaceOffenders, cadvisor-backed) covers *running* containers
+  # already; getting the aggregate Docker-wide number safely needs
+  # docker-socket-proxy's /system/df equivalent (as infra/compose/loki.yml
+  # uses for promtail), not raw filesystem access — a real gap, tracked
+  # rather than shipped via an over-broad mount.
+  #
+  # Override CARGO_HOME_PATH in .env with your host's real cargo home (e.g.
+  # /home/youruser/.cargo) — the fallback below almost certainly isn't it.
+  # A literal default rather than a required var (unlike a first instinct
+  # you might have here) because `docker compose config` — CI's own
+  # structural validation in .github/workflows/test.yml, which sets only
+  # REPO_ROOT — needs to resolve without a real host path to point at; an
+  # unmatched default just makes disk-usage-textfile.sh report 0 for cargo
+  # usage until this is set for real, same as any other missing bind-mount
+  # source the script already tolerates.
+  disk-usage-exporter:
+    image: debian:12-slim
+    container_name: disk-usage-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring-network
+    volumes:
+      - textfile_collector:/textfile-collector:rw
+      - ${REPO_ROOT}/scripts/disk-usage-textfile.sh:/usr/local/bin/disk-usage-textfile.sh:ro
+      - ${REPO_ROOT}/scripts/disk-usage-loop.sh:/usr/local/bin/disk-usage-loop.sh:ro
+      # registry/ and git/ specifically, not the whole cargo home — a real
+      # ~/.cargo can hold credentials.toml (crates.io/private-registry auth
+      # tokens), which this general-purpose sidecar on the shared network
+      # has no business reading.
+      #
+      # Both left on Docker's default auto-create (short-form mount,
+      # root-owned if created) rather than create_host_path: false, even
+      # though that flag is available and IS used below on target/ — an
+      # earlier version of this file applied it to registry/ alone, on the
+      # reasoning that a missing registry/ means "cargo has literally never
+      # run here." That reasoning didn't account for what the source path
+      # actually is: ${CARGO_HOME_PATH:-/root/.cargo}, whose fallback half
+      # is a placeholder, not a real cargo home. On an existing deployment
+      # that simply hasn't set CARGO_HOME_PATH yet — the common initial
+      # state, and exactly the case example.env documents as "silently
+      # reports 0 for both cargo panels rather than erroring" — the
+      # fallback /root/.cargo/registry won't exist either, and
+      # create_host_path: false turned that documented zero-fallback into
+      # a container-*creation* failure instead (Codex caught this
+      # contradiction directly). create_host_path: false is only safe on a
+      # mount source with no unconfigured/guessed state to begin with,
+      # which is why it stays on target/ below (${REPO_ROOT} is always the
+      # real checked-out repo, never a fallback guess) but not here: git/'s
+      # own reasoning — verified directly against this workspace's Cargo.lock
+      # (zero `git+` entries) — already covered why forcing loudly on a
+      # commonly-absent directory backfires; the same logic just as clearly
+      # covers registry/ once CARGO_HOME_PATH's fallback is accounted for,
+      # not only git/.
+      - ${CARGO_HOME_PATH:-/root/.cargo}/registry:/mnt/cargo/registry:ro
+      - ${CARGO_HOME_PATH:-/root/.cargo}/git:/mnt/cargo/git:ro
+      # Long-form, not the short `${REPO_ROOT}/target:/mnt/workspace-target:ro`
+      # this used to be: that form's own missing-host-path auto-create
+      # (root-owned, under rootful Docker) was real, but mounting the whole
+      # repo root to dodge it was worse — `${REPO_ROOT}` is exactly where a
+      # real `.env` lives (example.env documents VAPID_PRIVATE_KEY, HMAC_KEY,
+      # ... sitting right there), and this is a general-purpose Debian
+      # sidecar on the shared network that only ever needed target/.
+      # `create_host_path: false` makes a genuinely-missing target/ (a fresh
+      # checkout that hasn't built even once) a loud container-*creation*
+      # failure instead of a silent root-owned directory blocking a later
+      # non-root `cargo build`.
+      #
+      # Known, accepted limitation, not fixed here: `cargo clean` deletes
+      # and cargo build recreates target/ as a *new* inode at the same
+      # path — Linux bind mounts follow the inode, not the path, so this
+      # container's mount keeps pointing at the deleted directory until
+      # the container itself is recreated (`docker compose up
+      # --force-recreate disk-usage-exporter`), and nothing running inside
+      # the container can detect or fix that from in here: it only ever
+      # sees whatever's mounted, never the host's current filesystem
+      # state. cargo_target reads stale (not wrong-crashing, just stale)
+      # across a `cargo clean` until that manual recreate.
+      - type: bind
+        source: ${REPO_ROOT}/target
+        target: /mnt/workspace-target
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      # Passed to the container itself, not just interpolated into the
+      # sleep below — so disk-usage-textfile.sh can read the same value
+      # and emit it as hostdir_usage_scan_interval_seconds, letting
+      # hostDirUsageStaleness (forensic-panels.libsonnet) judge staleness
+      # relative to whatever interval is actually configured instead of
+      # against a threshold hardcoded to this 300s default.
+      - DISK_USAGE_SCAN_INTERVAL=${DISK_USAGE_SCAN_INTERVAL:-300}
+    # scripts/disk-usage-loop.sh, not an inline shell string here — see
+    # its own header comment for why: Compose's variable interpolation
+    # runs over this YAML file's text before the container ever starts,
+    # which fights a bare $DISK_USAGE_SCAN_INTERVAL written directly in a
+    # `command:` string (verified directly: it resolved against this
+    # file's own invoking shell instead of the environment: value above,
+    # producing an empty `sleep ""`). A bind-mounted script's contents
+    # aren't part of that interpolation pass at all.
+    command: ['bash', '/usr/local/bin/disk-usage-loop.sh']
+    mem_limit: 128M
+    cpus: 0.25
+    pids_limit: 20
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+          pids: 20
