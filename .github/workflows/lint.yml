@@ -1,5 +1,6 @@
 # Workspace lint: rustfmt, clippy (as a ratchet), and the #[instrument] skip
-# policy, on every pull request to main.
+# policy, on every pull request to main; plus the artifact retention rule for
+# this repo's own workflows (CLAUDE.md, "Workflow storage").
 #
 # History worth knowing before changing this file: from 748df86 until this
 # rewrite, `on.pull_request.branches` was `foo` — no such branch has ever
@@ -66,6 +67,18 @@ jobs:
 
     outputs:
       rust: ${{ steps.rust.outputs.diff != '' }}
+
+  # No path gate, unlike rust_lint: a workflow edit rides along with any kind
+  # of PR, and the check needs nothing but the runner's python3.
+  artifact_retention:
+    name: Artifact retention
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Every artifact upload keeps one day or says why
+        run: |
+          python3 scripts/check_artifact_retention.py --self-test
+          python3 scripts/check_artifact_retention.py
 
   rust_lint:
     name: Rust lint
