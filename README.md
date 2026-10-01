@@ -106,6 +106,27 @@ nix develop  # default shell: Rust + dev tools + Whisper + audio libs
 `whisper`, and `llm` — see [Nix Development Environment](./nix/README.md)
 for the first three.
 
+### Host-specific values
+
+This server runs on one machine today: the NixOS dev host `nixos.local`, with
+its data under `/mnt/storage` and NATS and Redis beside it. Some defaults,
+paths and example values are right only there. They are allowed, but never
+silent:
+
+* **Marked.** Each one carries the word `HOST-SPECIFIC` where it is defined:
+  `grep -rn HOST-SPECIFIC example.env infra/ apps/` lists every value a new
+  host (a VPS, say) must replace.
+* **Announced.** `file_host` logs one `HOST-SPECIFIC` warning at startup naming
+  every variable it is running on a dev-host value for
+  (`Config::host_specific_defaults_in_use`).
+* **Tracked.** [#406](https://github.com/paulgsc/server/issues/406) is the
+  inventory and the plan to move these out of code and compose into each
+  host's own configuration.
+
+The strongest one is `WEBAUTHN_RP_ID`: every passkey is bound to it, so
+moving to a new domain strands every passkey made on the old one. Settle the
+long-term domain before people create passkeys.
+
 ---
 
 ## Development

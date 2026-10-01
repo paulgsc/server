@@ -1,6 +1,22 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+// HOST-SPECIFIC defaults (#406). Each one is right on the dev host this server
+// grew up on (`nixos.local`, with NATS and Redis on the same machine) and wrong
+// on any other. They stay as defaults so that host keeps working with an
+// unchanged `.env`, but they are named, marked, and announced at startup
+// (`Config::host_specific_defaults_in_use`), so a new host finds every value
+// it must set instead of inheriting this one's silently.
+
+/// `ALLOWED_ORIGINS`' default. HOST-SPECIFIC: the `nixos.local` dev host.
+pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
+/// `APP_BASE_URL`'s default. HOST-SPECIFIC: the `nixos.local` dev host.
+pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
+/// Used when `NATS_URL` is unset. HOST-SPECIFIC: a NATS on this machine.
+pub const DEV_HOST_NATS_URL: &str = "nats://localhost:4222";
+/// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
+pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
+
 // One bool per command-line switch is what a clap `Parser` is; grouping them
 // into enums would change every flag and env var the deployment sets.
 #[allow(clippy::struct_excessive_bools)]
@@ -81,12 +97,9 @@ pub struct Config {
 	/// `PushManager` are all gated on a secure context, so the origin a
 	/// subscription is actually posted from is an HTTPS one, and a list that only
 	/// admits the Storybook origin blocks it.
-	#[arg(
-		long,
-		env = "ALLOWED_ORIGINS",
-		value_delimiter = ',',
-		default_value = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006"
-	)]
+	///
+	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
+	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = DEV_HOST_ALLOWED_ORIGINS)]
 	pub allowed_origins: Vec<String>,
 
 	/// Log level
@@ -97,11 +110,15 @@ pub struct Config {
 	#[arg(long, env = "LOG_FILE")]
 	pub log_file: Option<String>,
 
-	/// Redis URL for caching
+	/// Redis URL for caching.
+	///
+	/// Unset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).
 	#[arg(long, env = "REDIS_URL")]
 	pub redis_url: Option<String>,
 
-	/// NATS URL for broker messaging
+	/// NATS URL for broker messaging.
+	///
+	/// Unset, a NATS on this machine (HOST-SPECIFIC; see `DEV_HOST_NATS_URL`).
 	#[arg(long, env = "NATS_URL")]
 	pub nats_url: Option<String>,
 
@@ -262,19 +279,33 @@ pub struct Config {
 	/// Base URL of the study app, used to build the notification's deep link.
 	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
 	/// the server has to produce the same shape or clicks land on the dashboard.
-	#[arg(long, env = "APP_BASE_URL", default_value = "https://nixos.local:5173/")]
+	///
+	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
+	#[arg(long, env = "APP_BASE_URL", default_value = DEV_HOST_APP_BASE_URL)]
 	pub app_base_url: String,
 
 	// ── Passkey auth ──────────────────────────────────────────────────────────
 	//
 	// See docs/identity.md, "Passkey auth". A passkey is the only way in, so
 	// there is nothing else to configure: no mail server, no token signing key.
-	// Unset, the server still boots; nobody can sign in, and every
-	// subject-scoped route answers 401.
+	// It is on unless `AUTH_ENABLED` says otherwise, and on, the server refuses
+	// to start without `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS`: a server that
+	// boots with nobody able to sign in looks up and serves no one.
+	/// Whether passkey sign-in is on.
+	///
+	/// On by default. On, `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS` are required
+	/// and the server will not start without them. `false` is for a run that
+	/// needs nobody signed in: every ceremony answers `503` and every
+	/// subject-scoped route `401`. `false` with `WEBAUTHN_RP_ID` set is refused
+	/// as a contradiction.
+	#[arg(long, env = "AUTH_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
+	pub auth_enabled: bool,
+
 	/// The WebAuthn relying party id: the registrable domain the app is served
 	/// from (`nixos.local`, `example.com`), with no scheme or port. A passkey is
 	/// bound to it for good, so changing it strands every passkey made under
-	/// the old one.
+	/// the old one, which also makes it HOST-SPECIFIC in the strongest sense:
+	/// moving to a new domain strands every passkey made on this one.
 	#[arg(long, env = "WEBAUTHN_RP_ID")]
 	pub webauthn_rp_id: Option<String>,
 
@@ -345,6 +376,82 @@ impl Config {
 	}
 
 	pub fn as_cache_config(&self) -> some_cache::CacheConfig {
-		some_cache::CacheConfig::new(self.redis_url.clone().unwrap_or_else(|| "redis://127.0.0.1:6379".into())).with_ttl(self.cache_ttl)
+		some_cache::CacheConfig::new(self.redis_url.clone().unwrap_or_else(|| DEV_HOST_REDIS_URL.into())).with_ttl(self.cache_ttl)
+	}
+
+	/// The variables this run is taking from a HOST-SPECIFIC default (#406):
+	/// values that are right on the `nixos.local` dev host and wrong anywhere
+	/// else. Startup logs them, so running on them is never silent.
+	#[must_use]
+	pub fn host_specific_defaults_in_use(&self) -> Vec<&'static str> {
+		host_specific_defaults_in_use(&self.allowed_origins, &self.app_base_url, self.nats_url.as_deref(), self.redis_url.as_deref())
+	}
+}
+
+/// Compares values, not where they came from: setting a variable to the dev
+/// host's value explicitly is still running on the dev host's value.
+fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: Option<&str>, redis_url: Option<&str>) -> Vec<&'static str> {
+	let mut in_use = Vec::new();
+	if allowed_origins.join(",") == DEV_HOST_ALLOWED_ORIGINS {
+		in_use.push("ALLOWED_ORIGINS");
+	}
+	if app_base_url == DEV_HOST_APP_BASE_URL {
+		in_use.push("APP_BASE_URL");
+	}
+	// Unset falls back to the dev-host value; set to it is the same value.
+	if nats_url.is_none_or(|url| url == DEV_HOST_NATS_URL) {
+		in_use.push("NATS_URL");
+	}
+	if redis_url.is_none_or(|url| url == DEV_HOST_REDIS_URL) {
+		in_use.push("REDIS_URL");
+	}
+	in_use
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{host_specific_defaults_in_use, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
+	use clap::{CommandFactory, Parser};
+
+	#[test]
+	fn config_definition_is_valid() {
+		Config::command().debug_assert();
+	}
+
+	#[test]
+	fn every_dev_host_default_in_use_is_named() {
+		let dev_origins: Vec<String> = DEV_HOST_ALLOWED_ORIGINS.split(',').map(String::from).collect();
+		assert_eq!(
+			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, None, None),
+			["ALLOWED_ORIGINS", "APP_BASE_URL", "NATS_URL", "REDIS_URL"]
+		);
+	}
+
+	/// `example.env` sets `NATS_URL` to the dev host's value explicitly, for
+	/// `make dev`; that is still running on it.
+	#[test]
+	fn a_dev_host_value_set_explicitly_is_still_named() {
+		let origins = [String::from("https://app.example.com")];
+		assert_eq!(
+			host_specific_defaults_in_use(&origins, "https://app.example.com/", Some(DEV_HOST_NATS_URL), Some(DEV_HOST_REDIS_URL)),
+			["NATS_URL", "REDIS_URL"]
+		);
+	}
+
+	#[test]
+	fn a_host_that_sets_its_own_values_runs_on_none() {
+		let origins = [String::from("https://app.example.com")];
+		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", Some("nats://nats:4222"), Some("redis://redis:6379")).is_empty());
+	}
+
+	/// `AUTH_ENABLED` is on by default, so turning it off has to be possible by
+	/// value, which a plain `bool` flag (`SetTrue`) would not allow.
+	#[test]
+	fn auth_enabled_can_be_turned_off_by_value() {
+		let required = ["file_host", "--obs-host", "h", "--obs-password", "p", "--database-url", "sqlite::memory:"];
+		let off = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "false"])).unwrap();
+		assert!(!off.auth_enabled);
+		let on = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "true"])).unwrap();
+		assert!(on.auth_enabled);
 	}
 }

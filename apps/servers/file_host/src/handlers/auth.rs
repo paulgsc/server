@@ -263,10 +263,11 @@ pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: Sub
 /// when it opens, so a session lasts as long as the app keeps being used.
 ///
 /// # Errors
-/// 401 (clearing the cookie) without a live session.
+/// 401 (clearing the cookie) without a live session, and for every session
+/// while sessions are off (`AuthContext::sessions_enabled`).
 #[instrument(name = "auth_session", skip_all, fields(otel.kind = "server"))]
 pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Result<Response, FileHostError> {
-	let Some(token) = SessionToken::from_headers(&headers) else {
+	let Some(token) = SessionToken::from_headers(&headers).filter(|_| auth.sessions_enabled()) else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
 	let repository = auth.repository();
@@ -729,6 +730,21 @@ mod tests {
 			assert_eq!(call(&app, Method::POST, path, None, None).await.0, StatusCode::UNAUTHORIZED, "{path}");
 		}
 		assert_eq!(call(&app, Method::DELETE, "/auth/account", None, None).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	/// A server restarted with `AUTH_ENABLED=false` keeps the `auth_session`
+	/// rows it issued while auth was on. None of them may open anything: not a
+	/// subject-scoped route, and not `/auth/session`, which would renew it.
+	#[tokio::test]
+	async fn with_auth_off_a_session_issued_while_it_was_on_opens_nothing() {
+		let pool = pool().await;
+		let browser = register(&app(AuthContext::for_tests(pool.clone(), 100)), &mut authenticator()).await;
+		let off = app(AuthContext::unconfigured_for_tests(pool));
+
+		assert_eq!(whoami(&off, &browser.cookie).await.0, StatusCode::UNAUTHORIZED);
+		let (status, set_cookie, _) = call(&off, Method::GET, "/auth/session", Some(&browser.cookie), None).await;
+		assert_eq!(status, StatusCode::UNAUTHORIZED);
+		assert!(set_cookie.unwrap().contains("Max-Age=0"), "and the cookie is cleared");
 	}
 
 	#[tokio::test]

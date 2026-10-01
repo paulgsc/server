@@ -28,6 +28,7 @@ services:
       # Bind mount: host path → container path
       # Override OLLAMA_MODELS_PATH in .env or environment to redirect to
       # a different host location (e.g. /mnt/ssd/ollama-models).
+      # HOST-SPECIFIC default: the nixos.local dev host's storage mount (#406).
       - ${OLLAMA_MODELS_PATH:-/mnt/storage/users/dev/models/ollama-models}:/root/.ollama/models
     networks:
       - monitoring-network

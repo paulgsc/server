@@ -9,6 +9,8 @@ services:
       - MB_DB_FILE=/metabase-data/metabase.db
       - JAVA_OPTS=-Xmx1500m -Xms512m
     volumes:
+      # HOST-SPECIFIC: the nixos.local dev host's storage mount (#406). Any
+      # other host must change both paths.
       - /mnt/storage/users/dev/metabase-data:/metabase-data
       - /mnt/storage/users/dev/databases:/data:rw
     networks:
