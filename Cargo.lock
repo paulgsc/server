@@ -3032,6 +3032,7 @@ name = "orchestrator"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "clap",
  "cursorium",
  "dashmap",
  "some-metrics",
