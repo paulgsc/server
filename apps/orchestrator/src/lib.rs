@@ -1,3 +1,5 @@
+pub mod config;
+
 use cursorium::core::StreamOrchestrator;
 use dashmap::DashMap;
 use some_transport::{NatsTransport, Transport};

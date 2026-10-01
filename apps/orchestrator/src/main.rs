@@ -1,39 +1,34 @@
 use anyhow::Result;
-use orchestrator::OrchestratorService;
+use clap::Parser;
+use orchestrator::{config::Config, OrchestratorService};
 use some_transport::NatsTransport;
-use std::net::SocketAddr;
-use tracing::Level;
+use tracing_subscriber::EnvFilter;
 use ws_events::events::UnifiedEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	// Initialize tracing
-	tracing_subscriber::fmt().with_max_level(Level::INFO).with_target(true).with_line_number(true).init();
+	let config = Config::parse();
+
+	tracing_subscriber::fmt()
+		.with_env_filter(EnvFilter::try_new(&config.rust_log)?)
+		.with_target(true)
+		.with_line_number(true)
+		.init();
 
 	tracing::info!("🎬 Starting NATS Orchestrator Service");
 
-	// Orchestrator has no other HTTP surface (#143 (C1)) — this listener
-	// exists purely to be scraped. Bind on all interfaces so it's reachable
-	// from `monitoring-network`, but do not publish the port to the host:
-	// `infra/compose/orchestrator.yml` deliberately declares no `ports`, and
-	// this must not change that.
 	let metrics_handle = some_metrics::install()?;
-	let metrics_addr: SocketAddr = std::env::var("METRICS_ADDR")
-		.ok()
-		.and_then(|addr| addr.parse().ok())
-		.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 9464)));
+	let metrics_addr = config.metrics_addr;
 	tokio::spawn(async move {
 		if let Err(error) = some_metrics::serve(metrics_addr, metrics_handle).await {
 			tracing::error!(%error, "metrics listener exited");
 		}
 	});
 
-	// Get NATS URL from environment or use default
-	let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
-	tracing::info!("📡 Connecting to NATS at {}", nats_url);
+	tracing::info!("📡 Connecting to NATS at {}", config.nats_url);
 
 	// Create NATS transport using the pooled connection
-	let transport: NatsTransport<UnifiedEvent> = NatsTransport::connect_pooled(&nats_url).await?;
+	let transport: NatsTransport<UnifiedEvent> = NatsTransport::connect_pooled(&config.nats_url).await?;
 	tracing::info!("✅ Connected to NATS");
 	tracing::info!("   - Commands: listening on {}", ws_events::events::EventType::OrchestratorCommandData.subject());
 	tracing::info!("   - State: publishing on {}", ws_events::events::EventType::OrchestratorState.subject());
