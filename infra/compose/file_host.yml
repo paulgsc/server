@@ -20,6 +20,8 @@ services:
       - DATA_DIR=/app/data
       - CONFIG_DIR=/app/config
     volumes:
+      # HOST-SPECIFIC: the nixos.local dev host's storage mount (#406). Any
+      # other host must change this path (example.env's STORAGE is the same one).
       - /mnt/storage/users/dev/databases/hopium:/app/dbs
       - ${REPO_ROOT}/data:/app/data:rw
       - ${REPO_ROOT}/config:/app/config:ro

@@ -59,7 +59,7 @@ pub struct AuthContext {
 
 struct Inner {
 	pool: SqlitePool,
-	/// `None` when `WEBAUTHN_RP_ID` is unset: the ceremony routes answer
+	/// `None` when `AUTH_ENABLED=false`: the ceremony routes answer
 	/// `503 feature_not_configured`, and with no way to sign in, every
 	/// subject-scoped route answers `401`.
 	relying_party: Option<Webauthn>,
@@ -159,6 +159,12 @@ impl SignupCap {
 /// Why the relying party could not be built from the configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum RelyingPartyError {
+	#[error(
+		"passkey sign-in is on (AUTH_ENABLED defaults to true) but WEBAUTHN_RP_ID is unset: set WEBAUTHN_RP_ID and WEBAUTHN_ORIGINS, or AUTH_ENABLED=false to run with nobody able to sign in"
+	)]
+	NotConfigured,
+	#[error("AUTH_ENABLED=false but WEBAUTHN_RP_ID is set: unset one of them")]
+	DisabledButConfigured,
 	#[error("WEBAUTHN_RP_ID is set but WEBAUTHN_ORIGINS is empty")]
 	NoOrigins,
 	#[error("WEBAUTHN_ORIGINS has an entry that is not a URL")]
@@ -170,21 +176,22 @@ pub enum RelyingPartyError {
 impl AuthContext {
 	/// Build from configuration.
 	///
-	/// Like the study nudge, auth that is simply not configured is not an
-	/// error: the server boots and says so. Auth that is configured wrongly
-	/// is, because the alternative is discovering it at someone's first
-	/// sign-in.
+	/// Like the study nudge with `NUDGE_ENABLED` on, auth that is on but not
+	/// configured is a startup error, not a warning. It used to boot and log
+	/// one: the server looked up while every sign-in failed with "Passkey
+	/// sign-in isn't set up on this server yet", which is discovering a
+	/// missing variable from a user's screen. Running without sign-in is an
+	/// explicit `AUTH_ENABLED=false`, and is logged.
 	///
 	/// # Errors
-	/// When `WEBAUTHN_RP_ID` is set and the origins are missing or
+	/// When auth is on and `WEBAUTHN_RP_ID` is unset, when it is off and
+	/// `WEBAUTHN_RP_ID` is set anyway, and when the origins are missing or
 	/// malformed.
 	pub fn from_config(pool: SqlitePool, config: &Config) -> Result<Self, RelyingPartyError> {
-		let relying_party = if let Some(rp_id) = config.webauthn_rp_id.as_deref() {
-			Some(relying_party(rp_id, &config.webauthn_origins)?)
-		} else {
-			tracing::warn!("passkey auth is not configured (WEBAUTHN_RP_ID is unset); nobody can sign in, and subject-scoped routes will answer 401");
-			None
-		};
+		let relying_party = configured_relying_party(config.auth_enabled, config.webauthn_rp_id.as_deref(), &config.webauthn_origins)?;
+		if relying_party.is_none() {
+			tracing::warn!("AUTH_ENABLED=false: passkey sign-in is off; nobody can sign in, and subject-scoped routes will answer 401");
+		}
 		let operators = operator::parse_subjects(&config.operator_subjects);
 		if operators.is_empty() {
 			tracing::warn!("OPERATOR_SUBJECTS is unset; the operator routes (lesson and LeetType round writes) are disabled and answer 403 to everyone");
@@ -362,6 +369,17 @@ impl AuthContext {
 	}
 }
 
+/// What `from_config` builds from `AUTH_ENABLED` and `WEBAUTHN_RP_ID`, or why
+/// the server must not start.
+fn configured_relying_party(enabled: bool, rp_id: Option<&str>, origins: &[String]) -> Result<Option<Webauthn>, RelyingPartyError> {
+	match (enabled, rp_id) {
+		(true, Some(rp_id)) => relying_party(rp_id, origins).map(Some),
+		(true, None) => Err(RelyingPartyError::NotConfigured),
+		(false, Some(_)) => Err(RelyingPartyError::DisabledButConfigured),
+		(false, None) => Ok(None),
+	}
+}
+
 fn relying_party(rp_id: &str, origins: &[String]) -> Result<Webauthn, RelyingPartyError> {
 	let mut origins = origins.iter().map(|origin| Url::parse(origin.trim()).map_err(|_| RelyingPartyError::BadOrigin));
 	let first = origins.next().ok_or(RelyingPartyError::NoOrigins)??;
@@ -391,7 +409,7 @@ pub(crate) fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-	use super::{relying_party, RelyingPartyError, SignupCap};
+	use super::{configured_relying_party, relying_party, RelyingPartyError, SignupCap};
 
 	#[test]
 	fn the_signup_cap_refills_at_the_day_boundary_and_not_before() {
@@ -408,5 +426,21 @@ mod tests {
 		assert!(matches!(relying_party("app.test", &[]), Err(RelyingPartyError::NoOrigins)));
 		assert!(matches!(relying_party("app.test", &[String::from("not a url")]), Err(RelyingPartyError::BadOrigin)));
 		assert!(relying_party("app.test", &[String::from("https://app.test"), String::from(" https://app.test:5173")]).is_ok());
+	}
+
+	/// The screenshot this guards against: auth on, `WEBAUTHN_RP_ID` missing
+	/// from the `.env`, and a server that booted anyway with nobody able to
+	/// sign in. Now that is a startup error, and only an explicit
+	/// `AUTH_ENABLED=false` runs without a relying party.
+	#[test]
+	fn auth_on_without_a_relying_party_id_does_not_start() {
+		let origins = [String::from("https://app.test")];
+		assert!(matches!(configured_relying_party(true, None, &origins), Err(RelyingPartyError::NotConfigured)));
+		assert!(matches!(configured_relying_party(true, Some("app.test"), &origins), Ok(Some(_))));
+		assert!(matches!(configured_relying_party(false, None, &[]), Ok(None)));
+		assert!(matches!(
+			configured_relying_party(false, Some("app.test"), &origins),
+			Err(RelyingPartyError::DisabledButConfigured)
+		));
 	}
 }

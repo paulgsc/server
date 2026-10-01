@@ -101,7 +101,8 @@ pub struct AppState {
 	/// to configure them to boot.
 	pub nudge: Option<NudgeContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
-	/// present; unconfigured, it refuses every ceremony with `503` (see
+	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
+	/// and with auth on but unconfigured the server does not start (see
 	/// `auth::AuthContext::from_config`).
 	pub auth: auth::AuthContext,
 }
@@ -110,6 +111,17 @@ impl AppState {
 	/// Build the entire universe in one explicit place
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
 		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new()?)));
+
+		// The first thing logged once there is a subscriber: which values this
+		// run took from the `nixos.local` dev host (#406). Fine there, wrong on
+		// any other host, and never silent either way.
+		let host_defaults = config.host_specific_defaults_in_use();
+		if !host_defaults.is_empty() {
+			tracing::warn!(
+				variables = ?host_defaults,
+				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
+			);
+		}
 		let core = CoreContext {
 			config: config.clone(),
 			cancel_token: cancel_token.clone(),
@@ -118,11 +130,15 @@ impl AppState {
 			otel_guard,
 		};
 
+		// Before anything touches the network: a configuration that cannot
+		// serve anyone (auth on with no relying party) should fail first.
+		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
+
 		let cache_store = CacheStore::new(config.as_cache_config())?;
 		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
 
 		// Initialize NATS transports
-		let nats_url = config.nats_url.as_deref().unwrap_or("nats://localhost:4222");
+		let nats_url = config.nats_url.as_deref().unwrap_or(crate::config::DEV_HOST_NATS_URL);
 		let transport = NatsTransport::connect_pooled(nats_url).await?;
 
 		// Reuse the Arc<Client> from the transport for JetStream
@@ -138,7 +154,6 @@ impl AppState {
 			pipeline_publisher,
 		};
 
-		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 
 		Ok(Self { core, realtime, nudge, auth })

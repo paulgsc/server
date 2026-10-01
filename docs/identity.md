@@ -74,6 +74,13 @@ login or recovery code, so there is no contact detail or shared secret to store,
 leak or recover with. Losing every copy of every passkey loses the account; that
 is the cost of holding nothing that could recover it.
 
+Passkey sign-in is on unless `AUTH_ENABLED=false`, and while it is on, the
+server refuses to start without `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS`. It
+used to boot without them and log a warning, so the only symptom was every
+sign-in failing with "Passkey sign-in isn't set up on this server yet".
+`AUTH_ENABLED=false` runs with nobody able to sign in: every ceremony answers
+`503` and every subject-scoped route `401`.
+
 ### What an account is
 
 | Stored | Where | What it is |
