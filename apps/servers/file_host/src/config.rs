@@ -398,10 +398,11 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 	if app_base_url == DEV_HOST_APP_BASE_URL {
 		in_use.push("APP_BASE_URL");
 	}
-	if nats_url.is_none() {
+	// Unset falls back to the dev-host value; set to it is the same value.
+	if nats_url.is_none_or(|url| url == DEV_HOST_NATS_URL) {
 		in_use.push("NATS_URL");
 	}
-	if redis_url.is_none() {
+	if redis_url.is_none_or(|url| url == DEV_HOST_REDIS_URL) {
 		in_use.push("REDIS_URL");
 	}
 	in_use
@@ -409,7 +410,7 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 
 #[cfg(test)]
 mod tests {
-	use super::{host_specific_defaults_in_use, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL};
+	use super::{host_specific_defaults_in_use, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
 	use clap::{CommandFactory, Parser};
 
 	#[test]
@@ -423,6 +424,17 @@ mod tests {
 		assert_eq!(
 			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, None, None),
 			["ALLOWED_ORIGINS", "APP_BASE_URL", "NATS_URL", "REDIS_URL"]
+		);
+	}
+
+	/// `example.env` sets `NATS_URL` to the dev host's value explicitly, for
+	/// `make dev`; that is still running on it.
+	#[test]
+	fn a_dev_host_value_set_explicitly_is_still_named() {
+		let origins = [String::from("https://app.example.com")];
+		assert_eq!(
+			host_specific_defaults_in_use(&origins, "https://app.example.com/", Some(DEV_HOST_NATS_URL), Some(DEV_HOST_REDIS_URL)),
+			["NATS_URL", "REDIS_URL"]
 		);
 	}
 

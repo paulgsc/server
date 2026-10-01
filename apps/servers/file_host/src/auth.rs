@@ -277,6 +277,13 @@ impl AuthContext {
 		&self.inner.pool
 	}
 
+	/// Whether a stored session may stand for anyone. Not with
+	/// `AUTH_ENABLED=false`: a server that cannot sign anyone in must not keep
+	/// letting in the sessions it issued while it could.
+	pub(crate) fn sessions_enabled(&self) -> bool {
+		self.inner.relying_party.is_some()
+	}
+
 	pub(crate) fn relying_party(&self) -> Result<&Webauthn, FileHostError> {
 		self.inner.relying_party.as_ref().ok_or(FileHostError::FeatureNotConfigured("passkey auth"))
 	}
@@ -359,8 +366,12 @@ impl AuthContext {
 	///
 	/// # Errors
 	/// A storage failure. A missing, malformed, unknown or expired cookie is
-	/// `Ok(None)`, not an error.
+	/// `Ok(None)`, not an error, and so is every cookie while sessions are off
+	/// ([`Self::sessions_enabled`]).
 	pub(crate) async fn session_subject(&self, headers: &HeaderMap) -> Result<Option<String>, FileHostError> {
+		if !self.sessions_enabled() {
+			return Ok(None);
+		}
 		let Some(token) = SessionToken::from_headers(headers) else {
 			return Ok(None);
 		};
