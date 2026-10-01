@@ -1,0 +1,12 @@
+{
+  "source_sha": "f17c02ed7c3773751ad2ef65c34d49e68627ba20",
+  "include": [
+    {
+      "name": "orchestrator",
+      "dockerfile": "./infra/docker/Dockerfile.orchestrator",
+      "repo_suffix": "orchestrator",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    }
+  ]
+}
