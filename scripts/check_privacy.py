@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fingerprinting headers are named in one place: file_host's `net` module.
 
-docs/identity.md, "Privacy invariants": the server keeps no record that could
-single a person out, and the request headers that exist mostly to do that —
+docs/identity.md, "Privacy invariants": the server is built to keep no record
+that names a person, and the request headers that exist mostly to do that —
 `User-Agent`, and the forwarded-address family (`X-Forwarded-For`,
 `X-Real-IP`, `Forwarded`, and the CDN variants) — are exactly such records.
 The one legitimate reader is `apps/servers/file_host/src/net.rs`, which turns

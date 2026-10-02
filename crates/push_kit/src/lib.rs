@@ -40,7 +40,7 @@ pub mod transport;
 pub use identity::{VapidError, VapidIdentity};
 pub use outcome::SendOutcome;
 pub use sender::{PreparedPush, Sender, MAX_PAYLOAD_BYTES};
-pub use subscription::{PushSubscription, SubscriptionKeys};
+pub use subscription::{PushSubscription, SubscriptionKeys, OTHER_SERVICE};
 pub use transport::{PushResponse, PushTransport};
 
 #[cfg(feature = "reqwest-transport")]

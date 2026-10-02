@@ -1,17 +1,28 @@
 # Identity and privacy
 
-> The server can tell that the same subject came back. It can never tell who
-> that subject is.
+> An account here is pseudonymous, not anonymous. The server can tell that the
+> same subject came back, and it never asks who that subject is. It cannot
+> promise that nobody could work that out: what a subject studies, when, and
+> what they choose to keep is stored under that id, and the machinery in front
+> of the server sees network addresses.
 
-That sentence is the design goal. The client holds the secret: a passkey,
-whose private key never leaves the person's authenticator. The server holds only
-what it needs to recognise a returning subject and to keep one client from
-starving another. Nothing it stores or logs should be able to single a person
-out.
+The design goal is that the server never needs to know who a subject is. The
+client holds the secret: a passkey, whose private key never leaves the person's
+authenticator. The server asks for nothing that names a person (no name, email,
+phone number or biometric), and holds what it needs to recognise a returning
+subject, to keep one client from starving another, and to run the study
+features that subject turns on. The code is built so that nothing it stores or
+logs names a person.
+
+That is a statement about what the code asks for. It is not a promise about
+what people choose to send it (a kept shelf item or a captured page can say
+anything), and it says nothing about what sits outside this process: the
+reverse proxy, the container log driver, the push services and the passkey
+provider. "What is still exposed" lists each, stated rather than assumed.
 
 This document says who owns identity in `file_host`, lists the invariants that
-make the sentence true, names where each one is enforced, and ends with what is
-still exposed — stated rather than assumed.
+hold, names where each one is enforced and what it does *not* prove, and ends
+with what is still exposed.
 
 ---
 
@@ -199,14 +210,21 @@ Subject ids are random and name nobody; the nudge waker logs them already.
 Each invariant names where it is enforced. An invariant that is enforced
 nowhere is marked as such and belongs to review.
 
-1. **Nothing at rest can single a person out.** No column is named for an
-   address, a contact detail or a fingerprint, and every table is classified, in
-   writing, as subject-scoped or not. A new table fails the test until someone
-   decides which it is and says why.
-   *Enforced by* `file_host::privacy`'s schema test, against the schema the
-   migrations actually produce.
+1. **No column is built to hold who a person is, and every table has an
+   owner.** No column is named for an address, a contact detail or a
+   fingerprint, and every table is classified, in writing, as subject-scoped or
+   not. A new table fails the test until someone decides which it is and says
+   why.
+   *Enforced by* `file_host::privacy`'s
+   `the_migrated_schema_has_no_identifying_column_names_and_every_table_is_classified`,
+   against the schema the migrations actually produce.
+   *What it proves:* names and ownership, nothing about values. It accepts a
+   `body` that holds an email address and a `tab_title` that holds a person's
+   name, and it says nothing about what several columns reveal together. What a
+   column's contents can say is under "What is still exposed".
 
-2. **The peer's address never leaves `net.rs`, and never reaches a log line.**
+2. **The peer's address never leaves `net.rs`, and never reaches a log line
+   `file_host` writes.**
    *Enforced by* `clippy.toml`'s `disallowed-types` (`axum::extract::ConnectInfo`),
    through `lint.yml`'s clippy ratchet: `net::Peer` is the one `#[allow]`. Also by
    `file_host::privacy`'s capturing-layer tests. They record every field of every
@@ -214,6 +232,9 @@ nowhere is marked as such and belongs to review.
    admission, the two paths that logged an address before #372, and on
    `ConnectionGuard`'s permit accounting, and fail if an address, or the
    process-stable admission key, appears anywhere in them.
+   *What it proves:* those three paths, under the test's own subscriber. It does
+   not cover the reverse proxy in front of `file_host`, Docker's log driver, or
+   any collector: see "What is still exposed".
 
 3. **Fingerprinting headers are named only in `net.rs`,** other than as a
    write that puts one on a request, which is how tests prove they're ignored.
@@ -233,9 +254,17 @@ nowhere is marked as such and belongs to review.
    compiles, so a `compile_fail` can only be failing on the constructor and not
    on a wrong path.
 
-6. **Every `#[instrument]` names what it skips.** Without `skip`/`skip_all`,
-   tracing records every argument as a span field.
-   *Enforced by* `scripts/check_instrument_skip.py`.
+6. **Every `#[instrument]` names what it skips, and a handler never records
+   request content.** Without `skip`/`skip_all`, tracing records every
+   argument as a span field, at the default `info` level, and the
+   OpenTelemetry layer exports those fields too. `skip(state)` alone is not
+   enough on a handler that takes a body: `Json(payload)` is recorded. So an
+   extractor that carries request content (`Json`, `Form`, `Bytes`,
+   `Multipart`, `Query`, `Path`) must be skipped itself, with `skip_all` or by
+   its binding, and a value worth recording is named in `fields(...)`.
+   *Enforced by* `scripts/check_instrument_skip.py`. It reads the attribute
+   and the signature that follows it. It does not read what `fields(...)`
+   records or what a handler passes to `info!`, which belongs to review.
 
 7. **Passkeys reveal no person and no device.** WebAuthn `attestation: "none"`,
    since anything else reveals the authenticator model, and whatever attestation
@@ -319,6 +348,54 @@ nowhere is marked as such and belongs to review.
     fails on a subject-scoped table outside the #395 list with no such
     trigger.
 
+13. **HTTP spans name a route, not a URL.** tower-http's default span records
+    the whole URI at DEBUG, query string included. `TraceLayer` is built with
+    `trace::RouteSpan`, which records the method and the matched route
+    template (`/api/v1/tabs/:tab_id`), or one fixed word for a request no route
+    matched, and nothing else from the request. A query string or a free-text
+    path segment never reaches a span, and so never reaches the log or the
+    OpenTelemetry exporter.
+    *Enforced by* `file_host::trace`'s
+    `a_request_span_names_the_route_and_never_the_query_or_a_path_segment`, with
+    `the_default_span_this_replaces_records_the_whole_uri` as the control that
+    keeps it from passing vacuously. *It proves* the span this layer builds. It
+    does not cover a handler that logs its own arguments (invariant 6).
+
+14. **A push endpoint is never logged; the log names a recognised push
+    service, or `other`.** An endpoint is a per-browser address, and
+    `validate()` accepts any `https://` host, so even its host can be the
+    client's own choice (a device-specific name, a token in a subdomain).
+    `PushSubscription::service()` therefore returns one of a fixed set of
+    labels for the browsers' own providers (`fcm.googleapis.com`,
+    `updates.push.services.mozilla.com`, `web.push.apple.com`,
+    `notify.windows.com`) and the word `other` for everything else, lookalikes
+    included. That says which provider answered when it is one of those, which
+    is what a log line and a failure need, and nothing the client chose. The
+    HTTP client's own connection logs name the host and port of every outbound
+    connection at debug and trace level, a push endpoint's included, so
+    `auth::loggable` keeps `hyper_util::client` and `reqwest` below `warn` out
+    of the log whatever `RUST_LOG` asks for, as it already does for
+    `webauthn_rs`. `ReqwestTransport` strips the URL from its errors with
+    `reqwest::Error::without_url`, because a transport error's text names the
+    URL it failed on and `SendOutcome::Transport` is logged. A push service's
+    own words are not logged either: the waker logs `SendOutcome::log_detail()`
+    (a status, a number of seconds, or text this process produced), never the
+    outcome's `Debug`, because `Rejected`, `ServiceError` and `RateLimited`
+    hold a response body and a `Retry-After` that a provider may fill with the
+    URI or token it was sent.
+    *Enforced by* `waker`'s
+    `no_push_endpoint_reaches_a_log_line_whatever_the_delivery_outcome`, which
+    makes one device time out, one refuse the connection, one accept and three
+    answer 400, 503 and 429 with the request line quoted in the body and the
+    `Retry-After`, and fails if any endpoint, its host or its per-browser path
+    appears in anything captured; and by `push_kit`'s tests of
+    `PushSubscription::service` (a device-specific host and lookalikes are
+    `other`) and of `SendOutcome::log_detail`; the same test runs under the
+    production filter, and a control test shows the HTTP client's connection
+    log does name the host without it. *It proves* the waker's delivery paths. The subscribe route's
+    single log line names the service by the same method, and is covered by
+    review.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -334,7 +411,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **`tabs`.** Browser-extension page captures: URL, title and extracted content,
   keyed by URL hash with no subject column. The content itself can identify
   whoever captured it. It is classified as not subject-scoped, which is accurate,
-  but that does not make it harmless.
+  but that does not make it harmless. See "Unauthenticated surfaces" below:
+  nothing gates it, and nothing deletes it when an account is deleted.
 - **The code-delivery trust gap.** The server ships the client's JavaScript, so
   a dishonest deployment could ship code that reads anything JavaScript can
   reach. A passkey's private key stays in the authenticator even then. Keys kept
@@ -355,6 +433,45 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   passkey for this site, which is the provider's knowledge, not this server's.
 - **Anyone can make an account.** An open server can be filled with empty
   accounts up to the daily cap. They hold nothing and single nobody out.
-- **HTTP tracing.** `TraceLayer::new_for_http()` uses tower-http's defaults,
-  which record method, URI and version but not headers. A query string is part of
-  the URI, so identifying data must never travel in one.
+- **Request URIs, outside the span.** `file_host`'s own HTTP span records a route
+  template and no URI (invariant 13), but a query string is still part of the URI
+  that every proxy in front of it sees, so identifying data must never travel in
+  one.
+- **Network addresses, outside this process.** `file_host` writes no address to
+  a log line (invariant 2), but whatever fronts it sees every request's address
+  and, unless it is told otherwise, logs it: nginx in the `some-ui` image, Caddy,
+  the host. The `some-ui` nginx configuration turns its access log off and stops
+  forwarding address headers to `file_host`; its error log still carries the
+  client address and request line when an upstream fails. Docker keeps a
+  container's output (`json-file`, until its size cap) wherever its log driver is
+  pointed, and nothing in this repository controls backups, a log shipper or a
+  collector.
+- **Behaviour is stored under the subject.** The sessions a subject builds,
+  when they start, finish or abandon them, the scores and elapsed times the
+  nudge reads, a presence lease per open session and the engagement state
+  derived from all of it are joined to the subject id. That is what an account
+  is for, and it is what makes an account pseudonymous rather than anonymous:
+  whoever can link the id to a person can read what that person studied, and
+  when.
+- **Logs and traces carry the subject id.** The waker logs subject ids, a
+  refused operator is logged by id, and the OpenTelemetry layer exports span
+  fields to whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names. Ids are random and
+  name nobody on their own; they are the join key above. Request bodies, query
+  strings and push endpoints are not logged (invariants 6, 13 and 14).
+- **Unauthenticated surfaces.** `tabs`, `mood_events`, `POST /now-playing`,
+  `POST /utter` and `/ws` need no session. They hold or relay content that
+  belongs to no subject (page URLs and titles, the video playing, text a
+  browser extension sends), so no account deletion reaches it and nothing here
+  ties it to a person except what it says. `tabs` is the one that stores
+  something identifying, and it is under review for removal.
+- **What deleting an account does not reach.** The subject's rows in the
+  subject-scoped tables are deleted in one transaction. Not reached: copies in
+  Redis, log lines and exported spans that carry the id, ceremonies held in
+  memory, backups, and SQLite's free pages and write-ahead log, which keep
+  deleted rows until they are overwritten or checkpointed.
+- **Retention that runs only sometimes.** The waker sweeps `intervention_log`
+  (90 days) and `activity_outcome` (365 days) on each pass, so those horizons
+  hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
+  `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
+  deleted when someone next signs in, not on a timer. `engagement_*`,
+  `sessions` and the shelf have no horizon.

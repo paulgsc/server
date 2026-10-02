@@ -401,16 +401,27 @@ fn relying_party(rp_id: &str, origins: &[String]) -> Result<Webauthn, RelyingPar
 	Ok(builder.build()?)
 }
 
+/// Libraries whose own logging below `warn` is never written, whatever
+/// `RUST_LOG` asks for.
+///
+/// - `webauthn_rs` instruments its ceremonies at debug and trace level,
+///   recording its arguments: the browser's whole credential, its id and client
+///   data included.
+/// - `hyper_util::client` and `reqwest` log every outbound connection at
+///   debug and trace level, naming its scheme, host and port. For a push
+///   delivery that is the push endpoint's host, which `validate()` lets a
+///   client choose (docs/identity.md, invariant 14).
+const QUIET_BELOW_WARN: [&str; 3] = ["webauthn_rs", "hyper_util::client", "reqwest"];
+
 /// Whether an event or span may reach the log, whatever `RUST_LOG` asks for.
 ///
-/// The WebAuthn library instruments its ceremonies at debug and trace level,
-/// recording its arguments: the browser's whole credential, its id and client
-/// data included. Only that library's warnings and errors pass. `main`'s
-/// subscriber applies this as a filter of its own, so turning on debug logging
-/// to chase something else cannot put a credential id in a log line.
+/// Only the libraries in `QUIET_BELOW_WARN` are held back, and only their
+/// warnings and errors pass. `main`'s subscriber applies this as a filter of
+/// its own, so turning on debug logging to chase something else cannot put a
+/// credential id or a push endpoint's host in a log line.
 #[must_use]
 pub fn loggable(metadata: &tracing::Metadata<'_>) -> bool {
-	!metadata.target().starts_with("webauthn_rs") || *metadata.level() <= tracing::Level::WARN
+	!QUIET_BELOW_WARN.iter().any(|quiet| metadata.target().starts_with(quiet)) || *metadata.level() <= tracing::Level::WARN
 }
 
 /// Unix seconds, now.

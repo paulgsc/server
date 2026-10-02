@@ -13,6 +13,7 @@ use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCK
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
 use file_host::routes::{inventory, metrics::get_metrics};
+use file_host::trace::RouteSpan;
 use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -150,7 +151,9 @@ async fn main() -> Result<()> {
 
 	let app = app.layer(
 		ServiceBuilder::new()
-			.layer(TraceLayer::new_for_http())
+			// `RouteSpan`, not the default span: that one records the whole URI, query
+			// string included (docs/identity.md, invariant 13).
+			.layer(TraceLayer::new_for_http().make_span_with(RouteSpan))
 			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
 			.layer(RequestBodyLimitLayer::new(config.clone().max_request_size * 1024 * 1024))
 			.layer(ConcurrencyLimitLayer::new(config.clone().max_concurrent_req))

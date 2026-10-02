@@ -117,8 +117,10 @@ pub async fn subscribe(State(state): State<AppState>, subject: SubjectId, Json(r
 		.await
 		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
 
+	// A recognised push service or `other`, never the endpoint or its host: both
+	// are the client's to choose (docs/identity.md, invariant 14).
 	info!(
-		endpoint = %request.subscription.endpoint,
+		service = request.subscription.service(),
 		subject = subject.as_str(),
 		topics = ?consent.topics,
 		"recorded consent and stored a push subscription"

@@ -29,6 +29,16 @@ services:
     networks:
       - monitoring-network
     restart: unless-stopped
+    # Bounds how long whatever this container writes to stdout lives. The
+    # default `json-file` driver keeps it until the container is removed, with
+    # no size cap. `file_host` writes no peer address to a log line, but its
+    # logs and exported spans do carry subject ids (docs/identity.md, "What is
+    # still exposed"), so they get a horizon too.
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
     depends_on:
       redis:
         condition: service_healthy

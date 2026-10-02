@@ -25,6 +25,7 @@ pub mod redacted;
 pub mod routes;
 pub mod schema;
 pub mod subject;
+pub mod trace;
 pub mod utils;
 pub mod websocket;
 

@@ -1350,13 +1350,16 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		}
 
 		let endpoint = &stored.subscription.endpoint;
+		// What a log line may name: a recognised push service or `other`, never
+		// the endpoint or its host, which a client chooses (docs/identity.md).
+		let service = stored.subscription.service();
 		let budget = nudge.delivery_timeout.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
 		if budget.is_zero() {
-			warn!(%endpoint, "waker pass deadline reached; not trying this subject's remaining devices");
+			warn!(subject = %subject_id, "waker pass deadline reached; not trying this subject's remaining devices");
 			break;
 		}
 		let Ok(outcome) = tokio::time::timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
-			warn!(%endpoint, timeout_ms = budget.as_millis(), "push service did not answer in time");
+			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
 			continue;
@@ -1364,13 +1367,13 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		let stamp = Utc::now().to_rfc3339();
 
 		if outcome.should_prune() {
-			info!(%endpoint, "subscription is gone; pruning");
+			info!(service, "subscription is gone; pruning");
 			subscriptions_repo.delete_by_endpoint(endpoint).await?;
 			continue;
 		}
 
 		if outcome.is_failure() {
-			warn!(%endpoint, outcome = outcome.label(), detail = ?outcome, "push was not accepted");
+			warn!(service, outcome = outcome.label(), detail = %outcome.log_detail(), "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
 			continue;
 		}
@@ -3022,6 +3025,61 @@ mod tests {
 		(endpoint, connections)
 	}
 
+	/// A push service that answers every request with `status`, a body that
+	/// echoes the request line (its per-browser path included) and a
+	/// `Retry-After` that does the same: the shape of a provider that puts the
+	/// URI it was sent into its own error text. Returns the endpoint.
+	fn echoing_push_service(status: u16, token: &str) -> String {
+		use std::io::{Read as _, Write as _};
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+		endpoint.push_str("/wpush/v2/");
+		endpoint.push_str(token);
+
+		std::thread::spawn(move || {
+			for stream in listener.incoming() {
+				let Ok(mut stream) = stream else { continue };
+				// The whole request, as `loopback_push_service` reads it, so the
+				// client sees a complete exchange and not a reset.
+				let mut request: Vec<u8> = Vec::new();
+				let mut chunk = [0_u8; 1024];
+				while let Ok(read) = stream.read(&mut chunk) {
+					if read == 0 {
+						break;
+					}
+					request.extend_from_slice(&chunk[..read]);
+					let Some(head) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+						continue;
+					};
+					let headers = String::from_utf8_lossy(&request[..head]).to_lowercase();
+					let length = headers
+						.lines()
+						.find_map(|line| line.strip_prefix("content-length:"))
+						.and_then(|value| value.trim().parse::<usize>().ok())
+						.unwrap_or(0);
+					if request.len() >= head + 4 + length {
+						break;
+					}
+				}
+				let request_line = String::from_utf8_lossy(&request).lines().next().unwrap_or_default().to_owned();
+				let body = "rejected: ".to_owned() + &request_line;
+				let response = "HTTP/1.1 ".to_owned()
+					+ &status.to_string()
+					+ " X\r\nRetry-After: "
+					+ &request_line
+					+ "\r\nContent-Length: "
+					+ &body.len().to_string()
+					+ "\r\nConnection: close\r\n\r\n"
+					+ &body;
+				let _ = stream.write_all(response.as_bytes());
+				let _ = stream.flush();
+			}
+		});
+
+		endpoint
+	}
+
 	/// One consenting device for `subject_id`, keyed with `push_kit`'s real
 	/// fixture so encryption succeeds and the request actually reaches the
 	/// socket — see the cold-start scenario above for why the inert
@@ -3222,6 +3280,121 @@ mod tests {
 				"exactly one intervention_log row, and it reached actuated_at"
 			);
 		});
+	}
+
+	/// docs/identity.md, invariant 14: a push endpoint is a per-browser
+	/// address, so no delivery outcome logs one.
+	///
+	/// Six devices, six outcomes that each log: a service that never answers
+	/// (a timeout), a port nothing listens on (a refused connection, whose
+	/// `reqwest` error names the URL it failed on unless the adapter strips
+	/// it), one that accepts, and three that refuse in their own words (a 400,
+	/// a 503 and a 429), each echoing the request line into its body and its
+	/// `Retry-After` the way a provider that quotes the URI would. Every
+	/// endpoint carries a path that is the per-browser part; none of it may
+	/// appear in anything captured.
+	#[test]
+	fn no_push_endpoint_reaches_a_log_line_whatever_the_delivery_outcome() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		// What the production subscriber lets through, whatever `RUST_LOG` asks for
+		// (`auth::loggable`), and not the HTTP client's own connection logs, which
+		// the control below shows would name every endpoint's host.
+		let (captured, _guard) = crate::privacy::capture_where(crate::auth::loggable);
+		let subject_id = "subject-three-devices";
+		let (stalled, _) = stalling_push_service();
+		let (answering, _) = loopback_push_service();
+		let refused = {
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+			endpoint.push_str("/wpush/v2/refused-device-token");
+			drop(listener);
+			endpoint
+		};
+		let quoting = [
+			echoing_push_service(400, "bad-request-device-token"),
+			echoing_push_service(503, "unavailable-device-token"),
+			echoing_push_service(429, "rate-limited-device-token"),
+		];
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let engagement = EngagementRepository::new(pool.clone());
+			for endpoint in [&stalled, &refused, &answering].into_iter().chain(&quoting) {
+				subscribe(&pool, subject_id, endpoint, &now_str).await;
+			}
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				..nudge_context()
+			};
+			let pass = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(pass.intervened, 1, "the accepting device made this an intervention: {pass:?}");
+		});
+
+		let lines = captured.lines();
+		// Without these the test passes vacuously: each outcome must have
+		// logged, and logged the service, for "no endpoint" to mean anything.
+		for expected in ["did not answer in time", "push was not accepted", "service=other"] {
+			assert!(lines.iter().any(|line| line.contains(expected)), "no line said {expected:?}: {lines:#?}");
+		}
+		for outcome in ["transport-error", "rejected", "service-error", "rate-limited"] {
+			assert!(
+				lines.iter().any(|line| line.contains(&("outcome=".to_owned() + outcome))),
+				"no device reached the {outcome} path: {lines:#?}"
+			);
+		}
+		for line in &lines {
+			for endpoint in [&stalled, &refused, &answering].into_iter().chain(&quoting) {
+				let per_browser_path = &endpoint[endpoint.find("/wpush").unwrap()..];
+				assert!(!line.contains(endpoint.as_str()), "an endpoint reached a log line: {line}");
+				assert!(!line.contains("127.0.0.1"), "a push endpoint's host reached a log line: {line}");
+				assert!(!line.contains(per_browser_path), "a per-browser endpoint path reached a log line: {line}");
+			}
+		}
+	}
+
+	/// The control for `auth::loggable`'s HTTP-client entries: with no filter,
+	/// the client's own debug and trace logs name the host and port of every
+	/// connection (a push endpoint's host, for a delivery), and with the
+	/// production filter they do not. If the first half fails, the library
+	/// stopped logging the host and the filter entry may no longer be needed.
+	#[test]
+	fn the_http_clients_connection_logs_name_the_host_unless_the_production_filter_drops_them() {
+		fn lines_for_one_connection(keep: fn(&tracing::Metadata<'_>) -> bool) -> Vec<String> {
+			let (captured, _guard) = crate::privacy::capture_where(keep);
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			let url = numbered("http://", listener.local_addr().unwrap());
+			// Accepts and drops: a refused-after-connect request is all that is needed.
+			std::thread::spawn(move || {
+				let _ = listener.accept();
+			});
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+			rt.block_on(async {
+				let _ = reqwest::Client::builder().no_proxy().build().unwrap().get(&url).send().await;
+			});
+			captured.lines()
+		}
+
+		let everything = lines_for_one_connection(|_| true);
+		assert!(
+			everything.iter().any(|line| line.contains("127.0.0.1")),
+			"the client no longer logs the host it connects to: {everything:#?}"
+		);
+		let production = lines_for_one_connection(crate::auth::loggable);
+		assert!(
+			!production.iter().any(|line| line.contains("127.0.0.1")),
+			"the production filter let the client's connection log through: {production:#?}"
+		);
 	}
 
 	/// #264 (SLI3), from a `chatgpt-codex-connector` finding on #357: the pass
