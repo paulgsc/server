@@ -49,7 +49,7 @@ impl From<MoodEventError> for FileHostError {
 
 // Single mood event handlers
 #[axum::debug_handler]
-#[instrument(name = "create_mood_event", skip(state), fields(otel.kind = "server"))]
+#[instrument(name = "create_mood_event", skip_all, fields(otel.kind = "server"))]
 pub async fn create_mood_event(State(state): State<AppState>, Json(event): Json<CreateMoodEvent>) -> Result<Json<MoodEvent>, FileHostError> {
 	let _timer = OperationTimer::new("create_mood_event", "total");
 
@@ -64,7 +64,7 @@ pub async fn create_mood_event(State(state): State<AppState>, Json(event): Json<
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_all_mood_events", skip(state), fields(otel.kind = "server"))]
+#[instrument(name = "get_all_mood_events", skip_all, fields(otel.kind = "server"))]
 pub async fn get_all_mood_events(State(state): State<AppState>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {
 	let _timer = OperationTimer::new("get_all_mood_events", "total");
 
@@ -86,7 +86,7 @@ pub async fn get_all_mood_events(State(state): State<AppState>) -> Result<Json<V
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_mood_event_by_id", skip(state), fields(id = %id, otel.kind = "server"))]
+#[instrument(name = "get_mood_event_by_id", skip_all, fields(id = %id, otel.kind = "server"))]
 pub async fn get_mood_event_by_id(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Json<MoodEvent>, FileHostError> {
 	let _timer = OperationTimer::new("get_mood_event_by_id", "total");
 
@@ -111,7 +111,7 @@ pub async fn get_mood_event_by_id(State(state): State<AppState>, Path(id): Path<
 }
 
 #[axum::debug_handler]
-#[instrument(name = "update_mood_event", skip(state), fields(id = %id, otel.kind = "server"))]
+#[instrument(name = "update_mood_event", skip_all, fields(id = %id, otel.kind = "server"))]
 pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64>, Json(update): Json<UpdateMoodEvent>) -> Result<Json<MoodEvent>, FileHostError> {
 	let _timer = OperationTimer::new("update_mood_event", "total");
 
@@ -140,7 +140,7 @@ pub async fn update_mood_event(State(state): State<AppState>, Path(id): Path<i64
 }
 
 #[axum::debug_handler]
-#[instrument(name = "delete_mood_event", skip(state), fields(id = %id, otel.kind = "server"))]
+#[instrument(name = "delete_mood_event", skip_all, fields(id = %id, otel.kind = "server"))]
 pub async fn delete_mood_event(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, FileHostError> {
 	let _timer = OperationTimer::new("delete_mood_event", "total");
 
@@ -168,7 +168,7 @@ pub async fn delete_mood_event(State(state): State<AppState>, Path(id): Path<i64
 
 // Batch operation handlers
 #[axum::debug_handler]
-#[instrument(name = "batch_create_mood_events", skip(state), fields(event_count = %request.events.len(), otel.kind = "server"))]
+#[instrument(name = "batch_create_mood_events", skip_all, fields(event_count = %request.events.len(), otel.kind = "server"))]
 pub async fn batch_create_mood_events(State(state): State<AppState>, Json(request): Json<BatchCreateRequest>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {
 	let _timer = OperationTimer::new("batch_create_mood_events", "total");
 
@@ -194,7 +194,7 @@ pub async fn batch_create_mood_events(State(state): State<AppState>, Json(reques
 }
 
 #[axum::debug_handler]
-#[instrument(name = "batch_update_mood_events", skip(state), fields(update_count = %request.updates.len(), otel.kind = "server"))]
+#[instrument(name = "batch_update_mood_events", skip_all, fields(update_count = %request.updates.len(), otel.kind = "server"))]
 pub async fn batch_update_mood_events(State(state): State<AppState>, Json(request): Json<BatchUpdateRequest>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {
 	let _timer = OperationTimer::new("batch_update_mood_events", "total");
 
@@ -227,7 +227,7 @@ pub async fn batch_update_mood_events(State(state): State<AppState>, Json(reques
 }
 
 #[axum::debug_handler]
-#[instrument(name = "batch_delete_mood_events", skip(state), fields(delete_count = %request.ids.len(), otel.kind = "server"))]
+#[instrument(name = "batch_delete_mood_events", skip_all, fields(delete_count = %request.ids.len(), otel.kind = "server"))]
 pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(request): Json<BatchDeleteRequest>) -> Result<Json<BatchDeleteResponse>, FileHostError> {
 	let _timer = OperationTimer::new("batch_delete_mood_events", "total");
 
@@ -261,7 +261,7 @@ pub async fn batch_delete_mood_events(State(state): State<AppState>, Json(reques
 
 // Query handlers
 #[axum::debug_handler]
-#[instrument(name = "get_mood_events_by_week", skip(state), fields(week = %week, otel.kind = "server"))]
+#[instrument(name = "get_mood_events_by_week", skip_all, fields(week = %week, otel.kind = "server"))]
 pub async fn get_mood_events_by_week(State(state): State<AppState>, Path(week): Path<i64>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {
 	let _timer = OperationTimer::new("get_mood_events_by_week", "total");
 
@@ -283,7 +283,7 @@ pub async fn get_mood_events_by_week(State(state): State<AppState>, Path(week): 
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_mood_events_by_team", skip(state), fields(team = %team, otel.kind = "server"))]
+#[instrument(name = "get_mood_events_by_team", skip_all, fields(team = %team, otel.kind = "server"))]
 pub async fn get_mood_events_by_team(State(state): State<AppState>, Path(team): Path<String>) -> Result<Json<Vec<MoodEvent>>, FileHostError> {
 	let _timer = OperationTimer::new("get_mood_events_by_team", "total");
 
@@ -305,7 +305,7 @@ pub async fn get_mood_events_by_team(State(state): State<AppState>, Path(team): 
 }
 
 #[axum::debug_handler]
-#[instrument(name = "get_mood_stats", skip(state), fields(otel.kind = "server"))]
+#[instrument(name = "get_mood_stats", skip_all, fields(otel.kind = "server"))]
 pub async fn get_mood_stats(State(state): State<AppState>) -> Result<Json<MoodStats>, FileHostError> {
 	let _timer = OperationTimer::new("get_mood_stats", "total");
 

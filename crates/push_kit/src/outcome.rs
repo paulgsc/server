@@ -30,7 +30,9 @@ pub enum SendOutcome {
 	RateLimited { retry_after: Option<String> },
 	/// `5xx`, or anything unmapped.
 	ServiceError { status: u16, body: String },
-	/// The request never got a response.
+	/// The request never got a response. The text is logged, so it must not
+	/// carry the endpoint: a transport adapter strips it from its errors
+	/// (`ReqwestTransport` calls `reqwest::Error::without_url`).
 	Transport(String),
 	/// Encryption or signing failed before anything was sent.
 	NotSent(String),

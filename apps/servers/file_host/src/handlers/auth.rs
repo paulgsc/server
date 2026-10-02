@@ -458,6 +458,15 @@ mod tests {
 		credential_id: String,
 	}
 
+	/// How many rows `table` holds for `subject`.
+	async fn rows_of(pool: &SqlitePool, table: &str, subject: &str) -> i64 {
+		sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table + " WHERE subject_id = ?1"))
+			.bind(subject)
+			.fetch_one(pool)
+			.await
+			.unwrap()
+	}
+
 	async fn pool() -> SqlitePool {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
@@ -916,6 +925,30 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
+			// The other five scoped tables. Seeded so that "deleted mine, kept
+			// theirs" below is a claim about all eleven, and not only about the
+			// ones this test happened to fill: an empty table passes both halves.
+			for statement in [
+				"INSERT INTO engagement_charge (subject_id, class, level, as_of) VALUES (?1, 0, 0.5, 'now')",
+				"INSERT INTO engagement_gate (subject_id, eligible_at) VALUES (?1, 'now')",
+				"INSERT INTO intervention_log (subject_id, action_kind, action, decided_at) VALUES (?1, 'k', '{}', 'now')",
+				"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome)
+				 VALUES (?1, 's-' || ?1, 'a', 0, 't0', 't1', 1000, 900, 'completed')",
+				"INSERT INTO push_subscriptions (endpoint, subject_id, p256dh, auth, consented_at, created_at)
+				 VALUES ('https://push.example.test/' || ?1, ?1, 'p', 'a', 'now', 'now')",
+			] {
+				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
+			}
+		}
+
+		for (table, _) in SUBJECT_SCOPED_TABLES {
+			for subject in [&my_subject, &stranger_subject] {
+				assert_eq!(
+					rows_of(&pool, table, subject.as_str().unwrap()).await,
+					1,
+					"{table} was not seeded: the checks below would pass vacuously"
+				);
+			}
 		}
 
 		let (status, set_cookie, _) = call(&app, Method::DELETE, "/auth/account", Some(&me.cookie), None).await;
@@ -930,13 +963,8 @@ mod tests {
 				.unwrap();
 			assert_eq!(mine, 0, "{table} kept a deleted account's row");
 		}
-		for table in ["account", "passkey", "auth_session", "sessions", "presence_leases", "learner_shelf"] {
-			let theirs: i64 = sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table + " WHERE subject_id = ?1"))
-				.bind(stranger_subject.as_str().unwrap())
-				.fetch_one(&pool)
-				.await
-				.unwrap();
-			assert_eq!(theirs, 1, "{table} lost another account's row");
+		for (table, _) in SUBJECT_SCOPED_TABLES {
+			assert_eq!(rows_of(&pool, table, stranger_subject.as_str().unwrap()).await, 1, "{table} lost another account's row");
 		}
 		assert_eq!(whoami(&app, &me.cookie).await.0, StatusCode::UNAUTHORIZED);
 		let (status, _, _) = sign_in(&app, &mut phone, &me.credential_id, &me.user_handle).await;

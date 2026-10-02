@@ -25,6 +25,14 @@ argument all the same). `--self-test` runs the
 rule against known-compliant and known-noncompliant attributes, and runs in
 lint.yml next to the real scan.
 
+A second rule closes the gap the first leaves: `skip(state)` is "naming a
+skip", and it still records `Json(payload)`. So a parameter that carries
+request content (`Json`, `Form`, `Bytes`, `Multipart`, `Query`, `Path`) must
+itself be skipped, with `skip_all` or by its binding. A value worth recording
+is named in `fields(...)`, which is a choice somebody made rather than a
+side effect. At the default `info` level those span fields reach the log and
+the OpenTelemetry exporter alike (docs/identity.md, invariant 6).
+
 Deliberately lexical, like scripts/check_metric_contract.py: a real parse
 would need the whole workspace to build, which would make the cheapest check
 in the repo the most expensive one to run.
@@ -73,6 +81,70 @@ def names_its_skips(attribute: str) -> bool:
 	return any(SKIP_DIRECTIVE.match(argument) for argument in top_level_arguments(attribute))
 
 
+# Extractors whose value is whatever the caller sent. `State`, `Extension` and
+# the auth extractors (`SubjectId`, `Operator`) are the server's own.
+CONTENT_EXTRACTORS = {"Json", "Form", "Query", "Path", "Bytes", "Multipart"}
+FN_NAME = re.compile(r"\bfn\s+\w+")
+PATH_PREFIX = re.compile(r"(?:\w+::)+")
+SINGLE_COLON = re.compile(r"(?<!:):(?!:)")
+
+
+def parameters(source: str, start: int) -> list[str]:
+	"""The parameters, as written, of the first `fn` at or after `start`."""
+	named = FN_NAME.search(source, start)
+	if not named:
+		return []
+	index, angle = named.end(), 0
+	while index < len(source):  # generics sit between the name and the list
+		char = source[index]
+		if char == "<":
+			angle += 1
+		elif char == ">" and source[index - 1] != "-":
+			angle -= 1
+		elif char == "(" and angle == 0:
+			break
+		index += 1
+	found, current, depth = [], [], 0
+	for char in source[index + 1 :]:
+		if char in "([{<":
+			depth += 1
+		elif char in ")]}>" and not (char == ">" and current and current[-1] == "-"):
+			if depth == 0:
+				break
+			depth -= 1
+		if char == "," and depth == 0:
+			found.append("".join(current).strip())
+			current = []
+		else:
+			current.append(char)
+	found.append("".join(current).strip())
+	return [parameter for parameter in found if parameter]
+
+
+def unskipped_content(attribute: str, source: str, attribute_end: int) -> list[str]:
+	"""Parameters carrying request content that `attribute` still records."""
+	arguments = top_level_arguments(attribute)
+	if any(argument == "skip_all" for argument in arguments):
+		return []
+	skipped: set[str] = set()
+	for argument in arguments:
+		if re.match(r"^skip\s*\(", argument):
+			skipped |= set(re.findall(r"[A-Za-z_]\w*", argument[argument.index("(") + 1 :]))
+	recorded = []
+	for parameter in parameters(source, attribute_end):
+		halves = SINGLE_COLON.split(parameter, maxsplit=1)
+		if len(halves) != 2:
+			continue  # `self`
+		pattern, kind = halves
+		extractor = re.match(r"\s*&?\s*(?:\w+::)*(\w+)", kind)
+		if not extractor or extractor.group(1) not in CONTENT_EXTRACTORS:
+			continue
+		bindings = set(re.findall(r"\b[a-z_]\w*\b", PATH_PREFIX.sub("", pattern))) - {"mut", "ref"}
+		if not bindings & skipped:
+			recorded.append(" ".join(parameter.split()))
+	return recorded
+
+
 def attribute_text(source: str, start: int) -> str:
 	"""The attribute beginning at `start` (its `#`), through its matching `]`."""
 	depth = 0
@@ -96,9 +168,13 @@ def offenders() -> list[str]:
 			source = path.read_text(encoding="utf-8")
 			for match in ATTRIBUTE.finditer(source):
 				attribute = attribute_text(source, match.start())
+				line = source.count("\n", 0, match.start()) + 1
+				where = f"{path.relative_to(REPO_ROOT)}:{line}"
 				if not names_its_skips(attribute):
-					line = source.count("\n", 0, match.start()) + 1
-					found.append(f"{path.relative_to(REPO_ROOT)}:{line}: {' '.join(attribute.split())}")
+					found.append(f"{where}: {' '.join(attribute.split())}")
+					continue
+				for parameter in unskipped_content(attribute, source, match.start() + len(attribute)):
+					found.append(f"{where}: records request content `{parameter}`; skip_all, or name it in skip(...)")
 	return found
 
 
@@ -122,15 +198,47 @@ NONCOMPLIANT = [
 ]
 
 
+# (attribute + the function it sits on) that record no request content.
+CONTENT_CLEAN = [
+	"#[instrument(skip_all)]\nasync fn h(State(state): State<S>, Json(p): Json<T>) {}",
+	"#[instrument(skip(state, p))]\nasync fn h(State(state): State<S>, Json(p): Json<T>) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, subject: SubjectId) {}",
+	"#[instrument(skip(state, q))]\nasync fn h(State(state): State<S>, axum::extract::Query(q): axum::extract::Query<Q>) {}",
+	'#[instrument(name = "x", skip_all, fields(id = %id))]\npub async fn h(Path(id): Path<i64>) {}',
+	"#[instrument(skip(db))]\nasync fn h<T: Fn(u8) -> u8>(db: &Pool, f: T) {}",
+]
+# ...and ones that still record it.
+CONTENT_RECORDED = [
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, Json(p): Json<T>) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, Path(id): Path<i64>) {}",
+	"#[instrument(skip(state))]\nasync fn h(axum::extract::Query(q): axum::extract::Query<Q>) {}",
+	"#[instrument(skip(state, other))]\nasync fn h(Json(p): Json<T>) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, body: Bytes) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, mut form: axum::Form<F>) {}",
+	"#[tracing::instrument(skip(state))]\npub async fn h<T>(State(state): State<S>, Json(p): Json<T>) {}",
+]
+
+
+def content_recorded(case: str) -> list[str]:
+	match = ATTRIBUTE.search(case)
+	attribute = attribute_text(case, match.start())
+	return unskipped_content(attribute, case, match.start() + len(attribute))
+
+
 def self_test() -> int:
 	failures = [f"not compliant: {case!r}" for case in COMPLIANT if not names_its_skips(case)]
 	failures += [f"compliant: {case!r}" for case in NONCOMPLIANT if names_its_skips(case)]
+	failures += [f"records content, should not: {case!r}" for case in CONTENT_CLEAN if content_recorded(case)]
+	failures += [f"content not caught: {case!r}" for case in CONTENT_RECORDED if not content_recorded(case)]
 	if failures:
 		print("::error::check_instrument_skip.py's own rule tests failed:")
 		for failure in failures:
 			print(f"  {failure}")
 		return 1
-	print(f"check_instrument_skip.py rule tests: {len(COMPLIANT)} compliant, {len(NONCOMPLIANT)} not, as expected")
+	print(
+		f"check_instrument_skip.py rule tests: {len(COMPLIANT)} compliant, {len(NONCOMPLIANT)} not; "
+		f"{len(CONTENT_CLEAN)} record no request content, {len(CONTENT_RECORDED)} do, as expected"
+	)
 	return 0
 
 
@@ -139,9 +247,9 @@ def main() -> int:
 		return self_test()
 	found = offenders()
 	if not found:
-		print("every #[instrument] names what it skips")
+		print("every #[instrument] names what it skips, and none records request content")
 		return 0
-	print("::error::#[instrument] without skip(...) or skip_all — name the arguments it records explicitly:")
+	print("::error::#[instrument] without skip(...) or skip_all, or one that still records request content:")
 	for offender in found:
 		print(f"  {offender}")
 	return 1

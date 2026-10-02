@@ -1626,6 +1626,12 @@ Three tiers, and every route above is in exactly one:
   `DELETE /push/subscriptions` takes no session either: it removes the
   subscription whose endpoint URL the request names, which in practice only the
   browser holding it knows.
+  Also public in this sense, and **not corpus**: `tabs`, `mood_events`,
+  `POST /now-playing`, `POST /utter` and `/ws`. They accept writes from anyone
+  who can reach the server, and they hold or relay content that belongs to no
+  subject (page URLs and titles, the video playing, text a browser extension
+  sends). Nothing deletes it with an account. docs/identity.md, "What is still
+  exposed", says what each holds.
 
 The CORS allowlist is not an access control on any of them: it only decides
 which pages a browser lets read the answer. It is written down here so each tier
@@ -1933,9 +1939,9 @@ no horizon at all.
 `engagement_charge` deliberately has **no** time-based horizon. It is bounded by
 construction (one row per subject × class), and its rows are current state, not
 history: deleting a long-silent subject's charge would reset them to *full* —
-exactly the person the charge exists to notice. A subject whose account is gone
-leaves four rows behind; removing them belongs to whatever deletes the account,
-which does not exist yet. `sessions` retention is out of scope for the same
+exactly the person the charge exists to notice. Deleting the account removes
+them with the rest (`DELETE /auth/account`, docs/identity.md invariant 9), so a
+subject whose account is gone leaves no charge rows behind. `sessions` retention is out of scope for the same
 reason in the other direction: a person's sessions are their data, not the
 system's history.
 

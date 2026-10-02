@@ -1350,13 +1350,16 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		}
 
 		let endpoint = &stored.subscription.endpoint;
+		// What a log line may name: the push service, never the endpoint,
+		// which is a per-browser address (docs/identity.md).
+		let service = stored.subscription.service();
 		let budget = nudge.delivery_timeout.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
 		if budget.is_zero() {
-			warn!(%endpoint, "waker pass deadline reached; not trying this subject's remaining devices");
+			warn!(subject = %subject_id, "waker pass deadline reached; not trying this subject's remaining devices");
 			break;
 		}
 		let Ok(outcome) = tokio::time::timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
-			warn!(%endpoint, timeout_ms = budget.as_millis(), "push service did not answer in time");
+			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
 			continue;
@@ -1364,13 +1367,13 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		let stamp = Utc::now().to_rfc3339();
 
 		if outcome.should_prune() {
-			info!(%endpoint, "subscription is gone; pruning");
+			info!(service, "subscription is gone; pruning");
 			subscriptions_repo.delete_by_endpoint(endpoint).await?;
 			continue;
 		}
 
 		if outcome.is_failure() {
-			warn!(%endpoint, outcome = outcome.label(), detail = ?outcome, "push was not accepted");
+			warn!(service, outcome = outcome.label(), detail = ?outcome, "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
 			continue;
 		}
@@ -3222,6 +3225,73 @@ mod tests {
 				"exactly one intervention_log row, and it reached actuated_at"
 			);
 		});
+	}
+
+	/// docs/identity.md, invariant 14: a push endpoint is a per-browser
+	/// address, so no delivery outcome logs one.
+	///
+	/// Three devices, three outcomes that each log: a service that never
+	/// answers (a timeout), a port nothing listens on (a refused connection,
+	/// whose `reqwest` error names the URL it failed on unless the adapter
+	/// strips it), and one that accepts. Every endpoint carries a path that is
+	/// the per-browser part; none of it may appear in anything captured.
+	#[test]
+	fn no_push_endpoint_reaches_a_log_line_whatever_the_delivery_outcome() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let (captured, _guard) = crate::privacy::capture();
+		let subject_id = "subject-three-devices";
+		let (stalled, _) = stalling_push_service();
+		let (answering, _) = loopback_push_service();
+		let refused = {
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+			endpoint.push_str("/wpush/v2/refused-device-token");
+			drop(listener);
+			endpoint
+		};
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let engagement = EngagementRepository::new(pool.clone());
+			for endpoint in [&stalled, &refused, &answering] {
+				subscribe(&pool, subject_id, endpoint, &now_str).await;
+			}
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				..nudge_context()
+			};
+			let pass = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(pass.intervened, 1, "the accepting device made this an intervention: {pass:?}");
+		});
+
+		let lines = captured.lines();
+		// Without these the test passes vacuously: each outcome must have
+		// logged, and logged the service, for "no endpoint" to mean anything.
+		for expected in ["did not answer in time", "push was not accepted", "service=127.0.0.1:"] {
+			assert!(lines.iter().any(|line| line.contains(expected)), "no line said {expected:?}: {lines:#?}");
+		}
+		assert!(
+			lines.iter().any(|line| line.contains("outcome=transport-error")),
+			"the refused connection did not reach the transport-error path: {lines:#?}"
+		);
+		for line in &lines {
+			for endpoint in [&stalled, &refused, &answering] {
+				let per_browser_path = &endpoint[endpoint.find("/wpush").unwrap()..];
+				assert!(!line.contains(endpoint.as_str()), "an endpoint reached a log line: {line}");
+				assert!(!line.contains(per_browser_path), "a per-browser endpoint path reached a log line: {line}");
+			}
+		}
 	}
 
 	/// #264 (SLI3), from a `chatgpt-codex-connector` finding on #357: the pass

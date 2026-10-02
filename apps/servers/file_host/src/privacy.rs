@@ -1,19 +1,27 @@
 //! `docs/identity.md`'s privacy invariants, as tests.
 //!
 //! Two of them cannot be enforced statically, so they are enforced here
-//! against the real thing:
+//! against the real thing. Each proves less than a short name might suggest,
+//! so each says what it does not cover:
 //!
-//! - **Nothing at rest can single a person out.** Checked against the schema
-//!   the migrations actually produce, not a list someone remembered to update:
-//!   no column named for an address, a contact detail or a fingerprint, and
-//!   every table classified, in writing, as subject-scoped or not. A new table
-//!   fails here until someone decides which it is.
-//! - **No address reaches a log line.** A capturing `tracing` layer records
-//!   every field of every event and span on the paths that used to log one —
-//!   the rate limiter's rejection, a WebSocket connection's admission (#372)
-//!   and `ConnectionGuard`'s permit accounting — and the test fails if an
-//!   address appears in any of them, however it got there (a field, a
-//!   formatted message, a `Debug` of a struct).
+//! - **No column is built to hold who a person is, and every table has an
+//!   owner** (invariant 1). Checked against the schema the migrations
+//!   actually produce, not a list someone remembered to update: no column
+//!   named for an address, a contact detail or a fingerprint, and every table
+//!   classified, in writing, as subject-scoped or not. A new table fails here
+//!   until someone decides which it is. *This proves column names and
+//!   ownership, nothing about values.* It accepts a `body` that holds an email
+//!   address and a `tab_title` that holds a name; what a column's contents can
+//!   say is `docs/identity.md`, "What is still exposed".
+//! - **No address reaches a log line `file_host` writes** (invariant 2). A
+//!   capturing `tracing` layer records every field of every event and span on
+//!   the paths that used to log one — the rate limiter's rejection, a
+//!   WebSocket connection's admission (#372) and `ConnectionGuard`'s permit
+//!   accounting — and the test fails if an address appears in any of them,
+//!   however it got there (a field, a formatted message, a `Debug` of a
+//!   struct). *Those three paths only*, under this test's own subscriber;
+//!   nothing outside this process (the reverse proxy, Docker's log driver, a
+//!   collector).
 //!
 //! The static half of the same boundary lives in clippy.toml
 //! (`disallowed-types`: `ConnectInfo`) and `scripts/check_privacy.py`
@@ -84,7 +92,7 @@ fn the_column_rule_catches_what_it_is_for_and_nothing_it_is_not() {
 }
 
 #[tokio::test]
-async fn the_migrated_schema_stores_nothing_that_singles_a_person_out() {
+async fn the_migrated_schema_has_no_identifying_column_names_and_every_table_is_classified() {
 	let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 	MIGRATOR.run(&pool).await.unwrap();
 

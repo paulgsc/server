@@ -7,7 +7,7 @@ use tracing::instrument;
 use ws_events::events::{Event, NowPlaying};
 
 #[axum::debug_handler]
-#[instrument(name = "now_playing", skip(state))]
+#[instrument(name = "now_playing", skip_all)]
 pub async fn now_playing(State(state): State<AppState>, Json(payload): Json<NowPlaying>) -> Result<StatusCode, FileHostError> {
 	let event = Event::from(payload);
 

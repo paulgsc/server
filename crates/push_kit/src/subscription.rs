@@ -41,6 +41,21 @@ impl std::fmt::Display for InvalidSubscription {
 impl std::error::Error for InvalidSubscription {}
 
 impl PushSubscription {
+	/// The push service this subscription belongs to (`fcm.googleapis.com`,
+	/// `updates.push.services.mozilla.com`), and nothing past its host.
+	///
+	/// This is what a log line or a metric may name. The endpoint itself is
+	/// a per-browser address: it is stable for one install, whoever holds it
+	/// can send to that browser, and the service that issued it can tie it
+	/// to that install. Naming the service says which provider answered, which
+	/// is all an operator reading a failure needs.
+	#[must_use]
+	pub fn service(&self) -> &str {
+		let rest = self.endpoint.split_once("://").map_or(self.endpoint.as_str(), |(_, rest)| rest);
+		let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+		authority.rsplit('@').next().unwrap_or_default()
+	}
+
 	/// Reject a subscription that could never be sent to.
 	///
 	/// Validating on the way *in* rather than at send time is the difference
@@ -92,6 +107,26 @@ mod tests {
 			"xS03Fi5ErfTNH_l9WHE9Ig",
 		);
 		assert_eq!(real.validate(), Ok(()));
+	}
+
+	#[test]
+	fn the_service_is_the_host_and_never_the_per_browser_path() {
+		let keys = ("BLMbF9ffKBiWQLCKvTHb6LO8", "xS03Fi5ErfTNH_l9WHE9Ig");
+		for (endpoint, service) in [
+			(
+				"https://updates.push.services.mozilla.com/wpush/v2/gAAAAB-per-browser-token",
+				"updates.push.services.mozilla.com",
+			),
+			("https://fcm.googleapis.com/fcm/send/abc:APA91b?x=1#frag", "fcm.googleapis.com"),
+			("https://push.example.test:8443/p", "push.example.test:8443"),
+			("https://user:secret@push.example.test/p", "push.example.test"),
+			("push.example.test/p", "push.example.test"),
+			("", ""),
+		] {
+			let subscription = subscription(endpoint, keys.0, keys.1);
+			assert_eq!(subscription.service(), service, "{endpoint}");
+			assert!(!subscription.service().contains("per-browser") && !subscription.service().contains("secret"));
+		}
 	}
 
 	#[test]

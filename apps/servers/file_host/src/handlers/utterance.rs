@@ -8,7 +8,7 @@ use tracing::instrument;
 use ws_events::events::{Event, UtterancePrompt};
 
 #[axum::debug_handler]
-#[instrument(name = "utterance", skip(state))]
+#[instrument(name = "utterance", skip_all)]
 pub async fn utterance(State(state): State<AppState>, Json(payload): Json<UtterancePrompt>) -> StatusCode {
 	let event = Event::from(payload);
 	let transport = state.realtime.transport.clone();

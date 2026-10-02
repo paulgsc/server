@@ -72,7 +72,11 @@ pub mod reqwest_transport {
 				outgoing = outgoing.header(name, value);
 			}
 
-			let response = outgoing.body(request.body).send().await?;
+			// `without_url`: a `reqwest::Error` names the URL it failed on in its
+			// `Display`, and the URL is the subscription endpoint, a per-browser
+			// address. `Sender::deliver` turns this error into text that callers
+			// log, so the endpoint must be gone before it gets there.
+			let response = outgoing.body(request.body).send().await.map_err(reqwest::Error::without_url)?;
 			let status = response.status().as_u16();
 			let retry_after = response
 				.headers()
