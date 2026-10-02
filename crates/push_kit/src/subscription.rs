@@ -79,7 +79,7 @@ impl PushSubscription {
 		if let Some(known) = KNOWN_SERVICES.iter().find(|known| known.eq_ignore_ascii_case(host)) {
 			return known;
 		}
-		if host.len() > WINDOWS_SUFFIX.len() && host[host.len() - WINDOWS_SUFFIX.len()..].eq_ignore_ascii_case(WINDOWS_SUFFIX) {
+		if host.len() > WINDOWS_SUFFIX.len() && host.as_bytes()[host.len() - WINDOWS_SUFFIX.len()..].eq_ignore_ascii_case(WINDOWS_SUFFIX.as_bytes()) {
 			return WINDOWS_SERVICE;
 		}
 		OTHER_SERVICE
@@ -163,6 +163,14 @@ mod tests {
 			("https://[::1]:3000/p", "other"),
 			("https://notify.windows.com.example.test/p", "other"),
 			("https://.notify.windows.com/p", "other"),
+			// Not ASCII: a byte offset into these falls inside a character, and
+			// `service()` runs on whatever a client stored (a panic here would take
+			// down the waker task).
+			("https://éééééééééé", "other"),
+			("https://éééééééééééééééééééé/p", "other"),
+			("https://日本語日本語日本語日本語.example/p", "other"),
+			("https://é.notify.windows.com/p", "notify.windows.com"),
+			("https://ééééééééééé.notifY.windows.cöm/p", "other"),
 			("push.example.test/p", "other"),
 			("", "other"),
 		] {
