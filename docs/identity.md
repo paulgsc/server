@@ -366,12 +366,19 @@ nowhere is marked as such and belongs to review.
     the host (`fcm.googleapis.com`), which is what a log line and a failure
     need. `ReqwestTransport` strips the URL from its errors with
     `reqwest::Error::without_url`, because a transport error's text names the
-    URL it failed on and `SendOutcome::Transport` is logged.
+    URL it failed on and `SendOutcome::Transport` is logged. A push service's
+    own words are not logged either: the waker logs `SendOutcome::log_detail()`
+    (a status, a number of seconds, or text this process produced), never the
+    outcome's `Debug`, because `Rejected`, `ServiceError` and `RateLimited`
+    hold a response body and a `Retry-After` that a provider may fill with the
+    URI or token it was sent.
     *Enforced by* `waker`'s
     `no_push_endpoint_reaches_a_log_line_whatever_the_delivery_outcome`, which
-    makes one device time out, one refuse the connection and one accept, and
-    fails if any endpoint, or its per-browser path, appears in anything
-    captured. *It proves* the waker's delivery paths. The subscribe route's
+    makes one device time out, one refuse the connection, one accept and three
+    answer 400, 503 and 429 with the request line quoted in the body and the
+    `Retry-After`, and fails if any endpoint, or its per-browser path, appears
+    in anything captured; and by `push_kit`'s `SendOutcome` tests of
+    `log_detail`. *It proves* the waker's delivery paths. The subscribe route's
     single log line names the service by the same method, and is covered by
     review.
 

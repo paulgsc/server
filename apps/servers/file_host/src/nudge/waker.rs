@@ -1373,7 +1373,7 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		}
 
 		if outcome.is_failure() {
-			warn!(service, outcome = outcome.label(), detail = ?outcome, "push was not accepted");
+			warn!(service, outcome = outcome.label(), detail = %outcome.log_detail(), "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
 			continue;
 		}
@@ -3025,6 +3025,61 @@ mod tests {
 		(endpoint, connections)
 	}
 
+	/// A push service that answers every request with `status`, a body that
+	/// echoes the request line (its per-browser path included) and a
+	/// `Retry-After` that does the same: the shape of a provider that puts the
+	/// URI it was sent into its own error text. Returns the endpoint.
+	fn echoing_push_service(status: u16, token: &str) -> String {
+		use std::io::{Read as _, Write as _};
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let mut endpoint = numbered("http://", listener.local_addr().unwrap());
+		endpoint.push_str("/wpush/v2/");
+		endpoint.push_str(token);
+
+		std::thread::spawn(move || {
+			for stream in listener.incoming() {
+				let Ok(mut stream) = stream else { continue };
+				// The whole request, as `loopback_push_service` reads it, so the
+				// client sees a complete exchange and not a reset.
+				let mut request: Vec<u8> = Vec::new();
+				let mut chunk = [0_u8; 1024];
+				while let Ok(read) = stream.read(&mut chunk) {
+					if read == 0 {
+						break;
+					}
+					request.extend_from_slice(&chunk[..read]);
+					let Some(head) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+						continue;
+					};
+					let headers = String::from_utf8_lossy(&request[..head]).to_lowercase();
+					let length = headers
+						.lines()
+						.find_map(|line| line.strip_prefix("content-length:"))
+						.and_then(|value| value.trim().parse::<usize>().ok())
+						.unwrap_or(0);
+					if request.len() >= head + 4 + length {
+						break;
+					}
+				}
+				let request_line = String::from_utf8_lossy(&request).lines().next().unwrap_or_default().to_owned();
+				let body = "rejected: ".to_owned() + &request_line;
+				let response = "HTTP/1.1 ".to_owned()
+					+ &status.to_string()
+					+ " X\r\nRetry-After: "
+					+ &request_line
+					+ "\r\nContent-Length: "
+					+ &body.len().to_string()
+					+ "\r\nConnection: close\r\n\r\n"
+					+ &body;
+				let _ = stream.write_all(response.as_bytes());
+				let _ = stream.flush();
+			}
+		});
+
+		endpoint
+	}
+
 	/// One consenting device for `subject_id`, keyed with `push_kit`'s real
 	/// fixture so encryption succeeds and the request actually reaches the
 	/// socket — see the cold-start scenario above for why the inert
@@ -3230,11 +3285,14 @@ mod tests {
 	/// docs/identity.md, invariant 14: a push endpoint is a per-browser
 	/// address, so no delivery outcome logs one.
 	///
-	/// Three devices, three outcomes that each log: a service that never
-	/// answers (a timeout), a port nothing listens on (a refused connection,
-	/// whose `reqwest` error names the URL it failed on unless the adapter
-	/// strips it), and one that accepts. Every endpoint carries a path that is
-	/// the per-browser part; none of it may appear in anything captured.
+	/// Six devices, six outcomes that each log: a service that never answers
+	/// (a timeout), a port nothing listens on (a refused connection, whose
+	/// `reqwest` error names the URL it failed on unless the adapter strips
+	/// it), one that accepts, and three that refuse in their own words (a 400,
+	/// a 503 and a 429), each echoing the request line into its body and its
+	/// `Retry-After` the way a provider that quotes the URI would. Every
+	/// endpoint carries a path that is the per-browser part; none of it may
+	/// appear in anything captured.
 	#[test]
 	fn no_push_endpoint_reaches_a_log_line_whatever_the_delivery_outcome() {
 		use sqlx::sqlite::SqlitePoolOptions;
@@ -3252,6 +3310,11 @@ mod tests {
 			drop(listener);
 			endpoint
 		};
+		let quoting = [
+			echoing_push_service(400, "bad-request-device-token"),
+			echoing_push_service(503, "unavailable-device-token"),
+			echoing_push_service(429, "rate-limited-device-token"),
+		];
 		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
 		rt.block_on(async {
@@ -3261,7 +3324,7 @@ mod tests {
 			let now = Utc::now();
 			let now_str = now.to_rfc3339();
 			let engagement = EngagementRepository::new(pool.clone());
-			for endpoint in [&stalled, &refused, &answering] {
+			for endpoint in [&stalled, &refused, &answering].into_iter().chain(&quoting) {
 				subscribe(&pool, subject_id, endpoint, &now_str).await;
 			}
 			first_contact(&pool, subject_id).await.unwrap();
@@ -3281,12 +3344,14 @@ mod tests {
 		for expected in ["did not answer in time", "push was not accepted", "service=127.0.0.1:"] {
 			assert!(lines.iter().any(|line| line.contains(expected)), "no line said {expected:?}: {lines:#?}");
 		}
-		assert!(
-			lines.iter().any(|line| line.contains("outcome=transport-error")),
-			"the refused connection did not reach the transport-error path: {lines:#?}"
-		);
+		for outcome in ["transport-error", "rejected", "service-error", "rate-limited"] {
+			assert!(
+				lines.iter().any(|line| line.contains(&("outcome=".to_owned() + outcome))),
+				"no device reached the {outcome} path: {lines:#?}"
+			);
+		}
 		for line in &lines {
-			for endpoint in [&stalled, &refused, &answering] {
+			for endpoint in [&stalled, &refused, &answering].into_iter().chain(&quoting) {
 				let per_browser_path = &endpoint[endpoint.find("/wpush").unwrap()..];
 				assert!(!line.contains(endpoint.as_str()), "an endpoint reached a log line: {line}");
 				assert!(!line.contains(per_browser_path), "a per-browser endpoint path reached a log line: {line}");

@@ -72,6 +72,29 @@ impl SendOutcome {
 		}
 	}
 
+	/// What a log line may say about this outcome beyond [`Self::label`].
+	///
+	/// Not `Debug`, which is how this used to be logged. `Rejected` and
+	/// `ServiceError` hold the push service's response body and `RateLimited`
+	/// its `Retry-After`, and a provider may put anything there, including the
+	/// request URI or the device token it was sent. A log line outlives the
+	/// request, so those strings never reach one: this gives a status, a
+	/// number of seconds, or text this process produced itself
+	/// (`Transport` and `NotSent`, whose sources carry no response).
+	#[must_use]
+	pub fn log_detail(&self) -> String {
+		match self {
+			Self::Rejected(_) => "http 400".to_owned(),
+			Self::ServiceError { status, .. } => "http ".to_owned() + &status.to_string(),
+			Self::RateLimited { retry_after } => retry_after
+				.as_deref()
+				.and_then(|value| value.trim().parse::<u64>().ok())
+				.map_or_else(|| "http 429".to_owned(), |seconds| "http 429, retry after ".to_owned() + &seconds.to_string() + "s"),
+			Self::Transport(text) | Self::NotSent(text) => text.clone(),
+			Self::Accepted | Self::Expired | Self::KeyMismatch | Self::TooLarge => self.label().to_owned(),
+		}
+	}
+
 	/// Map a push service's response.
 	///
 	/// Separate from the request so the mapping — the part with the interesting
@@ -114,6 +137,38 @@ mod tests {
 				retry_after: Some("120".to_owned())
 			}
 		);
+	}
+
+	#[test]
+	fn a_providers_own_words_never_reach_the_log_detail() {
+		// Whatever a push service puts in a body or a `Retry-After`, including
+		// the URI or token it was sent, stays out of what a log line may say.
+		let echoed = "https://push.example/wpush/v2/SECRET-DEVICE-TOKEN";
+		for outcome in [
+			SendOutcome::from_status(400, None, echoed.to_owned()),
+			SendOutcome::from_status(503, None, echoed.to_owned()),
+			SendOutcome::from_status(500, Some(echoed.to_owned()), echoed.to_owned()),
+			SendOutcome::from_status(429, Some(echoed.to_owned()), echoed.to_owned()),
+		] {
+			let detail = outcome.log_detail();
+			assert!(!detail.contains("SECRET") && !detail.contains("push.example"), "{outcome:?} logged {detail:?}");
+		}
+	}
+
+	#[test]
+	fn the_log_detail_keeps_what_helps_and_is_not_provider_text() {
+		assert_eq!(SendOutcome::from_status(400, None, "x".to_owned()).log_detail(), "http 400");
+		assert_eq!(SendOutcome::from_status(503, None, "x".to_owned()).log_detail(), "http 503");
+		assert_eq!(
+			SendOutcome::from_status(429, Some("120".to_owned()), String::new()).log_detail(),
+			"http 429, retry after 120s"
+		);
+		assert_eq!(
+			SendOutcome::from_status(429, Some("Wed, 21 Oct 2026 07:28:00 GMT".to_owned()), String::new()).log_detail(),
+			"http 429"
+		);
+		assert_eq!(SendOutcome::Transport("connection refused".to_owned()).log_detail(), "connection refused");
+		assert_eq!(SendOutcome::KeyMismatch.log_detail(), "key-mismatch");
 	}
 
 	#[test]
