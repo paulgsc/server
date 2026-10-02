@@ -163,7 +163,11 @@ def unskipped_content(attribute: str, source: str, attribute_end: int) -> list[s
 		if not set(re.findall(r"[A-Za-z_]\w*", kind)) & CONTENT_EXTRACTORS:
 			continue
 		bindings = set(re.findall(r"\b[a-z_]\w*\b", PATH_PREFIX.sub("", pattern))) - {"mut", "ref"}
-		if not bindings & skipped:
+		# `instrument` records each binding of a destructured parameter as its own
+		# field (`Path((activity, key))` is two), so skipping one still records the
+		# other: every binding must be named. A pattern with no binding to name
+		# (`Request { .. }`) can only be skipped by `skip_all`.
+		if not bindings or not bindings <= skipped:
 			recorded.append(" ".join(parameter.split()))
 	return recorded
 
@@ -234,6 +238,9 @@ CONTENT_CLEAN = [
 	'#[instrument(skip(state), fields(route = %matched.as_str()))]\nasync fn h(State(state): State<S>, matched: MatchedPath) {}',
 	"#[instrument(skip(state, query))]\nasync fn h(State(state): State<S>, query: Option<Query<SecretQuery>>) {}",
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, pool: Arc<Pool>, id: Option<i64>) {}",
+	"#[instrument(skip(activity, key))]\nasync fn h(Path((activity, key)): Path<(A, K)>) {}",
+	"#[instrument(skip(state, a, b))]\nasync fn h(State(state): State<S>, Query(Params { a, b }): Query<Params>) {}",
+	"#[instrument(skip_all)]\nasync fn h(Path((activity, key)): Path<(A, K)>) {}",
 ]
 # ...and ones that still record it.
 CONTENT_RECORDED = [
@@ -256,6 +263,10 @@ CONTENT_RECORDED = [
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, body: Option<axum::Json<T>>) {}",
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, path: Result<Path<i64>, PathRejection>) {}",
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, headers: Option<HeaderMap>) {}",
+	"#[instrument(skip(activity))]\nasync fn h(Path((activity, key)): Path<(A, K)>) {}",
+	"#[instrument(skip(key))]\nasync fn h(Path((activity, key)): Path<(A, K)>) {}",
+	"#[instrument(skip(state, a))]\nasync fn h(State(state): State<S>, Query(Params { a, b }): Query<Params>) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, axum::extract::Request { .. }: axum::extract::Request) {}",
 ]
 
 
