@@ -27,8 +27,10 @@ lint.yml next to the real scan.
 
 A second rule closes the gap the first leaves: `skip(state)` is "naming a
 skip", and it still records `Json(payload)`. So a parameter that carries
-request content (`Json`, `Form`, `Bytes`, `Multipart`, `Query`, `Path`) must
-itself be skipped, with `skip_all` or by its binding. A value worth recording
+request content (`Json`, `Form`, `Bytes`, `Multipart`, `Query`, `Path`) or the
+request itself (`HeaderMap`, `Uri`, `OriginalUri`, `Request`, `Parts`, `CookieJar`,
+`TypedHeader`, `Host`, `RawQuery`, `RawForm`: cookies, authorization, the full
+path and query) must itself be skipped, with `skip_all` or by its binding. A value worth recording
 is named in `fields(...)`, which is a choice somebody made rather than a
 side effect. At the default `info` level those span fields reach the log and
 the OpenTelemetry exporter alike (docs/identity.md, invariant 6).
@@ -81,9 +83,28 @@ def names_its_skips(attribute: str) -> bool:
 	return any(SKIP_DIRECTIVE.match(argument) for argument in top_level_arguments(attribute))
 
 
-# Extractors whose value is whatever the caller sent. `State`, `Extension` and
-# the auth extractors (`SubjectId`, `Operator`) are the server's own.
-CONTENT_EXTRACTORS = {"Json", "Form", "Query", "Path", "Bytes", "Multipart"}
+# Extractors whose value is whatever the caller sent, and the request itself:
+# its headers carry cookies and authorization, its URI the path and query.
+# `State`, `Extension`, `MatchedPath` (the route template) and the auth
+# extractors (`SubjectId`, `Operator`) are the server's own.
+CONTENT_EXTRACTORS = {
+	"Json",
+	"Form",
+	"Query",
+	"Path",
+	"Bytes",
+	"Multipart",
+	"HeaderMap",
+	"Uri",
+	"OriginalUri",
+	"Request",
+	"Parts",
+	"CookieJar",
+	"TypedHeader",
+	"Host",
+	"RawQuery",
+	"RawForm",
+}
 FN_NAME = re.compile(r"\bfn\s+\w+")
 PATH_PREFIX = re.compile(r"(?:\w+::)+")
 SINGLE_COLON = re.compile(r"(?<!:):(?!:)")
@@ -206,6 +227,9 @@ CONTENT_CLEAN = [
 	"#[instrument(skip(state, q))]\nasync fn h(State(state): State<S>, axum::extract::Query(q): axum::extract::Query<Q>) {}",
 	'#[instrument(name = "x", skip_all, fields(id = %id))]\npub async fn h(Path(id): Path<i64>) {}',
 	"#[instrument(skip(db))]\nasync fn h<T: Fn(u8) -> u8>(db: &Pool, f: T) {}",
+	"#[instrument(skip(state, headers))]\nasync fn h(State(state): State<S>, headers: HeaderMap) {}",
+	"#[instrument(skip_all)]\nasync fn h(uri: Uri, axum::extract::Request { .. }: axum::extract::Request) {}",
+	'#[instrument(skip(state), fields(route = %matched.as_str()))]\nasync fn h(State(state): State<S>, matched: MatchedPath) {}',
 ]
 # ...and ones that still record it.
 CONTENT_RECORDED = [
@@ -216,6 +240,13 @@ CONTENT_RECORDED = [
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, body: Bytes) {}",
 	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, mut form: axum::Form<F>) {}",
 	"#[tracing::instrument(skip(state))]\npub async fn h<T>(State(state): State<S>, Json(p): Json<T>) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, headers: HeaderMap) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, uri: Uri) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, OriginalUri(uri): OriginalUri) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, req: axum::extract::Request) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, jar: axum_extra::extract::CookieJar) {}",
+	"#[instrument(skip(state))]\nasync fn h(State(state): State<S>, TypedHeader(auth): TypedHeader<Authorization<Bearer>>) {}",
+	"#[instrument(skip(state, uri))]\nasync fn h(State(state): State<S>, headers: HeaderMap, uri: Uri) {}",
 ]
 
 

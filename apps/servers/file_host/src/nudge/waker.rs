@@ -1350,8 +1350,8 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		}
 
 		let endpoint = &stored.subscription.endpoint;
-		// What a log line may name: the push service, never the endpoint,
-		// which is a per-browser address (docs/identity.md).
+		// What a log line may name: a recognised push service or `other`, never
+		// the endpoint or its host, which a client chooses (docs/identity.md).
 		let service = stored.subscription.service();
 		let budget = nudge.delivery_timeout.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
 		if budget.is_zero() {
@@ -3299,7 +3299,10 @@ mod tests {
 
 		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 
-		let (captured, _guard) = crate::privacy::capture();
+		// What the production subscriber lets through, whatever `RUST_LOG` asks for
+		// (`auth::loggable`), and not the HTTP client's own connection logs, which
+		// the control below shows would name every endpoint's host.
+		let (captured, _guard) = crate::privacy::capture_where(crate::auth::loggable);
 		let subject_id = "subject-three-devices";
 		let (stalled, _) = stalling_push_service();
 		let (answering, _) = loopback_push_service();
@@ -3341,7 +3344,7 @@ mod tests {
 		let lines = captured.lines();
 		// Without these the test passes vacuously: each outcome must have
 		// logged, and logged the service, for "no endpoint" to mean anything.
-		for expected in ["did not answer in time", "push was not accepted", "service=127.0.0.1:"] {
+		for expected in ["did not answer in time", "push was not accepted", "service=other"] {
 			assert!(lines.iter().any(|line| line.contains(expected)), "no line said {expected:?}: {lines:#?}");
 		}
 		for outcome in ["transport-error", "rejected", "service-error", "rate-limited"] {
@@ -3354,9 +3357,44 @@ mod tests {
 			for endpoint in [&stalled, &refused, &answering].into_iter().chain(&quoting) {
 				let per_browser_path = &endpoint[endpoint.find("/wpush").unwrap()..];
 				assert!(!line.contains(endpoint.as_str()), "an endpoint reached a log line: {line}");
+				assert!(!line.contains("127.0.0.1"), "a push endpoint's host reached a log line: {line}");
 				assert!(!line.contains(per_browser_path), "a per-browser endpoint path reached a log line: {line}");
 			}
 		}
+	}
+
+	/// The control for `auth::loggable`'s HTTP-client entries: with no filter,
+	/// the client's own debug and trace logs name the host and port of every
+	/// connection (a push endpoint's host, for a delivery), and with the
+	/// production filter they do not. If the first half fails, the library
+	/// stopped logging the host and the filter entry may no longer be needed.
+	#[test]
+	fn the_http_clients_connection_logs_name_the_host_unless_the_production_filter_drops_them() {
+		fn lines_for_one_connection(keep: fn(&tracing::Metadata<'_>) -> bool) -> Vec<String> {
+			let (captured, _guard) = crate::privacy::capture_where(keep);
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			let url = numbered("http://", listener.local_addr().unwrap());
+			// Accepts and drops: a refused-after-connect request is all that is needed.
+			std::thread::spawn(move || {
+				let _ = listener.accept();
+			});
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+			rt.block_on(async {
+				let _ = reqwest::Client::builder().no_proxy().build().unwrap().get(&url).send().await;
+			});
+			captured.lines()
+		}
+
+		let everything = lines_for_one_connection(|_| true);
+		assert!(
+			everything.iter().any(|line| line.contains("127.0.0.1")),
+			"the client no longer logs the host it connects to: {everything:#?}"
+		);
+		let production = lines_for_one_connection(crate::auth::loggable);
+		assert!(
+			!production.iter().any(|line| line.contains("127.0.0.1")),
+			"the production filter let the client's connection log through: {production:#?}"
+		);
 	}
 
 	/// #264 (SLI3), from a `chatgpt-codex-connector` finding on #357: the pass

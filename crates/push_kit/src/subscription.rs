@@ -40,20 +40,49 @@ impl std::fmt::Display for InvalidSubscription {
 
 impl std::error::Error for InvalidSubscription {}
 
+/// The push services of the browsers' own vendors: Chrome, Edge, Brave and
+/// Opera (FCM), Firefox, and Safari. A subscription on any of these is logged
+/// under this host name; see [`PushSubscription::service`].
+const KNOWN_SERVICES: [&str; 3] = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"];
+
+/// Windows Notification Service endpoints are regional subdomains of this.
+const WINDOWS_SUFFIX: &str = ".notify.windows.com";
+const WINDOWS_SERVICE: &str = "notify.windows.com";
+
+/// What [`PushSubscription::service`] says for any provider it does not
+/// recognise, whatever the endpoint's host is.
+pub const OTHER_SERVICE: &str = "other";
+
 impl PushSubscription {
-	/// The push service this subscription belongs to (`fcm.googleapis.com`,
-	/// `updates.push.services.mozilla.com`), and nothing past its host.
+	/// The push service this subscription belongs to, as a fixed label, and
+	/// nothing the client chose.
 	///
-	/// This is what a log line or a metric may name. The endpoint itself is
-	/// a per-browser address: it is stable for one install, whoever holds it
-	/// can send to that browser, and the service that issued it can tie it
-	/// to that install. Naming the service says which provider answered, which
-	/// is all an operator reading a failure needs.
+	/// This is what a log line or a metric may name. The endpoint itself is a
+	/// per-browser address: it is stable for one install, whoever holds it can
+	/// send to that browser, and the service that issued it can tie it to that
+	/// install. `validate()` accepts any `https://` host, so even the host can
+	/// be a client's own choice (a device-specific name, a token in a
+	/// subdomain). So only a *recognised* provider is named, by one of a fixed
+	/// set of labels; anything else, including a lookalike such as
+	/// `fcm.googleapis.com.example.test`, is [`OTHER_SERVICE`]. That says which
+	/// provider answered when it is one of the browsers' own, which is what an
+	/// operator reading a failure needs, and nothing more.
 	#[must_use]
-	pub fn service(&self) -> &str {
+	pub fn service(&self) -> &'static str {
 		let rest = self.endpoint.split_once("://").map_or(self.endpoint.as_str(), |(_, rest)| rest);
 		let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-		authority.rsplit('@').next().unwrap_or_default()
+		let authority = authority.rsplit('@').next().unwrap_or_default();
+		// A port, and an IPv6 literal (never a provider), are not part of the name.
+		let host = authority
+			.rsplit_once(':')
+			.map_or(authority, |(host, port)| if port.bytes().all(|byte| byte.is_ascii_digit()) { host } else { authority });
+		if let Some(known) = KNOWN_SERVICES.iter().find(|known| known.eq_ignore_ascii_case(host)) {
+			return known;
+		}
+		if host.len() > WINDOWS_SUFFIX.len() && host[host.len() - WINDOWS_SUFFIX.len()..].eq_ignore_ascii_case(WINDOWS_SUFFIX) {
+			return WINDOWS_SERVICE;
+		}
+		OTHER_SERVICE
 	}
 
 	/// Reject a subscription that could never be sent to.
@@ -110,22 +139,40 @@ mod tests {
 	}
 
 	#[test]
-	fn the_service_is_the_host_and_never_the_per_browser_path() {
+	fn the_service_is_a_recognised_provider_and_never_what_the_client_chose() {
 		let keys = ("BLMbF9ffKBiWQLCKvTHb6LO8", "xS03Fi5ErfTNH_l9WHE9Ig");
 		for (endpoint, service) in [
+			// The browsers' own providers, whatever follows the host.
 			(
 				"https://updates.push.services.mozilla.com/wpush/v2/gAAAAB-per-browser-token",
 				"updates.push.services.mozilla.com",
 			),
 			("https://fcm.googleapis.com/fcm/send/abc:APA91b?x=1#frag", "fcm.googleapis.com"),
-			("https://push.example.test:8443/p", "push.example.test:8443"),
-			("https://user:secret@push.example.test/p", "push.example.test"),
-			("push.example.test/p", "push.example.test"),
-			("", ""),
+			("https://web.push.apple.com/QGZ-token", "web.push.apple.com"),
+			("https://wns2-par02p.notify.windows.com/w/?token=secret", "notify.windows.com"),
+			// Port, user info and case do not change the provider.
+			("https://user:secret@fcm.googleapis.com:443/p", "fcm.googleapis.com"),
+			("https://FCM.GoogleAPIs.com/p", "fcm.googleapis.com"),
+			// Anything else is one fixed word: a device-specific host, a token in a
+			// subdomain, a lookalike, a port that is not one, an IP, no host at all.
+			("https://SECRET-DEVICE.push.example/path", "other"),
+			("https://push.example.test:8443/p", "other"),
+			("https://fcm.googleapis.com.example.test/p", "other"),
+			("https://example.test/fcm.googleapis.com", "other"),
+			("https://127.0.0.1:3000/wpush/v2/token", "other"),
+			("https://[::1]:3000/p", "other"),
+			("https://notify.windows.com.example.test/p", "other"),
+			("https://.notify.windows.com/p", "other"),
+			("push.example.test/p", "other"),
+			("", "other"),
 		] {
 			let subscription = subscription(endpoint, keys.0, keys.1);
 			assert_eq!(subscription.service(), service, "{endpoint}");
-			assert!(!subscription.service().contains("per-browser") && !subscription.service().contains("secret"));
+			let named = subscription.service();
+			assert!(
+				!named.contains("per-browser") && !named.contains("secret") && !named.contains("SECRET") && !named.contains("example"),
+				"{endpoint} -> {named}"
+			);
 		}
 	}
 
