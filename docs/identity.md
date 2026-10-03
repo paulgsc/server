@@ -546,6 +546,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   account removes it. What the MCP endpoint's tools return goes into that
   service's context, by the subject's choice, and is then the service's to
   keep.
+- **What crosses the tunnel is readable at its edge.** The MCP endpoint is
+  public through a Cloudflare Tunnel, and Cloudflare terminates TLS: tokens,
+  the progress a tool returns and the lessons a service keeps pass through it
+  in the clear. Only the five public paths cross (paulgsc/dotfiles,
+  `docs/lesson-mcp-tunnel.md`); the approval page and everything else stay on
+  the home network.
 - **Passkey sync providers.** A synced passkey lives in the person's Apple,
   Google or password-manager account. That provider knows the person holds a
   passkey for this site, which is the provider's knowledge, not this server's.
@@ -558,7 +564,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **Network addresses, outside this process.** `file_host` writes no address to
   a log line (invariant 2), but whatever fronts it sees every request's address
   and, unless it is told otherwise, logs it: nginx in the `some-ui` image, Caddy,
-  the host. The `some-ui` nginx configuration turns its access log off and stops
+  the host. In front of the MCP endpoint, Cloudflare's edge sees every caller's
+  address; the box's Caddy site behind the tunnel drops the address headers and
+  keeps no access log (paulgsc/dotfiles, `nixos/lesson-mcp`). The `some-ui` nginx configuration turns its access log off and stops
   forwarding address headers to `file_host`; its error log still carries the
   client address and request line when an upstream fails. Docker keeps a
   container's output (`json-file`, until its size cap) wherever its log driver is

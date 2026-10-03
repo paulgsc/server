@@ -26,6 +26,10 @@ services:
       - ${REPO_ROOT}/data:/app/data:rw
       - ${REPO_ROOT}/config:/app/config:ro
       - ${REPO_ROOT}/logs:/app/logs:rw
+      # The MCP endpoint's lesson prompt (example.env, MCP_LESSON_PROMPT_FILE):
+      # a file from a some-ui checkout on the host. Unset, /dev/null stands in,
+      # and pointing MCP_LESSON_PROMPT_FILE at it refuses startup as empty.
+      - ${MCP_LESSON_PROMPT_HOST_FILE:-/dev/null}:/app/lesson-prompt.md:ro
     networks:
       - monitoring-network
     restart: unless-stopped
