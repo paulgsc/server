@@ -230,6 +230,8 @@ never learns who the subject is.
 | Approve (`OAUTH_AUTHORIZE_URL`, the app's page) | the subject's browser | the app's origin: passkeys are bound to `WEBAUTHN_RP_ID`, so on `nixos.local` this step needs the home network, once per service |
 | Token (`POST /oauth/token`) | the AI service's servers | public |
 | Connected services (`GET`/`DELETE /oauth/grants`) | the app, signed in | the app's origin |
+| Resource metadata (`/.well-known/oauth-protected-resource/api/v1/mcp`, RFC 9728) | the AI service's servers | public |
+| The MCP endpoint (`POST /mcp`) | the AI service's servers, with a token | public |
 
 The approval page is the app's, not this server's: it already holds the
 passkey sign-in. It sends the authorization request's parameters to
@@ -252,6 +254,32 @@ Declining answers the redirect with `access_denied` and needs no session.
 - **Only for its audience.** A grant records the resource it was issued for
   (`OAUTH_RESOURCE`, the MCP endpoint's URL), and a token whose grant names
   another one is refused.
+
+### The MCP endpoint
+
+`POST /api/v1/mcp` (`handlers::mcp`) is what a token is for: MCP's Streamable
+HTTP transport, stateless, one JSON-RPC message per request and one JSON
+answer. A request without a live token is `401` with
+`WWW-Authenticate: Bearer resource_metadata=…`, naming the RFC 9728 metadata
+that points at this server as the authorization server. `OAUTH_RESOURCE` must
+therefore be `<origin>/api/v1/mcp`, so the metadata's path follows from it.
+A request from a browser page on an untrusted origin is `403`, which is MCP's
+guard against DNS rebinding.
+
+| Tool | Needs | Does |
+|---|---|---|
+| `get_lesson_prompt` | any approved service | returns `MCP_LESSON_PROMPT_FILE`, some-ui's TOPIK lesson prompt; not offered while unset |
+| `list_lessons`, `get_lesson` | `lessons:read` | the corpus manifest and one lesson, as `GET /curriculum/...` serves them |
+| `get_progress` | `progress:read` | the subject's outcome stats, as `GET /subjects/me/stats` serves them |
+| `list_my_lessons`, `get_my_lesson` | `shelf` | the subject's own TOPIK shelf, as `GET /shelf/topik/...` serves it |
+| `keep_lesson` | `shelf` | keeps a lesson on that shelf, in the document the app plays (`{ version, meta, batches }`), never replacing a different one |
+
+A tool the subject did not approve is not listed, and calling it is `403`
+with `error="insufficient_scope"` and the permission it needs. Each tool
+calls the handler body the app's own route uses, so the endpoint reaches
+exactly what the app does: no corpus write, no other subject's rows, no
+account route, and no survey (surveys never leave the phone). Nothing it
+receives or returns is logged.
 
 ### What is stored
 
@@ -368,7 +396,10 @@ nowhere is marked as such and belongs to review.
    transaction. There are three such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
-     (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
+     (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`),
+     and through `subject::Delegated` (the MCP endpoint's `keep_lesson`),
+     which takes it before looking up the access token, a row that leaves
+     with the account;
    - the OAuth token endpoint, which has no session: for a code and a
      refresh alike it holds the lock across its writes, and checks in the
      same transaction that the subject still has an account (a code) or that
@@ -399,12 +430,15 @@ nowhere is marked as such and belongs to review.
 11. **The learner shelf holds content only** (#387). `learner_shelf` is the
     one subject-scoped table that stores something the learner wrote rather
     than something the server observed: items they generated and chose to
-    keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf").
+    keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf"),
+    or a lesson an AI service they approved for `shelf` wrote for them
+    (the MCP endpoint's `keep_lesson`, which never replaces a kept item).
     A row is the subject, the activity, the item's key, its content hash, when
     it was kept, and the body verbatim: what storing and listing it needs, and
     no survey, flag, outcome, title or anything derived from play. It is
-    capped at 20 items per activity, readable only by its own subject, written
-    only when the learner asks, and deleted with the account like every other
+    capped at 20 items per activity, readable only by its own subject and the
+    services they approved for it, written only when the learner asks or by
+    such a service, and deleted with the account like every other
     subject-scoped table.
     *Enforced by* `learner_shelf_repo`'s
     `the_table_holds_exactly_its_described_columns`, which fails on a new
@@ -496,7 +530,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **The learner shelf's contents and times.** A kept body is whatever the
   learner's own model wrote from a prompt that included their recent survey
   digest, so its text can say something about them; the server stores it
-  verbatim and never reads it. Each item's `saved_at` says when the learner
+  verbatim and never reads it. A lesson an AI service keeps through the MCP
+  endpoint is that service's text, written from whatever the learner told it.
+  Each item's `saved_at` says when the learner
   last kept those bytes, to the millisecond, which is a partial timeline of
   use: the price of listing the shelf in the order it was filled. Deleting an
   item or the account removes both.

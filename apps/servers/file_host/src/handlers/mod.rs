@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod db;
 pub mod health;
+pub mod mcp;
 pub mod oauth;
 pub mod outcomes;
 pub mod pipeline;

@@ -212,8 +212,19 @@ impl AuthContext {
 			config.oauth_authorize_url.as_deref(),
 			config.oauth_resource.as_deref(),
 		)?;
-		if oauth.is_some() {
-			tracing::info!("OAuth is on: AI services can connect through the MCP endpoint once a subject approves them");
+		let oauth = match (oauth, config.mcp_lesson_prompt_file.as_deref()) {
+			(Some(settings), Some(path)) => Some(settings.with_lesson_prompt_file(path)?),
+			(None, Some(_)) => {
+				tracing::warn!("MCP_LESSON_PROMPT_FILE is set but OAuth is off, so there is no MCP endpoint to offer it on");
+				None
+			}
+			(oauth, None) => oauth,
+		};
+		if let Some(settings) = &oauth {
+			tracing::info!(
+				lesson_prompt = settings.lesson_prompt.is_some(),
+				"OAuth is on: AI services can connect through the MCP endpoint once a subject approves them"
+			);
 		}
 		let trusted_origins = config
 			.allowed_origins
@@ -287,8 +298,14 @@ impl AuthContext {
 	/// `https://lessons.test/api/v1/mcp`.
 	#[cfg(test)]
 	pub(crate) fn for_tests_with_oauth(pool: SqlitePool) -> Self {
+		Self::for_tests_with_lesson_prompt(pool, None)
+	}
+
+	/// [`Self::for_tests_with_oauth`], with `MCP_LESSON_PROMPT_FILE`'s text.
+	#[cfg(test)]
+	pub(crate) fn for_tests_with_lesson_prompt(pool: SqlitePool, lesson_prompt: Option<&str>) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
-		let oauth = OAuthSettings::from_parts(
+		let mut oauth = OAuthSettings::from_parts(
 			true,
 			Some("https://lessons.test"),
 			Some("https://app.test/connect"),
@@ -296,6 +313,7 @@ impl AuthContext {
 		)
 		.unwrap()
 		.unwrap();
+		oauth.lesson_prompt = lesson_prompt.map(std::sync::Arc::from);
 		Self::new(pool, Some(relying_party), Some(oauth), Self::test_settings(100, None))
 	}
 

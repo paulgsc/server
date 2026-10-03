@@ -3,6 +3,7 @@ pub mod cors;
 pub mod db;
 pub mod health;
 pub mod inventory;
+pub mod mcp;
 pub mod metrics;
 pub mod oauth;
 pub mod outcomes;

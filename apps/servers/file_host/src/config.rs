@@ -362,6 +362,14 @@ pub struct Config {
 	#[arg(long, env = "OAUTH_RESOURCE")]
 	pub oauth_resource: Option<String>,
 
+	/// A file holding the lesson prompt the MCP endpoint's
+	/// `get_lesson_prompt` tool returns: paulgsc/some-ui's
+	/// `packages/ui/topik/src/lib/topik/generation/lesson-prompt.md`, from
+	/// whatever checkout the deployment has. Read once at startup; unset, the
+	/// tool is not offered. Ignored while OAuth is off.
+	#[arg(long, env = "MCP_LESSON_PROMPT_FILE")]
+	pub mcp_lesson_prompt_file: Option<std::path::PathBuf>,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

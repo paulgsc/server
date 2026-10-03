@@ -21,6 +21,9 @@
 //! - **A token does only what was approved** ([`Scopes`]), only for
 //!   [`OAuthSettings::resource`], and only through `subject::Delegated`. No
 //!   route that takes `SubjectId` accepts one.
+//! - **The resource is this server's MCP endpoint** (`handlers::mcp`), so
+//!   `OAUTH_RESOURCE` must end in [`MCP_ENDPOINT`]: its RFC 9728 metadata is
+//!   served at the path that URL implies.
 
 use super::ceremony::{OneTimeId, OneTimeStore};
 use crate::redacted::Redacted;
@@ -28,8 +31,16 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::Duration;
 use webauthn_rs::prelude::Url;
+
+/// Where the MCP endpoint is served, under `API_V1_BASE_PATH`.
+pub const MCP_ENDPOINT: &str = "/mcp";
+
+/// The largest lesson prompt `MCP_LESSON_PROMPT_FILE` may hold. The one in
+/// paulgsc/some-ui is about 28 KB.
+pub const LESSON_PROMPT_CEILING: usize = 256 * 1024;
 
 /// How long an access token lasts. Clients refresh before or on expiry.
 pub const ACCESS_TOKEN_TTL_SECONDS: i64 = 3_600;
@@ -126,6 +137,9 @@ pub struct OAuthSettings {
 	pub authorize_url: String,
 	/// The MCP endpoint's URL: the one audience tokens are issued for.
 	pub resource: String,
+	/// The lesson prompt the MCP endpoint's `get_lesson_prompt` returns
+	/// (`MCP_LESSON_PROMPT_FILE`). `None` leaves that tool off.
+	pub lesson_prompt: Option<Arc<str>>,
 }
 
 /// Why OAuth settings were refused at startup.
@@ -139,6 +153,10 @@ pub enum OAuthConfigError {
 	NotHttps(&'static str),
 	#[error("OAUTH_ISSUER must be an origin, with no path, query or fragment")]
 	IssuerHasPath,
+	#[error("OAUTH_RESOURCE must be this server's MCP endpoint: an origin followed by /api/v1/mcp")]
+	ResourceNotMcp,
+	#[error("MCP_LESSON_PROMPT_FILE could not be read: {0}")]
+	LessonPrompt(String),
 }
 
 impl OAuthSettings {
@@ -160,15 +178,59 @@ impl OAuthSettings {
 					return Err(OAuthConfigError::IssuerHasPath);
 				}
 				https(authorize_url, "OAUTH_AUTHORIZE_URL")?;
-				https(resource, "OAUTH_RESOURCE")?;
+				let parsed = https(resource, "OAUTH_RESOURCE")?;
+				if parsed.path() != mcp_path() || parsed.query().is_some() || parsed.fragment().is_some() {
+					return Err(OAuthConfigError::ResourceNotMcp);
+				}
 				Ok(Some(Self {
 					issuer: issuer.to_owned(),
 					authorize_url: authorize_url.to_owned(),
 					resource: resource.to_owned(),
+					lesson_prompt: None,
 				}))
 			}
 			_ => Err(OAuthConfigError::Partial),
 		}
+	}
+
+	/// These settings, with the lesson prompt read from `path`.
+	///
+	/// # Errors
+	/// When the file cannot be read, is not UTF-8, is empty or is over
+	/// [`LESSON_PROMPT_CEILING`].
+	pub fn with_lesson_prompt_file(mut self, path: &std::path::Path) -> Result<Self, OAuthConfigError> {
+		let refuse = |why: String| OAuthConfigError::LessonPrompt(path.display().to_string() + ": " + &why);
+		let bytes = std::fs::read(path).map_err(|err| refuse(err.to_string()))?;
+		if bytes.len() > LESSON_PROMPT_CEILING {
+			return Err(refuse(String::from("over the ") + &LESSON_PROMPT_CEILING.to_string() + "-byte ceiling"));
+		}
+		let text = String::from_utf8(bytes).map_err(|_| refuse(String::from("not UTF-8")))?;
+		if text.trim().is_empty() {
+			return Err(refuse(String::from("empty")));
+		}
+		self.lesson_prompt = Some(Arc::from(text));
+		Ok(self)
+	}
+
+	/// Where the MCP endpoint's RFC 9728 metadata is: `/.well-known/
+	/// oauth-protected-resource` inserted between the resource's origin and
+	/// its path (§3.1). A 401 from the endpoint names it.
+	#[must_use]
+	pub fn resource_metadata_url(&self) -> String {
+		self.resource.strip_suffix(&mcp_path()).unwrap_or(&self.resource).to_owned() + PROTECTED_RESOURCE_METADATA + &mcp_path()
+	}
+
+	/// RFC 9728 metadata for the MCP endpoint: who issues its tokens, and
+	/// which permissions exist.
+	#[must_use]
+	pub fn protected_resource_metadata(&self) -> Value {
+		json!({
+			"resource": self.resource,
+			"authorization_servers": [self.issuer],
+			"scopes_supported": Scopes::all().words(),
+			"bearer_methods_supported": ["header"],
+			"resource_name": "Lessons",
+		})
 	}
 
 	#[must_use]
@@ -200,6 +262,15 @@ impl OAuthSettings {
 			"authorization_response_iss_parameter_supported": true,
 		})
 	}
+}
+
+/// The well-known prefix RFC 9728 puts before a resource's path.
+pub const PROTECTED_RESOURCE_METADATA: &str = "/.well-known/oauth-protected-resource";
+
+/// The MCP endpoint's path from the origin: `/api/v1/mcp`.
+#[must_use]
+pub fn mcp_path() -> String {
+	String::from(crate::API_V1_BASE_PATH) + MCP_ENDPOINT
 }
 
 /// A setting, unless it is unset or blank.
@@ -412,5 +483,49 @@ mod tests {
 			OAuthSettings::from_parts(true, Some("https://lessons.test/api"), page, resource).unwrap_err(),
 			OAuthConfigError::IssuerHasPath
 		);
+	}
+
+	#[test]
+	fn the_resource_is_the_mcp_endpoint_and_its_metadata_sits_at_the_path_rfc_9728_implies() {
+		let issuer = Some("https://auth.test");
+		let page = Some("https://nixos.local:5173/connect");
+		let settings = OAuthSettings::from_parts(true, issuer, page, Some("https://lessons.test/api/v1/mcp")).unwrap().unwrap();
+		assert_eq!(settings.resource_metadata_url(), "https://lessons.test/.well-known/oauth-protected-resource/api/v1/mcp");
+		let metadata = settings.protected_resource_metadata();
+		assert_eq!(metadata["resource"], "https://lessons.test/api/v1/mcp");
+		assert_eq!(metadata["authorization_servers"][0], "https://auth.test");
+
+		for elsewhere in ["https://lessons.test/mcp", "https://lessons.test/api/v1/mcp/", "https://lessons.test/api/v1/mcp?x=1"] {
+			assert_eq!(
+				OAuthSettings::from_parts(true, issuer, page, Some(elsewhere)).unwrap_err(),
+				OAuthConfigError::ResourceNotMcp,
+				"{elsewhere}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_lesson_prompt_file_is_read_whole_and_refused_when_unusable() {
+		let settings = OAuthSettings::from_parts(
+			true,
+			Some("https://lessons.test"),
+			Some("https://app.test/connect"),
+			Some("https://lessons.test/api/v1/mcp"),
+		)
+		.unwrap()
+		.unwrap();
+		assert!(settings.lesson_prompt.is_none());
+
+		let temp = tempfile::tempdir().unwrap();
+		let dir = temp.path();
+		let prompt = dir.join("lesson-prompt.md");
+		std::fs::write(&prompt, "# Topik Lesson Generator\n").unwrap();
+		let with = settings.clone().with_lesson_prompt_file(&prompt).unwrap();
+		assert_eq!(with.lesson_prompt.as_deref(), Some("# Topik Lesson Generator\n"));
+
+		let blank = dir.join("blank.md");
+		std::fs::write(&blank, "  \n").unwrap();
+		assert!(matches!(settings.clone().with_lesson_prompt_file(&blank), Err(OAuthConfigError::LessonPrompt(_))));
+		assert!(matches!(settings.with_lesson_prompt_file(&dir.join("missing.md")), Err(OAuthConfigError::LessonPrompt(_))));
 	}
 }
