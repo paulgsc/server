@@ -8,9 +8,18 @@
 //! `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
 //! module's extractor body and nothing downstream of it, as the seam was built
 //! to allow (#252, #261, #372). See docs/identity.md.
+//!
+//! [`Delegated`] is the one other way in: an OAuth access token an AI service
+//! holds for a subject, limited to the [`Scopes`] the subject approved. Only a
+//! route that asks for `Delegated` accepts one; every route that takes a
+//! `SubjectId` keeps reading the session cookie and nothing else, so no token
+//! can sign out, add a passkey or delete an account.
 
+use crate::auth::oauth::{hash_token, Scope, Scopes};
 use crate::{auth::AuthContext, FileHostError};
+use auth_repo::OAuthRepository;
 use axum::extract::{FromRef, FromRequestParts};
+use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use rand::RngCore;
 use std::sync::Arc;
@@ -40,6 +49,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	(
 		"learner_shelf",
 		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
+	),
+	(
+		"oauth_access_token",
+		"hashes of access tokens an AI service holds for the subject, their permissions and expiry",
+	),
+	(
+		"oauth_grant",
+		"which AI services the subject approved, for what, and hashed refresh tokens; see docs/identity.md",
 	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),
@@ -154,6 +171,71 @@ where
 		};
 		let subject = auth.session_subject(&parts.headers).await?.ok_or(FileHostError::Unauthorized)?;
 		Ok(Self { id: subject, _hold: hold })
+	}
+}
+
+/// A request an AI service makes for a subject, with an OAuth access token
+/// the subject approved (docs/identity.md, "AI services acting for a
+/// subject").
+///
+/// Refused with `401` unless the `Authorization: Bearer` token is live, was
+/// issued for this server's MCP endpoint (`OAUTH_RESOURCE`) and OAuth is on.
+/// No origin check: a bearer token is not ambient, so no other page can make
+/// a browser attach it. It carries the same hold against account deletion as
+/// a [`SubjectId`], taken before the token is looked up.
+#[derive(Debug, Clone)]
+pub struct Delegated {
+	subject: SubjectId,
+	scopes: Scopes,
+}
+
+impl Delegated {
+	#[must_use]
+	pub const fn subject(&self) -> &SubjectId {
+		&self.subject
+	}
+
+	/// Whether the subject approved `scope` for this service.
+	#[must_use]
+	pub fn allows(&self, scope: Scope) -> bool {
+		self.scopes.contains(scope)
+	}
+}
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for Delegated
+where
+	AuthContext: FromRef<S>,
+	S: Send + Sync,
+{
+	type Rejection = FileHostError;
+
+	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+		let auth = AuthContext::from_ref(state);
+		let resource = auth.oauth().map_err(|_| FileHostError::Unauthorized)?.settings.resource.clone();
+		let token = parts
+			.headers
+			.get(AUTHORIZATION)
+			.and_then(|value| value.to_str().ok())
+			// The scheme is case-insensitive (RFC 7235 §2.1).
+			.and_then(|value| value.split_once(' '))
+			.filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+			.map(|(_, token)| token.trim())
+			.filter(|token| !token.is_empty())
+			.ok_or(FileHostError::Unauthorized)?;
+		let hold = Hold {
+			_guard: Arc::new(auth.hold_against_deletion().await),
+		};
+		let row = OAuthRepository::new(auth.pool().clone())
+			.access_token(&hash_token(token), crate::auth::now())
+			.await?
+			.filter(|row| row.resource == resource)
+			.ok_or(FileHostError::Unauthorized)?;
+		let scopes = Scopes::parse(&row.scope).ok_or(FileHostError::Unauthorized)?;
+		Ok(Self {
+			subject: SubjectId { id: row.subject_id, _hold: hold },
+			scopes,
+		})
 	}
 }
 

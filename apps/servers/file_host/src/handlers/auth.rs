@@ -925,8 +925,8 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
-			// The other five scoped tables. Seeded so that "deleted mine, kept
-			// theirs" below is a claim about all eleven, and not only about the
+			// The other seven scoped tables. Seeded so that "deleted mine, kept
+			// theirs" below is a claim about all thirteen, and not only about the
 			// ones this test happened to fill: an empty table passes both halves.
 			for statement in [
 				"INSERT INTO engagement_charge (subject_id, class, level, as_of) VALUES (?1, 0, 0.5, 'now')",
@@ -936,6 +936,10 @@ mod tests {
 				 VALUES (?1, 's-' || ?1, 'a', 0, 't0', 't1', 1000, 900, 'completed')",
 				"INSERT INTO push_subscriptions (endpoint, subject_id, p256dh, auth, consented_at, created_at)
 				 VALUES ('https://push.example.test/' || ?1, ?1, 'p', 'a', 'now', 'now')",
+				"INSERT INTO oauth_grant (grant_id, subject_id, client_id, scope, resource, refresh_hash, expires_at)
+				 VALUES ('g-' || ?1, ?1, 'c', 'shelf', 'https://lessons.test/api/v1/mcp', CAST('r-' || ?1 AS BLOB), 0)",
+				"INSERT INTO oauth_access_token (token_hash, grant_id, subject_id, scope, expires_at)
+				 VALUES (CAST('t-' || ?1 AS BLOB), 'g-' || ?1, ?1, 'shelf', 0)",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

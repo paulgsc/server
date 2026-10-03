@@ -21,6 +21,8 @@
 //! - An operator is a subject listed in `OPERATOR_SUBJECTS`, nothing more
 //!   ([`operator::Operator`]). Signing in makes nobody an operator: anyone can
 //!   make an account.
+//! - An AI service acts for a subject only with a token the subject approved
+//!   ([`oauth`]), accepted only by `subject::Delegated`.
 //!
 //! [`AuthContext`] is its own state, bounded on `AuthContext: FromRef<S>` only,
 //! per the convention docs/identity.md records: the auth routes and their tests
@@ -29,6 +31,7 @@
 pub mod ceremony;
 pub mod cookie;
 pub mod csrf;
+pub mod oauth;
 pub mod operator;
 pub mod passkey;
 
@@ -37,6 +40,7 @@ use auth_repo::AuthRepository;
 use axum::http::{HeaderMap, Method};
 use ceremony::CeremonyStore;
 use cookie::SessionToken;
+use oauth::{OAuthFlows, OAuthSettings};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -67,6 +71,8 @@ struct Inner {
 	settings: Settings,
 	signups: SignupCap,
 	deletion: DeletionLock,
+	/// `None` unless `OAUTH_*` is configured; see [`oauth`].
+	oauth: Option<OAuthFlows>,
 }
 
 /// Orders account deletion against everything that writes subject-scoped
@@ -171,6 +177,8 @@ pub enum RelyingPartyError {
 	BadOrigin,
 	#[error("the WebAuthn relying party could not be built: {0}")]
 	Webauthn(#[from] webauthn_rs::prelude::WebauthnError),
+	#[error(transparent)]
+	OAuth(#[from] oauth::OAuthConfigError),
 }
 
 impl AuthContext {
@@ -198,6 +206,15 @@ impl AuthContext {
 		} else {
 			tracing::info!(operators = operators.len(), "operator routes are enabled for the subjects in OPERATOR_SUBJECTS");
 		}
+		let oauth = OAuthSettings::from_parts(
+			config.auth_enabled,
+			config.oauth_issuer.as_deref(),
+			config.oauth_authorize_url.as_deref(),
+			config.oauth_resource.as_deref(),
+		)?;
+		if oauth.is_some() {
+			tracing::info!("OAuth is on: AI services can connect through the MCP endpoint once a subject approves them");
+		}
 		let trusted_origins = config
 			.allowed_origins
 			.iter()
@@ -207,6 +224,7 @@ impl AuthContext {
 		Ok(Self::new(
 			pool,
 			relying_party,
+			oauth,
 			Settings {
 				session_ttl_seconds: i64::from(config.auth_session_days) * 86_400,
 				new_accounts_per_day: config.auth_new_accounts_per_day,
@@ -217,7 +235,7 @@ impl AuthContext {
 		))
 	}
 
-	fn new(pool: SqlitePool, relying_party: Option<Webauthn>, settings: Settings) -> Self {
+	fn new(pool: SqlitePool, relying_party: Option<Webauthn>, oauth: Option<OAuthSettings>, settings: Settings) -> Self {
 		Self {
 			inner: Arc::new(Inner {
 				pool,
@@ -226,6 +244,7 @@ impl AuthContext {
 				signups: SignupCap::new(settings.new_accounts_per_day),
 				settings,
 				deletion: DeletionLock::default(),
+				oauth: oauth.map(OAuthFlows::new),
 			}),
 		}
 	}
@@ -251,7 +270,7 @@ impl AuthContext {
 	#[cfg(test)]
 	pub(crate) fn for_tests_with_claim(pool: SqlitePool, new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
-		Self::new(pool, Some(relying_party), Self::test_settings(new_accounts_per_day, legacy_claim))
+		Self::new(pool, Some(relying_party), None, Self::test_settings(new_accounts_per_day, legacy_claim))
 	}
 
 	/// A context for tests whose `OPERATOR_SUBJECTS` is `operators`.
@@ -260,13 +279,30 @@ impl AuthContext {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
 		let mut settings = Self::test_settings(100, None);
 		settings.operators = operators.iter().map(|&subject| subject.to_owned()).collect();
-		Self::new(pool, Some(relying_party), settings)
+		Self::new(pool, Some(relying_party), None, settings)
+	}
+
+	/// A context for tests with OAuth on: issuer `https://lessons.test`,
+	/// approval page `https://app.test/connect`, resource
+	/// `https://lessons.test/api/v1/mcp`.
+	#[cfg(test)]
+	pub(crate) fn for_tests_with_oauth(pool: SqlitePool) -> Self {
+		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
+		let oauth = OAuthSettings::from_parts(
+			true,
+			Some("https://lessons.test"),
+			Some("https://app.test/connect"),
+			Some("https://lessons.test/api/v1/mcp"),
+		)
+		.unwrap()
+		.unwrap();
+		Self::new(pool, Some(relying_party), Some(oauth), Self::test_settings(100, None))
 	}
 
 	/// A context for tests, with `WEBAUTHN_RP_ID` unset.
 	#[cfg(test)]
 	pub(crate) fn unconfigured_for_tests(pool: SqlitePool) -> Self {
-		Self::new(pool, None, Self::test_settings(100, None))
+		Self::new(pool, None, None, Self::test_settings(100, None))
 	}
 
 	pub(crate) fn repository(&self) -> AuthRepository {
@@ -286,6 +322,12 @@ impl AuthContext {
 
 	pub(crate) fn relying_party(&self) -> Result<&Webauthn, FileHostError> {
 		self.inner.relying_party.as_ref().ok_or(FileHostError::FeatureNotConfigured("passkey auth"))
+	}
+
+	/// OAuth's settings and in-flight state, or `503` when it is not
+	/// configured.
+	pub(crate) fn oauth(&self) -> Result<&OAuthFlows, FileHostError> {
+		self.inner.oauth.as_ref().ok_or(FileHostError::FeatureNotConfigured("OAuth"))
 	}
 
 	pub(crate) fn ceremonies(&self) -> &CeremonyStore {

@@ -76,6 +76,11 @@ subject, and a request without a live session is refused with `401`. There is no
 fallback subject. Passkey auth changed that one function body; no subject-scoped
 handler, repository or route path changed with it.
 
+`subject::Delegated` is the one other way in: an OAuth access token, accepted
+only by the MCP endpoint and limited to what its grant approved (see "AI
+services acting for a subject"). It lives in the same module, so both ways a
+request gets a subject are in one file.
+
 ---
 
 ## Passkey auth
@@ -205,6 +210,70 @@ Subject ids are random and name nobody; the nudge waker logs them already.
 
 ---
 
+## AI services acting for a subject (OAuth)
+
+An AI service (claude.ai, ChatGPT, Claude Code) can act for a subject through
+the MCP endpoint, after the subject approves it once. The service's servers
+cannot do a passkey ceremony, so the subject signs in in their own browser and
+the server hands the service a token. This is OAuth 2.1 with PKCE, as the MCP
+authorization spec (2026-07-28) asks for, with `file_host` as its own
+authorization server. Nothing here is "sign in with" another company: the
+token is minted here, names a subject id and nothing else, and the service
+never learns who the subject is.
+
+### Where each step happens
+
+| Step | Who calls | Where |
+|---|---|---|
+| Metadata (`/.well-known/oauth-authorization-server`) | the AI service's servers | public, through the tunnel |
+| Register (`POST /oauth/register`, RFC 7591) | the AI service's servers | public |
+| Approve (`OAUTH_AUTHORIZE_URL`, the app's page) | the subject's browser | the app's origin: passkeys are bound to `WEBAUTHN_RP_ID`, so on `nixos.local` this step needs the home network, once per service |
+| Token (`POST /oauth/token`) | the AI service's servers | public |
+| Connected services (`GET`/`DELETE /oauth/grants`) | the app, signed in | the app's origin |
+
+The approval page is the app's, not this server's: it already holds the
+passkey sign-in. It sends the authorization request's parameters to
+`POST /oauth/authorize/requests`, which checks them against the registered
+client and holds them for ten minutes in memory, and shows the subject the
+service's name, the host it will redirect to and what it asks for. Approving is
+`POST /oauth/authorize/requests/:id/approve`, a subject-scoped request with the
+usual session, origin check and hold against deletion. It answers with the
+redirect, carrying a one-time code, the request's `state` and `iss` (RFC 9207).
+Declining answers the redirect with `access_denied` and needs no session.
+
+### What a token can do
+
+- **Only what was approved.** A grant names its permissions (`lessons:read`,
+  `progress:read`, `shelf`), and every token carries the grant's.
+- **Only at the MCP endpoint.** A token is accepted by one extractor,
+  `subject::Delegated`, and every route that takes `SubjectId` keeps reading
+  the session cookie and nothing else. So no token can sign out, add a passkey
+  or delete the account, whatever its permissions say.
+- **Only for its audience.** A grant records the resource it was issued for
+  (`OAUTH_RESOURCE`, the MCP endpoint's URL), and a token whose grant names
+  another one is refused.
+
+### What is stored
+
+| Stored | Where | What it is |
+|---|---|---|
+| A registered client | `oauth_client` | a random client id, the name the service gave, and its exact redirect URIs. About the service, not about anyone; at most `MAX_CLIENTS`. |
+| A grant | `oauth_grant` | the subject, the client, the permissions and resource approved, the current and previous refresh-token hashes, and when the refresh token expires. At most `MAX_GRANTS_PER_SUBJECT`. |
+| An access token | `oauth_access_token` | its SHA-256, its grant and subject, its permissions, and its expiry. At most one live per grant. |
+
+A code and a pending request are never stored: they live in memory for a
+minute and ten minutes, are taken once, and a restart costs only the approvals
+in flight.
+
+Access tokens last an hour. A refresh token lasts `AUTH_SESSION_DAYS` from its
+last use and is replaced on every use. Presenting the one it replaced ends the
+whole grant, since only a copy could still hold it.
+
+Deleting a grant (Settings → Connected AI services) deletes its tokens. A grant
+and its tokens are subject-scoped and leave with the account, and a grant tells
+the server something it did not know before: which AI service a subject uses.
+"What is still exposed" says so.
+
 ## Privacy invariants
 
 Each invariant names where it is enforced. An invariant that is enforced
@@ -277,7 +346,8 @@ nowhere is marked as such and belongs to review.
    ceremony with a software authenticator that sends `packed` attestation.
 
 8. **No secret is stored or logged in the clear.** The database holds a
-   session token's SHA-256, never the token. No session token, credential id
+   session token's SHA-256, never the token, and the same for OAuth access
+   and refresh tokens; an authorization code is never stored at all. No session token, credential id
    or user handle reaches a log line or span field, at any level the
    production subscriber lets through.
    *Enforced by* the `auth_session.token_hash` column (invariant 10's column
@@ -295,10 +365,15 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion holds it exclusively for its one
-   transaction. There are two such writers today:
+   transaction. There are three such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
+   - the OAuth token endpoint, which has no session: for a code and a
+     refresh alike it holds the lock across its writes, and checks in the
+     same transaction that the subject still has an account (a code) or that
+     the grant still exists (a refresh), so neither writes for a deleted
+     account (`a_code_exchanged_after_its_account_is_deleted_writes_nothing`);
    - the nudge waker, through `waker::unless_deleted`, which takes the lock
      around one re-check of the subject's `engagement_gate` row and one write
      (`a_write_for_a_deleted_subject_is_skipped_and_waits_out_a_deletion`).
@@ -313,9 +388,10 @@ nowhere is marked as such and belongs to review.
    deletion stays well inside the HTTP timeout.
 
 10. **The auth tables keep no timeline.** `account`, `passkey` and
-    `auth_session` hold exactly the columns listed under "What an account is":
-    no creation, last-seen or last-used time. A session's expiry is the one
-    instant stored.
+    `auth_session` hold exactly the columns listed under "What an account is",
+    and `oauth_client`, `oauth_grant` and `oauth_access_token` those under
+    "AI services acting for a subject": no creation, last-seen or last-used
+    time. An expiry is the one instant stored.
     *Enforced by* `file_host::privacy`'s
     `the_auth_tables_hold_exactly_their_listed_columns`. A new column there
     fails it until someone decides what it tells the server and says why.
@@ -428,6 +504,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
   session's halfway point. Nothing older is kept.
+- **Which AI services a subject connected.** A grant ties a subject id to a
+  registered client such as claude.ai, with what was approved. Whoever reads
+  the database learns which service a subject uses; deleting the grant or the
+  account removes it. What the MCP endpoint's tools return goes into that
+  service's context, by the subject's choice, and is then the service's to
+  keep.
 - **Passkey sync providers.** A synced passkey lives in the person's Apple,
   Google or password-manager account. That provider knows the person holds a
   passkey for this site, which is the provider's knowledge, not this server's.

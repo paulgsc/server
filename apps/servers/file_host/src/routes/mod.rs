@@ -4,6 +4,7 @@ pub mod db;
 pub mod health;
 pub mod inventory;
 pub mod metrics;
+pub mod oauth;
 pub mod outcomes;
 pub mod presence;
 pub mod push;

@@ -38,7 +38,7 @@
 //! auth added its own `/auth/*` routes and changed no other path here.
 
 use super::table::Module;
-use super::{auth, db, health, outcomes, presence, push, readiness, shelf, signals, subjects, tab_metadata, utterance};
+use super::{auth, db, health, oauth, outcomes, presence, push, readiness, shelf, signals, subjects, tab_metadata, utterance};
 use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
 use serde::Serialize;
@@ -115,8 +115,11 @@ where
 		health::get_health(),
 		readiness::get_readiness(),
 		websocket::routes(),
+		oauth::oauth_metadata(),
 		// ── versioned ───────────────────────────────────────────────────────
 		auth::auth(),
+		oauth::oauth(),
+		oauth::oauth_approval(),
 		db::mood_events(),
 		db::tabs(),
 		db::sessions(),

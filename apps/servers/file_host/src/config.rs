@@ -342,6 +342,26 @@ pub struct Config {
 	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',')]
 	pub operator_subjects: Vec<String>,
 
+	// AI services acting for a subject (docs/identity.md, "AI services acting
+	// for a subject"). All three together turn OAuth on; any one alone is a
+	// startup error (`auth::oauth::OAuthSettings::from_parts`).
+	/// The public origin AI services reach this server at, e.g.
+	/// `https://lessons.example.com`: OAuth's issuer, and the base of the token
+	/// and registration endpoints. HOST-SPECIFIC. Unset, OAuth is off.
+	#[arg(long, env = "OAUTH_ISSUER")]
+	pub oauth_issuer: Option<String>,
+
+	/// The app's approval page, on the origin passkeys belong to
+	/// (`https://nixos.local:5173/connect`). A subject's browser opens it to
+	/// approve a service. HOST-SPECIFIC.
+	#[arg(long, env = "OAUTH_AUTHORIZE_URL")]
+	pub oauth_authorize_url: Option<String>,
+
+	/// The MCP endpoint's public URL: the one audience OAuth tokens are issued
+	/// for (`https://lessons.example.com/api/v1/mcp`). HOST-SPECIFIC.
+	#[arg(long, env = "OAUTH_RESOURCE")]
+	pub oauth_resource: Option<String>,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,
