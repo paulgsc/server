@@ -5,10 +5,13 @@ services:
     networks:
       - monitoring-network
     restart: unless-stopped
+    # LAN: a reverse proxy is the LAN entry point by definition. Not in the
+    # root compose (Caddy runs at the NixOS level); this applies only if
+    # this file is run directly.
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp" # HTTP/3
+      - '0.0.0.0:80:80'
+      - '0.0.0.0:443:443'
+      - '0.0.0.0:443:443/udp' # HTTP/3
     volumes:
       - ${REPO_ROOT}/infra/Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
