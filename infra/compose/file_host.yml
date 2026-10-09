@@ -7,7 +7,8 @@ services:
       - path: ${REPO_ROOT}/.env
         required: false
     ports:
-      - '3000:3000'
+      # LAN: the phone reaches file_host directly. It has its own auth.
+      - '0.0.0.0:3000:3000'
     environment:
       - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1

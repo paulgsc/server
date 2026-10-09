@@ -17,10 +17,12 @@ services:
     restart: unless-stopped
     # Pass the config file.  The -js flag alone also works, but a config
     # file makes max_payload and store limits explicit and reviewable.
-    command: ["-c", "/etc/nats/nats.conf"]
+    command: ['-c', '/etc/nats/nats.conf']
+    # Box only: no auth. Containers use nats:4222 / nats-server:8222 on the
+    # network; host tools default to nats://localhost:4222.
     ports:
-      - '4222:4222' # client
-      - '8222:8222' # HTTP monitoring
+      - '127.0.0.1:4222:4222' # client
+      - '127.0.0.1:8222:8222' # HTTP monitoring
     volumes:
       # Config — read-only.
       - ${REPO_ROOT:-.}/infra/nats/nats.conf:/etc/nats/nats.conf:ro
