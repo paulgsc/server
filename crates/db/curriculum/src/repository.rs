@@ -245,19 +245,22 @@ impl CurriculumRepository {
 		)
 	}
 
-	/// Every **listed** lesson's row, by key, without bodies — what the
-	/// manifest serves. Retired lessons are not in it.
+	/// Every **listed** lesson's row for one activity, by key, without
+	/// bodies — what that activity's manifest serves. Retired lessons are not
+	/// in it, and neither is another activity's: a client reads the material
+	/// of the activity it plays, never a format it cannot parse.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn entries(&self, limit: i64) -> Result<Vec<CurriculumEntry>, sqlx::Error> {
+	pub async fn entries(&self, activity_id: &str, limit: i64) -> Result<Vec<CurriculumEntry>, sqlx::Error> {
 		sqlx::query_as!(
 			EntryRow,
 			r#"
 			SELECT key AS "key!", activity_id, level, display_name, description, batch_count, total_questions, total_messages, tags,
 			       published_at, version, content_hash, retired_at
-			FROM curriculum WHERE retired_at IS NULL ORDER BY key LIMIT ?
+			FROM curriculum WHERE retired_at IS NULL AND activity_id = ? ORDER BY key LIMIT ?
 			"#,
+			activity_id,
 			limit
 		)
 		.fetch_all(&self.pool)

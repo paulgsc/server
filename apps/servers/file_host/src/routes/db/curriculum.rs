@@ -3,6 +3,7 @@
 //! ```text
 //! GET /curriculum/manifest        → { version, topiks: TopikMetadata[] }, bounded (curriculum_repo::MANIFEST_CEILING)
 //! GET /curriculum/manifest.json   → the same manifest
+//!     ?activity=<id>              → that activity's lessons instead of `topik`'s
 //! GET /curriculum/:key            → one lesson file, verbatim, or a JSON 404; `<key>.json` works too
 //! ```
 //!
@@ -17,6 +18,13 @@
 //! `${root}/<key>.json` (a real `chatgpt-codex-connector` finding on #366).
 //! The static `manifest.json` route wins over `:key` in axum's router, so
 //! the manifest is never looked up as a lesson key.
+//!
+//! A manifest lists one activity's lessons (`curriculum.activity_id`): `topik`'s
+//! conversation lessons unless `?activity=` names another, such as
+//! `makjang`'s scene trees, which only the phone's handheld lesson reads. The
+//! bare route stays `topik`'s because every client before the query reads it
+//! and parses whatever it lists as a conversation lesson. A lesson is served
+//! by key whatever its activity: keys are one namespace.
 //!
 //! Read-only: lessons arrive through `import-curriculum` (#275) or the
 //! operator's routes (`routes::db::curriculum_operator`). The manifest lists

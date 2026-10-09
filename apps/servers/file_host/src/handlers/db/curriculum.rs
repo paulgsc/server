@@ -5,7 +5,7 @@ use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modifi
 use crate::{AppState, FileHostError};
 use axum::{
 	body::Body,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::{
 		header::{CONTENT_TYPE, ETAG},
 		HeaderMap, HeaderValue,
@@ -14,7 +14,7 @@ use axum::{
 	Json,
 };
 use curriculum_repo::{content_hash, CurriculumRepository, ManifestEntry, MANIFEST_CEILING};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -31,7 +31,22 @@ pub struct Manifest {
 	pub topiks: Vec<ManifestEntry>,
 }
 
-/// The manifest, and the tag that names it.
+/// The activity a manifest lists when the request names none: the
+/// conversation lessons `@some-ui/topik` has always read from the bare route.
+///
+/// Every client that predates `?activity=` reads the bare route and parses
+/// what it lists as a conversation lesson, so the bare route keeps listing
+/// exactly those, and another format (makjang's scene trees, `paulgsc/some-ui`
+/// MKJ-S4) is only ever listed to a client that asks for it by name.
+pub(crate) const DEFAULT_ACTIVITY: &str = "topik";
+
+/// `?activity=<id>`: which activity's lessons a manifest lists.
+#[derive(Debug, Deserialize)]
+pub struct ManifestQuery {
+	activity: Option<String>,
+}
+
+/// The manifest of one activity's lessons, and the tag that names it.
 ///
 /// Both the `ETag` and `version` are [`content_hash`] over the serialised
 /// `topiks` array — the same function #274 defines a lesson's hash with, so
@@ -43,12 +58,12 @@ pub struct Manifest {
 /// right that "nobody has published any lessons yet" is an honest answer,
 /// not an error — and a corpus over [`MANIFEST_CEILING`] is refused rather
 /// than silently truncated.
-pub(crate) async fn manifest(db: &SqlitePool) -> Result<Manifest, FileHostError> {
+pub(crate) async fn manifest(db: &SqlitePool, activity_id: &str) -> Result<Manifest, FileHostError> {
 	// One read of one past the ceiling, not a count and then a listing: two
 	// reads can see two snapshots, and an import committing between them would
 	// turn the refusal into a silently truncated manifest (a real
 	// `chatgpt-codex-connector` finding on #366).
-	let rows = CurriculumRepository::new(db.clone()).entries(MANIFEST_CEILING + 1).await?;
+	let rows = CurriculumRepository::new(db.clone()).entries(activity_id, MANIFEST_CEILING + 1).await?;
 	#[allow(clippy::cast_possible_wrap)] // at most MANIFEST_CEILING + 1
 	if rows.len() as i64 > MANIFEST_CEILING {
 		return Err(FileHostError::MaxRecordLimitExceeded);
@@ -63,14 +78,19 @@ pub(crate) async fn manifest(db: &SqlitePool) -> Result<Manifest, FileHostError>
 	})
 }
 
-/// `GET /curriculum/manifest`
+/// `GET /curriculum/manifest[?activity=<id>]`
+///
+/// Lists [`DEFAULT_ACTIVITY`]'s lessons unless the query names another
+/// activity. An activity with no listed lessons is an empty manifest, like an
+/// empty corpus.
 ///
 /// # Errors
 /// 400 for a corpus over the ceiling; 500 for a storage failure.
 #[axum::debug_handler]
 #[instrument(name = "curriculum_manifest", skip_all, fields(otel.kind = "server"))]
-pub async fn get_manifest(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, FileHostError> {
-	let manifest = manifest(&state.core.shared_db).await?;
+pub async fn get_manifest(State(state): State<AppState>, headers: HeaderMap, Query(query): Query<ManifestQuery>) -> Result<Response, FileHostError> {
+	let activity = query.activity.as_deref().unwrap_or(DEFAULT_ACTIVITY);
+	let manifest = manifest(&state.core.shared_db, activity).await?;
 	let etag = etag_value(&manifest.version)?;
 	if if_none_match_hits(&headers, &etag) {
 		return Ok(not_modified(etag));
@@ -124,7 +144,7 @@ pub async fn get_lesson(State(state): State<AppState>, headers: HeaderMap, Path(
 
 #[cfg(test)]
 mod tests {
-	use super::{lesson, manifest};
+	use super::{lesson, manifest, DEFAULT_ACTIVITY};
 	use crate::FileHostError;
 	use axum::http::StatusCode;
 	use axum::response::IntoResponse;
@@ -157,7 +177,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_empty_corpus_is_a_valid_empty_manifest() {
 		let pool = pool().await;
-		let empty = manifest(&pool).await.unwrap();
+		let empty = manifest(&pool, DEFAULT_ACTIVITY).await.unwrap();
 		assert!(empty.topiks.is_empty());
 		let json = serde_json::to_value(&empty).unwrap();
 		assert!(json["version"].is_string() && json["topiks"].as_array().is_some_and(Vec::is_empty), "{json}");
@@ -179,14 +199,14 @@ mod tests {
 		std::fs::write(dir.path().join("beginner.json"), b"{ \"batches\": [] }").unwrap();
 		import_dir(&pool, dir.path(), "topik", "2026-09-24T00:00:00+00:00", false).await.unwrap();
 
-		let listed = manifest(&pool).await.unwrap();
+		let listed = manifest(&pool, DEFAULT_ACTIVITY).await.unwrap();
 		let json = serde_json::to_value(&listed).unwrap();
 		assert_eq!(
 			json["topiks"],
 			serde_json::json!([{ "key": "beginner", "displayName": "Beginner", "description": "d", "batchCount": 2, "totalQuestions": 20, "totalMessages": 8, "difficulty": "beginner", "tags": ["a"] }]),
 			"exactly TopikMetadata's fields, camelCased, and nothing of the server's own bookkeeping"
 		);
-		assert_eq!(manifest(&pool).await.unwrap().version, listed.version, "stable while nothing changes");
+		assert_eq!(manifest(&pool, DEFAULT_ACTIVITY).await.unwrap().version, listed.version, "stable while nothing changes");
 
 		let (hash, body) = lesson(&pool, "beginner").await.unwrap();
 		assert_eq!(body, "{ \"batches\": [] }", "verbatim, never re-serialised");
@@ -203,7 +223,37 @@ mod tests {
 		CurriculumRepository::upsert(&mut pool.acquire().await.unwrap(), "topik", &renamed, body.as_bytes(), "2026-09-25T00:00:00+00:00", false)
 			.await
 			.unwrap();
-		assert_ne!(manifest(&pool).await.unwrap().version, listed.version, "a rename changes the manifest a client caches");
+		assert_ne!(
+			manifest(&pool, DEFAULT_ACTIVITY).await.unwrap().version,
+			listed.version,
+			"a rename changes the manifest a client caches"
+		);
+	}
+
+	/// A manifest lists one activity's lessons: the default one, unless the
+	/// request names another. Another activity's lesson is never in the
+	/// default manifest that every older client reads as conversation
+	/// lessons, and is still served by key to the client that lists it.
+	#[tokio::test]
+	async fn a_manifest_lists_one_activity() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		CurriculumRepository::upsert(&mut conn, DEFAULT_ACTIVITY, &entry("week-40"), b"{ \"batches\": [] }", "2026-10-09T00:00:00+00:00", false)
+			.await
+			.unwrap();
+		CurriculumRepository::upsert(&mut conn, "makjang", &entry("tree-40"), b"{ \"root\": {} }", "2026-10-09T00:00:00+00:00", false)
+			.await
+			.unwrap();
+		drop(conn);
+
+		let keys = |manifest: super::Manifest| manifest.topiks.into_iter().map(|entry| entry.key).collect::<Vec<_>>();
+		assert_eq!(keys(manifest(&pool, DEFAULT_ACTIVITY).await.unwrap()), ["week-40"]);
+		assert_eq!(keys(manifest(&pool, "makjang").await.unwrap()), ["tree-40"]);
+		assert!(
+			manifest(&pool, "no-such-activity").await.unwrap().topiks.is_empty(),
+			"an activity with nothing listed is an empty manifest"
+		);
+		assert_eq!(lesson(&pool, "tree-40").await.unwrap().1, "{ \"root\": {} }", "served by key whatever its activity");
 	}
 
 	/// An unknown key is a 404 with a JSON error body — emphatically not HTML.
@@ -233,6 +283,6 @@ mod tests {
 				.unwrap();
 		}
 		drop(conn);
-		assert!(matches!(manifest(&pool).await, Err(FileHostError::MaxRecordLimitExceeded)));
+		assert!(matches!(manifest(&pool, DEFAULT_ACTIVITY).await, Err(FileHostError::MaxRecordLimitExceeded)));
 	}
 }

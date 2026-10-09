@@ -1279,7 +1279,7 @@ raise a notification.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/curriculum/manifest` | `{ version, topiks: TopikMetadata[] }` — the manifest `@some-ui/topik` reads, from the `curriculum` table (#276) |
+| `GET` | `/curriculum/manifest` | `{ version, topiks: TopikMetadata[] }` — the manifest `@some-ui/topik` reads, from the `curriculum` table (#276): `topik`'s lessons, or `?activity=<id>`'s |
 | `GET` | `/curriculum/:key` | One lesson file, verbatim, or a JSON `404` |
 | `GET` | `/curriculum/operator/lessons` | Every lesson's manifest entry plus `activityId`, `publishedAt`, `version`, `contentHash` and `retiredAt`, retired lessons included — the operator's view |
 | `PUT` | `/curriculum/operator/lessons/:key` | Write one lesson, `{ activityId, metadata: TopikMetadata, body }`; answers `{ change, lesson }` |
