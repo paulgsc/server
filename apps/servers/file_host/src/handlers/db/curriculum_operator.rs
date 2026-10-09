@@ -239,7 +239,7 @@ pub async fn restore_lesson(_operator: Operator, State(db): State<SqlitePool>, P
 #[cfg(test)]
 mod tests {
 	use super::{listing, set_listed, write, LessonWrite};
-	use crate::handlers::db::curriculum::{lesson, manifest};
+	use crate::handlers::db::curriculum::{lesson, manifest, DEFAULT_ACTIVITY};
 	use crate::FileHostError;
 	use curriculum_repo::{CurriculumRepository, ManifestEntry, LESSON_BYTES_CEILING, MANIFEST_CEILING};
 	use sqlx::sqlite::SqlitePoolOptions;
@@ -282,7 +282,7 @@ mod tests {
 	}
 
 	async fn manifest_keys(pool: &SqlitePool) -> Vec<String> {
-		manifest(pool).await.unwrap().topiks.into_iter().map(|entry| entry.key).collect()
+		manifest(pool, DEFAULT_ACTIVITY).await.unwrap().topiks.into_iter().map(|entry| entry.key).collect()
 	}
 
 	/// A write is the importer's upsert: a new key is version 1, identical
@@ -417,7 +417,7 @@ mod tests {
 		set_listed(&pool, "lesson-0", false, T0).await.unwrap();
 		write(&pool, "one-more", &request("one-more", "x", "{}"), T0).await.unwrap();
 		assert!(matches!(set_listed(&pool, "lesson-0", true, T0).await, Err(FileHostError::MaxRecordLimitExceeded)));
-		assert!(manifest(&pool).await.is_ok(), "the manifest is at the ceiling, not over it");
+		assert!(manifest(&pool, DEFAULT_ACTIVITY).await.is_ok(), "the manifest is at the ceiling, not over it");
 	}
 
 	/// The listing's wire shape: the manifest entry's camelCase fields, the
