@@ -10,6 +10,10 @@
 //! restart costs only the ones in flight (the browser starts again), and
 //! nothing about it is worth a row. Bounded by [`MAX_OPEN_CEREMONIES`], so a
 //! client that only ever calls `start` cannot grow the process without limit.
+//!
+//! The store itself, [`OneTimeStore`], holds anything with the same shape: a
+//! short life, taken exactly once, bounded. OAuth's pending approvals and its
+//! authorization codes use it too (`auth::oauth`).
 
 use rand::RngCore;
 use std::{
@@ -40,39 +44,62 @@ pub(crate) enum Ceremony {
 	},
 }
 
-/// The handle a client holds between `start` and `finish`. Not a secret: it
-/// only finds the stored challenge, and finishing still needs the
-/// authenticator's signature over that challenge.
-pub(crate) type CeremonyId = [u8; 16];
+/// The handle a client holds for something in a [`OneTimeStore`]: 16 random
+/// bytes. For a ceremony it is not a secret: it only finds the stored
+/// challenge, and finishing still needs the authenticator's signature over
+/// that challenge. An OAuth authorization code is one of these, and is.
+pub(crate) type OneTimeId = [u8; 16];
 
-#[derive(Default)]
-pub(crate) struct CeremonyStore {
-	open: Mutex<HashMap<CeremonyId, (Instant, Ceremony)>>,
+/// The handle a client holds between `start` and `finish`.
+pub(crate) type CeremonyId = OneTimeId;
+
+/// Values that live for `ttl` at most, are taken out exactly once, and number
+/// at most `capacity` unexpired at a time.
+pub(crate) struct OneTimeStore<T> {
+	open: Mutex<HashMap<OneTimeId, (Instant, T)>>,
+	ttl: Duration,
+	capacity: usize,
 }
 
-impl CeremonyStore {
-	/// Open a ceremony, or return `None` when [`MAX_OPEN_CEREMONIES`] are
-	/// already open and unexpired.
-	pub(crate) fn open(&self, ceremony: Ceremony, now: Instant) -> Option<CeremonyId> {
-		let mut id = CeremonyId::default();
+/// The passkey ceremonies in flight.
+pub(crate) type CeremonyStore = OneTimeStore<Ceremony>;
+
+impl Default for CeremonyStore {
+	fn default() -> Self {
+		Self::new(CEREMONY_TTL, MAX_OPEN_CEREMONIES)
+	}
+}
+
+impl<T> OneTimeStore<T> {
+	pub(crate) fn new(ttl: Duration, capacity: usize) -> Self {
+		Self {
+			open: Mutex::new(HashMap::new()),
+			ttl,
+			capacity,
+		}
+	}
+
+	/// Store a value under a fresh random id, or return `None` when
+	/// `capacity` are already stored and unexpired.
+	pub(crate) fn open(&self, value: T, now: Instant) -> Option<OneTimeId> {
+		let mut id = OneTimeId::default();
 		rand::rng().fill_bytes(&mut id);
 		let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
-		if open.len() >= MAX_OPEN_CEREMONIES {
+		if open.len() >= self.capacity {
 			open.retain(|_, (expires, _)| *expires > now);
-			if open.len() >= MAX_OPEN_CEREMONIES {
+			if open.len() >= self.capacity {
 				return None;
 			}
 		}
-		open.insert(id, (now + CEREMONY_TTL, ceremony));
+		open.insert(id, (now + self.ttl, value));
 		drop(open);
 		Some(id)
 	}
 
-	/// Take a ceremony out, once. An expired one is dropped and reads as
-	/// absent.
-	pub(crate) fn take(&self, id: &CeremonyId, now: Instant) -> Option<Ceremony> {
-		let (expires, ceremony) = self.open.lock().unwrap_or_else(PoisonError::into_inner).remove(id)?;
-		(expires > now).then_some(ceremony)
+	/// Take a value out, once. An expired one is dropped and reads as absent.
+	pub(crate) fn take(&self, id: &OneTimeId, now: Instant) -> Option<T> {
+		let (expires, value) = self.open.lock().unwrap_or_else(PoisonError::into_inner).remove(id)?;
+		(expires > now).then_some(value)
 	}
 }
 

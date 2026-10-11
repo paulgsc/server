@@ -1448,12 +1448,15 @@ whether someone else kept something is not observable. The table is
 detection never sees it, so it is never announced as new material and no
 epoch or watermark moves (`handlers::shelf`'s
 `a_shelf_write_moves_no_epoch_and_touches_no_other_table`). Nothing but these
-routes writes the table; there is no background sync.
+routes and the MCP endpoint's `keep_lesson` writes the table: an AI service the
+subject approved for `shelf` keeping a TOPIK lesson it wrote for them
+(docs/identity.md, "The MCP endpoint"), which is refused rather than replace a
+different item. There is no background sync.
 
 **A shelf, not a library.** At most `SHELF_CAP` (20) items per subject per
 activity, matching the client's `MAX_LOCAL_LESSONS`. A new key on a full shelf
 is a `409` (`conflict`, "the shelf is full…"), never an eviction: the client
-decides what to delete. Replacing a kept key is always allowed. The cap is a
+decides what to delete. Replacing a kept key through `PUT` is always allowed. The cap is a
 condition of the insert itself, so concurrent writes cannot exceed it.
 
 **Content only, never parsed.** A row is the body verbatim, its key, its

@@ -60,6 +60,19 @@ const NOT_A_KEY: Problem = ("key", KEY_PROBLEM);
 /// The 409 a full shelf answers.
 const SHELF_FULL: &str = "the shelf is full: delete an item before keeping another";
 
+/// The 409 a keep that may not replace answers when the key holds other bytes.
+const KEY_TAKEN: &str = "something else is already kept under this key: choose another key";
+
+/// Whether a keep may replace different bytes already kept under its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Replace {
+	/// `PUT /shelf/...`: the learner's own tap, on an item they can see.
+	Allowed,
+	/// An AI service keeping a lesson (`handlers::mcp`): it never overwrites
+	/// what the learner kept, and is told to choose another key.
+	Refused,
+}
+
 /// A read's target: a missing activity or a malformed key is simply absent.
 fn read_target(activity: &str) -> Result<Activity, FileHostError> {
 	Activity::parse(activity).ok_or(FileHostError::NotFound)
@@ -105,9 +118,10 @@ pub(crate) async fn item(db: &SqlitePool, subject: &str, activity: &str, key: &s
 ///
 /// Every problem with the target and the body is found before the
 /// transaction, so a refusal takes no write lock. `BEGIN IMMEDIATE`, so the
-/// read that tells kept, replaced and unchanged apart and the write see one
-/// snapshot (the cap itself is a condition of the insert).
-pub(crate) async fn keep(db: &SqlitePool, subject: &str, activity: &str, key: &str, body: &[u8], now: &str) -> Result<Written, FileHostError> {
+/// read that tells kept, replaced and unchanged apart (and, with
+/// [`Replace::Refused`], the read that refuses other bytes under the key) and
+/// the write see one snapshot (the cap itself is a condition of the insert).
+pub(crate) async fn keep(db: &SqlitePool, subject: &str, activity: &str, key: &str, body: &[u8], now: &str, replace: Replace) -> Result<Written, FileHostError> {
 	let target = write_target(activity, key);
 	let checked = validate(key, body);
 	let activity = match (target, checked) {
@@ -119,6 +133,12 @@ pub(crate) async fn keep(db: &SqlitePool, subject: &str, activity: &str, key: &s
 		}
 	};
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	if replace == Replace::Refused {
+		let kept = learner_shelf_repo::body(&mut tx, subject, activity, key).await?;
+		if kept.is_some_and(|kept| kept.as_bytes() != body) {
+			return Err(FileHostError::Conflict(KEY_TAKEN));
+		}
+	}
 	let put = learner_shelf_repo::put(&mut tx, subject, activity, key, body, now).await.map_err(|err| match err {
 		ShelfError::Invalid(problems) => FileHostError::unprocessable_entity(problems),
 		ShelfError::Full => FileHostError::Conflict(SHELF_FULL),
@@ -174,7 +194,7 @@ pub async fn get_item(subject: SubjectId, State(db): State<SqlitePool>, Path((ac
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "shelf_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_item(subject: SubjectId, State(db): State<SqlitePool>, Path((activity, key)): Path<(String, String)>, body: Bytes) -> Result<Json<Written>, FileHostError> {
-	keep(&db, subject.as_str(), &activity, &key, &body, &now()).await.map(Json)
+	keep(&db, subject.as_str(), &activity, &key, &body, &now(), Replace::Allowed).await.map(Json)
 }
 
 /// `DELETE /shelf/:activity/:key` — `204` whether or not it was kept.

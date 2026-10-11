@@ -25,7 +25,9 @@
 //!   it runs none of that crate's queries.
 //! - **No background sync.** The only writers of `learner_shelf` are [`put`]
 //!   and [`delete`], and their only callers are `file_host`'s
-//!   `handlers::shelf` (`PUT` / `DELETE /api/v1/shelf/:activity/:key`) plus
+//!   `handlers::shelf` (`PUT` / `DELETE /api/v1/shelf/:activity/:key`, and
+//!   `keep` for the MCP endpoint's `keep_lesson`, a service the subject
+//!   approved for `shelf`, which never replaces a kept item) plus
 //!   account deletion: its generic sweep of `SUBJECT_SCOPED_TABLES`, and
 //!   the migration's trigger on `account` for a rolled-back binary whose
 //!   list predates this table (docs/identity.md invariant 12). A

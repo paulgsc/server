@@ -67,6 +67,7 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("leetype_round_run", "recorded runs of each round's programs, per round version — corpus-wide, recorded offline, never about who asked"),
 	("leetype_round_witness", "each round's μ into the canon register, derived from its body — corpus-wide"),
 	("mood_events", "editorial content, not per-person"),
+	("oauth_client", "AI services that registered for OAuth: a name and redirect URIs, about the service and never a person"),
 	(
 		"tabs",
 		"browser-extension page captures (URL, title, content), keyed by URL hash — no subject column, but the content itself can identify whoever captured it; see docs/identity.md",
@@ -231,6 +232,21 @@ async fn the_auth_tables_hold_exactly_their_listed_columns() {
 		("account", &["subject_id", "user_handle"][..]),
 		("passkey", &["credential_id", "subject_id", "passkey"][..]),
 		("auth_session", &["token_hash", "subject_id", "expires_at"][..]),
+		("oauth_client", &["client_id", "client_name", "redirect_uris"][..]),
+		(
+			"oauth_grant",
+			&[
+				"grant_id",
+				"subject_id",
+				"client_id",
+				"scope",
+				"resource",
+				"refresh_hash",
+				"previous_refresh_hash",
+				"expires_at",
+			][..],
+		),
+		("oauth_access_token", &["token_hash", "grant_id", "subject_id", "scope", "expires_at"][..]),
 	] {
 		let columns: Vec<String> = sqlx::query("SELECT name FROM pragma_table_info(?) ORDER BY cid")
 			.bind(table)
