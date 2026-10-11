@@ -52,7 +52,7 @@ pull: ## Pull the latest image from Docker Hub
 
 run: ## Run the container locally
 	@echo "Running container from $(DOCKER_REPO):$(TAG)..."
-	@docker run -d --name $(IMAGE_NAME) -p 3000:3000 $(DOCKER_REPO):$(TAG)
+	@docker run -d --name $(IMAGE_NAME) -p 127.0.0.1:3000:3000 $(DOCKER_REPO):$(TAG)
 
 stop: ## Stop the running container
 	@echo "Stopping container..."
@@ -78,7 +78,7 @@ dev-build: ## Build with dev tag
 	@docker build -f $(DOCKERFILE_PATH) -t $(DOCKER_REPO):dev .
 
 dev-run: ## Run development container
-	@docker run -it --rm --name $(IMAGE_NAME)-dev -p 3000:3000 $(DOCKER_REPO):dev
+	@docker run -it --rm --name $(IMAGE_NAME)-dev -p 127.0.0.1:3000:3000 $(DOCKER_REPO):dev
 
 # Multi-platform build (requires buildx)
 build-multi: ## Build multi-platform image (linux/amd64,linux/arm64)
