@@ -1,9 +1,10 @@
 //! Where `file_host` listens, and the dev-only port juggle.
 //!
 //! Production listens on exactly the port it is given (`FILE_HOST_PORT`,
-//! 3000 by default) or fails to start: its container publishes `3000:3000`
-//! and its healthcheck asks 3000, so a server that quietly moved would be
-//! up, unreachable, and marked unhealthy for a reason nobody could see.
+//! 3000 by default) or fails to start: its container publishes
+//! `127.0.0.1:3000:3000` and its healthcheck asks 3000, so a server that
+//! quietly moved would be up, unreachable, and marked unhealthy for a reason
+//! nobody could see.
 //!
 //! A server run from source beside that container opts into the juggle
 //! (`make dev`): `FILE_HOST_PORT_FALLBACK` takes the next free port when the
