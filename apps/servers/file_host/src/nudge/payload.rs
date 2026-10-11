@@ -170,8 +170,8 @@ mod tests {
 
 	#[test]
 	fn get_started_resolves_to_the_app_base_not_a_session() {
-		let payload = NudgePayload::for_action("https://nixos.local:5173/", &StudyAction::GetStarted);
-		assert_eq!(payload.url, "https://nixos.local:5173/");
+		let payload = NudgePayload::for_action("https://www.home.maishatu.com/", &StudyAction::GetStarted);
+		assert_eq!(payload.url, "https://www.home.maishatu.com/");
 		assert!(!payload.url.contains("/sessions/"), "got {}", payload.url);
 	}
 
@@ -182,15 +182,15 @@ mod tests {
 
 	#[test]
 	fn the_deep_link_matches_the_shape_the_client_builds() {
-		let payload = NudgePayload::for_session("https://nixos.local:5173/", "session-abc", "t".to_owned(), "b".to_owned());
-		assert_eq!(payload.url, "https://nixos.local:5173/sessions/session-abc");
+		let payload = NudgePayload::for_session("https://www.home.maishatu.com/", "session-abc", "t".to_owned(), "b".to_owned());
+		assert_eq!(payload.url, "https://www.home.maishatu.com/sessions/session-abc");
 		assert_eq!(payload.tag, NUDGE_TAG);
 	}
 
 	#[test]
 	fn a_base_url_without_its_trailing_slash_still_produces_one_slash() {
-		let payload = NudgePayload::for_session("https://nixos.local:5173", "session-abc", "t".to_owned(), "b".to_owned());
-		assert_eq!(payload.url, "https://nixos.local:5173/sessions/session-abc");
+		let payload = NudgePayload::for_session("https://www.home.maishatu.com", "session-abc", "t".to_owned(), "b".to_owned());
+		assert_eq!(payload.url, "https://www.home.maishatu.com/sessions/session-abc");
 	}
 
 	#[test]

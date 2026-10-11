@@ -3,10 +3,6 @@ networks:
     name: shared-dev-network
     driver: bridge
 volumes:
-  caddy_data:
-    driver: local
-  caddy_config:
-    driver: local
   prometheus_data:
     driver: local
   grafana_data:

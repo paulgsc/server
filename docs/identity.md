@@ -227,7 +227,7 @@ never learns who the subject is.
 |---|---|---|
 | Metadata (`/.well-known/oauth-authorization-server`) | the AI service's servers | public, through the tunnel |
 | Register (`POST /oauth/register`, RFC 7591) | the AI service's servers | public |
-| Approve (`OAUTH_AUTHORIZE_URL`, the app's page) | the subject's browser | the app's origin: passkeys are bound to `WEBAUTHN_RP_ID`, so on `nixos.local` this step needs the home network, once per service |
+| Approve (`OAUTH_AUTHORIZE_URL`, the app's page) | the subject's browser | the app's origin: passkeys are bound to `WEBAUTHN_RP_ID`, and on the dev host `*.home.maishatu.com` resolves to a private address, so this step needs the home network, once per service |
 | Token (`POST /oauth/token`) | the AI service's servers | public |
 | Connected services (`GET`/`DELETE /oauth/grants`) | the app, signed in | the app's origin |
 | Resource metadata (`/.well-known/oauth-protected-resource/api/v1/mcp`, RFC 9728) | the AI service's servers | public |

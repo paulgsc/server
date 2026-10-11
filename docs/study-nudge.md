@@ -1182,36 +1182,25 @@ See `example.env`. The two that most reward attention:
 
 Service workers, `Notification`, and `PushManager` are all gated on a **secure
 context**. `http://localhost` and `http://127.0.0.1` qualify by explicit
-exception; `http://nixos.local` and `http://192.168.x.x` do **not**.
+exception; a plain-HTTP LAN name (`http://nixos.local`, `http://10.0.0.x`)
+does **not**.
 
 The symptom is confusing: the APIs are simply absent from `window`, so what you
 see is "the toggle isn't there", not an error. On a LAN-only setup this is the
 blocker that stops the whole feature.
 
-The client already handles its side — `apps/www/vite.config.ts` in
-`paulgsc/some-ui` picks up `certs/nixos.local+3.pem` when present, and the
-settings section renders an explanation instead of the toggle when
-`nudgesSupported()` is false.
+On the dev host, Caddy (paulgsc/dotfiles, `nixos/subdomains`;
+`docs/lan-tls.md` there) serves the app to the LAN as
+`https://www.home.maishatu.com` (the Docker build) and
+`https://dev.home.maishatu.com` (`vite dev`), with a Let's Encrypt wildcard it
+renews itself. Every device already trusts that certificate, so there is no
+local CA to install, and `ALLOWED_ORIGINS`, `WEBAUTHN_ORIGINS` and
+`APP_BASE_URL` name those origins. The client renders an explanation instead of
+the toggle when `nudgesSupported()` is false.
 
-#### The certificate story
-
-- **Which cert.** A locally-issued cert for `nixos.local`, generated with
-  [`mkcert`](https://github.com/FiloSottile/mkcert):
-  `mkcert nixos.local localhost 127.0.0.1 ::1`, which writes
-  `nixos.local+3.pem` and `nixos.local+3-key.pem`.
-- **Who trusts it.** `mkcert -install` puts the local CA into the system trust
-  store, and separately into Firefox's (which keeps its own). Every browser that
-  is going to subscribe needs the CA trusted, or the page is not a secure
-  context and there is nothing to subscribe with.
-- **When it expires.** `mkcert` leaf certificates are good for a little over two
-  years; the local CA for ten. Expiry presents as the app failing to load over
-  HTTPS, and then — because there is no secure context — as the nudge toggle
-  disappearing. The remedy is to re-run the `mkcert` command above and restart
-  the dev server. If the *CA* expired, `mkcert -uninstall && mkcert -install`
-  first, and every browser has to trust the new one.
-
-Write the date somewhere you will see it. A certificate expiry that nobody
-expected is indistinguishable, from the outside, from this feature being broken.
+If renewal fails, the certificate expires about 90 days after the last good
+one: the app then fails to load over HTTPS and the toggle disappears with it.
+`systemctl list-timers 'acme-*'` on the host shows the next renewal.
 
 ---
 

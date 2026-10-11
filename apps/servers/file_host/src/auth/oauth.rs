@@ -465,7 +465,7 @@ mod tests {
 	#[test]
 	fn settings_are_all_or_nothing_https_and_need_passkeys() {
 		let issuer = Some("https://lessons.test/");
-		let page = Some("https://nixos.local:5173/connect");
+		let page = Some("https://www.home.maishatu.com/connect");
 		let resource = Some("https://lessons.test/api/v1/mcp");
 		assert!(OAuthSettings::from_parts(true, None, None, None).unwrap().is_none());
 		let settings = OAuthSettings::from_parts(true, issuer, page, resource).unwrap().unwrap();
@@ -488,7 +488,7 @@ mod tests {
 	#[test]
 	fn the_resource_is_the_mcp_endpoint_and_its_metadata_sits_at_the_path_rfc_9728_implies() {
 		let issuer = Some("https://auth.test");
-		let page = Some("https://nixos.local:5173/connect");
+		let page = Some("https://www.home.maishatu.com/connect");
 		let settings = OAuthSettings::from_parts(true, issuer, page, Some("https://lessons.test/api/v1/mcp")).unwrap().unwrap();
 		assert_eq!(settings.resource_metadata_url(), "https://lessons.test/.well-known/oauth-protected-resource/api/v1/mcp");
 		let metadata = settings.protected_resource_metadata();

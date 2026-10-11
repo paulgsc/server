@@ -114,13 +114,13 @@ impl AppState {
 		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new()?)));
 
 		// The first thing logged once there is a subscriber: which values this
-		// run took from the `nixos.local` dev host (#406). Fine there, wrong on
+		// run took from the dev host (#406). Fine there, wrong on
 		// any other host, and never silent either way.
 		let host_defaults = config.host_specific_defaults_in_use();
 		if !host_defaults.is_empty() {
 			tracing::warn!(
 				variables = ?host_defaults,
-				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
+				"HOST-SPECIFIC: running on the dev host's values for these variables; any other host must set them (#406)"
 			);
 		}
 		let core = CoreContext {

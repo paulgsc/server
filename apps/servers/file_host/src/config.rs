@@ -2,16 +2,17 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 // HOST-SPECIFIC defaults (#406). Each one is right on the dev host this server
-// grew up on (`nixos.local`, with NATS and Redis on the same machine) and wrong
+// grew up on (`nixos`, whose Caddy serves the app to the LAN as
+// `*.home.maishatu.com`, with NATS and Redis on the same machine) and wrong
 // on any other. They stay as defaults so that host keeps working with an
 // unchanged `.env`, but they are named, marked, and announced at startup
 // (`Config::host_specific_defaults_in_use`), so a new host finds every value
 // it must set instead of inheriting this one's silently.
 
-/// `ALLOWED_ORIGINS`' default. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
-/// `APP_BASE_URL`'s default. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
+/// `ALLOWED_ORIGINS`' default. HOST-SPECIFIC: the dev host.
+pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://www.home.maishatu.com,https://dev.home.maishatu.com";
+/// `APP_BASE_URL`'s default. HOST-SPECIFIC: the dev host.
+pub const DEV_HOST_APP_BASE_URL: &str = "https://www.home.maishatu.com/";
 /// Used when `NATS_URL` is unset. HOST-SPECIFIC: a NATS on this machine.
 pub const DEV_HOST_NATS_URL: &str = "nats://localhost:4222";
 /// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
@@ -92,13 +93,12 @@ pub struct Config {
 	/// (push and sessions). Other routes deliberately allow any origin
 	/// (extensions, etc.) and are unaffected by this setting.
 	///
-	/// The default carries three entries rather than one because the study app is
-	/// not on `:6006` — that is Storybook. Service workers, `Notification`, and
-	/// `PushManager` are all gated on a secure context, so the origin a
-	/// subscription is actually posted from is an HTTPS one, and a list that only
-	/// admits the Storybook origin blocks it.
+	/// The default is the app's two HTTPS origins on the dev host: the Docker
+	/// build (`www`) and `vite dev` (`dev`), both served by the host's Caddy.
+	/// Service workers, `Notification`, and `PushManager` are all gated on a
+	/// secure context, so a push subscription is always posted from one of them.
 	///
-	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
+	/// HOST-SPECIFIC default: the dev host. Set it on any other.
 	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = DEV_HOST_ALLOWED_ORIGINS)]
 	pub allowed_origins: Vec<String>,
 
@@ -280,7 +280,7 @@ pub struct Config {
 	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
 	/// the server has to produce the same shape or clicks land on the dashboard.
 	///
-	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
+	/// HOST-SPECIFIC default: the dev host. Set it on any other.
 	#[arg(long, env = "APP_BASE_URL", default_value = DEV_HOST_APP_BASE_URL)]
 	pub app_base_url: String,
 
@@ -302,7 +302,7 @@ pub struct Config {
 	pub auth_enabled: bool,
 
 	/// The WebAuthn relying party id: the registrable domain the app is served
-	/// from (`nixos.local`, `example.com`), with no scheme or port. A passkey is
+	/// from (`home.maishatu.com`, `example.com`), with no scheme or port. A passkey is
 	/// bound to it for good, so changing it strands every passkey made under
 	/// the old one, which also makes it HOST-SPECIFIC in the strongest sense:
 	/// moving to a new domain strands every passkey made on this one.
@@ -310,7 +310,7 @@ pub struct Config {
 	pub webauthn_rp_id: Option<String>,
 
 	/// Comma-separated origins the app is served from, scheme and port
-	/// included (`https://nixos.local:5173`). A passkey ceremony from any
+	/// included (`https://www.home.maishatu.com`). A passkey ceremony from any
 	/// other origin fails verification. Required when `WEBAUTHN_RP_ID` is set.
 	#[arg(long, env = "WEBAUTHN_ORIGINS", value_delimiter = ',')]
 	pub webauthn_origins: Vec<String>,
@@ -352,7 +352,7 @@ pub struct Config {
 	pub oauth_issuer: Option<String>,
 
 	/// The app's approval page, on the origin passkeys belong to
-	/// (`https://nixos.local:5173/connect`). A subject's browser opens it to
+	/// (`https://www.home.maishatu.com/connect`). A subject's browser opens it to
 	/// approve a service. HOST-SPECIFIC.
 	#[arg(long, env = "OAUTH_AUTHORIZE_URL")]
 	pub oauth_authorize_url: Option<String>,
@@ -408,7 +408,7 @@ impl Config {
 	}
 
 	/// The variables this run is taking from a HOST-SPECIFIC default (#406):
-	/// values that are right on the `nixos.local` dev host and wrong anywhere
+	/// values that are right on the dev host and wrong anywhere
 	/// else. Startup logs them, so running on them is never silent.
 	#[must_use]
 	pub fn host_specific_defaults_in_use(&self) -> Vec<&'static str> {

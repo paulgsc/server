@@ -124,6 +124,6 @@ services:
 # them.
 out_of_stack:
   - service: caddy
-    reason: "infra/compose/caddy.yml exists but is deliberately excluded from docker-compose.yml (\"We set caddy at NIXOS sys level\") — [HM-COVER] C3 (#145) is the story that gives it a byte counter"
+    reason: "Caddy runs on the host (paulgsc/dotfiles, nixos/subdomains), not in compose — [HM-COVER] C3 (#145) is the story that gives it a byte counter"
   - service: tabsched-pipeline
     reason: 'in the hoist set per epic #136, but no compose file or crate exists in this repo yet — [HM-COVER] C1 (#143) covers orchestrator only until it lands'

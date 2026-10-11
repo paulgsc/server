@@ -108,7 +108,8 @@ for the first three.
 
 ### Host-specific values
 
-This server runs on one machine today: the NixOS dev host `nixos.local`, with
+This server runs on one machine today: the NixOS dev host `nixos` (its Caddy
+serves the app to the LAN as `*.home.maishatu.com`; paulgsc/dotfiles), with
 its data under `/mnt/storage` and NATS and Redis beside it. Some defaults,
 paths and example values are right only there. They are allowed, but never
 silent:
