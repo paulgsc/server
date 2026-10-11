@@ -7,8 +7,11 @@ services:
       - path: ${REPO_ROOT}/.env
         required: false
     ports:
-      # LAN: the phone reaches file_host directly. It has its own auth.
-      - '0.0.0.0:3000:3000'
+      # Box only: Caddy on the host serves it to the LAN, the phone included,
+      # as https://file-host.home.maishatu.com (paulgsc/dotfiles,
+      # nixos/subdomains), and the lesson MCP gate proxies here too. Other
+      # containers use file-host-server:3000 on shared-dev-network.
+      - '127.0.0.1:3000:3000'
     environment:
       - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
