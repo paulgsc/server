@@ -1440,6 +1440,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "outcome_repo",
+ "playoff_delta",
  "presence_repo",
  "publication_repo",
  "push_kit",
@@ -3243,6 +3244,14 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "playoff_delta"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "plotters"

@@ -26,6 +26,7 @@ members = [
   "crates/db/push",
   "crates/intervention",
   "crates/leetype_runner",
+  "crates/playoff_delta",
   "crates/push_kit",
   "crates/study_domain",
   "crates/db/session",
@@ -128,6 +129,7 @@ publication_repo = { path = "crates/db/publication" }
 presence_repo = { path = "crates/db/presence" }
 push_kit = { path = "crates/push_kit" }
 intervention = { path = "crates/intervention" }
+playoff_delta = { path = "crates/playoff_delta" }
 study_domain = { path = "crates/study_domain" }
 session_repo = { path = "crates/db/session" }
 

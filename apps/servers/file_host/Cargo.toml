@@ -19,7 +19,9 @@ edition.workspace = true
 # repo's `checkSessionDuration` fixture; see `src/bin/dump_proposed_session.rs`.
 # `dump-provisioned-session` emits a full RCM5 provisioned `SessionRecord`
 # for the client repo's round-trip fixture; see
-# `src/bin/dump_provisioned_session.rs`.
+# `src/bin/dump_provisioned_session.rs`. `dump-playoff-delta` emits a
+# team's Playoff Delta season story for the client repo's stage, from an
+# nflverse `games.csv`; see `src/playoff_delta.rs`.
 [[bin]]
 name = "file_host"
 path = "src/main.rs"
@@ -55,6 +57,10 @@ path = "src/bin/record_leetype_runs.rs"
 [[bin]]
 name = "dump-leetype-snapshot"
 path = "src/bin/dump_leetype_snapshot.rs"
+
+[[bin]]
+name = "dump-playoff-delta"
+path = "src/bin/dump_playoff_delta.rs"
 
 [dependencies]
 # path crates
@@ -130,6 +136,7 @@ presence_repo = { workspace = true }
 session_repo = { workspace = true }
 push_kit = { workspace = true, features = ["reqwest-transport"] }
 intervention = { workspace = true }
+playoff_delta = { workspace = true }
 study_domain = { workspace = true }
 chrono-tz = "0.10"
 

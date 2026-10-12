@@ -1,0 +1,24 @@
+[package]
+name = "playoff_delta"
+description = "Evaluates an NFL regular season, week by week, into the Playoff Delta story: how bad can a team be and still make the playoffs"
+categories = ["algorithms"]
+keywords = ["nfl", "playoffs", "max-flow", "elimination"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+serde_json = { workspace = true }
