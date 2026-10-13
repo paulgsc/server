@@ -16,13 +16,10 @@ question asked about another team, or about the week with one result flipped.
 The crate is pure: no I/O, no clock, no randomness, no feed. A caller builds a
 `Season` (every game, with a score once it is final) and calls
 `evaluate::evaluate(season, previous_season, subject)`. Feeds are adapters
-outside the crate: `file_host::playoff_delta` reads an nflverse `games.csv`,
-and the `dump-playoff-delta` binary writes the story to stdout:
-
-```sh
-cargo run -q --release --bin dump-playoff-delta -- \
-  --games games.csv --season 2026 --team SF --rivals DAL,SEA > season.json
-```
+outside the crate: `apps/playoff_delta_job` reads ESPN scoreboard responses
+and its `playoff-delta` binary writes the story to stdout (its README has the
+commands). A scheduled workflow in the data repository runs it weekly and
+commits the JSON the stage fetches.
 
 | Module | Owns |
 |---|---|
@@ -134,7 +131,7 @@ exact one.
   its bye is left out of that week's `rivals`.
 - **Tied games.** `record` has no `t`. Ties count as half a win in every
   computation; the record shown drops them.
-- **`collapse`** needs an in-game win-probability feed; the nflverse adapter
-  has none, so it is never set.
+- **`collapse`** needs an in-game win-probability feed; the ESPN adapter
+  reads scoreboards only, so it is never set.
 - **Postponed games.** A week with a pending game while a later week has
   finals is refused (`ResultsOutOfOrder`), not guessed around.

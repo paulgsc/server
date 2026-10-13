@@ -9,6 +9,7 @@ members = [
   "apps/servers/file_host",
   "apps/orchestrator",
   "apps/some-obs",
+  "apps/playoff_delta_job",
 
   # crates (transitive deps of the apps above)
   "crates/cursorium",
