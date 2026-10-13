@@ -95,6 +95,11 @@ pub fn evaluate(season: &Season, previous: &Season, subject: &Subject) -> Result
 	let mut so_far = Score::default();
 	let mut weeks = Vec::new();
 	for week in 1..=season.complete_through() {
+		// A bye still has competitor games: they count toward the season's
+		// futility points even though the week has no slide.
+		let points = futility(season, subject, week);
+		so_far.scored += points.scored;
+		so_far.possible += points.possible;
 		let Some(game) = season.game_of(subject.team, week) else {
 			continue;
 		};
@@ -113,9 +118,7 @@ pub fn evaluate(season: &Season, previous: &Season, subject: &Subject) -> Result
 			[&claims[w - 1], &claims[w]],
 		);
 		let mut story = view.story();
-		so_far.scored += story.points.week.scored;
-		so_far.possible += story.points.week.possible;
-		story.points.season = so_far;
+		story.points = Points { week: points, season: so_far };
 		weeks.push(story);
 	}
 	if weeks.is_empty() {
@@ -131,6 +134,26 @@ pub fn evaluate(season: &Season, previous: &Season, subject: &Subject) -> Result
 		conference: subject.team.conference().label(),
 		weeks,
 	})
+}
+
+/// Futility points in `week` (see the module doc).
+fn futility(season: &Season, subject: &Subject, week: u8) -> Score {
+	let me = subject.team;
+	let competitor = |t: Team| t != me && (t.division() == me.division() || subject.rivals.contains(&t));
+	let mut score = Score::default();
+	for g in season.week(week) {
+		let (home, away) = (competitor(g.home), competitor(g.away));
+		if !home && !away {
+			continue;
+		}
+		score.possible += 1;
+		let lost = match g.outcome() {
+			Some(Outcome::Won(w)) => (home && w != g.home) || (away && w != g.away),
+			_ => false,
+		};
+		score.scored += u16::from(lost);
+	}
+	score
 }
 
 /// A team's paths at a table: the best seed for each count of more wins.
@@ -268,7 +291,6 @@ impl<'a> Week<'a> {
 	fn story(&self) -> StoryWeek {
 		let me = self.cx.subject.team;
 		let takes: Vec<(Team, Vec<RivalTake>)> = self.cx.subject.rivals.iter().map(|r| (*r, self.rival_takes(*r))).collect();
-		let points = self.futility();
 		let record = self.before.record(me);
 		StoryWeek {
 			week: self.number,
@@ -284,29 +306,13 @@ impl<'a> Week<'a> {
 			path: self.path(),
 			rivals: self.rivals(&takes),
 			collisions: self.collisions(&takes),
-			points: Points { week: points, season: points },
+			// Filled in by `evaluate`, which also counts the bye weeks.
+			points: Points {
+				week: Score::default(),
+				season: Score::default(),
+			},
 			benchmark: self.benchmark(),
 		}
-	}
-
-	/// Futility points this week (see the module doc).
-	fn futility(&self) -> Score {
-		let me = self.cx.subject.team;
-		let competitor = |t: Team| t != me && (t.division() == me.division() || self.cx.subject.rivals.contains(&t));
-		let mut score = Score::default();
-		for g in &self.games {
-			let (home, away) = (competitor(g.home), competitor(g.away));
-			if !home && !away {
-				continue;
-			}
-			score.possible += 1;
-			let lost = match g.outcome() {
-				Some(Outcome::Won(w)) => (home && w != g.home) || (away && w != g.away),
-				_ => false,
-			};
-			score.scored += u16::from(lost);
-		}
-		score
 	}
 
 	fn game(&self) -> StoryGame {

@@ -66,6 +66,10 @@ fn a_bye_is_not_a_slide_but_its_results_count() {
 	let bye = (1..=18).find(|w| !weeks.contains(w)).unwrap();
 	assert!(bye == 9 || bye == 10);
 	assert_eq!(story.weeks.last().map(|w| w.week), Some(18));
+	// Competitors still play on the subject's bye, and those games count.
+	let slides: u16 = story.weeks.iter().map(|w| w.points.week.possible).sum();
+	let season = story.weeks.last().map_or(0, |w| w.points.season.possible);
+	assert!(season > slides, "the bye week's {} points are missing", season - slides);
 }
 
 #[test]
