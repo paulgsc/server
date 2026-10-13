@@ -82,6 +82,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 	};
 	let current = season(&args.scoreboards, args.season)?;
 	let previous = season(&args.previous, args.season - 1)?;
+	// The benchmark reads last season at the same week, so every game of it
+	// must be final, or later weeks repeat a stale claim.
+	if previous.games().iter().any(|g| g.score.is_none()) {
+		let mut message = String::new();
+		write!(message, "{}: {} still has games without a final score", args.previous.display(), args.season - 1)?;
+		return Err(message.into());
+	}
 	let story = evaluate(&current, &previous, &subject)?;
 	let mut out = io::stdout().lock();
 	serde_json::to_writer_pretty(&mut out, &story)?;
