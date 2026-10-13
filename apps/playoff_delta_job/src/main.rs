@@ -20,6 +20,7 @@ use playoff_delta::{
 	season::Season,
 };
 use std::{
+	fmt::Write as _,
 	io::{self, Write},
 	path::{Path, PathBuf},
 	process::ExitCode,
@@ -47,12 +48,29 @@ struct Args {
 	label: Option<String>,
 }
 
+/// Games each team plays in an NFL regular season (since 2021).
+const GAMES_PER_TEAM: usize = 17;
+
+/// One season from its directory. A missing or empty week would leave every
+/// team a game short and still look like a valid season, so the count is
+/// checked against the league's, not only against itself.
 fn season(dir: &Path, year: u16) -> Result<Season, Box<dyn std::error::Error>> {
 	let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
 	paths.retain(|p| p.extension().is_some_and(|x| x == "json"));
 	paths.sort();
 	let bodies = paths.iter().map(std::fs::read_to_string).collect::<Result<Vec<_>, _>>()?;
-	Ok(espn::season_from_scoreboards(bodies.iter().map(String::as_str), year)?)
+	let season = espn::season_from_scoreboards(bodies.iter().map(String::as_str), year)?;
+	if season.length() != GAMES_PER_TEAM {
+		let mut message = String::new();
+		write!(
+			message,
+			"{}: {year} has {} games a team, not {GAMES_PER_TEAM}; is a week missing?",
+			dir.display(),
+			season.length()
+		)?;
+		return Err(message.into());
+	}
+	Ok(season)
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {

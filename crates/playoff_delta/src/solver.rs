@@ -13,8 +13,9 @@
 //! with or ahead of everyone it must beat, and the NFL's tiebreakers (head to
 //! head, division record, common games, strength of victory...) are not
 //! applied. The answer is therefore the best seed the standings allow, which
-//! is never worse than what the tiebreakers would give. Remaining games may
-//! end in a tie only where banked ties make a half-win arithmetic need one.
+//! is never worse than what the tiebreakers would give. Banked ties count half
+//! a win; remaining games are decided as wins and losses, so a team's room
+//! below `F` is rounded down to whole wins.
 //!
 //! ## How
 //!
@@ -113,9 +114,8 @@ struct Ask<'a> {
 }
 
 enum Placed {
-	/// Every game placed: per pending game the flow decided, its winner
-	/// (`None`: a tie, which only half-win caps from banked ties can ask for).
-	Yes(Vec<(usize, Option<Team>)>),
+	/// Every game placed: per pending game the flow decided, its winner.
+	Yes(Vec<(usize, Team)>),
 	/// The capped teams (the asked one included, when there) on the source
 	/// side of a minimum cut: their games among themselves overflow their caps.
 	No(Mask),
@@ -280,7 +280,10 @@ impl<'a> Ask<'a> {
 		if i == self.me {
 			return Some(u32::from(self.extra) * 2);
 		}
-		self.target.checked_sub(self.table.points(self.conf[i])).map(u32::from)
+		// A remaining game hands out a whole win, so odd room left by a banked
+		// tie is half a win nobody can take: round it down. Every capacity is
+		// then even, the flow moves points in pairs, and no game is split.
+		self.target.checked_sub(self.table.points(self.conf[i])).map(|room| u32::from(room) & !1)
 	}
 
 	/// Can every pending game be placed with only `free` (and the other
@@ -322,12 +325,7 @@ impl<'a> Ask<'a> {
 			.zip(home_edges)
 			.map(|(&g, (home, _))| {
 				let p = self.table.pending()[g];
-				let winner = match net.flow_on(home) {
-					2 => Some(p.home),
-					1 => None,
-					_ => Some(p.away),
-				};
-				(g, winner)
+				(g, if net.flow_on(home) == 2 { p.home } else { p.away })
 			})
 			.collect();
 		Placed::Yes(winners)
@@ -337,31 +335,26 @@ impl<'a> Ask<'a> {
 	/// between capped teams; a free team or the other conference takes every
 	/// game against a capped one; then the asked team takes wins from its
 	/// remaining losses, in schedule order, until it has exactly `extra`.
-	fn scenario(&self, seed: u8, placed: &[(usize, Option<Team>)], free: Mask) -> Scenario {
+	fn scenario(&self, seed: u8, placed: &[(usize, Team)], free: Mask) -> Scenario {
 		let pending = self.table.pending();
-		let mut winner: Vec<Option<Team>> = pending.iter().map(|p| Some(if self.capped(p.home, free) { p.away } else { p.home })).collect();
+		let mut winner: Vec<Team> = pending.iter().map(|p| if self.capped(p.home, free) { p.away } else { p.home }).collect();
 		for &(g, w) in placed {
 			winner[g] = w;
 		}
-		let mut wins = winner.iter().filter(|w| **w == Some(self.team)).count();
+		let mut wins = winner.iter().filter(|w| **w == self.team).count();
 		for (g, p) in pending.iter().enumerate() {
 			if wins >= usize::from(self.extra) {
 				break;
 			}
-			if (p.home == self.team || p.away == self.team) && winner[g] != Some(self.team) {
-				winner[g] = Some(self.team);
+			if (p.home == self.team || p.away == self.team) && winner[g] != self.team {
+				winner[g] = self.team;
 				wins += 1;
 			}
 		}
 		let mut rest = [Record::default(); 32];
 		for (p, w) in pending.iter().zip(winner) {
-			if let Some(w) = w {
-				rest[w.index()].w += 1;
-				rest[(if w == p.home { p.away } else { p.home }).index()].l += 1;
-			} else {
-				rest[p.home.index()].t += 1;
-				rest[p.away.index()].t += 1;
-			}
+			rest[w.index()].w += 1;
+			rest[(if w == p.home { p.away } else { p.home }).index()].l += 1;
 		}
 		Scenario { seed, rest }
 	}

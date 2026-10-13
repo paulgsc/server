@@ -129,8 +129,9 @@ exact one.
 - **Byes.** A week's `game` is required, so the subject's bye week is not
   emitted; its results count, and show in the next week's `before`. A rival on
   its bye is left out of that week's `rivals`.
-- **Tied games.** `record` has no `t`. Ties count as half a win in every
-  computation; the record shown drops them.
+- **Tied games.** `record` has no `t`. A banked tie counts as half a win in
+  every computation, and the record shown drops it. Remaining games are
+  decided as wins and losses only.
 - **`collapse`** needs an in-game win-probability feed; the ESPN adapter
   reads scoreboards only, so it is never set.
 - **Postponed games.** A week with a pending game while a later week has

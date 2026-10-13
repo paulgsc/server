@@ -1,5 +1,6 @@
 //! The solver against brute force: every outcome of a dozen pending games,
-//! seeded by the rule itself (PD1: a tie goes to the team asked about).
+//! seeded by the rule itself (PD1: a tie goes to the team asked about), with
+//! banked ties in the standings so half-win room is exercised.
 
 use super::*;
 use crate::table::Pending;
@@ -56,7 +57,8 @@ fn brute_force(records: &[Record; 32], pending: &[Pending]) -> Vec<Vec<Option<u8
 fn random_case(rng: &mut Lcg, games: usize) -> ([Record; 32], Vec<Pending>) {
 	let records = [(); 32].map(|()| {
 		let w = 6 + u8::try_from(rng.next(5)).unwrap();
-		Record { w, l: 14 - w, t: 0 }
+		let t = u8::from(rng.next(4) == 0);
+		Record { w, l: 14 - w - t, t }
 	});
 	let pending = (0..games)
 		.map(|_| {
@@ -87,6 +89,7 @@ fn matches_brute_force_and_every_scenario_is_real() {
 				assert_eq!(got.as_ref().map(|s| s.seed), oracle[team.index()][usize::from(extra)], "{} +{extra}", team.code());
 				if let Some(s) = got {
 					assert_eq!(s.rest[team.index()].w, extra);
+					assert!(s.rest.iter().all(|r| r.t == 0), "{} +{extra}: a remaining game was tied", team.code());
 					let mut points = records.map(Record::points);
 					for t in Team::ALL {
 						points[t.index()] += s.rest[t.index()].points();
