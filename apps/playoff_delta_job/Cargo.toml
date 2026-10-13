@@ -1,0 +1,24 @@
+[package]
+name = "playoff_delta_job"
+description = "The weekly Playoff Delta job: ESPN scoreboard files in, one team's story JSON out"
+categories = ["command-line-utilities"]
+keywords = ["nfl", "playoffs", "espn"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "playoff-delta"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+playoff_delta = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
