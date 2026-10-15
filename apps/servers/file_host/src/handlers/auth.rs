@@ -308,7 +308,7 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	};
 	let repository = auth.repository();
 	let now = now();
-	let Some(live) = repository.live_session(&token.hash(), now).await? else {
+	let Some(live) = repository.live_session(&token.hash(carrier), now).await? else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
 
@@ -316,7 +316,7 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	// Reporting is open to any GET; extending is not (`AuthContext::may_renew`).
 	if live.expires_at - now < ttl / 2 && auth.may_renew(&headers) {
 		let expires_at = now + ttl;
-		repository.extend_session(&token.hash(), expires_at).await?;
+		repository.extend_session(&token.hash(carrier), expires_at).await?;
 		if carrier == Carrier::Cookie {
 			return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
 		}
@@ -340,8 +340,8 @@ pub async fn sign_out(State(auth): State<AuthContext>, method: Method, headers: 
 	// No `SubjectId` here, so the origin check its extractor makes is made
 	// directly: a sibling page must not be able to sign this browser out.
 	auth.check_origin(&method, &headers)?;
-	if let Some((token, _)) = SessionToken::from_headers(&headers) {
-		auth.repository().end_session(&token.hash()).await?;
+	if let Some((token, carrier)) = SessionToken::from_headers(&headers) {
+		auth.repository().end_session(&token.hash(carrier)).await?;
 	}
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
@@ -376,7 +376,7 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json
 	let subject = PairingCode::typed(&request.code)
 		.and_then(|code| auth.pairings().take(&code, Instant::now()))
 		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
-	let (token, expires_at) = new_session(&auth, &subject, now()).await?;
+	let (token, expires_at) = new_session(&auth, &subject, now(), Carrier::Bearer).await?;
 	Ok(Json(DeviceSession {
 		token: token.encoded(),
 		expires_at: expires_at * 1_000,
@@ -430,19 +430,21 @@ pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<
 }
 
 async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
-	let (token, expires_at) = new_session(auth, subject, now).await?;
+	let (token, expires_at) = new_session(auth, subject, now, Carrier::Cookie).await?;
 	Ok(with_cookie(token.set_cookie(auth.session_ttl_seconds()), expires_at))
 }
 
-/// A new session for `subject`, and when it ends.
+/// A new session for `subject`, to be carried as `carrier` (a browser's
+/// cookie or a phone's bearer token, stored apart: `SessionToken::hash`),
+/// and when it ends.
 ///
 /// # Errors
 /// 401 when the account was deleted while the sign-in or pairing was in
 /// flight; 500 for a storage failure.
-async fn new_session(auth: &AuthContext, subject: &str, now: i64) -> Result<(SessionToken, i64), FileHostError> {
+async fn new_session(auth: &AuthContext, subject: &str, now: i64, carrier: Carrier) -> Result<(SessionToken, i64), FileHostError> {
 	let token = SessionToken::mint();
 	let expires_at = now + auth.session_ttl_seconds();
-	if !auth.repository().create_session(&token.hash(), subject, expires_at, now).await? {
+	if !auth.repository().create_session(&token.hash(carrier), subject, expires_at, now).await? {
 		return Err(FileHostError::Unauthorized);
 	}
 	Ok((token, expires_at))
@@ -979,10 +981,20 @@ mod tests {
 			(Method::POST, "/auth/pairing/start"),
 			(Method::DELETE, "/auth/account"),
 		] {
-			let (status, _, _) = call_with(&app, method, path, None, None, &[("authorization", &phone)]).await;
+			let (status, _, _) = call_with(&app, method.clone(), path, None, None, &[("authorization", &phone)]).await;
 			assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+			// Nor by passing it off as a browser's cookie: it opens no session there.
+			let as_cookie = String::from(SESSION_COOKIE) + "=" + &token;
+			let (status, _, _) = call(&app, method, path, Some(&as_cookie), None).await;
+			assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}, as a cookie");
 		}
 		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "the account is still there");
+		let browser_token = browser.cookie.split_once('=').unwrap().1;
+		assert_eq!(
+			whoami_as_phone(&app, browser_token).await.0,
+			StatusCode::UNAUTHORIZED,
+			"and a browser's token is no phone's"
+		);
 	}
 
 	#[tokio::test]

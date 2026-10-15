@@ -5,9 +5,9 @@
 //! place a request's subject is decided: [`SubjectId::from_request_parts`]
 //! reads the session (a browser's cookie, or a paired phone's bearer token)
 //! and looks it up. [`BrowserSubject`] narrows it to a browser's passkey
-//! sign-in, for what a phone's token must not reach. A request with no live session is
-//! refused with `401`, and a state-changing one from an untrusted origin with
-//! `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
+//! sign-in, for what a phone's token must not reach. A request with no live
+//! session is refused with `401`, and a state-changing one from an untrusted
+//! origin with `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
 //! module's extractor body and nothing downstream of it, as the seam was built
 //! to allow (#252, #261, #372). See docs/identity.md.
 
@@ -173,7 +173,9 @@ where
 /// outlive or widen the session that asked, and a phone's token sits in app
 /// storage, easier to lift than an `HttpOnly` cookie. So none of them take
 /// one (docs/identity.md, "Pairing a phone").
-#[derive(Debug, Clone)]
+/// Sound because a session's kind is how it arrived: a phone's token is
+/// stored under a digest no cookie matches (`auth::cookie::SessionToken::hash`).
+#[derive(Debug)]
 pub struct BrowserSubject(pub SubjectId);
 
 #[axum::async_trait]

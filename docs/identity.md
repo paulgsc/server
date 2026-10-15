@@ -180,12 +180,16 @@ this relying party. It gets a session another way (`auth::pairing`):
    attaches that header on its own, so it is no ambient credential.
 
 A code is held in memory only, found by its SHA-256 and taken once, like a
-ceremony; a restart drops the open ones, and so do sign-out everywhere and
-account deletion. The token is an ordinary `auth_session` row, so nothing new
-is stored: it expires and slides like any session (renewing it sets no
-cookie), and it ends with `/auth/sign-out` sent with the token (unpairing),
-with `/auth/sign-out-everywhere`, or with the account. Nothing records that a
-session belongs to a phone.
+ceremony; a restart drops the open ones, and so do account deletion and,
+best effort, sign-out everywhere (a pairing already in flight as it runs may
+still land, as a passkey sign-in in flight may). The token is an ordinary
+`auth_session` row, so no column is added: it expires and slides like any
+session (renewing it sets no cookie), and it ends with `/auth/sign-out` sent
+with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
+account. No column says a session is a phone's; its digest is taken over a
+fixed prefix and the token (`SessionToken::hash`), so a phone's token sent as
+a cookie, or a browser's sent as a bearer, finds no session. How a session
+arrives is therefore what kind it is.
 
 A phone's token acts on the account's study data and nothing that would
 outlive or widen it: adding a passkey, pairing another phone, deleting the
@@ -313,7 +317,8 @@ nowhere is marked as such and belongs to review.
    ceremony with a software authenticator that sends `packed` attestation.
 
 8. **No secret is stored or logged in the clear.** The database holds a
-   session token's SHA-256, never the token, and a pairing code is never
+   session token's SHA-256 (a phone's, over a fixed prefix too), never the
+   token, and a pairing code is never
    stored at all: it lives in memory under its SHA-256 until it is taken or
    expires. No session token, pairing code, credential id or user handle
    reaches a log line or span field, at any level the production subscriber
@@ -514,8 +519,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **What deleting an account does not reach.** The subject's rows in the
   subject-scoped tables are deleted in one transaction. Not reached: copies in
   Redis, log lines and exported spans that carry the id, ceremonies held in
-  memory (an open pairing code is closed), backups, and SQLite's free pages and write-ahead log, which keep
-  deleted rows until they are overwritten or checkpointed.
+  memory (an open pairing code is closed), backups, and SQLite's free pages
+  and write-ahead log, which keep deleted rows until they are overwritten or
+  checkpointed.
 - **Retention that runs only sometimes.** The waker sweeps `intervention_log`
   (90 days) and `activity_outcome` (365 days) on each pass, so those horizons
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind

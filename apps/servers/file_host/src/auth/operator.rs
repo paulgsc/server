@@ -140,7 +140,12 @@ mod tests {
 			.unwrap();
 		let token = SessionToken::mint();
 		let now = now();
-		assert!(state.auth.repository().create_session(&token.hash(), subject, now + 3_600, now).await.unwrap());
+		assert!(state
+			.auth
+			.repository()
+			.create_session(&token.hash(crate::auth::cookie::Carrier::Cookie), subject, now + 3_600, now)
+			.await
+			.unwrap());
 		token.set_cookie(3_600).to_str().unwrap().split(';').next().unwrap().to_owned()
 	}
 

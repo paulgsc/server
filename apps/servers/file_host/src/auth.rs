@@ -386,10 +386,10 @@ impl AuthContext {
 		if !self.sessions_enabled() {
 			return Ok(None);
 		}
-		let Some((token, _)) = SessionToken::from_headers(headers) else {
+		let Some((token, carrier)) = SessionToken::from_headers(headers) else {
 			return Ok(None);
 		};
-		let session = self.repository().live_session(&token.hash(), now()).await?;
+		let session = self.repository().live_session(&token.hash(carrier), now()).await?;
 		Ok(session.map(|session| session.subject_id))
 	}
 }

@@ -18,6 +18,11 @@
 //! A paired phone holds the same kind of token, handed to it in a response
 //! body (`super::pairing`), and sends it as `Authorization: Bearer`. A browser
 //! never attaches that header on its own, so it is no ambient credential.
+//!
+//! The two kinds are stored under different digests ([`SessionToken::hash`]):
+//! a phone's token presented as a cookie, or a browser's as a bearer, finds
+//! no session. So how a token arrived is what kind of session it is, which
+//! is what lets `subject::BrowserSubject` judge by the carrier.
 
 use crate::redacted::Redacted;
 use axum::http::{
@@ -29,6 +34,9 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 pub const SESSION_COOKIE: &str = "__Host-session";
+
+/// Prefixed to a phone's token before hashing ([`SessionToken::hash`]).
+const PHONE_DOMAIN: &[u8] = b"some-ui paired phone session\0";
 
 /// A session token as the client holds it. Never logged, never stored.
 pub(crate) struct SessionToken(Redacted<[u8; 32]>);
@@ -64,9 +72,15 @@ impl SessionToken {
 		URL_SAFE_NO_PAD.encode(self.0.expose())
 	}
 
-	/// What the server stores and looks sessions up by.
-	pub(crate) fn hash(&self) -> [u8; 32] {
-		Sha256::digest(self.0.expose()).into()
+	/// What the server stores and looks sessions up by, for a token carried
+	/// as `carrier`: a browser's is the token's SHA-256 (every session made
+	/// before pairing existed is one), a phone's is domain-separated, so
+	/// neither opens the other's kind of session.
+	pub(crate) fn hash(&self, carrier: Carrier) -> [u8; 32] {
+		match carrier {
+			Carrier::Cookie => Sha256::digest(self.0.expose()).into(),
+			Carrier::Bearer => Sha256::new().chain_update(PHONE_DOMAIN).chain_update(self.0.expose()).finalize().into(),
+		}
 	}
 
 	/// The `Set-Cookie` that hands this token to the browser for
@@ -153,7 +167,7 @@ mod tests {
 
 		let value = cookie_value(&set_cookie);
 		let (read, carrier) = SessionToken::from_headers(&headers(&[&(String::from("theme=dark; ") + SESSION_COOKIE + "=" + &value)])).unwrap();
-		assert_eq!(read.hash(), token.hash());
+		assert_eq!(read.hash(carrier), token.hash(Carrier::Cookie));
 		assert_eq!(carrier, Carrier::Cookie);
 	}
 
@@ -161,8 +175,8 @@ mod tests {
 	fn a_session_cookie_is_found_in_any_cookie_header() {
 		let token = SessionToken::mint();
 		let value = cookie_value(&token.set_cookie(60));
-		let (read, _) = SessionToken::from_headers(&headers(&["theme=dark", &(String::from(SESSION_COOKIE) + "=" + &value)])).unwrap();
-		assert_eq!(read.hash(), token.hash());
+		let (read, carrier) = SessionToken::from_headers(&headers(&["theme=dark", &(String::from(SESSION_COOKIE) + "=" + &value)])).unwrap();
+		assert_eq!(read.hash(carrier), token.hash(Carrier::Cookie));
 	}
 
 	#[test]
@@ -173,8 +187,9 @@ mod tests {
 		both.insert(AUTHORIZATION, HeaderValue::from_str(&(String::from("Bearer ") + &phone.encoded())).unwrap());
 
 		let (read, carrier) = SessionToken::from_headers(&both).unwrap();
-		assert_eq!(read.hash(), phone.hash());
+		assert_eq!(read.hash(carrier), phone.hash(Carrier::Bearer));
 		assert_eq!(carrier, Carrier::Bearer);
+		assert_ne!(phone.hash(Carrier::Bearer), phone.hash(Carrier::Cookie), "a phone's session is no browser's");
 
 		for malformed in ["Bearer", "Bearer not*base64", "Basic AAAA", "Bearer c2hvcnQ"] {
 			let mut only = HeaderMap::new();
