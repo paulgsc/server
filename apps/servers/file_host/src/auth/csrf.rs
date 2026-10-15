@@ -34,6 +34,15 @@ pub(crate) fn allowed(method: &Method, headers: &HeaderMap, trusted: &[String]) 
 	)
 }
 
+/// Whether a browser page sent this request: it carries an `Origin` or a
+/// `Sec-Fetch-Site`, which browsers set on a page's requests and a native
+/// client (the paired phone) does not. Redeeming a pairing code refuses
+/// these, so script on the app's own origin cannot trade the cookie it
+/// cannot read for a token it can (`auth::pairing`).
+pub(crate) fn from_a_page(headers: &HeaderMap) -> bool {
+	headers.contains_key("origin") || headers.contains_key("sec-fetch-site")
+}
+
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 	headers.get(name).and_then(|value| value.to_str().ok())
 }

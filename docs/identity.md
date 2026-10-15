@@ -180,9 +180,11 @@ this relying party. It gets a session another way (`auth::pairing`):
    attaches that header on its own, so it is no ambient credential.
 
 A code is held in memory only, found by its SHA-256 and taken once, like a
-ceremony; a restart drops the open ones, and so do account deletion and,
-best effort, sign-out everywhere (a pairing already in flight as it runs may
-still land, as a passkey sign-in in flight may). The token is an ordinary
+ceremony; a restart drops the open ones, and so do account deletion and
+sign-out everywhere. Both run under the exclusive hold against deletion,
+and redeeming a code holds it from taking the code to making the session, so
+a pairing in flight lands wholly before them (and is ended) or after them
+(and finds no code). The token is an ordinary
 `auth_session` row, so no column is added: it expires and slides like any
 session (renewing it sets no cookie), and it ends with `/auth/sign-out` sent
 with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
@@ -202,7 +204,10 @@ everywhere.
 The origin check (`auth::csrf`) runs on every state-changing request before
 its session is read, the phone's included. The phone passes it by sending
 none of `Origin` and `Sec-Fetch-Site`: it calls these routes over native
-HTTP, never a WebView `fetch` from `https://localhost`.
+HTTP, never a WebView `fetch` from `https://localhost`. Redeeming a code goes
+further and refuses any request that carries either header: script on the
+app's own origin could start a pairing with the cookie it cannot read, and
+must not be able to finish it and carry the token away.
 
 ### Who can make an account
 
@@ -339,7 +344,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion holds it exclusively for its one
-   transaction. There are two such writers today:
+   transaction. There are three such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -351,6 +356,10 @@ nowhere is marked as such and belongs to review.
      across a push delivery, so a deletion waits for writes, not for a pass.
      The claim and its log entry need no wrapper: they share a transaction
      with an `UPDATE engagement_gate … WHERE subject_id = ?`.
+   - redeeming a pairing code (`/auth/pairing/finish`), which acts for no
+     `SubjectId` and so takes the hold itself, from taking the code to
+     making the phone's session; sign-out everywhere takes the exclusive
+     hold too, so neither leaves a session or a code behind it.
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a

@@ -366,13 +366,22 @@ pub async fn start_pairing(State(auth): State<AuthContext>, BrowserSubject(subje
 
 /// `POST /auth/pairing/finish`: trade an open code for a phone's own session.
 ///
+/// From a native client only: a request a browser page sent is refused
+/// before the code is read (`auth::csrf::from_a_page`). The code is taken and
+/// its session made under one hold against deletion, so a sign-out
+/// everywhere or an account deletion lands wholly before or after it.
+///
 /// # Errors
-/// 422 for a code that is malformed, unknown, expired or already used; 401
-/// when the account was deleted while the code was open; 503 while passkey
-/// auth is off, since no session could be used.
+/// 403 from a browser page; 422 for a code that is malformed, unknown,
+/// expired or already used; 401 when the account was deleted while the code
+/// was open; 503 while passkey auth is off, since no session could be used.
 #[instrument(name = "auth_pairing_finish", skip_all, fields(otel.kind = "server"))]
-pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json<FinishPairing>) -> Result<Json<DeviceSession>, FileHostError> {
+pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap, Json(request): Json<FinishPairing>) -> Result<Json<DeviceSession>, FileHostError> {
 	auth.relying_party()?;
+	if crate::auth::csrf::from_a_page(&headers) {
+		return Err(FileHostError::Forbidden);
+	}
+	let _hold = auth.hold_against_deletion().await;
 	let subject = PairingCode::typed(&request.code)
 		.and_then(|code| auth.pairings().take(&code, Instant::now()))
 		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
@@ -383,14 +392,23 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json
 	}))
 }
 
-/// `POST /auth/sign-out-everywhere`: end every session this account holds.
+/// `POST /auth/sign-out-everywhere`: end every session this account holds,
+/// paired phones' included, and close its open pairing code.
+///
+/// Under the exclusive hold account deletion takes, so a pairing being
+/// started or redeemed lands wholly before it (and is ended) or after it
+/// (and finds no session, or no code).
 ///
 /// # Errors
 /// 401 without a session.
 #[instrument(name = "auth_sign_out_everywhere", skip_all, fields(otel.kind = "server"))]
 pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
-	auth.pairings().forget(subject.as_str());
-	auth.repository().end_all_sessions(subject.as_str()).await?;
+	// This request's own hold goes first, or the exclusive hold below would
+	// wait for it forever.
+	let subject = subject.release();
+	let _exclusive = auth.exclude_requests().await;
+	auth.pairings().forget(&subject);
+	auth.repository().end_all_sessions(&subject).await?;
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
 
@@ -938,6 +956,14 @@ mod tests {
 		let app = app(AuthContext::for_tests(pool().await, 100));
 		let browser = register(&app, &mut authenticator()).await;
 		let (_, subject) = whoami(&app, &browser.cookie).await;
+
+		// Script on the app's own origin cannot trade the cookie it cannot
+		// read for a token it can: a page's request is refused, code kept.
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		for page in [[("origin", "https://app.test")], [("sec-fetch-site", "same-origin")]] {
+			let (status, _, _) = call_with(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] })), &page).await;
+			assert_eq!(status, StatusCode::FORBIDDEN);
+		}
 
 		let (code, token) = pair(&app, &browser.cookie).await;
 		assert_eq!(whoami_as_phone(&app, &token).await, (StatusCode::OK, subject));
