@@ -205,9 +205,17 @@ The origin check (`auth::csrf`) runs on every state-changing request before
 its session is read, the phone's included. The phone passes it by sending
 none of `Origin` and `Sec-Fetch-Site`: it calls these routes over native
 HTTP, never a WebView `fetch` from `https://localhost`. Redeeming a code goes
-further and refuses any request that carries either header: script on the
-app's own origin could start a pairing with the cookie it cannot read, and
-must not be able to finish it and carry the token away.
+further and refuses any request that carries either header, so a code is
+redeemed by a native client, never by the page that asked for it.
+
+That is not a defence against script running on the app's own origin (an
+XSS). Such script can start a pairing with the cookie and hand the code to a
+native client of its own, which redeems it. It gains nothing it lacked:
+with the cookie it can already start a passkey registration and answer it
+with a key pair it made itself (registration asks for no attestation), a
+passkey that outlives every session. Script on the app's origin is account
+takeover, pairing or not; keeping it off that origin is the app's job (its
+content security policy), not this route's.
 
 ### Who can make an account
 
@@ -343,8 +351,8 @@ nowhere is marked as such and belongs to review.
    `deleting_an_account_removes_its_rows_from_every_subject_scoped_table_and_nobody_elses`.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
-   exists and its write.** A deletion holds it exclusively for its one
-   transaction. There are three such writers today:
+   exists and its write.** A deletion, or a sign-out everywhere, holds it
+   exclusively for its one transaction. There are three such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);

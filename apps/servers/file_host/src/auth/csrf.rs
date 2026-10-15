@@ -37,8 +37,10 @@ pub(crate) fn allowed(method: &Method, headers: &HeaderMap, trusted: &[String]) 
 /// Whether a browser page sent this request: it carries an `Origin` or a
 /// `Sec-Fetch-Site`, which browsers set on a page's requests and a native
 /// client (the paired phone) does not. Redeeming a pairing code refuses
-/// these, so script on the app's own origin cannot trade the cookie it
-/// cannot read for a token it can (`auth::pairing`).
+/// these, so a code is redeemed only by a native client, never by the page
+/// that asked for it. It is not a defence against script on the app's own
+/// origin, which can pass the code to a native client of its own; see
+/// docs/identity.md, "Pairing a phone".
 pub(crate) fn from_a_page(headers: &HeaderMap) -> bool {
 	headers.contains_key("origin") || headers.contains_key("sec-fetch-site")
 }

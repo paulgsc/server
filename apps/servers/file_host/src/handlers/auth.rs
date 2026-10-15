@@ -957,13 +957,15 @@ mod tests {
 		let browser = register(&app, &mut authenticator()).await;
 		let (_, subject) = whoami(&app, &browser.cookie).await;
 
-		// Script on the app's own origin cannot trade the cookie it cannot
-		// read for a token it can: a page's request is refused, code kept.
+		// A page cannot redeem a code itself: refused, and the code is kept
+		// for the native client it is meant for.
 		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
 		for page in [[("origin", "https://app.test")], [("sec-fetch-site", "same-origin")]] {
 			let (status, _, _) = call_with(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] })), &page).await;
 			assert_eq!(status, StatusCode::FORBIDDEN);
 		}
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::OK, "the refused code still pairs a native client");
 
 		let (code, token) = pair(&app, &browser.cookie).await;
 		assert_eq!(whoami_as_phone(&app, &token).await, (StatusCode::OK, subject));
