@@ -7,13 +7,20 @@
 //! beside the browser's `credential`. A finish that creates a session answers
 //! `{ expiresAt }` (ms since the epoch) and sets the session cookie.
 //!
+//! Pairing a phone is two calls too: a signed-in browser asks
+//! `/auth/pairing/start` for a one-time code, and the phone sends it to
+//! `/auth/pairing/finish`, which answers `{ token, expiresAt }`: a session the
+//! phone sends back as `Authorization: Bearer`. No cookie is set for it.
+//!
 //! No request or response carries anything about the person: not a name, not
 //! an email, not the authenticator's model. See `crate::auth`.
 
 use crate::auth::{
 	ceremony::{Ceremony, CeremonyId},
-	cookie::{clear_cookie, SessionToken},
-	now, passkey, AuthContext, PRODUCT_NAME,
+	cookie::{clear_cookie, Carrier, SessionToken},
+	now,
+	pairing::{PairingCode, PAIRING_TTL},
+	passkey, AuthContext, PRODUCT_NAME,
 };
 use crate::subject::{legacy_subject, new_account_subject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
@@ -63,6 +70,30 @@ pub struct FinishSignIn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
+	/// ms since the epoch.
+	pub expires_at: i64,
+}
+
+/// A code to type on the phone, and when it stops working.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingStarted {
+	pub code: String,
+	/// ms since the epoch.
+	pub expires_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FinishPairing {
+	pub code: String,
+}
+
+/// A paired phone's session: the token it sends as `Authorization: Bearer`,
+/// and when the session ends unless it is used.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSession {
+	pub token: String,
 	/// ms since the epoch.
 	pub expires_at: i64,
 }
@@ -267,7 +298,7 @@ pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: Sub
 /// while sessions are off (`AuthContext::sessions_enabled`).
 #[instrument(name = "auth_session", skip_all, fields(otel.kind = "server"))]
 pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Result<Response, FileHostError> {
-	let Some(token) = SessionToken::from_headers(&headers).filter(|_| auth.sessions_enabled()) else {
+	let Some((token, carrier)) = SessionToken::from_headers(&headers).filter(|_| auth.sessions_enabled()) else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
 	let repository = auth.repository();
@@ -281,7 +312,10 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	if live.expires_at - now < ttl / 2 && auth.may_renew(&headers) {
 		let expires_at = now + ttl;
 		repository.extend_session(&token.hash(), expires_at).await?;
-		return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
+		if carrier == Carrier::Cookie {
+			return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
+		}
+		return Ok(Json(SessionView { expires_at: expires_at * 1_000 }).into_response());
 	}
 	Ok(
 		Json(SessionView {
@@ -291,8 +325,8 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	)
 }
 
-/// `POST /auth/sign-out`: end this browser's session. Succeeds without one,
-/// so a client can always call it.
+/// `POST /auth/sign-out`: end this browser's session, or a paired phone's
+/// (unpairing it). Succeeds without one, so a client can always call it.
 ///
 /// # Errors
 /// 403 from an untrusted origin (`auth::csrf`); 500 for a storage failure.
@@ -301,10 +335,50 @@ pub async fn sign_out(State(auth): State<AuthContext>, method: Method, headers: 
 	// No `SubjectId` here, so the origin check its extractor makes is made
 	// directly: a sibling page must not be able to sign this browser out.
 	auth.check_origin(&method, &headers)?;
-	if let Some(token) = SessionToken::from_headers(&headers) {
+	if let Some((token, _)) = SessionToken::from_headers(&headers) {
 		auth.repository().end_session(&token.hash()).await?;
 	}
 	Ok(signed_out(Json(Value::Object(Map::new()))))
+}
+
+/// `POST /auth/pairing/start`: a one-time code that pairs a phone to this
+/// account, open for [`PAIRING_TTL`]. Asking again replaces the open one.
+///
+/// # Errors
+/// 401 without a session; 503 when too many codes are open.
+#[instrument(name = "auth_pairing_start", skip_all, fields(otel.kind = "server"))]
+pub async fn start_pairing(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Json<PairingStarted>, FileHostError> {
+	let code = auth.pairings().open(subject.as_str(), Instant::now()).ok_or(FileHostError::ServiceOverloaded)?;
+	let ttl = i64::try_from(PAIRING_TTL.as_secs()).unwrap_or(i64::MAX);
+	Ok(Json(PairingStarted {
+		code: code.expose().to_owned(),
+		expires_at: (now() + ttl) * 1_000,
+	}))
+}
+
+/// `POST /auth/pairing/finish`: trade an open code for a phone's own session.
+///
+/// # Errors
+/// 422 for a code that is malformed, unknown, expired or already used; 401
+/// when the account was deleted while the code was open; 503 while passkey
+/// auth is off, since no session could be used.
+#[instrument(name = "auth_pairing_finish", skip_all, fields(otel.kind = "server"))]
+pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json<FinishPairing>) -> Result<Json<DeviceSession>, FileHostError> {
+	auth.relying_party()?;
+	let subject = PairingCode::typed(&request.code)
+		.and_then(|code| auth.pairings().take(&code, Instant::now()))
+		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
+	let token = SessionToken::mint();
+	let ttl = auth.session_ttl_seconds();
+	let now = now();
+	// False when the account was deleted while the code was open.
+	if !auth.repository().create_session(&token.hash(), &subject, now + ttl, now).await? {
+		return Err(FileHostError::Unauthorized);
+	}
+	Ok(Json(DeviceSession {
+		token: token.encoded(),
+		expires_at: (now + ttl) * 1_000,
+	}))
 }
 
 /// `POST /auth/sign-out-everywhere`: end every session this account holds.
@@ -584,6 +658,29 @@ mod tests {
 		(status, body)
 	}
 
+	/// The `Authorization` header a paired phone sends.
+	fn bearer(token: &str) -> String {
+		String::from("Bearer ") + token
+	}
+
+	async fn whoami_as_phone(app: &Router, token: &str) -> (StatusCode, Value) {
+		let (status, _, body) = call_with(app, Method::GET, "/whoami", None, None, &[("authorization", &bearer(token))]).await;
+		(status, body)
+	}
+
+	/// Pair a phone from a signed-in browser: the code it was shown, and the
+	/// token the phone got for it.
+	async fn pair(app: &Router, cookie: &str) -> (String, String) {
+		let (status, _, started) = call(app, Method::POST, "/auth/pairing/start", Some(cookie), None).await;
+		assert_eq!(status, StatusCode::OK, "{started}");
+		let code = started["code"].as_str().unwrap().to_owned();
+		let (status, set_cookie, finished) = call(app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": code }))).await;
+		assert_eq!(status, StatusCode::OK, "{finished}");
+		assert!(set_cookie.is_none(), "a phone is handed its token, never a cookie");
+		assert!(finished["expiresAt"].as_i64().unwrap() > 0);
+		(code, finished["token"].as_str().unwrap().to_owned())
+	}
+
 	#[tokio::test]
 	async fn registration_options_ask_for_nothing_identifying() {
 		let app = app(AuthContext::for_tests(pool().await, 100));
@@ -822,6 +919,57 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_paired_phone_acts_for_the_account_that_asked_with_a_code_used_once() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
+
+		let (code, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(whoami_as_phone(&app, &token).await, (StatusCode::OK, subject));
+
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": code }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a used code pairs nothing");
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": "00000000" }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/start", None, None).await;
+		assert_eq!(status, StatusCode::UNAUTHORIZED, "only a signed-in account can ask for a code");
+	}
+
+	#[tokio::test]
+	async fn unpairing_or_signing_out_everywhere_ends_a_phones_session() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let phone = bearer(&token);
+		assert_eq!(
+			call_with(&app, Method::POST, "/auth/sign-out", None, None, &[("authorization", &phone)]).await.0,
+			StatusCode::OK
+		);
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "unpairing leaves the browser signed in");
+
+		let (_, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(call(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None).await.0, StatusCode::OK);
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	#[tokio::test]
+	async fn a_phones_session_slides_without_a_cookie() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests(pool.clone(), 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let week_left = crate::auth::now() + 7 * 86_400;
+		sqlx::query("UPDATE auth_session SET expires_at = ?1").bind(week_left).execute(&pool).await.unwrap();
+
+		let (status, set_cookie, body) = call_with(&app, Method::GET, "/auth/session", None, None, &[("authorization", &bearer(&token))]).await;
+		assert_eq!(status, StatusCode::OK);
+		assert!(set_cookie.is_none(), "nothing is set in a cookie for a phone");
+		assert!(body["expiresAt"].as_i64().unwrap() > week_left * 1_000, "but its session is extended");
+	}
+
+	#[tokio::test]
 	async fn a_sibling_page_cannot_keep_a_session_alive() {
 		let pool = pool().await;
 		let app = app(AuthContext::for_tests(pool.clone(), 100));
@@ -972,9 +1120,9 @@ mod tests {
 	}
 
 	/// docs/identity.md, "Secrets are wrapped when they exist": a whole
-	/// sign-up, sign-in and refused sign-in, captured field by field at every
-	/// level the production subscriber lets through, names no session token,
-	/// credential id or user handle.
+	/// sign-up, sign-in, refused sign-in and phone pairing, captured field by
+	/// field at every level the production subscriber lets through, names no
+	/// session token, pairing code, credential id or user handle.
 	#[tokio::test]
 	async fn no_secret_reaches_a_log_line() {
 		let (captured, _guard) = crate::privacy::capture_where(|metadata| crate::auth::loggable(metadata) && !metadata.target().starts_with("webauthn_authenticator_rs"));
@@ -986,6 +1134,8 @@ mod tests {
 		let (status, _, _) = sign_in(&app, &mut phone, &browser.credential_id, &[9; 16]).await;
 		assert_eq!(status, StatusCode::UNAUTHORIZED, "sanity check: the refusal path ran");
 		assert_eq!(whoami(&app, "__Host-session=garbage").await.0, StatusCode::UNAUTHORIZED);
+		let (code, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::OK);
 
 		let lines = captured.lines();
 		assert!(
@@ -997,6 +1147,8 @@ mod tests {
 			cookie_pair(&set_cookie.unwrap()).split_once('=').unwrap().1.to_owned(),
 			browser.credential_id.clone(),
 			URL_SAFE_NO_PAD.encode(&browser.user_handle),
+			code,
+			token,
 		];
 		for line in &lines {
 			for secret in &secrets {

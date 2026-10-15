@@ -32,7 +32,7 @@ There are four handles on a request. Exactly one of them is an identity.
 
 | Handle | What it is | Identity? |
 |---|---|---|
-| `subject::SubjectId` | The subject a request acts for. Decided in one place, the extractor in `subject.rs`, from the request's passkey session. | **Yes, the only one.** |
+| `subject::SubjectId` | The subject a request acts for. Decided in one place, the extractor in `subject.rs`, from the request's session: a passkey sign-in's cookie, or a paired phone's bearer token. | **Yes, the only one.** |
 | `net::PeerKey` | A keyed, daily-rotating hash of the peer's address. Used by the rate limiter for fairness, and named in log lines. | No |
 | `net::AdmissionKey` | The same keyed hash over a secret that lives as long as the process. Used for WebSocket admission accounting. **Never logged.** | No |
 | `ws_connection::ClientId` | `probe:` / `proxy:<PeerKey>` / `direct:<PeerKey>`. Groups WebSocket connections for metric labels. | No |
@@ -71,9 +71,10 @@ labelled `auth`. Nothing authenticated that header, and no client sent it.
 
 ### The seam
 
-`SubjectId::from_request_parts` is where a request's session cookie becomes a
-subject, and a request without a live session is refused with `401`. There is no
-fallback subject. Passkey auth changed that one function body; no subject-scoped
+`SubjectId::from_request_parts` is where a request's session becomes a subject,
+whether the session arrived as the cookie or as a paired phone's
+`Authorization: Bearer`, and a request without a live session is refused with
+`401`. There is no fallback subject. Passkey auth changed that one function body; no subject-scoped
 handler, repository or route path changed with it.
 
 ---
@@ -99,7 +100,7 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 | Subject id | `account.subject_id` | `subject-` and 32 random hex digits, minted by `subject.rs`. The key of every per-person row. |
 | User handle | `account.user_handle` | The WebAuthn `user.id`: 16 random bytes. The only thing an authenticator returns on a sign-in that names no account. |
 | Passkeys | `passkey` | Credential id, public key, signature counter and backup flags. At most 16 per account. |
-| Sessions | `auth_session` | SHA-256 of each session token, its subject, and when it expires. At most 32 per account. |
+| Sessions | `auth_session` | SHA-256 of each session token, its subject, and when it expires. At most 32 per account, paired phones included. |
 
 Nothing records when an account or a passkey was made or last used. The
 per-day cap on new accounts is counted in memory for the same reason.
@@ -163,6 +164,27 @@ app's transport sends `credentials: "include"` and the modules it calls use
 the credentialed CORS allowlist. A session is created only if its account
 still exists, in the same statement, so a sign-in racing an account deletion
 gets no session rather than an orphan one.
+
+### Pairing a phone
+
+The Android app serves its pages from `https://localhost`, another site, so it
+can neither hold the `SameSite=Strict` cookie nor run a passkey ceremony for
+this relying party. It gets a session another way (`auth::pairing`):
+
+1. A signed-in browser calls `POST /auth/pairing/start` and is shown a code:
+   8 characters of Crockford base32 (40 bits), open for ten minutes. Asking
+   again replaces the account's open code.
+2. The person types it on the phone, which sends it to
+   `POST /auth/pairing/finish` and is answered `{ token, expiresAt }`.
+3. The phone sends that token as `Authorization: Bearer`. A browser never
+   attaches that header on its own, so it is no ambient credential.
+
+A code is held in memory only, found by its SHA-256 and taken once, like a
+ceremony; a restart drops the open ones. The token is an ordinary
+`auth_session` row, so nothing new is stored: it expires and slides like any
+session (renewing it sets no cookie), and it ends with `/auth/sign-out` sent
+with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
+account. Nothing records that a session belongs to a phone.
 
 ### Who can make an account
 
@@ -277,13 +299,16 @@ nowhere is marked as such and belongs to review.
    ceremony with a software authenticator that sends `packed` attestation.
 
 8. **No secret is stored or logged in the clear.** The database holds a
-   session token's SHA-256, never the token. No session token, credential id
-   or user handle reaches a log line or span field, at any level the
-   production subscriber lets through.
+   session token's SHA-256, never the token, and a pairing code is never
+   stored at all: it lives in memory under its SHA-256 until it is taken or
+   expires. No session token, pairing code, credential id or user handle
+   reaches a log line or span field, at any level the production subscriber
+   lets through.
    *Enforced by* the `auth_session.token_hash` column (invariant 10's column
    test) and `handlers::auth`'s `no_secret_reaches_a_log_line`, which captures
-   every field of a sign-up, a sign-in and a refused sign-in through
-   `auth::loggable`. A companion test proves that filter is needed.
+   every field of a sign-up, a sign-in, a refused sign-in and a phone's
+   pairing through `auth::loggable`. A companion test proves that filter is
+   needed.
 
 9. **An account takes all its rows with it.** Deleting an account deletes the
    subject's rows from every subject-scoped table, including a row a request
@@ -428,6 +453,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
   session's halfway point. Nothing older is kept.
+- **A paired phone holds a session token.** Whoever has the phone's app data
+  and the key protecting it can act for the account until the session
+  expires, the phone unpairs, or the account signs out everywhere. The token
+  travels in a request header, which nothing in `file_host` logs (invariant
+  6), but which a proxy in front of it could if configured to.
 - **Passkey sync providers.** A synced passkey lives in the person's Apple,
   Google or password-manager account. That provider knows the person holds a
   passkey for this site, which is the provider's knowledge, not this server's.

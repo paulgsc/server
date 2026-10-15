@@ -14,6 +14,11 @@
 //!   SameSite=Strict` cookie. Only its SHA-256 is stored ([`cookie`]).
 //! - A state-changing, cookie-authenticated request must come from a trusted
 //!   origin ([`csrf`]): `SameSite=Strict` alone admits same-site siblings.
+//! - A phone has no passkey for this site and cannot hold the cookie. A
+//!   signed-in browser asks for a one-time code, the phone trades it for a
+//!   session of its own, and sends that as `Authorization: Bearer`
+//!   ([`pairing`]). It is an ordinary session row: it expires, slides, and
+//!   ends with sign-out, sign-out everywhere, or the account.
 //! - The pre-auth subject goes to a new account only with the operator's
 //!   one-time `AUTH_LEGACY_CLAIM_TOKEN`, never to whoever registers first.
 //! - [`crate::subject::SubjectId`]'s extractor is the one place a request's
@@ -30,6 +35,7 @@ pub mod ceremony;
 pub mod cookie;
 pub mod csrf;
 pub mod operator;
+pub mod pairing;
 pub mod passkey;
 
 use crate::{redacted::Redacted, Config, FileHostError};
@@ -37,6 +43,7 @@ use auth_repo::AuthRepository;
 use axum::http::{HeaderMap, Method};
 use ceremony::CeremonyStore;
 use cookie::SessionToken;
+use pairing::PairingStore;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -64,6 +71,7 @@ struct Inner {
 	/// subject-scoped route answers `401`.
 	relying_party: Option<Webauthn>,
 	ceremonies: CeremonyStore,
+	pairings: PairingStore,
 	settings: Settings,
 	signups: SignupCap,
 	deletion: DeletionLock,
@@ -223,6 +231,7 @@ impl AuthContext {
 				pool,
 				relying_party,
 				ceremonies: CeremonyStore::default(),
+				pairings: PairingStore::default(),
 				signups: SignupCap::new(settings.new_accounts_per_day),
 				settings,
 				deletion: DeletionLock::default(),
@@ -290,6 +299,10 @@ impl AuthContext {
 
 	pub(crate) fn ceremonies(&self) -> &CeremonyStore {
 		&self.inner.ceremonies
+	}
+
+	pub(crate) fn pairings(&self) -> &PairingStore {
+		&self.inner.pairings
 	}
 
 	pub(crate) fn session_ttl_seconds(&self) -> i64 {
@@ -360,7 +373,8 @@ impl AuthContext {
 		self.inner.signups.take(now.div_euclid(86_400))
 	}
 
-	/// The subject of the live session this request's cookie names, if any.
+	/// The subject of the live session this request's cookie, or a paired
+	/// phone's bearer token, names, if any.
 	///
 	/// Only [`crate::subject`] turns this into a `SubjectId`.
 	///
@@ -372,7 +386,7 @@ impl AuthContext {
 		if !self.sessions_enabled() {
 			return Ok(None);
 		}
-		let Some(token) = SessionToken::from_headers(headers) else {
+		let Some((token, _)) = SessionToken::from_headers(headers) else {
 			return Ok(None);
 		};
 		let session = self.repository().live_session(&token.hash(), now()).await?;
