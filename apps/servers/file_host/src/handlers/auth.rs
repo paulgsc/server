@@ -7,15 +7,22 @@
 //! beside the browser's `credential`. A finish that creates a session answers
 //! `{ expiresAt }` (ms since the epoch) and sets the session cookie.
 //!
+//! Pairing a phone is two calls too: a signed-in browser asks
+//! `/auth/pairing/start` for a one-time code, and the phone sends it to
+//! `/auth/pairing/finish`, which answers `{ token, expiresAt }`: a session the
+//! phone sends back as `Authorization: Bearer`. No cookie is set for it.
+//!
 //! No request or response carries anything about the person: not a name, not
 //! an email, not the authenticator's model. See `crate::auth`.
 
 use crate::auth::{
 	ceremony::{Ceremony, CeremonyId},
-	cookie::{clear_cookie, SessionToken},
-	now, passkey, AuthContext, PRODUCT_NAME,
+	cookie::{clear_cookie, Carrier, SessionToken},
+	now,
+	pairing::{PairingCode, PAIRING_TTL_SECONDS},
+	passkey, AuthContext, PRODUCT_NAME,
 };
-use crate::subject::{legacy_subject, new_account_subject, SubjectId, SUBJECT_SCOPED_TABLES};
+use crate::subject::{legacy_subject, new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
 use auth_repo::{AddPasskey, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
@@ -63,6 +70,31 @@ pub struct FinishSignIn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
+	/// ms since the epoch.
+	pub expires_at: i64,
+}
+
+/// A code to type on the phone, and when it stops working. No `Debug`: the
+/// code is a secret while it is open.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingStarted {
+	pub code: String,
+	/// ms since the epoch.
+	pub expires_at: i64,
+}
+
+#[derive(Deserialize)]
+pub struct FinishPairing {
+	pub code: String,
+}
+
+/// A paired phone's session: the token it sends as `Authorization: Bearer`,
+/// and when the session ends unless it is used. No `Debug`, for the token.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSession {
+	pub token: String,
 	/// ms since the epoch.
 	pub expires_at: i64,
 }
@@ -199,7 +231,7 @@ pub async fn finish_sign_in(State(auth): State<AuthContext>, Json(request): Json
 /// 401 without a session; 409 when the account already holds the most
 /// passkeys it may; 503 as for sign-in.
 #[instrument(name = "auth_add_passkey_start", skip_all, fields(otel.kind = "server"))]
-pub async fn start_adding_passkey(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Json<CeremonyStarted>, FileHostError> {
+pub async fn start_adding_passkey(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<CeremonyStarted>, FileHostError> {
 	let relying_party = auth.relying_party()?;
 	let repository = auth.repository();
 	let user_handle = repository.user_handle(subject.as_str()).await?.ok_or(FileHostError::Unauthorized)?;
@@ -234,7 +266,11 @@ pub async fn start_adding_passkey(State(auth): State<AuthContext>, subject: Subj
 /// ceremony, or a passkey that does not verify; 409 for a passkey already
 /// registered or an account at its passkey cap.
 #[instrument(name = "auth_add_passkey_finish", skip_all, fields(otel.kind = "server"))]
-pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: SubjectId, Json(request): Json<FinishRegistration>) -> Result<Json<Value>, FileHostError> {
+pub async fn finish_adding_passkey(
+	State(auth): State<AuthContext>,
+	BrowserSubject(subject): BrowserSubject,
+	Json(request): Json<FinishRegistration>,
+) -> Result<Json<Value>, FileHostError> {
 	let relying_party = auth.relying_party()?;
 	let Ceremony::Register { state, subject: Some(owner), .. } = take(&auth, &request.ceremony)? else {
 		return Err(stale_ceremony());
@@ -267,12 +303,12 @@ pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: Sub
 /// while sessions are off (`AuthContext::sessions_enabled`).
 #[instrument(name = "auth_session", skip_all, fields(otel.kind = "server"))]
 pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Result<Response, FileHostError> {
-	let Some(token) = SessionToken::from_headers(&headers).filter(|_| auth.sessions_enabled()) else {
+	let Some((token, carrier)) = SessionToken::from_headers(&headers).filter(|_| auth.sessions_enabled()) else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
 	let repository = auth.repository();
 	let now = now();
-	let Some(live) = repository.live_session(&token.hash(), now).await? else {
+	let Some(live) = repository.live_session(&token.hash(carrier), now).await? else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
 
@@ -280,8 +316,11 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	// Reporting is open to any GET; extending is not (`AuthContext::may_renew`).
 	if live.expires_at - now < ttl / 2 && auth.may_renew(&headers) {
 		let expires_at = now + ttl;
-		repository.extend_session(&token.hash(), expires_at).await?;
-		return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
+		repository.extend_session(&token.hash(carrier), expires_at).await?;
+		if carrier == Carrier::Cookie {
+			return Ok(with_cookie(token.set_cookie(ttl), expires_at).into_response());
+		}
+		return Ok(Json(SessionView { expires_at: expires_at * 1_000 }).into_response());
 	}
 	Ok(
 		Json(SessionView {
@@ -291,8 +330,8 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	)
 }
 
-/// `POST /auth/sign-out`: end this browser's session. Succeeds without one,
-/// so a client can always call it.
+/// `POST /auth/sign-out`: end this browser's session, or a paired phone's
+/// (unpairing it). Succeeds without one, so a client can always call it.
 ///
 /// # Errors
 /// 403 from an untrusted origin (`auth::csrf`); 500 for a storage failure.
@@ -301,19 +340,75 @@ pub async fn sign_out(State(auth): State<AuthContext>, method: Method, headers: 
 	// No `SubjectId` here, so the origin check its extractor makes is made
 	// directly: a sibling page must not be able to sign this browser out.
 	auth.check_origin(&method, &headers)?;
-	if let Some(token) = SessionToken::from_headers(&headers) {
-		auth.repository().end_session(&token.hash()).await?;
+	if let Some((token, carrier)) = SessionToken::from_headers(&headers) {
+		auth.repository().end_session(&token.hash(carrier)).await?;
 	}
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
 
-/// `POST /auth/sign-out-everywhere`: end every session this account holds.
+/// `POST /auth/pairing/start`: a one-time code that pairs a phone.
+///
+/// The code pairs to this account and is open for [`PAIRING_TTL_SECONDS`];
+/// asking again replaces it. A browser's passkey session only: a phone
+/// cannot pair another.
+///
+/// # Errors
+/// 401 without a session; 403 for a phone's token; 503 when too many codes
+/// are open.
+#[instrument(name = "auth_pairing_start", skip_all, fields(otel.kind = "server"))]
+pub async fn start_pairing(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<PairingStarted>, FileHostError> {
+	let code = auth.pairings().open(subject.as_str(), Instant::now()).ok_or(FileHostError::ServiceOverloaded)?;
+	Ok(Json(PairingStarted {
+		code: code.expose().to_owned(),
+		expires_at: (now() + PAIRING_TTL_SECONDS) * 1_000,
+	}))
+}
+
+/// `POST /auth/pairing/finish`: trade an open code for a phone's own session.
+///
+/// From a native client only: a request a browser page sent is refused
+/// before the code is read (`auth::csrf::from_a_page`). The code is taken and
+/// its session made under one hold against deletion, so a sign-out
+/// everywhere or an account deletion lands wholly before or after it.
+///
+/// # Errors
+/// 403 from a browser page; 422 for a code that is malformed, unknown,
+/// expired or already used; 401 when the account was deleted while the code
+/// was open; 503 while passkey auth is off, since no session could be used.
+#[instrument(name = "auth_pairing_finish", skip_all, fields(otel.kind = "server"))]
+pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap, Json(request): Json<FinishPairing>) -> Result<Json<DeviceSession>, FileHostError> {
+	auth.relying_party()?;
+	if crate::auth::csrf::from_a_page(&headers) {
+		return Err(FileHostError::Forbidden);
+	}
+	let _hold = auth.hold_against_deletion().await;
+	let subject = PairingCode::typed(&request.code)
+		.and_then(|code| auth.pairings().take(&code, Instant::now()))
+		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
+	let (token, expires_at) = new_session(&auth, &subject, now(), Carrier::Bearer).await?;
+	Ok(Json(DeviceSession {
+		token: token.encoded(),
+		expires_at: expires_at * 1_000,
+	}))
+}
+
+/// `POST /auth/sign-out-everywhere`: end every session this account holds,
+/// paired phones' included, and close its open pairing code.
+///
+/// Under the exclusive hold account deletion takes, so a pairing being
+/// started or redeemed lands wholly before it (and is ended) or after it
+/// (and finds no session, or no code).
 ///
 /// # Errors
 /// 401 without a session.
 #[instrument(name = "auth_sign_out_everywhere", skip_all, fields(otel.kind = "server"))]
 pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
-	auth.repository().end_all_sessions(subject.as_str()).await?;
+	// This request's own hold goes first, or the exclusive hold below would
+	// wait for it forever.
+	let subject = subject.release();
+	let _exclusive = auth.exclude_requests().await;
+	auth.pairings().forget(&subject);
+	auth.repository().end_all_sessions(&subject).await?;
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
 
@@ -327,7 +422,7 @@ pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: Subje
 /// # Errors
 /// 401 without a session.
 #[instrument(name = "auth_delete_account", skip_all, fields(otel.kind = "server"))]
-pub async fn delete_account(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
+pub async fn delete_account(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Response, FileHostError> {
 	// This request's own hold goes first, or the exclusive hold below would
 	// wait for it forever.
 	let subject = subject.release();
@@ -341,6 +436,7 @@ pub async fn delete_account(State(auth): State<AuthContext>, subject: SubjectId)
 /// lookup that finds nothing.
 pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<(), FileHostError> {
 	let _exclusive = auth.exclude_requests().await;
+	auth.pairings().forget(subject);
 	let mut tx = auth.pool().begin().await?;
 	for (table, _) in SUBJECT_SCOPED_TABLES {
 		// Table names come from a constant list, never from a request.
@@ -352,13 +448,24 @@ pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<
 }
 
 async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
+	let (token, expires_at) = new_session(auth, subject, now, Carrier::Cookie).await?;
+	Ok(with_cookie(token.set_cookie(auth.session_ttl_seconds()), expires_at))
+}
+
+/// A new session for `subject`, to be carried as `carrier` (a browser's
+/// cookie or a phone's bearer token, stored apart: `SessionToken::hash`),
+/// and when it ends.
+///
+/// # Errors
+/// 401 when the account was deleted while the sign-in or pairing was in
+/// flight; 500 for a storage failure.
+async fn new_session(auth: &AuthContext, subject: &str, now: i64, carrier: Carrier) -> Result<(SessionToken, i64), FileHostError> {
 	let token = SessionToken::mint();
-	let ttl = auth.session_ttl_seconds();
-	// False when the account was deleted while this sign-in was in flight.
-	if !auth.repository().create_session(&token.hash(), subject, now + ttl, now).await? {
+	let expires_at = now + auth.session_ttl_seconds();
+	if !auth.repository().create_session(&token.hash(carrier), subject, expires_at, now).await? {
 		return Err(FileHostError::Unauthorized);
 	}
-	Ok(with_cookie(token.set_cookie(ttl), now + ttl))
+	Ok((token, expires_at))
 }
 
 const fn with_cookie(set_cookie: HeaderValue, expires_at: i64) -> WithCookie<SessionView> {
@@ -582,6 +689,29 @@ mod tests {
 	async fn whoami(app: &Router, cookie: &str) -> (StatusCode, Value) {
 		let (status, _, body) = call(app, Method::GET, "/whoami", Some(cookie), None).await;
 		(status, body)
+	}
+
+	/// The `Authorization` header a paired phone sends.
+	fn bearer(token: &str) -> String {
+		String::from("Bearer ") + token
+	}
+
+	async fn whoami_as_phone(app: &Router, token: &str) -> (StatusCode, Value) {
+		let (status, _, body) = call_with(app, Method::GET, "/whoami", None, None, &[("authorization", &bearer(token))]).await;
+		(status, body)
+	}
+
+	/// Pair a phone from a signed-in browser: the code it was shown, and the
+	/// token the phone got for it.
+	async fn pair(app: &Router, cookie: &str) -> (String, String) {
+		let (status, _, started) = call(app, Method::POST, "/auth/pairing/start", Some(cookie), None).await;
+		assert_eq!(status, StatusCode::OK, "{started}");
+		let code = started["code"].as_str().unwrap().to_owned();
+		let (status, set_cookie, finished) = call(app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": code }))).await;
+		assert_eq!(status, StatusCode::OK, "{finished}");
+		assert!(set_cookie.is_none(), "a phone is handed its token, never a cookie");
+		assert!(finished["expiresAt"].as_i64().unwrap() > 0);
+		(code, finished["token"].as_str().unwrap().to_owned())
 	}
 
 	#[tokio::test]
@@ -822,6 +952,106 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_paired_phone_acts_for_the_account_that_asked_with_a_code_used_once() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
+
+		// A page cannot redeem a code itself: refused, and the code is kept
+		// for the native client it is meant for.
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		for page in [[("origin", "https://app.test")], [("sec-fetch-site", "same-origin")]] {
+			let (status, _, _) = call_with(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] })), &page).await;
+			assert_eq!(status, StatusCode::FORBIDDEN);
+		}
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::OK, "the refused code still pairs a native client");
+
+		let (code, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(whoami_as_phone(&app, &token).await, (StatusCode::OK, subject));
+
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": code }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a used code pairs nothing");
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": "00000000" }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/start", None, None).await;
+		assert_eq!(status, StatusCode::UNAUTHORIZED, "only a signed-in account can ask for a code");
+	}
+
+	#[tokio::test]
+	async fn unpairing_or_signing_out_everywhere_ends_a_phones_session() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let phone = bearer(&token);
+		assert_eq!(
+			call_with(&app, Method::POST, "/auth/sign-out", None, None, &[("authorization", &phone)]).await.0,
+			StatusCode::OK
+		);
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "unpairing leaves the browser signed in");
+
+		let (_, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(call(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None).await.0, StatusCode::OK);
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	#[tokio::test]
+	async fn a_phones_token_cannot_add_a_passkey_pair_another_phone_or_delete_the_account() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let phone = bearer(&token);
+
+		for (method, path) in [
+			(Method::POST, "/auth/passkeys/start"),
+			(Method::POST, "/auth/pairing/start"),
+			(Method::DELETE, "/auth/account"),
+		] {
+			let (status, _, _) = call_with(&app, method.clone(), path, None, None, &[("authorization", &phone)]).await;
+			assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+			// Nor by passing it off as a browser's cookie: it opens no session there.
+			let as_cookie = String::from(SESSION_COOKIE) + "=" + &token;
+			let (status, _, _) = call(&app, method, path, Some(&as_cookie), None).await;
+			assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}, as a cookie");
+		}
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "the account is still there");
+		let browser_token = browser.cookie.split_once('=').unwrap().1;
+		assert_eq!(
+			whoami_as_phone(&app, browser_token).await.0,
+			StatusCode::UNAUTHORIZED,
+			"and a browser's token is no phone's"
+		);
+	}
+
+	#[tokio::test]
+	async fn signing_out_everywhere_closes_a_code_not_yet_used() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+
+		assert_eq!(call(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None).await.0, StatusCode::OK);
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "no session appears after the account ended them all");
+	}
+
+	#[tokio::test]
+	async fn a_phones_session_slides_without_a_cookie() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests(pool.clone(), 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let week_left = crate::auth::now() + 7 * 86_400;
+		sqlx::query("UPDATE auth_session SET expires_at = ?1").bind(week_left).execute(&pool).await.unwrap();
+
+		let (status, set_cookie, body) = call_with(&app, Method::GET, "/auth/session", None, None, &[("authorization", &bearer(&token))]).await;
+		assert_eq!(status, StatusCode::OK);
+		assert!(set_cookie.is_none(), "nothing is set in a cookie for a phone");
+		assert!(body["expiresAt"].as_i64().unwrap() > week_left * 1_000, "but its session is extended");
+	}
+
+	#[tokio::test]
 	async fn a_sibling_page_cannot_keep_a_session_alive() {
 		let pool = pool().await;
 		let app = app(AuthContext::for_tests(pool.clone(), 100));
@@ -972,9 +1202,9 @@ mod tests {
 	}
 
 	/// docs/identity.md, "Secrets are wrapped when they exist": a whole
-	/// sign-up, sign-in and refused sign-in, captured field by field at every
-	/// level the production subscriber lets through, names no session token,
-	/// credential id or user handle.
+	/// sign-up, sign-in, refused sign-in and phone pairing, captured field by
+	/// field at every level the production subscriber lets through, names no
+	/// session token, pairing code, credential id or user handle.
 	#[tokio::test]
 	async fn no_secret_reaches_a_log_line() {
 		let (captured, _guard) = crate::privacy::capture_where(|metadata| crate::auth::loggable(metadata) && !metadata.target().starts_with("webauthn_authenticator_rs"));
@@ -986,6 +1216,8 @@ mod tests {
 		let (status, _, _) = sign_in(&app, &mut phone, &browser.credential_id, &[9; 16]).await;
 		assert_eq!(status, StatusCode::UNAUTHORIZED, "sanity check: the refusal path ran");
 		assert_eq!(whoami(&app, "__Host-session=garbage").await.0, StatusCode::UNAUTHORIZED);
+		let (code, token) = pair(&app, &browser.cookie).await;
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::OK);
 
 		let lines = captured.lines();
 		assert!(
@@ -997,6 +1229,8 @@ mod tests {
 			cookie_pair(&set_cookie.unwrap()).split_once('=').unwrap().1.to_owned(),
 			browser.credential_id.clone(),
 			URL_SAFE_NO_PAD.encode(&browser.user_handle),
+			code,
+			token,
 		];
 		for line in &lines {
 			for secret in &secrets {
@@ -1034,5 +1268,8 @@ mod tests {
 			assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
 			assert_eq!(body["error"]["code"], "feature_not_configured");
 		}
+		let (status, _, body) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": "00000000" }))).await;
+		assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+		assert_eq!(body["error"]["code"], "feature_not_configured");
 	}
 }

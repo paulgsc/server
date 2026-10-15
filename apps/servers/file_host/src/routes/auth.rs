@@ -36,7 +36,11 @@ where
 		// Signed in: add a passkey on another device or ecosystem.
 		.post("/auth/passkeys/start", handlers::start_adding_passkey)
 		.post("/auth/passkeys/finish", handlers::finish_adding_passkey)
-		// Is this browser signed in? Also where a session slides.
+		// Signed in: a one-time code a phone trades for a session of its own,
+		// sent as `Authorization: Bearer` (`auth::pairing`).
+		.post("/auth/pairing/start", handlers::start_pairing)
+		.post("/auth/pairing/finish", handlers::finish_pairing)
+		// Is this browser (or paired phone) signed in? Also where a session slides.
 		.get("/auth/session", handlers::session)
 		.post("/auth/sign-out", handlers::sign_out)
 		.post("/auth/sign-out-everywhere", handlers::sign_out_everywhere)

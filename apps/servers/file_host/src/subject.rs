@@ -3,13 +3,21 @@
 //! Everything per-person — the charge ledger, the subscription table, the
 //! intervention log, study sessions — is keyed by subject, and this is the one
 //! place a request's subject is decided: [`SubjectId::from_request_parts`]
-//! reads the session cookie and looks it up. A request with no live session is
-//! refused with `401`, and a state-changing one from an untrusted origin with
-//! `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
+//! reads the session (a browser's cookie, or a paired phone's bearer token)
+//! and looks it up. [`BrowserSubject`] narrows it to a browser's passkey
+//! sign-in, for what a phone's token must not reach. A request with no live
+//! session is refused with `401`, and a state-changing one from an untrusted
+//! origin with `403` (`auth::csrf`); there is no fallback subject. Passkey auth changed this
 //! module's extractor body and nothing downstream of it, as the seam was built
 //! to allow (#252, #261, #372). See docs/identity.md.
 
-use crate::{auth::AuthContext, FileHostError};
+use crate::{
+	auth::{
+		cookie::{Carrier, SessionToken},
+		AuthContext,
+	},
+	FileHostError,
+};
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use rand::RngCore;
@@ -154,6 +162,37 @@ where
 		};
 		let subject = auth.session_subject(&parts.headers).await?.ok_or(FileHostError::Unauthorized)?;
 		Ok(Self { id: subject, _hold: hold })
+	}
+}
+
+/// A subject whose session is a browser's passkey sign-in (the cookie), not a
+/// paired phone's bearer token, which answers `403` here.
+///
+/// A phone is paired to act on the account's study data. Adding a passkey,
+/// pairing another phone, deleting the account and the operator routes would
+/// outlive or widen the session that asked, and a phone's token sits in app
+/// storage, easier to lift than an `HttpOnly` cookie. So none of them take
+/// one (docs/identity.md, "Pairing a phone").
+///
+/// Sound because a session's kind is how it arrived: a phone's token is
+/// stored under a digest no cookie matches (`auth::cookie::SessionToken::hash`).
+#[derive(Debug)]
+pub struct BrowserSubject(pub SubjectId);
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for BrowserSubject
+where
+	AuthContext: FromRef<S>,
+	S: Send + Sync,
+{
+	type Rejection = FileHostError;
+
+	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+		let subject = SubjectId::from_request_parts(parts, state).await?;
+		match SessionToken::from_headers(&parts.headers) {
+			Some((_, Carrier::Bearer)) => Err(FileHostError::Forbidden),
+			_ => Ok(Self(subject)),
+		}
 	}
 }
 
