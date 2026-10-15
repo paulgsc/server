@@ -379,8 +379,8 @@ impl AuthContext {
 	/// Only [`crate::subject`] turns this into a `SubjectId`.
 	///
 	/// # Errors
-	/// A storage failure. A missing, malformed, unknown or expired cookie is
-	/// `Ok(None)`, not an error, and so is every cookie while sessions are off
+	/// A storage failure. A missing, malformed, unknown or expired token is
+	/// `Ok(None)`, not an error, and so is every token while sessions are off
 	/// ([`Self::sessions_enabled`]).
 	pub(crate) async fn session_subject(&self, headers: &HeaderMap) -> Result<Option<String>, FileHostError> {
 		if !self.sessions_enabled() {

@@ -13,9 +13,15 @@
 //! one open code; asking again replaces it. [`MAX_OPEN_PAIRINGS`] bounds the
 //! store across every subject.
 //!
-//! 8 characters of Crockford base32 is 40 bits. With the per-client limit on
-//! `/api/v1` (60 a minute), guessing an open code inside its ten minutes is
-//! about one chance in 1.8 billion.
+//! 8 characters of Crockford base32 is 40 bits. At the default per-client
+//! limit on `/api/v1` (`RATE_LIMIT`, 60 a minute), one client guessing one
+//! open code inside its ten minutes has about one chance in 1.8 billion; N
+//! clients, or N open codes, multiply that by N. Sign-out everywhere and
+//! account deletion close the account's open code ([`PairingStore::forget`]).
+//!
+//! The phone calls these routes, and everything after, over native HTTP: a
+//! request with no `Origin` or `Sec-Fetch-Site` passes `auth::csrf`, which a
+//! `WebView` `fetch` from `https://localhost` would not.
 
 use crate::redacted::Redacted;
 use rand::Rng;
@@ -29,6 +35,9 @@ use std::{
 /// How long a code stays open: time to read it off one screen and type it on
 /// another.
 pub const PAIRING_TTL: Duration = Duration::from_secs(600);
+
+/// [`PAIRING_TTL`] in the seconds a response's `expiresAt` is counted in.
+pub const PAIRING_TTL_SECONDS: i64 = 600;
 
 /// How many codes may be open at once, across every subject.
 pub const MAX_OPEN_PAIRINGS: usize = 10_000;
@@ -55,7 +64,7 @@ impl PairingCode {
 	pub(crate) fn typed(text: &str) -> Option<Self> {
 		let code: String = text
 			.chars()
-			.filter(|c| !matches!(c, ' ' | '-'))
+			.filter(|c| !c.is_whitespace() && *c != '-')
 			.map(|c| match c.to_ascii_uppercase() {
 				'I' | 'L' => '1',
 				'O' => '0',
@@ -96,6 +105,12 @@ impl PairingStore {
 		Some(code)
 	}
 
+	/// Close `subject`'s open code, if it has one: a sign-out everywhere or an
+	/// account deletion must not leave a session to be had after it.
+	pub(crate) fn forget(&self, subject: &str) {
+		self.open.lock().unwrap_or_else(PoisonError::into_inner).retain(|_, (_, owner)| owner != subject);
+	}
+
 	/// The subject `code` pairs to, once. An expired code is dropped and
 	/// reads as absent.
 	pub(crate) fn take(&self, code: &PairingCode, now: Instant) -> Option<String> {
@@ -106,8 +121,13 @@ impl PairingStore {
 
 #[cfg(test)]
 mod tests {
-	use super::{PairingCode, PairingStore, CODE_LENGTH, MAX_OPEN_PAIRINGS, PAIRING_TTL};
+	use super::{PairingCode, PairingStore, CODE_LENGTH, MAX_OPEN_PAIRINGS, PAIRING_TTL, PAIRING_TTL_SECONDS};
 	use std::time::Instant;
+
+	#[test]
+	fn both_spellings_of_the_lifetime_agree() {
+		assert_eq!(i64::try_from(PAIRING_TTL.as_secs()).unwrap(), PAIRING_TTL_SECONDS);
+	}
 
 	#[test]
 	fn a_code_is_taken_once_and_not_after_it_expires() {
@@ -137,6 +157,17 @@ mod tests {
 	}
 
 	#[test]
+	fn forgetting_a_subject_closes_its_code_only() {
+		let store = PairingStore::default();
+		let now = Instant::now();
+		let mine = store.open("subject-a", now).unwrap();
+		let theirs = store.open("subject-b", now).unwrap();
+		store.forget("subject-a");
+		assert!(store.take(&mine, now).is_none());
+		assert_eq!(store.take(&theirs, now).as_deref(), Some("subject-b"));
+	}
+
+	#[test]
 	fn a_typed_code_reads_the_way_crockford_base32_does() {
 		let store = PairingStore::default();
 		let now = Instant::now();
@@ -151,7 +182,7 @@ mod tests {
 		});
 		assert_eq!(store.take(&PairingCode::typed(&typed).unwrap(), now).as_deref(), Some("subject-a"));
 
-		assert_eq!(PairingCode::typed("o1il-OOOO").unwrap().expose(), "0111-0000".replace('-', ""));
+		assert_eq!(PairingCode::typed(" o1il-OOOO\n").unwrap().expose(), "01110000");
 		for wrong in ["", "1234567", "123456789", "1234567U", "12345678!"] {
 			assert!(PairingCode::typed(wrong).is_none(), "{wrong}");
 		}

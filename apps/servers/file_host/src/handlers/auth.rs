@@ -19,10 +19,10 @@ use crate::auth::{
 	ceremony::{Ceremony, CeremonyId},
 	cookie::{clear_cookie, Carrier, SessionToken},
 	now,
-	pairing::{PairingCode, PAIRING_TTL},
+	pairing::{PairingCode, PAIRING_TTL_SECONDS},
 	passkey, AuthContext, PRODUCT_NAME,
 };
-use crate::subject::{legacy_subject, new_account_subject, SubjectId, SUBJECT_SCOPED_TABLES};
+use crate::subject::{legacy_subject, new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
 use auth_repo::{AddPasskey, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
@@ -74,8 +74,9 @@ pub struct SessionView {
 	pub expires_at: i64,
 }
 
-/// A code to type on the phone, and when it stops working.
-#[derive(Debug, Serialize)]
+/// A code to type on the phone, and when it stops working. No `Debug`: the
+/// code is a secret while it is open.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingStarted {
 	pub code: String,
@@ -83,14 +84,14 @@ pub struct PairingStarted {
 	pub expires_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct FinishPairing {
 	pub code: String,
 }
 
 /// A paired phone's session: the token it sends as `Authorization: Bearer`,
-/// and when the session ends unless it is used.
-#[derive(Debug, Serialize)]
+/// and when the session ends unless it is used. No `Debug`, for the token.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSession {
 	pub token: String,
@@ -230,7 +231,7 @@ pub async fn finish_sign_in(State(auth): State<AuthContext>, Json(request): Json
 /// 401 without a session; 409 when the account already holds the most
 /// passkeys it may; 503 as for sign-in.
 #[instrument(name = "auth_add_passkey_start", skip_all, fields(otel.kind = "server"))]
-pub async fn start_adding_passkey(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Json<CeremonyStarted>, FileHostError> {
+pub async fn start_adding_passkey(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<CeremonyStarted>, FileHostError> {
 	let relying_party = auth.relying_party()?;
 	let repository = auth.repository();
 	let user_handle = repository.user_handle(subject.as_str()).await?.ok_or(FileHostError::Unauthorized)?;
@@ -265,7 +266,11 @@ pub async fn start_adding_passkey(State(auth): State<AuthContext>, subject: Subj
 /// ceremony, or a passkey that does not verify; 409 for a passkey already
 /// registered or an account at its passkey cap.
 #[instrument(name = "auth_add_passkey_finish", skip_all, fields(otel.kind = "server"))]
-pub async fn finish_adding_passkey(State(auth): State<AuthContext>, subject: SubjectId, Json(request): Json<FinishRegistration>) -> Result<Json<Value>, FileHostError> {
+pub async fn finish_adding_passkey(
+	State(auth): State<AuthContext>,
+	BrowserSubject(subject): BrowserSubject,
+	Json(request): Json<FinishRegistration>,
+) -> Result<Json<Value>, FileHostError> {
 	let relying_party = auth.relying_party()?;
 	let Ceremony::Register { state, subject: Some(owner), .. } = take(&auth, &request.ceremony)? else {
 		return Err(stale_ceremony());
@@ -341,18 +346,21 @@ pub async fn sign_out(State(auth): State<AuthContext>, method: Method, headers: 
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
 
-/// `POST /auth/pairing/start`: a one-time code that pairs a phone to this
-/// account, open for [`PAIRING_TTL`]. Asking again replaces the open one.
+/// `POST /auth/pairing/start`: a one-time code that pairs a phone.
+///
+/// The code pairs to this account and is open for [`PAIRING_TTL_SECONDS`];
+/// asking again replaces it. A browser's passkey session only: a phone
+/// cannot pair another.
 ///
 /// # Errors
-/// 401 without a session; 503 when too many codes are open.
+/// 401 without a session; 403 for a phone's token; 503 when too many codes
+/// are open.
 #[instrument(name = "auth_pairing_start", skip_all, fields(otel.kind = "server"))]
-pub async fn start_pairing(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Json<PairingStarted>, FileHostError> {
+pub async fn start_pairing(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<PairingStarted>, FileHostError> {
 	let code = auth.pairings().open(subject.as_str(), Instant::now()).ok_or(FileHostError::ServiceOverloaded)?;
-	let ttl = i64::try_from(PAIRING_TTL.as_secs()).unwrap_or(i64::MAX);
 	Ok(Json(PairingStarted {
 		code: code.expose().to_owned(),
-		expires_at: (now() + ttl) * 1_000,
+		expires_at: (now() + PAIRING_TTL_SECONDS) * 1_000,
 	}))
 }
 
@@ -368,16 +376,10 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json
 	let subject = PairingCode::typed(&request.code)
 		.and_then(|code| auth.pairings().take(&code, Instant::now()))
 		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
-	let token = SessionToken::mint();
-	let ttl = auth.session_ttl_seconds();
-	let now = now();
-	// False when the account was deleted while the code was open.
-	if !auth.repository().create_session(&token.hash(), &subject, now + ttl, now).await? {
-		return Err(FileHostError::Unauthorized);
-	}
+	let (token, expires_at) = new_session(&auth, &subject, now()).await?;
 	Ok(Json(DeviceSession {
 		token: token.encoded(),
-		expires_at: (now + ttl) * 1_000,
+		expires_at: expires_at * 1_000,
 	}))
 }
 
@@ -387,6 +389,7 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, Json(request): Json
 /// 401 without a session.
 #[instrument(name = "auth_sign_out_everywhere", skip_all, fields(otel.kind = "server"))]
 pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
+	auth.pairings().forget(subject.as_str());
 	auth.repository().end_all_sessions(subject.as_str()).await?;
 	Ok(signed_out(Json(Value::Object(Map::new()))))
 }
@@ -401,7 +404,7 @@ pub async fn sign_out_everywhere(State(auth): State<AuthContext>, subject: Subje
 /// # Errors
 /// 401 without a session.
 #[instrument(name = "auth_delete_account", skip_all, fields(otel.kind = "server"))]
-pub async fn delete_account(State(auth): State<AuthContext>, subject: SubjectId) -> Result<Response, FileHostError> {
+pub async fn delete_account(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Response, FileHostError> {
 	// This request's own hold goes first, or the exclusive hold below would
 	// wait for it forever.
 	let subject = subject.release();
@@ -415,6 +418,7 @@ pub async fn delete_account(State(auth): State<AuthContext>, subject: SubjectId)
 /// lookup that finds nothing.
 pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<(), FileHostError> {
 	let _exclusive = auth.exclude_requests().await;
+	auth.pairings().forget(subject);
 	let mut tx = auth.pool().begin().await?;
 	for (table, _) in SUBJECT_SCOPED_TABLES {
 		// Table names come from a constant list, never from a request.
@@ -426,13 +430,22 @@ pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<
 }
 
 async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
+	let (token, expires_at) = new_session(auth, subject, now).await?;
+	Ok(with_cookie(token.set_cookie(auth.session_ttl_seconds()), expires_at))
+}
+
+/// A new session for `subject`, and when it ends.
+///
+/// # Errors
+/// 401 when the account was deleted while the sign-in or pairing was in
+/// flight; 500 for a storage failure.
+async fn new_session(auth: &AuthContext, subject: &str, now: i64) -> Result<(SessionToken, i64), FileHostError> {
 	let token = SessionToken::mint();
-	let ttl = auth.session_ttl_seconds();
-	// False when the account was deleted while this sign-in was in flight.
-	if !auth.repository().create_session(&token.hash(), subject, now + ttl, now).await? {
+	let expires_at = now + auth.session_ttl_seconds();
+	if !auth.repository().create_session(&token.hash(), subject, expires_at, now).await? {
 		return Err(FileHostError::Unauthorized);
 	}
-	Ok(with_cookie(token.set_cookie(ttl), now + ttl))
+	Ok((token, expires_at))
 }
 
 const fn with_cookie(set_cookie: HeaderValue, expires_at: i64) -> WithCookie<SessionView> {
@@ -955,6 +968,35 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_phones_token_cannot_add_a_passkey_pair_another_phone_or_delete_the_account() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, token) = pair(&app, &browser.cookie).await;
+		let phone = bearer(&token);
+
+		for (method, path) in [
+			(Method::POST, "/auth/passkeys/start"),
+			(Method::POST, "/auth/pairing/start"),
+			(Method::DELETE, "/auth/account"),
+		] {
+			let (status, _, _) = call_with(&app, method, path, None, None, &[("authorization", &phone)]).await;
+			assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+		}
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::OK, "the account is still there");
+	}
+
+	#[tokio::test]
+	async fn signing_out_everywhere_closes_a_code_not_yet_used() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+
+		assert_eq!(call(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None).await.0, StatusCode::OK);
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "no session appears after the account ended them all");
+	}
+
+	#[tokio::test]
 	async fn a_phones_session_slides_without_a_cookie() {
 		let pool = pool().await;
 		let app = app(AuthContext::for_tests(pool.clone(), 100));
@@ -1186,5 +1228,8 @@ mod tests {
 			assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
 			assert_eq!(body["error"]["code"], "feature_not_configured");
 		}
+		let (status, _, body) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": "00000000" }))).await;
+		assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+		assert_eq!(body["error"]["code"], "feature_not_configured");
 	}
 }

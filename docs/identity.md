@@ -180,11 +180,25 @@ this relying party. It gets a session another way (`auth::pairing`):
    attaches that header on its own, so it is no ambient credential.
 
 A code is held in memory only, found by its SHA-256 and taken once, like a
-ceremony; a restart drops the open ones. The token is an ordinary
-`auth_session` row, so nothing new is stored: it expires and slides like any
-session (renewing it sets no cookie), and it ends with `/auth/sign-out` sent
-with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
-account. Nothing records that a session belongs to a phone.
+ceremony; a restart drops the open ones, and so do sign-out everywhere and
+account deletion. The token is an ordinary `auth_session` row, so nothing new
+is stored: it expires and slides like any session (renewing it sets no
+cookie), and it ends with `/auth/sign-out` sent with the token (unpairing),
+with `/auth/sign-out-everywhere`, or with the account. Nothing records that a
+session belongs to a phone.
+
+A phone's token acts on the account's study data and nothing that would
+outlive or widen it: adding a passkey, pairing another phone, deleting the
+account and the operator routes take a browser's passkey session only
+(`subject::BrowserSubject`), and answer a bearer token `403`. The token sits
+in the phone's app storage, easier to lift than an `HttpOnly` cookie, so a
+stolen one must not be able to plant a passkey that outlives sign-out
+everywhere.
+
+The origin check (`auth::csrf`) runs on every state-changing request before
+its session is read, the phone's included. The phone passes it by sending
+none of `Origin` and `Sec-Fetch-Site`: it calls these routes over native
+HTTP, never a WebView `fetch` from `https://localhost`.
 
 ### Who can make an account
 
@@ -454,8 +468,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   expiry says, to the day, when this browser last opened the app past its
   session's halfway point. Nothing older is kept.
 - **A paired phone holds a session token.** Whoever has the phone's app data
-  and the key protecting it can act for the account until the session
-  expires, the phone unpairs, or the account signs out everywhere. The token
+  and the key protecting it can read and write the account's study data
+  (sessions, the shelf, the reporting routes), and sign it out everywhere,
+  until the session expires, the phone unpairs, or the account signs out
+  everywhere. It cannot add a passkey, pair another phone, delete the
+  account or act as an operator. The token
   travels in a request header, which nothing in `file_host` logs (invariant
   6), but which a proxy in front of it could if configured to.
 - **Passkey sync providers.** A synced passkey lives in the person's Apple,
@@ -497,7 +514,7 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **What deleting an account does not reach.** The subject's rows in the
   subject-scoped tables are deleted in one transaction. Not reached: copies in
   Redis, log lines and exported spans that carry the id, ceremonies held in
-  memory, backups, and SQLite's free pages and write-ahead log, which keep
+  memory (an open pairing code is closed), backups, and SQLite's free pages and write-ahead log, which keep
   deleted rows until they are overwritten or checkpointed.
 - **Retention that runs only sometimes.** The waker sweeps `intervention_log`
   (90 days) and `activity_outcome` (365 days) on each pass, so those horizons

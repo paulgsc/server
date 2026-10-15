@@ -8,7 +8,8 @@
 //! make an account"). So an operator is a signed-in subject **listed in
 //! `OPERATOR_SUBJECTS`**, and nothing else makes one.
 //!
-//! [`Operator`]'s extractor takes a [`SubjectId`] first, so a request without
+//! [`Operator`]'s extractor takes a [`BrowserSubject`] first (a paired
+//! phone's token is never an operator), so a request without
 //! a live session is `401`, a state-changing one from an untrusted origin is
 //! `403` (`auth::csrf`), and the request holds off an account deletion, all
 //! exactly as on every subject-scoped route. Then a subject not on the list is
@@ -28,7 +29,10 @@
 //! `AUTH_LEGACY_CLAIM_TOKEN` is `subject-local`.
 
 use super::AuthContext;
-use crate::{subject::SubjectId, FileHostError};
+use crate::{
+	subject::{BrowserSubject, SubjectId},
+	FileHostError,
+};
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 
@@ -57,7 +61,7 @@ where
 	type Rejection = FileHostError;
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-		let subject = SubjectId::from_request_parts(parts, state).await?;
+		let BrowserSubject(subject) = BrowserSubject::from_request_parts(parts, state).await?;
 		if AuthContext::from_ref(state).is_operator(subject.as_str()) {
 			Ok(Self { _subject: subject })
 		} else {
