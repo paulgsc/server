@@ -100,7 +100,7 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 | Subject id | `account.subject_id` | `subject-` and 32 random hex digits, minted by `subject.rs`. The key of every per-person row. |
 | User handle | `account.user_handle` | The WebAuthn `user.id`: 16 random bytes. The only thing an authenticator returns on a sign-in that names no account. |
 | Passkeys | `passkey` | Credential id, public key, signature counter and backup flags. At most 16 per account. |
-| Sessions | `auth_session` | SHA-256 of each session token, its subject, and when it expires. At most 32 per account, paired phones included. |
+| Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, and when it expires. At most 32 per account, paired phones included. |
 
 Nothing records when an account or a passkey was made or last used. The
 per-day cap on new accounts is counted in memory for the same reason.

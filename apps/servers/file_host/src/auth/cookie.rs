@@ -35,7 +35,8 @@ use sha2::{Digest, Sha256};
 
 pub const SESSION_COOKIE: &str = "__Host-session";
 
-/// Prefixed to a phone's token before hashing ([`SessionToken::hash`]).
+/// Prefixed to a phone's token before hashing ([`SessionToken::hash`]). Part
+/// of what is stored: changing it unpairs every phone.
 const PHONE_DOMAIN: &[u8] = b"some-ui paired phone session\0";
 
 /// A session token as the client holds it. Never logged, never stored.

@@ -173,6 +173,7 @@ where
 /// outlive or widen the session that asked, and a phone's token sits in app
 /// storage, easier to lift than an `HttpOnly` cookie. So none of them take
 /// one (docs/identity.md, "Pairing a phone").
+///
 /// Sound because a session's kind is how it arrived: a phone's token is
 /// stored under a digest no cookie matches (`auth::cookie::SessionToken::hash`).
 #[derive(Debug)]
