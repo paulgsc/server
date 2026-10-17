@@ -57,9 +57,14 @@ fn refusal(err: AphError) -> FileHostError {
 	}
 }
 
-/// This subject's record as it stands.
+/// This subject's record as it stands. One transaction, so the settings and
+/// the entries come from one snapshot: a write landing between the two reads
+/// could otherwise answer an entry whose checkpoint the settings lack.
 pub(crate) async fn current(db: &SqlitePool, subject: &str) -> Result<Record, FileHostError> {
-	aph_repo::record(&mut *db.acquire().await?, subject).await.map_err(refusal)
+	let mut tx = db.begin().await?;
+	let record = aph_repo::record(&mut tx, subject).await.map_err(refusal)?;
+	tx.commit().await?;
+	Ok(record)
 }
 
 /// Writes `body` as entry `id`'s next revision. `BEGIN IMMEDIATE`, so the

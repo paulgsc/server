@@ -230,6 +230,9 @@ pub async fn put_settings(conn: &mut SqliteConnection, subject: &str, body: &[u8
 
 /// `subject`'s record as it stands.
 ///
+/// Run it in a transaction, so the settings and the entries are read from one
+/// snapshot.
+///
 /// Unbounded on purpose: it is one person's log, a few entries a day, and
 /// the phone reads it whole to show History and the trend.
 ///
