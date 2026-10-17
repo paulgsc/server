@@ -146,6 +146,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "aph_repo"
+version = "0.0.0"
+dependencies = [
+ "curriculum_repo",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1416,6 +1427,7 @@ version = "0.0.0"
 dependencies = [
  "activity_repo",
  "anyhow",
+ "aph_repo",
  "auth_repo",
  "axum",
  "base64 0.22.1",
