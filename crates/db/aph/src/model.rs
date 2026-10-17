@@ -109,14 +109,29 @@ impl Settings {
 const NOT_A_KEY: Problem = ("id", "must be a plain key: URL-unreserved characters, not starting with `.` or `http`, no `.json` suffix");
 const NOT_A_DAY: &str = "must be a calendar day, YYYY-MM-DD";
 
-/// `YYYY-MM-DD` by shape: four digits, a dash, two, a dash, two.
+/// A calendar day that exists, written `YYYY-MM-DD`: four digits, a dash,
+/// a month from 01 to 12, a dash, and a day that month has.
 fn is_day(text: &str) -> bool {
 	let bytes = text.as_bytes();
-	bytes.len() == 10
+	let shaped = bytes.len() == 10
 		&& bytes
 			.iter()
 			.enumerate()
-			.all(|(i, byte)| if i == 4 || i == 7 { *byte == b'-' } else { byte.is_ascii_digit() })
+			.all(|(i, byte)| if i == 4 || i == 7 { *byte == b'-' } else { byte.is_ascii_digit() });
+	if !shaped {
+		return false;
+	}
+	let number = |range: std::ops::Range<usize>| text[range].parse::<u32>().unwrap_or(0);
+	let (year, month, day) = (number(0..4), number(5..7), number(8..10));
+	let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+	let days = match month {
+		1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+		4 | 6 | 9 | 11 => 30,
+		2 if leap => 29,
+		2 => 28,
+		_ => return false,
+	};
+	(1..=days).contains(&day)
 }
 
 fn too_long(text: &str, chars: usize) -> bool {
@@ -369,6 +384,26 @@ mod tests {
 			..entry()
 		};
 		assert!(breaches(&unreported, &reported).is_empty(), "their figure may come in");
+	}
+
+	#[test]
+	fn a_day_is_one_the_calendar_has() {
+		for day in ["2026-10-17", "2028-02-29", "2000-02-29", "2026-12-31"] {
+			assert!(super::is_day(day), "{day}");
+		}
+		for day in [
+			"2026-99-99",
+			"2026-02-31",
+			"2026-02-29",
+			"1900-02-29",
+			"2026-00-10",
+			"2026-04-31",
+			"2026-10-00",
+			"2026/10/17",
+			"26-10-17",
+		] {
+			assert!(!super::is_day(day), "{day}");
+		}
 	}
 
 	#[test]

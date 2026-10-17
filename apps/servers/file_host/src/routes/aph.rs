@@ -24,7 +24,7 @@ use crate::Config;
 use axum::{
 	extract::FromRef,
 	http::{
-		header::{ACCEPT, CONTENT_TYPE},
+		header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
 		Method,
 	},
 };
@@ -46,5 +46,5 @@ where
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
 }
