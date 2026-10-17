@@ -1,3 +1,4 @@
+pub mod aph;
 pub mod auth;
 pub mod db;
 pub mod health;

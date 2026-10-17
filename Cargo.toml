@@ -14,6 +14,7 @@ members = [
   # crates (transitive deps of the apps above)
   "crates/cursorium",
   "crates/db/activity",
+  "crates/db/aph",
   "crates/db/auth",
   "crates/db/capture",
   "crates/db/curriculum",
@@ -117,6 +118,7 @@ cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
 activity_repo = { path = "crates/db/activity" }
+aph_repo = { path = "crates/db/aph" }
 auth_repo = { path = "crates/db/auth" }
 capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }

@@ -381,9 +381,10 @@ nowhere is marked as such and belongs to review.
     `the_auth_tables_hold_exactly_their_listed_columns`. A new column there
     fails it until someone decides what it tells the server and says why.
 
-11. **The learner shelf holds content only** (#387). `learner_shelf` is the
-    one subject-scoped table that stores something the learner wrote rather
-    than something the server observed: items they generated and chose to
+11. **The learner shelf holds content only** (#387). `learner_shelf` is one
+    of the two subject-scoped places that store something the learner wrote
+    rather than something the server observed (the aph record, invariant 15,
+    is the other): items they generated and chose to
     keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf").
     A row is the subject, the activity, the item's key, its content hash, when
     it was kept, and the body verbatim: what storing and listing it needs, and
@@ -457,6 +458,22 @@ nowhere is marked as such and belongs to review.
     single log line names the service by the same method, and is covered by
     review.
 
+15. **The aph record is append-only, and holds what the owner logged.**
+    `aph_entry` and `aph_settings` keep the owner's aph log once the phone is
+    opted in to keeping it on home (paulgsc/some-ui `packages/ui/aph`): every
+    revision of every entry and of the settings, never updated (a trigger
+    aborts an `UPDATE`) and never deleted but with the account. A revision is
+    the entry as the phone wrote it, checked and re-serialised (the figures,
+    labels and note), the day and checkpoint and whether it is plain (the
+    columns the one-plain-figure check reads), and when it was written. It is
+    written only by `PUT /aph/entries/:id` and `PUT /aph/settings`, readable
+    only by its own subject, and deleted with the account by both the sweep
+    and the migration's triggers (invariant 12).
+    *Enforced by* `aph_repo`'s `the_tables_hold_exactly_their_described_columns`
+    and `every_change_is_a_new_revision_and_every_old_one_stays` (an
+    `UPDATE` is refused), `the_record_leaves_with_the_account`, and
+    `handlers::aph`'s `refusals_name_their_fields_and_records_stay_apart`.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -485,13 +502,19 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   last kept those bytes, to the millisecond, which is a partial timeline of
   use: the price of listing the shelf in the order it was filled. Deleting an
   item or the account removes both.
+- **The aph record and its times.** The entries are personal figures, with
+  the owner's own labels and notes, and every revision is kept with when it
+  was written, to the millisecond: when the phone sent each change, which,
+  because the phone sends as soon as it can reach home, is close to when it
+  was logged. That timeline is what the record is for. Deleting the account
+  removes it; nothing else does.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
   session's halfway point. Nothing older is kept.
 - **A paired phone holds a session token.** Whoever has the phone's app data
   and the key protecting it can read and write the account's study data
-  (sessions, the shelf, the reporting routes), and sign it out everywhere,
+  (sessions, the shelf, the aph record, the reporting routes), and sign it out everywhere,
   until the session expires, the phone unpairs, or the account signs out
   everywhere. It cannot add a passkey, pair another phone, delete the
   account or act as an operator. The token
@@ -544,4 +567,4 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions` and the shelf have no horizon.
+  `sessions`, the shelf and the aph record have no horizon.

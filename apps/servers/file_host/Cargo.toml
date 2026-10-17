@@ -114,6 +114,7 @@ metrics = { workspace = true }
 some-cache.workspace = true
 some-metrics.workspace = true
 activity_repo = { workspace = true }
+aph_repo = { workspace = true }
 auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }

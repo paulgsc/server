@@ -41,6 +41,11 @@ pub const SINGLETON_SUBJECT: &str = "subject-local";
 pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("account", "the account itself: a subject id and its WebAuthn user handle"),
 	("activity_outcome", "per-block study outcomes"),
+	(
+		"aph_entry",
+		"the owner's aph log (paulgsc/some-ui `packages/ui/aph`), every revision of every entry: the figures, labels and note as written, and when each revision was written; see docs/identity.md",
+	),
+	("aph_settings", "the checkpoints, goals and labels the aph log is read against, every revision"),
 	("auth_session", "hashes of the account's sign-in sessions, and when they expire"),
 	("engagement_charge", "engagement model state"),
 	("engagement_gate", "the waker's due index"),
