@@ -131,6 +131,15 @@ pub enum Event {
 		pick_id: String,
 		fingerprint: String,
 	},
+	/// Let go unreviewed with the rest of its digest: its queue slot frees.
+	#[serde(rename_all = "camelCase")]
+	Archived {
+		id: String,
+		at: String,
+		day: String,
+		pick_id: String,
+		fingerprint: String,
+	},
 	#[serde(rename_all = "camelCase")]
 	Passed {
 		id: String,
@@ -216,6 +225,7 @@ impl Event {
 	pub fn id(&self) -> &str {
 		match self {
 			Self::Taken { id, .. }
+			| Self::Archived { id, .. }
 			| Self::Passed { id, .. }
 			| Self::ResumeReady { id, .. }
 			| Self::ApplyOpened { id, .. }
@@ -233,6 +243,7 @@ impl Event {
 	pub fn at(&self) -> &str {
 		match self {
 			Self::Taken { at, .. }
+			| Self::Archived { at, .. }
 			| Self::Passed { at, .. }
 			| Self::ResumeReady { at, .. }
 			| Self::ApplyOpened { at, .. }
@@ -346,7 +357,10 @@ fn scout_ok(problems: &mut Vec<Problem>, scout: &Scout) {
 /// The problems with one event's payload, by its type.
 fn payload(event: &Event, problems: &mut Vec<Problem>) {
 	match event {
-		Event::Taken { day, pick_id, fingerprint, .. } | Event::ResumeReady { day, pick_id, fingerprint, .. } | Event::ApplyOpened { day, pick_id, fingerprint, .. } => {
+		Event::Taken { day, pick_id, fingerprint, .. }
+		| Event::Archived { day, pick_id, fingerprint, .. }
+		| Event::ResumeReady { day, pick_id, fingerprint, .. }
+		| Event::ApplyOpened { day, pick_id, fingerprint, .. } => {
 			pick_ref(problems, day, pick_id, fingerprint);
 		}
 		Event::Passed {
@@ -487,6 +501,7 @@ mod tests {
 		};
 		let events = [
 			with("taken", json!({})),
+			with("archived", json!({})),
 			with("passed", json!({ "reasons": ["seniority", "customer-facing"], "note": "Clearance", "voice": [] })),
 			with("resume-ready", json!({})),
 			with("apply-opened", json!({})),

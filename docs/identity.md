@@ -477,8 +477,8 @@ nowhere is marked as such and belongs to review.
 16. **The Jobs record is append-only, and holds what the owner recorded.**
     `jobs_event` keeps the owner's Jobs log once the phone is opted in to
     keeping it on home (paulgsc/some-ui `apps/www/src/lib/jobs`): every event,
-    as the phone recorded it, checked and re-serialised (picks taken or
-    passed and why, how applying went, outcomes, postings found by hand), when
+    as the phone recorded it, checked and re-serialised (picks taken, passed
+    or archived and why, how applying went, outcomes, postings found by hand), when
     the phone recorded it and when it reached home. An event is never updated
     (a trigger aborts an `UPDATE`) or replaced (a different body under a held
     id is a `409`), and never deleted but with the account. It names voice
