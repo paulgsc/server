@@ -51,6 +51,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("engagement_gate", "the waker's due index"),
 	("intervention_log", "what the waker decided and when"),
 	(
+		"jobs_event",
+		"the owner's Jobs log (paulgsc/some-ui `apps/www/src/lib/jobs`), every event: picks taken or passed and why, how applying went, outcomes, postings found by hand, as written, and when each was recorded and reached home; see docs/identity.md",
+	),
+	(
 		"learner_shelf",
 		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
 	),

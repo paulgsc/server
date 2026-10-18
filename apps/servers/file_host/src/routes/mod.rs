@@ -4,6 +4,7 @@ pub mod cors;
 pub mod db;
 pub mod health;
 pub mod inventory;
+pub mod jobs;
 pub mod metrics;
 pub mod outcomes;
 pub mod presence;
