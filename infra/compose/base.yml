@@ -21,3 +21,5 @@ volumes:
     driver: local
   pipeline_prompts_dump:
     driver: local
+  textfile_collector:
+    driver: local

@@ -2,6 +2,11 @@
 // Forensic monitoring panels for "Who Dunnit" system hang detection
 // Designed for docker-compose stack with process-exporter and cAdvisor
 
+local glance = import 'glance.libsonnet';
+
+// Names beside the bar, as sympathy-panels.libsonnet's processBars.
+local leftNames = { options+: { namePlacement: 'left', sizing: 'auto' } };
+
 {
   // ========== CRITICAL INVARIANT VIOLATIONS ==========
 
@@ -828,5 +833,107 @@
       },
     ],
     type: 'table',
+  },
+
+  // ========== DISK SPACE CULPRITS ==========
+  // "Who is filling the disk" for the two things sympathy-panels.libsonnet's
+  // diskSpace (% used per filesystem) can't name: containers, from cadvisor's
+  // writable-layer size, and the cargo toolchain's host directories, which no
+  // container's own usage covers. Ranked bars in that file's style, since
+  // they sit in its Disk band.
+  topDiskSpaceOffenders:: glance.barGauge(
+    'Who is filling the disk — containers',
+    'Writable-layer size per running container (cadvisor container_fs_usage_bytes). Image layers and named volumes are not counted.',
+    [{
+      expr: 'topk(10, sum by (name) (container_fs_usage_bytes{name!="", name=~"$container"}))',
+      legendFormat: '{{name}}',
+      instant: true,
+      refId: 'A',
+    }],
+    'bytes',
+    glance.informational,
+  ) + leftNames,
+
+  // Cargo's registry/git caches and the workspace target/ dir are host paths
+  // a periodic `du` (scripts/disk-usage-textfile.sh, run by the
+  // disk-usage-exporter sidecar in infra/compose/monitoring.yml) feeds into
+  // node_exporter's textfile collector as hostdir_usage_bytes. Doesn't cover
+  // Docker's own data-root (build cache, dangling images/volumes) — see that
+  // script's header for why measuring it safely needs a scoped Docker API
+  // call rather than raw filesystem access to a tree holding every other
+  // container's secrets.
+  hostDirDiskUsage:: glance.barGauge(
+    'Who is filling the disk — cargo',
+    'du -s -B1 over the cargo registry and git caches and the workspace target/ dir, every DISK_USAGE_SCAN_INTERVAL seconds (scripts/disk-usage-textfile.sh). cargo_registry and cargo_git read 0 until CARGO_HOME_PATH is set in .env.',
+    [{
+      expr: 'sort_desc(hostdir_usage_bytes)',
+      legendFormat: '{{target}}',
+      instant: true,
+      refId: 'A',
+    }],
+    'bytes',
+    glance.informational,
+  ) + leftNames,
+
+  // Distinguishes "the sidecar is fine, cargo just isn't that big" from
+  // "the sidecar died three days ago" — a stat panel can't tell staleness
+  // from a gauge value alone, so this measures the scan's own age directly
+  // rather than trusting hostdir_usage_bytes to look wrong when it is stuck.
+  // It also turns red when `du` keeps failing on one directory: the script
+  // then holds that directory at its last measured size and stops advancing
+  // the timestamp this reads (see scripts/disk-usage-textfile.sh).
+  hostDirUsageStaleness:: {
+    datasource: { type: 'prometheus', uid: 'prometheus' },
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 1,
+        color: { mode: 'thresholds' },
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'yellow', value: 3 },
+            { color: 'red', value: 6 },
+          ],
+        },
+      },
+      overrides: [],
+    },
+    options: { colorMode: 'value', graphMode: 'none', justifyMode: 'center', orientation: 'horizontal', reduceOptions: { calcs: ['lastNotNull'], values: false }, textMode: 'value_and_name' },
+    targets: [
+      {
+        datasource: { type: 'prometheus', uid: 'prometheus' },
+        // A multiple of the *configured* scan interval
+        // (hostdir_usage_scan_interval_seconds, emitted by the same
+        // script off DISK_USAGE_SCAN_INTERVAL) rather than raw seconds
+        // against a threshold hardcoded to one assumed interval — an
+        // operator raising that interval to reduce du's traversal cost
+        // would otherwise make a
+        // perfectly healthy sidecar read as stopped between every scan.
+        //
+        // A sidecar that never completes even one scan (never created at
+        // all — e.g. target/ genuinely missing, monitoring.yml's own
+        // comments on that mount's create_host_path: false) emits
+        // neither metric this expression reads, so it evaluates over an
+        // empty vector: grey "no data" (panelDefaults.harden, applied to
+        // every stat panel on this dashboard), not red. That's this
+        // codebase's own established third state, not a gap — panel-
+        // defaults.libsonnet's own header is explicit that grey must never
+        // be mistaken for healthy, same as every liveness panel already
+        // does for `up{job="..."}`. What grey can't distinguish here is
+        // "just started, first scan hasn't landed yet" from "will never
+        // work" — closing that would mean giving this sidecar its own
+        // scrape endpoint (or monitoring Compose itself for failed
+        // container creation), a materially bigger, more general piece of
+        // observability than this panel's job.
+        expr: '(time() - hostdir_usage_last_run_timestamp_seconds) / hostdir_usage_scan_interval_seconds',
+        instant: true,
+        refId: 'A',
+      },
+    ],
+    title: 'Cargo scan age (× interval)',
+    description: 'How many scan intervals since the last pass that measured every directory. Red means the sidecar stopped, or `du` keeps failing on a directory (the cargo panel then holds its last measured size). Grey "no data" means no pass has ever measured every directory: dead on arrival, same severity as red. The one thing it cannot tell apart is that from "just started, give it one interval."',
+    type: 'stat',
   },
 }
