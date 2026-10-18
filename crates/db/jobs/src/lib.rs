@@ -89,7 +89,8 @@ pub const REWRITTEN: &str = "this event id already holds a different event: the 
 /// The record as it stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Record {
-	/// In the order the phone recorded them: by `at`, then id.
+	/// In the order the phone recorded them: by `at`, then the order they
+	/// reached home, which is the phone's log order (its outbox sends in order).
 	pub events: Vec<Event>,
 }
 
@@ -143,7 +144,7 @@ pub async fn put_event(conn: &mut SqliteConnection, subject: &str, id: &str, bod
 /// [`JobsError::Unreadable`] for a stored body that does not read back, and
 /// [`JobsError::Storage`] for any `sqlx` failure.
 pub async fn record(conn: &mut SqliteConnection, subject: &str) -> Result<Record, JobsError> {
-	let bodies = sqlx::query_scalar!("SELECT body FROM jobs_event WHERE subject_id = ?1 ORDER BY at, event_id", subject)
+	let bodies = sqlx::query_scalar!("SELECT body FROM jobs_event WHERE subject_id = ?1 ORDER BY at, rowid", subject)
 		.fetch_all(&mut *conn)
 		.await?;
 	let events = bodies.iter().map(|body| read_body(body)).collect::<Result<Vec<Event>, JobsError>>()?;
@@ -237,7 +238,7 @@ mod tests {
 		}
 		let held = record(&mut pool.acquire().await.unwrap(), A).await.unwrap();
 		let ids: Vec<&str> = held.events.iter().map(super::Event::id).collect();
-		assert_eq!(ids, ["e2", "e3", "e1"], "by instant in UTC, then id");
+		assert_eq!(ids, ["e3", "e2", "e1"], "by instant in UTC, then as they arrived: e3 reached home before e2");
 		assert_eq!(
 			serde_json::to_value(&held.events[2]).unwrap(),
 			taken("e1", "2026-10-18T15:20:00-07:00"),

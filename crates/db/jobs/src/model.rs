@@ -13,9 +13,13 @@ use serde::{Deserialize, Serialize};
 /// `(field, why)`: one reason a write was refused.
 pub type Problem = (&'static str, &'static str);
 
-/// The most bytes one event's body may hold. A scout carries the posting's
-/// text, up to 20,000 characters; every other event is a few hundred bytes.
-pub const EVENT_BODY_CEILING: usize = 64 * 1024;
+/// The most bytes one event's body may hold.
+///
+/// A scout is the largest: its posting text, title, link and note come to at
+/// most 24,348 characters, and JSON spends at most 6 bytes on one (a control
+/// character as `\u001f`; a character outside the BMP is 4 bytes of UTF-8), so
+/// about 146 KB. Every other event is a few hundred bytes.
+pub const EVENT_BODY_CEILING: usize = 256 * 1024;
 
 const MAX_ID_CHARS: usize = 64;
 const MAX_NOTE_CHARS: usize = 2_000;
@@ -518,6 +522,19 @@ mod tests {
 		assert_eq!(fields("e1", &half), ["body"], "minutes are whole");
 		let big = json!({ "id": "e1", "padding": "x".repeat(super::EVENT_BODY_CEILING) });
 		assert_eq!(fields("e1", &big), ["body"]);
+	}
+
+	#[test]
+	fn the_largest_scout_the_phone_can_write_fits_under_the_ceiling() {
+		// Each text at its limit, in the character JSON spends the most bytes on.
+		let worst = |chars: usize| "\u{1f}".repeat(chars);
+		let scout = json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
+			"id": "sc-a1b2c3", "url": "https://".to_owned() + &worst(2_040), "title": worst(300), "why": worst(2_000),
+			"postingText": worst(20_000), "track": "adjacent", "family": "qa"
+		} });
+		let body = scout.to_string();
+		assert!(body.len() > 140_000, "{} bytes: every text is escaped", body.len());
+		assert!(parse_event("e1", body.as_bytes()).is_ok());
 	}
 
 	#[test]

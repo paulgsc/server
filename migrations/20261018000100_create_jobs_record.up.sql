@@ -34,8 +34,10 @@ CREATE TABLE jobs_event (
     PRIMARY KEY (subject_id, event_id)
 );
 
--- A read serves a subject's events in the order they were recorded.
-CREATE INDEX jobs_event_order ON jobs_event (subject_id, at, event_id);
+-- A read serves a subject's events in the order they were recorded: by `at`,
+-- then by insertion (`rowid`, which every SQLite index carries), since the
+-- phone's outbox sends its log in order and two events can share a millisecond.
+CREATE INDEX jobs_event_order ON jobs_event (subject_id, at);
 
 CREATE TRIGGER jobs_event_is_append_only
 BEFORE UPDATE ON jobs_event
