@@ -2,6 +2,7 @@ pub mod aph;
 pub mod auth;
 pub mod db;
 pub mod health;
+pub mod jobs;
 pub mod outcomes;
 pub mod pipeline;
 pub mod presence;

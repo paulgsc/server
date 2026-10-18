@@ -1441,6 +1441,7 @@ dependencies = [
  "futures",
  "hex",
  "intervention",
+ "jobs_repo",
  "lazy_static",
  "learner_shelf_repo",
  "leetype_round_repo",
@@ -2323,6 +2324,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
 dependencies = [
  "jiff-tzdb",
+]
+
+[[package]]
+name = "jobs_repo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

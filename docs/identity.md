@@ -382,9 +382,9 @@ nowhere is marked as such and belongs to review.
     fails it until someone decides what it tells the server and says why.
 
 11. **The learner shelf holds content only** (#387). `learner_shelf` is one
-    of the two subject-scoped places that store something the learner wrote
-    rather than something the server observed (the aph record, invariant 15,
-    is the other): items they generated and chose to
+    of the three subject-scoped places that store something the learner wrote
+    rather than something the server observed (the aph and Jobs records,
+    invariants 15 and 16, are the others): items they generated and chose to
     keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf").
     A row is the subject, the activity, the item's key, its content hash, when
     it was kept, and the body verbatim: what storing and listing it needs, and
@@ -474,6 +474,22 @@ nowhere is marked as such and belongs to review.
     `UPDATE` is refused), `the_record_leaves_with_the_account`, and
     `handlers::aph`'s `refusals_name_their_fields_and_records_stay_apart`.
 
+16. **The Jobs record is append-only, and holds what the owner recorded.**
+    `jobs_event` keeps the owner's Jobs log once the phone is opted in to
+    keeping it on home (paulgsc/some-ui `apps/www/src/lib/jobs`): every event,
+    as the phone recorded it, checked and re-serialised (picks taken or
+    passed and why, how applying went, outcomes, postings found by hand), when
+    the phone recorded it and when it reached home. An event is never updated
+    (a trigger aborts an `UPDATE`) or replaced (a different body under a held
+    id is a `409`), and never deleted but with the account. It names voice
+    notes by the phone's ids only: no audio is stored. It is written only by
+    `PUT /jobs/events/:id`, readable only by its own subject, and deleted with
+    the account by both the sweep and the migration's trigger (invariant 12).
+    *Enforced by* `jobs_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `an_event_is_stored_once_and_never_replaced` and
+    `the_record_leaves_with_the_account`, and `handlers::jobs`'s
+    `refusals_name_their_fields_and_records_stay_apart`.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -508,13 +524,19 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   because the phone sends as soon as it can reach home, is close to when it
   was logged. That timeline is what the record is for. Deleting the account
   removes it; nothing else does.
+- **The Jobs record and its times.** The events say which jobs the owner
+  looked at, passed on and applied to, why, how applying went and what came
+  of it, in the owner's own words, each with when the phone recorded it and
+  when it reached home. Companies and job titles are in it, by design. Voice
+  notes are not: an event names them, the audio stays on the phone and in
+  the owner's Drive. Deleting the account removes it; nothing else does.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
   session's halfway point. Nothing older is kept.
 - **A paired phone holds a session token.** Whoever has the phone's app data
   and the key protecting it can read and write the account's study data
-  (sessions, the shelf, the aph record, the reporting routes), and sign it out everywhere,
+  (sessions, the shelf, the aph and Jobs records, the reporting routes), and sign it out everywhere,
   until the session expires, the phone unpairs, or the account signs out
   everywhere. It cannot add a passkey, pair another phone, delete the
   account or act as an operator. The token
@@ -567,4 +589,4 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions`, the shelf and the aph record have no horizon.
+  `sessions`, the shelf, and the aph and Jobs records have no horizon.

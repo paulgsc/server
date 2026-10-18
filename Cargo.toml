@@ -18,6 +18,7 @@ members = [
   "crates/db/auth",
   "crates/db/capture",
   "crates/db/curriculum",
+  "crates/db/jobs",
   "crates/db/leetype_round",
   "crates/db/learner_shelf",
   "crates/db/mood_event",
@@ -122,6 +123,7 @@ aph_repo = { path = "crates/db/aph" }
 auth_repo = { path = "crates/db/auth" }
 capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }
+jobs_repo = { path = "crates/db/jobs" }
 leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }
