@@ -8,7 +8,7 @@
 //! ```
 //!
 //! **Trust model:** a paired phone's routes. Every handler takes a
-//! `PairedDevice`, so a request without a session is `401`, a write from an
+//! `Paired`, so a request without a session is `401`, a write from an
 //! untrusted origin `403`, and a browser's cookie session `403` too: the
 //! phone's two-press confirm makes a choice, a signed-in browser never does.
 //! Each choice is the pairing's alone.

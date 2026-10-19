@@ -1,5 +1,5 @@
 //! Handlers for `routes::sharing`: a paired phone's choices of what it keeps
-//! sending home. The record's own rules (append-only, two times per choice)
+//! sending home. The record's own rules (append-only, one row per change)
 //! are `sharing_repo`'s.
 //!
 //! **The deletion hold.** Each handler takes a [`Paired`], whose
@@ -287,12 +287,13 @@ mod tests {
 		assert_eq!(send_aph(&app, &phone).await, [StatusCode::OK; 2]);
 
 		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": false })).await;
-		assert_eq!(send_jobs(&app, &phone, "e3").await, StatusCode::OK, "stopping what was never kept changes nothing");
-		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": true })).await;
-		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": false })).await;
-		let (status, refused) = call(&app, Method::PUT, "/jobs/events/e4", Some(&phone), &event("e4")).await;
-		assert_eq!(status, StatusCode::CONFLICT, "stopped");
+		let (status, refused) = call(&app, Method::PUT, "/jobs/events/e3", Some(&phone), &event("e3")).await;
+		assert_eq!(status, StatusCode::CONFLICT, "stopped, though never kept here");
 		assert_eq!(refused["error"]["code"], "sharing_stopped");
+		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": true })).await;
+		assert_eq!(send_jobs(&app, &phone, "e3").await, StatusCode::OK);
+		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": false })).await;
+		assert_eq!(send_jobs(&app, &phone, "e4").await, StatusCode::CONFLICT, "stopped");
 		call(&app, Method::PUT, "/sharing/aph", Some(&phone), &json!({ "kept": false })).await;
 		assert_eq!(send_aph(&app, &phone).await, [StatusCode::CONFLICT; 2]);
 

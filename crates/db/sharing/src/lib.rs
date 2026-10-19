@@ -6,11 +6,11 @@
 //! - **Per pairing.** A choice is made on one phone, under one pairing
 //!   (`pairing_id`, a digest of that pairing's session), and counts for it
 //!   alone, as it does on the phone.
-//! - **Append-only, two times per choice.** [`choose`] adds a row only when
-//!   a choice changes: one when sharing began, one when it ended. No row is
-//!   ever updated (a trigger aborts an `UPDATE`), and nothing here deletes;
-//!   account deletion is the one delete. Nothing records when anything was
-//!   sent under a choice.
+//! - **Append-only, one row per change.** [`choose`] adds a row only when
+//!   a choice changes: when sharing began, or ended. No row is ever updated
+//!   (a trigger aborts an `UPDATE`), and nothing here deletes; account
+//!   deletion is the one delete. Nothing records when anything was sent
+//!   under a choice.
 //! - **Home refuses what was stopped.** [`refuses`] is what a write from a
 //!   pairing checks first: a scope whose latest change stopped it.
 
@@ -103,13 +103,15 @@ async fn latest(conn: &mut SqliteConnection, subject: &str, pairing: &str, scope
 /// Records that the pairing keeps sending `scope` (`kept`) or stopped, as of
 /// `now`, and answers with the pairing's changes after it.
 ///
-/// Choosing what already holds writes nothing. Run it in a `BEGIN IMMEDIATE`
+/// Choosing what the latest change already says writes nothing. Run it in a `BEGIN IMMEDIATE`
 /// transaction, so the read that decides and the write see one snapshot.
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn choose(conn: &mut SqliteConnection, subject: &str, pairing: &str, scope: Scope, kept: bool, now: &str) -> Result<Vec<Change>, sqlx::Error> {
-	if latest(conn, subject, pairing, scope).await?.unwrap_or(false) != kept {
+	// A first stop is written too: a pairing made before home kept choices
+	// sends until it names a scope, and stopping one names it.
+	if latest(conn, subject, pairing, scope).await? != Some(kept) {
 		let name = scope.as_str();
 		let flag = i64::from(kept);
 		// The next `seq` from the table, not from `changes`, which leaves out
@@ -187,16 +189,17 @@ mod tests {
 		let conn = &mut pool.acquire().await.unwrap();
 		assert_eq!(choose(conn, A, "d1", Scope::Aph, true, "t1").await.unwrap().len(), 1);
 		assert_eq!(choose(conn, A, "d1", Scope::Aph, true, "t2").await.unwrap().len(), 1, "keeping what is kept writes nothing");
+		assert_eq!(choose(conn, A, "d1", Scope::Jobs, false, "t2").await.unwrap().len(), 2, "a first stop is written");
 		assert_eq!(
-			choose(conn, A, "d1", Scope::Jobs, false, "t2").await.unwrap().len(),
-			1,
-			"stopping what was never kept writes nothing"
+			choose(conn, A, "d1", Scope::Jobs, false, "t3").await.unwrap().len(),
+			2,
+			"stopping what is stopped writes nothing"
 		);
 		choose(conn, A, "d1", Scope::Aph, false, "t3").await.unwrap();
 		let held = choose(conn, A, "d1", Scope::Aph, true, "t4").await.unwrap();
 		assert_eq!(
 			held.iter().map(|change| (change.scope, change.kept, change.at.as_str())).collect::<Vec<_>>(),
-			[(Scope::Aph, true, "t1"), (Scope::Aph, false, "t3"), (Scope::Aph, true, "t4")]
+			[(Scope::Aph, true, "t1"), (Scope::Jobs, false, "t2"), (Scope::Aph, false, "t3"), (Scope::Aph, true, "t4")]
 		);
 		assert_eq!(held, changes(conn, A, "d1").await.unwrap());
 		assert!(changes(conn, A, "d2").await.unwrap().is_empty(), "another pairing's are its own");
@@ -236,6 +239,8 @@ mod tests {
 		assert!(!refuses(conn, A, "d2", Scope::Aph).await.unwrap(), "another pairing's stop is its own");
 		choose(conn, A, "d1", Scope::Aph, true, "t3").await.unwrap();
 		assert!(!refuses(conn, A, "d1", Scope::Aph).await.unwrap(), "kept again");
+		choose(conn, A, "d1", Scope::Jobs, false, "t4").await.unwrap();
+		assert!(refuses(conn, A, "d1", Scope::Jobs).await.unwrap(), "stopped without ever being kept here");
 	}
 
 	#[tokio::test]
