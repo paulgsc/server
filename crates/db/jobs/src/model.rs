@@ -151,6 +151,17 @@ pub enum Event {
 		note: String,
 		voice: Vec<String>,
 	},
+	/// Why I fit a pick I took, for the next run to redraft its application from.
+	#[serde(rename_all = "camelCase")]
+	FitNote {
+		id: String,
+		at: String,
+		day: String,
+		pick_id: String,
+		fingerprint: String,
+		note: String,
+		voice: Vec<String>,
+	},
 	#[serde(rename_all = "camelCase")]
 	ResumeReady {
 		id: String,
@@ -227,6 +238,7 @@ impl Event {
 			Self::Taken { id, .. }
 			| Self::Archived { id, .. }
 			| Self::Passed { id, .. }
+			| Self::FitNote { id, .. }
 			| Self::ResumeReady { id, .. }
 			| Self::ApplyOpened { id, .. }
 			| Self::Debrief { id, .. }
@@ -245,6 +257,7 @@ impl Event {
 			Self::Taken { at, .. }
 			| Self::Archived { at, .. }
 			| Self::Passed { at, .. }
+			| Self::FitNote { at, .. }
 			| Self::ResumeReady { at, .. }
 			| Self::ApplyOpened { at, .. }
 			| Self::Debrief { at, .. }
@@ -379,6 +392,21 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 			note_ok(problems, "note", note);
 			voice_ok(problems, voice, MAX_VOICE);
 		}
+		Event::FitNote {
+			day,
+			pick_id,
+			fingerprint,
+			note,
+			voice,
+			..
+		} => {
+			pick_ref(problems, day, pick_id, fingerprint);
+			note_ok(problems, "note", note);
+			voice_ok(problems, voice, MAX_VOICE);
+			if note.trim().is_empty() && voice.is_empty() {
+				problems.push(("note", "a fit note says why, in words or aloud"));
+			}
+		}
 		Event::Debrief {
 			day,
 			pick_id,
@@ -503,6 +531,10 @@ mod tests {
 			with("taken", json!({})),
 			with("archived", json!({})),
 			with("passed", json!({ "reasons": ["seniority", "customer-facing"], "note": "Clearance", "voice": [] })),
+			with(
+				"fit-note",
+				json!({ "note": "I built the pipelines this team runs.", "voice": ["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f"] }),
+			),
 			with("resume-ready", json!({})),
 			with("apply-opened", json!({})),
 			debrief(),
@@ -581,6 +613,9 @@ mod tests {
 			fields("e1", &scout("software", json!("qa"), "http://indeed.com/x")),
 			["scout.family", "scout.id", "scout.postingText", "scout.title", "scout.url"]
 		);
+		let silent = json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "fit-note", "day": "2026-10-18",
+			"pickId": "blu-7f2a", "fingerprint": "a|b|c", "note": "  ", "voice": [] });
+		assert_eq!(fields("e1", &silent), ["note"], "a fit note says why");
 		let shared =
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "shared", "kind": "scouts", "day": "2026-10-18", "file": "../scouts.txt", "through": -1, "voice": [] });
 		assert_eq!(fields("e1", &shared), ["file", "through"]);
