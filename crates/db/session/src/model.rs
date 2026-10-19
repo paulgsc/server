@@ -13,12 +13,17 @@ pub fn new_session_id() -> String {
 	String::from("session-") + &uuid::Uuid::new_v4().to_string()
 }
 
-/// An id a client may name its session by: 1 to 64 letters, digits, `-` and
-/// `_`, which every id [`new_session_id`] and the client's `generateId`
-/// make is.
+/// An id a client may name its session by.
+///
+/// It is `session-`, then 16 to 56 letters, digits, `-` and `_`. Every id [`new_session_id`] and the
+/// client's `generateId("session")` make is one; a short or guessable id is
+/// not, so an id in use can be found only by whoever made it, and nothing
+/// shadows a literal route segment such as `/sessions/status`.
 #[must_use]
 pub fn is_session_id(text: &str) -> bool {
-	!text.is_empty() && text.len() <= 64 && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+	text
+		.strip_prefix("session-")
+		.is_some_and(|rest| (16..=56).contains(&rest.len()) && rest.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
 }
 
 /// The five statuses `SessionStatus` admits in the client. Not four, not six —
@@ -186,8 +191,9 @@ pub struct SessionRecord {
 /// Deliberately not a `SessionRecord`: the timestamps, the initial status,
 /// and `totalDurationMs` are all the server's to decide now, and a client
 /// that could send them could disagree with itself. The id is the server's
-/// too unless the client names one ([`is_session_id`]): a phone sending a
-/// session it made names its own, so the same create sent twice makes one.
+/// too unless the client names one ([`is_session_id`]): a fresh one for
+/// each copy it makes, kept until home answers, so the same create sent
+/// twice makes one session.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSession {
@@ -300,7 +306,7 @@ pub fn total_duration_of(scenes: &[serde_json::Value]) -> i64 {
 
 #[cfg(test)]
 mod tests {
-	use super::{new_session_id, session_abandonment_is_real, total_duration_of, SessionOrigin, SessionRecord};
+	use super::{is_session_id, new_session_id, session_abandonment_is_real, total_duration_of, SessionOrigin, SessionRecord};
 	use serde_json::json;
 
 	#[test]
@@ -310,6 +316,28 @@ mod tests {
 		let id = new_session_id();
 		assert!(id.starts_with("session-"));
 		assert!(uuid::Uuid::parse_str(id.trim_start_matches("session-")).is_ok());
+		assert!(is_session_id(&id), "a client may name a session the way the server does");
+	}
+
+	#[test]
+	fn a_client_names_a_session_only_by_an_id_of_that_shape() {
+		// The client's fallback when `crypto.randomUUID` is missing.
+		assert!(is_session_id("session-1761000000000-k3j9x2qa"));
+		for refused in [
+			"",
+			"status",
+			"session-",
+			"session-short",
+			"session-1234567890abcde",
+			"sessions-1234567890abcdef",
+			"session-1234567890abcdef/",
+			"session-1234567890abcdé0",
+		] {
+			assert!(!is_session_id(refused), "{refused}");
+		}
+		let longest = String::from("session-") + &"a".repeat(56);
+		assert!(is_session_id(&longest));
+		assert!(!is_session_id(&(longest + "a")));
 	}
 
 	#[test]

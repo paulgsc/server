@@ -80,18 +80,19 @@ pub async fn get_session(State(state): State<AppState>, subject: SubjectId, Path
 
 /// `POST /sessions`
 ///
-/// With an `id`, once per id: a create under an id this subject already
-/// holds answers with that session as it is now and changes nothing, so a
-/// send whose answer was lost can be sent again. An id another subject holds
-/// is a `409`; one that is not [`is_session_id`] a `422`.
+/// Once per id (`SessionRepository::insert_if_absent`): a create under an
+/// id this subject already holds answers with that session as it is now and
+/// changes nothing, so a client that names its own id can send a create
+/// whose answer was lost again. An id another subject holds is a `409`; a
+/// named one that is not [`is_session_id`] a `422`; without one, the server
+/// mints it.
 #[axum::debug_handler]
 #[instrument(name = "create_session", skip_all, fields(otel.kind = "server"))]
 pub async fn create_session(State(state): State<AppState>, subject: SubjectId, Json(input): Json<CreateSession>) -> Result<Json<SessionRecord>, FileHostError> {
 	let now = Utc::now().to_rfc3339();
-	let named = input.id.is_some();
 	let id = match input.id {
 		Some(id) if is_session_id(&id) => id,
-		Some(_) => return Err(FileHostError::unprocessable_entity([("id", "is 1 to 64 letters, digits, - and _")])),
+		Some(_) => return Err(FileHostError::unprocessable_entity([("id", "is session- and 16 to 56 letters, digits, - and _")])),
 		None => new_session_id(),
 	};
 
@@ -121,10 +122,6 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 		final_elapsed_ms: None,
 	};
 
-	if !named {
-		repo(&state).upsert(subject.as_str(), &record).await.map_err(|err| to_http(&err))?;
-		return Ok(Json(record));
-	}
 	match repo(&state).insert_if_absent(subject.as_str(), &record).await.map_err(|err| to_http(&err))? {
 		Created::Inserted => Ok(Json(record)),
 		Created::Held(held) => Ok(Json(*held)),

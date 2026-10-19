@@ -127,6 +127,32 @@ impl From<serde_json::Error> for SessionRepoError {
 	}
 }
 
+/// A record's columns as stored: its enums by name, its JSON as text.
+struct Encoded {
+	status: &'static str,
+	origin: &'static str,
+	layout_mode: &'static str,
+	activities: String,
+	scenes: String,
+	layout: Option<String>,
+}
+
+fn encode(record: &SessionRecord) -> Result<Encoded, serde_json::Error> {
+	// `serde_json::to_string` is on clippy.toml's disallowed list to keep
+	// eager serialization out of tracing calls. These three are the
+	// database write itself, which is the one place the string is the
+	// point.
+	#[allow(clippy::disallowed_methods)]
+	Ok(Encoded {
+		status: record.status.as_str(),
+		origin: record.origin.as_str(),
+		layout_mode: record.layout_mode.as_str(),
+		activities: serde_json::to_string(&record.activities)?,
+		scenes: serde_json::to_string(&record.scenes)?,
+		layout: record.layout.as_ref().map(serde_json::to_string).transpose()?,
+	})
+}
+
 /// How [`SessionRepository::insert_if_absent`] went.
 #[derive(Debug)]
 pub enum Created {
@@ -412,15 +438,14 @@ impl SessionRepository {
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
 	pub async fn provision_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<(), SessionRepoError> {
-		let status = record.status.as_str();
-		let origin = record.origin.as_str();
-		let layout_mode = record.layout_mode.as_str();
-		#[allow(clippy::disallowed_methods)]
-		let (activities, scenes, layout) = (
-			serde_json::to_string(&record.activities)?,
-			serde_json::to_string(&record.scenes)?,
-			record.layout.as_ref().map(serde_json::to_string).transpose()?,
-		);
+		let Encoded {
+			status,
+			origin,
+			layout_mode,
+			activities,
+			scenes,
+			layout,
+		} = encode(record)?;
 
 		sqlx::query!(
 			r#"
@@ -558,6 +583,11 @@ impl SessionRepository {
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the stored row does not parse.
 	pub async fn get(&self, subject_id: &str, id: &str) -> Result<Option<SessionRecord>, SessionRepoError> {
+		Self::read(&self.pool, subject_id, id).await
+	}
+
+	/// [`Self::get`] on `executor`: the pool, or a transaction's connection.
+	async fn read<'e>(executor: impl sqlx::SqliteExecutor<'e>, subject_id: &str, id: &str) -> Result<Option<SessionRecord>, SessionRepoError> {
 		let row = sqlx::query_as!(
 			SessionRow,
 			r#"
@@ -571,7 +601,7 @@ impl SessionRepository {
 			id,
 			subject_id
 		)
-		.fetch_optional(&self.pool)
+		.fetch_optional(executor)
 		.await?;
 
 		row.map(|row| SessionRecord::try_from(row).map_err(Into::into)).transpose()
@@ -618,19 +648,14 @@ impl SessionRepository {
 	/// with [`SessionRepoError::SubjectMismatch`] if `id` already belongs to
 	/// another subject.
 	pub async fn upsert(&self, subject_id: &str, record: &SessionRecord) -> Result<(), SessionRepoError> {
-		let status = record.status.as_str();
-		let origin = record.origin.as_str();
-		let layout_mode = record.layout_mode.as_str();
-		// `serde_json::to_string` is on clippy.toml's disallowed list to keep
-		// eager serialization out of tracing calls. These three are the
-		// database write itself, which is the one place the string is the
-		// point.
-		#[allow(clippy::disallowed_methods)]
-		let (activities, scenes, layout) = (
-			serde_json::to_string(&record.activities)?,
-			serde_json::to_string(&record.scenes)?,
-			record.layout.as_ref().map(serde_json::to_string).transpose()?,
-		);
+		let Encoded {
+			status,
+			origin,
+			layout_mode,
+			activities,
+			scenes,
+			layout,
+		} = encode(record)?;
 
 		let result = sqlx::query!(
 			r#"
@@ -681,29 +706,32 @@ impl SessionRepository {
 		Ok(())
 	}
 
-	/// Write a new record under the id its client chose, once: a repeated
-	/// create (a send whose answer was lost, sent again) finds the record the
-	/// first one made and changes nothing.
+	/// Write a new record under its id, once: a repeated create (a send
+	/// whose answer was lost, sent again) finds the record the first one made
+	/// and changes nothing. Once only while that record stands: a create
+	/// sent again after the session was deleted makes it anew, so a client
+	/// sends it again only until its first answer.
 	///
 	/// [`Created::Taken`] is an id another subject holds. Saying so tells the
-	/// caller that id is in use, which [`Self::get`] never does; an id the
-	/// client made with `crypto.randomUUID()` is one only it has seen, so
-	/// the answer reaches no one who did not already hold the id.
+	/// caller that id is in use, which [`Self::get`] never does; a client
+	/// names only an id it minted fresh (`is_session_id`), so the answer
+	/// reaches no one who did not already hold the id. The write and the read
+	/// are one `BEGIN IMMEDIATE` transaction, so a delete between them cannot
+	/// make a free id read as taken.
 	///
 	/// # Errors
 	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
 	pub async fn insert_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<Created, SessionRepoError> {
-		let status = record.status.as_str();
-		let origin = record.origin.as_str();
-		let layout_mode = record.layout_mode.as_str();
-		// The database write itself, as in `upsert`.
-		#[allow(clippy::disallowed_methods)]
-		let (activities, scenes, layout) = (
-			serde_json::to_string(&record.activities)?,
-			serde_json::to_string(&record.scenes)?,
-			record.layout.as_ref().map(serde_json::to_string).transpose()?,
-		);
+		let Encoded {
+			status,
+			origin,
+			layout_mode,
+			activities,
+			scenes,
+			layout,
+		} = encode(record)?;
 
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 		let result = sqlx::query!(
 			r#"
 			INSERT INTO sessions (
@@ -730,13 +758,18 @@ impl SessionRepository {
 			scenes,
 			layout,
 		)
-		.execute(&self.pool)
+		.execute(&mut *tx)
 		.await?;
 
-		if result.rows_affected() == 1 {
-			return Ok(Created::Inserted);
-		}
-		Ok(self.get(subject_id, &record.id).await?.map_or(Created::Taken, |held| Created::Held(Box::new(held))))
+		let created = if result.rows_affected() == 1 {
+			Created::Inserted
+		} else {
+			Self::read(&mut *tx, subject_id, &record.id)
+				.await?
+				.map_or(Created::Taken, |held| Created::Held(Box::new(held)))
+		};
+		tx.commit().await?;
+		Ok(created)
 	}
 
 	/// Remove one session **owned by this subject**. Returns whether a row was
