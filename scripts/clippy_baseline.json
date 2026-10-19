@@ -93,17 +93,6 @@
       "fn status_code": {
         "Self::Forbidden => StatusCode::FORBIDDEN,": 1
       }
-    },
-    "clippy::missing_const_for_fn": {
-      "fn code": {
-        "fn code(&self) -> &'static str { match self { Self::Unauthorized => \"unauthorized\", Self::Forbidden => \"forbidden\", Self::NotFound => \"not_found\", Self::InvalidData => \"invalid_data\", Self::InvalidMimeType(_) => \"invalid_mime_type\", Self::InvalidEncodedDate(_) => \"invalid_encoded_date\", Self::UnprocessableEntity { .. } => \"unprocessable_entity\", Self::MaxRecordLimitExceeded => \"max_record_limit_exceeded\", Self::Conflict(_) => \"conflict\", Self::NonSerializableData(_) => \"serialization_error\", Self::IntegerConversionError(_) => \"integer_conversion_error\", Self::ResponseBuildError(_) => \"response_build_error\", Self::IoError(_) => \"io_error\", Self::TowerError(_) => \"tower_error\", Self::NatsTransportError(_) => \"nats_transport_error\", Self::BroadcastError(_) => \"broadcast_error\", Self::Upstream(_) => \"upstream_error\", Self::Cache(_) => \"cache_error\", Self::Sqlite(_) => \"database_error\", Self::OperationError(_) => \"operation_error\", Self::UnexpectedSinglePair => \"unexpected_single_pair\", Self::RequestTimeout => \"request_timeout\", Self::ServiceOverloaded => \"service_overloaded\", Self::FeatureNotConfigured(_) => \"feature_not_configured\", } }": 1
-      },
-      "fn message": {
-        "fn message(&self) -> &'static str { match self { Self::Unauthorized => \"authentication required\", Self::Forbidden => \"user may not perform that action\", Self::NotFound => \"request path not found\", Self::InvalidData => \"invalid data schema\", Self::InvalidMimeType(_) => \"invalid mime type\", Self::InvalidEncodedDate(_) => \"invalid encoded date\", Self::UnprocessableEntity { .. } => \"error in request body\", Self::MaxRecordLimitExceeded => \"maximum record limit exceeded\", Self::Conflict(reason) => reason, Self::RequestTimeout => \"request timeout\", Self::ServiceOverloaded => \"service temporarily overloaded\", Self::FeatureNotConfigured(_) => \"feature not configured on this deployment\", _ => \"internal server error\", } }": 1
-      },
-      "fn status_code": {
-        "fn status_code(&self) -> StatusCode { match self { Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY, Self::Unauthorized => StatusCode::UNAUTHORIZED, Self::Forbidden => StatusCode::FORBIDDEN, Self::NotFound => StatusCode::NOT_FOUND, Self::Conflict(_) => StatusCode::CONFLICT, Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN, Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST, Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT, Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE, Self::Cache(e) => match e { DedupCacheError::NotFound => StatusCode::NOT_FOUND, DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST, _ => StatusCode::INTERNAL_SERVER_ERROR, }, _ => StatusCode::INTERNAL_SERVER_ERROR, } }": 1
-      }
     }
   },
   "apps/servers/file_host/src/handlers/db/activities.rs": {

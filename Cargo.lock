@@ -1465,6 +1465,7 @@ dependencies = [
  "serde_json",
  "session_repo",
  "sha2 0.10.9",
+ "sharing_repo",
  "some-cache",
  "some-metrics",
  "some-services",
@@ -4214,6 +4215,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "sharing_repo"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ pub mod pipeline;
 pub mod presence;
 pub mod push;
 pub mod readiness;
+pub mod sharing;
 pub mod shelf;
 pub mod signals;
 pub mod subjects;

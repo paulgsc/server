@@ -14,16 +14,19 @@
 //! callers of `aph_repo::put_entry` and `::put_settings`; nothing writes the
 //! record in the background.
 
+use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use aph_repo::{AphError, Entry, Record, Settings};
 use axum::{
 	body::Bytes,
 	extract::{Path, State},
+	http::HeaderMap,
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
+use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -69,16 +72,18 @@ pub(crate) async fn current(db: &SqlitePool, subject: &str) -> Result<Record, Fi
 
 /// Writes `body` as entry `id`'s next revision. `BEGIN IMMEDIATE`, so the
 /// reads that decide and the write see one snapshot.
-pub(crate) async fn write_entry(db: &SqlitePool, subject: &str, id: &str, body: &[u8], now: &str) -> Result<EntryWritten, FileHostError> {
+pub(crate) async fn write_entry(db: &SqlitePool, subject: &str, headers: &HeaderMap, id: &str, body: &[u8], now: &str) -> Result<EntryWritten, FileHostError> {
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	refusing(&mut tx, subject, headers, Scope::Aph).await?;
 	let (change, entry) = aph_repo::put_entry(&mut tx, subject, id, body, now).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(EntryWritten { change: change.as_str(), entry })
 }
 
 /// Writes `body` as the next settings revision, as [`write_entry`].
-pub(crate) async fn write_settings(db: &SqlitePool, subject: &str, body: &[u8], now: &str) -> Result<SettingsWritten, FileHostError> {
+pub(crate) async fn write_settings(db: &SqlitePool, subject: &str, headers: &HeaderMap, body: &[u8], now: &str) -> Result<SettingsWritten, FileHostError> {
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	refusing(&mut tx, subject, headers, Scope::Aph).await?;
 	let (change, settings) = aph_repo::put_settings(&mut tx, subject, body, now).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(SettingsWritten {
@@ -101,22 +106,28 @@ pub async fn get_record(subject: SubjectId, State(db): State<SqlitePool>) -> Res
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, and 500 for a storage failure.
+/// refused field, 409 from a paired phone that stopped sending aph home
+/// (`handlers::sharing::refusing`), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "aph_entry_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_entry(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<EntryWritten>, FileHostError> {
-	write_entry(&db, subject.as_str(), &id, &body, &now()).await.map(Json)
+pub async fn put_entry(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	headers: HeaderMap,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Json<EntryWritten>, FileHostError> {
+	write_entry(&db, subject.as_str(), &headers, &id, &body, &now()).await.map(Json)
 }
 
 /// `PUT /aph/settings`, the request body being the settings.
 ///
 /// # Errors
-/// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, and 500 for a storage failure.
+/// As [`put_entry`]'s.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "aph_settings_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_settings(subject: SubjectId, State(db): State<SqlitePool>, body: Bytes) -> Result<Json<SettingsWritten>, FileHostError> {
-	write_settings(&db, subject.as_str(), &body, &now()).await.map(Json)
+pub async fn put_settings(subject: SubjectId, State(db): State<SqlitePool>, headers: HeaderMap, body: Bytes) -> Result<Json<SettingsWritten>, FileHostError> {
+	write_settings(&db, subject.as_str(), &headers, &body, &now()).await.map(Json)
 }
 
 #[cfg(test)]

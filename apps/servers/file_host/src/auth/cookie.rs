@@ -39,6 +39,20 @@ pub const SESSION_COOKIE: &str = "__Host-session";
 /// of what is stored: changing it unpairs every phone.
 const PHONE_DOMAIN: &[u8] = b"some-ui paired phone session\0";
 
+/// Prefixed to a phone's session digest to name its pairing
+/// ([`pairing_of`]). Changing it makes every pairing a new one to home.
+const PAIRING_DOMAIN: &[u8] = b"some-ui pairing\0";
+
+/// The name of the pairing whose session is stored as `token_hash`: a
+/// digest of the digest, so it opens nothing, and it lasts exactly as long
+/// as that pairing's session. Anyone holding the database can join it to
+/// that session's row while it lives (docs/identity.md, "What is still
+/// exposed").
+pub(crate) fn pairing_of(token_hash: &[u8; 32]) -> String {
+	let digest = Sha256::new().chain_update(PAIRING_DOMAIN).chain_update(token_hash).finalize();
+	hex::encode(&digest[..16])
+}
+
 /// A session token as the client holds it. Never logged, never stored.
 pub(crate) struct SessionToken(Redacted<[u8; 32]>);
 
