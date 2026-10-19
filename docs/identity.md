@@ -519,7 +519,8 @@ nowhere is marked as such and belongs to review.
     `a_change_is_one_row_and_no_row_changes` and
     `the_choices_leave_with_the_account`, and `handlers::sharing`'s
     `only_a_paired_phone_makes_or_reads_a_choice` and
-    `home_refuses_only_what_a_phone_stopped`.
+    `home_refuses_only_what_a_phone_stopped`, and `handlers::sync`'s
+    `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

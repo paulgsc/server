@@ -95,8 +95,8 @@ pub async fn put_choice(paired: Paired, State(db): State<SqlitePool>, Path(scope
 /// on the write's own transaction, before the write.
 ///
 /// Only aph's and the Jobs record's writes call it (`handlers::aph`,
-/// `handlers::jobs`, and a batch of either, `handlers::sync`). The phone sends sessions and the
-/// shelf on a tap too (paulgsc/some-ui `apps/www/src/lib/home-link/send.ts`,
+/// `handlers::jobs`, and a batch of either, `handlers::sync`). The phone
+/// sends sessions and the shelf on a tap too (paulgsc/some-ui `apps/www/src/lib/home-link/send.ts`,
 /// Settings' one-time send), which no standing choice covers, so they are
 /// not checked.
 ///

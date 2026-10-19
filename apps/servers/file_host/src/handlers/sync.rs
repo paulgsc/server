@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 use tracing::instrument;
 
 /// The most items one batch carries.
-pub const BATCH_CEILING: usize = 100;
+pub(crate) const BATCH_CEILING: usize = 100;
 
 /// How a batch item ended, as its own route would have answered.
 enum Outcome {
@@ -88,7 +88,7 @@ impl Collection for Aph {
 /// `POST /sync/:collection/batch`
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Batch {
+pub(crate) struct Batch {
 	pub items: Vec<Item>,
 }
 
@@ -96,7 +96,7 @@ pub struct Batch {
 /// as the bytes that arrived so it is read exactly as that route reads it.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Item {
+pub(crate) struct Item {
 	pub id: String,
 	pub body: Box<RawValue>,
 }
@@ -187,8 +187,10 @@ async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMa
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 404 for an unknown
 /// collection, 409 from a paired phone that stopped sending this record,
-/// 422 for a body that is not a batch or holds too many items, and 500 for
-/// a storage failure, which keeps none of the batch.
+/// 413 for a body over axum's 2 MiB default (about 14 of the largest Jobs
+/// events, so a client sizes a batch by bytes as well as by count), 422 for
+/// a body that is not a batch or holds too many items, and 500 for a
+/// storage failure, which keeps none of the batch.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "sync_batch", skip_all, fields(otel.kind = "server"))]
 pub async fn write_batch(
@@ -315,15 +317,22 @@ mod tests {
 		rewritten["type"] = json!("resume-ready");
 		let batch = json!({ "items": [
 			{ "id": "e1", "body": event("e1") },
-			{ "id": "e2", "body": event("e2") },
 			{ "id": "e3", "body": wrong },
+			{ "id": "e2", "body": event("e2") },
 		] });
 		let (status, written) = call(&app, Method::POST, "/sync/jobs/batch", &a, &batch.to_string()).await;
 		assert_eq!(status, StatusCode::OK, "{written}");
 		let statuses: Vec<_> = written["results"].as_array().unwrap().iter().map(|r| (r["id"].clone(), r["status"].clone())).collect();
-		assert_eq!(statuses, [(json!("e1"), json!(200)), (json!("e2"), json!(200)), (json!("e3"), json!(422))]);
-		assert_eq!(written["results"][0]["held"], event("e1"), "what the record holds, as its own route answers");
-		assert_eq!(written["results"][2]["refused"]["day"].as_array().unwrap().len(), 1);
+		assert_eq!(
+			statuses,
+			[(json!("e1"), json!(200)), (json!("e3"), json!(422)), (json!("e2"), json!(200))],
+			"the rest go on"
+		);
+		assert_eq!(written["results"][0]["held"], event("e1"), "what the record holds");
+		assert_eq!(written["results"][1]["refused"]["day"].as_array().unwrap().len(), 1);
+		let fixed = json!({ "items": [{ "id": "e3", "body": event("e3") }] });
+		let (_, kept) = call(&app, Method::POST, "/sync/jobs/batch", &a, &fixed.to_string()).await;
+		assert_eq!(kept["results"][0]["change"], "added", "a refused item kept nothing");
 
 		let again = json!({ "items": [{ "id": "e1", "body": event("e1") }, { "id": "e1", "body": rewritten }] });
 		let (_, answered) = call(&app, Method::POST, "/sync/jobs/batch", &a, &again.to_string()).await;
