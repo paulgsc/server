@@ -191,7 +191,9 @@ with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
 account. No column says a session is a phone's; its digest is taken over a
 fixed prefix and the token (`SessionToken::hash`), so a phone's token sent as
 a cookie, or a browser's sent as a bearer, finds no session. How a session
-arrives is therefore what kind it is.
+arrives is therefore what kind it is. What the phone's person chose to keep
+sending home names the pairing by a digest of that session's digest, in
+`sharing_choice` (invariant 17), not in `auth_session`.
 
 A phone's token acts on the account's study data and nothing that would
 outlive or widen it: adding a passkey, pairing another phone, deleting the
@@ -491,6 +493,29 @@ nowhere is marked as such and belongs to review.
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s
     `refusals_name_their_fields_and_records_stay_apart`.
 
+17. **What a phone shares is a choice home keeps two times for, never one per
+    item.** `sharing_choice` keeps what each paired phone's person chose to
+    keep sending home (paulgsc/some-ui `apps/www/src/lib/home-link`, its
+    consent log): one row when sharing a kind of record (`sessions`, `shelf`,
+    `aph`, `jobs`) began under a pairing and one when it ended, each with
+    when home heard it, and nothing about when anything was sent under it.
+    Those two times are kept so home can refuse what a phone sends after its
+    person stopped it (`PUT /aph/*` and `PUT /jobs/events/:id` answer `409`),
+    and say when each choice started and stopped; a timestamp on each synced
+    row stays out. A choice is made only by a paired phone
+    (`PUT /sharing/:scope`, a bearer session: a browser's is `403`), counts
+    for that pairing alone, and is never updated (a trigger aborts an
+    `UPDATE`) or deleted but with the account. The pairing is named by
+    `device_id`, a digest of its session's stored digest
+    (`auth::cookie::device_of`): it opens nothing, says nothing
+    `auth_session` does not, is never sent by the phone (invariant 4), and is
+    no identity, since it is only ever read under the subject it came with.
+    *Enforced by* `sharing_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_choice_is_two_rows_at_most_and_no_row_changes` and
+    `the_choices_leave_with_the_account`, and `handlers::sharing`'s
+    `only_a_paired_phone_makes_or_reads_a_choice` and
+    `home_takes_a_phones_writes_only_while_they_are_kept`.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -531,6 +556,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   when it reached home. Companies and job titles are in it, by design. Voice
   notes are not: an event names them, the audio stays on the phone and in
   the owner's Drive. Deleting the account removes it; nothing else does.
+- **When a phone began and stopped sharing.** `sharing_choice` says, to the
+  millisecond, when each pairing began and stopped sending each kind of
+  record home (invariant 17): a few times per pairing, not a use timeline.
+  It outlives the pairing it names, as what home received does. Deleting the
+  account removes it; nothing else does.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
@@ -590,4 +620,5 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions`, the shelf, and the aph and Jobs records have no horizon.
+  `sessions`, the shelf, the aph and Jobs records and `sharing_choice` have
+  no horizon.

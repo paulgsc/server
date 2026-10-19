@@ -1,0 +1,28 @@
+[package]
+name = "sharing_repo"
+description = "What each paired phone's person chose to keep sending home, and when: append-only changes per pairing — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["sharing", "consent", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

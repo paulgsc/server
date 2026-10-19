@@ -13,13 +13,13 @@
 
 use crate::{
 	auth::{
-		cookie::{Carrier, SessionToken},
+		cookie::{device_of, Carrier, SessionToken},
 		AuthContext,
 	},
 	FileHostError,
 };
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::request::Parts;
+use axum::http::{request::Parts, HeaderMap};
 use rand::RngCore;
 use std::sync::Arc;
 use tokio::sync::OwnedRwLockReadGuard;
@@ -65,6 +65,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
 	),
 	("sessions", "study sessions"),
+	(
+		"sharing_choice",
+		"what each paired phone's person chose to keep sending home, and when each choice began and ended: two times per choice, none per item sent; see docs/identity.md",
+	),
 ];
 
 /// Who a request is acting for.
@@ -202,6 +206,49 @@ where
 			Some((_, Carrier::Bearer)) => Err(FileHostError::Forbidden),
 			_ => Ok(Self(subject)),
 		}
+	}
+}
+
+/// A paired phone's request: its subject, and its pairing (`device`), which
+/// a browser's cookie session has none of, so it answers `403` here.
+///
+/// The device is named from the pairing's session (`auth::cookie::device_of`),
+/// never from anything the phone says about itself (invariant 4), and it is
+/// no identity: it only tells one pairing's choices from another's under the
+/// same subject, as the phone's own consent log does.
+#[derive(Debug)]
+pub struct PairedDevice {
+	pub subject: SubjectId,
+	device: String,
+}
+
+impl PairedDevice {
+	#[must_use]
+	pub fn device(&self) -> &str {
+		&self.device
+	}
+}
+
+/// The pairing a request's bearer session names, or `None` for a browser's.
+pub(crate) fn paired_device(headers: &HeaderMap) -> Option<String> {
+	match SessionToken::from_headers(headers) {
+		Some((token, Carrier::Bearer)) => Some(device_of(&token.hash(Carrier::Bearer))),
+		_ => None,
+	}
+}
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for PairedDevice
+where
+	AuthContext: FromRef<S>,
+	S: Send + Sync,
+{
+	type Rejection = FileHostError;
+
+	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+		let subject = SubjectId::from_request_parts(parts, state).await?;
+		let device = paired_device(&parts.headers).ok_or(FileHostError::Forbidden)?;
+		Ok(Self { subject, device })
 	}
 }
 

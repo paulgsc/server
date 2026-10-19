@@ -15,16 +15,19 @@
 //! **No other writer.** [`put_event`] is the only caller of
 //! `jobs_repo::put_event`; nothing writes the record in the background.
 
+use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
 	extract::{Path, State},
+	http::HeaderMap,
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
 use jobs_repo::{Event, JobsError, Record, REWRITTEN};
 use serde::Serialize;
+use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -69,12 +72,20 @@ pub async fn get_record(subject: SubjectId, State(db): State<SqlitePool>) -> Res
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, 409 for a different event under a held id, and 500 for a
-/// storage failure.
+/// refused field, 409 for a different event under a held id or from a paired
+/// phone that stopped sending the record home (`handlers::sharing::refusing`),
+/// and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "jobs_event_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_event(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<EventWritten>, FileHostError> {
+pub async fn put_event(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	headers: HeaderMap,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Json<EventWritten>, FileHostError> {
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
 	let (change, event) = jobs_repo::put_event(&mut tx, subject.as_str(), &id, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(EventWritten { change: change.as_str(), event }))
