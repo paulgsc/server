@@ -10,9 +10,9 @@
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 //!
-//! **No other writer.** [`put_entry`] and [`put_settings`] are the only
-//! callers of `aph_repo::put_entry` and `::put_settings`; nothing writes the
-//! record in the background.
+//! **No other writer.** [`put_entry`] and [`put_settings`], and a batch's
+//! entries (`handlers::sync`), are the only callers of `aph_repo::put_entry`
+//! and `::put_settings`; nothing writes the record in the background.
 
 use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;

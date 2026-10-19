@@ -468,7 +468,8 @@ nowhere is marked as such and belongs to review.
     the entry as the phone wrote it, checked and re-serialised (the figures,
     labels and note), the day and checkpoint and whether it is plain (the
     columns the one-plain-figure check reads), and when it was written. It is
-    written only by `PUT /aph/entries/:id` and `PUT /aph/settings`, readable
+    written only by `PUT /aph/entries/:id`, `PUT /aph/settings` and
+    `POST /sync/aph/batch` (entries, each as its own route), readable
     only by its own subject, and deleted with the account by both the sweep
     and the migration's triggers (invariant 12).
     *Enforced by* `aph_repo`'s `the_tables_hold_exactly_their_described_columns`
@@ -486,7 +487,8 @@ nowhere is marked as such and belongs to review.
     (a trigger aborts an `UPDATE`) or replaced (a different body under a held
     id is a `409`), and never deleted but with the account. It names voice
     notes by the phone's ids only: no audio is stored. It is written only by
-    `PUT /jobs/events/:id`, readable only by its own subject, and deleted with
+    `PUT /jobs/events/:id` and `POST /sync/jobs/batch` (each event as that
+    route), readable only by its own subject, and deleted with
     the account by both the sweep and the migration's trigger (invariant 12).
     *Enforced by* `jobs_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced` and
@@ -500,8 +502,9 @@ nowhere is marked as such and belongs to review.
     a kind of record (`sessions`, `shelf`, `aph`, `jobs`) began or ended under
     a pairing, with when home heard it, and nothing about when anything was
     sent under it. Those times are kept so home can refuse the aph and Jobs
-    writes a phone sends after its person stopped them (`PUT /aph/*` and
-    `PUT /jobs/events/:id` answer `409`, code `sharing_stopped`; sessions and
+    writes a phone sends after its person stopped them (`PUT /aph/*`,
+    `PUT /jobs/events/:id` and `POST /sync/:collection/batch` answer `409`,
+    code `sharing_stopped`; sessions and
     the shelf also go home on a tap no choice covers, and are not refused),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
@@ -516,7 +519,8 @@ nowhere is marked as such and belongs to review.
     `a_change_is_one_row_and_no_row_changes` and
     `the_choices_leave_with_the_account`, and `handlers::sharing`'s
     `only_a_paired_phone_makes_or_reads_a_choice` and
-    `home_refuses_only_what_a_phone_stopped`.
+    `home_refuses_only_what_a_phone_stopped`, and `handlers::sync`'s
+    `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

@@ -16,9 +16,11 @@
 //!   notes themselves stay on the phone and in the owner's Drive.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
-//! - **No background writer.** The caller is `file_host`'s `handlers::jobs`
-//!   (`PUT /api/v1/jobs/events/:id`), which the phone sends once its person
-//!   has opted in. A `git grep -n jobs_event -- '*.rs'` shows no other writer.
+//! - **No background writer.** The callers are `file_host`'s `handlers::jobs`
+//!   (`PUT /api/v1/jobs/events/:id`) and `handlers::sync`
+//!   (`POST /api/v1/sync/jobs/batch`, each event as that route), which the
+//!   phone sends once its person has opted in. A
+//!   `git grep -n jobs_event -- '*.rs'` shows no other writer.
 
 mod model;
 
@@ -107,7 +109,9 @@ fn read_body(body: &str) -> Result<Event, JobsError> {
 /// # Errors
 /// [`JobsError::Invalid`] naming every problem [`parse_event`] finds,
 /// [`JobsError::Rewritten`] when `id` already holds a different event, and
-/// [`JobsError::Storage`] for any `sqlx` failure.
+/// [`JobsError::Storage`] for any `sqlx` failure. A refusal is decided before
+/// anything is written, so a caller that goes on after one (a batch,
+/// `file_host`'s `handlers::sync`) keeps nothing of it.
 pub async fn put_event(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<(Change, Event), JobsError> {
 	let event = parse_event(id, body).map_err(JobsError::Invalid)?;
 	let standing = sqlx::query_scalar!("SELECT body FROM jobs_event WHERE subject_id = ?1 AND event_id = ?2", subject, id)
