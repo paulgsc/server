@@ -616,6 +616,9 @@ mod tests {
 		let silent = json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "fit-note", "day": "2026-10-18",
 			"pickId": "blu-7f2a", "fingerprint": "a|b|c", "note": "  ", "voice": [] });
 		assert_eq!(fields("e1", &silent), ["note"], "a fit note says why");
+		let mut aloud = silent.clone();
+		aloud["voice"] = json!(["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f"]);
+		assert!(parse_event("e1", aloud.to_string().as_bytes()).is_ok(), "or says it aloud");
 		let shared =
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "shared", "kind": "scouts", "day": "2026-10-18", "file": "../scouts.txt", "through": -1, "voice": [] });
 		assert_eq!(fields("e1", &shared), ["file", "through"]);

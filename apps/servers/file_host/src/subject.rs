@@ -52,7 +52,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("intervention_log", "what the waker decided and when"),
 	(
 		"jobs_event",
-		"the owner's Jobs log (paulgsc/some-ui `apps/www/src/lib/jobs`), every event: picks taken or passed and why, how applying went, outcomes, postings found by hand, as written, and when each was recorded and reached home; see docs/identity.md",
+		"the owner's Jobs log (paulgsc/some-ui `apps/www/src/lib/jobs`), every event: picks taken, passed or archived and why, why the owner fits one taken, how applying went, outcomes, postings found by hand, as written, and when each was recorded and reached home; see docs/identity.md",
 	),
 	(
 		"learner_shelf",
