@@ -18,8 +18,9 @@
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer.** The callers are `file_host`'s `handlers::aph`
-//!   (`PUT /api/v1/aph/entries/:id`, `PUT /api/v1/aph/settings`), which the
-//!   phone sends once its person has opted in. A
+//!   (`PUT /api/v1/aph/entries/:id`, `PUT /api/v1/aph/settings`) and
+//!   `handlers::sync` (`POST /api/v1/sync/aph/batch`, entries as the first
+//!   route), which the phone sends once its person has opted in. A
 //!   `git grep -n -e aph_entry -e aph_settings -- '*.rs'` shows no other writer.
 
 mod model;
@@ -256,55 +257,9 @@ pub async fn record(conn: &mut SqliteConnection, subject: &str) -> Result<Record
 	Ok(Record { settings, entries })
 }
 
-/// Where a read of the entries left off: the last revision's `written_at`,
-/// entry id and revision. The default comes before every revision.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Mark {
-	pub written_at: String,
-	pub entry_id: String,
-	pub revision: i64,
-}
-
-/// Up to `limit` of `subject`'s entry revisions stored after `after`.
-///
-/// Each is as it was written, in the order they reached home, with the mark
-/// to read on from. A later revision of an entry stands over an earlier one.
-///
-/// # Errors
-/// [`AphError::Unreadable`] for a stored body that does not read back, and
-/// [`AphError::Storage`] for any `sqlx` failure.
-pub async fn since(conn: &mut SqliteConnection, subject: &str, after: &Mark, limit: i64) -> Result<(Vec<Entry>, Mark), AphError> {
-	let rows = sqlx::query!(
-		r#"
-		SELECT entry_id, revision, written_at, body FROM aph_entry
-		WHERE subject_id = ?1
-		  AND (written_at > ?2 OR (written_at = ?2 AND (entry_id > ?3 OR (entry_id = ?3 AND revision > ?4))))
-		ORDER BY written_at, entry_id, revision
-		LIMIT ?5
-		"#,
-		subject,
-		after.written_at,
-		after.entry_id,
-		after.revision,
-		limit
-	)
-	.fetch_all(&mut *conn)
-	.await?;
-	let next = rows.last().map_or_else(
-		|| after.clone(),
-		|row| Mark {
-			written_at: row.written_at.clone(),
-			entry_id: row.entry_id.clone(),
-			revision: row.revision,
-		},
-	);
-	let entries = rows.iter().map(|row| read_body(&row.body)).collect::<Result<Vec<Entry>, AphError>>()?;
-	Ok((entries, next))
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{put_entry, put_settings, record, since, AphError, Change, Mark};
+	use super::{put_entry, put_settings, record, AphError, Change};
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -421,38 +376,6 @@ mod tests {
 		assert!(update.unwrap_err().to_string().contains("append-only"), "no row is ever updated");
 		let update = sqlx::query("UPDATE aph_settings SET body = '{}'").execute(&pool).await;
 		assert!(update.unwrap_err().to_string().contains("append-only"));
-	}
-
-	#[tokio::test]
-	async fn a_read_from_a_mark_takes_each_revision_once_in_the_order_it_reached_home() {
-		let pool = pool().await;
-		set(&pool, A, &settings()).await.unwrap();
-		let mut first = entry("e1");
-		put(&pool, A, &first, T0).await.unwrap();
-		first["note"] = json!("again");
-		put(&pool, A, &first, T1).await.unwrap();
-		let mut other_day = entry("e0");
-		other_day["day"] = json!("2026-10-16");
-		put(&pool, A, &other_day, T1).await.unwrap();
-
-		let conn = &mut pool.acquire().await.unwrap();
-		assert!(since(conn, B, &Mark::default(), 9).await.unwrap().0.is_empty(), "another subject's are its own");
-		let (head, mark) = since(conn, A, &Mark::default(), 2).await.unwrap();
-		let ids = |entries: &[super::Entry]| {
-			serde_json::to_value(entries)
-				.unwrap()
-				.as_array()
-				.unwrap()
-				.iter()
-				.map(|e| e["id"].clone())
-				.collect::<Vec<_>>()
-		};
-		assert_eq!(ids(&head), [json!("e1"), json!("e0")], "by when it reached home, then id");
-		let (tail, end) = since(conn, A, &mark, 2).await.unwrap();
-		assert_eq!(serde_json::to_value(&tail).unwrap(), json!([first]), "the later revision, once");
-		let (none, same) = since(conn, A, &end, 2).await.unwrap();
-		assert!(none.is_empty());
-		assert_eq!(same, end);
 	}
 
 	#[tokio::test]

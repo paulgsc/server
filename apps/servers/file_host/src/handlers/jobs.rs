@@ -12,8 +12,9 @@
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 //!
-//! **No other writer.** [`put_event`] is the only caller of
-//! `jobs_repo::put_event`; nothing writes the record in the background.
+//! **No other writer.** [`put_event`] and a batch's events
+//! (`handlers::sync`) are the only callers of `jobs_repo::put_event`; nothing
+//! writes the record in the background.
 
 use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;

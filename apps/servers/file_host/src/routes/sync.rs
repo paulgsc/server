@@ -1,9 +1,8 @@
-//! `/api/v1/sync` — many writes of one kept record in one request, and its
-//! changes read on from a mark, over each record's own storage.
+//! `/api/v1/sync` — many writes of one kept record in one request, over
+//! each record's own storage.
 //!
 //! ```text
 //! POST /sync/:collection/batch → { results }: each item as its own PUT answers it
-//! GET  /sync/:collection       → { items, next }: written after `?since=`
 //! ```
 //!
 //! `:collection` is `jobs` (the Jobs record's events) or `aph` (aph's entry
@@ -11,7 +10,7 @@
 //! routes it stands for are one per item.
 //!
 //! **Trust model:** a subject route, as `routes::jobs` and `routes::aph`:
-//! every handler takes a `SubjectId`, and a paired phone's batch is refused
+//! the handler takes a `SubjectId`, and a paired phone's batch is refused
 //! once its person stopped sending that record (`handlers::sharing`). See
 //! `handlers::sync`.
 
@@ -36,13 +35,11 @@ where
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
 {
-	let table = RouteTable::new()
-		.get("/sync/:collection", handlers::read_since)
-		.post("/sync/:collection/batch", handlers::write_batch);
+	let table = RouteTable::new().post("/sync/:collection/batch", handlers::write_batch);
 
 	Module::versioned("sync", table).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::POST, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
 }

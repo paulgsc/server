@@ -8,7 +8,7 @@
 //!
 //! **No other writer.** [`put_choice`] is the only caller of
 //! `sharing_repo::choose`. What reads the choices is [`get_choices`] and each
-//! aph and Jobs write's check ([`refusing`]).
+//! aph and Jobs write's check ([`refusing`]), a batch's included.
 
 use crate::subject::{pairing_in, Paired};
 use crate::FileHostError;
@@ -94,7 +94,8 @@ pub async fn put_choice(paired: Paired, State(db): State<SqlitePool>, Path(scope
 /// (`sharing_repo::refuses`); a browser's write is never refused here. Run it
 /// on the write's own transaction, before the write.
 ///
-/// Only aph and the Jobs record call it. The phone sends sessions and the
+/// Only aph's and the Jobs record's writes call it (`handlers::aph`,
+/// `handlers::jobs`, and a batch of either, `handlers::sync`). The phone sends sessions and the
 /// shelf on a tap too (paulgsc/some-ui `apps/www/src/lib/home-link/send.ts`,
 /// Settings' one-time send), which no standing choice covers, so they are
 /// not checked.

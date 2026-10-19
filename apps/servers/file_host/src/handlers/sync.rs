@@ -1,16 +1,16 @@
 //! Handlers for `routes::sync`: a kept record's writes in one request.
 //!
-//! Each item is answered as its own route would answer it, and the record's
-//! changes are read on from a mark. A collection is one record's own storage
-//! behind [`Collection`]: no store is shared between records, and nothing
-//! here keeps a time per item.
+//! Each item is answered as its own route would answer it, from the same
+//! bytes, by the same repository call. A collection is one record's own
+//! storage behind [`Collection`]: no store is shared between records, and
+//! nothing new is stored.
 //!
 //! **One transaction per batch.** `BEGIN IMMEDIATE`, so every item and the
 //! choice it is checked against see one snapshot. An item home refuses (a
 //! `422` naming its fields, or a `409`) writes nothing and the rest go on;
 //! a storage failure ends the whole batch, and none of it is kept.
 //!
-//! **The deletion hold.** Each handler takes a [`SubjectId`] first and keeps
+//! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns (docs/identity.md, invariant 9).
 
 use crate::handlers::sharing::refusing;
@@ -19,14 +19,14 @@ use crate::FileHostError;
 use aph_repo::AphError;
 use axum::{
 	body::Bytes,
-	extract::{Path, Query, State},
+	extract::{Path, State},
 	http::HeaderMap,
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
 use jobs_repo::{JobsError, REWRITTEN};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 use sharing_repo::Scope;
 use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
@@ -35,78 +35,38 @@ use tracing::instrument;
 /// The most items one batch carries.
 pub const BATCH_CEILING: usize = 100;
 
-/// The most items one read answers with.
-const READ_CEILING: i64 = 200;
-
 /// How a batch item ended, as its own route would have answered.
 enum Outcome {
-	/// Stored, or already held: the route's `change`.
-	Written(&'static str),
+	/// Stored, or already held: the route's `change`, and what the record now
+	/// holds under the id, which the phone compares with what it sent.
+	Written(&'static str, Value),
 	/// A `422`: each refused field and why.
 	Refused(Vec<(&'static str, &'static str)>),
 	/// A `409`: what it conflicts with.
 	Conflict(&'static str),
 }
 
-/// One record's storage, as the sync routes reach it.
+/// One record's storage, as a batch reaches it.
 trait Collection {
 	/// What its person keeps sending when this record goes home.
 	const SCOPE: Scope;
-	/// Where a read left off.
-	type Mark: Default;
 
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError>;
-
-	async fn since(conn: &mut SqliteConnection, subject: &str, after: &Self::Mark, limit: i64) -> Result<(Vec<Value>, Self::Mark), FileHostError>;
-
-	/// The mark as `next` gives it, and back.
-	fn encode(mark: &Self::Mark) -> String;
-	fn decode(text: &str) -> Option<Self::Mark>;
-}
-
-/// `parts` joined by `|`, which no id or time here holds.
-fn joined(parts: &[&str]) -> String {
-	parts.join("|")
-}
-
-fn values<T: Serialize>(items: &[T]) -> Result<Vec<Value>, FileHostError> {
-	items.iter().map(|item| serde_json::to_value(item).map_err(FileHostError::from)).collect()
 }
 
 struct Jobs;
 
 impl Collection for Jobs {
 	const SCOPE: Scope = Scope::Jobs;
-	type Mark = jobs_repo::Mark;
 
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match jobs_repo::put_event(conn, subject, id, body, now).await {
-			Ok((change, _)) => Ok(Outcome::Written(change.as_str())),
+			Ok((change, event)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(event)?)),
 			Err(JobsError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(JobsError::Rewritten) => Ok(Outcome::Conflict(REWRITTEN)),
 			Err(JobsError::Unreadable) => Err(FileHostError::OperationError("a stored Jobs event does not read back".to_owned())),
 			Err(JobsError::Storage(err)) => Err(FileHostError::Sqlite(err)),
 		}
-	}
-
-	async fn since(conn: &mut SqliteConnection, subject: &str, after: &Self::Mark, limit: i64) -> Result<(Vec<Value>, Self::Mark), FileHostError> {
-		match jobs_repo::since(conn, subject, after, limit).await {
-			Ok((events, next)) => Ok((values(&events)?, next)),
-			Err(JobsError::Storage(err)) => Err(FileHostError::Sqlite(err)),
-			Err(_) => Err(FileHostError::OperationError("a stored Jobs event does not read back".to_owned())),
-		}
-	}
-
-	fn encode(mark: &Self::Mark) -> String {
-		joined(&[&mark.written_at, &mark.event_id])
-	}
-
-	fn decode(text: &str) -> Option<Self::Mark> {
-		let (written_at, event_id) = text.split_once('|')?;
-		Some(jobs_repo::Mark {
-			written_at: written_at.to_owned(),
-			event_id: event_id.to_owned(),
-		})
 	}
 }
 
@@ -114,37 +74,14 @@ struct Aph;
 
 impl Collection for Aph {
 	const SCOPE: Scope = Scope::Aph;
-	type Mark = aph_repo::Mark;
 
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match aph_repo::put_entry(conn, subject, id, body, now).await {
-			Ok((change, _)) => Ok(Outcome::Written(change.as_str())),
+			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(entry)?)),
 			Err(AphError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(AphError::Unreadable) => Err(FileHostError::OperationError("a stored aph revision does not read back".to_owned())),
 			Err(AphError::Storage(err)) => Err(FileHostError::Sqlite(err)),
 		}
-	}
-
-	async fn since(conn: &mut SqliteConnection, subject: &str, after: &Self::Mark, limit: i64) -> Result<(Vec<Value>, Self::Mark), FileHostError> {
-		match aph_repo::since(conn, subject, after, limit).await {
-			Ok((entries, next)) => Ok((values(&entries)?, next)),
-			Err(AphError::Storage(err)) => Err(FileHostError::Sqlite(err)),
-			Err(_) => Err(FileHostError::OperationError("a stored aph revision does not read back".to_owned())),
-		}
-	}
-
-	fn encode(mark: &Self::Mark) -> String {
-		joined(&[&mark.written_at, &mark.entry_id, &mark.revision.to_string()])
-	}
-
-	fn decode(text: &str) -> Option<Self::Mark> {
-		let (rest, revision) = text.rsplit_once('|')?;
-		let (written_at, entry_id) = rest.split_once('|')?;
-		Some(aph_repo::Mark {
-			written_at: written_at.to_owned(),
-			entry_id: entry_id.to_owned(),
-			revision: revision.parse().ok()?,
-		})
 	}
 }
 
@@ -155,22 +92,26 @@ pub struct Batch {
 	pub items: Vec<Item>,
 }
 
-/// One write: the id its own route takes in the path, and its body.
+/// One write: the id its own route takes in the path, and its body, kept
+/// as the bytes that arrived so it is read exactly as that route reads it.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Item {
 	pub id: String,
-	pub body: Value,
+	pub body: Box<RawValue>,
 }
 
 /// One item's answer: the status its own route would have answered, and that
-/// route's `change`, or the fields refused and why.
+/// route's `change` with what the record holds, or the fields refused and
+/// why, or the conflict.
 #[derive(Debug, Serialize)]
 pub struct Answer {
 	pub id: String,
 	pub status: u16,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub change: Option<&'static str>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub held: Option<Value>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub refused: Option<BTreeMap<&'static str, Vec<&'static str>>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -182,79 +123,66 @@ pub struct Written {
 	pub results: Vec<Answer>,
 }
 
-/// `GET /sync/:collection?since=`
-#[derive(Debug, Deserialize)]
-pub struct Since {
-	pub since: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Read {
-	/// Each as its own record holds it, in the order it reached home.
-	pub items: Vec<Value>,
-	/// What to send as `since` to read on; the same mark when nothing came.
-	pub next: String,
-}
-
 fn now() -> String {
 	// Fixed width, as `handlers::jobs`'s.
 	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMap, batch: Batch) -> Result<Written, FileHostError> {
+fn answer(id: String, outcome: Outcome) -> Answer {
+	let blank = Answer {
+		id,
+		status: 200,
+		change: None,
+		held: None,
+		refused: None,
+		conflict: None,
+	};
+	match outcome {
+		Outcome::Written(change, held) => Answer {
+			change: Some(change),
+			held: Some(held),
+			..blank
+		},
+		Outcome::Refused(problems) => {
+			let mut refused: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+			for (field, why) in problems {
+				refused.entry(field).or_default().push(why);
+			}
+			Answer {
+				status: 422,
+				refused: Some(refused),
+				..blank
+			}
+		}
+		Outcome::Conflict(why) => Answer {
+			status: 409,
+			conflict: Some(why),
+			..blank
+		},
+	}
+}
+
+async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMap, body: &[u8]) -> Result<Written, FileHostError> {
+	let batch: Batch = serde_json::from_slice(body).map_err(|_| FileHostError::unprocessable_entity([("body", "is { \"items\": [{ \"id\", \"body\" }] }")]))?;
+	if batch.items.len() > BATCH_CEILING {
+		return Err(FileHostError::unprocessable_entity([("items", "are at most 100")]));
+	}
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	refusing(&mut tx, subject, headers, C::SCOPE).await?;
 	let now = now();
 	let mut results = Vec::with_capacity(batch.items.len());
 	for Item { id, body } in batch.items {
-		let bytes = body.to_string();
-		let answer = match C::put(&mut tx, subject, &id, bytes.as_bytes(), &now).await? {
-			Outcome::Written(change) => Answer {
-				id,
-				status: 200,
-				change: Some(change),
-				refused: None,
-				conflict: None,
-			},
-			Outcome::Refused(problems) => {
-				let mut refused: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
-				for (field, why) in problems {
-					refused.entry(field).or_default().push(why);
-				}
-				Answer {
-					id,
-					status: 422,
-					change: None,
-					refused: Some(refused),
-					conflict: None,
-				}
-			}
-			Outcome::Conflict(why) => Answer {
-				id,
-				status: 409,
-				change: None,
-				refused: None,
-				conflict: Some(why),
-			},
-		};
-		results.push(answer);
+		let outcome = C::put(&mut tx, subject, &id, body.get().as_bytes(), &now).await?;
+		results.push(answer(id, outcome));
 	}
 	tx.commit().await?;
 	Ok(Written { results })
 }
 
-async fn read<C: Collection>(db: &SqlitePool, subject: &str, since: Option<&str>) -> Result<Read, FileHostError> {
-	let after = match since {
-		None => C::Mark::default(),
-		Some(text) => C::decode(text).ok_or_else(|| FileHostError::unprocessable_entity([("since", "is a `next` this route answered")]))?,
-	};
-	let mut conn = db.acquire().await?;
-	let (items, next) = C::since(&mut conn, subject, &after, READ_CEILING).await?;
-	Ok(Read { items, next: C::encode(&next) })
-}
-
-/// `POST /sync/:collection/batch`, `{ "items": [{ "id", "body" }, …] }`, at
-/// most [`BATCH_CEILING`] of them.
+/// `POST /sync/:collection/batch`, `{ "items": [{ "id", "body" }, …] }`.
+///
+/// At most [`BATCH_CEILING`] items; `:collection` is `jobs` (events, as
+/// `PUT /jobs/events/:id`) or `aph` (entries, as `PUT /aph/entries/:id`).
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 404 for an unknown
@@ -270,31 +198,10 @@ pub async fn write_batch(
 	Path(collection): Path<String>,
 	body: Bytes,
 ) -> Result<Json<Written>, FileHostError> {
-	let batch: Batch = serde_json::from_slice(&body).map_err(|_| FileHostError::unprocessable_entity([("body", "is { \"items\": [{ \"id\", \"body\" }] }")]))?;
-	if batch.items.len() > BATCH_CEILING {
-		return Err(FileHostError::unprocessable_entity([("items", "are at most 100")]));
-	}
 	let subject = subject.as_str();
 	match collection.as_str() {
-		"jobs" => write::<Jobs>(&db, subject, &headers, batch).await.map(Json),
-		"aph" => write::<Aph>(&db, subject, &headers, batch).await.map(Json),
-		_ => Err(FileHostError::NotFound),
-	}
-}
-
-/// `GET /sync/:collection?since=`: what was written after `since` (a `next`
-/// this route answered; none for the start), at most 200 items.
-///
-/// # Errors
-/// 401 without a session, 404 for an unknown collection, 422 for a `since`
-/// this route did not answer, and 500 for a storage failure.
-#[axum::debug_handler(state = crate::AppState)]
-#[instrument(name = "sync_since", skip_all, fields(otel.kind = "server"))]
-pub async fn read_since(subject: SubjectId, State(db): State<SqlitePool>, Path(collection): Path<String>, Query(query): Query<Since>) -> Result<Json<Read>, FileHostError> {
-	let since = query.since.as_deref();
-	match collection.as_str() {
-		"jobs" => read::<Jobs>(&db, subject.as_str(), since).await.map(Json),
-		"aph" => read::<Aph>(&db, subject.as_str(), since).await.map(Json),
+		"jobs" => write::<Jobs>(&db, subject, &headers, &body).await.map(Json),
+		"aph" => write::<Aph>(&db, subject, &headers, &body).await.map(Json),
 		_ => Err(FileHostError::NotFound),
 	}
 }
@@ -375,9 +282,13 @@ mod tests {
 			.with_state(state)
 	}
 
-	async fn call(app: &Router, method: Method, path: &str, auth: &(HeaderName, String), body: &Value) -> (StatusCode, Value) {
-		let text = if body.is_null() { String::new() } else { body.to_string() };
-		let request = Request::builder().method(method).uri(path).header(&auth.0, &auth.1).body(Body::from(text)).unwrap();
+	async fn call(app: &Router, method: Method, path: &str, auth: &(HeaderName, String), body: &str) -> (StatusCode, Value) {
+		let request = Request::builder()
+			.method(method)
+			.uri(path)
+			.header(&auth.0, &auth.1)
+			.body(Body::from(body.to_owned()))
+			.unwrap();
 		let response = app.clone().oneshot(request).await.unwrap();
 		let status = response.status();
 		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -392,7 +303,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_batch_answers_each_item_as_its_own_route_would_and_reads_back_from_a_mark() {
+	async fn a_batch_answers_each_item_as_its_own_route_would() {
 		let state = state().await;
 		let a = phone(&state, A).await;
 		let b = phone(&state, B).await;
@@ -407,38 +318,26 @@ mod tests {
 			{ "id": "e2", "body": event("e2") },
 			{ "id": "e3", "body": wrong },
 		] });
-		let (status, written) = call(&app, Method::POST, "/sync/jobs/batch", &a, &batch).await;
+		let (status, written) = call(&app, Method::POST, "/sync/jobs/batch", &a, &batch.to_string()).await;
 		assert_eq!(status, StatusCode::OK, "{written}");
 		let statuses: Vec<_> = written["results"].as_array().unwrap().iter().map(|r| (r["id"].clone(), r["status"].clone())).collect();
 		assert_eq!(statuses, [(json!("e1"), json!(200)), (json!("e2"), json!(200)), (json!("e3"), json!(422))]);
+		assert_eq!(written["results"][0]["held"], event("e1"), "what the record holds, as its own route answers");
 		assert_eq!(written["results"][2]["refused"]["day"].as_array().unwrap().len(), 1);
 
 		let again = json!({ "items": [{ "id": "e1", "body": event("e1") }, { "id": "e1", "body": rewritten }] });
-		let (_, answered) = call(&app, Method::POST, "/sync/jobs/batch", &a, &again).await;
+		let (_, answered) = call(&app, Method::POST, "/sync/jobs/batch", &a, &again.to_string()).await;
 		assert_eq!(answered["results"][0]["change"], "unchanged");
 		assert_eq!(answered["results"][1]["status"], 409);
 
-		let (status, first) = call(&app, Method::GET, "/sync/jobs", &a, &Value::Null).await;
-		assert_eq!(status, StatusCode::OK);
-		assert_eq!(first["items"], json!([event("e1"), event("e2")]));
-		let next = first["next"].as_str().unwrap().to_owned();
-		let (_, rest) = call(
-			&app,
-			Method::GET,
-			&(String::from("/sync/jobs?since=") + &next.replace('|', "%7C").replace(':', "%3A")),
-			&a,
-			&Value::Null,
-		)
-		.await;
-		assert_eq!(rest["items"], json!([]));
-		assert_eq!(rest["next"], json!(next), "an empty read keeps its mark");
+		// The bytes as sent: a duplicate key is refused as its own route refuses it.
+		let doubled = String::from(r#"{ "items": [{ "id": "e4", "body": {"id":"e4","#) + &event("e4").to_string()[1..] + "}] }";
+		let (_, refused) = call(&app, Method::POST, "/sync/jobs/batch", &a, &doubled).await;
+		assert_eq!(refused["results"][0]["status"], 422, "{refused}");
 
-		assert_eq!(call(&app, Method::GET, "/sync/jobs", &b, &Value::Null).await.1["items"], json!([]), "B reads none of A's");
-		assert_eq!(call(&app, Method::GET, "/sync/mood", &a, &Value::Null).await.0, StatusCode::NOT_FOUND);
-		assert_eq!(
-			call(&app, Method::GET, "/sync/jobs?since=garbage", &a, &Value::Null).await.0,
-			StatusCode::UNPROCESSABLE_ENTITY
-		);
+		let (status, b_wrote) = call(&app, Method::POST, "/sync/jobs/batch", &b, &json!({ "items": [] }).to_string()).await;
+		assert_eq!((status, b_wrote), (StatusCode::OK, json!({ "results": [] })));
+		assert_eq!(call(&app, Method::POST, "/sync/mood/batch", &a, &batch.to_string()).await.0, StatusCode::NOT_FOUND);
 	}
 
 	#[tokio::test]
@@ -446,27 +345,58 @@ mod tests {
 		let state = state().await;
 		let a = phone(&state, A).await;
 		let app = app(state);
-		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": true })).await;
+		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": true }).to_string()).await;
 		let batch = json!({ "items": [{ "id": "e1", "body": event("e1") }] });
-		assert_eq!(call(&app, Method::POST, "/sync/jobs/batch", &a, &batch).await.0, StatusCode::OK);
-		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": false })).await;
+		assert_eq!(call(&app, Method::POST, "/sync/jobs/batch", &a, &batch.to_string()).await.0, StatusCode::OK);
+		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": false }).to_string()).await;
 		let late = json!({ "items": [{ "id": "e2", "body": event("e2") }] });
-		assert_eq!(call(&app, Method::POST, "/sync/jobs/batch", &a, &late).await.0, StatusCode::CONFLICT);
-		assert_eq!(call(&app, Method::GET, "/sync/jobs", &a, &Value::Null).await.1["items"], json!([event("e1")]));
+		let (status, stopped) = call(&app, Method::POST, "/sync/jobs/batch", &a, &late.to_string()).await;
+		assert_eq!((status, stopped["error"]["code"].clone()), (StatusCode::CONFLICT, json!("sharing_stopped")));
+	}
 
-		let entry = json!({
-			"id": "a1", "day": "2026-10-17", "checkpoint": null, "time": null,
-			"mine": { "value": 4300, "approx": true }, "theirs": null, "goal": null,
-			"labels": [], "note": null, "review": null
-		});
-		let (status, kept) = call(&app, Method::POST, "/sync/aph/batch", &a, &json!({ "items": [{ "id": "a1", "body": entry }] })).await;
-		assert_eq!((status, kept["results"][0]["status"].clone()), (StatusCode::OK, json!(200)), "{kept}");
-		assert_eq!(call(&app, Method::GET, "/sync/aph", &a, &Value::Null).await.1["items"], json!([entry]));
-
-		let too_many: Vec<Value> = (0..=super::BATCH_CEILING).map(|i| json!({ "id": i.to_string(), "body": {} })).collect();
+	#[tokio::test]
+	async fn an_aph_batch_writes_entries_and_a_batch_holds_at_most_a_hundred() {
+		let state = state().await;
+		let a = phone(&state, A).await;
+		let app = app(state);
+		let entry = |id: &str| {
+			json!({
+				"id": id, "day": "2026-10-17", "checkpoint": null, "time": null,
+				"mine": { "value": 4300, "approx": true }, "theirs": null, "goal": null,
+				"labels": [], "note": null, "review": null
+			})
+		};
+		let items =
+			|n: usize| -> Value { json!({ "items": (0..n).map(|i| { let id = String::from("a") + &i.to_string(); json!({ "id": id, "body": entry(&id) }) }).collect::<Vec<_>>() }) };
+		let (status, kept) = call(&app, Method::POST, "/sync/aph/batch", &a, &items(super::BATCH_CEILING).to_string()).await;
+		assert_eq!(status, StatusCode::OK, "{kept}");
+		assert_eq!(kept["results"].as_array().unwrap().len(), super::BATCH_CEILING);
+		assert_eq!(kept["results"][0]["held"], entry("a0"));
 		assert_eq!(
-			call(&app, Method::POST, "/sync/aph/batch", &a, &json!({ "items": too_many })).await.0,
+			call(&app, Method::POST, "/sync/aph/batch", &a, &items(super::BATCH_CEILING + 1).to_string()).await.0,
 			StatusCode::UNPROCESSABLE_ENTITY
+		);
+	}
+
+	#[tokio::test]
+	async fn a_batch_needs_a_session_from_a_trusted_origin() {
+		let state = state().await;
+		let a = phone(&state, A).await;
+		let app = app(state);
+		let request = |auth: Option<&(HeaderName, String)>, origin: Option<&str>| {
+			let mut request = Request::builder().method(Method::POST).uri("/sync/jobs/batch");
+			if let Some((name, value)) = auth {
+				request = request.header(name, value);
+			}
+			if let Some(origin) = origin {
+				request = request.header("origin", origin);
+			}
+			request.body(Body::from(json!({ "items": [] }).to_string())).unwrap()
+		};
+		assert_eq!(app.clone().oneshot(request(None, None)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+		assert_eq!(
+			app.clone().oneshot(request(Some(&a), Some("https://evil.app.test"))).await.unwrap().status(),
+			StatusCode::FORBIDDEN
 		);
 	}
 }
