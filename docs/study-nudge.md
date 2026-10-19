@@ -1559,7 +1559,12 @@ the per-subject scan #260 (SUB2) then added: every non-admin method on
 by it — `get` returns `None` for a foreign id rather than the row (an id is
 not a capability), `delete`/`delete_many` treat a foreign id as a no-op, and
 `upsert` refuses outright, as `SessionRepoError::SubjectMismatch`, to move an
-existing row to a different subject. The route layer does not extract a real
+existing row to a different subject. `insert_if_absent` (`POST /sessions`
+with a client's own `id`) is the one exception to "an id is not a
+capability": an id another subject holds is a `409`, which says the id is in
+use. It can say nothing a caller did not already hold, because such an id is
+`session-` and at least 16 more characters, which the phone mints fresh for
+each copy (`session_repo::is_session_id`). The route layer does not extract a real
 subject yet — `handlers/db/session.rs` passes `SINGLETON_SUBJECT` explicitly,
 same as every other unauthenticated caller — that thread-through is #261
 (SUB3), whose own acceptance criterion (`grep -rn "SINGLETON_SUBJECT"` outside
