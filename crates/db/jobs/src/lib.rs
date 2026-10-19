@@ -151,9 +151,49 @@ pub async fn record(conn: &mut SqliteConnection, subject: &str) -> Result<Record
 	Ok(Record { events })
 }
 
+/// Where a read of the record left off: the last event's `written_at` and
+/// id. The empty string comes before every event.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mark {
+	pub written_at: String,
+	pub event_id: String,
+}
+
+/// Up to `limit` of `subject`'s events stored after `after`, in the order
+/// they reached home, and the mark to read on from.
+///
+/// # Errors
+/// [`JobsError::Unreadable`] for a stored body that does not read back, and
+/// [`JobsError::Storage`] for any `sqlx` failure.
+pub async fn since(conn: &mut SqliteConnection, subject: &str, after: &Mark, limit: i64) -> Result<(Vec<Event>, Mark), JobsError> {
+	let rows = sqlx::query!(
+		r#"
+		SELECT event_id, written_at, body FROM jobs_event
+		WHERE subject_id = ?1 AND (written_at > ?2 OR (written_at = ?2 AND event_id > ?3))
+		ORDER BY written_at, event_id
+		LIMIT ?4
+		"#,
+		subject,
+		after.written_at,
+		after.event_id,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let next = rows.last().map_or_else(
+		|| after.clone(),
+		|row| Mark {
+			written_at: row.written_at.clone(),
+			event_id: row.event_id.clone(),
+		},
+	);
+	let events = rows.iter().map(|row| read_body(&row.body)).collect::<Result<Vec<Event>, JobsError>>()?;
+	Ok((events, next))
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{put_event, record, Change, JobsError};
+	use super::{put_event, record, since, Change, JobsError, Mark};
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -224,6 +264,25 @@ mod tests {
 
 		let update = sqlx::query("UPDATE jobs_event SET body = '{}'").execute(&pool).await;
 		assert!(update.unwrap_err().to_string().contains("append-only"), "no row is ever updated");
+	}
+
+	#[tokio::test]
+	async fn a_read_from_a_mark_takes_each_event_once_in_the_order_it_reached_home() {
+		let pool = pool().await;
+		let conn = &mut pool.acquire().await.unwrap();
+		for (id, now) in [("e2", "2026-10-18T23:00:00.000Z"), ("e1", "2026-10-18T23:00:00.000Z"), ("e3", "2026-10-18T23:00:01.000Z")] {
+			let event = taken(id, "2026-10-18T22:10:00.000Z");
+			put_event(conn, A, id, event.to_string().as_bytes(), now).await.unwrap();
+		}
+		put_event(conn, B, "e9", taken("e9", "2026-10-18T22:10:00.000Z").to_string().as_bytes(), NOW).await.unwrap();
+
+		let (first, mark) = since(conn, A, &Mark::default(), 2).await.unwrap();
+		assert_eq!(first.iter().map(super::Event::id).collect::<Vec<_>>(), ["e1", "e2"]);
+		let (rest, end) = since(conn, A, &mark, 2).await.unwrap();
+		assert_eq!(rest.iter().map(super::Event::id).collect::<Vec<_>>(), ["e3"]);
+		let (none, same) = since(conn, A, &end, 2).await.unwrap();
+		assert!(none.is_empty());
+		assert_eq!(same, end, "an empty read keeps its mark");
 	}
 
 	#[tokio::test]

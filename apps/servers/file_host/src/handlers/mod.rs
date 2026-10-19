@@ -12,5 +12,6 @@ pub mod sharing;
 pub mod shelf;
 pub mod signals;
 pub mod subjects;
+pub mod sync;
 pub mod tab_metadata;
 pub mod utterance;
