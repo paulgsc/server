@@ -493,28 +493,30 @@ nowhere is marked as such and belongs to review.
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s
     `refusals_name_their_fields_and_records_stay_apart`.
 
-17. **What a phone shares is a choice home keeps two times for, never one per
-    item.** `sharing_choice` keeps what each paired phone's person chose to
-    keep sending home (paulgsc/some-ui `apps/www/src/lib/home-link`, its
-    consent log): one row when sharing a kind of record (`sessions`, `shelf`,
-    `aph`, `jobs`) began under a pairing and one when it ended, each with
-    when home heard it, and nothing about when anything was sent under it.
-    Those two times are kept so home can refuse what a phone sends after its
-    person stopped it (`PUT /aph/*` and `PUT /jobs/events/:id` answer `409`),
+17. **What a phone shares is a choice home keeps a time for at each change,
+    never one per item.** `sharing_choice` keeps what each paired phone's
+    person chose to keep sending home (paulgsc/some-ui
+    `apps/www/src/lib/home-link`, its consent log): one row each time sharing
+    a kind of record (`sessions`, `shelf`, `aph`, `jobs`) began or ended under
+    a pairing, with when home heard it, and nothing about when anything was
+    sent under it. Those times are kept so home can refuse the aph and Jobs
+    writes a phone sends after its person stopped them (`PUT /aph/*` and
+    `PUT /jobs/events/:id` answer `409`, code `sharing_stopped`; sessions and
+    the shelf also go home on a tap no choice covers, and are not refused),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
     (`PUT /sharing/:scope`, a bearer session: a browser's is `403`), counts
     for that pairing alone, and is never updated (a trigger aborts an
     `UPDATE`) or deleted but with the account. The pairing is named by
-    `device_id`, a digest of its session's stored digest
-    (`auth::cookie::device_of`): it opens nothing, says nothing
-    `auth_session` does not, is never sent by the phone (invariant 4), and is
-    no identity, since it is only ever read under the subject it came with.
+    `pairing_id`, a digest of its session's stored digest
+    (`auth::cookie::pairing_of`): it opens nothing, is never sent by the
+    phone (invariant 4), and is no identity, since it is only ever read under
+    the subject it came with.
     *Enforced by* `sharing_repo`'s `the_table_holds_exactly_its_described_columns`,
-    `a_choice_is_two_rows_at_most_and_no_row_changes` and
+    `a_change_is_one_row_and_no_row_changes` and
     `the_choices_leave_with_the_account`, and `handlers::sharing`'s
     `only_a_paired_phone_makes_or_reads_a_choice` and
-    `home_takes_a_phones_writes_only_while_they_are_kept`.
+    `home_refuses_only_what_a_phone_stopped`.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
@@ -558,9 +560,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   the owner's Drive. Deleting the account removes it; nothing else does.
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
-  record home (invariant 17): a few times per pairing, not a use timeline.
-  It outlives the pairing it names, as what home received does. Deleting the
-  account removes it; nothing else does.
+  record home (invariant 17): one row per change, as many as its person
+  flips a choice, with no cap. While the pairing's session lives, anyone
+  holding the database can recompute `pairing_id` from that session's
+  `auth_session` row and join the two, so the first time dates roughly when
+  the phone was paired and later ones when it was used, which the auth
+  tables alone do not say (invariant 10). It outlives the pairing it names,
+  as what home received does. Deleting the account removes it; nothing else
+  does.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its

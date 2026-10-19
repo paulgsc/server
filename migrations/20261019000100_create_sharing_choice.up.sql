@@ -2,19 +2,20 @@
 -- began and ended (paulgsc/some-ui `apps/www/src/lib/home-link`, its consent
 -- log): one row per change of a choice, for one pairing and one kind of
 -- record. The phone's own log is the record of what was agreed to, in its
--- words; this is home's, so home can refuse what a phone sends after its
--- person stopped it, and show when each choice started and stopped.
+-- words; this is home's, so home can refuse the aph and Jobs writes a phone
+-- sends after its person stopped them, and show when each choice started and
+-- stopped.
 --
--- Two times per choice, never one per item sent: home keeps when sharing
--- began and ended, and nothing about when anything was sent under it
+-- One row per change, never one per item sent: home keeps when sharing began
+-- and ended, and nothing about when anything was sent under it
 -- (docs/identity.md, invariant 17). APPEND-ONLY: a row is never updated (the
 -- trigger below aborts an UPDATE) or deleted but with the account.
 --
 -- Columns of `sharing_choice`:
 --
 --   subject_id -- whose account.
---   device_id  -- the pairing it was made under: a digest of that pairing's
---                 session (`subject::PairedDevice`), never anything the
+--   pairing_id -- the pairing it was made under: a digest of that pairing's
+--                 session (`auth::cookie::pairing_of`), never anything the
 --                 phone says about itself.
 --   seq        -- this pairing's changes, in the order home heard them.
 --   scope      -- what is shared: `sessions`, `shelf`, `aph` or `jobs`.
@@ -22,12 +23,12 @@
 --   at         -- ISO-8601 UTC, when home heard it.
 CREATE TABLE sharing_choice (
     subject_id TEXT    NOT NULL,
-    device_id  TEXT    NOT NULL,
+    pairing_id TEXT    NOT NULL,
     seq        INTEGER NOT NULL,
     scope      TEXT    NOT NULL CHECK (scope IN ('sessions', 'shelf', 'aph', 'jobs')),
     kept       INTEGER NOT NULL CHECK (kept IN (0, 1)),
     at         TEXT    NOT NULL,
-    PRIMARY KEY (subject_id, device_id, seq)
+    PRIMARY KEY (subject_id, pairing_id, seq)
 );
 CREATE TRIGGER sharing_choice_is_append_only
 BEFORE UPDATE ON sharing_choice

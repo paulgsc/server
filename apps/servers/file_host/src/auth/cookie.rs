@@ -40,14 +40,14 @@ pub const SESSION_COOKIE: &str = "__Host-session";
 const PHONE_DOMAIN: &[u8] = b"some-ui paired phone session\0";
 
 /// Prefixed to a phone's session digest to name its pairing
-/// ([`device_of`]). Changing it makes every pairing a new one to home.
-const DEVICE_DOMAIN: &[u8] = b"some-ui paired device\0";
+/// ([`pairing_of`]). Changing it makes every pairing a new one to home.
+const PAIRING_DOMAIN: &[u8] = b"some-ui pairing\0";
 
 /// The name of the pairing whose session is stored as `token_hash`: a
 /// digest of the digest, so it opens nothing and says nothing the session
 /// row does not, and it lasts exactly as long as that pairing's session.
-pub(crate) fn device_of(token_hash: &[u8; 32]) -> String {
-	let digest = Sha256::new().chain_update(DEVICE_DOMAIN).chain_update(token_hash).finalize();
+pub(crate) fn pairing_of(token_hash: &[u8; 32]) -> String {
+	let digest = Sha256::new().chain_update(PAIRING_DOMAIN).chain_update(token_hash).finalize();
 	hex::encode(&digest[..16])
 }
 

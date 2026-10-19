@@ -1169,7 +1169,7 @@ mod tests {
 				"INSERT INTO aph_entry (subject_id, entry_id, revision, day, checkpoint, plain, body, written_at) VALUES (?1, 'e', 1, 'd', NULL, 0, '{}', 'now')",
 				"INSERT INTO aph_settings (subject_id, revision, body, written_at) VALUES (?1, 1, '{}', 'now')",
 				"INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, 'e', 'now', '{}', 'now')",
-				"INSERT INTO sharing_choice (subject_id, device_id, seq, scope, kept, at) VALUES (?1, 'd', 1, 'aph', 1, 'now')",
+				"INSERT INTO sharing_choice (subject_id, pairing_id, seq, scope, kept, at) VALUES (?1, 'p', 1, 'aph', 1, 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

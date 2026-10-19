@@ -2,15 +2,15 @@
 //! sending home. The record's own rules (append-only, two times per choice)
 //! are `sharing_repo`'s.
 //!
-//! **The deletion hold.** Each handler takes a [`PairedDevice`], whose
+//! **The deletion hold.** Each handler takes a [`Paired`], whose
 //! [`crate::subject::SubjectId`] it keeps until it returns, as every other
 //! subject-scoped write does (docs/identity.md, invariant 9).
 //!
 //! **No other writer.** [`put_choice`] is the only caller of
-//! `sharing_repo::choose`. What reads the choices is each phone write's check
-//! ([`refusing`]).
+//! `sharing_repo::choose`. What reads the choices is [`get_choices`] and each
+//! aph and Jobs write's check ([`refusing`]).
 
-use crate::subject::{paired_device, PairedDevice};
+use crate::subject::{pairing_in, Paired};
 use crate::FileHostError;
 use axum::{
 	extract::{Path, State},
@@ -22,10 +22,6 @@ use serde::{Deserialize, Serialize};
 use sharing_repo::{Change, Scope};
 use sqlx::{SqliteConnection, SqlitePool};
 use tracing::instrument;
-
-/// What a stopped write is refused with: the phone says "Sending to home is
-/// off", and keeps what it holds.
-pub const STOPPED: &str = "this phone stopped sending it to home";
 
 /// A pairing's choices: what it keeps sending now and since when, and every
 /// change, in the order home heard them.
@@ -70,9 +66,9 @@ fn choices_of(changes: Vec<Change>) -> Choices {
 /// 401 without a session, 403 for a browser's, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "sharing_choices", skip_all, fields(otel.kind = "server"))]
-pub async fn get_choices(paired: PairedDevice, State(db): State<SqlitePool>) -> Result<Json<Choices>, FileHostError> {
+pub async fn get_choices(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Choices>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let changes = sharing_repo::changes(&mut conn, paired.subject.as_str(), paired.device()).await?;
+	let changes = sharing_repo::changes(&mut conn, paired.subject.as_str(), paired.pairing()).await?;
 	Ok(Json(choices_of(changes)))
 }
 
@@ -85,13 +81,11 @@ pub async fn get_choices(paired: PairedDevice, State(db): State<SqlitePool>) -> 
 /// storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "sharing_choose", skip_all, fields(otel.kind = "server"))]
-pub async fn put_choice(paired: PairedDevice, State(db): State<SqlitePool>, Path(scope): Path<String>, body: axum::body::Bytes) -> Result<Json<Choices>, FileHostError> {
+pub async fn put_choice(paired: Paired, State(db): State<SqlitePool>, Path(scope): Path<String>, body: axum::body::Bytes) -> Result<Json<Choices>, FileHostError> {
 	let scope = Scope::named(&scope).ok_or_else(|| FileHostError::unprocessable_entity([("scope", "is sessions, shelf, aph or jobs")]))?;
 	let choice: Choice = serde_json::from_slice(&body).map_err(|_| FileHostError::unprocessable_entity([("body", "is { \"kept\": true } or { \"kept\": false }")]))?;
-	let (subject, device) = (paired.subject.as_str(), paired.device());
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	sharing_repo::choose(&mut tx, subject, device, scope, choice.kept, &now()).await?;
-	let changes = sharing_repo::changes(&mut tx, subject, device).await?;
+	let changes = sharing_repo::choose(&mut tx, paired.subject.as_str(), paired.pairing(), scope, choice.kept, &now()).await?;
 	tx.commit().await?;
 	Ok(Json(choices_of(changes)))
 }
@@ -100,18 +94,19 @@ pub async fn put_choice(paired: PairedDevice, State(db): State<SqlitePool>, Path
 /// (`sharing_repo::refuses`); a browser's write is never refused here. Run it
 /// on the write's own transaction, before the write.
 ///
-/// Only aph and the Jobs record call it: their phone writes come from a
-/// standing choice alone. Sessions and the shelf also go home by a tap of
-/// Settings' one-time send, which no choice covers, so they are not checked.
+/// Only aph and the Jobs record call it. The phone sends sessions and the
+/// shelf on a tap too (paulgsc/some-ui `apps/www/src/lib/home-link/send.ts`,
+/// Settings' one-time send), which no standing choice covers, so they are
+/// not checked.
 ///
 /// # Errors
-/// 409 ([`STOPPED`]) when stopped, and 500 for a storage failure.
+/// 409 (`sharing_stopped`) when stopped, and 500 for a storage failure.
 pub async fn refusing(conn: &mut SqliteConnection, subject: &str, headers: &HeaderMap, scope: Scope) -> Result<(), FileHostError> {
-	let Some(device) = paired_device(headers) else {
+	let Some(pairing) = pairing_in(headers) else {
 		return Ok(());
 	};
-	if sharing_repo::refuses(conn, subject, &device, scope).await? {
-		return Err(FileHostError::Conflict(STOPPED));
+	if sharing_repo::refuses(conn, subject, &pairing, scope).await? {
+		return Err(FileHostError::Stopped);
 	}
 	Ok(())
 }
@@ -119,8 +114,8 @@ pub async fn refusing(conn: &mut SqliteConnection, subject: &str, headers: &Head
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
-	//! paired phone sends) and a browser's, and the Jobs record's write as
-	//! the one a choice gates.
+	//! paired phone sends) and a browser's, and the aph and Jobs writes a
+	//! choice gates.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
@@ -189,6 +184,7 @@ mod tests {
 		crate::routes::sharing::sharing()
 			.into_table_router()
 			.merge(crate::routes::jobs::jobs().into_table_router())
+			.merge(crate::routes::aph::aph().into_table_router())
 			.with_state(state)
 	}
 
@@ -213,6 +209,24 @@ mod tests {
 
 	async fn send_jobs(app: &Router, phone: &(HeaderName, String), id: &str) -> StatusCode {
 		call(app, Method::PUT, &(String::from("/jobs/events/") + id), Some(phone), &event(id)).await.0
+	}
+
+	async fn send_aph(app: &Router, phone: &(HeaderName, String)) -> [StatusCode; 2] {
+		let entry = json!({
+			"id": "e1", "day": "2026-10-17", "checkpoint": "7", "time": null,
+			"mine": { "value": 4300, "approx": true }, "theirs": null, "goal": 4100,
+			"labels": [], "note": null, "review": null
+		});
+		let settings = json!({
+			"checkpoints": [{ "id": "7", "label": "7:00", "minutes": 420, "goal": 4100 }],
+			"labels": [], "step": 100, "usualLow": 3000, "usualHigh": 6500, "tolerance": 100,
+			"since": "2026-09-14"
+		});
+		// Settings first: an entry names one of their checkpoints.
+		[
+			call(app, Method::PUT, "/aph/settings", Some(phone), &settings).await.0,
+			call(app, Method::PUT, "/aph/entries/e1", Some(phone), &entry).await.0,
+		]
 	}
 
 	#[tokio::test]
@@ -255,11 +269,12 @@ mod tests {
 		assert_eq!(named(call(&app, Method::PUT, "/sharing/aph", Some(&phone), &json!({ "kept": "yes" })).await), ["body"]);
 	}
 
-	/// What a phone that told home its choices sends is taken only while it is
-	/// kept; a phone that never told home any, and a browser, are refused
-	/// nothing; and each pairing's choices are its own.
+	/// A phone's aph and Jobs writes are refused once its person stopped them,
+	/// and taken again once kept again; a scope a phone never named, a phone
+	/// that told home nothing, and a browser are refused nothing; and each
+	/// pairing's choices are its own.
 	#[tokio::test]
-	async fn home_takes_a_phones_writes_only_while_they_are_kept() {
+	async fn home_refuses_only_what_a_phone_stopped() {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let other_phone = session(&state, A, Carrier::Bearer).await;
@@ -268,18 +283,24 @@ mod tests {
 
 		assert_eq!(send_jobs(&app, &phone, "e1").await, StatusCode::OK, "told home nothing yet");
 		call(&app, Method::PUT, "/sharing/aph", Some(&phone), &json!({ "kept": true })).await;
-		let (status, refused) = call(&app, Method::PUT, "/jobs/events/e2", Some(&phone), &event("e2")).await;
-		assert_eq!(status, StatusCode::CONFLICT, "told home, but never kept the Jobs record");
-		assert_eq!(refused["error"]["message"], super::STOPPED);
+		assert_eq!(send_jobs(&app, &phone, "e2").await, StatusCode::OK, "a scope this phone has not named");
+		assert_eq!(send_aph(&app, &phone).await, [StatusCode::OK; 2]);
 
-		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": true })).await;
-		assert_eq!(send_jobs(&app, &phone, "e2").await, StatusCode::OK);
 		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": false })).await;
-		assert_eq!(send_jobs(&app, &phone, "e3").await, StatusCode::CONFLICT, "stopped");
+		assert_eq!(send_jobs(&app, &phone, "e3").await, StatusCode::OK, "stopping what was never kept changes nothing");
+		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": true })).await;
+		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": false })).await;
+		let (status, refused) = call(&app, Method::PUT, "/jobs/events/e4", Some(&phone), &event("e4")).await;
+		assert_eq!(status, StatusCode::CONFLICT, "stopped");
+		assert_eq!(refused["error"]["code"], "sharing_stopped");
+		call(&app, Method::PUT, "/sharing/aph", Some(&phone), &json!({ "kept": false })).await;
+		assert_eq!(send_aph(&app, &phone).await, [StatusCode::CONFLICT; 2]);
 
-		assert_eq!(send_jobs(&app, &other_phone, "e3").await, StatusCode::OK, "another pairing's choices are its own");
-		assert_eq!(send_jobs(&app, &browser, "e4").await, StatusCode::OK, "a browser makes no choice and is refused none");
+		assert_eq!(send_jobs(&app, &other_phone, "e4").await, StatusCode::OK, "another pairing's choices are its own");
+		assert_eq!(send_jobs(&app, &browser, "e5").await, StatusCode::OK, "a browser makes no choice and is refused none");
+		call(&app, Method::PUT, "/sharing/jobs", Some(&phone), &json!({ "kept": true })).await;
+		assert_eq!(send_jobs(&app, &phone, "e6").await, StatusCode::OK, "kept again");
 		let held = call(&app, Method::GET, "/jobs", Some(&browser), &Value::Null).await.1;
-		assert_eq!(held["events"].as_array().unwrap().len(), 4, "what home took before the stop stays");
+		assert_eq!(held["events"].as_array().unwrap().len(), 6, "what home took before the stop stays");
 	}
 }

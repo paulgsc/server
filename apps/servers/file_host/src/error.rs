@@ -43,6 +43,12 @@ pub enum FileHostError {
 	#[error("conflicts with an existing record: {0}")]
 	Conflict(&'static str),
 
+	// A paired phone wrote a kind of record its person stopped sending home
+	// (`handlers::sharing::refusing`). A 409 of its own code, so the phone
+	// can tell it from a `Conflict` on the same route.
+	#[error("this phone stopped sending it to home")]
+	Stopped,
+
 	// ---- transparent from-conversions ----
 	#[error("serialization error: {0}")]
 	NonSerializableData(#[from] serde_json::Error),
@@ -144,13 +150,13 @@ struct ErrorEnvelope {
 }
 
 impl FileHostError {
-	fn status_code(&self) -> StatusCode {
+	const fn status_code(&self) -> StatusCode {
 		match self {
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
-			Self::Conflict(_) => StatusCode::CONFLICT,
+			Self::Conflict(_) | Self::Stopped => StatusCode::CONFLICT,
 			Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
@@ -164,7 +170,7 @@ impl FileHostError {
 		}
 	}
 
-	fn code(&self) -> &'static str {
+	const fn code(&self) -> &'static str {
 		match self {
 			Self::Unauthorized => "unauthorized",
 			Self::Forbidden => "forbidden",
@@ -175,6 +181,7 @@ impl FileHostError {
 			Self::UnprocessableEntity { .. } => "unprocessable_entity",
 			Self::MaxRecordLimitExceeded => "max_record_limit_exceeded",
 			Self::Conflict(_) => "conflict",
+			Self::Stopped => "sharing_stopped",
 			Self::NonSerializableData(_) => "serialization_error",
 			Self::IntegerConversionError(_) => "integer_conversion_error",
 			Self::ResponseBuildError(_) => "response_build_error",
@@ -195,7 +202,7 @@ impl FileHostError {
 
 	// Client-facing message. Kept generic for anything that might carry
 	// internal details (DB/IO/upstream errors) so those never leak into the response body.
-	fn message(&self) -> &'static str {
+	const fn message(&self) -> &'static str {
 		match self {
 			Self::Unauthorized => "authentication required",
 			Self::Forbidden => "user may not perform that action",
@@ -206,6 +213,7 @@ impl FileHostError {
 			Self::UnprocessableEntity { .. } => "error in request body",
 			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
 			Self::Conflict(reason) => reason,
+			Self::Stopped => "this phone stopped sending it to home",
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",

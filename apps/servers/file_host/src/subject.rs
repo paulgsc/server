@@ -13,7 +13,7 @@
 
 use crate::{
 	auth::{
-		cookie::{device_of, Carrier, SessionToken},
+		cookie::{pairing_of, Carrier, SessionToken},
 		AuthContext,
 	},
 	FileHostError,
@@ -67,7 +67,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("sessions", "study sessions"),
 	(
 		"sharing_choice",
-		"what each paired phone's person chose to keep sending home, and when each choice began and ended: two times per choice, none per item sent; see docs/identity.md",
+		"what each paired phone's person chose to keep sending home, and when each choice began and ended: a time per change, none per item sent; see docs/identity.md",
 	),
 ];
 
@@ -209,36 +209,38 @@ where
 	}
 }
 
-/// A paired phone's request: its subject, and its pairing (`device`), which
-/// a browser's cookie session has none of, so it answers `403` here.
+/// A paired phone's request: its subject, and its pairing, which a browser's
+/// cookie session has none of, so it answers `403` here.
 ///
-/// The device is named from the pairing's session (`auth::cookie::device_of`),
-/// never from anything the phone says about itself (invariant 4), and it is
-/// no identity: it only tells one pairing's choices from another's under the
+/// The pairing is named from its session (`auth::cookie::pairing_of`), never
+/// from anything the phone says about itself (invariant 4), and it is no
+/// identity: it only tells one pairing's choices from another's under the
 /// same subject, as the phone's own consent log does.
 #[derive(Debug)]
-pub struct PairedDevice {
+pub struct Paired {
 	pub subject: SubjectId,
-	device: String,
+	pairing: String,
 }
 
-impl PairedDevice {
+impl Paired {
 	#[must_use]
-	pub fn device(&self) -> &str {
-		&self.device
+	pub fn pairing(&self) -> &str {
+		&self.pairing
 	}
 }
 
 /// The pairing a request's bearer session names, or `None` for a browser's.
-pub(crate) fn paired_device(headers: &HeaderMap) -> Option<String> {
+/// It reads the session `SubjectId` resolved, as both read the bearer first
+/// (`SessionToken::from_headers`).
+pub(crate) fn pairing_in(headers: &HeaderMap) -> Option<String> {
 	match SessionToken::from_headers(headers) {
-		Some((token, Carrier::Bearer)) => Some(device_of(&token.hash(Carrier::Bearer))),
+		Some((token, Carrier::Bearer)) => Some(pairing_of(&token.hash(Carrier::Bearer))),
 		_ => None,
 	}
 }
 
 #[axum::async_trait]
-impl<S> FromRequestParts<S> for PairedDevice
+impl<S> FromRequestParts<S> for Paired
 where
 	AuthContext: FromRef<S>,
 	S: Send + Sync,
@@ -247,8 +249,8 @@ where
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
 		let subject = SubjectId::from_request_parts(parts, state).await?;
-		let device = paired_device(&parts.headers).ok_or(FileHostError::Forbidden)?;
-		Ok(Self { subject, device })
+		let pairing = pairing_in(&parts.headers).ok_or(FileHostError::Forbidden)?;
+		Ok(Self { subject, pairing })
 	}
 }
 
