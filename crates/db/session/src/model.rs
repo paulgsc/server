@@ -13,6 +13,14 @@ pub fn new_session_id() -> String {
 	String::from("session-") + &uuid::Uuid::new_v4().to_string()
 }
 
+/// An id a client may name its session by: 1 to 64 letters, digits, `-` and
+/// `_`, which every id [`new_session_id`] and the client's `generateId`
+/// make is.
+#[must_use]
+pub fn is_session_id(text: &str) -> bool {
+	!text.is_empty() && text.len() <= 64 && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 /// The five statuses `SessionStatus` admits in the client. Not four, not six —
 /// the vocabulary is fixed, and the policy's candidate ranking is written
 /// against exactly these names.
@@ -175,12 +183,16 @@ pub struct SessionRecord {
 
 /// What `SessionsRepository.create(input)` sends.
 ///
-/// Deliberately not a `SessionRecord`: the id, the timestamps, the initial
-/// status, and `totalDurationMs` are all the server's to decide now, and a
-/// client that could send them could disagree with itself.
+/// Deliberately not a `SessionRecord`: the timestamps, the initial status,
+/// and `totalDurationMs` are all the server's to decide now, and a client
+/// that could send them could disagree with itself. The id is the server's
+/// too unless the client names one ([`is_session_id`]): a phone sending a
+/// session it made names its own, so the same create sent twice makes one.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSession {
+	#[serde(default)]
+	pub id: Option<String>,
 	pub name: String,
 	#[serde(default)]
 	pub activities: Vec<serde_json::Value>,

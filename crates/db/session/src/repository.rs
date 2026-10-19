@@ -127,6 +127,16 @@ impl From<serde_json::Error> for SessionRepoError {
 	}
 }
 
+/// How [`SessionRepository::insert_if_absent`] went.
+#[derive(Debug)]
+pub enum Created {
+	Inserted,
+	/// This subject already holds the id: the record as it is now.
+	Held(Box<SessionRecord>),
+	/// Another subject holds the id.
+	Taken,
+}
+
 pub struct SessionRepository {
 	pool: SqlitePool,
 }
@@ -671,6 +681,64 @@ impl SessionRepository {
 		Ok(())
 	}
 
+	/// Write a new record under the id its client chose, once: a repeated
+	/// create (a send whose answer was lost, sent again) finds the record the
+	/// first one made and changes nothing.
+	///
+	/// [`Created::Taken`] is an id another subject holds. Saying so tells the
+	/// caller that id is in use, which [`Self::get`] never does; an id the
+	/// client made with `crypto.randomUUID()` is one only it has seen, so
+	/// the answer reaches no one who did not already hold the id.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error, or if the record's JSON does not serialize.
+	pub async fn insert_if_absent(&self, subject_id: &str, record: &SessionRecord) -> Result<Created, SessionRepoError> {
+		let status = record.status.as_str();
+		let origin = record.origin.as_str();
+		let layout_mode = record.layout_mode.as_str();
+		// The database write itself, as in `upsert`.
+		#[allow(clippy::disallowed_methods)]
+		let (activities, scenes, layout) = (
+			serde_json::to_string(&record.activities)?,
+			serde_json::to_string(&record.scenes)?,
+			record.layout.as_ref().map(serde_json::to_string).transpose()?,
+		);
+
+		let result = sqlx::query!(
+			r#"
+			INSERT INTO sessions (
+			    id, subject_id, name, status, origin, layout_mode, total_duration_ms,
+			    created_at, updated_at, started_at, completed_at, final_elapsed_ms,
+			    activities, scenes, layout
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO NOTHING
+			"#,
+			record.id,
+			subject_id,
+			record.name,
+			status,
+			origin,
+			layout_mode,
+			record.total_duration_ms,
+			record.created_at,
+			record.updated_at,
+			record.started_at,
+			record.completed_at,
+			record.final_elapsed_ms,
+			activities,
+			scenes,
+			layout,
+		)
+		.execute(&self.pool)
+		.await?;
+
+		if result.rows_affected() == 1 {
+			return Ok(Created::Inserted);
+		}
+		Ok(self.get(subject_id, &record.id).await?.map_or(Created::Taken, |held| Created::Held(Box::new(held))))
+	}
+
 	/// Remove one session **owned by this subject**. Returns whether a row was
 	/// actually removed, so a caller that cares about 404 can tell.
 	///
@@ -810,7 +878,7 @@ impl SessionRepository {
 /// is no synchronous metrics-recorder API here to wrap the runtime around.
 #[cfg(test)]
 mod tests {
-	use super::{SessionRepoError, SessionRepository};
+	use super::{Created, SessionRepoError, SessionRepository};
 	use crate::model::{LayoutMode, SessionOrigin, SessionRecord, SessionStatus};
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqlitePool;
@@ -849,6 +917,25 @@ mod tests {
 			completed_at: None,
 			final_elapsed_ms: None,
 		}
+	}
+
+	#[tokio::test]
+	async fn a_create_under_a_held_id_changes_nothing_and_names_whose_it_is() {
+		let pool = pool().await;
+		let repo = SessionRepository::new(pool);
+		let first = fixture("session-client-1");
+		assert!(matches!(repo.insert_if_absent("subject-a", &first).await.unwrap(), Created::Inserted));
+
+		let mut again = fixture("session-client-1");
+		again.name = String::from("sent again");
+		match repo.insert_if_absent("subject-a", &again).await.unwrap() {
+			Created::Held(record) => assert_eq!(record.name, first.name),
+			other => panic!("expected the held record, got {other:?}"),
+		}
+		assert_eq!(repo.list("subject-a").await.unwrap().len(), 1);
+
+		assert!(matches!(repo.insert_if_absent("subject-b", &again).await.unwrap(), Created::Taken));
+		assert!(repo.list("subject-b").await.unwrap().is_empty());
 	}
 
 	#[tokio::test]

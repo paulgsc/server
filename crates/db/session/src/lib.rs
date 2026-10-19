@@ -17,5 +17,7 @@
 pub mod model;
 pub mod repository;
 
-pub use model::{new_session_id, session_abandonment_is_real, total_duration_of, CreateSession, LayoutMode, SessionOrigin, SessionRecord, SessionStatus, UpdateSession};
-pub use repository::SessionRepository;
+pub use model::{
+	is_session_id, new_session_id, session_abandonment_is_real, total_duration_of, CreateSession, LayoutMode, SessionOrigin, SessionRecord, SessionStatus, UpdateSession,
+};
+pub use repository::{Created, SessionRepository};

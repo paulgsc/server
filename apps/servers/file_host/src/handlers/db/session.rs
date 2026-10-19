@@ -19,7 +19,9 @@
 //!
 //! Two behaviours were client-side and move with the data, or they diverge:
 //! **id generation** (`generateId("session")` produced `session-<uuid>`) and
-//! **`totalDurationOf(scenes)`**. Both are the server's now.
+//! **`totalDurationOf(scenes)`**. Both are the server's now, but for one
+//! case: a create may name its id, and the same create sent again then
+//! answers with the session the first made (`create_session`).
 //!
 //! Every mutating call returns the full record, because the client's
 //! repositories already do and its react-query cache depends on it.
@@ -32,7 +34,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use session_repo::{new_session_id, total_duration_of, CreateSession, SessionOrigin, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
+use session_repo::{is_session_id, new_session_id, total_duration_of, CreateSession, Created, SessionOrigin, SessionRecord, SessionRepository, SessionStatus, UpdateSession};
 use tracing::instrument;
 
 #[derive(Debug, Deserialize)]
@@ -77,13 +79,24 @@ pub async fn get_session(State(state): State<AppState>, subject: SubjectId, Path
 }
 
 /// `POST /sessions`
+///
+/// With an `id`, once per id: a create under an id this subject already
+/// holds answers with that session as it is now and changes nothing, so a
+/// send whose answer was lost can be sent again. An id another subject holds
+/// is a `409`; one that is not [`is_session_id`] a `422`.
 #[axum::debug_handler]
 #[instrument(name = "create_session", skip_all, fields(otel.kind = "server"))]
 pub async fn create_session(State(state): State<AppState>, subject: SubjectId, Json(input): Json<CreateSession>) -> Result<Json<SessionRecord>, FileHostError> {
 	let now = Utc::now().to_rfc3339();
+	let named = input.id.is_some();
+	let id = match input.id {
+		Some(id) if is_session_id(&id) => id,
+		Some(_) => return Err(FileHostError::unprocessable_entity([("id", "is 1 to 64 letters, digits, - and _")])),
+		None => new_session_id(),
+	};
 
 	let record = SessionRecord {
-		id: new_session_id(),
+		id,
 		name: input.name,
 		// Everything starts as a draft. The client's `create` did the same, and
 		// a session that could be born `scheduled` would be one the nudge could
@@ -108,8 +121,15 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 		final_elapsed_ms: None,
 	};
 
-	repo(&state).upsert(subject.as_str(), &record).await.map_err(|err| to_http(&err))?;
-	Ok(Json(record))
+	if !named {
+		repo(&state).upsert(subject.as_str(), &record).await.map_err(|err| to_http(&err))?;
+		return Ok(Json(record));
+	}
+	match repo(&state).insert_if_absent(subject.as_str(), &record).await.map_err(|err| to_http(&err))? {
+		Created::Inserted => Ok(Json(record)),
+		Created::Held(held) => Ok(Json(*held)),
+		Created::Taken => Err(FileHostError::Conflict("another session holds this id")),
+	}
 }
 
 /// `PATCH /sessions/:id`
