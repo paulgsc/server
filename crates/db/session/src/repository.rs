@@ -714,7 +714,7 @@ impl SessionRepository {
 	///
 	/// [`Created::Taken`] is an id another subject holds. Saying so tells the
 	/// caller that id is in use, which [`Self::get`] never does; a client
-	/// names only an id it minted fresh (`is_session_id`), so the answer
+	/// names only an id it minted at random for this copy, so the answer
 	/// reaches no one who did not already hold the id. The write and the read
 	/// are one `BEGIN IMMEDIATE` transaction, so a delete between them cannot
 	/// make a free id read as taken.
@@ -956,10 +956,10 @@ mod tests {
 	async fn a_create_under_a_held_id_changes_nothing_and_names_whose_it_is() {
 		let pool = pool().await;
 		let repo = SessionRepository::new(pool);
-		let first = fixture("session-client-1");
+		let first = fixture("session-0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f");
 		assert!(matches!(repo.insert_if_absent("subject-a", &first).await.unwrap(), Created::Inserted));
 
-		let mut again = fixture("session-client-1");
+		let mut again = fixture("session-0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f");
 		again.name = String::from("sent again");
 		match repo.insert_if_absent("subject-a", &again).await.unwrap() {
 			Created::Held(record) => assert_eq!(record.name, first.name),

@@ -15,10 +15,11 @@ pub fn new_session_id() -> String {
 
 /// An id a client may name its session by.
 ///
-/// It is `session-`, then 16 to 56 letters, digits, `-` and `_`. Every id [`new_session_id`] and the
-/// client's `generateId("session")` make is one; a short or guessable id is
-/// not, so an id in use can be found only by whoever made it, and nothing
-/// shadows a literal route segment such as `/sessions/status`.
+/// It is `session-`, then 16 to 56 letters, digits, `-` and `_`: every id
+/// [`new_session_id`] and the client's `generateId("session")` make is one.
+/// The shape rules out a short id and one that shadows a literal route
+/// segment such as `/sessions/status`; that an id is hard to guess comes
+/// from the random part both generators make.
 #[must_use]
 pub fn is_session_id(text: &str) -> bool {
 	text
