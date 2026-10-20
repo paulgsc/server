@@ -16,9 +16,8 @@
 //! catalogue, which carries no subject.
 //!
 //! **Append-only.** A `PUT` adds an event or changes nothing, and a different
-//! body under a held id is a `409`; there is no `DELETE`. No soundbite comes
-//! here: a spoken answer's ticks, prompt, rubric or typed words are a `422`.
-//! See `handlers::leetype_log` and `leetype_log_repo`.
+//! body under a held id is a `409`; there is no `DELETE`. What an event may
+//! hold is `leetype_log_repo`'s. See `handlers::leetype_log`.
 
 use crate::auth::AuthContext;
 use crate::handlers::leetype_log as handlers;

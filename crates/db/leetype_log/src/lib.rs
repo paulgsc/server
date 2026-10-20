@@ -309,6 +309,35 @@ mod tests {
 		assert_eq!(columns, ["subject_id", "session_id", "event_id", "at", "type", "body", "written_at"]);
 	}
 
+	/// Every read goes by the subject and the session: a put's lookup by the
+	/// primary key, a session's read-back and the list's `started` lookup by
+	/// `leetype_session_event_order`. None scans the table, or every event a
+	/// subject holds, which is what an index on `(subject_id, at)` alone gave
+	/// once a subject held thousands of sessions.
+	#[tokio::test]
+	async fn every_read_goes_by_the_subject_and_the_session() {
+		let pool = pool().await;
+		for (query, index) in [
+			(
+				"EXPLAIN QUERY PLAN SELECT body FROM leetype_session_event WHERE subject_id = 'a' AND session_id = 's' AND event_id = 'e'",
+				"sqlite_autoindex_leetype_session_event_1 (subject_id=? AND session_id=? AND event_id=?)",
+			),
+			(
+				"EXPLAIN QUERY PLAN SELECT body FROM leetype_session_event WHERE subject_id = 'a' AND session_id = 's' ORDER BY at, rowid",
+				"leetype_session_event_order (subject_id=? AND session_id=?)",
+			),
+			(
+				"EXPLAIN QUERY PLAN SELECT json_extract(started.body, '$.file') FROM leetype_session_event AS started
+				 WHERE started.subject_id = 'a' AND started.session_id = 's' AND started.type = 'started' ORDER BY started.at, started.rowid LIMIT 1",
+				"leetype_session_event_order (subject_id=? AND session_id=?)",
+			),
+		] {
+			let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(query).fetch_all(&pool).await.unwrap();
+			assert!(plan.iter().any(|(_, _, _, detail)| detail.contains(index)), "{query}: {plan:?}");
+			assert!(!plan.iter().any(|(_, _, _, detail)| detail.starts_with("SCAN")), "{query}: {plan:?}");
+		}
+	}
+
 	#[tokio::test]
 	async fn an_event_is_stored_once_and_never_replaced() {
 		let pool = pool().await;

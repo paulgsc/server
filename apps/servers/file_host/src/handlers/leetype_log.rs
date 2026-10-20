@@ -1,15 +1,11 @@
 //! Handlers for `routes::leetype_log`: the validate-and-answer half. The
-//! record's own rules (append-only, what an event holds, no soundbite) are
-//! `leetype_log_repo`'s.
+//! record's own rules (append-only, what an event holds and what it may not)
+//! are `leetype_log_repo`'s.
 //!
-//! **Refusals.** An event that breaks a rule is a `422` naming each field and
-//! why, a soundbite field included, and a different event under an id the
-//! session holds is a `409`. Both write nothing, so the phone can say which
-//! event home refused and keep it.
-//!
-//! **No soundbite.** A spoken answer comes home as how it was given, for how
-//! long and whether it was strong; what was said or typed, and what it was
-//! marked against, stays on the phone and goes to the owner's Drive.
+//! **Refusals.** An event that breaks one of those rules is a `422` naming
+//! each field and why, and a different event under an id the session holds
+//! is a `409`. Both write nothing, so the phone can say which event home
+//! refused and keep it.
 //!
 //! **The deletion hold.** Each handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every

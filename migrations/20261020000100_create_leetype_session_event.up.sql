@@ -43,12 +43,13 @@ CREATE TABLE leetype_session_event (
     PRIMARY KEY (subject_id, session_id, event_id)
 );
 
--- A session's events are read by the primary key's prefix. The list of
--- sessions and any read across sessions go by when they were recorded: by
--- `at`, then by insertion (`rowid`, which every SQLite index carries), since
--- the phone sends a session's log in order and two events can share a
--- millisecond.
-CREATE INDEX leetype_session_event_order ON leetype_session_event (subject_id, at);
+-- Every read is of one subject's sessions, each session's events in the
+-- order they were recorded: by `at`, then by insertion (`rowid`, which every
+-- SQLite index carries), since the phone sends a session's log in order and
+-- two events can share a millisecond. This index serves that order (a
+-- session's read-back, and the list's `started` lookup per session); the
+-- primary key serves a put's lookup by id.
+CREATE INDEX leetype_session_event_order ON leetype_session_event (subject_id, session_id, at);
 
 CREATE TRIGGER leetype_session_event_is_append_only
 BEFORE UPDATE ON leetype_session_event

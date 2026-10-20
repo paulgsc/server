@@ -14,13 +14,11 @@ edition.workspace = true
 [dependencies]
 chrono = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-sqlx = { workspace = true, features = [
-  "runtime-tokio-native-tls",
-  "sqlite",
-  "uuid",
-  "time",
-] }
+# `float_roundtrip`: a phone's `seconds` (performance.now() / 1000) carries 16
+# to 17 significant digits, and without it about one in nine reads back a
+# different last digit, so the phone's read-back would never match.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

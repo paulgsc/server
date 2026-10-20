@@ -9,8 +9,10 @@
 //! and no event may carry a [`SOUNDBITES`] field. What comes home of a spoken
 //! answer is `as`, `seconds` and `strong`, which is what the ledger reads.
 //!
-//! Numbers are kept as the phone wrote them ([`Number`]), so an event reads
-//! back byte for byte as it was sent: `23` stays `23`, never `23.0`.
+//! Numbers are kept as the phone wrote them ([`Number`], parsed with
+//! `float_roundtrip`), so an event reads back as the same JSON value it was
+//! sent as: `23` stays `23`, never `23.0`, and a float keeps every digit. Key
+//! order is not kept.
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -452,6 +454,8 @@ mod tests {
 			),
 			spoken(&json!({ "as": "passed" })),
 			spoken(&json!({ "as": "recorded", "seconds": 41.2, "strong": true })),
+			// `performance.now() / 1000`: 17 significant digits, the last one kept.
+			spoken(&json!({ "as": "recorded", "seconds": 31.353_200_000_002_982, "strong": false })),
 			spoken(&json!({ "as": "typed", "strong": false })),
 			with("ended", json!({ "how": "declared" })),
 			with("ended", json!({ "how": "left" })),
