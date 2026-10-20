@@ -384,10 +384,11 @@ nowhere is marked as such and belongs to review.
     fails it until someone decides what it tells the server and says why.
 
 11. **The learner shelf holds content only** (#387). `learner_shelf` is one
-    of the three subject-scoped places that store something the learner wrote
-    rather than something the server observed (the aph and Jobs records,
-    invariants 15 and 16, are the others): items they generated and chose to
-    keep (`PUT /shelf/:activity/:key`, docs/study-nudge.md, "Learner shelf").
+    of the four subject-scoped places that store something the learner wrote
+    rather than something the server observed (the aph and Jobs records and
+    the LeetType session log, invariants 15, 16 and 18, are the others): items
+    they generated and chose to keep (`PUT /shelf/:activity/:key`,
+    docs/study-nudge.md, "Learner shelf").
     A row is the subject, the activity, the item's key, its content hash, when
     it was kept, and the body verbatim: what storing and listing it needs, and
     no survey, flag, outcome, title or anything derived from play. It is
@@ -504,8 +505,8 @@ nowhere is marked as such and belongs to review.
     sent under it. Those times are kept so home can refuse the aph and Jobs
     writes a phone sends after its person stopped them (`PUT /aph/*`,
     `PUT /jobs/events/:id` and `POST /sync/:collection/batch` answer `409`,
-    code `sharing_stopped`; sessions and
-    the shelf also go home on a tap no choice covers, and are not refused),
+    code `sharing_stopped`; sessions, the shelf and the LeetType session log
+    also go home on a tap no choice covers, and are not refused),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
     (`PUT /sharing/:scope`, a bearer session: a browser's is `403`), counts
@@ -521,6 +522,33 @@ nowhere is marked as such and belongs to review.
     `only_a_paired_phone_makes_or_reads_a_choice` and
     `home_refuses_only_what_a_phone_stopped`, and `handlers::sync`'s
     `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`.
+
+18. **The LeetType session log is append-only, holds what the owner played,
+    and holds no soundbite.** `leetype_session_event` keeps the phone's
+    LeetType session log once the phone sends a finished session home
+    (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`): every
+    event of the session, as the phone recorded it, checked and re-serialised
+    (the session file started and in which form, each pick and how many
+    milliseconds it took, the readings placed, opened, saved or read, the
+    rounds parked, returned and confirmed, how each spoken answer was given,
+    for how many seconds and whether it was strong, and how the session
+    ended), its type, when the phone recorded it and when it reached home.
+    What was said or typed in a spoken answer, and what it was marked against
+    (`ticks`, `prompt`, `rubric`, `typed`), goes to the owner's Drive and
+    never here: an event carrying any of them is a `422` naming the field, and
+    nothing of it is stored. An event is never updated (a trigger aborts an
+    `UPDATE`) or replaced (a different body under an id its session holds is
+    a `409`), and never deleted but with the account. It is written only by
+    `PUT /leetype/sessions/:session/events/:id`, readable only by its own
+    subject (`GET /leetype/sessions` and `GET /leetype/sessions/:session/events`),
+    and deleted with the account by both the sweep and the migration's
+    trigger (invariant 12). The corpus-wide `GET /leetype/rounds*` and
+    `leetype_round` hold nothing of it.
+    *Enforced by* `leetype_log_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `an_event_is_stored_once_and_never_replaced`,
+    `the_record_leaves_with_the_account` and, for the soundbites,
+    `a_soundbite_is_refused_by_name` and `a_refused_event_writes_nothing`, and
+    `handlers::leetype_log`'s `refusals_name_their_fields_and_records_stay_apart`.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
@@ -562,6 +590,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   when it reached home. Companies and job titles are in it, by design. Voice
   notes are not: an event names them, the audio stays on the phone and in
   the owner's Drive. Deleting the account removes it; nothing else does.
+- **The LeetType session log and its times.** The events say which session
+  files the owner played, how each round went and how long each pick took,
+  which rounds they struggled with and returned to, which readings they
+  opened, saved or read, and how each spoken answer went (how long it ran and
+  whether it was strong, never what was said), each with when the phone
+  recorded it, to the millisecond, and when it reached home. That timeline is
+  what the record is for: it is how the owner's growth reads back. Deleting
+  the account removes it; nothing else does.
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
   record home (invariant 17): one row per change, as many as its person
@@ -578,7 +614,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   session's halfway point. Nothing older is kept.
 - **A paired phone holds a session token.** Whoever has the phone's app data
   and the key protecting it can read and write the account's study data
-  (sessions, the shelf, the aph and Jobs records, the reporting routes), and sign it out everywhere,
+  (sessions, the shelf, the aph and Jobs records, the LeetType session log,
+  the reporting routes), and sign it out everywhere,
   until the session expires, the phone unpairs, or the account signs out
   everywhere. It cannot add a passkey, pair another phone, delete the
   account or act as an operator. The token
@@ -631,5 +668,5 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions`, the shelf, the aph and Jobs records and `sharing_choice` have
-  no horizon.
+  `sessions`, the shelf, the aph and Jobs records, the LeetType session log
+  and `sharing_choice` have no horizon.
