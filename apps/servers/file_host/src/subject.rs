@@ -58,6 +58,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"learner_shelf",
 		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
 	),
+	(
+		"leetype_session_event",
+		"the owner's LeetType session log (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`), every event of every session sent home: the session file played, each pick and how long it took, readings placed, opened, saved or read, rounds parked, returned and confirmed, how each spoken answer was given and whether it was strong (never what was said, typed or ticked), how the session ended, and when each was recorded and reached home; see docs/identity.md",
+	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),
 	(
