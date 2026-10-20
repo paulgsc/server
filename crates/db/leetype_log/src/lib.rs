@@ -309,11 +309,12 @@ mod tests {
 		assert_eq!(columns, ["subject_id", "session_id", "event_id", "at", "type", "body", "written_at"]);
 	}
 
-	/// Every read goes by the subject and the session: a put's lookup by the
-	/// primary key, a session's read-back and the list's `started` lookup by
-	/// `leetype_session_event_order`. None scans the table, or every event a
-	/// subject holds, which is what an index on `(subject_id, at)` alone gave
-	/// once a subject held thousands of sessions.
+	/// The three lookups by one session go by the subject and the session: a
+	/// put's by the primary key, a session's read-back and the list's
+	/// `started` lookup by `leetype_session_event_order`, in `at` order with
+	/// no sort. None scans, as an index on `(subject_id, at)` alone did once a
+	/// subject held thousands of sessions. The queries mirror `put_event`,
+	/// `session_events` and `sessions`, with literals for their binds.
 	#[tokio::test]
 	async fn every_read_goes_by_the_subject_and_the_session() {
 		let pool = pool().await;
@@ -335,6 +336,7 @@ mod tests {
 			let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(query).fetch_all(&pool).await.unwrap();
 			assert!(plan.iter().any(|(_, _, _, detail)| detail.contains(index)), "{query}: {plan:?}");
 			assert!(!plan.iter().any(|(_, _, _, detail)| detail.starts_with("SCAN")), "{query}: {plan:?}");
+			assert!(!plan.iter().any(|(_, _, _, detail)| detail.contains("TEMP B-TREE")), "{query}: {plan:?}");
 		}
 	}
 
