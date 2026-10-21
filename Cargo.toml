@@ -97,16 +97,21 @@ edition = "2021"
 # `catch_unwind` or inspects `JoinError::is_panic`, so no code path depends
 # on unwinding. Tests and benches ignore this setting and still unwind.
 [profile.release]
-opt-level = 3        # cargo's release default, stated so the section reads whole
-lto = "thin"         # cross-crate inlining across the 14 member crates, at a fraction of fat LTO's link time
-codegen-units = 1    # maximises intra-crate inlining; costs per-crate build parallelism, not the binding CI cost (#205)
-panic = "abort"      # decided, not defaulted: see above
+# cargo's release default, stated so the section reads whole
+opt-level = 3
+# cross-crate inlining across the 14 member crates, at a fraction of fat LTO's link time
+lto = "thin"
+# maximises intra-crate inlining; costs per-crate build parallelism, not the binding CI cost (#205)
+codegen-units = 1
+# decided, not defaulted: see above
+panic = "abort"
 
 # `cargo bench` (criterion in ws-conn-manager/benches) measures the code as
 # it ships, so benches inherit the release codegen above.
 [profile.bench]
 inherits = "release"
-debug = 1            # line tables: usable flamegraph/perf stacks for bench runs, which nothing strips
+# line tables: usable flamegraph/perf stacks for bench runs, which nothing strips
+debug = 1
 
 [workspace.dependencies]
 
@@ -184,10 +189,15 @@ base64 = "0.22"
 # how file_host strips attestation data a client sent unasked before storing
 # it (see `auth::passkey`). The name is the library's; nothing here reaches
 # into the ceremony's verification.
-webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui", "danger-credential-internals"] }
+webauthn-rs = { version = "0.5.5", default-features = false, features = [
+  "conditional-ui",
+  "danger-credential-internals",
+] }
 # A software authenticator, for file_host's tests only: real WebAuthn
 # ceremonies against the real routes, with no browser.
-webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = ["softpasskey"] }
+webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = [
+  "softpasskey",
+] }
 reqwest = { version = "0.12.23", features = ["json"] }
 web-push = { version = "0.11", default-features = false }
 
