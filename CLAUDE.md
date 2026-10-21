@@ -21,13 +21,13 @@ through the MCP tools, which a hook can't call. The sweep reads back what
 
 ## Pre-commit verification
 
-`.husky/pre-commit` runs `pnpm dlx lint-staged` unconditionally (no `CLAUDE_CODE_REMOTE`
-guard, unlike `paulgsc/some-ui`'s hook) — but `lint-staged` here only covers this repo's
-JS/TS-adjacent files. It says nothing about the Rust workspace: nothing in the git hooks
-invokes `cargo` at all, in any environment. A clean, quiet commit is not evidence the Rust
-side compiles, passes clippy, or has an up-to-date `.sqlx/` cache — run
-`cargo check --workspace`, `cargo test --workspace`, **`cargo clippy` on every package your
-diff actually touches or adds** (see flags below — this is not optional; `cargo check` passing
+This repo has no git hooks: nothing runs on `git commit` or `git push`, in any environment
+(the Node tooling that installed a husky hook was removed; the repo has no JavaScript or
+TypeScript). A clean, quiet commit is not evidence the Rust side is formatted, compiles,
+passes clippy, or has an up-to-date `.sqlx/` cache — run `cargo fmt --all -- --check` (CI's
+`lint.yml` runs the same), `cargo check --workspace`, `cargo test --workspace`,
+**`cargo clippy` on every package your diff actually touches or adds** (see flags below —
+this is not optional; `cargo check` passing
 is not evidence `cargo clippy` will, verified directly: `cargo check -p enum-name-derive`
 succeeded while `cargo clippy -p enum-name-derive --keep-going --no-deps` reported real
 denied-lint errors in that crate's own non-test code, before #375 deleted the crate), and
@@ -64,6 +64,12 @@ real `.expect()` in its test module; `--all-targets` surfaces 27 findings in tha
 with `>`, never pipe through `| tail`: a pipeline reports the last command's exit code, not
 clippy's. The baseline depends on the clippy version, so `lint.yml` pins its toolchain — bump
 the pin and regenerate the baseline in the same change.
+
+**Commit messages** are conventional: `type(scope): subject`, a header of at most 100
+characters, body and footer lines of at most 100, and a `type` of `build`, `chore`, `ci`,
+`docs`, `feat`, `impr`, `fix`, `perf`, `refactor`, `revert`, `style` or `test` (`impr` is this
+repo's own, for an improvement to an existing feature). `commitlint` used to check this in a
+local hook; with the hook gone, nothing enforces it, so the convention holds only if you keep it.
 
 ## Cross-repo coupling with `paulgsc/some-ui`
 
@@ -111,7 +117,7 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
   upload action is not seen: add it to the rule when one appears. `paulgsc/some-ui` runs
   the same rule as `pnpm check:workflows`.
 - **What stays, and why** (not artifacts, so no `retention-days` applies):
-  - Actions caches: the detector binary (`detect.yml`), pnpm (`deny.yml`), and the
+  - Actions caches: the detector binary (`detect.yml`) and the
     Docker `type=gha,mode=max` layer caches in `.github/actions/docker-build` (every PR
     and `main` push that touches an image) and `docker-push`. GitHub evicts an entry
     unused for 7 days and caps the repo at 10 GB; keys that change with their inputs
