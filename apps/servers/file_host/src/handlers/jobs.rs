@@ -187,6 +187,10 @@ pub struct FileFiled {
 /// carry: `decisions-YYYY-MM-DD(-n).json` or `scouts-YYYYMMDDTHHMMSS.json`,
 /// the mailbox's own patterns (paulgsc/some-ui `apps/mailbox`).
 fn folder_of(name: &str) -> Option<(&'static str, &'static str)> {
+	// The patterns are ASCII, and the byte offsets below assume it.
+	if !name.is_ascii() {
+		return None;
+	}
 	let digits = |text: &str, count: usize| text.len() == count && text.bytes().all(|byte| byte.is_ascii_digit());
 	if let Some(rest) = name.strip_prefix("decisions-").and_then(|rest| rest.strip_suffix(".json")) {
 		let (day, nth) = rest.split_at(rest.len().min(10));
@@ -199,6 +203,66 @@ fn folder_of(name: &str) -> Option<(&'static str, &'static str)> {
 	let stamp = name.strip_prefix("scouts-")?.strip_suffix(".json")?;
 	let (date, time) = stamp.split_once('T')?;
 	(digits(date, 8) && digits(time, 6)).then_some(("scout", "some-ui.job-scouts/1"))
+}
+
+/// Reads a body that holds each object's members once. A duplicate member is
+/// refused rather than read the way `serde_json::Value` does (the last one
+/// wins): the bytes stored and handed on are the body as sent, so what is
+/// checked has to be every member those bytes hold.
+struct UniqueMembers;
+
+impl<'de> Deserialize<'de> for UniqueMembers {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		deserializer.deserialize_any(Self)
+	}
+}
+
+impl<'de> serde::de::Visitor<'de> for UniqueMembers {
+	type Value = Self;
+
+	fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("JSON with no duplicate member")
+	}
+
+	fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+		let mut seen = std::collections::HashSet::new();
+		while let Some(key) = map.next_key::<String>()? {
+			if !seen.insert(key) {
+				return Err(serde::de::Error::custom("a duplicate member"));
+			}
+			map.next_value::<Self>()?;
+		}
+		Ok(Self)
+	}
+
+	fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+		while seq.next_element::<Self>()?.is_some() {}
+		Ok(Self)
+	}
+
+	fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+		Ok(Self)
+	}
+
+	fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+		Ok(Self)
+	}
+
+	fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+		Ok(Self)
+	}
+
+	fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+		Ok(Self)
+	}
+
+	fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+		Ok(Self)
+	}
+
+	fn visit_unit<E>(self) -> Result<Self, E> {
+		Ok(Self)
+	}
 }
 
 /// Whether `value` names a voice note anywhere: a `voice` key whose value is
@@ -237,6 +301,9 @@ pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, headers:
 	let Ok(file) = serde_json::from_slice::<Value>(&body) else {
 		return Err(FileHostError::unprocessable_entity([("body", "not JSON")]));
 	};
+	if serde_json::from_slice::<UniqueMembers>(&body).is_err() {
+		return Err(FileHostError::unprocessable_entity([("body", "an object holds a member twice")]));
+	}
 	if file.get("schema").and_then(Value::as_str) != Some(schema) {
 		return Err(FileHostError::unprocessable_entity([("schema", "not the schema this file's name calls for")]));
 	}
@@ -642,6 +709,7 @@ mod tests {
 			("/jobs/files/decisions-2026-13-01.json", file.clone(), "name"),
 			("/jobs/files/decisions-2026-10-23-x.json", file.clone(), "name"),
 			("/jobs/files/scouts-20261023.json", file.clone(), "name"),
+			("/jobs/files/decisions-2026-10-2%C3%A9.json", file.clone(), "name"),
 			("/jobs/files/scouts-20261023T101500.json", file.clone(), "schema"),
 			("/jobs/files/decisions-2026-10-23.json", json!("text"), "schema"),
 			("/jobs/files/decisions-2026-10-23-2.json", json!({ "padding": "x".repeat(super::FILE_CEILING) }), "body"),
@@ -650,6 +718,26 @@ mod tests {
 			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {answer}");
 			assert!(answer["error"]["details"][field].is_array(), "{path}: {answer}");
 		}
+		assert!(filed(&state).await.is_empty());
+	}
+
+	/// `Value` keeps the last of two members with one name, so a note named
+	/// by the first would pass a check of the parsed file and still be in
+	/// the bytes stored and handed on. A duplicate member is refused.
+	#[tokio::test]
+	async fn files_refuse_a_member_named_twice() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let body = r#"{"schema":"some-ui.job-decisions/1","picks":[{"voice":["note.webm"],"voice":[]}]}"#;
+		let request = Request::builder()
+			.method(Method::PUT)
+			.uri("/jobs/files/decisions-2026-10-23.json")
+			.header(&phone.0, &phone.1)
+			.body(Body::from(body))
+			.unwrap();
+		let response = app.clone().oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(filed(&state).await.is_empty());
 	}
 }
