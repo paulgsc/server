@@ -35,11 +35,13 @@ use std::fmt;
 /// The most files one pass takes. More waiting are taken by the next pass.
 pub const ITEMS_PER_PASS: u32 = 20;
 
-/// The most `brief` pages one pass lists. A file home already holds (one put
-/// back after archiving, under a new `seq`) is passed over without being
-/// fetched or counted, so a page of them never stops the pass short of a new
-/// digest behind them; this bounds how far it looks.
-const BRIEF_PAGES_PER_PASS: usize = 10;
+/// The most pages one pass lists per folder. Inbound passes over a file home
+/// already holds (one put back after archiving, under a new `seq`) without
+/// fetching or counting it, so a page of them never stops the pass short of
+/// a new digest behind them. The bound: home's cursor moves only when it
+/// keeps a new file, so more than 200 files put back at once ahead of a new
+/// digest hold it back until they are archived again.
+const PAGES_PER_PASS: usize = 10;
 
 /// What a pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -170,7 +172,7 @@ async fn read_brief<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	let mut after = cursor(db, subject).await.map_err(Failure::Storage)?;
 	let mut fetched = 0;
-	for _ in 0..BRIEF_PAGES_PER_PASS {
+	for _ in 0..PAGES_PER_PASS {
 		let items = mailbox.list(Folder::Brief, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
 		let full = items.len() >= ITEMS_PER_PASS as usize;
 		for item in &items {
@@ -331,11 +333,14 @@ async fn archive_old<T: MailboxTransport>(
 		// Paged, so files that stay live at the head (each counted below)
 		// never hold back the old ones behind them.
 		let mut after = 0;
-		for _ in 0..BRIEF_PAGES_PER_PASS {
+		for _ in 0..PAGES_PER_PASS {
 			let items = archiving.mailbox.list(folder, after, PAGE_LIMIT).await.map_err(Failure::Mailbox)?;
 			let full = items.len() >= PAGE_LIMIT as usize;
 			after = items.last().map_or(after, |item| item.seq);
-			for item in items.iter().filter(|item| item.live_since() <= cutoff.as_str()) {
+			// Later `seq`s went live later: the first young file ends the folder.
+			let old: Vec<_> = items.iter().take_while(|item| item.live_since() <= cutoff.as_str()).collect();
+			let young = old.len() < items.len();
+			for item in old {
 				if budget == 0 {
 					return Ok(());
 				}
@@ -349,7 +354,7 @@ async fn archive_old<T: MailboxTransport>(
 					budget -= 1;
 				}
 			}
-			if !full {
+			if young || !full {
 				break;
 			}
 		}
@@ -370,8 +375,12 @@ async fn archive_one<T: MailboxTransport>(
 	item: &mailbox_kit::ItemMeta,
 ) -> Result<Option<&'static str>, Failure> {
 	let sha256 = item.sha256.to_ascii_lowercase();
-	if folder == Folder::Brief && held_sha256(db, subject, BRIEF, &item.name).await?.as_deref() != Some(sha256.as_str()) {
-		return Ok(Some("unread"));
+	if folder == Folder::Brief {
+		match held_sha256(db, subject, BRIEF, &item.name).await? {
+			None => return Ok(Some("unread")),
+			Some(held) if held != sha256 => return Ok(Some("rewritten")),
+			Some(_) => {}
+		}
 	}
 	let archived = {
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
@@ -757,10 +766,8 @@ mod tests {
 		assert!(err.contains("MAILBOX_ARCHIVE_TOKEN") && !err.contains("home-token"), "{err}");
 		let err = on(&[&all[..], &archive[..], &["--mailbox-archive-days", "29"][..]].concat()).err().unwrap().to_string();
 		assert!(err.contains("MAILBOX_ARCHIVE_DAYS"), "{err}");
-		assert!(
-			on(&[&all[..], &["--mailbox-archive-days", "29"][..]].concat()).is_ok(),
-			"the days matter only with the token"
-		);
+		let err = on(&[&all[..], &archive[..], &["--mailbox-archive-days", "36501"][..]].concat()).err().unwrap().to_string();
+		assert!(err.contains("MAILBOX_ARCHIVE_DAYS"), "{err}");
 	}
 
 	/// A file as the phone files it (`PUT /jobs/files/:name`).
