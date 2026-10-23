@@ -24,9 +24,13 @@
 //! **Bodies.** A [`MailboxError`] carries a status, a kind, or the mailbox's
 //! own short refusal, never a file's bytes, and [`ReqwestTransport`] strips
 //! the URL from its errors.
+//!
+//! [`usage`] asks Cloudflare how much of its free allowance the mailbox's
+//! database has used today, over the same transport.
 
 mod client;
 pub mod transport;
+pub mod usage;
 
 pub use client::{Folder, ItemMeta, Mailbox, MailboxError, Put, PAGE_LIMIT};
 pub use transport::{MailboxTransport, Method, Request, Response, Token};

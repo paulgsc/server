@@ -198,6 +198,7 @@ async fn main() -> Result<()> {
 	// A poll, unlike the waker: home is LAN-only, so the mailbox cannot tell
 	// it a digest arrived. See `mailbox`.
 	file_host::mailbox::start(&app_state);
+	file_host::d1_usage::start(&app_state);
 
 	// #227 (C2) / #228 (C3): `connected`/`live`/`subscribed`, guard
 	// occupancy, and SQLite pool gauges — unconditional, unlike the nudge

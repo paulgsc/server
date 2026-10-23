@@ -591,6 +591,25 @@ nowhere is marked as such and belongs to review.
     shows today and review keeps; and what a digest says, which is the
     routine's.
 
+20. **Home asks Cloudflare only how much the mailbox's database has used,
+    and keeps no answer but gauges.** `file_host`'s `d1_usage` collector
+    (`CF_USAGE_ENABLED`) makes one request, every `CF_USAGE_SECONDS`: a
+    GraphQL read of one D1 database's sums for the UTC day (rows and queries)
+    and its size, through `mailbox_kit::usage`. It uses its own read-only
+    token (`CF_API_TOKEN`, Account Analytics: Read), never the mailbox's, and
+    reads nothing about a person: the database's counts are the mailbox's,
+    not a subject's. What it learns goes to Prometheus gauges and nowhere
+    else; it writes no table. The token and the account id
+    (`CF_ACCOUNT_ID`) are held where they never print (`mailbox_kit::Token`,
+    a hand-written `Debug` on `Analytics`), and errors are logged by kind
+    and Cloudflare's own short message, never the request.
+    *Enforced by* `mailbox_kit::usage`'s
+    `neither_the_token_nor_the_account_prints` and its recorded-answer
+    tests, and `d1_usage`'s `off_unless_enabled_and_never_half_configured`
+    (an error names the variable, never its value). *Not enforced:* that
+    the collector asks for nothing more, which review keeps by reading
+    `usage::QUERY`.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -638,7 +657,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   home asking every `MAILBOX_SECONDS` from the home connection's address,
   and the routine putting a file each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
-  account removes home's copy; the mailbox's is the owner's to delete.
+  account removes home's copy; the mailbox's is the owner's to delete. With
+  `CF_USAGE_ENABLED`, home also asks Cloudflare for the database's usage
+  every few minutes (invariant 20), so Cloudflare sees that pattern too.
 - **The LeetType session log and its times.** The events say which session
   files the owner played, how each round went and how long each pick took,
   which rounds they struggled with and returned to, which readings they
