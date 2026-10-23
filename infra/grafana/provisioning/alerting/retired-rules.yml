@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# Rules this repo once provisioned and has since removed. Grafana keeps a
+# provisioned rule in its database (`grafana_data`) after its file is gone,
+# so a removed rule is deleted here by uid, or it stays: one whose metrics
+# stopped existing fires on no data for good.
+#
+# - The three D1 usage rules (`mailbox-d1-usage.yml`, #445): the collector
+#   they read was removed in #448, since Cloudflare's own D1 Metrics page
+#   shows the same numbers. `mailbox-d1-usage-unknown` alerted on no data.
+deleteRules:
+  - orgId: 1
+    uid: mailbox-d1-rows-written-near-limit
+  - orgId: 1
+    uid: mailbox-d1-rows-read-near-limit
+  - orgId: 1
+    uid: mailbox-d1-usage-unknown
