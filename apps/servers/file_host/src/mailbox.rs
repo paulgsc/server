@@ -51,6 +51,10 @@ pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// below which it refuses every archive.
 pub const MIN_ARCHIVE_DAYS: u64 = 30;
 
+/// The most days `MAILBOX_ARCHIVE_DAYS` may set: a hundred years, so the age
+/// a pass counts back to is always a date it can name.
+pub const MAX_ARCHIVE_DAYS: u64 = 36_500;
+
 /// How long one request to the mailbox may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -105,11 +109,10 @@ impl MailboxContext {
 		}
 		let archive_token = set(config.mailbox_archive_token.as_ref());
 		if archive_token.as_ref() == Some(&token) {
-			// The mailbox authenticates no one with a secret two roles share.
 			anyhow::bail!("MAILBOX_ARCHIVE_TOKEN must not be MAILBOX_TOKEN");
 		}
-		if archive_token.is_some() && config.mailbox_archive_days < MIN_ARCHIVE_DAYS {
-			anyhow::bail!("MAILBOX_ARCHIVE_DAYS must be at least 30");
+		if archive_token.is_some() && !(MIN_ARCHIVE_DAYS..=MAX_ARCHIVE_DAYS).contains(&config.mailbox_archive_days) {
+			anyhow::bail!("MAILBOX_ARCHIVE_DAYS must be from 30 to 36500");
 		}
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 		let mailbox = Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;

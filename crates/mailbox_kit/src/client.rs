@@ -46,7 +46,6 @@ pub struct ItemMeta {
 	pub put_at: String,
 	/// When it was last put back from home, else `put_at`. A mailbox from
 	/// before archiving does not send it.
-	#[serde(default)]
 	pub live_since: Option<String>,
 }
 

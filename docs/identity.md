@@ -627,13 +627,17 @@ nowhere is marked as such and belongs to review.
     ask the mailbox to archive the file, naming that SHA-256 in `If-Match`,
     so the mailbox drops nothing but the bytes home holds. A file home could
     not store (other bytes already under its name, no account) is never asked
-    for. When the routine asks for an archived file again, the poller puts
+    for, and neither is a digest `mailbox_item` does not hold, so the phone's
+    feed never loses one to the archive. When the routine asks for an archived file again, the poller puts
     back the bytes `mailbox_archive` holds for it, and the mailbox takes only
     the bytes it archived. Nothing here deletes: an archived file's bytes
-    are home's, and the mailbox keeps a row about it for good.
+    are home's, and the mailbox keeps a row about it for good. Deleting the
+    account deletes `mailbox_archive` with the rest (invariant 12), and an
+    archived file then exists nowhere: the mailbox kept only its row.
     *Enforced by* `mailbox::pass`'s
     `an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays`,
     `a_file_home_cannot_store_stays_live`,
+    `a_digest_the_feed_does_not_hold_is_not_archived`,
     `an_ask_is_answered_from_home_and_one_home_lacks_stays_open` and
     `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
@@ -691,7 +695,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   sees the access pattern: home asking every `MAILBOX_SECONDS` from the home
   connection's address, and the routine putting a file each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
-  account removes home's copy; the mailbox's is the owner's to delete.
+  account removes home's copy and its archive; the mailbox's live files and
+  archived rows are the owner's to delete.
 - **The LeetType session log and its times.** The events say which session
   files the owner played, how each round went and how long each pick took,
   which rounds they struggled with and returned to, which readings they

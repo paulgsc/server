@@ -41,9 +41,10 @@ pub const ANSWERS: [&str; 4] = ["added", "unchanged", "conflict", "refused"];
 ///
 /// Archived (or already), or why the file stayed live: its bytes were not
 /// what the listing said (`mismatch`), its name could not be asked for
-/// (`bad_name`), home holds other bytes under it (`rewritten`), the mailbox
-/// refused it as too young (`refused`), or it was gone (`gone`).
-pub const ARCHIVE_ANSWERS: [&str; 7] = ["archived", "unchanged", "mismatch", "bad_name", "rewritten", "refused", "gone"];
+/// (`bad_name`), home holds other bytes under it (`rewritten`), it is a
+/// digest home has not kept for the phone (`unread`), the mailbox refused it
+/// as too young (`refused`), or it was gone (`gone`).
+pub const ARCHIVE_ANSWERS: [&str; 8] = ["archived", "unchanged", "mismatch", "bad_name", "rewritten", "unread", "refused", "gone"];
 
 /// Every value `mailbox_poll_items_restored_total`'s `answer` label can take.
 ///

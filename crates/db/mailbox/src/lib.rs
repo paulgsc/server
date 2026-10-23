@@ -20,9 +20,8 @@
 //!   `PUT /api/v1/jobs/files/:name` the only caller of [`file_outgoing`];
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
 //!   shows no other.
-//! - **Archived here before anywhere else lets go.** [`keep_archived`] stores
-//!   a file's bytes before the poller asks the mailbox to archive it, and
-//!   [`archived_body`] hands them back when the routine asks for it again.
+//! - **Archived here first** (docs/identity.md invariant 21): see
+//!   [`keep_archived`].
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
@@ -111,6 +110,17 @@ pub async fn cursor(conn: &mut SqliteConnection, subject: &str, folder: &str) ->
 		.fetch_one(&mut *conn)
 		.await?;
 	Ok(highest.unwrap_or(0))
+}
+
+/// The SHA-256 `subject`'s copy holds under (`folder`, `name`), if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn held_sha256(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<Option<String>, MailboxError> {
+	let held = sqlx::query_scalar!("SELECT sha256 FROM mailbox_item WHERE subject_id = ?1 AND folder = ?2 AND name = ?3", subject, folder, name)
+		.fetch_optional(&mut *conn)
+		.await?;
+	Ok(held)
 }
 
 /// Keeps `item` for `subject`, as of `now`.
@@ -258,6 +268,22 @@ pub async fn archived_body(conn: &mut SqliteConnection, subject: &str, folder: &
 	.fetch_optional(&mut *conn)
 	.await?;
 	Ok(body)
+}
+
+/// The SHA-256 `subject`'s archive holds under (`folder`, `name`), if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn archived_sha256(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<Option<String>, MailboxError> {
+	let sha = sqlx::query_scalar!(
+		"SELECT sha256 FROM mailbox_archive WHERE subject_id = ?1 AND folder = ?2 AND name = ?3",
+		subject,
+		folder,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(sha)
 }
 
 /// One file filed for the mailbox and not yet answered.
