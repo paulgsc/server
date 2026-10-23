@@ -1174,6 +1174,7 @@ mod tests {
 				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
 				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
+				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

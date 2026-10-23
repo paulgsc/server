@@ -575,8 +575,13 @@ nowhere is marked as such and belongs to review.
       audio to Drive.
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
       each filed file it handed over, once, final.
+    - `mailbox_archive`, written only by the poller with the archive token
+      (invariant 21): each file it archived from any folder, its bytes as the
+      mailbox held them (they must match the listing's SHA-256), its hash,
+      size, sequence number, when it was first put and when home stored it.
+      Read only by the poller, to put a file back when the routine asks.
 
-    No row of the three is updated (each table's trigger aborts an
+    No row of the four is updated (each table's trigger aborts an
     `UPDATE`), replaced (other bytes under a held or filed name are refused,
     and nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE`
     trigger for) or deleted but with the account, by the sweep and the
@@ -601,7 +606,7 @@ nowhere is marked as such and belongs to review.
     `digests_answers_only_the_callers_own` and
     `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
     *Not enforced:* that nothing else writes these tables, which a
-    `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed' -- '*.rs'`
+    `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
     shows today and review keeps; and what a digest says, which is the
     routine's.
 
@@ -609,6 +614,34 @@ nowhere is marked as such and belongs to review.
     Cloudflare analytics read that kept nothing but gauges. The collector was
     removed: Cloudflare's own D1 Metrics page shows the same numbers, and
     home no longer asks Cloudflare anything.
+
+21. **Home archives a mailbox file only once it holds the bytes, and puts
+    back only those bytes.** The mailbox is where the routine and home meet,
+    not the record (owner, 2026-10-23). With `MAILBOX_ARCHIVE_TOKEN` (the
+    Worker's `archive` role, a token apart from `MAILBOX_TOKEN`), each pass
+    of `file_host`'s `mailbox` poller takes the files live in any folder for
+    `MAILBOX_ARCHIVE_DAYS` (at least 30, the mailbox's own floor), at most
+    `ITEMS_PER_PASS` of them. For each it reads the bytes, checks them
+    against the listing's size and SHA-256, and stores them in
+    `mailbox_archive`, committed, under the deletion hold. Only then does it
+    ask the mailbox to archive the file, naming that SHA-256 in `If-Match`,
+    so the mailbox drops nothing but the bytes home holds. A file home could
+    not store (other bytes already under its name, no account) is never asked
+    for. When the routine asks for an archived file again, the poller puts
+    back the bytes `mailbox_archive` holds for it, and the mailbox takes only
+    the bytes it archived. Nothing here deletes: an archived file's bytes
+    are home's, and the mailbox keeps a row about it for good.
+    *Enforced by* `mailbox::pass`'s
+    `an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays`,
+    `a_file_home_cannot_store_stays_live`,
+    `an_ask_is_answered_from_home_and_one_home_lacks_stays_open` and
+    `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
+    `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
+    refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
+    days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB1's
+    trigger that lets an item go only once its `archived` row is written.
+    *Not enforced:* that `archive_old` stores before it asks, beyond those
+    tests, which review keeps by reading the function's order.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
@@ -652,10 +685,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   the owner's Drive. Deleting the account removes it; nothing else does.
 - **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
   picked for the owner, with companies and titles) live in a Cloudflare D1
-  database before home reads them, and stay there: the mailbox is
-  append-only too. Cloudflare holds them at rest and sees the access pattern:
-  home asking every `MAILBOX_SECONDS` from the home connection's address,
-  and the routine putting a file each morning. Home's own copy
+  database before home reads them, and stay there until home archives them
+  (invariant 21): then their bytes are home's alone, and the mailbox keeps
+  each one's name, size, hash and dates. Cloudflare holds them at rest and
+  sees the access pattern: home asking every `MAILBOX_SECONDS` from the home
+  connection's address, and the routine putting a file each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
   account removes home's copy; the mailbox's is the owner's to delete.
 - **The LeetType session log and its times.** The events say which session

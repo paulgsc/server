@@ -15,11 +15,19 @@
 //! Handing over is once per file: the mailbox's answer, whatever it is, is
 //! recorded and final (a `conflict` or a refusal is not retried), and only a
 //! failure to reach it leaves the file to be handed again.
+//!
+//! With the archive token (`MAILBOX_ARCHIVE_TOKEN`), a pass also keeps the
+//! mailbox small. It first puts back each archived file the routine asked
+//! for, from `mailbox_archive`. Then it archives the files live there for
+//! `MAILBOX_ARCHIVE_DAYS`, oldest first, at most [`ITEMS_PER_PASS`]: each is
+//! read, checked against its listing and stored in `mailbox_archive`, and
+//! only then does the mailbox drop its bytes, and only if they are still the
+//! ones home stored. A file home could not store stays live.
 
 use crate::auth::DeletionLock;
-use chrono::{SecondsFormat, Utc};
-use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
-use mailbox_repo::{Answer, Change, ItemIn, BRIEF};
+use chrono::{DateTime, SecondsFormat, Utc};
+use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
+use mailbox_repo::{Answer, ArchiveIn, Change, ItemIn, BRIEF};
 use serde::de::IgnoredAny;
 use sqlx::SqlitePool;
 use std::fmt;
@@ -38,6 +46,12 @@ pub struct Outcome {
 	/// Filed files handed to the mailbox this pass, each by its answer:
 	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
 	pub handed: Vec<&'static str>,
+	/// Files archived home this pass, each by what came of it
+	/// (`metrics::mailbox::ARCHIVE_ANSWERS`).
+	pub archived: Vec<&'static str>,
+	/// Asked-for files put back this pass, each by what came of it
+	/// (`metrics::mailbox::RESTORE_ANSWERS`).
+	pub restored: Vec<&'static str>,
 	/// The subject has no account: the pass stopped and wrote nothing more.
 	pub no_account: bool,
 }
@@ -83,10 +97,28 @@ pub fn now() -> String {
 	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// One pass: read `brief` after `subject`'s cursor and keep what checks out,
-/// then hand the mailbox what the phone filed and it has not answered.
+/// The mailbox as the archive token reaches it, and how long a file stays
+/// live there before home archives it.
+pub struct Archiving<'a, T> {
+	pub mailbox: &'a Mailbox<T>,
+	pub after_days: u64,
+}
+
+/// `days` before `now`, in the mailbox's own format, so the two compare as
+/// text; `None` when `now` does not read.
+fn days_before(now: &str, days: u64) -> Option<String> {
+	let now = DateTime::parse_from_rfc3339(now).ok()?.with_timezone(&Utc);
+	let back = chrono::Duration::try_days(i64::try_from(days).ok()?)?;
+	Some((now - back).to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+/// One pass of the poller.
 ///
-/// The two halves are independent: a failure ends its own half, and the pass
+/// It reads `brief` after `subject`'s cursor and keeps what checks out, then
+/// hands the mailbox what the phone filed and it has not answered, then, with
+/// `archiving`, answers the routine's asks and archives what is old.
+///
+/// The halves are independent: a failure ends its own half, and the pass
 /// reports the first.
 ///
 /// # Errors
@@ -96,6 +128,7 @@ pub fn now() -> String {
 pub async fn run_once<T: MailboxTransport>(
 	db: &SqlitePool,
 	mailbox: &Mailbox<T>,
+	archiving: Option<&Archiving<'_, T>>,
 	subject: &str,
 	deletion: &DeletionLock,
 	now: &(impl Fn() -> String + Sync),
@@ -107,7 +140,15 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		hand_over(db, mailbox, subject, deletion, now, &mut outcome).await
 	};
-	match inbound.and(outbound) {
+	let asks = match archiving {
+		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
+		_ => Ok(()),
+	};
+	let old = match archiving {
+		Some(archiving) if !outcome.no_account => archive_old(db, archiving, subject, deletion, now, &mut outcome).await,
+		_ => Ok(()),
+	};
+	match inbound.and(outbound).and(asks).and(old) {
 		Ok(()) => Ok(outcome),
 		Err(failure) => Err(PassError { outcome, failure }),
 	}
@@ -198,6 +239,101 @@ async fn hand_over<T: MailboxTransport>(
 	Ok(())
 }
 
+/// Puts back each archived file the routine asked for, from home's archive.
+/// The mailbox takes only the bytes it archived; an ask home holds nothing
+/// for (`missing`) stays open.
+async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving<'_, T>, subject: &str, outcome: &mut Outcome) -> Result<(), Failure> {
+	for folder in Folder::ALL {
+		let asks = archiving.mailbox.wanted(folder, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
+		for ask in asks {
+			let body = {
+				let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+				mailbox_repo::archived_body(&mut conn, subject, folder.as_str(), &ask.name).await.map_err(storage)?
+			};
+			let Some(body) = body else {
+				outcome.restored.push("missing");
+				continue;
+			};
+			let answer = match archiving.mailbox.restore(folder, &ask.name, body).await {
+				Ok(Restore::Restored { .. }) => "restored",
+				Ok(Restore::Unchanged { .. }) => "unchanged",
+				Ok(Restore::Conflict) => "conflict",
+				Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName | MailboxError::NotFound) => "refused",
+				Err(err) => return Err(Failure::Mailbox(err)),
+			};
+			outcome.restored.push(answer);
+		}
+	}
+	Ok(())
+}
+
+/// Archives the files live in the mailbox for `archiving.after_days`, oldest
+/// first, at most [`ITEMS_PER_PASS`]. Each is stored in `mailbox_archive`
+/// before the mailbox is asked to drop it, and the ask names the bytes home
+/// stored, so the mailbox drops nothing home does not hold.
+async fn archive_old<T: MailboxTransport>(
+	db: &SqlitePool,
+	archiving: &Archiving<'_, T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	outcome: &mut Outcome,
+) -> Result<(), Failure> {
+	let Some(cutoff) = days_before(&now(), archiving.after_days) else {
+		return Ok(());
+	};
+	let mut budget = ITEMS_PER_PASS as usize;
+	for folder in Folder::ALL {
+		// Oldest first: what is old enough sits at the head of the listing.
+		let items = archiving.mailbox.list(folder, 0, PAGE_LIMIT).await.map_err(Failure::Mailbox)?;
+		for item in items.iter().filter(|item| item.live_since() <= cutoff.as_str()) {
+			if budget == 0 {
+				return Ok(());
+			}
+			budget -= 1;
+			let body = match archiving.mailbox.get(folder, item).await {
+				Ok(body) => body,
+				Err(err @ (MailboxError::Mismatch | MailboxError::BadName)) => {
+					outcome.archived.push(err.kind());
+					continue;
+				}
+				Err(err) => return Err(Failure::Mailbox(err)),
+			};
+			let sha256 = item.sha256.to_ascii_lowercase();
+			let file = ArchiveIn {
+				folder: folder.as_str(),
+				name: &item.name,
+				seq: item.seq,
+				sha256: &sha256,
+				put_at: &item.put_at,
+				body: &body,
+			};
+			match keep_archived(db, deletion, subject, file, &now()).await {
+				Ok(Change::Added | Change::Unchanged) => {}
+				Ok(Change::NoAccount) => {
+					outcome.no_account = true;
+					return Ok(());
+				}
+				Err(mailbox_repo::MailboxError::Rewritten) => {
+					outcome.archived.push("rewritten");
+					continue;
+				}
+				Err(mailbox_repo::MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
+			}
+			let answer = match archiving.mailbox.archive(folder, item).await {
+				Ok(Archive::Archived) => "archived",
+				Ok(Archive::Unchanged) => "unchanged",
+				Err(err @ MailboxError::Mismatch) => err.kind(),
+				Err(MailboxError::Refused(_)) => "refused",
+				Err(MailboxError::NotFound) => "gone",
+				Err(err) => return Err(Failure::Mailbox(err)),
+			};
+			outcome.archived.push(answer);
+		}
+	}
+	Ok(())
+}
+
 fn storage(err: mailbox_repo::MailboxError) -> Failure {
 	match err {
 		mailbox_repo::MailboxError::Storage(err) => Failure::Storage(err),
@@ -221,6 +357,15 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
+	tx.commit().await?;
+	Ok(change)
+}
+
+/// As [`keep`], for a file about to be archived.
+async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, file: ArchiveIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let change = mailbox_repo::keep_archived(&mut tx, subject, file, now).await?;
 	tx.commit().await?;
 	Ok(change)
 }
@@ -356,7 +501,7 @@ mod tests {
 
 	async fn pass(pool: &SqlitePool, fake: &Fake) -> Result<Outcome, super::PassError> {
 		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), fake).unwrap();
-		run_once(pool, &mailbox, OWNER, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z")).await
+		run_once(pool, &mailbox, None, OWNER, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z")).await
 	}
 
 	async fn held(pool: &SqlitePool) -> Vec<String> {
@@ -475,7 +620,7 @@ mod tests {
 		let deletion = DeletionLock::default();
 		let exclusive = deletion.exclude().await;
 		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), &fake).unwrap();
-		let running = run_once(&pool, &mailbox, OWNER, &deletion, &|| String::from("2026-10-23T15:00:00.000Z"));
+		let running = run_once(&pool, &mailbox, None, OWNER, &deletion, &|| String::from("2026-10-23T15:00:00.000Z"));
 		let delete = async {
 			tokio::task::yield_now().await;
 			sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
@@ -527,6 +672,19 @@ mod tests {
 		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!((context.subject.as_str(), context.interval.as_secs()), (OWNER, 900));
+		assert!(context.archive.is_none(), "no archive token, nothing archived");
+
+		let archive = ["--mailbox-archive-token", "archive-token"];
+		let context = on(&[&all[..], &archive[..]].concat()).unwrap().unwrap();
+		assert_eq!((context.archive.is_some(), context.archive_days), (true, 90));
+		let err = on(&[&all[..], &["--mailbox-archive-token", "home-token"][..]].concat()).err().unwrap().to_string();
+		assert!(err.contains("MAILBOX_ARCHIVE_TOKEN") && !err.contains("home-token"), "{err}");
+		let err = on(&[&all[..], &archive[..], &["--mailbox-archive-days", "29"][..]].concat()).err().unwrap().to_string();
+		assert!(err.contains("MAILBOX_ARCHIVE_DAYS"), "{err}");
+		assert!(
+			on(&[&all[..], &["--mailbox-archive-days", "29"][..]].concat()).is_ok(),
+			"the days matter only with the token"
+		);
 	}
 
 	/// A file as the phone files it (`PUT /jobs/files/:name`).
@@ -583,6 +741,230 @@ mod tests {
 		);
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(fake.puts.lock().unwrap().len(), 2, "neither is handed again");
+	}
+
+	/// The mailbox as the archive token sees it: every folder's live files,
+	/// what it archived, the routine's open asks, and every archive asked of
+	/// it. A request with home's token gets an empty `brief` and nothing else.
+	/// One live file: (folder, seq, name, body, live since).
+	type Live = (String, i64, String, String, String);
+
+	#[derive(Default)]
+	struct Vault {
+		live: Mutex<Vec<Live>>,
+		/// (folder, name, sha256)
+		archived: Mutex<Vec<(String, String, String)>>,
+		/// (folder, name)
+		wanted: Mutex<Vec<(String, String)>>,
+		/// (path, If-Match) of each archive asked for
+		deletes: Mutex<Vec<(String, Option<String>)>>,
+	}
+
+	fn sha(body: &str) -> String {
+		hex::encode(Sha256::digest(body.as_bytes()))
+	}
+
+	impl Vault {
+		fn add(&self, folder: &str, seq: i64, name: &str, body: &str, live_since: &str) {
+			self
+				.live
+				.lock()
+				.unwrap()
+				.push((folder.to_owned(), seq, name.to_owned(), body.to_owned(), live_since.to_owned()));
+		}
+
+		fn names(&self) -> Vec<String> {
+			self.live.lock().unwrap().iter().map(|(_, _, name, ..)| name.clone()).collect()
+		}
+	}
+
+	impl MailboxTransport for &Vault {
+		type Error = &'static str;
+
+		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
+			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
+			if request.token.expose() == "home-token" {
+				assert!(request.method == Method::Get && path.starts_with("/v1/brief/items?"), "home's token: {path}");
+				return Ok(answer(200, r#"{"items":[]}"#));
+			}
+			assert_eq!(request.token.expose(), "archive-token");
+			let mut parts = path.trim_start_matches("/v1/").splitn(3, '/');
+			let (folder, rest) = (parts.next().unwrap().to_owned(), parts.next().unwrap().to_owned());
+			let name = parts.next().map(str::to_owned);
+			match (request.method, rest.split('?').next().unwrap(), name) {
+				(Method::Get, "items", None) => {
+					let listed: Vec<serde_json::Value> = self
+						.live
+						.lock()
+						.unwrap()
+						.iter()
+						.filter(|(f, ..)| *f == folder)
+						.map(|(_, seq, name, body, since)| {
+							serde_json::json!({
+								"seq": seq, "name": name, "size": body.len(), "sha256": sha(body),
+								"contentType": "application/json", "putAt": "2026-01-01T00:00:00.000Z", "liveSince": since
+							})
+						})
+						.collect();
+					Ok(answer(200, &serde_json::json!({ "items": listed }).to_string()))
+				}
+				(Method::Get, "items", Some(name)) => {
+					let found = self
+						.live
+						.lock()
+						.unwrap()
+						.iter()
+						.find(|(f, _, n, ..)| *f == folder && *n == name)
+						.map(|(_, _, _, body, _)| body.clone());
+					Ok(found.map_or_else(|| answer(404, "{}"), |body| answer(200, &body)))
+				}
+				(Method::Get, "wanted", None) => {
+					let asks: Vec<serde_json::Value> = self
+						.wanted
+						.lock()
+						.unwrap()
+						.iter()
+						.filter(|(f, _)| *f == folder)
+						.map(|(_, name)| serde_json::json!({ "name": name, "askedAt": "2026-10-23T14:00:00.000Z" }))
+						.collect();
+					Ok(answer(200, &serde_json::json!({ "items": asks }).to_string()))
+				}
+				(Method::Delete, "items", Some(name)) => {
+					self.deletes.lock().unwrap().push((path.clone(), request.if_match.clone()));
+					let held = self
+						.live
+						.lock()
+						.unwrap()
+						.iter()
+						.find(|(f, _, n, ..)| *f == folder && *n == name)
+						.map(|(.., body, _)| sha(body));
+					let Some(held) = held else {
+						return Ok(answer(404, r#"{"error":"not_found"}"#));
+					};
+					if request.if_match != Some(String::from("\"") + &held + "\"") {
+						return Ok(answer(412, r#"{"error":"mismatch"}"#));
+					}
+					self.live.lock().unwrap().retain(|(f, _, n, ..)| !(*f == folder && *n == name));
+					self.archived.lock().unwrap().push((folder, name, held));
+					Ok(answer(200, r#"{"change":"archived"}"#))
+				}
+				(Method::Put, "items", Some(name)) => {
+					let body = String::from_utf8(request.body.unwrap()).unwrap();
+					let archived = self.archived.lock().unwrap().iter().any(|(f, n, h)| *f == folder && *n == name && *h == sha(&body));
+					if !archived {
+						return Ok(answer(409, r#"{"error":"conflict"}"#));
+					}
+					self.wanted.lock().unwrap().retain(|(f, n)| !(*f == folder && *n == name));
+					self.add(&folder, 99, &name, &body, "2026-10-23T15:00:00.000Z");
+					Ok(answer(201, r#"{"change":"restored","seq":99}"#))
+				}
+				other => panic!("the archive token asked for {other:?}"),
+			}
+		}
+	}
+
+	const OLD: &str = "2026-07-01T00:00:00.000Z";
+	const YOUNG: &str = "2026-10-01T00:00:00.000Z";
+
+	async fn archive_pass(pool: &SqlitePool, vault: &Vault) -> Outcome {
+		let home = Mailbox::new(BASE, Token::new(String::from("home-token")), vault).unwrap();
+		let archive = Mailbox::new(BASE, Token::new(String::from("archive-token")), vault).unwrap();
+		let archiving = super::Archiving {
+			mailbox: &archive,
+			after_days: 90,
+		};
+		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z"))
+			.await
+			.unwrap()
+	}
+
+	async fn archived_home(pool: &SqlitePool) -> Vec<(String, String, Vec<u8>)> {
+		sqlx::query_as("SELECT folder, name, body FROM mailbox_archive ORDER BY folder, name")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	#[tokio::test]
+	async fn an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (old, old_body) = digest("2026-07-01");
+		let (young, young_body) = digest("2026-10-01");
+		vault.add("brief", 1, &old, &old_body, OLD);
+		vault.add("brief", 2, &young, &young_body, YOUNG);
+		vault.add("decisions", 3, "decisions-2026-07-01.json", "{}", OLD);
+		let outcome = archive_pass(&pool, &vault).await;
+		assert_eq!(outcome.archived, ["archived", "archived"]);
+		assert_eq!(vault.names(), [young], "ninety days are counted from when it went live");
+		assert_eq!(
+			archived_home(&pool).await,
+			[
+				(String::from("brief"), old.clone(), old_body.clone().into_bytes()),
+				(String::from("decisions"), String::from("decisions-2026-07-01.json"), b"{}".to_vec()),
+			]
+		);
+		assert_eq!(
+			vault.deletes.lock().unwrap()[0],
+			(String::from("/v1/brief/items/") + &old, Some(String::from("\"") + &sha(&old_body) + "\"")),
+			"the archive names the bytes home stored"
+		);
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+	}
+
+	#[tokio::test]
+	async fn a_file_home_cannot_store_stays_live() {
+		let (held, vault) = (pool().await, Vault::default());
+		let (old, body) = digest("2026-07-01");
+		vault.add("brief", 1, &old, &body, OLD);
+		sqlx::query(
+			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', ?2, 1, 'other', 2, 'then', x'7b7d', 'now')",
+		)
+		.bind(OWNER)
+		.bind(&old)
+		.execute(&held)
+		.await
+		.unwrap();
+		assert_eq!(archive_pass(&held, &vault).await.archived, ["rewritten"]);
+		assert!(vault.deletes.lock().unwrap().is_empty(), "the mailbox was not asked to drop it");
+		assert_eq!(vault.names(), std::slice::from_ref(&old));
+
+		let (gone, vault) = (pool().await, Vault::default());
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&gone).await.unwrap();
+		vault.add("brief", 1, &old, &body, OLD);
+		assert!(archive_pass(&gone, &vault).await.no_account);
+		assert!(vault.deletes.lock().unwrap().is_empty(), "nor for a subject with no account");
+	}
+
+	#[tokio::test]
+	async fn an_ask_is_answered_from_home_and_one_home_lacks_stays_open() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (kept, body) = digest("2026-07-01");
+		vault.add("brief", 1, &kept, &body, OLD);
+		archive_pass(&pool, &vault).await;
+		vault
+			.archived
+			.lock()
+			.unwrap()
+			.push((String::from("brief"), String::from("digest-2026-06-01.json"), String::from("sha")));
+		*vault.wanted.lock().unwrap() = vec![(String::from("brief"), kept.clone()), (String::from("brief"), String::from("digest-2026-06-01.json"))];
+		let outcome = archive_pass(&pool, &vault).await;
+		assert_eq!(outcome.restored, ["restored", "missing"]);
+		assert_eq!(vault.names(), std::slice::from_ref(&kept), "the same bytes are live again");
+		assert_eq!(vault.live.lock().unwrap()[0].3, body);
+		assert_eq!(vault.wanted.lock().unwrap().len(), 1, "the one home lacks stays asked");
+		assert!(outcome.archived.is_empty(), "a file just put back is not old");
+	}
+
+	#[tokio::test]
+	async fn a_pass_archives_at_most_twenty() {
+		let (pool, vault) = (pool().await, Vault::default());
+		for n in 1..=25 {
+			let (name, body) = digest(&(String::from("2026-06-") + &format_day(n)));
+			vault.add("brief", i64::from(n), &name, &body, OLD);
+		}
+		assert_eq!(archive_pass(&pool, &vault).await.archived.len(), ITEMS_PER_PASS as usize);
+		assert_eq!(archive_pass(&pool, &vault).await.archived.len(), 5, "the rest on the next pass");
+		assert_eq!(archived_home(&pool).await.len(), 25);
 	}
 
 	#[tokio::test]

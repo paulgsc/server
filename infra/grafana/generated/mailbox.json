@@ -88,7 +88,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 0,
         "y": 1
       },
@@ -114,6 +114,86 @@
         }
       ],
       "title": "READING",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Whether this home archives old mailbox files (MAILBOX_ARCHIVE_TOKEN). OFF is a choice: the mailbox then keeps every file live.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#8E8E8E",
+                  "text": "OFF"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "ON"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 1
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "mailbox_archive_enabled",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ARCHIVING",
       "type": "stat"
     },
     {
@@ -160,8 +240,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 4,
+        "w": 4,
+        "x": 6,
         "y": 1
       },
       "id": 3,
@@ -232,7 +312,7 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 9,
+        "x": 10,
         "y": 1
       },
       "id": 4,
@@ -304,7 +384,7 @@
       "gridPos": {
         "h": 4,
         "w": 5,
-        "x": 13,
+        "x": 14,
         "y": 1
       },
       "id": 5,
@@ -375,8 +455,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
+        "w": 5,
+        "x": 19,
         "y": 1
       },
       "id": 6,
@@ -452,7 +532,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per hour. Kept and refused: digests read from the mailbox. Handed: the phone's voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead.",
+      "description": "Per hour. Kept and refused: digests read from the mailbox. Handed: the phone's voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead. Archived: files live in the mailbox for MAILBOX_ARCHIVE_DAYS, stored home and then dropped there, or why one stayed live. Put back: archived files the routine asked for again; missing means home holds nothing for the ask. Both stay at 0 without MAILBOX_ARCHIVE_TOKEN.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -496,9 +576,19 @@
           "expr": "sum by (answer) (increase(mailbox_poll_items_handed_total[1h]))",
           "legendFormat": "handed: {{answer}}",
           "refId": "C"
+        },
+        {
+          "expr": "sum by (answer) (increase(mailbox_poll_items_archived_total[1h]))",
+          "legendFormat": "archived: {{answer}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (answer) (increase(mailbox_poll_items_restored_total[1h]))",
+          "legendFormat": "put back: {{answer}}",
+          "refId": "E"
         }
       ],
-      "title": "Files kept, refused and handed over",
+      "title": "Files kept, refused, handed over, archived and put back",
       "type": "timeseries"
     },
     {

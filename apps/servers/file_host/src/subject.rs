@@ -63,6 +63,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's LeetType session log (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`), every event of every session sent home: the session file played, each pick and how long it took, readings placed, opened, saved or read, rounds parked, returned and confirmed, how each spoken answer was given and whether it was strong (never what was said, typed or ticked), how the session ended, and when each was recorded and reached home; see docs/identity.md",
 	),
 	(
+		"mailbox_archive",
+		"the owner's files home archived from the Jobs mailbox, from any folder: their bytes as the mailbox held them, hash, size, sequence number, when each was first put and when home stored it; see docs/identity.md invariants 19 and 21",
+	),
+	(
 		"mailbox_handed",
 		"each answer the Jobs mailbox gave when home handed it one of the owner's files, and when; see docs/identity.md invariant 19",
 	),

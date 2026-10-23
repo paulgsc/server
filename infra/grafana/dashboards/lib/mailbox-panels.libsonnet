@@ -66,6 +66,15 @@ local series(title, description, targets, unit) = {
     [{ type: 'value', options: { '0': { text: 'OFF', color: '#8E8E8E' }, '1': { text: 'ON', color: 'green' } } }],
   ),
 
+  archiving: stat(
+    'ARCHIVING',
+    'Whether this home archives old mailbox files (MAILBOX_ARCHIVE_TOKEN). OFF is a choice: the mailbox then keeps every file live.',
+    { expr: 'mailbox_archive_enabled' },
+    'none',
+    [{ color: 'green', value: null }],
+    [{ type: 'value', options: { '0': { text: 'OFF', color: '#8E8E8E' }, '1': { text: 'ON', color: 'green' } } }],
+  ),
+
   // In intervals rather than seconds, so the threshold holds whatever
   // MAILBOX_SECONDS is: a pass is due every interval, and two missed is stuck.
   sinceLastRead: stat(
@@ -108,12 +117,14 @@ local series(title, description, targets, unit) = {
   ),
 
   keptAndRefused: series(
-    'Files kept, refused and handed over',
-    'Per hour. Kept and refused: digests read from the mailbox. Handed: the phone\'s voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead.',
+    'Files kept, refused, handed over, archived and put back',
+    'Per hour. Kept and refused: digests read from the mailbox. Handed: the phone\'s voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead. Archived: files live in the mailbox for MAILBOX_ARCHIVE_DAYS, stored home and then dropped there, or why one stayed live. Put back: archived files the routine asked for again; missing means home holds nothing for the ask. Both stay at 0 without MAILBOX_ARCHIVE_TOKEN.',
     [
       { expr: 'sum(increase(mailbox_poll_items_kept_total[1h]))', legendFormat: 'kept', refId: 'A' },
       { expr: 'sum by (why) (increase(mailbox_poll_items_refused_total[1h]))', legendFormat: 'refused: {{why}}', refId: 'B' },
       { expr: 'sum by (answer) (increase(mailbox_poll_items_handed_total[1h]))', legendFormat: 'handed: {{answer}}', refId: 'C' },
+      { expr: 'sum by (answer) (increase(mailbox_poll_items_archived_total[1h]))', legendFormat: 'archived: {{answer}}', refId: 'D' },
+      { expr: 'sum by (answer) (increase(mailbox_poll_items_restored_total[1h]))', legendFormat: 'put back: {{answer}}', refId: 'E' },
     ],
     'none',
   ),

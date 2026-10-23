@@ -5,7 +5,9 @@
 //! routine puts the day's digest in `brief`, home puts the phone's decisions
 //! and scouts in `decisions` and `scout`. Each side holds its own bearer
 //! token, and the Worker decides what each token may read and put. This crate
-//! speaks its `/v1` API: [`Mailbox::list`], [`Mailbox::get`], [`Mailbox::put`].
+//! speaks its `/v1` API: [`Mailbox::list`], [`Mailbox::get`], [`Mailbox::put`],
+//! and, with the archive token, [`Mailbox::archive`], [`Mailbox::wanted`] and
+//! [`Mailbox::restore`].
 //! It does not know what a digest is, which subject a file is for, or when to
 //! ask; `file_host`'s `mailbox` module decides all three.
 //!
@@ -28,7 +30,7 @@
 mod client;
 pub mod transport;
 
-pub use client::{Folder, ItemMeta, Mailbox, MailboxError, Put, PAGE_LIMIT};
+pub use client::{Archive, Folder, ItemMeta, Mailbox, MailboxError, Put, Restore, Wanted, PAGE_LIMIT};
 pub use transport::{MailboxTransport, Method, Request, Response, Token};
 
 #[cfg(feature = "reqwest-transport")]

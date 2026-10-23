@@ -371,6 +371,17 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900")]
 	pub mailbox_seconds: u64,
 
+	/// Home's second mailbox token (the Worker's `ARCHIVE_TOKEN`): it moves a
+	/// file live there long enough home, and puts one back when the routine
+	/// asks. Unset, nothing is archived. Never logged.
+	#[arg(long, env = "MAILBOX_ARCHIVE_TOKEN", hide_env_values = true)]
+	pub mailbox_archive_token: Option<String>,
+
+	/// Days a file stays live in the mailbox before home archives it. At
+	/// least 30, the mailbox's own floor.
+	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90")]
+	pub mailbox_archive_days: u64,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

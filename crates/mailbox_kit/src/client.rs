@@ -18,6 +18,9 @@ pub enum Folder {
 }
 
 impl Folder {
+	/// Every folder, in the order a pass visits them.
+	pub const ALL: [Self; 3] = [Self::Brief, Self::Decisions, Self::Scout];
+
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
 	#[must_use]
 	pub const fn as_str(self) -> &'static str {
@@ -41,6 +44,46 @@ pub struct ItemMeta {
 	pub sha256: String,
 	pub content_type: String,
 	pub put_at: String,
+	/// When it was last put back from home, else `put_at`. A mailbox from
+	/// before archiving does not send it.
+	#[serde(default)]
+	pub live_since: Option<String>,
+}
+
+impl ItemMeta {
+	/// When the item went live: what archiving counts its age from.
+	#[must_use]
+	pub fn live_since(&self) -> &str {
+		self.live_since.as_deref().unwrap_or(&self.put_at)
+	}
+}
+
+/// An archived item the routine asked for again.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Wanted {
+	pub name: String,
+	pub asked_at: String,
+}
+
+/// What an archive did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archive {
+	/// The mailbox kept a row about the item and dropped its bytes.
+	Archived,
+	/// It was archived already.
+	Unchanged,
+}
+
+/// What putting an archived item back did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restore {
+	/// The bytes are live again, under a new `seq`.
+	Restored { seq: i64 },
+	/// The item was live already.
+	Unchanged { seq: i64 },
+	/// The mailbox archived other bytes under the name.
+	Conflict,
 }
 
 /// What a put did.
@@ -163,11 +206,16 @@ impl<T: MailboxTransport> Mailbox<T> {
 	}
 
 	async fn send(&self, method: Method, url: String, body: Option<Vec<u8>>) -> Result<Response, MailboxError> {
+		self.send_matching(method, url, body, None).await
+	}
+
+	async fn send_matching(&self, method: Method, url: String, body: Option<Vec<u8>>, if_match: Option<String>) -> Result<Response, MailboxError> {
 		let request = Request {
 			method,
 			url,
 			token: self.token.clone(),
 			body,
+			if_match,
 		};
 		self.transport.send(request).await.map_err(|err| MailboxError::Transport(err.to_string()))
 	}
@@ -240,6 +288,86 @@ impl<T: MailboxTransport> Mailbox<T> {
 			_ => Err(failure(&response)),
 		}
 	}
+
+	/// The routine's open asks for archived items in `folder`, oldest first,
+	/// at most `limit`. Needs the archive token.
+	///
+	/// # Errors
+	/// The status's [`MailboxError`], [`MailboxError::Transport`], or
+	/// [`MailboxError::Decode`] for an answer that is not `{ items }`.
+	pub async fn wanted(&self, folder: Folder, limit: u32) -> Result<Vec<Wanted>, MailboxError> {
+		#[derive(Deserialize)]
+		struct Listing {
+			items: Vec<Wanted>,
+		}
+		let query = String::from("wanted?limit=") + &limit.clamp(1, PAGE_LIMIT).to_string();
+		let response = self.send(Method::Get, self.url(&[folder.as_str(), &query]), None).await?;
+		if response.status != 200 {
+			return Err(failure(&response));
+		}
+		let listing: Listing = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode("the asks are not { items }"))?;
+		Ok(listing.items)
+	}
+
+	/// Archive `item`: the mailbox keeps a row about it and drops its bytes,
+	/// but only if they are still the ones `item` lists. Needs the archive
+	/// token, and home must hold the bytes first.
+	///
+	/// # Errors
+	/// [`MailboxError::Mismatch`] when the mailbox holds other bytes (`412`),
+	/// [`MailboxError::Refused`] when it is too young to archive (`422`),
+	/// [`MailboxError::NotFound`], [`MailboxError::BadName`], the status's
+	/// other [`MailboxError`], or [`MailboxError::Transport`].
+	pub async fn archive(&self, folder: Folder, item: &ItemMeta) -> Result<Archive, MailboxError> {
+		#[derive(Deserialize)]
+		struct Answer {
+			change: String,
+		}
+		let name = plain_name(&item.name)?;
+		let tag = String::from("\"") + &item.sha256.to_ascii_lowercase() + "\"";
+		let response = self.send_matching(Method::Delete, self.url(&[folder.as_str(), "items", name]), None, Some(tag)).await?;
+		match response.status {
+			200 => {
+				let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode("an archive's answer is not { change }"))?;
+				match answer.change.as_str() {
+					"archived" => Ok(Archive::Archived),
+					"unchanged" => Ok(Archive::Unchanged),
+					_ => Err(MailboxError::Decode("an archive's change is not one it can be")),
+				}
+			}
+			412 => Err(MailboxError::Mismatch),
+			_ => Err(failure(&response)),
+		}
+	}
+
+	/// Put an archived item's own bytes back under `name`. Needs the archive
+	/// token.
+	///
+	/// # Errors
+	/// [`MailboxError::NotFound`] when the name was never archived,
+	/// [`MailboxError::BadName`], the status's other [`MailboxError`], or
+	/// [`MailboxError::Transport`].
+	pub async fn restore(&self, folder: Folder, name: &str, body: Vec<u8>) -> Result<Restore, MailboxError> {
+		#[derive(Deserialize)]
+		struct Answer {
+			change: String,
+			seq: i64,
+		}
+		let name = plain_name(name)?;
+		let response = self.send(Method::Put, self.url(&[folder.as_str(), "items", name]), Some(body)).await?;
+		match response.status {
+			200 | 201 => {
+				let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode("a restore's answer is not { change, seq }"))?;
+				match (response.status, answer.change.as_str()) {
+					(201, "restored") => Ok(Restore::Restored { seq: answer.seq }),
+					(200, "unchanged") => Ok(Restore::Unchanged { seq: answer.seq }),
+					_ => Err(MailboxError::Decode("a restore's change does not match its status")),
+				}
+			}
+			409 => Ok(Restore::Conflict),
+			_ => Err(failure(&response)),
+		}
+	}
 }
 
 /// A name the mailbox's patterns allow is letters, digits, `-`, `_` and `.`,
@@ -277,7 +405,7 @@ fn failure(response: &Response) -> MailboxError {
 
 #[cfg(test)]
 mod tests {
-	use super::{Folder, ItemMeta, Mailbox, MailboxError, Put};
+	use super::{Archive, Folder, ItemMeta, Mailbox, MailboxError, Put, Restore, Wanted};
 	use crate::transport::{MailboxTransport, Method, Request, Response, Token};
 	use sha2::{Digest, Sha256};
 	use std::sync::Mutex;
@@ -333,6 +461,7 @@ mod tests {
 			sha256: hex::encode(Sha256::digest(body.as_bytes())),
 			content_type: "application/json".to_owned(),
 			put_at: "2026-10-22T14:57:51.443Z".to_owned(),
+			live_since: None,
 		}
 	}
 
@@ -425,6 +554,80 @@ mod tests {
 			(Method::Put, "https://mailbox.example.test/v1/decisions/items/decisions-2026-10-22.json")
 		);
 		assert_eq!(request.body.as_deref(), Some(body().as_slice()));
+	}
+
+	#[tokio::test]
+	async fn a_listing_reads_live_since_and_falls_back_to_put_at() {
+		let listing = r#"{"items":[
+			{"seq":9,"name":"a.json","size":1,"sha256":"aa","contentType":"application/json","putAt":"2026-01-01T00:00:00.000Z","liveSince":"2026-06-01T00:00:00.000Z"},
+			{"seq":10,"name":"b.json","size":1,"sha256":"bb","contentType":"application/json","putAt":"2026-02-01T00:00:00.000Z"}
+		]}"#;
+		let items = mailbox(vec![(200, listing)]).list(Folder::Brief, 0, 50).await.unwrap();
+		assert_eq!(items[0].live_since(), "2026-06-01T00:00:00.000Z", "put back from home");
+		assert_eq!(items[1].live_since(), "2026-02-01T00:00:00.000Z", "a mailbox from before archiving");
+	}
+
+	#[tokio::test]
+	async fn an_archive_names_the_bytes_and_each_answer_maps_to_what_it_means() {
+		let body = r#"{"schema":"some-ui.job-digest/1"}"#;
+		let mailbox = mailbox(vec![
+			(200, r#"{"change":"archived"}"#),
+			(200, r#"{"change":"unchanged"}"#),
+			(412, r#"{"error":"mismatch"}"#),
+			(422, r#"{"error":"an item is archived only after 30 days live"}"#),
+			(404, r#"{"error":"not_found"}"#),
+			(200, r#"{"change":"restored"}"#),
+		]);
+		let listed = item("digest-2026-10-22.json", body);
+		assert_eq!(mailbox.archive(Folder::Brief, &listed).await, Ok(Archive::Archived));
+		assert_eq!(mailbox.archive(Folder::Brief, &listed).await, Ok(Archive::Unchanged));
+		assert_eq!(mailbox.archive(Folder::Brief, &listed).await, Err(MailboxError::Mismatch));
+		assert!(matches!(mailbox.archive(Folder::Brief, &listed).await, Err(MailboxError::Refused(_))));
+		assert_eq!(mailbox.archive(Folder::Brief, &listed).await, Err(MailboxError::NotFound));
+		assert!(matches!(mailbox.archive(Folder::Brief, &listed).await, Err(MailboxError::Decode(_))));
+		let request = mailbox.transport.sent.lock().unwrap()[0].clone();
+		assert_eq!(
+			(request.method, request.url.as_str(), request.if_match.as_deref(), request.body.is_none()),
+			(
+				Method::Delete,
+				"https://mailbox.example.test/v1/brief/items/digest-2026-10-22.json",
+				Some(String::from("\"") + &listed.sha256 + "\"").as_deref(),
+				true
+			)
+		);
+		assert_eq!(mailbox.archive(Folder::Brief, &item("../x", body)).await, Err(MailboxError::BadName));
+	}
+
+	#[tokio::test]
+	async fn the_asks_are_listed_and_a_restore_answer_maps_to_what_it_means() {
+		let mailbox = mailbox(vec![
+			(200, r#"{"items":[{"name":"digest-2026-07-01.json","askedAt":"2026-10-23T15:00:00.000Z"}]}"#),
+			(201, r#"{"change":"restored","seq":40}"#),
+			(200, r#"{"change":"unchanged","seq":40}"#),
+			(409, r#"{"error":"conflict"}"#),
+			(404, r#"{"error":"not_found"}"#),
+			(201, r#"{"change":"added","seq":41}"#),
+		]);
+		assert_eq!(
+			mailbox.wanted(Folder::Brief, 500).await.unwrap(),
+			[Wanted {
+				name: String::from("digest-2026-07-01.json"),
+				asked_at: String::from("2026-10-23T15:00:00.000Z"),
+			}]
+		);
+		let restore = || mailbox.restore(Folder::Brief, "digest-2026-07-01.json", b"{}".to_vec());
+		assert_eq!(restore().await, Ok(Restore::Restored { seq: 40 }));
+		assert_eq!(restore().await, Ok(Restore::Unchanged { seq: 40 }));
+		assert_eq!(restore().await, Ok(Restore::Conflict));
+		assert_eq!(restore().await, Err(MailboxError::NotFound));
+		assert!(matches!(restore().await, Err(MailboxError::Decode(_))), "a 201 that says added");
+		assert_eq!(
+			sent(&mailbox)[..2],
+			[
+				(Method::Get, String::from(BASE) + "/v1/brief/wanted?limit=50"),
+				(Method::Put, String::from(BASE) + "/v1/brief/items/digest-2026-07-01.json"),
+			]
+		);
 	}
 
 	#[tokio::test]
