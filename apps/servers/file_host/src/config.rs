@@ -371,6 +371,35 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900")]
 	pub mailbox_seconds: u64,
 
+	// ── The mailbox's D1 usage ───────────────────────────────────────────────
+	//
+	// See `d1_usage`. Home asks Cloudflare how much of the free D1 allowance
+	// the mailbox's database has used today, for the MAILBOX dashboard. Off
+	// unless `CF_USAGE_ENABLED`; on, the server refuses to start unless the
+	// other three are set.
+	/// Whether home reads the mailbox database's usage from Cloudflare.
+	#[arg(long, env = "CF_USAGE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	pub cf_usage_enabled: bool,
+
+	/// The Cloudflare account id the mailbox runs under. Never logged.
+	#[arg(long, env = "CF_ACCOUNT_ID", hide_env_values = true)]
+	pub cf_account_id: Option<String>,
+
+	/// A read-only Cloudflare API token with Account Analytics: Read, and
+	/// nothing else. Not the mailbox's own token. Never logged.
+	#[arg(long, env = "CF_API_TOKEN", hide_env_values = true)]
+	pub cf_api_token: Option<String>,
+
+	/// The mailbox's D1 database id (`apps/mailbox/wrangler.jsonc` in
+	/// paulgsc/some-ui).
+	#[arg(long, env = "CF_D1_DATABASE_ID")]
+	pub cf_d1_database_id: Option<String>,
+
+	/// Seconds between reads of the usage. At least 60; Cloudflare's numbers
+	/// run a few minutes behind anyway.
+	#[arg(long, env = "CF_USAGE_SECONDS", default_value = "300")]
+	pub cf_usage_seconds: u64,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

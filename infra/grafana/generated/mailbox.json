@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "The Jobs mailbox: whether home is reading the daily digest from it.",
+  "description": "The Jobs mailbox: whether home is reading the daily digest from it, and how much of the free plan its database has used today.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -538,6 +538,576 @@
         }
       ],
       "title": "How long a pass takes",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 10,
+      "panels": [],
+      "title": "The mailbox's database, against the free plan",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Whether this home asks Cloudflare for the mailbox database's usage (CF_USAGE_ENABLED). OFF is a choice, not a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#8E8E8E",
+                  "text": "OFF"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "ON"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 0,
+        "y": 14
+      },
+      "id": 11,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_enabled",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "USAGE READ",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The UTC day so far. At 100,000 every mailbox query fails until 00:00 UTC. Grey: the numbers are stale.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "max": 100000,
+          "min": 0,
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50000
+              },
+              {
+                "color": "red",
+                "value": 80000
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 4,
+        "y": 14
+      },
+      "id": 12,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_rows_written_today and on() ((time() - d1_usage_last_success_timestamp_seconds) < 3 * d1_usage_interval_seconds)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rows written today, of 100,000 allowed",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The UTC day so far. At 5,000,000 every mailbox query fails until 00:00 UTC. Grey: the numbers are stale.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "max": 5000000,
+          "min": 0,
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2500000
+              },
+              {
+                "color": "red",
+                "value": 4000000
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 9,
+        "y": 14
+      },
+      "id": 13,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_rows_read_today and on() ((time() - d1_usage_last_success_timestamp_seconds) < 3 * d1_usage_interval_seconds)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rows read today, of 5,000,000 allowed",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "What the mailbox holds. It only grows: the mailbox is append-only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "max": 500000000,
+          "min": 0,
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 250000000
+              },
+              {
+                "color": "red",
+                "value": 400000000
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 14,
+        "y": 14
+      },
+      "id": 14,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_database_bytes and on() ((time() - d1_usage_last_success_timestamp_seconds) < 3 * d1_usage_interval_seconds)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Database size, of 500 MB allowed",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Collector intervals since Cloudflare last answered. Above 3 the numbers above are grey; the panel below says why.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 19,
+        "y": 14
+      },
+      "id": 15,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "(time() - d1_usage_last_success_timestamp_seconds) / d1_usage_interval_seconds",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "NUMBERS AGE",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Each line resets at 00:00 UTC, when the free plan's day does. A line climbing every few minutes is a runaway writer.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "spanNulls": false
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 20
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_rows_written_today",
+          "legendFormat": "written",
+          "refId": "A"
+        },
+        {
+          "expr": "d1_usage_rows_read_today",
+          "legendFormat": "read",
+          "refId": "B"
+        }
+      ],
+      "title": "Rows today, through the day",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Read and write queries the Worker made today.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "spanNulls": false
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 20
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_queries_today",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Queries today, by kind",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "How long the Worker's queries took, today; 0 on a day with none.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "spanNulls": false
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "d1_usage_query_batch_p90_milliseconds",
+          "legendFormat": "p90",
+          "refId": "A"
+        }
+      ],
+      "title": "Query time, 90th percentile today",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "One line per reason; 1 while the last read failed for it. unauthorized: CF_API_TOKEN cannot read the account. api: Cloudflare refused the query. The dotted line is intervals since the collector last asked at all.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "spanNulls": false
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (error) (d1_usage_failing)",
+          "legendFormat": "{{error}}",
+          "refId": "A"
+        },
+        {
+          "expr": "(time() - d1_usage_last_attempt_timestamp_seconds) / d1_usage_interval_seconds",
+          "legendFormat": "intervals since asked",
+          "refId": "B"
+        }
+      ],
+      "title": "Why the last usage read failed",
       "type": "timeseries"
     }
   ],

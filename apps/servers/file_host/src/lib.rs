@@ -10,6 +10,7 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 pub mod auth;
 pub mod cache;
 pub mod config;
+pub mod d1_usage;
 pub mod error;
 pub mod handlers;
 pub mod health;
@@ -105,6 +106,8 @@ pub struct AppState {
 	/// `None` unless `MAILBOX_ENABLED`: no poller runs, and
 	/// `GET /api/v1/jobs/digests` answers from whatever copy home holds.
 	pub mailbox: Option<mailbox::MailboxContext>,
+	/// `None` unless `CF_USAGE_ENABLED`: nothing asks Cloudflare.
+	pub d1_usage: Option<d1_usage::UsageContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -161,12 +164,14 @@ impl AppState {
 
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
+		let d1_usage = d1_usage::UsageContext::from_config(&config)?;
 
 		Ok(Self {
 			core,
 			realtime,
 			nudge,
 			mailbox,
+			d1_usage,
 			auth,
 		})
 	}
