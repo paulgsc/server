@@ -452,7 +452,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per hour.",
+      "description": "Per hour. Kept and refused: digests read from the mailbox. Handed: the phone's voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -491,9 +491,14 @@
           "expr": "sum by (why) (increase(mailbox_poll_items_refused_total[1h]))",
           "legendFormat": "refused: {{why}}",
           "refId": "B"
+        },
+        {
+          "expr": "sum by (answer) (increase(mailbox_poll_items_handed_total[1h]))",
+          "legendFormat": "handed: {{answer}}",
+          "refId": "C"
         }
       ],
-      "title": "Files kept and refused",
+      "title": "Files kept, refused and handed over",
       "type": "timeseries"
     },
     {

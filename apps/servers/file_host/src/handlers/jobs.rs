@@ -20,6 +20,11 @@
 //! job digests home read from the Jobs mailbox, which only the `mailbox`
 //! poller writes (`mailbox_repo`, docs/identity.md invariant 19). It reads,
 //! and writes nothing; `jobs_event` still has no writer but the two above.
+//!
+//! **Files for the mailbox carry no voice notes.** [`put_file`] files the
+//! phone's decisions or scouts file for the poller to hand to the mailbox,
+//! and refuses one that names a voice note: those go by the phone's share
+//! sheet, which carries the audio to Drive (invariant 16: no audio here).
 
 use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
@@ -33,7 +38,8 @@ use axum::{
 use chrono::{NaiveDate, SecondsFormat, Utc};
 use jobs_repo::{Event, JobsError, Record, REWRITTEN};
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
+use serde_json::{value::RawValue, Value};
+use sha2::{Digest as _, Sha256};
 use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
@@ -167,6 +173,99 @@ pub async fn get_digests(subject: SubjectId, State(db): State<SqlitePool>, Query
 	Ok(Json(Digests { digests }))
 }
 
+/// The most a filed file may hold: the Jobs record's own body ceiling.
+pub const FILE_CEILING: usize = jobs_repo::EVENT_BODY_CEILING;
+
+/// `PUT /jobs/files/:name`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileFiled {
+	/// `added` or `unchanged`.
+	pub change: &'static str,
+}
+
+/// The mailbox folder a file's name puts it in, and the schema it must
+/// carry: `decisions-YYYY-MM-DD(-n).json` or `scouts-YYYYMMDDTHHMMSS.json`,
+/// the mailbox's own patterns (paulgsc/some-ui `apps/mailbox`).
+fn folder_of(name: &str) -> Option<(&'static str, &'static str)> {
+	let digits = |text: &str, count: usize| text.len() == count && text.bytes().all(|byte| byte.is_ascii_digit());
+	if let Some(rest) = name.strip_prefix("decisions-").and_then(|rest| rest.strip_suffix(".json")) {
+		let (day, nth) = rest.split_at(rest.len().min(10));
+		let nth_ok = nth.is_empty()
+			|| nth
+				.strip_prefix('-')
+				.is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|byte| byte.is_ascii_digit()));
+		return (is_day(day) && nth_ok).then_some(("decisions", "some-ui.job-decisions/1"));
+	}
+	let stamp = name.strip_prefix("scouts-")?.strip_suffix(".json")?;
+	let (date, time) = stamp.split_once('T')?;
+	(digits(date, 8) && digits(time, 6)).then_some(("scout", "some-ui.job-scouts/1"))
+}
+
+/// Whether `value` names a voice note anywhere: a `voice` key whose value is
+/// anything but an empty array. Read over the whole file rather than the
+/// schema's known places, so a new place a note can hang is refused too.
+fn names_voice(value: &Value) -> bool {
+	match value {
+		Value::Object(fields) => fields
+			.iter()
+			.any(|(key, field)| (key == "voice" && field.as_array().is_none_or(|notes| !notes.is_empty())) || names_voice(field)),
+		Value::Array(items) => items.iter().any(names_voice),
+		_ => false,
+	}
+}
+
+/// `PUT /jobs/files/:name`, the body being the file itself.
+///
+/// A voice-free decisions or scouts file, filed for the mailbox poller to
+/// hand on. `BEGIN IMMEDIATE`, so the read that decides and the write see one
+/// snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 naming what is
+/// wrong (`name`, `body`, `schema` or `voice`), 409 for other bytes under a
+/// filed name or from a paired phone that stopped sending the record home,
+/// and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_file_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, headers: HeaderMap, Path(name): Path<String>, body: Bytes) -> Result<Json<FileFiled>, FileHostError> {
+	let Some((folder, schema)) = folder_of(&name) else {
+		return Err(FileHostError::unprocessable_entity([("name", "not a decisions or scouts file name")]));
+	};
+	if body.len() > FILE_CEILING {
+		return Err(FileHostError::unprocessable_entity([("body", "over 256 KiB")]));
+	}
+	let Ok(file) = serde_json::from_slice::<Value>(&body) else {
+		return Err(FileHostError::unprocessable_entity([("body", "not JSON")]));
+	};
+	if file.get("schema").and_then(Value::as_str) != Some(schema) {
+		return Err(FileHostError::unprocessable_entity([("schema", "not the schema this file's name calls for")]));
+	}
+	if names_voice(&file) {
+		return Err(FileHostError::unprocessable_entity([(
+			"voice",
+			"names a voice note: share it from the phone, which sends the audio to Drive",
+		)]));
+	}
+	let sha256 = hex::encode(Sha256::digest(&body));
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
+	let change = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), folder, &name, &sha256, &body, &now())
+		.await
+		.map_err(|err| match err {
+			mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("this name already holds a different file: what home hands the mailbox is never replaced"),
+			mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+		})?;
+	let change = match change {
+		mailbox_repo::Change::Added => "added",
+		mailbox_repo::Change::Unchanged => "unchanged",
+		// `SubjectId` holds the deletion lock and found the account, so this
+		// is not reachable; if it were, nothing was written.
+		mailbox_repo::Change::NoAccount => return Err(FileHostError::OperationError("the account is gone".to_owned())),
+	};
+	tx.commit().await?;
+	Ok(Json(FileFiled { change }))
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with a real phone session (a bearer token, as
@@ -274,9 +373,14 @@ mod tests {
 		let app = app(state);
 		let routes: Vec<(Method, String)> = module()
 			.descriptors()
-			.map(|route| (Method::from_bytes(route.method.as_bytes()).unwrap(), route.path.replace(":id", "e1")))
+			.map(|route| {
+				(
+					Method::from_bytes(route.method.as_bytes()).unwrap(),
+					route.path.replace(":id", "e1").replace(":name", "decisions-2026-10-23.json"),
+				)
+			})
 			.collect();
-		assert_eq!(routes.len(), 3, "{routes:?}");
+		assert_eq!(routes.len(), 4, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -460,5 +564,92 @@ mod tests {
 			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{after}: {answer}");
 			assert!(answer["error"]["details"]["after"].is_array(), "{answer}");
 		}
+	}
+
+	fn decisions(day: &str, voice: &[&str]) -> Value {
+		json!({
+			"schema": "some-ui.job-decisions/1", "day": day, "digestDay": day, "sharedAt": "2026-10-23T22:00:00.000Z",
+			"picks": [{
+				"day": day, "pickId": "blu-7f2a", "fingerprint": "bluesight|data analyst|remote", "id": "e1",
+				"decision": "taken", "reasons": [], "note": "", "voice": [],
+				"debrief": { "id": "e2", "minutes": 20, "friction": 2, "frictionChips": [], "what": "", "voice": voice, "result": "submitted" },
+				"fit": []
+			}],
+			"disagreements": [], "outcomes": []
+		})
+	}
+
+	async fn filed(state: &TestState) -> Vec<(String, String)> {
+		sqlx::query_as("SELECT folder, name FROM mailbox_outgoing ORDER BY rowid")
+			.fetch_all(&state.pool)
+			.await
+			.unwrap()
+	}
+
+	#[tokio::test]
+	async fn files_take_a_voice_free_file_once_and_never_replace_it() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let path = "/jobs/files/decisions-2026-10-23.json";
+		assert_eq!(
+			call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-23", &[])).await,
+			(StatusCode::OK, json!({ "change": "added" }))
+		);
+		assert_eq!(
+			call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-23", &[])).await.1,
+			json!({ "change": "unchanged" })
+		);
+		let (status, answer) = call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-22", &[])).await;
+		assert_eq!((status, &answer["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")), "{answer}");
+		let scouts = json!({ "schema": "some-ui.job-scouts/1", "sharedAt": "2026-10-23T22:00:00.000Z", "scouts": [{ "voice": [] }] });
+		assert_eq!(
+			call(&app, Method::PUT, "/jobs/files/scouts-20261023T101500.json", Some(&phone), &scouts).await.0,
+			StatusCode::OK
+		);
+		assert_eq!(
+			filed(&state).await,
+			[
+				(String::from("decisions"), String::from("decisions-2026-10-23.json")),
+				(String::from("scout"), String::from("scouts-20261023T101500.json")),
+			]
+		);
+	}
+
+	#[tokio::test]
+	async fn files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let mut not_a_list = decisions("2026-10-23", &[]);
+		not_a_list["picks"][0]["voice"] = json!("note.webm");
+		for file in [decisions("2026-10-23", &["debrief-1.webm"]), not_a_list] {
+			let (status, answer) = call(&app, Method::PUT, "/jobs/files/decisions-2026-10-23.json", Some(&phone), &file).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+			assert!(answer["error"]["details"]["voice"].is_array(), "{answer}");
+		}
+		assert!(filed(&state).await.is_empty());
+	}
+
+	#[tokio::test]
+	async fn files_refuse_a_wrong_name_schema_or_body() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let file = decisions("2026-10-23", &[]);
+		for (path, body, field) in [
+			("/jobs/files/digest-2026-10-23.json", file.clone(), "name"),
+			("/jobs/files/decisions-2026-13-01.json", file.clone(), "name"),
+			("/jobs/files/decisions-2026-10-23-x.json", file.clone(), "name"),
+			("/jobs/files/scouts-20261023.json", file.clone(), "name"),
+			("/jobs/files/scouts-20261023T101500.json", file.clone(), "schema"),
+			("/jobs/files/decisions-2026-10-23.json", json!("text"), "schema"),
+			("/jobs/files/decisions-2026-10-23-2.json", json!({ "padding": "x".repeat(super::FILE_CEILING) }), "body"),
+		] {
+			let (status, answer) = call(&app, Method::PUT, path, Some(&phone), &body).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {answer}");
+			assert!(answer["error"]["details"][field].is_array(), "{path}: {answer}");
+		}
+		assert!(filed(&state).await.is_empty());
 	}
 }

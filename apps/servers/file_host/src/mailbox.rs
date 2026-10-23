@@ -131,8 +131,8 @@ fn spawn(state: &AppState, context: MailboxContext) {
 					match result {
 						Ok(outcome) => {
 							crate::metrics::mailbox::record_pass(&outcome, None);
-							if outcome.kept > 0 || !outcome.refused.is_empty() || outcome.no_account {
-								info!(kept = outcome.kept, refused = ?outcome.refused, no_account = outcome.no_account, "Jobs mailbox pass");
+							if outcome.kept > 0 || !outcome.refused.is_empty() || !outcome.handed.is_empty() || outcome.no_account {
+								info!(kept = outcome.kept, refused = ?outcome.refused, handed = ?outcome.handed, no_account = outcome.no_account, "Jobs mailbox pass");
 							}
 						}
 						Err(err) => {

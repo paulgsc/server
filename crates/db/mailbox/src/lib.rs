@@ -15,8 +15,14 @@
 //!   `auth::DeletionLock` around it (docs/identity.md invariants 9 and 19).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
-//! - **One writer.** `file_host`'s `mailbox` poller is the only caller of
-//!   [`keep_item`]; `git grep -n mailbox_item -- '*.rs'` shows no other.
+//! - **One writer per table.** `file_host`'s `mailbox` poller is the only
+//!   caller of [`keep_item`] and [`record_handed`], and
+//!   `PUT /api/v1/jobs/files/:name` the only caller of [`file_outgoing`];
+//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed' -- '*.rs'`
+//!   shows no other.
+//! - **Handed once.** A file filed for the mailbox is handed until the
+//!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
+//!   filed files with no answer recorded.
 
 use sqlx::SqliteConnection;
 
@@ -177,9 +183,123 @@ pub async fn digests_after(conn: &mut SqliteConnection, subject: &str, after: Op
 	Ok(digests)
 }
 
+/// One file filed for the mailbox and not yet answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+	pub folder: String,
+	pub name: String,
+	pub body: Vec<u8>,
+}
+
+/// What the mailbox said to a file home handed it. Every answer is final.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+	/// It took the file.
+	Added,
+	/// It already held these very bytes under the name.
+	Unchanged,
+	/// It holds other bytes under the name, which it never replaces.
+	Conflict,
+	/// It refused the file (a `422` or a `413`).
+	Refused,
+}
+
+impl Answer {
+	/// The value `mailbox_handed.answer` stores.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Added => "added",
+			Self::Unchanged => "unchanged",
+			Self::Conflict => "conflict",
+			Self::Refused => "refused",
+		}
+	}
+}
+
+/// Files `body` under (`folder`, `name`) for `subject`, to be handed to the
+/// mailbox, as of `now`.
+///
+/// Run it in the request's `BEGIN IMMEDIATE` transaction.
+///
+/// # Errors
+/// [`MailboxError::Rewritten`] when the name already holds other bytes, and
+/// [`MailboxError::Storage`] for any `sqlx` failure.
+pub async fn file_outgoing(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str, sha256: &str, body: &[u8], now: &str) -> Result<Change, MailboxError> {
+	let standing = sqlx::query_scalar!(
+		"SELECT sha256 FROM mailbox_outgoing WHERE subject_id = ?1 AND folder = ?2 AND name = ?3",
+		subject,
+		folder,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	if let Some(standing) = standing {
+		return if standing == sha256 { Ok(Change::Unchanged) } else { Err(MailboxError::Rewritten) };
+	}
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		folder,
+		name,
+		sha256,
+		body,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
+/// `subject`'s filed files the mailbox has not answered, oldest filed first,
+/// at most `limit`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn pending_outgoing(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Outgoing>, MailboxError> {
+	let pending = sqlx::query_as!(
+		Outgoing,
+		"SELECT folder, name, body FROM mailbox_outgoing AS filed
+		 WHERE subject_id = ?1
+		   AND NOT EXISTS (
+		     SELECT 1 FROM mailbox_handed AS handed
+		     WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		   )
+		 ORDER BY filed_at, rowid
+		 LIMIT ?2",
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(pending)
+}
+
+/// Records the mailbox's `answer` to `subject`'s file (`folder`, `name`), as
+/// of `now`. Its caller holds the deletion hold, as for [`keep_item`].
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str, answer: Answer, now: &str) -> Result<Change, MailboxError> {
+	let answer = answer.as_str();
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		folder,
+		name,
+		answer,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{cursor, digests_after, keep_item, Change, ItemIn, MailboxError, BRIEF};
+	use super::{cursor, digests_after, file_outgoing, keep_item, pending_outgoing, record_handed, Answer, Change, ItemIn, MailboxError, BRIEF};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -381,5 +501,53 @@ mod tests {
 			let left: Vec<String> = sqlx::query_scalar(&(String::from("SELECT subject_id FROM ") + table)).fetch_all(&pool).await.unwrap();
 			assert_eq!(left, [B], "{table}: A's rows went with A's account, B's stayed");
 		}
+	}
+
+	async fn file(pool: &SqlitePool, subject: &str, name: &str, body: &str) -> Result<Change, MailboxError> {
+		let sha = String::from("sha-of-") + body;
+		file_outgoing(&mut pool.acquire().await.unwrap(), subject, "decisions", name, &sha, body.as_bytes(), NOW).await
+	}
+
+	async fn pending(pool: &SqlitePool, subject: &str) -> Vec<String> {
+		pending_outgoing(&mut pool.acquire().await.unwrap(), subject, 20)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|outgoing| outgoing.name)
+			.collect()
+	}
+
+	#[tokio::test]
+	async fn a_filed_name_is_not_filed_twice() {
+		let pool = pool().await;
+		assert_eq!(file(&pool, A, "decisions-2026-10-23.json", "{}").await.unwrap(), Change::Added);
+		assert_eq!(file(&pool, A, "decisions-2026-10-23.json", "{}").await.unwrap(), Change::Unchanged);
+		assert!(matches!(file(&pool, A, "decisions-2026-10-23.json", "[]").await, Err(MailboxError::Rewritten)));
+		assert_eq!(file(&pool, "subject-gone", "decisions-2026-10-23.json", "{}").await.unwrap(), Change::NoAccount);
+	}
+
+	#[tokio::test]
+	async fn a_file_is_pending_until_the_mailbox_answers_it_and_any_answer_is_final() {
+		let pool = pool().await;
+		for name in ["decisions-2026-10-21.json", "decisions-2026-10-22.json", "decisions-2026-10-23.json"] {
+			file(&pool, A, name, name).await.unwrap();
+		}
+		file(&pool, B, "decisions-2026-10-21.json", "b").await.unwrap();
+		assert_eq!(
+			pending(&pool, A).await,
+			["decisions-2026-10-21.json", "decisions-2026-10-22.json", "decisions-2026-10-23.json"],
+			"oldest filed first"
+		);
+		let mut conn = pool.acquire().await.unwrap();
+		record_handed(&mut conn, A, "decisions", "decisions-2026-10-21.json", Answer::Added, NOW).await.unwrap();
+		record_handed(&mut conn, A, "decisions", "decisions-2026-10-22.json", Answer::Conflict, NOW).await.unwrap();
+		drop(conn);
+		assert_eq!(pending(&pool, A).await, ["decisions-2026-10-23.json"], "a conflict is not handed again");
+		assert_eq!(pending(&pool, B).await, ["decisions-2026-10-21.json"], "per subject");
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			record_handed(&mut conn, "subject-gone", "decisions", "x", Answer::Refused, NOW).await.unwrap(),
+			Change::NoAccount
+		);
 	}
 }
