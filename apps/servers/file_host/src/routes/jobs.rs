@@ -5,6 +5,9 @@
 //! ```text
 //! GET /jobs              → { events }: the record, in the order recorded
 //! PUT /jobs/events/:id   → { change, event }: the body is the event itself
+//! GET /jobs/digests      → { digests }: the daily job digests home holds,
+//!                          oldest first, at most 7; `?after=YYYY-MM-DD` for
+//!                          the days after it
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::aph`. Every handler takes a
@@ -15,6 +18,8 @@
 //! **Append-only.** A `PUT` adds an event or changes nothing, and a different
 //! body under a held id is a `409`; there is no `DELETE`. See
 //! `handlers::jobs` and `jobs_repo`.
+//!
+//! **Digests** are read only: the `mailbox` poller is their one writer.
 
 use crate::auth::AuthContext;
 use crate::handlers::jobs as handlers;
@@ -37,7 +42,10 @@ where
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
 {
-	let table = RouteTable::new().get("/jobs", handlers::get_record).put("/jobs/events/:id", handlers::put_event);
+	let table = RouteTable::new()
+		.get("/jobs", handlers::get_record)
+		.put("/jobs/events/:id", handlers::put_event)
+		.get("/jobs/digests", handlers::get_digests);
 
 	Module::versioned("jobs", table).with_cors(cors)
 }

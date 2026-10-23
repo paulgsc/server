@@ -6,6 +6,7 @@
 pub mod build_info;
 pub mod http;
 pub mod instruments;
+pub mod mailbox;
 pub mod observability;
 pub mod periodic;
 pub mod pool;

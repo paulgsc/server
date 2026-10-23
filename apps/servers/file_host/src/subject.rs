@@ -62,6 +62,18 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"leetype_session_event",
 		"the owner's LeetType session log (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`), every event of every session sent home: the session file played, each pick and how long it took, readings placed, opened, saved or read, rounds parked, returned and confirmed, how each spoken answer was given and whether it was strong (never what was said, typed or ticked), how the session ended, and when each was recorded and reached home; see docs/identity.md",
 	),
+	(
+		"mailbox_handed",
+		"each answer the Jobs mailbox gave when home handed it one of the owner's files, and when; see docs/identity.md invariant 19",
+	),
+	(
+		"mailbox_item",
+		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each the routine's daily job digest: its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+	),
+	(
+		"mailbox_outgoing",
+		"the owner's voice-free Jobs decisions and scouts filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),
 	(
