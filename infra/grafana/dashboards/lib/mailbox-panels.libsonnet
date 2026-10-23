@@ -137,11 +137,12 @@ local series(title, description, targets, unit) = {
   ),
 
   keptAndRefused: series(
-    'Files kept and refused',
-    'Per hour.',
+    'Files kept, refused and handed over',
+    'Per hour. Kept and refused: digests read from the mailbox. Handed: the phone\'s voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead.',
     [
       { expr: 'sum(increase(mailbox_poll_items_kept_total[1h]))', legendFormat: 'kept', refId: 'A' },
       { expr: 'sum by (why) (increase(mailbox_poll_items_refused_total[1h]))', legendFormat: 'refused: {{why}}', refId: 'B' },
+      { expr: 'sum by (answer) (increase(mailbox_poll_items_handed_total[1h]))', legendFormat: 'handed: {{answer}}', refId: 'C' },
     ],
     'none',
   ),

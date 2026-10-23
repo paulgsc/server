@@ -371,7 +371,8 @@ nowhere is marked as such and belongs to review.
      making the phone's session; sign-out everywhere takes the exclusive
      hold too, so neither leaves a session or a code behind it.
    - the Jobs mailbox poller (`mailbox::pass`), which takes the lock around
-     each file it keeps, and keeps it in a statement that checks the
+     each file it keeps and each answer it records, and writes each in a
+     statement that checks the
      subject's `account` row (`nothing_is_written_for_a_deleted_subject`,
      `a_write_waits_out_a_deletion_in_flight`). It never holds the lock
      across a request to the mailbox (invariant 19).
@@ -555,38 +556,51 @@ nowhere is marked as such and belongs to review.
     `a_soundbite_is_refused_by_name` and `a_refused_event_writes_nothing`, and
     `handlers::leetype_log`'s `refusals_name_their_fields_and_records_stay_apart`.
 
-19. **Home's copy of the Jobs mailbox is append-only, written by the poller
-    alone, and holds JSON files, never audio.** The mailbox (paulgsc/some-ui
+19. **Home's copy of the Jobs mailbox is append-only, each table has one
+    writer, and it holds JSON files, never audio.** The mailbox (paulgsc/some-ui
     `apps/mailbox`) is a Cloudflare Worker where the owner's cloud routine
-    and home leave each other files. `file_host`'s `mailbox` poller reads
-    only its `brief` folder (the routine's daily job digests), for the one
-    subject `MAILBOX_SUBJECT` names, and keeps each file in `mailbox_item`:
-    its bytes as the mailbox held them, which must match the listing's
-    SHA-256 and parse as JSON, its hash, size and sequence number, and when
-    home read it. `mailbox_outgoing` and `mailbox_handed` (created with it,
-    for the voice-free decisions and scouts home will hand back) have no
-    writer yet. No row of the three is updated (each table's trigger aborts
-    an `UPDATE`), replaced (other bytes under a held name are refused, and
-    nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE` trigger
-    for) or deleted but with the account, by the sweep and the migration's
-    triggers (invariant 12). Each write holds `auth::DeletionLock` (invariant
-    9). `mailbox_item` is read only by `GET /jobs/digests`, for its own
-    subject. The poller's token (`MAILBOX_TOKEN`) is held in a
+    and home leave each other files. For the one subject `MAILBOX_SUBJECT`
+    names, `file_host`'s `mailbox` poller reads only its `brief` folder (the
+    routine's daily job digests) and puts only to `decisions` and `scout`.
+    - `mailbox_item`, written only by the poller: each `brief` file it kept,
+      its bytes as the mailbox held them (they must match the listing's
+      SHA-256 and parse as JSON), its hash, size and sequence number, and
+      when home read it. Read only by `GET /jobs/digests`, for its own
+      subject.
+    - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`: a
+      decisions or scouts file the phone filed, its bytes, hash and when.
+      The route refuses a file that names a voice note anywhere (any `voice`
+      key that is not an empty list), so no file that points at audio is
+      handed on; those go by the phone's share sheet, which carries the
+      audio to Drive.
+    - `mailbox_handed`, written only by the poller: the mailbox's answer to
+      each filed file it handed over, once, final.
+
+    No row of the three is updated (each table's trigger aborts an
+    `UPDATE`), replaced (other bytes under a held or filed name are refused,
+    and nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE`
+    trigger for) or deleted but with the account, by the sweep and the
+    migration's triggers (invariant 12). Every write holds
+    `auth::DeletionLock` (invariant 9): the route through `SubjectId`, the
+    poller around each write. The poller's token (`MAILBOX_TOKEN`) is held in a
     `mailbox_kit::Token`, which prints `[redacted]` and has no `Display`; it
     reaches no log line, and neither does the mailbox's URL or a file's body
     (errors are logged by kind, and the transport strips the URL from its
     errors). No audio is stored, as invariants 16 and 18 hold for the
     records these files come from.
     *Enforced by* `mailbox_repo`'s `the_tables_hold_exactly_their_described_columns`,
-    `a_held_name_is_not_kept_twice`, `no_row_is_ever_updated`,
-    `nothing_is_kept_for_a_subject_with_no_account` and
-    `the_copy_leaves_with_the_account`; `mailbox::pass`'s
-    `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept` and
-    `nothing_is_written_for_a_deleted_subject`, and its fake transport, which
-    fails any request but a `GET` of `brief`; `mailbox_kit`'s
-    `the_token_never_appears_in_a_debug_or_an_error`; and
-    `handlers::jobs`'s `digests_answers_only_the_callers_own`. *Not enforced:*
-    that nothing else writes these tables, which a
+    `a_held_name_is_not_kept_twice`, `a_filed_name_is_not_filed_twice`,
+    `no_row_is_ever_updated`, `nothing_is_kept_for_a_subject_with_no_account`
+    and `the_copy_leaves_with_the_account`; `mailbox::pass`'s
+    `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
+    `nothing_is_written_for_a_deleted_subject` and
+    `a_conflict_or_a_refusal_is_final_and_not_handed_again`, and its fake
+    transport, which fails a `GET` of anything but `brief` and a `PUT` of
+    anything but `decisions` or `scout`; `mailbox_kit`'s
+    `the_token_never_appears_in_a_debug_or_an_error`; and `handlers::jobs`'s
+    `digests_answers_only_the_callers_own` and
+    `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
+    *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed' -- '*.rs'`
     shows today and review keeps; and what a digest says, which is the
     routine's.

@@ -33,6 +33,10 @@ pub const PASS_ERROR_CLASSES: [&str; 10] = [
 /// `mailbox::pass::Outcome::refused`.
 pub const REFUSALS: [&str; 4] = ["mismatch", "bad_name", "not_json", "rewritten"];
 
+/// Every value `mailbox_poll_items_handed_total`'s `answer` label can take:
+/// `mailbox_repo::Answer`.
+pub const ANSWERS: [&str; 4] = ["added", "unchanged", "conflict", "refused"];
+
 /// Whether this deployment runs the poller: 1 or 0, set once at boot on both
 /// branches of `main.rs`'s mailbox gate, so "switched off" and "task missing"
 /// read apart.
@@ -49,6 +53,9 @@ pub fn record_interval(interval: Duration) {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => why).increment(0);
 	}
 	metrics::counter!("mailbox_poll_items_kept_total").increment(0);
+	for answer in ANSWERS {
+		metrics::counter!("mailbox_poll_items_handed_total", "answer" => answer).increment(0);
+	}
 }
 
 /// Mark the start of a pass.
@@ -68,6 +75,9 @@ pub fn record_pass(outcome: &Outcome, failed: Option<&'static str>) {
 	metrics::counter!("mailbox_poll_items_kept_total").increment(outcome.kept as u64);
 	for why in &outcome.refused {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => *why).increment(1);
+	}
+	for answer in &outcome.handed {
+		metrics::counter!("mailbox_poll_items_handed_total", "answer" => *answer).increment(1);
 	}
 	// A subject with no account keeps nothing, pass after pass: the
 	// configured `MAILBOX_SUBJECT` names nobody. Read as a failure.

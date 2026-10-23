@@ -8,6 +8,8 @@
 //! GET /jobs/digests      → { digests }: the daily job digests home holds,
 //!                          oldest first, at most 7; `?after=YYYY-MM-DD` for
 //!                          the days after it
+//! PUT /jobs/files/:name  → { change }: a voice-free decisions or scouts file,
+//!                          for the mailbox poller to hand on
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::aph`. Every handler takes a
@@ -20,6 +22,8 @@
 //! `handlers::jobs` and `jobs_repo`.
 //!
 //! **Digests** are read only: the `mailbox` poller is their one writer.
+//! **Files** are filed once per name, never replaced, and never with a voice
+//! note.
 
 use crate::auth::AuthContext;
 use crate::handlers::jobs as handlers;
@@ -45,7 +49,8 @@ where
 	let table = RouteTable::new()
 		.get("/jobs", handlers::get_record)
 		.put("/jobs/events/:id", handlers::put_event)
-		.get("/jobs/digests", handlers::get_digests);
+		.get("/jobs/digests", handlers::get_digests)
+		.put("/jobs/files/:name", handlers::put_file);
 
 	Module::versioned("jobs", table).with_cors(cors)
 }

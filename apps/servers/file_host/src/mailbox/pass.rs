@@ -1,5 +1,8 @@
-//! One pass of the mailbox poller: read what `brief` holds after home's
-//! cursor, and keep each file that checks out.
+//! One pass of the mailbox poller.
+//!
+//! It reads what `brief` holds after home's cursor and keeps each file that
+//! checks out, then hands the mailbox the voice-free decisions and scouts the
+//! phone filed (`PUT /jobs/files/:name`).
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -8,11 +11,15 @@
 //! and the pass goes on: one bad file never holds back the days after it.
 //! A refused file that is the newest in `brief` is asked for again each pass
 //! until a newer one is kept, since the cursor is the highest `seq` held.
+//!
+//! Handing over is once per file: the mailbox's answer, whatever it is, is
+//! recorded and final (a `conflict` or a refusal is not retried), and only a
+//! failure to reach it leaves the file to be handed again.
 
 use crate::auth::DeletionLock;
 use chrono::{SecondsFormat, Utc};
-use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport};
-use mailbox_repo::{Change, ItemIn, BRIEF};
+use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
+use mailbox_repo::{Answer, Change, ItemIn, BRIEF};
 use serde::de::IgnoredAny;
 use sqlx::SqlitePool;
 use std::fmt;
@@ -28,7 +35,10 @@ pub struct Outcome {
 	/// Files refused this pass, each by why: `mismatch`, `bad_name`,
 	/// `not_json` or `rewritten` (`metrics::mailbox::REFUSALS`).
 	pub refused: Vec<&'static str>,
-	/// The subject has no account: the pass stopped and kept nothing more.
+	/// Filed files handed to the mailbox this pass, each by its answer:
+	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
+	pub handed: Vec<&'static str>,
+	/// The subject has no account: the pass stopped and wrote nothing more.
 	pub no_account: bool,
 }
 
@@ -73,11 +83,16 @@ pub fn now() -> String {
 	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Read `brief` after `subject`'s cursor and keep what checks out.
+/// One pass: read `brief` after `subject`'s cursor and keep what checks out,
+/// then hand the mailbox what the phone filed and it has not answered.
+///
+/// The two halves are independent: a failure ends its own half, and the pass
+/// reports the first.
 ///
 /// # Errors
-/// A [`PassError`] when the mailbox cannot be listed or read (anything but a
-/// file that does not check out), or the database fails.
+/// A [`PassError`] when the mailbox cannot be reached or read (anything but
+/// a file that does not check out, or an answer that is final), or the
+/// database fails.
 pub async fn run_once<T: MailboxTransport>(
 	db: &SqlitePool,
 	mailbox: &Mailbox<T>,
@@ -86,24 +101,28 @@ pub async fn run_once<T: MailboxTransport>(
 	now: &(impl Fn() -> String + Sync),
 ) -> Result<Outcome, PassError> {
 	let mut outcome = Outcome::default();
-	let after = match cursor(db, subject).await {
-		Ok(after) => after,
-		Err(err) => {
-			return Err(PassError {
-				outcome,
-				failure: Failure::Storage(err),
-			})
-		}
+	let inbound = read_brief(db, mailbox, subject, deletion, now, &mut outcome).await;
+	let outbound = if outcome.no_account {
+		Ok(())
+	} else {
+		hand_over(db, mailbox, subject, deletion, now, &mut outcome).await
 	};
-	let items = match mailbox.list(Folder::Brief, after, ITEMS_PER_PASS).await {
-		Ok(items) => items,
-		Err(err) => {
-			return Err(PassError {
-				outcome,
-				failure: Failure::Mailbox(err),
-			})
-		}
-	};
+	match inbound.and(outbound) {
+		Ok(()) => Ok(outcome),
+		Err(failure) => Err(PassError { outcome, failure }),
+	}
+}
+
+async fn read_brief<T: MailboxTransport>(
+	db: &SqlitePool,
+	mailbox: &Mailbox<T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	outcome: &mut Outcome,
+) -> Result<(), Failure> {
+	let after = cursor(db, subject).await.map_err(Failure::Storage)?;
+	let items = mailbox.list(Folder::Brief, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
 	for item in items.iter().take(ITEMS_PER_PASS as usize) {
 		let body = match mailbox.get(Folder::Brief, item).await {
 			Ok(body) => body,
@@ -111,12 +130,7 @@ pub async fn run_once<T: MailboxTransport>(
 				outcome.refused.push(err.kind());
 				continue;
 			}
-			Err(err) => {
-				return Err(PassError {
-					outcome,
-					failure: Failure::Mailbox(err),
-				})
-			}
+			Err(err) => return Err(Failure::Mailbox(err)),
 		};
 		if serde_json::from_slice::<IgnoredAny>(&body).is_err() {
 			outcome.refused.push("not_json");
@@ -134,18 +148,61 @@ pub async fn run_once<T: MailboxTransport>(
 			Ok(Change::Unchanged) => {}
 			Ok(Change::NoAccount) => {
 				outcome.no_account = true;
-				return Ok(outcome);
+				return Ok(());
 			}
 			Err(mailbox_repo::MailboxError::Rewritten) => outcome.refused.push("rewritten"),
-			Err(mailbox_repo::MailboxError::Storage(err)) => {
-				return Err(PassError {
-					outcome,
-					failure: Failure::Storage(err),
-				})
-			}
+			Err(mailbox_repo::MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
 		}
 	}
-	Ok(outcome)
+	Ok(())
+}
+
+/// Hands each filed file the mailbox has not answered, oldest first, at most
+/// [`ITEMS_PER_PASS`]. Every answer is final and recorded: taken, already
+/// held, held with other bytes (`conflict`), or refused. A failure to reach
+/// the mailbox records nothing, so the next pass hands that file again.
+async fn hand_over<T: MailboxTransport>(
+	db: &SqlitePool,
+	mailbox: &Mailbox<T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	outcome: &mut Outcome,
+) -> Result<(), Failure> {
+	let pending = {
+		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+		mailbox_repo::pending_outgoing(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
+	};
+	for file in pending {
+		let folder = match file.folder.as_str() {
+			"decisions" => Folder::Decisions,
+			"scout" => Folder::Scout,
+			// `PUT /jobs/files/:name` files only these two.
+			_ => continue,
+		};
+		let answer = match mailbox.put(folder, &file.name, file.body).await {
+			Ok(Put::Added { .. }) => Answer::Added,
+			Ok(Put::Unchanged { .. }) => Answer::Unchanged,
+			Ok(Put::Conflict) => Answer::Conflict,
+			Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => Answer::Refused,
+			Err(err) => return Err(Failure::Mailbox(err)),
+		};
+		match record(db, deletion, subject, (&file.folder, &file.name), answer, &now()).await.map_err(storage)? {
+			Change::NoAccount => {
+				outcome.no_account = true;
+				return Ok(());
+			}
+			Change::Added | Change::Unchanged => outcome.handed.push(answer.as_str()),
+		}
+	}
+	Ok(())
+}
+
+fn storage(err: mailbox_repo::MailboxError) -> Failure {
+	match err {
+		mailbox_repo::MailboxError::Storage(err) => Failure::Storage(err),
+		mailbox_repo::MailboxError::Rewritten => Failure::Storage(sqlx::Error::Protocol(String::from("a read or an answer cannot rewrite"))),
+	}
 }
 
 async fn cursor(db: &SqlitePool, subject: &str) -> Result<i64, sqlx::Error> {
@@ -157,13 +214,29 @@ async fn cursor(db: &SqlitePool, subject: &str) -> Result<i64, sqlx::Error> {
 }
 
 /// One write, under the deletion hold (docs/identity.md invariant 9):
-/// `keep_item` checks the subject's account in the statement that writes, and
-/// the hold keeps a deletion from landing between them. Held for this write
-/// only, never across a request to the mailbox.
+/// `keep_item` and `record_handed` check the subject's account in the
+/// statement that writes, and the hold keeps a deletion from landing between
+/// them. Held for this write only, never across a request to the mailbox.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
+	tx.commit().await?;
+	Ok(change)
+}
+
+/// As [`keep`], for the mailbox's answer to a handed file.
+async fn record(
+	db: &SqlitePool,
+	deletion: &DeletionLock,
+	subject: &str,
+	(folder, name): (&str, &str),
+	answer: Answer,
+	now: &str,
+) -> Result<Change, mailbox_repo::MailboxError> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let change = mailbox_repo::record_handed(&mut tx, subject, folder, name, answer, now).await?;
 	tx.commit().await?;
 	Ok(change)
 }
@@ -190,6 +263,10 @@ mod tests {
 		bodies: Mutex<HashMap<String, String>>,
 		listing_fails: Mutex<bool>,
 		gets: Mutex<Vec<String>>,
+		/// What each put said: the next canned answer, else `201 added`.
+		put_answers: Mutex<Vec<(u16, &'static str)>>,
+		puts_fail: Mutex<bool>,
+		puts: Mutex<Vec<String>>,
 	}
 
 	impl Fake {
@@ -211,8 +288,25 @@ mod tests {
 		type Error = &'static str;
 
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
-			assert_eq!(request.method, Method::Get, "the inbound half only reads");
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
+			if request.method == Method::Put {
+				assert!(
+					path.starts_with("/v1/decisions/items/") || path.starts_with("/v1/scout/items/"),
+					"puts only decisions and scouts: {path}"
+				);
+				if *self.puts_fail.lock().unwrap() {
+					return Err("connection refused");
+				}
+				self.puts.lock().unwrap().push(path);
+				let mut answers = self.put_answers.lock().unwrap();
+				let (status, body) = if answers.is_empty() {
+					(201, r#"{"change":"added","seq":1}"#)
+				} else {
+					answers.remove(0)
+				};
+				return Ok(answer(status, body));
+			}
+			assert_eq!(request.method, Method::Get, "and reads nothing but brief");
 			if let Some(query) = path.strip_prefix("/v1/brief/items?") {
 				if *self.listing_fails.lock().unwrap() {
 					return Err("connection refused");
@@ -433,5 +527,70 @@ mod tests {
 		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!((context.subject.as_str(), context.interval.as_secs()), (OWNER, 900));
+	}
+
+	/// A file as the phone files it (`PUT /jobs/files/:name`).
+	async fn filed(pool: &SqlitePool, name: &str) {
+		let folder = if name.starts_with("scouts-") { "scout" } else { "decisions" };
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", b"{}", "2026-10-23T15:00:00.000Z")
+			.await
+			.unwrap();
+	}
+
+	async fn answers(pool: &SqlitePool) -> Vec<(String, String)> {
+		sqlx::query_as("SELECT name, answer FROM mailbox_handed ORDER BY rowid").fetch_all(pool).await.unwrap()
+	}
+
+	#[tokio::test]
+	async fn a_filed_file_is_handed_over_once_and_its_answer_recorded() {
+		let (pool, fake) = (pool().await, Fake::default());
+		filed(&pool, "decisions-2026-10-23.json").await;
+		filed(&pool, "scouts-20261023T101500.json").await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added", "added"]);
+		assert_eq!(
+			*fake.puts.lock().unwrap(),
+			["/v1/decisions/items/decisions-2026-10-23.json", "/v1/scout/items/scouts-20261023T101500.json"]
+		);
+		assert!(pass(&pool, &fake).await.unwrap().handed.is_empty(), "an answered file is not handed again");
+		assert_eq!(fake.puts.lock().unwrap().len(), 2);
+	}
+
+	#[tokio::test]
+	async fn a_transport_error_records_nothing_and_the_next_pass_hands_it_again() {
+		let (pool, fake) = (pool().await, Fake::default());
+		filed(&pool, "decisions-2026-10-23.json").await;
+		*fake.puts_fail.lock().unwrap() = true;
+		let err = pass(&pool, &fake).await.unwrap_err();
+		assert_eq!(err.class(), "transport");
+		assert!(answers(&pool).await.is_empty());
+		*fake.puts_fail.lock().unwrap() = false;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+	}
+
+	#[tokio::test]
+	async fn a_conflict_or_a_refusal_is_final_and_not_handed_again() {
+		let (pool, fake) = (pool().await, Fake::default());
+		filed(&pool, "decisions-2026-10-22.json").await;
+		filed(&pool, "decisions-2026-10-23.json").await;
+		*fake.put_answers.lock().unwrap() = vec![(409, r#"{"error":"conflict"}"#), (422, r#"{"error":"the schema does not match the folder"}"#)];
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["conflict", "refused"]);
+		assert_eq!(
+			answers(&pool).await,
+			[
+				(String::from("decisions-2026-10-22.json"), String::from("conflict")),
+				(String::from("decisions-2026-10-23.json"), String::from("refused")),
+			]
+		);
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(fake.puts.lock().unwrap().len(), 2, "neither is handed again");
+	}
+
+	#[tokio::test]
+	async fn a_listing_error_still_hands_over_what_was_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		filed(&pool, "decisions-2026-10-23.json").await;
+		*fake.listing_fails.lock().unwrap() = true;
+		let err = pass(&pool, &fake).await.unwrap_err();
+		assert_eq!((err.class(), err.outcome.handed), ("transport", vec!["added"]), "the halves are independent");
 	}
 }
