@@ -37,11 +37,28 @@ pub const REFUSALS: [&str; 4] = ["mismatch", "bad_name", "not_json", "rewritten"
 /// `mailbox_repo::Answer`.
 pub const ANSWERS: [&str; 4] = ["added", "unchanged", "conflict", "refused"];
 
-/// Whether this deployment runs the poller: 1 or 0, set once at boot on both
-/// branches of `main.rs`'s mailbox gate, so "switched off" and "task missing"
-/// read apart.
-pub fn record_enabled(enabled: bool) {
+/// Every value `mailbox_poll_items_archived_total`'s `answer` label can take.
+///
+/// Archived (or already), or why the file stayed live: its bytes were not
+/// what the listing said (`mismatch`), its name could not be asked for
+/// (`bad_name`), home holds other bytes under it (`rewritten`), it is a
+/// digest home has not kept for the phone (`unread`), the mailbox refused it
+/// as too young (`refused`), or it was gone (`gone`).
+pub const ARCHIVE_ANSWERS: [&str; 8] = ["archived", "unchanged", "mismatch", "bad_name", "rewritten", "unread", "refused", "gone"];
+
+/// Every value `mailbox_poll_items_restored_total`'s `answer` label can take.
+///
+/// Put back (or already live), the mailbox archived other bytes
+/// (`conflict`), it refused them (`refused`), or home holds nothing for the
+/// ask (`missing`).
+pub const RESTORE_ANSWERS: [&str; 5] = ["restored", "unchanged", "conflict", "refused", "missing"];
+
+/// Whether this deployment runs the poller, and whether it archives: 1 or 0
+/// each, set once at boot on both branches of `main.rs`'s mailbox gate, so
+/// "switched off" and "task missing" read apart.
+pub fn record_enabled(enabled: bool, archiving: bool) {
 	metrics::gauge!("mailbox_poll_enabled").set(if enabled { 1.0 } else { 0.0 });
+	metrics::gauge!("mailbox_archive_enabled").set(if archiving { 1.0 } else { 0.0 });
 }
 
 /// Publish the configured interval as soon as the task is spawned, and start
@@ -55,6 +72,12 @@ pub fn record_interval(interval: Duration) {
 	metrics::counter!("mailbox_poll_items_kept_total").increment(0);
 	for answer in ANSWERS {
 		metrics::counter!("mailbox_poll_items_handed_total", "answer" => answer).increment(0);
+	}
+	for answer in ARCHIVE_ANSWERS {
+		metrics::counter!("mailbox_poll_items_archived_total", "answer" => answer).increment(0);
+	}
+	for answer in RESTORE_ANSWERS {
+		metrics::counter!("mailbox_poll_items_restored_total", "answer" => answer).increment(0);
 	}
 }
 
@@ -78,6 +101,12 @@ pub fn record_pass(outcome: &Outcome, failed: Option<&'static str>) {
 	}
 	for answer in &outcome.handed {
 		metrics::counter!("mailbox_poll_items_handed_total", "answer" => *answer).increment(1);
+	}
+	for answer in &outcome.archived {
+		metrics::counter!("mailbox_poll_items_archived_total", "answer" => *answer).increment(1);
+	}
+	for answer in &outcome.restored {
+		metrics::counter!("mailbox_poll_items_restored_total", "answer" => *answer).increment(1);
 	}
 	// A subject with no account keeps nothing, pass after pass: the
 	// configured `MAILBOX_SUBJECT` names nobody. Read as a failure.

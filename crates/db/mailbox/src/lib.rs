@@ -16,10 +16,12 @@
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
 //! - **One writer per table.** `file_host`'s `mailbox` poller is the only
-//!   caller of [`keep_item`] and [`record_handed`], and
+//!   caller of [`keep_item`], [`record_handed`] and [`keep_archived`], and
 //!   `PUT /api/v1/jobs/files/:name` the only caller of [`file_outgoing`];
-//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed' -- '*.rs'`
+//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
 //!   shows no other.
+//! - **Archived here first** (docs/identity.md invariant 21): see
+//!   [`keep_archived`].
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
@@ -76,6 +78,20 @@ pub struct ItemIn<'a> {
 	pub body: &'a [u8],
 }
 
+/// One file to archive, read from the mailbox and checked by the caller
+/// against its listing.
+#[derive(Debug, Clone, Copy)]
+pub struct ArchiveIn<'a> {
+	pub folder: &'a str,
+	pub name: &'a str,
+	pub seq: i64,
+	/// Lowercase hex SHA-256 of `body`.
+	pub sha256: &'a str,
+	/// When it was first put in the mailbox.
+	pub put_at: &'a str,
+	pub body: &'a [u8],
+}
+
 /// One held digest: its day, and the file's bytes as the mailbox held them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Digest {
@@ -94,6 +110,17 @@ pub async fn cursor(conn: &mut SqliteConnection, subject: &str, folder: &str) ->
 		.fetch_one(&mut *conn)
 		.await?;
 	Ok(highest.unwrap_or(0))
+}
+
+/// The SHA-256 `subject`'s copy holds under (`folder`, `name`), if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn held_sha256(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<Option<String>, MailboxError> {
+	let held = sqlx::query_scalar!("SELECT sha256 FROM mailbox_item WHERE subject_id = ?1 AND folder = ?2 AND name = ?3", subject, folder, name)
+		.fetch_optional(&mut *conn)
+		.await?;
+	Ok(held)
 }
 
 /// Keeps `item` for `subject`, as of `now`.
@@ -181,6 +208,82 @@ pub async fn digests_after(conn: &mut SqliteConnection, subject: &str, after: Op
 		newest
 	};
 	Ok(digests)
+}
+
+/// Stores `file`'s bytes for `subject`, as of `now`.
+///
+/// It runs before the mailbox is asked to archive the file. A name holds one
+/// body: the same bytes again are [`Change::Unchanged`] (a file put back and
+/// archived again).
+///
+/// Run it in a `BEGIN IMMEDIATE` transaction, under the deletion hold, as for
+/// [`keep_item`].
+///
+/// # Errors
+/// [`MailboxError::Rewritten`] when the name already holds other bytes, and
+/// [`MailboxError::Storage`] for any `sqlx` failure.
+pub async fn keep_archived(conn: &mut SqliteConnection, subject: &str, file: ArchiveIn<'_>, now: &str) -> Result<Change, MailboxError> {
+	let standing = sqlx::query_scalar!(
+		"SELECT sha256 FROM mailbox_archive WHERE subject_id = ?1 AND folder = ?2 AND name = ?3",
+		subject,
+		file.folder,
+		file.name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	if let Some(standing) = standing {
+		return if standing == file.sha256 { Ok(Change::Unchanged) } else { Err(MailboxError::Rewritten) };
+	}
+	let size = i64::try_from(file.body.len()).unwrap_or(i64::MAX);
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		file.folder,
+		file.name,
+		file.seq,
+		file.sha256,
+		size,
+		file.put_at,
+		file.body,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
+/// The bytes `subject`'s archive holds under (`folder`, `name`), if any: what
+/// home puts back when the routine asks for an archived file.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn archived_body(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<Option<Vec<u8>>, MailboxError> {
+	let body = sqlx::query_scalar!(
+		"SELECT body FROM mailbox_archive WHERE subject_id = ?1 AND folder = ?2 AND name = ?3",
+		subject,
+		folder,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(body)
+}
+
+/// The SHA-256 `subject`'s archive holds under (`folder`, `name`), if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn archived_sha256(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<Option<String>, MailboxError> {
+	let sha = sqlx::query_scalar!(
+		"SELECT sha256 FROM mailbox_archive WHERE subject_id = ?1 AND folder = ?2 AND name = ?3",
+		subject,
+		folder,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(sha)
 }
 
 /// One file filed for the mailbox and not yet answered.
@@ -299,7 +402,9 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 
 #[cfg(test)]
 mod tests {
-	use super::{cursor, digests_after, file_outgoing, keep_item, pending_outgoing, record_handed, Answer, Change, ItemIn, MailboxError, BRIEF};
+	use super::{
+		archived_body, cursor, digests_after, file_outgoing, keep_archived, keep_item, pending_outgoing, record_handed, Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF,
+	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -351,12 +456,12 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mailbox_%'");
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3);
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 4);
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops them");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "up recreates them");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 4, "up recreates them");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
@@ -368,6 +473,10 @@ mod tests {
 			("mailbox_item", &["subject_id", "folder", "name", "seq", "sha256", "size", "body", "pulled_at"][..]),
 			("mailbox_outgoing", &["subject_id", "folder", "name", "sha256", "body", "filed_at"][..]),
 			("mailbox_handed", &["subject_id", "folder", "name", "answer", "handed_at"][..]),
+			(
+				"mailbox_archive",
+				&["subject_id", "folder", "name", "seq", "sha256", "size", "put_at", "body", "kept_at"][..],
+			),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -403,10 +512,11 @@ mod tests {
 		for statement in [
 			"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'd', 's', x'00', 'now')",
 			"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'd', 'added', 'now')",
+			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
-		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed"] {
+		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive"] {
 			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET name = 'other'")).execute(&pool).await;
 			assert!(update.unwrap_err().to_string().contains("append-only"), "{table}");
 		}
@@ -495,12 +605,46 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
+			archive(&pool, subject, "digest-2026-07-01.json", "{}").await.unwrap();
 		}
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
-		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed"] {
+		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive"] {
 			let left: Vec<String> = sqlx::query_scalar(&(String::from("SELECT subject_id FROM ") + table)).fetch_all(&pool).await.unwrap();
 			assert_eq!(left, [B], "{table}: A's rows went with A's account, B's stayed");
 		}
+	}
+
+	async fn archive(pool: &SqlitePool, subject: &str, name: &str, body: &str) -> Result<Change, MailboxError> {
+		let sha = String::from("sha-of-") + body;
+		let file = ArchiveIn {
+			folder: BRIEF,
+			name,
+			seq: 3,
+			sha256: &sha,
+			put_at: "2026-07-01T14:52:00.000Z",
+			body: body.as_bytes(),
+		};
+		keep_archived(&mut pool.acquire().await.unwrap(), subject, file, NOW).await
+	}
+
+	async fn held_body(pool: &SqlitePool, subject: &str) -> Option<Vec<u8>> {
+		archived_body(&mut pool.acquire().await.unwrap(), subject, BRIEF, "digest-2026-07-01.json").await.unwrap()
+	}
+
+	#[tokio::test]
+	async fn an_archived_name_holds_one_body_and_hands_it_back() {
+		let pool = pool().await;
+		assert_eq!(held_body(&pool, A).await, None);
+		assert_eq!(archive(&pool, A, "digest-2026-07-01.json", "{}").await.unwrap(), Change::Added);
+		assert_eq!(
+			archive(&pool, A, "digest-2026-07-01.json", "{}").await.unwrap(),
+			Change::Unchanged,
+			"archived again after being put back"
+		);
+		assert!(matches!(archive(&pool, A, "digest-2026-07-01.json", "[]").await, Err(MailboxError::Rewritten)));
+		assert_eq!(held_body(&pool, A).await, Some(b"{}".to_vec()));
+		assert_eq!(held_body(&pool, B).await, None, "B's archive is B's");
+		assert_eq!(archive(&pool, "subject-gone", "digest-2026-07-01.json", "{}").await.unwrap(), Change::NoAccount);
 	}
 
 	async fn file(pool: &SqlitePool, subject: &str, name: &str, body: &str) -> Result<Change, MailboxError> {

@@ -28,20 +28,24 @@ impl fmt::Debug for Token {
 	}
 }
 
-/// The two methods the mailbox's `/v1` API answers.
+/// The methods the mailbox's `/v1` API answers. `DELETE` archives an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
 	Get,
 	Put,
+	Delete,
 }
 
-/// One request, ready for the wire. A `PUT` carries a JSON body.
+/// One request, ready for the wire. A `PUT` carries a JSON body; a `DELETE`
+/// names the bytes it archives in `If-Match`.
 #[derive(Debug, Clone)]
 pub struct Request {
 	pub method: Method,
 	pub url: String,
 	pub token: Token,
 	pub body: Option<Vec<u8>>,
+	/// An `If-Match` value, already quoted.
+	pub if_match: Option<String>,
 }
 
 /// What the mailbox answered: everything [`crate::Mailbox`] reads.
@@ -87,8 +91,13 @@ pub mod reqwest_transport {
 			let outgoing = match request.method {
 				Method::Get => self.client.get(&request.url),
 				Method::Put => self.client.put(&request.url).header(reqwest::header::CONTENT_TYPE, "application/json"),
+				Method::Delete => self.client.delete(&request.url),
 			};
 			let outgoing = outgoing.bearer_auth(request.token.expose());
+			let outgoing = match request.if_match {
+				Some(tag) => outgoing.header(reqwest::header::IF_MATCH, tag),
+				None => outgoing,
+			};
 			let outgoing = match request.body {
 				Some(body) => outgoing.body(body),
 				None => outgoing,
