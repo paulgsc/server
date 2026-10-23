@@ -14,6 +14,7 @@ pub mod error;
 pub mod handlers;
 pub mod health;
 pub mod listen;
+pub mod mailbox;
 pub mod metrics;
 pub mod models;
 pub mod net;
@@ -101,6 +102,9 @@ pub struct AppState {
 	/// failing: a deployment that does not want notifications should not have
 	/// to configure them to boot.
 	pub nudge: Option<NudgeContext>,
+	/// `None` unless `MAILBOX_ENABLED`: no poller runs, and
+	/// `GET /api/v1/jobs/digests` answers from whatever copy home holds.
+	pub mailbox: Option<mailbox::MailboxContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -156,8 +160,15 @@ impl AppState {
 		};
 
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
+		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
 
-		Ok(Self { core, realtime, nudge, auth })
+		Ok(Self {
+			core,
+			realtime,
+			nudge,
+			mailbox,
+			auth,
+		})
 	}
 
 	/// Validate the nudge's configuration once, at startup.

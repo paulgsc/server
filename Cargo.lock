@@ -1447,6 +1447,8 @@ dependencies = [
  "leetype_log_repo",
  "leetype_round_repo",
  "leetype_runner",
+ "mailbox_kit",
+ "mailbox_repo",
  "metrics",
  "metrics-util",
  "mood_event",
@@ -2549,6 +2551,26 @@ dependencies = [
  "scoped-tls",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mailbox_kit"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
+name = "mailbox_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

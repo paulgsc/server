@@ -15,19 +15,25 @@
 //! **No other writer.** [`put_event`] and a batch's events
 //! (`handlers::sync`) are the only callers of `jobs_repo::put_event`; nothing
 //! writes the record in the background.
+//!
+//! **Digests come from the mailbox copy.** [`get_digests`] serves the daily
+//! job digests home read from the Jobs mailbox, which only the `mailbox`
+//! poller writes (`mailbox_repo`, docs/identity.md invariant 19). It reads,
+//! and writes nothing; `jobs_event` still has no writer but the two above.
 
 use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::HeaderMap,
 	Json,
 };
-use chrono::{SecondsFormat, Utc};
+use chrono::{NaiveDate, SecondsFormat, Utc};
 use jobs_repo::{Event, JobsError, Record, REWRITTEN};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
@@ -90,6 +96,75 @@ pub async fn put_event(
 	let (change, event) = jobs_repo::put_event(&mut tx, subject.as_str(), &id, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(EventWritten { change: change.as_str(), event }))
+}
+
+/// The most digests one answer holds: the phone's own cap on what one run
+/// takes (`DIGESTS_PER_RUN` in paulgsc/some-ui `apps/www/src/lib/jobs/model.ts`).
+pub const DIGESTS_PER_ANSWER: i64 = 7;
+
+/// `GET /jobs/digests`' query: the newest day the phone holds, if any.
+#[derive(Debug, Deserialize)]
+pub struct DigestsQuery {
+	after: Option<String>,
+}
+
+/// `GET /jobs/digests`
+#[derive(Debug, Serialize)]
+pub struct Digests {
+	/// Oldest day first.
+	pub digests: Vec<HeldDigest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HeldDigest {
+	/// `YYYY-MM-DD`, always a real date.
+	pub day: String,
+	/// The digest file as the mailbox held it, verbatim.
+	pub digest: Box<RawValue>,
+}
+
+/// Whether `text` is a day as the phone writes one: `YYYY-MM-DD`, a real date.
+fn is_day(text: &str) -> bool {
+	let shape = text.len() == 10
+		&& text
+			.bytes()
+			.enumerate()
+			.all(|(at, byte)| if at == 4 || at == 7 { byte == b'-' } else { byte.is_ascii_digit() });
+	shape && NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
+}
+
+/// `GET /jobs/digests?after=YYYY-MM-DD`: the daily job digests home holds
+/// for the caller, oldest first, at most [`DIGESTS_PER_ANSWER`]. With
+/// `after`, the days after it; without, the newest days.
+///
+/// # Errors
+/// 401 without a session, 422 for an `after` that is not a day, and 500 for
+/// a storage failure or a held digest that does not read back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_digests", skip_all, fields(otel.kind = "server"))]
+pub async fn get_digests(subject: SubjectId, State(db): State<SqlitePool>, Query(query): Query<DigestsQuery>) -> Result<Json<Digests>, FileHostError> {
+	if let Some(after) = &query.after {
+		if !is_day(after) {
+			return Err(FileHostError::unprocessable_entity([("after", "not a day as YYYY-MM-DD")]));
+		}
+	}
+	let mut conn = db.acquire().await?;
+	let held = mailbox_repo::digests_after(&mut conn, subject.as_str(), query.after.as_deref(), DIGESTS_PER_ANSWER)
+		.await
+		.map_err(|err| match err {
+			mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+			mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
+		})?;
+	let digests = held
+		.into_iter()
+		.map(|held| {
+			let text = String::from_utf8(held.body).map_err(|_| ())?;
+			let digest = RawValue::from_string(text).map_err(|_| ())?;
+			Ok(HeldDigest { day: held.day, digest })
+		})
+		.collect::<Result<Vec<_>, ()>>()
+		.map_err(|()| FileHostError::OperationError("a held digest does not read back".to_owned()))?;
+	Ok(Json(Digests { digests }))
 }
 
 #[cfg(test)]
@@ -201,7 +276,7 @@ mod tests {
 			.descriptors()
 			.map(|route| (Method::from_bytes(route.method.as_bytes()).unwrap(), route.path.replace(":id", "e1")))
 			.collect();
-		assert_eq!(routes.len(), 2, "{routes:?}");
+		assert_eq!(routes.len(), 3, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -280,5 +355,110 @@ mod tests {
 			json!({ "events": [passed("e1")] }),
 			"nothing refused was written"
 		);
+	}
+
+	/// A digest home read from the mailbox for `subject`, as the poller keeps
+	/// one (`mailbox_repo::keep_item`).
+	async fn hold(state: &TestState, subject: &str, day: &str) -> Value {
+		let digest = json!({ "schema": "some-ui.job-digest/1", "day": day, "picks": [{ "id": String::from("p-") + day }] });
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', ?2, ?3, 's', 0, ?4, 'now')")
+			.bind(subject)
+			.bind(String::from("digest-") + day + ".json")
+			.bind(day.replace('-', "").parse::<i64>().unwrap())
+			.bind(digest.to_string().into_bytes())
+			.execute(&state.pool)
+			.await
+			.unwrap();
+		json!({ "day": day, "digest": digest })
+	}
+
+	fn days(answer: &Value) -> Vec<&str> {
+		answer["digests"].as_array().unwrap().iter().map(|held| held["day"].as_str().unwrap()).collect()
+	}
+
+	#[tokio::test]
+	async fn digests_needs_a_session() {
+		let state = state().await;
+		hold(&state, A, "2026-10-22").await;
+		let app = app(state);
+		assert_eq!(call(&app, Method::GET, "/jobs/digests", None, &Value::Null).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	#[tokio::test]
+	async fn digests_answers_nothing_when_none_are_held() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(
+			call(&app, Method::GET, "/jobs/digests", Some(&phone), &Value::Null).await,
+			(StatusCode::OK, json!({ "digests": [] }))
+		);
+	}
+
+	/// The phone asks after the newest day it holds, and takes each digest
+	/// verbatim: the body is the file the mailbox held, not a re-encoding.
+	#[tokio::test]
+	async fn digests_after_a_day_answers_only_later_days_oldest_first() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let mut held = Vec::new();
+		for day in ["2026-10-23", "2026-10-21", "2026-10-22"] {
+			held.push(hold(&state, A, day).await);
+		}
+		let app = app(state);
+		let (status, answer) = call(&app, Method::GET, "/jobs/digests?after=2026-10-21", Some(&phone), &Value::Null).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(answer, json!({ "digests": [held[2], held[0]] }));
+		let newest = call(&app, Method::GET, "/jobs/digests?after=2026-10-23", Some(&phone), &Value::Null).await;
+		assert_eq!(newest, (StatusCode::OK, json!({ "digests": [] })));
+	}
+
+	#[tokio::test]
+	async fn digests_answers_at_most_seven() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		for day in 10..=19 {
+			hold(&state, A, &(String::from("2026-10-") + &day.to_string())).await;
+		}
+		let app = app(state);
+		let (_, after) = call(&app, Method::GET, "/jobs/digests?after=2026-10-09", Some(&phone), &Value::Null).await;
+		assert_eq!(
+			days(&after),
+			["2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"],
+			"the oldest seven after the day"
+		);
+		let (_, newest) = call(&app, Method::GET, "/jobs/digests", Some(&phone), &Value::Null).await;
+		assert_eq!(
+			days(&newest),
+			["2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18", "2026-10-19"],
+			"with no day, the newest seven"
+		);
+	}
+
+	#[tokio::test]
+	async fn digests_answers_only_the_callers_own() {
+		let state = state().await;
+		let a = session(&state, A, Carrier::Bearer).await;
+		let b = session(&state, B, Carrier::Bearer).await;
+		hold(&state, A, "2026-10-22").await;
+		let app = app(state);
+		assert_eq!(days(&call(&app, Method::GET, "/jobs/digests", Some(&a), &Value::Null).await.1), ["2026-10-22"]);
+		assert_eq!(
+			call(&app, Method::GET, "/jobs/digests", Some(&b), &Value::Null).await.1,
+			json!({ "digests": [] }),
+			"B reads none of A's"
+		);
+	}
+
+	#[tokio::test]
+	async fn digests_refuses_a_malformed_after() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		for after in ["", "2026-10-2", "2026-13-01", "2026-02-30", "20261022", "2026-10-22T00:00", "tomorrow"] {
+			let (status, answer) = call(&app, Method::GET, &(String::from("/jobs/digests?after=") + after), Some(&phone), &Value::Null).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{after}: {answer}");
+			assert!(answer["error"]["details"]["after"].is_array(), "{answer}");
+		}
 	}
 }

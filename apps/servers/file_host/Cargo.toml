@@ -119,6 +119,8 @@ auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
 jobs_repo = { workspace = true }
+mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
+mailbox_repo = { workspace = true }
 sharing_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
 leetype_round_repo = { workspace = true }

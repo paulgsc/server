@@ -342,6 +342,35 @@ pub struct Config {
 	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',')]
 	pub operator_subjects: Vec<String>,
 
+	// ── The Jobs mailbox ──────────────────────────────────────────────────────
+	//
+	// See `mailbox`. Home reads the owner's daily digest from the mailbox (a
+	// Cloudflare Worker, paulgsc/some-ui `apps/mailbox`) so the phone can take
+	// it from home. Off unless `MAILBOX_ENABLED` says otherwise; on, the server
+	// refuses to start unless the other four are set and usable.
+	/// Whether home reads the Jobs mailbox at all.
+	#[arg(long, env = "MAILBOX_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	pub mailbox_enabled: bool,
+
+	/// The mailbox's base URL: `https://` and a host, no path
+	/// (`https://some-ui-mailbox.<account>.workers.dev`).
+	#[arg(long, env = "MAILBOX_URL")]
+	pub mailbox_url: Option<String>,
+
+	/// Home's own mailbox token: it reads `brief` and puts `decisions` and
+	/// `scout`. Never logged.
+	#[arg(long, env = "MAILBOX_TOKEN", hide_env_values = true)]
+	pub mailbox_token: Option<String>,
+
+	/// The subject whose copy the mailbox's files are kept as: the owner's
+	/// subject id, found as for `OPERATOR_SUBJECTS`.
+	#[arg(long, env = "MAILBOX_SUBJECT")]
+	pub mailbox_subject: Option<String>,
+
+	/// Seconds between reads of the mailbox. At least 60.
+	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900")]
+	pub mailbox_seconds: u64,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

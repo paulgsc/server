@@ -354,7 +354,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion, or a sign-out everywhere, holds it
-   exclusively for its one transaction. There are three such writers today:
+   exclusively for its one transaction. There are four such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -370,6 +370,11 @@ nowhere is marked as such and belongs to review.
      `SubjectId` and so takes the hold itself, from taking the code to
      making the phone's session; sign-out everywhere takes the exclusive
      hold too, so neither leaves a session or a code behind it.
+   - the Jobs mailbox poller (`mailbox::pass`), which takes the lock around
+     each file it keeps, and keeps it in a statement that checks the
+     subject's `account` row (`nothing_is_written_for_a_deleted_subject`,
+     `a_write_waits_out_a_deletion_in_flight`). It never holds the lock
+     across a request to the mailbox (invariant 19).
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a
@@ -550,6 +555,42 @@ nowhere is marked as such and belongs to review.
     `a_soundbite_is_refused_by_name` and `a_refused_event_writes_nothing`, and
     `handlers::leetype_log`'s `refusals_name_their_fields_and_records_stay_apart`.
 
+19. **Home's copy of the Jobs mailbox is append-only, written by the poller
+    alone, and holds JSON files, never audio.** The mailbox (paulgsc/some-ui
+    `apps/mailbox`) is a Cloudflare Worker where the owner's cloud routine
+    and home leave each other files. `file_host`'s `mailbox` poller reads
+    only its `brief` folder (the routine's daily job digests), for the one
+    subject `MAILBOX_SUBJECT` names, and keeps each file in `mailbox_item`:
+    its bytes as the mailbox held them, which must match the listing's
+    SHA-256 and parse as JSON, its hash, size and sequence number, and when
+    home read it. `mailbox_outgoing` and `mailbox_handed` (created with it,
+    for the voice-free decisions and scouts home will hand back) have no
+    writer yet. No row of the three is updated (each table's trigger aborts
+    an `UPDATE`), replaced (other bytes under a held name are refused, and
+    nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE` trigger
+    for) or deleted but with the account, by the sweep and the migration's
+    triggers (invariant 12). Each write holds `auth::DeletionLock` (invariant
+    9). `mailbox_item` is read only by `GET /jobs/digests`, for its own
+    subject. The poller's token (`MAILBOX_TOKEN`) is held in a
+    `mailbox_kit::Token`, which prints `[redacted]` and has no `Display`; it
+    reaches no log line, and neither does the mailbox's URL or a file's body
+    (errors are logged by kind, and the transport strips the URL from its
+    errors). No audio is stored, as invariants 16 and 18 hold for the
+    records these files come from.
+    *Enforced by* `mailbox_repo`'s `the_tables_hold_exactly_their_described_columns`,
+    `a_held_name_is_not_kept_twice`, `no_row_is_ever_updated`,
+    `nothing_is_kept_for_a_subject_with_no_account` and
+    `the_copy_leaves_with_the_account`; `mailbox::pass`'s
+    `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept` and
+    `nothing_is_written_for_a_deleted_subject`, and its fake transport, which
+    fails any request but a `GET` of `brief`; `mailbox_kit`'s
+    `the_token_never_appears_in_a_debug_or_an_error`; and
+    `handlers::jobs`'s `digests_answers_only_the_callers_own`. *Not enforced:*
+    that nothing else writes these tables, which a
+    `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed' -- '*.rs'`
+    shows today and review keeps; and what a digest says, which is the
+    routine's.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -590,6 +631,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   when it reached home. Companies and job titles are in it, by design. Voice
   notes are not: an event names them, the audio stays on the phone and in
   the owner's Drive. Deleting the account removes it; nothing else does.
+- **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
+  picked for the owner, with companies and titles) live in a Cloudflare D1
+  database before home reads them, and stay there: the mailbox is
+  append-only too. Cloudflare holds them at rest and sees the access pattern:
+  home asking every `MAILBOX_SECONDS` from the home connection's address,
+  and the routine putting a file each morning. Home's own copy
+  (`mailbox_item`, invariant 19) says when home read each one. Deleting the
+  account removes home's copy; the mailbox's is the owner's to delete.
 - **The LeetType session log and its times.** The events say which session
   files the owner played, how each round went and how long each pick took,
   which rounds they struggled with and returned to, which readings they
@@ -668,5 +717,5 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions`, the shelf, the aph and Jobs records, the LeetType session log
-  and `sharing_choice` have no horizon.
+  `sessions`, the shelf, the aph and Jobs records, the LeetType session log,
+  `sharing_choice` and the mailbox copy have no horizon.
