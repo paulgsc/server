@@ -3,9 +3,7 @@
 // MAILBOX: the Jobs mailbox, as home sees it. The mailbox (paulgsc/some-ui
 // `apps/mailbox`) is a Cloudflare Worker and D1 database where the owner's
 // cloud routine leaves each day's job digest; file_host's `mailbox` poller
-// reads it so the phone can take today's picks from home, and its
-// `d1_usage` collector reads the database's use of Cloudflare's free plan.
-// Panel layer:
+// reads it so the phone can take today's picks from home. Panel layer:
 // lib/mailbox-panels.libsonnet.
 local panels = import 'lib/mailbox-panels.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
@@ -35,7 +33,7 @@ local at(x, y, w, h) = { gridPos: { x: x, y: y, w: w, h: h } };
       },
     ],
   },
-  description: 'The Jobs mailbox: whether home is reading the daily digest from it, and how much of the free plan its database has used today.',
+  description: 'The Jobs mailbox: whether home is reading the daily digest from it.',
   editable: true,
   fiscalYearStartMonth: 0,
   graphTooltip: 1,
@@ -52,17 +50,6 @@ local at(x, y, w, h) = { gridPos: { x: x, y: y, w: w, h: h } };
     panels.failingByWhy + at(0, 5, 8, 8) + { id: 7 },
     panels.keptAndRefused + at(8, 5, 8, 8) + { id: 8 },
     panels.passDuration + at(16, 5, 8, 8) + { id: 9 },
-
-    row("The mailbox's database, against the free plan", 13, 10),
-    panels.usageReading + at(0, 14, 4, 6) + { id: 11 },
-    panels.rowsWritten + at(4, 14, 5, 6) + { id: 12 },
-    panels.rowsRead + at(9, 14, 5, 6) + { id: 13 },
-    panels.databaseSize + at(14, 14, 5, 6) + { id: 14 },
-    panels.usageFreshness + at(19, 14, 5, 6) + { id: 15 },
-    panels.rowsToday + at(0, 20, 8, 8) + { id: 16 },
-    panels.queriesToday + at(8, 20, 8, 8) + { id: 17 },
-    panels.queryLatency + at(16, 20, 8, 8) + { id: 18 },
-    panels.usageFailingByWhy + at(0, 28, 24, 6) + { id: 19 },
   ]),
   refresh: '1m',
   revision: 1,

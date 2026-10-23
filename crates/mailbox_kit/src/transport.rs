@@ -28,16 +28,14 @@ impl fmt::Debug for Token {
 	}
 }
 
-/// The methods this crate sends: the mailbox's `/v1` API answers `GET` and
-/// `PUT`; Cloudflare's GraphQL API ([`crate::usage`]) takes a `POST`.
+/// The two methods the mailbox's `/v1` API answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
 	Get,
 	Put,
-	Post,
 }
 
-/// One request, ready for the wire. A `PUT` or `POST` carries a JSON body.
+/// One request, ready for the wire. A `PUT` carries a JSON body.
 #[derive(Debug, Clone)]
 pub struct Request {
 	pub method: Method,
@@ -89,7 +87,6 @@ pub mod reqwest_transport {
 			let outgoing = match request.method {
 				Method::Get => self.client.get(&request.url),
 				Method::Put => self.client.put(&request.url).header(reqwest::header::CONTENT_TYPE, "application/json"),
-				Method::Post => self.client.post(&request.url).header(reqwest::header::CONTENT_TYPE, "application/json"),
 			};
 			let outgoing = outgoing.bearer_auth(request.token.expose());
 			let outgoing = match request.body {
@@ -97,7 +94,7 @@ pub mod reqwest_transport {
 				None => outgoing,
 			};
 			// `without_url`: an error's `Display` names the URL, and the caller
-			// logs that text. The URL can name the owner's Worker; it stays out.
+			// logs that text. The URL names the owner's Worker; it stays out.
 			let response = outgoing.send().await.map_err(reqwest::Error::without_url)?;
 			let status = response.status().as_u16();
 			let body = response.bytes().await.map_err(reqwest::Error::without_url)?;
