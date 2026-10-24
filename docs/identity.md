@@ -561,12 +561,15 @@ nowhere is marked as such and belongs to review.
     `apps/mailbox`) is a Cloudflare Worker where the owner's cloud routine
     and home leave each other files. For the one subject `MAILBOX_SUBJECT`
     names, `file_host`'s `mailbox` poller reads only its `brief` folder (the
-    routine's daily job digests) and puts only to `decisions` and `scout`.
-    - `mailbox_item`, written only by the poller: each `brief` file it kept,
-      its bytes as the mailbox held them (they must match the listing's
-      SHA-256 and parse as JSON), its hash, size and sequence number, and
-      when home read it. Read only by `GET /jobs/digests`, for its own
-      subject.
+    routine's daily job digests) and its `scene` and `drama` folders (the
+    reflections routine's word sets and dramas, `mailbox::pass::READS`), and
+    puts only to `decisions` and `scout`.
+    - `mailbox_item`, written only by the poller: each file it kept from
+      those three folders, its bytes as the mailbox held them (they must
+      match the listing's SHA-256 and parse as JSON), its hash, size and
+      sequence number, and when home read it. Read only by
+      `GET /jobs/digests` (`brief`) and `GET /routine/files` (`scene` and
+      `drama`), each for its own subject.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`: a
       decisions or scouts file the phone filed, its bytes, hash and when.
       The route refuses a file that names a voice note anywhere (any `voice`
@@ -600,10 +603,11 @@ nowhere is marked as such and belongs to review.
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject` and
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`, and its fake
-    transport, which fails a `GET` of anything but `brief` and a `PUT` of
+    transport, which fails a `GET` of anything but those three and a `PUT` of
     anything but `decisions` or `scout`; `mailbox_kit`'s
-    `the_token_never_appears_in_a_debug_or_an_error`; and `handlers::jobs`'s
-    `digests_answers_only_the_callers_own` and
+    `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
+    `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
+    `handlers::jobs`'s `digests_answers_only_the_callers_own` and
     `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
@@ -688,7 +692,10 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   notes are not: an event names them, the audio stays on the phone and in
   the owner's Drive. Deleting the account removes it; nothing else does.
 - **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
-  picked for the owner, with companies and titles) live in a Cloudflare D1
+  picked for the owner, with companies and titles), and the reflections
+  routine's word sets and dramas (Korean practice written for the owner, each
+  naming the study session it answers, and a word set quoting a few words of
+  the owner's note in its `from`), live in a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and

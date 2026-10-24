@@ -11,6 +11,7 @@ pub mod outcomes;
 pub mod presence;
 pub mod push;
 pub mod readiness;
+pub mod routine;
 pub mod sharing;
 pub mod shelf;
 pub mod signals;
