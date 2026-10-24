@@ -157,7 +157,7 @@ above the button that deletes (invariant 22):
 | aph | `aph_entry`, `aph_settings` |
 | The Jobs record | `jobs_event` |
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
-| Decisions and scouts filed with home | `mailbox_outgoing`, `mailbox_handed` |
+| Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed` |
 | LeetType sessions | `leetype_session_event` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
