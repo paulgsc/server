@@ -72,7 +72,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_item",
-		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets and dramas): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets, dramas and run records): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_outgoing",

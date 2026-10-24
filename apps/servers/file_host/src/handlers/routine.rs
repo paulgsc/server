@@ -1,6 +1,6 @@
 //! Handlers for `routes::routine`: the files the reflections routine left for
-//! the phone through the Jobs mailbox, as home keeps them (`mailbox_item`,
-//! docs/identity.md invariant 19).
+//! the phone through the Jobs mailbox, and the record of each of its runs, as
+//! home keeps them (`mailbox_item`, docs/identity.md invariant 19).
 //!
 //! **Read only.** The `mailbox` poller is the files' one writer; nothing here
 //! writes, and the phone keeps its own record of which it opened.
@@ -17,16 +17,25 @@ use tracing::instrument;
 /// routine" list can show.
 pub const FILES_PER_ANSWER: i64 = 20;
 
+/// The most run records one answer holds: a month of daily runs, so a phone
+/// away from home that long still learns of every one.
+pub const RUNS_PER_ANSWER: i64 = 31;
+
 /// `GET /routine/files`
 #[derive(Debug, Serialize)]
 pub struct Files {
 	/// Newest first.
 	pub files: Vec<HeldFile>,
+	/// What each of the routine's runs found and added, newest first.
+	pub runs: Vec<HeldFile>,
+	/// When home answered (ISO-8601 UTC): the phone keeps the runs it saw,
+	/// and tells a routine that went quiet from a look made before it was due.
+	pub at: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct HeldFile {
-	/// `scene` (a word set pair) or `drama`.
+	/// `scene` (a word set pair), `drama` or `run` (one run's record).
 	pub folder: String,
 	/// Its name in the mailbox, which the phone remembers once opened.
 	pub name: String,
@@ -36,7 +45,8 @@ pub struct HeldFile {
 
 /// `GET /routine/files`: the reflections routine's newest word sets and
 /// dramas home holds for the caller, newest first, at most
-/// [`FILES_PER_ANSWER`].
+/// [`FILES_PER_ANSWER`], and its newest run records, at most
+/// [`RUNS_PER_ANSWER`].
 ///
 /// A held file that does not read back as JSON is left out and logged, so
 /// one bad file never hides the rest.
@@ -47,11 +57,25 @@ pub struct HeldFile {
 #[instrument(name = "routine_files", skip_all, fields(otel.kind = "server"))]
 pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Files>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::routine_files(&mut conn, subject.as_str(), FILES_PER_ANSWER).await.map_err(|err| match err {
+	let files = mailbox_repo::routine_files(&mut conn, subject.as_str(), FILES_PER_ANSWER).await.map_err(storage)?;
+	let runs = mailbox_repo::routine_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await.map_err(storage)?;
+	Ok(Json(Files {
+		files: readable(files),
+		runs: readable(runs),
+		at: crate::mailbox::pass::now(),
+	}))
+}
+
+fn storage(err: mailbox_repo::MailboxError) -> FileHostError {
+	match err {
 		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
 		mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
-	})?;
-	let files = held
+	}
+}
+
+/// The held files that read back as JSON, in order.
+fn readable(held: Vec<mailbox_repo::RoutineFile>) -> Vec<HeldFile> {
+	held
 		.into_iter()
 		.filter_map(|held| {
 			// The poller kept only JSON (invariant 19), so a body that fails
@@ -71,8 +95,7 @@ pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 				}
 			}
 		})
-		.collect();
-	Ok(Json(Files { files }))
+		.collect()
 }
 
 #[cfg(test)]
@@ -171,7 +194,7 @@ mod tests {
 	}
 
 	/// Only the routine's word sets and dramas, only the caller's, newest
-	/// first, each verbatim.
+	/// first, each verbatim; its run records apart, the same way.
 	#[tokio::test]
 	async fn files_answer_the_callers_own_scenes_and_dramas_newest_first() {
 		let state = state().await;
@@ -182,14 +205,26 @@ mod tests {
 		hold(&state, A, "drama", 5, &drama).await;
 		hold(&state, A, "brief", 9, &json!({ "schema": "some-ui.job-digest/1" })).await;
 		hold(&state, B, "scene", 7, &scene).await;
-		let (status, answer) = get(state, Some(&phone)).await;
+		let run = json!({ "schema": "some-ui.routine-run/1", "added": [] });
+		hold(&state, A, "run", 4, &run).await;
+		hold(&state, A, "run", 6, &run).await;
+		hold(&state, B, "run", 8, &run).await;
+		let (status, mut answer) = get(state, Some(&phone)).await;
 		assert_eq!(status, StatusCode::OK);
+		let at = answer.as_object_mut().unwrap().remove("at").unwrap();
+		assert!(chrono::DateTime::parse_from_rfc3339(at.as_str().unwrap()).is_ok(), "{at}");
 		assert_eq!(
 			answer,
-			json!({ "files": [
-				{ "folder": "drama", "name": "drama-5.json", "file": drama },
-				{ "folder": "scene", "name": "scene-3.json", "file": scene },
-			] })
+			json!({
+				"files": [
+					{ "folder": "drama", "name": "drama-5.json", "file": drama },
+					{ "folder": "scene", "name": "scene-3.json", "file": scene },
+				],
+				"runs": [
+					{ "folder": "run", "name": "run-6.json", "file": run },
+					{ "folder": "run", "name": "run-4.json", "file": run },
+				],
+			})
 		);
 	}
 
@@ -226,5 +261,20 @@ mod tests {
 		let files = answer["files"].as_array().unwrap();
 		assert_eq!(files.len(), 20);
 		assert_eq!((files[0]["file"]["seq"].as_i64(), files[19]["file"]["seq"].as_i64()), (Some(25), Some(6)));
+	}
+
+	#[tokio::test]
+	async fn runs_answer_at_most_a_month_apart_from_files() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		hold(&state, A, "scene", 1, &json!({ "seq": 1 })).await;
+		for seq in 2..=40 {
+			hold(&state, A, "run", seq, &json!({ "seq": seq })).await;
+		}
+		let (_, answer) = get(state, Some(&phone)).await;
+		let runs = answer["runs"].as_array().unwrap();
+		assert_eq!(runs.len(), 31);
+		assert_eq!((runs[0]["file"]["seq"].as_i64(), runs[30]["file"]["seq"].as_i64()), (Some(40), Some(10)));
+		assert_eq!(answer["files"].as_array().unwrap().len(), 1, "runs take no file's place");
 	}
 }
