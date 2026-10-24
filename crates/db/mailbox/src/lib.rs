@@ -286,6 +286,35 @@ pub async fn archived_sha256(conn: &mut SqliteConnection, subject: &str, folder:
 	Ok(sha)
 }
 
+/// One file a routine left for the phone: a word set or a drama.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineFile {
+	/// `scene` or `drama`.
+	pub folder: String,
+	pub name: String,
+	pub body: Vec<u8>,
+}
+
+/// `subject`'s newest word sets and dramas from the reflections routine
+/// (the `scene` and `drama` folders), newest first, at most `limit`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn routine_files(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<RoutineFile>, MailboxError> {
+	let files = sqlx::query_as!(
+		RoutineFile,
+		"SELECT folder, name, body FROM mailbox_item
+		 WHERE subject_id = ?1 AND folder IN ('scene', 'drama')
+		 ORDER BY seq DESC
+		 LIMIT ?2",
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(files)
+}
+
 /// One file filed for the mailbox and not yet answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {

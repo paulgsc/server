@@ -3,7 +3,8 @@
 //! The mailbox (paulgsc/some-ui `apps/mailbox`) is a Cloudflare Worker over a
 //! D1 database where the cloud routine and home leave each other files: the
 //! routine puts the day's digest in `brief`, home puts the phone's decisions
-//! and scouts in `decisions` and `scout`. Each side holds its own bearer
+//! and scouts in `decisions` and `scout`, and the reflections routine puts
+//! its word sets and dramas in `scene` and `drama`. Each side holds its own bearer
 //! token, and the Worker decides what each token may read and put. This crate
 //! speaks its `/v1` API: [`Mailbox::list`], [`Mailbox::get`], [`Mailbox::put`],
 //! and, with the archive token, [`Mailbox::archive`], [`Mailbox::wanted`] and

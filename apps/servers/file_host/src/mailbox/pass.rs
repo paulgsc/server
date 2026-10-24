@@ -1,16 +1,17 @@
 //! One pass of the mailbox poller.
 //!
-//! It reads what `brief` holds after home's cursor and keeps each file that
-//! checks out, then hands the mailbox the voice-free decisions and scouts the
-//! phone filed (`PUT /jobs/files/:name`).
+//! It reads what each folder home reads ([`READS`]: the Jobs digests, and the
+//! reflections routine's word sets and dramas) holds after home's cursor for
+//! it and keeps each file that checks out, then hands the mailbox the
+//! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`).
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
 //! that does not check out (its bytes are not what the listing said, it is
 //! not JSON, or its name already holds other bytes) is refused and counted,
 //! and the pass goes on: one bad file never holds back the days after it.
-//! A refused file that is the newest in `brief` is asked for again each pass
-//! until a newer one is kept, since the cursor is the highest `seq` held.
+//! A refused file that is the newest in its folder is asked for again each
+//! pass until a newer one is kept, since the cursor is the highest `seq` held.
 //!
 //! Handing over is once per file: the mailbox's answer, whatever it is, is
 //! recorded and final (a `conflict` or a refusal is not retried), and only a
@@ -27,13 +28,18 @@
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
-use mailbox_repo::{Answer, ArchiveIn, Change, ItemIn, BRIEF};
+use mailbox_repo::{Answer, ArchiveIn, Change, ItemIn};
 use serde::de::IgnoredAny;
 use sqlx::SqlitePool;
 use std::fmt;
 
-/// The most files one pass takes. More waiting are taken by the next pass.
+/// The most files one pass takes from a folder. More waiting are taken by
+/// the next pass.
 pub const ITEMS_PER_PASS: u32 = 20;
+
+/// The folders home reads and keeps in `mailbox_item`: the routine's digests
+/// (`GET /jobs/digests`), and its word sets and dramas (`GET /routine/files`).
+pub const READS: [Folder; 3] = [Folder::Brief, Folder::Scene, Folder::Drama];
 
 /// The most pages one pass lists per folder. Inbound passes over a file home
 /// already holds (one put back after archiving, under a new `seq`) without
@@ -122,7 +128,7 @@ fn days_before(now: &str, days: u64) -> Option<String> {
 
 /// One pass of the poller.
 ///
-/// It reads `brief` after `subject`'s cursor and keeps what checks out, then
+/// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
@@ -142,7 +148,13 @@ pub async fn run_once<T: MailboxTransport>(
 	now: &(impl Fn() -> String + Sync),
 ) -> Result<Outcome, PassError> {
 	let mut outcome = Outcome::default();
-	let inbound = read_brief(db, mailbox, subject, deletion, now, &mut outcome).await;
+	let mut inbound = Ok(());
+	for folder in READS {
+		if inbound.is_err() || outcome.no_account {
+			break;
+		}
+		inbound = read_folder(db, mailbox, folder, subject, deletion, now, &mut outcome).await;
+	}
 	let outbound = if outcome.no_account {
 		Ok(())
 	} else {
@@ -162,29 +174,30 @@ pub async fn run_once<T: MailboxTransport>(
 	}
 }
 
-async fn read_brief<T: MailboxTransport>(
+async fn read_folder<T: MailboxTransport>(
 	db: &SqlitePool,
 	mailbox: &Mailbox<T>,
+	folder: Folder,
 	subject: &str,
 	deletion: &DeletionLock,
 	now: &(impl Fn() -> String + Sync),
 	outcome: &mut Outcome,
 ) -> Result<(), Failure> {
-	let mut after = cursor(db, subject).await.map_err(Failure::Storage)?;
+	let mut after = cursor(db, subject, folder).await.map_err(Failure::Storage)?;
 	let mut fetched = 0;
 	for _ in 0..PAGES_PER_PASS {
-		let items = mailbox.list(Folder::Brief, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
+		let items = mailbox.list(folder, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
 		let full = items.len() >= ITEMS_PER_PASS as usize;
 		for item in &items {
 			after = after.max(item.seq);
-			if held_sha256(db, subject, BRIEF, &item.name).await?.as_deref() == Some(item.sha256.to_ascii_lowercase().as_str()) {
+			if held_sha256(db, subject, folder.as_str(), &item.name).await?.as_deref() == Some(item.sha256.to_ascii_lowercase().as_str()) {
 				continue;
 			}
 			if fetched == ITEMS_PER_PASS {
 				return Ok(());
 			}
 			fetched += 1;
-			if !read_one(db, mailbox, subject, deletion, now, outcome, item).await? {
+			if !read_one(db, (mailbox, folder), subject, deletion, now, outcome, item).await? {
 				return Ok(());
 			}
 		}
@@ -195,18 +208,18 @@ async fn read_brief<T: MailboxTransport>(
 	Ok(())
 }
 
-/// Fetches, checks and keeps one `brief` file; `false` when the subject has
-/// no account, which ends the pass.
+/// Fetches, checks and keeps one file; `false` when the subject has no
+/// account, which ends the pass.
 async fn read_one<T: MailboxTransport>(
 	db: &SqlitePool,
-	mailbox: &Mailbox<T>,
+	(mailbox, folder): (&Mailbox<T>, Folder),
 	subject: &str,
 	deletion: &DeletionLock,
 	now: &(impl Fn() -> String + Sync),
 	outcome: &mut Outcome,
 	item: &mailbox_kit::ItemMeta,
 ) -> Result<bool, Failure> {
-	let body = match mailbox.get(Folder::Brief, item).await {
+	let body = match mailbox.get(folder, item).await {
 		Ok(body) => body,
 		Err(err @ (MailboxError::Mismatch | MailboxError::BadName)) => {
 			outcome.refused.push(err.kind());
@@ -219,7 +232,7 @@ async fn read_one<T: MailboxTransport>(
 		return Ok(true);
 	}
 	let kept = ItemIn {
-		folder: BRIEF,
+		folder: folder.as_str(),
 		name: &item.name,
 		seq: item.seq,
 		sha256: &item.sha256.to_ascii_lowercase(),
@@ -375,8 +388,9 @@ async fn archive_one<T: MailboxTransport>(
 	item: &mailbox_kit::ItemMeta,
 ) -> Result<Option<&'static str>, Failure> {
 	let sha256 = item.sha256.to_ascii_lowercase();
-	if folder == Folder::Brief {
-		match held_sha256(db, subject, BRIEF, &item.name).await? {
+	// A file home reads goes home only once home has kept it for the phone.
+	if READS.contains(&folder) {
+		match held_sha256(db, subject, folder.as_str(), &item.name).await? {
 			None => return Ok(Some("unread")),
 			Some(held) if held != sha256 => return Ok(Some("rewritten")),
 			Some(_) => {}
@@ -426,9 +440,9 @@ fn storage(err: mailbox_repo::MailboxError) -> Failure {
 	}
 }
 
-async fn cursor(db: &SqlitePool, subject: &str) -> Result<i64, sqlx::Error> {
+async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, sqlx::Error> {
 	let mut conn = db.acquire().await?;
-	mailbox_repo::cursor(&mut conn, subject, BRIEF).await.map_err(|err| match err {
+	mailbox_repo::cursor(&mut conn, subject, folder.as_str()).await.map_err(|err| match err {
 		mailbox_repo::MailboxError::Storage(err) => err,
 		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a cursor read cannot rewrite")),
 	})
@@ -536,7 +550,10 @@ mod tests {
 				};
 				return Ok(answer(status, body));
 			}
-			assert_eq!(request.method, Method::Get, "and reads nothing but brief");
+			assert_eq!(request.method, Method::Get, "and reads nothing but the folders home reads");
+			if path.starts_with("/v1/scene/items?") || path.starts_with("/v1/drama/items?") {
+				return Ok(answer(200, r#"{"items":[]}"#));
+			}
 			if let Some(query) = path.strip_prefix("/v1/brief/items?") {
 				if *self.listing_fails.lock().unwrap() {
 					return Err("connection refused");
@@ -867,7 +884,10 @@ mod tests {
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.token.expose() == "home-token" {
-				assert!(request.method == Method::Get && path.starts_with("/v1/brief/items"), "home's token: {path}");
+				assert!(
+					request.method == Method::Get && ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items"].iter().any(|read| path.starts_with(read)),
+					"home's token: {path}"
+				);
 			} else {
 				assert_eq!(request.token.expose(), "archive-token");
 			}
@@ -1059,6 +1079,25 @@ mod tests {
 		vault.add("brief", 200, &next, &body, YOUNG);
 		assert_eq!(archive_pass(&pool, &vault).await.kept, 1, "the new digest, in one pass");
 		assert_eq!(held(&pool).await.last(), Some(&next));
+	}
+
+	#[tokio::test]
+	async fn the_routines_word_sets_and_dramas_are_kept_like_digests() {
+		let (pool, vault) = (pool().await, Vault::default());
+		vault.add("scene", 1, "scene-2026-10-13_morning_session-.json", r#"{"schema":"some-ui.routine-scene/1"}"#, YOUNG);
+		vault.add("drama", 2, "drama-20261012T145200123Z.json", "not json", OLD);
+		vault.add("drama", 3, "drama-20261013T145200123Z.json", r#"{"schema":"some-ui.routine-drama/1"}"#, YOUNG);
+		let outcome = archive_pass(&pool, &vault).await;
+		assert_eq!((outcome.kept, outcome.refused), (2, vec!["not_json"]));
+		let kept: Vec<(String, String)> = sqlx::query_as("SELECT folder, name FROM mailbox_item ORDER BY seq").fetch_all(&pool).await.unwrap();
+		assert_eq!(
+			kept,
+			[
+				(String::from("scene"), String::from("scene-2026-10-13_morning_session-.json")),
+				(String::from("drama"), String::from("drama-20261013T145200123Z.json")),
+			]
+		);
+		assert_eq!(outcome.archived, ["unread"], "a drama the phone never got stays in the mailbox");
 	}
 
 	#[tokio::test]

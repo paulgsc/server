@@ -6,7 +6,9 @@
 //! mailbox, a Cloudflare Worker over a D1 database (paulgsc/some-ui
 //! `apps/mailbox`): the routine puts the digest in its `brief` folder, and
 //! this module reads `brief` and keeps a copy of each file in
-//! `mailbox_item` (`mailbox_repo`), which the route serves.
+//! `mailbox_item` (`mailbox_repo`), which the route serves. The reflections
+//! routine's word sets and dramas arrive the same way, in `scene` and
+//! `drama`, and `GET /api/v1/routine/files` serves them.
 //!
 //! **Why this is a poll.** This repo leans against cron-shaped design
 //! (`nudge::waker`'s header): a timer should pick up work that something
@@ -19,8 +21,9 @@
 //!
 //! What this module promises, as docs/identity.md invariant 19 states:
 //!
-//! - It reads only the `brief` folder, for the one subject `MAILBOX_SUBJECT`
-//!   names, and writes only `mailbox_item`, through [`pass::run_once`].
+//! - It reads only the folders in [`pass::READS`] (`brief`, `scene` and
+//!   `drama`), for the one subject `MAILBOX_SUBJECT` names, and writes only
+//!   `mailbox_item`, through [`pass::run_once`].
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is
