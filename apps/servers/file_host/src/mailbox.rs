@@ -8,7 +8,8 @@
 //! this module reads `brief` and keeps a copy of each file in
 //! `mailbox_item` (`mailbox_repo`), which the route serves. The reflections
 //! routine's word sets and dramas arrive the same way, in `scene` and
-//! `drama`, and `GET /api/v1/routine/files` serves them.
+//! `drama`, with a record of each of its runs in `run`, and
+//! `GET /api/v1/routine/files` serves them.
 //!
 //! **Why this is a poll.** This repo leans against cron-shaped design
 //! (`nudge::waker`'s header): a timer should pick up work that something
@@ -21,8 +22,8 @@
 //!
 //! What this module promises, as docs/identity.md invariant 19 states:
 //!
-//! - It reads only the folders in [`pass::READS`] (`brief`, `scene` and
-//!   `drama`), for the one subject `MAILBOX_SUBJECT` names, and writes only
+//! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`
+//!   and `run`), for the one subject `MAILBOX_SUBJECT` names, and writes only
 //!   `mailbox_item`, through [`pass::run_once`].
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the

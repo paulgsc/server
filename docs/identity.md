@@ -587,21 +587,28 @@ nowhere is marked as such and belongs to review.
     `apps/mailbox`) is a Cloudflare Worker where the owner's cloud routine
     and home leave each other files. For the one subject `MAILBOX_SUBJECT`
     names, `file_host`'s `mailbox` poller reads only its `brief` folder (the
-    routine's daily job digests) and its `scene` and `drama` folders (the
-    reflections routine's word sets and dramas, `mailbox::pass::READS`), and
-    puts only to `decisions` and `scout`.
+    routine's daily job digests), its `scene` and `drama` folders (the
+    reflections routine's word sets and dramas) and its `run` folder (a
+    record of what each of that routine's runs found and added, which the
+    phone shows as when the routine last ran; owner, 2026-10-24),
+    `mailbox::pass::READS`, and puts only to `decisions`, `scout` and
+    `opened`.
     - `mailbox_item`, written only by the poller: each file it kept from
-      those three folders, its bytes as the mailbox held them (they must
+      those four folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
       sequence number, and when home read it. Read only by
-      `GET /jobs/digests` (`brief`) and `GET /routine/files` (`scene` and
-      `drama`), each for its own subject.
-    - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`: a
-      decisions or scouts file the phone filed, its bytes, hash and when.
-      The route refuses a file that names a voice note anywhere (any `voice`
-      key that is not an empty list), so no file that points at audio is
-      handed on; those go by the phone's share sheet, which carries the
-      audio to Drive.
+      `GET /jobs/digests` (`brief`) and `GET /routine/files` (`scene`,
+      `drama` and `run`), each for its own subject.
+    - `mailbox_outgoing`, written only by `PUT /jobs/files/:name` and
+      `PUT /routine/opened`: a decisions or scouts file the phone filed, or
+      which of the routine's lessons it opened, its bytes, hash and when.
+      The jobs route refuses a file that names a voice note anywhere (any
+      `voice` key that is not an empty list), so no file that points at
+      audio is handed on; those go by the phone's share sheet, which carries
+      the audio to Drive. The routine route builds its file itself, as
+      `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
+      `drama` and a mailbox name), at most 100, and home's time, nothing
+      else (owner, 2026-10-24: the routine keeps three lessons not opened).
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
       each filed file it handed over, once, final.
     - `mailbox_archive`, written only by the poller with the archive token
@@ -739,7 +746,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   routine's word sets and dramas (Korean practice written for the owner: a
   word set is named for the study session it answers and quotes a few words
   of the owner's note in its `from`; a drama is named for the time of its
-  prompt), live in a Cloudflare D1
+  prompt), and a record of each of that routine's runs (when it ran, how many
+  reflections and prompts it found unanswered, the names and titles of what
+  it added, and what it could not do, in a sentence), and which of those
+  lessons the phone opened (their names, and when home filed them), live in
+  a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and

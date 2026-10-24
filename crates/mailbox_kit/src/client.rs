@@ -19,11 +19,15 @@ pub enum Folder {
 	Scene,
 	/// The reflections routine's dramas, `drama-<stamp>.json`.
 	Drama,
+	/// What one run of a routine did, `run-<routine>-<stamp>.json`.
+	Run,
+	/// Which of the routine's lessons the phone opened, `opened-<stamp>.json`.
+	Opened,
 }
 
 impl Folder {
 	/// Every folder, in the order a pass visits them.
-	pub const ALL: [Self; 5] = [Self::Brief, Self::Decisions, Self::Scout, Self::Scene, Self::Drama];
+	pub const ALL: [Self; 7] = [Self::Brief, Self::Decisions, Self::Scout, Self::Scene, Self::Drama, Self::Run, Self::Opened];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
 	#[must_use]
@@ -34,6 +38,8 @@ impl Folder {
 			Self::Scout => "scout",
 			Self::Scene => "scene",
 			Self::Drama => "drama",
+			Self::Run => "run",
+			Self::Opened => "opened",
 		}
 	}
 }

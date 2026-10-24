@@ -1,7 +1,7 @@
 //! One pass of the mailbox poller.
 //!
 //! It reads what each folder home reads ([`READS`]: the Jobs digests, and the
-//! reflections routine's word sets and dramas) holds after home's cursor for
+//! reflections routine's word sets, dramas and run records) holds after home's cursor for
 //! it and keeps each file that checks out, then hands the mailbox the
 //! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`).
 //!
@@ -38,8 +38,9 @@ use std::fmt;
 pub const ITEMS_PER_PASS: u32 = 20;
 
 /// The folders home reads and keeps in `mailbox_item`: the routine's digests
-/// (`GET /jobs/digests`), and its word sets and dramas (`GET /routine/files`).
-pub const READS: [Folder; 3] = [Folder::Brief, Folder::Scene, Folder::Drama];
+/// (`GET /jobs/digests`), and its word sets, dramas and run records
+/// (`GET /routine/files`).
+pub const READS: [Folder; 4] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run];
 
 /// The most pages one pass lists per folder. Inbound passes over a file home
 /// already holds (one put back after archiving, under a new `seq`) without
@@ -277,7 +278,8 @@ async fn hand_over<T: MailboxTransport>(
 		let folder = match file.folder.as_str() {
 			"decisions" => Folder::Decisions,
 			"scout" => Folder::Scout,
-			// `PUT /jobs/files/:name` files only these two.
+			"opened" => Folder::Opened,
+			// `PUT /jobs/files/:name` and `PUT /routine/opened` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -535,8 +537,8 @@ mod tests {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.method == Method::Put {
 				assert!(
-					path.starts_with("/v1/decisions/items/") || path.starts_with("/v1/scout/items/"),
-					"puts only decisions and scouts: {path}"
+					["/v1/decisions/items/", "/v1/scout/items/", "/v1/opened/items/"].iter().any(|put| path.starts_with(put)),
+					"puts only decisions, scouts and which lessons were opened: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -551,7 +553,7 @@ mod tests {
 				return Ok(answer(status, body));
 			}
 			assert_eq!(request.method, Method::Get, "and reads nothing but the folders home reads");
-			if path.starts_with("/v1/scene/items?") || path.starts_with("/v1/drama/items?") {
+			if ["/v1/scene/items?", "/v1/drama/items?", "/v1/run/items?"].iter().any(|read| path.starts_with(read)) {
 				return Ok(answer(200, r#"{"items":[]}"#));
 			}
 			if let Some(query) = path.strip_prefix("/v1/brief/items?") {
@@ -787,9 +789,15 @@ mod tests {
 		assert!(err.contains("MAILBOX_ARCHIVE_DAYS"), "{err}");
 	}
 
-	/// A file as the phone files it (`PUT /jobs/files/:name`).
+	/// A file as the phone files it (`PUT /jobs/files/:name`, `PUT /routine/opened`).
 	async fn filed(pool: &SqlitePool, name: &str) {
-		let folder = if name.starts_with("scouts-") { "scout" } else { "decisions" };
+		let folder = if name.starts_with("scouts-") {
+			"scout"
+		} else if name.starts_with("opened-") {
+			"opened"
+		} else {
+			"decisions"
+		};
 		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", b"{}", "2026-10-23T15:00:00.000Z")
 			.await
 			.unwrap();
@@ -804,13 +812,18 @@ mod tests {
 		let (pool, fake) = (pool().await, Fake::default());
 		filed(&pool, "decisions-2026-10-23.json").await;
 		filed(&pool, "scouts-20261023T101500.json").await;
-		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added", "added"]);
+		filed(&pool, "opened-20261023T101500123Z.json").await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added", "added", "added"]);
 		assert_eq!(
 			*fake.puts.lock().unwrap(),
-			["/v1/decisions/items/decisions-2026-10-23.json", "/v1/scout/items/scouts-20261023T101500.json"]
+			[
+				"/v1/decisions/items/decisions-2026-10-23.json",
+				"/v1/scout/items/scouts-20261023T101500.json",
+				"/v1/opened/items/opened-20261023T101500123Z.json"
+			]
 		);
 		assert!(pass(&pool, &fake).await.unwrap().handed.is_empty(), "an answered file is not handed again");
-		assert_eq!(fake.puts.lock().unwrap().len(), 2);
+		assert_eq!(fake.puts.lock().unwrap().len(), 3);
 	}
 
 	#[tokio::test]
@@ -885,7 +898,10 @@ mod tests {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.token.expose() == "home-token" {
 				assert!(
-					request.method == Method::Get && ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items"].iter().any(|read| path.starts_with(read)),
+					request.method == Method::Get
+						&& ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items", "/v1/run/items"]
+							.iter()
+							.any(|read| path.starts_with(read)),
 					"home's token: {path}"
 				);
 			} else {
