@@ -244,6 +244,94 @@ async fn the_auth_tables_hold_exactly_their_listed_columns() {
 	}
 }
 
+/// The tables docs/identity.md's "What deleting an account erases" lists:
+/// each backticked name in the second cell of a row of its table, and the
+/// names listed more than once. The section ends at the next heading.
+fn listed_as_erased(doc: &str) -> (BTreeSet<String>, Vec<String>) {
+	let mut listed = BTreeSet::new();
+	let mut twice = Vec::new();
+	let section = doc.lines().skip_while(|line| *line != "### What deleting an account erases").skip(1);
+	for line in section.take_while(|line| !line.starts_with('#')) {
+		// `| Kind | Tables |` splits into " Kind ", " Tables " and "".
+		let Some(tables) = line.strip_prefix('|').and_then(|row| row.split('|').nth(1)) else {
+			continue;
+		};
+		// The text between each pair of backticks.
+		for table in tables.split('`').skip(1).step_by(2) {
+			if !listed.insert(table.to_owned()) {
+				twice.push(table.to_owned());
+			}
+		}
+	}
+	(listed, twice)
+}
+
+/// Why `doc`'s list of what deleting an account erases does not match
+/// `scoped`, or nothing when it does.
+fn erasure_list_problems(doc: &str, scoped: &BTreeSet<&str>) -> Vec<String> {
+	let (listed, twice) = listed_as_erased(doc);
+	let mut problems: Vec<String> = Vec::new();
+	if listed.is_empty() {
+		problems.push(String::from("docs/identity.md lists no table under \"What deleting an account erases\""));
+	}
+	for table in scoped.iter().filter(|table| !listed.contains(**table)) {
+		problems.push(String::from(*table) + " is subject-scoped but \"What deleting an account erases\" does not name it: say which kind the person is told it is");
+	}
+	for table in listed.iter().filter(|table| !scoped.contains(table.as_str())) {
+		problems.push(table.clone() + " is listed under \"What deleting an account erases\" but is not in subject::SUBJECT_SCOPED_TABLES");
+	}
+	for table in &twice {
+		problems.push(table.clone() + " is listed more than once under \"What deleting an account erases\"");
+	}
+	problems
+}
+
+/// docs/identity.md invariant 22: every subject-scoped table is named, once,
+/// in the list of what deleting an account erases, the list the Account
+/// screen's words follow (#452). A table added to `SUBJECT_SCOPED_TABLES`
+/// fails here until the list says which kind it belongs to.
+#[test]
+fn every_subject_scoped_table_is_named_in_what_deleting_erases() {
+	let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../docs/identity.md")).unwrap();
+	let scoped: BTreeSet<&str> = SUBJECT_SCOPED_TABLES.iter().map(|(table, _)| *table).collect();
+	let problems = erasure_list_problems(&doc, &scoped);
+	assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The check above is only worth having if it can fail: a table the list
+/// omits, one it invents and one it lists twice each do, and nothing else.
+#[test]
+fn the_erasure_list_check_fails_on_an_omission_an_invention_and_a_repeat() {
+	let doc = "\
+### What deleting an account erases
+
+| Kind | Tables |
+|---|---|
+| Sessions | `sessions` |
+| Sign-in | `account`, `passkey` |
+| Sign-in again | `passkey`, `made_up` |
+
+### The session
+
+| Not | `in_the_section` |
+";
+	let scoped: BTreeSet<&str> = ["sessions", "account", "passkey", "left_off"].into_iter().collect();
+	let problems = erasure_list_problems(doc, &scoped);
+	assert_eq!(problems.len(), 3, "{problems:#?}");
+	assert!(problems.iter().any(|problem| problem.starts_with("left_off is subject-scoped")));
+	assert!(problems.iter().any(|problem| problem.starts_with("made_up is listed under")));
+	assert!(problems.iter().any(|problem| problem.starts_with("passkey is listed more than once")));
+
+	let scoped: BTreeSet<&str> = ["sessions", "account", "passkey", "made_up"].into_iter().collect();
+	let fixed = doc.replace("`passkey`, `made_up`", "`made_up`");
+	assert!(erasure_list_problems(&fixed, &scoped).is_empty());
+	assert_eq!(
+		erasure_list_problems("no section here", &scoped).len(),
+		5,
+		"no section lists nothing, so every table is unnamed"
+	);
+}
+
 /// Every field of every event and span, rendered.
 #[derive(Clone, Default)]
 pub(crate) struct Captured(Arc<Mutex<Vec<String>>>);

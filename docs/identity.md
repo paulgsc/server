@@ -141,6 +141,32 @@ once).
   session. Nothing in the subject tables references `account`, so the lock is
   what stops a write outliving its account.
 
+### What deleting an account erases
+
+`DELETE /auth/account` deletes the subject's rows from every table in
+`subject::SUBJECT_SCOPED_TABLES`. Said to the person, those tables fall into
+these kinds, and the Account screen (paulgsc/some-ui,
+`apps/www/src/lib/auth/account-erases.ts`) names each one, and what stays,
+above the button that deletes (invariant 22):
+
+| Kind | Tables |
+|---|---|
+| Sessions | `sessions` |
+| Saved shelf items | `learner_shelf` |
+| Reminders and progress | `activity_outcome`, `engagement_charge`, `engagement_gate`, `intervention_log`, `presence_leases`, `push_subscriptions` |
+| aph | `aph_entry`, `aph_settings` |
+| The Jobs record | `jobs_event` |
+| Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
+| Decisions and scouts filed with home | `mailbox_outgoing`, `mailbox_handed` |
+| LeetType sessions | `leetype_session_event` |
+| What a phone shares | `sharing_choice` |
+| Sign-in | `account`, `passkey`, `auth_session` |
+
+A file home archived out of the mailbox goes with the account, and the person
+is told so: once the mailbox has let a file go, `mailbox_archive` holds the
+only copy of its bytes (invariant 21). What deleting does not reach is under
+"What is still exposed", in "What deleting an account does not reach".
+
 ### The session
 
 A session is 32 random bytes, base64url in a `__Host-session` cookie:
@@ -653,6 +679,21 @@ nowhere is marked as such and belongs to review.
     *Not enforced:* that `archive_old` stores before it asks, beyond those
     tests, which review keeps by reading the function's order.
 
+22. **Every subject-scoped table is named in what deleting an account
+    erases.** "What deleting an account erases" gives each table in
+    `subject::SUBJECT_SCOPED_TABLES` a kind, the unit the Account screen
+    tells the person, so a table that deletion erases cannot go unsaid by being
+    left off the list (#452: archived mailbox files went with an account
+    before the screen said so). A table is listed once.
+    *Enforced by* `file_host::privacy`'s
+    `every_subject_scoped_table_is_named_in_what_deleting_erases`, which fails
+    on a subject-scoped table the list omits, a name it lists that is not one,
+    and a table listed twice.
+    *Not enforced:* that the screen says each kind. The words live in another
+    repository (paulgsc/some-ui, `apps/www/src/lib/auth/account-erases.ts`),
+    and nothing there can read this list; a kind added here is added there by
+    review.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -779,7 +820,15 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   Redis, log lines and exported spans that carry the id, ceremonies held in
   memory (an open pairing code is closed), backups, and SQLite's free pages
   and write-ahead log, which keep deleted rows until they are overwritten or
-  checkpointed.
+  checkpointed. Nor does it reach what home never held: a paired phone keeps
+  its own copy of what it sent, and the owner's Drive keeps its copies. And it
+  does not reach the Jobs mailbox. A file still live there stays live: the
+  poller keeps nothing and archives nothing for a subject with no account
+  (`mailbox::pass`'s `a_file_home_cannot_store_stays_live`), so it never
+  reaches the age at which home would archive it, and stays until the owner
+  removes it from the mailbox. For a file the mailbox had already let go, only
+  its row remains (name, size, hash and dates, invariant 21): its bytes were
+  home's, and went with the account.
 - **Retention that runs only sometimes.** The waker sweeps `intervention_log`
   (90 days) and `activity_outcome` (365 days) on each pass, so those horizons
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
