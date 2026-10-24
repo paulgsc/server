@@ -89,4 +89,11 @@ ignore = [
   # `grep -rln web_push crates/push_kit/src/`), so that's a product
   # decision, not a dependency-hygiene one.
   { id = "RUSTSEC-2023-0071", reason = "rsa via web-push 0.11.0 (latest) -> jwt-simple's non-optional pure-rust feature -> superboring; no upstream fix, push_kit genuinely uses web-push" },
+  # Constant-time arithmetic that can branch on secrets in `crypto-bigint`
+  # 0.5.5. Reachable only via `web-push 0.11.0` -> `jwt-simple 0.12.17` ->
+  # `elliptic-curve 0.13` (k256, p256, p384). The fix is 0.7.6, on the
+  # `elliptic-curve` 0.14 line that `jwt-simple` 0.13+ uses, but `web-push`
+  # 0.11.0 is the latest release and pins `jwt-simple` 0.12, so no version
+  # bump reaches it. Accepted by the owner (2026-10-24), as above.
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via web-push 0.11.0 (latest) -> jwt-simple 0.12 -> elliptic-curve 0.13; fixed only in the 0.7 line, which web-push does not reach; push_kit genuinely uses web-push" },
 ]

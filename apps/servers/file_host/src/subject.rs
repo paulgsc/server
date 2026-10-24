@@ -72,11 +72,11 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_item",
-		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets and dramas): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets, dramas and run records): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's voice-free Jobs decisions and scouts, and which of the reflections routine's lessons they opened (names only), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),
