@@ -38,8 +38,8 @@ pub struct HeldFile {
 /// dramas home holds for the caller, newest first, at most
 /// [`FILES_PER_ANSWER`].
 ///
-/// A held file that does not read back as JSON is left out, so one bad file
-/// never hides the rest.
+/// A held file that does not read back as JSON is left out and logged, so
+/// one bad file never hides the rest.
 ///
 /// # Errors
 /// 401 without a session, and 500 for a storage failure.
@@ -54,12 +54,22 @@ pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 	let files = held
 		.into_iter()
 		.filter_map(|held| {
-			let file = RawValue::from_string(String::from_utf8(held.body).ok()?).ok()?;
-			Some(HeldFile {
-				folder: held.folder,
-				name: held.name,
-				file,
-			})
+			// The poller kept only JSON (invariant 19), so a body that fails
+			// here was written some other way: say so, by kind, never by body.
+			let file = String::from_utf8(held.body)
+				.map_err(|_| "utf8")
+				.and_then(|text| RawValue::from_string(text).map_err(|_| "json"));
+			match file {
+				Ok(file) => Some(HeldFile {
+					folder: held.folder,
+					name: held.name,
+					file,
+				}),
+				Err(kind) => {
+					tracing::error!(folder = %held.folder, kind, "a held routine file does not read back; left out");
+					None
+				}
+			}
 		})
 		.collect();
 	Ok(Json(Files { files }))
@@ -188,13 +198,21 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A).await;
 		hold(&state, A, "scene", 1, &json!({ "ok": 1 })).await;
-		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'drama', 'bad.json', 2, 's', 1, x'ff', 'now')")
-			.bind(A)
-			.execute(&state.pool)
-			.await
-			.unwrap();
+		for (seq, body) in [(2, &b"\xff"[..]), (3, &b"not json"[..])] {
+			sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'drama', ?2, ?3, 's', 1, ?4, 'now')")
+				.bind(A)
+				.bind(String::from("bad-") + &seq.to_string() + ".json")
+				.bind(seq)
+				.bind(body)
+				.execute(&state.pool)
+				.await
+				.unwrap();
+		}
 		let (status, answer) = get(state, Some(&phone)).await;
-		assert_eq!((status, answer["files"].as_array().unwrap().len()), (StatusCode::OK, 1));
+		assert_eq!(
+			(status, &answer["files"][0]["name"], answer["files"].as_array().unwrap().len()),
+			(StatusCode::OK, &json!("scene-1.json"), 1)
+		);
 	}
 
 	#[tokio::test]
