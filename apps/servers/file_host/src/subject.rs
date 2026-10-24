@@ -38,6 +38,8 @@ pub const SINGLETON_SUBJECT: &str = "subject-local";
 /// from every one of them (`handlers::auth::delete_account`), and the privacy
 /// schema test fails if a migrated table has a `subject_id` and is missing
 /// here, so a new per-person table cannot outlive its account by omission.
+/// A table here is also named, under the kind the person is told it is, in
+/// docs/identity.md's "What deleting an account erases" (invariant 22).
 pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("account", "the account itself: a subject id and its WebAuthn user handle"),
 	("activity_outcome", "per-block study outcomes"),
