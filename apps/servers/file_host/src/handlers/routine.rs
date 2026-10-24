@@ -1,6 +1,8 @@
-//! Handlers for `routes::routine`: the files the reflections routine left for
-//! the phone through the Jobs mailbox, and the record of each of its runs, as
-//! home keeps them (`mailbox_item`, docs/identity.md invariant 19).
+//! Handlers for `routes::routine`: what the reflections routine left for the
+//! phone through the Jobs mailbox.
+//!
+//! Its files and the record of each of its runs, as home keeps them
+//! (`mailbox_item`, docs/identity.md invariant 19).
 //!
 //! **Read only.** The `mailbox` poller is the files' one writer; nothing here
 //! writes, and the phone keeps its own record of which it opened.
@@ -43,9 +45,10 @@ pub struct HeldFile {
 	pub file: Box<RawValue>,
 }
 
-/// `GET /routine/files`: the reflections routine's newest word sets and
-/// dramas home holds for the caller, newest first, at most
-/// [`FILES_PER_ANSWER`], and its newest run records, at most
+/// `GET /routine/files`: the reflections routine's newest files and runs.
+///
+/// Its word sets and dramas home holds for the caller, newest first, at
+/// most [`FILES_PER_ANSWER`], and its run records, at most
 /// [`RUNS_PER_ANSWER`].
 ///
 /// A held file that does not read back as JSON is left out and logged, so
