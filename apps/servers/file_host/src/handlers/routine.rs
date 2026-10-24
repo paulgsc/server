@@ -4,14 +4,20 @@
 //! Its files and the record of each of its runs, as home keeps them
 //! (`mailbox_item`, docs/identity.md invariant 19).
 //!
-//! **Read only.** The `mailbox` poller is the files' one writer; nothing here
-//! writes, and the phone keeps its own record of which it opened.
+//! **Read only, but for which were opened.** The `mailbox` poller is the
+//! files' one writer. `PUT /routine/opened` files the names of the routine's
+//! lessons the phone has opened, and nothing else, with home's outbox
+//! (`mailbox_outgoing`), which the poller hands to the mailbox's `opened`
+//! folder: the routine keeps three lessons not opened (docs/identity.md
+//! invariant 19).
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{extract::State, Json};
-use serde::Serialize;
+use chrono::{SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use sha2::{Digest as _, Sha256};
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -99,6 +105,91 @@ fn readable(held: Vec<mailbox_repo::RoutineFile>) -> Vec<HeldFile> {
 			}
 		})
 		.collect()
+}
+
+/// The most names one filing holds: every file one answer lists, and more.
+pub const OPENED_PER_FILING: usize = 100;
+
+/// `PUT /routine/opened`: the routine's lessons the phone has opened.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Opened {
+	/// Each `<folder>/<name>`, as `GET /routine/files` names it: `scene` or
+	/// `drama`, and the file's name.
+	pub opened: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Filed {
+	/// `added`, or `unchanged` for the same names filed again in the same
+	/// millisecond.
+	pub change: &'static str,
+}
+
+/// Whether `key` names one of the routine's lessons: `scene/` or `drama/`,
+/// then a mailbox name of letters, digits, `.`, `_` and `-` ending `.json`.
+fn names_a_lesson(key: &str) -> bool {
+	let Some((folder, name)) = key.split_once('/') else {
+		return false;
+	};
+	matches!(folder, "scene" | "drama")
+		&& name.len() <= 100
+		&& name.rsplit_once('.').is_some_and(|(stem, extension)| !stem.is_empty() && extension == "json")
+		&& name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// `PUT /routine/opened`: which of the routine's lessons the phone opened.
+///
+/// Filed with home's outbox as one `opened-<stamp>.json`, for the poller to
+/// hand to the mailbox. Names only: nothing of the lessons, and no time but
+/// home's own when it filed them.
+///
+/// # Errors
+/// 401 without a session, 422 for a name that is not a lesson's or more
+/// than [`OPENED_PER_FILING`] of them, 409 when the stamp's name already
+/// holds other names, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "routine_opened", skip_all, fields(otel.kind = "server"))]
+pub async fn put_opened(subject: SubjectId, State(db): State<SqlitePool>, Json(body): Json<Opened>) -> Result<Json<Filed>, FileHostError> {
+	if body.opened.len() > OPENED_PER_FILING {
+		return Err(FileHostError::unprocessable_entity([("opened", "over 100 names")]));
+	}
+	if !body.opened.iter().all(|key| names_a_lesson(key)) {
+		return Err(FileHostError::unprocessable_entity([("opened", "a name that is not one of the routine's lessons")]));
+	}
+	let at = Utc::now();
+	let name = at.format("opened-%Y%m%dT%H%M%S%3fZ.json").to_string();
+	let file = serde_json::json!({
+		"schema": "some-ui.routine-opened/1",
+		"opened": body.opened,
+		"at": at.to_rfc3339_opts(SecondsFormat::Millis, true),
+	});
+	let bytes = file.to_string().into_bytes();
+	let sha256 = hex::encode(Sha256::digest(&bytes));
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let change = mailbox_repo::file_outgoing(
+		&mut tx,
+		subject.as_str(),
+		"opened",
+		&name,
+		&sha256,
+		&bytes,
+		&at.to_rfc3339_opts(SecondsFormat::Millis, true),
+	)
+	.await
+	.map_err(|err| match err {
+		mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("this moment already holds other names: try again"),
+		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+	})?;
+	let change = match change {
+		mailbox_repo::Change::Added => "added",
+		mailbox_repo::Change::Unchanged => "unchanged",
+		// `SubjectId` found the account, so this is not reachable; if it
+		// were, nothing was written.
+		mailbox_repo::Change::NoAccount => return Err(FileHostError::OperationError("the account is gone".to_owned())),
+	};
+	tx.commit().await?;
+	Ok(Json(Filed { change }))
 }
 
 #[cfg(test)]
@@ -279,5 +370,57 @@ mod tests {
 		assert_eq!(runs.len(), 31);
 		assert_eq!((runs[0]["file"]["seq"].as_i64(), runs[30]["file"]["seq"].as_i64()), (Some(40), Some(10)));
 		assert_eq!(answer["files"].as_array().unwrap().len(), 1, "runs take no file's place");
+	}
+
+	async fn put(state: TestState, auth: Option<&str>, body: &Value) -> (StatusCode, Value) {
+		let app: Router = crate::routes::routine::routine().into_table_router().with_state(state);
+		let mut request = Request::builder()
+			.method(Method::PUT)
+			.uri("/routine/opened")
+			.header(axum::http::header::CONTENT_TYPE, "application/json");
+		if let Some(auth) = auth {
+			request = request.header(AUTHORIZATION, auth);
+		}
+		let response = app.oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	/// Names only, filed for the mailbox's `opened` folder under home's stamp.
+	#[tokio::test]
+	async fn opened_names_are_filed_for_the_mailbox() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		let names = json!({ "opened": ["scene/scene-2026-10-13_morning_session-.json", "drama/drama-20261013T145200123Z.json"] });
+		let (status, answer) = put(state.clone(), Some(&phone), &names).await;
+		assert_eq!((status, answer), (StatusCode::OK, json!({ "change": "added" })));
+		let mut conn = state.pool.acquire().await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		assert_eq!(pending.len(), 1);
+		assert_eq!(pending[0].folder, "opened");
+		assert!(pending[0].name.starts_with("opened-") && pending[0].name.ends_with("Z.json"), "{}", pending[0].name);
+		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
+		assert_eq!(file["schema"], "some-ui.routine-opened/1");
+		assert_eq!(file["opened"], names["opened"]);
+	}
+
+	#[tokio::test]
+	async fn opened_refuses_anything_but_lesson_names() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		assert_eq!(put(state.clone(), None, &json!({ "opened": [] })).await.0, StatusCode::UNAUTHORIZED);
+		for body in [
+			json!({ "opened": ["brief/digest-2026-10-22.json"] }),
+			json!({ "opened": ["scene/../x.json"] }),
+			json!({ "opened": ["scene/a.m4a"] }),
+			json!({ "opened": [], "note": "more" }),
+			json!({ "opened": vec!["scene/a.json"; 101] }),
+		] {
+			let status = put(state.clone(), Some(&phone), &body).await.0;
+			assert!(status.is_client_error() && status != StatusCode::UNAUTHORIZED, "{body}: {status}");
+		}
+		let mut conn = state.pool.acquire().await.unwrap();
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
 	}
 }

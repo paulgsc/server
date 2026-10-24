@@ -2,13 +2,16 @@
 //! through the Jobs mailbox, other than the Jobs digests (`routes::jobs`).
 //!
 //! ```text
-//! GET /routine/files → { files }: the reflections routine's newest word
-//!                      sets and dramas home holds, newest first, at most 20
+//! GET /routine/files  → { files, runs, at }: the reflections routine's
+//!                       newest word sets and dramas home holds, newest
+//!                       first, at most 20, and its newest runs, at most 31
+//! PUT /routine/opened → { change }: which of its lessons the phone opened,
+//!                       names only, filed for the mailbox
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::jobs`: a request without a
-//! session is `401`. Read only: the `mailbox` poller is the files' one
-//! writer (docs/identity.md invariant 19).
+//! session is `401`. The `mailbox` poller is the files' one writer; the one
+//! write here is a filing for home's outbox (docs/identity.md invariant 19).
 
 use crate::auth::AuthContext;
 use crate::handlers::routine as handlers;
@@ -18,7 +21,7 @@ use crate::Config;
 use axum::{
 	extract::FromRef,
 	http::{
-		header::{ACCEPT, AUTHORIZATION},
+		header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
 		Method,
 	},
 };
@@ -31,10 +34,10 @@ where
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
 {
-	let table = RouteTable::new().get("/routine/files", handlers::get_files);
+	let table = RouteTable::new().get("/routine/files", handlers::get_files).put("/routine/opened", handlers::put_opened);
 	Module::versioned("routine", table).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::OPTIONS], vec![ACCEPT, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
 }

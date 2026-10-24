@@ -76,7 +76,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's voice-free Jobs decisions and scouts, and which of the reflections routine's lessons they opened (names only), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	("passkey", "the account's passkeys: public keys and counters, no attestation"),
 	("presence_leases", "which session a subject is looking at, right now"),

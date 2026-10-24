@@ -278,7 +278,8 @@ async fn hand_over<T: MailboxTransport>(
 		let folder = match file.folder.as_str() {
 			"decisions" => Folder::Decisions,
 			"scout" => Folder::Scout,
-			// `PUT /jobs/files/:name` files only these two.
+			"opened" => Folder::Opened,
+			// `PUT /jobs/files/:name` and `PUT /routine/opened` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -536,8 +537,8 @@ mod tests {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.method == Method::Put {
 				assert!(
-					path.starts_with("/v1/decisions/items/") || path.starts_with("/v1/scout/items/"),
-					"puts only decisions and scouts: {path}"
+					["/v1/decisions/items/", "/v1/scout/items/", "/v1/opened/items/"].iter().any(|put| path.starts_with(put)),
+					"puts only decisions, scouts and which lessons were opened: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -788,9 +789,15 @@ mod tests {
 		assert!(err.contains("MAILBOX_ARCHIVE_DAYS"), "{err}");
 	}
 
-	/// A file as the phone files it (`PUT /jobs/files/:name`).
+	/// A file as the phone files it (`PUT /jobs/files/:name`, `PUT /routine/opened`).
 	async fn filed(pool: &SqlitePool, name: &str) {
-		let folder = if name.starts_with("scouts-") { "scout" } else { "decisions" };
+		let folder = if name.starts_with("scouts-") {
+			"scout"
+		} else if name.starts_with("opened-") {
+			"opened"
+		} else {
+			"decisions"
+		};
 		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", b"{}", "2026-10-23T15:00:00.000Z")
 			.await
 			.unwrap();
@@ -805,13 +812,18 @@ mod tests {
 		let (pool, fake) = (pool().await, Fake::default());
 		filed(&pool, "decisions-2026-10-23.json").await;
 		filed(&pool, "scouts-20261023T101500.json").await;
-		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added", "added"]);
+		filed(&pool, "opened-20261023T101500123Z.json").await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added", "added", "added"]);
 		assert_eq!(
 			*fake.puts.lock().unwrap(),
-			["/v1/decisions/items/decisions-2026-10-23.json", "/v1/scout/items/scouts-20261023T101500.json"]
+			[
+				"/v1/decisions/items/decisions-2026-10-23.json",
+				"/v1/scout/items/scouts-20261023T101500.json",
+				"/v1/opened/items/opened-20261023T101500123Z.json"
+			]
 		);
 		assert!(pass(&pool, &fake).await.unwrap().handed.is_empty(), "an answered file is not handed again");
-		assert_eq!(fake.puts.lock().unwrap().len(), 2);
+		assert_eq!(fake.puts.lock().unwrap().len(), 3);
 	}
 
 	#[tokio::test]
