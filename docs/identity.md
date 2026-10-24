@@ -631,8 +631,9 @@ nowhere is marked as such and belongs to review.
     ask the mailbox to archive the file, naming that SHA-256 in `If-Match`,
     so the mailbox drops nothing but the bytes home holds. A file home could
     not store (other bytes already under its name, no account) is never asked
-    for, and neither is a digest `mailbox_item` does not hold, so the phone's
-    feed never loses one to the archive. When the routine asks for an archived file again, the poller puts
+    for, and neither is a file from a folder home reads (`brief`, `scene`,
+    `drama`) that `mailbox_item` does not hold, so the phone never loses one
+    to the archive. When the routine asks for an archived file again, the poller puts
     back the bytes `mailbox_archive` holds for it, and the mailbox takes only
     the bytes it archived. Nothing here deletes: an archived file's bytes
     are home's, and the mailbox keeps a row about it for good. Deleting the
@@ -642,6 +643,7 @@ nowhere is marked as such and belongs to review.
     `an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays`,
     `a_file_home_cannot_store_stays_live`,
     `a_digest_the_feed_does_not_hold_is_not_archived`,
+    `the_routines_word_sets_and_dramas_are_kept_like_digests`,
     `an_ask_is_answered_from_home_and_one_home_lacks_stays_open` and
     `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
@@ -693,9 +695,10 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   the owner's Drive. Deleting the account removes it; nothing else does.
 - **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
   picked for the owner, with companies and titles), and the reflections
-  routine's word sets and dramas (Korean practice written for the owner, each
-  naming the study session it answers, and a word set quoting a few words of
-  the owner's note in its `from`), live in a Cloudflare D1
+  routine's word sets and dramas (Korean practice written for the owner: a
+  word set is named for the study session it answers and quotes a few words
+  of the owner's note in its `from`; a drama is named for the time of its
+  prompt), live in a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and

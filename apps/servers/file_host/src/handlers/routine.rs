@@ -38,9 +38,11 @@ pub struct HeldFile {
 /// dramas home holds for the caller, newest first, at most
 /// [`FILES_PER_ANSWER`].
 ///
+/// A held file that does not read back as JSON is left out, so one bad file
+/// never hides the rest.
+///
 /// # Errors
-/// 401 without a session, and 500 for a storage failure or a held file that
-/// does not read back.
+/// 401 without a session, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "routine_files", skip_all, fields(otel.kind = "server"))]
 pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Files>, FileHostError> {
@@ -51,17 +53,15 @@ pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 	})?;
 	let files = held
 		.into_iter()
-		.map(|held| {
-			let text = String::from_utf8(held.body).map_err(|_| ())?;
-			let file = RawValue::from_string(text).map_err(|_| ())?;
-			Ok(HeldFile {
+		.filter_map(|held| {
+			let file = RawValue::from_string(String::from_utf8(held.body).ok()?).ok()?;
+			Some(HeldFile {
 				folder: held.folder,
 				name: held.name,
 				file,
 			})
 		})
-		.collect::<Result<Vec<_>, ()>>()
-		.map_err(|()| FileHostError::OperationError("a held routine file does not read back".to_owned()))?;
+		.collect();
 	Ok(Json(Files { files }))
 }
 
@@ -181,6 +181,20 @@ mod tests {
 				{ "folder": "scene", "name": "scene-3.json", "file": scene },
 			] })
 		);
+	}
+
+	#[tokio::test]
+	async fn a_file_that_does_not_read_back_is_left_out() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		hold(&state, A, "scene", 1, &json!({ "ok": 1 })).await;
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'drama', 'bad.json', 2, 's', 1, x'ff', 'now')")
+			.bind(A)
+			.execute(&state.pool)
+			.await
+			.unwrap();
+		let (status, answer) = get(state, Some(&phone)).await;
+		assert_eq!((status, answer["files"].as_array().unwrap().len()), (StatusCode::OK, 1));
 	}
 
 	#[tokio::test]
