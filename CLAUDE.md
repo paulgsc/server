@@ -93,6 +93,14 @@ registered on a `RouteTable` (`src/routes/table.rs`), never with `Router::route`
 is a `clippy::disallowed_methods` error, because a route registered any other way would be served
 but missing from the snapshot.
 
+The Jobs mailbox the `mailbox` poller reads is a Cloudflare Worker in `some-ui`
+(`apps/mailbox`). A server change that needs a mailbox change (a new folder, a new role) ships
+after that Worker: home's pass fails every cycle against a mailbox that lacks what it reads.
+The Worker is not the owner's to deploy by hand. A session whose environment carries
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` applies its migrations and deploys it
+(`some-ui`'s `apps/mailbox/README.md`, "Deploy"). A session started before those were
+added doesn't have them, so check `[ -n "$CLOUDFLARE_API_TOKEN" ]` (never print it) first.
+
 ## Workflow storage
 
 Everything a workflow stores costs GitHub space for as long as it lives, so the default is
