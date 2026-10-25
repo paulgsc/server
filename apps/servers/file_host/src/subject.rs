@@ -91,6 +91,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"sharing_choice",
 		"what each paired phone's person chose to keep sending home, and when each choice began and ended: a time per change, none per item sent; see docs/identity.md",
 	),
+	(
+		"voice_note",
+		"the owner's voice notes sent home by the phone (paulgsc/server#460), each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
+	),
+	(
+		"voice_note_audio",
+		"the audio of each of the owner's voice notes, byte for byte as the phone sent it; see docs/identity.md invariant 23",
+	),
 ];
 
 /// Who a request is acting for.

@@ -1155,8 +1155,8 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
-			// The other thirteen scoped tables. Seeded so that "deleted mine, kept
-			// theirs" below is a claim about all nineteen, and not only about the
+			// The other sixteen scoped tables. Seeded so that "deleted mine, kept
+			// theirs" below is a claim about all twenty-two, and not only about the
 			// ones this test happened to fill: an empty table passes both halves.
 			for statement in [
 				"INSERT INTO engagement_charge (subject_id, class, level, as_of) VALUES (?1, 0, 0.5, 'now')",
@@ -1175,6 +1175,9 @@ mod tests {
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
 				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
 				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

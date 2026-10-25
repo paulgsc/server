@@ -1485,6 +1485,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tungstenite",
+ "voice_repo",
  "webauthn-authenticator-rs",
  "webauthn-rs",
  "ws-conn-manager",
@@ -5430,6 +5431,18 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voice_repo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "walkdir"
