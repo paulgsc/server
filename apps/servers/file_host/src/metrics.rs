@@ -12,6 +12,7 @@ pub mod periodic;
 pub mod pool;
 pub mod rate_limit;
 pub mod refusals;
+pub mod transcribe;
 pub mod waker;
 
 #[allow(unused_imports)]

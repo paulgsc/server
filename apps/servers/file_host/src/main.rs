@@ -199,6 +199,9 @@ async fn main() -> Result<()> {
 	// it a digest arrived. See `mailbox`.
 	file_host::mailbox::start(&app_state);
 
+	// A poll too, over home's own database: see `transcribe`.
+	file_host::transcribe::start(&app_state);
+
 	// #227 (C2) / #228 (C3): `connected`/`live`/`subscribed`, guard
 	// occupancy, and SQLite pool gauges — unconditional, unlike the nudge
 	// waker above, since none of them depend on optional configuration.

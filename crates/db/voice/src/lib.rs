@@ -19,9 +19,16 @@
 //!   size within [`NOTE_CEILING`].
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
-//! - **No background writer.** The caller is `file_host`'s
-//!   `handlers::voice` (`PUT /api/v1/voice-notes/:id`). A
-//!   `git grep -n voice_note -- '*.rs'` shows no other writer.
+//! - **No background writer of a note.** The one caller of [`put_note`] is
+//!   `file_host`'s `handlers::voice` (`PUT /api/v1/voice-notes/:id`). A
+//!   `git grep -n 'voice_note\b\|voice_note_audio' -- '*.rs'` shows no
+//!   other writer.
+//!
+//! What home heard in each note is [`transcript`]'s: `voice_transcript`,
+//! written only by `file_host`'s `transcribe` worker, which reads a note's
+//! audio and never writes it.
+
+pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;

@@ -19,14 +19,34 @@ WORKDIR /app
 RUN cargo install cargo-chef --locked
 
 # Install system dependencies required for building the workspace
+# cmake and libclang build whisper.cpp and its bindings (`whisper-rs-sys`,
+# file_host's voice-note transcriber).
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     ca-certificates \
     build-essential \
+    cmake \
+    clang \
+    libclang-dev \
     libasound2-dev \
     libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# whisper.cpp's CPU code, compiled for the machine that runs the image, not
+# the CI runner that builds it: ggml's default `-march=native` would bake in
+# whatever the runner has (AVX-512, say) and crash on a host without it. So
+# native is off and the target is x86-64-v3 (AVX2, FMA, F16C: Intel since
+# Haswell, AMD since Excavator). HOST-SPECIFIC: a host without AVX2 needs
+# these off, at about a third of the speed. OpenMP off, so the binary needs
+# no libgomp at runtime; ggml's own thread pool runs it. whisper-rs-sys passes
+# every GGML_* variable to cmake.
+ENV GGML_NATIVE=OFF \
+    GGML_AVX=ON \
+    GGML_AVX2=ON \
+    GGML_FMA=ON \
+    GGML_F16C=ON \
+    GGML_OPENMP=OFF
 
 
 # ── Stage 2: planner ──────────────────────────────────────────────────────
@@ -117,12 +137,15 @@ RUN strip target/release/file_host
 #   - Keeps image small and reduces attack surface
 FROM debian:12-slim AS runtime
 
-# Install only runtime dependencies (no build tools)
+# Install only runtime dependencies (no build tools). ffmpeg decodes each
+# voice note for the transcriber (`file_host::transcribe::engine`); without
+# recommends, it brings its libraries and nothing else.
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libasound2 \
     libsqlite3-0 \
     libssl3 \
+    && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && groupadd -g 10001 nonroot \

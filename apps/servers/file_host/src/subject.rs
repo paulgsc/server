@@ -99,6 +99,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"voice_note_audio",
 		"the audio of each of the owner's voice notes, byte for byte as the phone sent it; see docs/identity.md invariant 23",
 	),
+	(
+		"voice_transcript",
+		"what home heard in each of the owner's voice notes, every attempt: the model and engine, what was heard (or that nothing was said, or why it could not be heard), the language and its probability, the audio's length, and when; see docs/identity.md invariant 23",
+	),
 ];
 
 /// Who a request is acting for.
