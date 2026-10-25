@@ -10,6 +10,9 @@
 //!                          the days after it
 //! GET /jobs/runs         → { runs }: the jobs routine's run records home
 //!                          holds, newest first, at most 7
+//! PUT /jobs/notice       → { change }: tell this phone, through FCM, when a
+//!                          morning run's record arrives; `{ token }`
+//! DELETE /jobs/notice    → { change }: stop telling it; `{ token }`
 //! PUT /jobs/files/:name  → { change }: a voice-free decisions or scouts file,
 //!                          for the mailbox poller to hand on
 //! ```
@@ -54,11 +57,17 @@ where
 		.put("/jobs/events/:id", handlers::put_event)
 		.get("/jobs/digests", handlers::get_digests)
 		.get("/jobs/runs", handlers::get_runs)
+		.put("/jobs/notice", handlers::put_notice)
+		.delete("/jobs/notice", handlers::delete_notice)
 		.put("/jobs/files/:name", handlers::put_file);
 
 	Module::versioned("jobs", table).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
+	allowlisted_cors_with_credentials(
+		config,
+		vec![Method::GET, Method::PUT, Method::DELETE, Method::OPTIONS],
+		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION],
+	)
 }

@@ -20,6 +20,7 @@ members = [
   "crates/db/curriculum",
   "crates/db/jobs",
   "crates/db/mailbox",
+  "crates/db/notice",
   "crates/db/sharing",
   "crates/db/leetype_log",
   "crates/db/leetype_round",
@@ -33,6 +34,7 @@ members = [
   "crates/intervention",
   "crates/leetype_runner",
   "crates/mailbox_kit",
+  "crates/fcm_kit",
   "crates/playoff_delta",
   "crates/push_kit",
   "crates/study_domain",
@@ -135,6 +137,8 @@ capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }
 jobs_repo = { path = "crates/db/jobs" }
 mailbox_kit = { path = "crates/mailbox_kit" }
+notice_repo = { path = "crates/db/notice" }
+fcm_kit = { path = "crates/fcm_kit" }
 mailbox_repo = { path = "crates/db/mailbox" }
 sharing_repo = { path = "crates/db/sharing" }
 leetype_log_repo = { path = "crates/db/leetype_log" }

@@ -156,6 +156,7 @@ above the button that deletes (invariant 22):
 | Reminders and progress | `activity_outcome`, `engagement_charge`, `engagement_gate`, `intervention_log`, `presence_leases`, `push_subscriptions` |
 | aph | `aph_entry`, `aph_settings` |
 | The Jobs record | `jobs_event` |
+| Telling the phone a morning run is in | `jobs_notice_device`, `jobs_notice_sent` |
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed` |
 | LeetType sessions | `leetype_session_event` |
@@ -610,7 +611,9 @@ nowhere is marked as such and belongs to review.
       sequence number, and when home read it. Read only by
       `GET /jobs/digests` (`brief`), `GET /jobs/runs` (the jobs routine's
       `run-jobs-*` records in `run`) and `GET /routine/files` (`scene`,
-      `drama` and the other `run` records), each for its own subject.
+      `drama` and the other `run` records), each for its own subject, and by
+      the arrival notice's pass (`jobs_notice`), which reads the same
+      `run-jobs-*` records for the poller's subject (invariant 24).
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name` and
       `PUT /routine/opened`: a decisions or scouts file the phone filed, or
       which of the routine's lessons it opened, its bytes, hash and when.
@@ -779,6 +782,35 @@ nowhere is marked as such and belongs to review.
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.
 
+24. **A phone's FCM token is never logged and never an identity, and what
+    home tells it is fixed text.** `jobs_notice_device` holds the FCM
+    registration token of each phone that asked (`PUT /jobs/notice`) to be
+    told when a morning run's record arrives (paulgsc/server#470). The token
+    names that install of the app to Google, as a push endpoint names a
+    browser (invariant 14). It is filed under the caller's `SubjectId` and
+    found only by it; nothing reads one as who is calling (invariant 4).
+    `fcm_kit::DeviceToken` and the access token print as `[redacted]`, the
+    token travels only in a message's body (never a URL), and `jobs_notice`
+    logs counts, statuses and the transport's words (`ReqwestTransport`
+    strips URLs, as `push_kit`'s does), never a token or FCM's own words.
+    What it sends is one of three fixed notices (`jobs_notice::PICKS`,
+    `PARTLY`, `STOPPED`): whether the picks are at home or the run couldn't
+    finish, and nothing of the picks, counts or reasons, since FCM carries
+    the text through Google. `jobs_notice_sent` is append-only (a trigger
+    aborts an `UPDATE`), one row per run record noticed, and records what was
+    said and to how many phones, never which. A token FCM calls
+    `UNREGISTERED`, or one the phone withdraws (`DELETE /jobs/notice`), is
+    deleted. Both tables leave with the account (invariant 12).
+    *Enforced by* `jobs_notice`'s
+    `no_device_token_reaches_a_log_line_whatever_fcm_answers` (a refusal that
+    quotes the token, no answer, a gone phone and a delivery, under the
+    production filter); `fcm_kit`'s `nothing_secret_prints`; and
+    `notice_repo`'s `a_run_is_noticed_once_and_never_rewritten` and
+    `both_leave_with_the_account`.
+    *Not enforced:* that the three notices stay free of anything personal,
+    which review keeps; and that nothing else writes these tables, which
+    `git grep -n 'jobs_notice_' -- '*.rs'` shows today.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -791,6 +823,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   per browser, and the push service that issued it (Google, Mozilla, Apple) can
   tie it to a browser install. Payloads are encrypted end to end (RFC 8291), but
   the push service sees delivery timing.
+- **FCM tokens and the arrival notice.** A `jobs_notice_device.token` names
+  one install of the app to Google, which issued it. Unlike a web push, an FCM
+  notice is not end-to-end encrypted: Google sees its fixed text ("This
+  morning's picks are at home", "This morning's run couldn't finish"), the
+  Firebase project and service account it came from, and when, so it learns
+  when the owner's morning run finished, day by day (invariant 24).
 - **`tabs`.** Browser-extension page captures: URL, title and extracted content,
   keyed by URL hash with no subject column. The content itself can identify
   whoever captured it. It is classified as not subject-scoped, which is accurate,

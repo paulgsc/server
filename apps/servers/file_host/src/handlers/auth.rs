@@ -1180,6 +1180,8 @@ mod tests {
 				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
 				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
 				 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
+				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
+				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

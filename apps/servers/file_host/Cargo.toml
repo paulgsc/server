@@ -121,6 +121,8 @@ curriculum_repo = { workspace = true }
 jobs_repo = { workspace = true }
 mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
 mailbox_repo = { workspace = true }
+fcm_kit = { workspace = true, features = ["reqwest-transport"] }
+notice_repo = { workspace = true }
 sharing_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
@@ -158,6 +160,10 @@ metrics-util = { workspace = true }
 # Real passkey ceremonies in `handlers::auth`'s tests; see the workspace
 # manifest.
 webauthn-authenticator-rs = { workspace = true }
+# A throwaway service-account key for `jobs_notice`'s tests, made at test
+# time so no private key sits in the repo; the crate and feature `fcm_kit`
+# already builds.
+jwt-simple = { version = "0.12.11", default-features = false, features = ["pure-rust"] }
 
 [lints]
 workspace = true
