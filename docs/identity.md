@@ -535,12 +535,12 @@ nowhere is marked as such and belongs to review.
     never one per item.** `sharing_choice` keeps what each paired phone's
     person chose to keep sending home (paulgsc/some-ui
     `apps/www/src/lib/home-link`, its consent log): one row each time sharing
-    a kind of record (`sessions`, `shelf`, `aph`, `jobs`) began or ended under
-    a pairing, with when home heard it, and nothing about when anything was
-    sent under it. Those times are kept so home can refuse the aph and Jobs
-    writes a phone sends after its person stopped them (`PUT /aph/*`,
-    `PUT /jobs/events/:id` and `POST /sync/:collection/batch` answer `409`,
-    code `sharing_stopped`; sessions, the shelf and the LeetType session log
+    a kind of record (`sessions`, `shelf`, `aph`, `jobs`, `voice`) began or
+    ended under a pairing, with when home heard it, and nothing about when
+    anything was sent under it. Those times are kept so home can refuse the
+    aph, Jobs and voice-note writes a phone sends after its person stopped
+    them (`PUT /aph/*`, `PUT /jobs/events/:id`, `POST /sync/:collection/batch`
+    and `PUT /voice-notes/:id` answer `409`, code `sharing_stopped`; sessions, the shelf and the LeetType session log
     also go home on a tap no choice covers, and are not refused),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
@@ -555,8 +555,15 @@ nowhere is marked as such and belongs to review.
     `a_change_is_one_row_and_no_row_changes` and
     `the_choices_leave_with_the_account`, and `handlers::sharing`'s
     `only_a_paired_phone_makes_or_reads_a_choice` and
-    `home_refuses_only_what_a_phone_stopped`, and `handlers::sync`'s
-    `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`.
+    `home_refuses_only_what_a_phone_stopped`, `handlers::sync`'s
+    `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`, and
+    `handlers::voice`'s `home_refuses_a_note_once_its_phone_stopped_sending_them`.
+    A new scope widens the table's CHECK by rebuilding it with every row
+    copied (`20261025000300_add_voice_to_sharing_choice`, held by
+    `sharing_repo`'s `adding_voice_keeps_every_change_and_both_triggers`), and
+    rolling that back once a pairing has chosen the scope fails rather than
+    discarding the choice
+    (`rolling_back_past_voice_refuses_rather_than_discards`).
 
 18. **The LeetType session log is append-only, holds what the owner played,
     and holds no soundbite.** `leetype_session_event` keeps the phone's
@@ -721,7 +728,9 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line; it is readable by
+    so neither the audio nor its hash reaches a log line, and which refuses a
+    paired phone whose person stopped sending voice notes (invariant 17,
+    scope `voice`); it is readable by
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
@@ -762,7 +771,8 @@ nowhere is marked as such and belongs to review.
     `nothing_is_kept_for_a_note_that_left_with_its_account` and
     `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s
     `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
-    `refusals_name_their_fields_and_notes_stay_apart`.
+    `refusals_name_their_fields_and_notes_stay_apart` and
+    `home_refuses_a_note_once_its_phone_stopped_sending_them`.
     *Not enforced:* that nothing else writes these tables or holds audio,
     which `git grep -n 'voice_note\|voice_transcript' -- '*.rs'` shows today
     and review keeps; and that the temporary directory is removed when a

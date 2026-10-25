@@ -1,7 +1,8 @@
 //! What a paired phone's person chose to keep sending to home, and when each
 //! choice began and ended (paulgsc/some-ui `apps/www/src/lib/home-link`, its
 //! consent log). `20261019000100_create_sharing_choice.up.sql` records the
-//! design; in short:
+//! design, and `20261025000300_add_voice_to_sharing_choice.up.sql` adds
+//! voice notes to what can be chosen; in short:
 //!
 //! - **Per pairing.** A choice is made on one phone, under one pairing
 //!   (`pairing_id`, a digest of that pairing's session), and counts for it
@@ -26,10 +27,12 @@ pub enum Scope {
 	Shelf,
 	Aph,
 	Jobs,
+	/// Voice notes, audio included (`PUT /voice-notes/:id`).
+	Voice,
 }
 
 impl Scope {
-	pub const ALL: [Self; 4] = [Self::Sessions, Self::Shelf, Self::Aph, Self::Jobs];
+	pub const ALL: [Self; 5] = [Self::Sessions, Self::Shelf, Self::Aph, Self::Jobs, Self::Voice];
 
 	/// The wire and stored name.
 	#[must_use]
@@ -39,6 +42,7 @@ impl Scope {
 			Self::Shelf => "shelf",
 			Self::Aph => "aph",
 			Self::Jobs => "jobs",
+			Self::Voice => "voice",
 		}
 	}
 
@@ -151,6 +155,8 @@ mod tests {
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const PREVIOUS_MIGRATION: i64 = 20_261_018_000_100;
+	/// The migration before `20261025000300_add_voice_to_sharing_choice`.
+	const BEFORE_VOICE: i64 = 20_261_025_000_200;
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 
@@ -241,6 +247,75 @@ mod tests {
 		assert!(!refuses(conn, A, "d1", Scope::Aph).await.unwrap(), "kept again");
 		choose(conn, A, "d1", Scope::Jobs, false, "t4").await.unwrap();
 		assert!(refuses(conn, A, "d1", Scope::Jobs).await.unwrap(), "stopped without ever being kept here");
+	}
+
+	async fn account(pool: &SqlitePool, subject: &str) {
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(subject)
+			.bind(subject.as_bytes())
+			.execute(pool)
+			.await
+			.unwrap();
+	}
+
+	/// Rebuilding the table to take `voice` copies every change as it was,
+	/// keeps both triggers, and lets a pairing keep or stop voice notes.
+	#[tokio::test]
+	async fn adding_voice_keeps_every_change_and_both_triggers() {
+		let pool = pool().await;
+		MIGRATOR.undo(&pool, BEFORE_VOICE).await.unwrap();
+		account(&pool, A).await;
+		let rows = || sqlx::query_as::<_, (String, String, i64, String, i64, String)>("SELECT * FROM sharing_choice ORDER BY subject_id, pairing_id, seq");
+		// The pool holds one connection: each borrow ends before a migration runs.
+		let mut conn = pool.acquire().await.unwrap();
+		for (subject, pairing, scope, kept, at) in [
+			(A, "d1", Scope::Aph, true, "t1"),
+			(A, "d1", Scope::Jobs, false, "t2"),
+			(A, "d2", Scope::Sessions, true, "t3"),
+			(B, "d1", Scope::Shelf, true, "t4"),
+			(A, "d1", Scope::Aph, false, "t5"),
+		] {
+			choose(&mut conn, subject, pairing, scope, kept, at).await.unwrap();
+		}
+		let before = rows().fetch_all(&mut *conn).await.unwrap();
+		assert_eq!(before.len(), 5);
+		drop(conn);
+
+		MIGRATOR.run(&pool).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(rows().fetch_all(&mut *conn).await.unwrap(), before, "every change, as it was");
+
+		choose(&mut conn, A, "d1", Scope::Voice, false, "t6").await.unwrap();
+		assert!(refuses(&mut conn, A, "d1", Scope::Voice).await.unwrap());
+		let held = choose(&mut conn, A, "d1", Scope::Voice, true, "t7").await.unwrap();
+		assert_eq!(held.last().map(|change| (change.scope, change.kept)), Some((Scope::Voice, true)));
+		assert!(!refuses(&mut conn, A, "d1", Scope::Voice).await.unwrap());
+
+		let update = sqlx::query("UPDATE sharing_choice SET kept = 1").execute(&mut *conn).await;
+		assert!(update.unwrap_err().to_string().contains("append-only"), "no row is ever updated");
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
+		let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM sharing_choice").fetch_all(&mut *conn).await.unwrap();
+		assert_eq!(left, [B], "A's choices left with A's account, and only A's");
+	}
+
+	/// Rolling back past `voice` once a pairing chose it fails and changes
+	/// nothing, rather than discarding the choice.
+	#[tokio::test]
+	async fn rolling_back_past_voice_refuses_rather_than_discards() {
+		let pool = pool().await;
+		account(&pool, A).await;
+		let mut conn = pool.acquire().await.unwrap();
+		choose(&mut conn, A, "d1", Scope::Voice, false, "t1").await.unwrap();
+		drop(conn);
+		let refused = MIGRATOR.undo(&pool, BEFORE_VOICE).await.unwrap_err().to_string();
+		assert!(refused.contains("CHECK constraint failed"), "{refused}");
+
+		let mut conn = pool.acquire().await.unwrap();
+		assert!(refuses(&mut conn, A, "d1", Scope::Voice).await.unwrap(), "the choice is still held");
+		let update = sqlx::query("UPDATE sharing_choice SET kept = 1").execute(&mut *conn).await;
+		assert!(update.unwrap_err().to_string().contains("append-only"), "the append-only trigger is still there");
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
+		assert!(changes(&mut conn, A, "d1").await.unwrap().is_empty(), "the account trigger is still there");
 	}
 
 	#[tokio::test]
