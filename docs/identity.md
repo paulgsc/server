@@ -159,6 +159,7 @@ above the button that deletes (invariant 22):
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed` |
 | LeetType sessions | `leetype_session_event` |
+| Voice notes | `voice_note`, `voice_note_audio` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -519,7 +520,9 @@ nowhere is marked as such and belongs to review.
     it and when it reached home. An event is never updated
     (a trigger aborts an `UPDATE`) or replaced (a different body under a held
     id is a `409`), and never deleted but with the account. It names voice
-    notes by the phone's ids only: no audio is stored. It is written only by
+    notes by the phone's ids only, and holds no audio: a note's audio, once
+    the phone sends it home, is `voice_note_audio`'s (invariant 23). It is
+    written only by
     `PUT /jobs/events/:id` and `POST /sync/jobs/batch` (each event as that
     route), readable only by its own subject, and deleted with
     the account by both the sweep and the migration's trigger (invariant 12).
@@ -627,8 +630,8 @@ nowhere is marked as such and belongs to review.
     `mailbox_kit::Token`, which prints `[redacted]` and has no `Display`; it
     reaches no log line, and neither does the mailbox's URL or a file's body
     (errors are logged by kind, and the transport strips the URL from its
-    errors). No audio is stored, as invariants 16 and 18 hold for the
-    records these files come from.
+    errors). No audio is stored in them: home holds audio only in
+    `voice_note_audio` (invariant 23), and the mailbox never carries it.
     *Enforced by* `mailbox_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_held_name_is_not_kept_twice`, `a_filed_name_is_not_filed_twice`,
     `no_row_is_ever_updated`, `nothing_is_kept_for_a_subject_with_no_account`
@@ -701,6 +704,33 @@ nowhere is marked as such and belongs to review.
     and nothing there can read this list; a kind added here is added there by
     review.
 
+23. **Home holds audio only as voice notes, append-only, and keeps them.**
+    `voice_note` describes each voice note the phone sends home
+    (paulgsc/server#460): what it was said for (`reflection`, `jobs` or
+    `scene`) and which one, when the phone recorded it and when it reached
+    home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
+    and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
+    written in the same transaction. These two tables are the only place home
+    holds a recording (the catalogue's `activities.audio` is an activity's
+    disclosure copy, text), and the Jobs mailbox never carries one
+    (invariant 19). A note
+    is never updated (each table's trigger aborts an `UPDATE`) or replaced
+    (other bytes or another description under a held id is a `409`), and
+    never deleted but with the account, after it is transcribed as before
+    (owner, 2026-10-25: the audio is worth more than its transcript). It is
+    written only by `PUT /voice-notes/:id`, whose span skips its arguments,
+    so neither the audio nor its hash reaches a log line; it is readable by
+    no route yet; and it is deleted with the account by both the sweep and
+    the migration's trigger (invariant 12).
+    *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
+    `a_note_is_stored_once_and_never_replaced`,
+    `the_audio_is_kept_byte_for_byte_beside_its_note`,
+    `a_note_whose_audio_fails_leaves_no_description` and
+    `the_notes_leave_with_the_account`, and `handlers::voice`'s
+    `refusals_name_their_fields_and_notes_stay_apart`.
+    *Not enforced:* that nothing else writes these tables or holds audio,
+    which `git grep -n voice_note -- '*.rs'` shows today and review keeps.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -739,8 +769,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   looked at, passed on and applied to, why, how applying went and what came
   of it, in the owner's own words, each with when the phone recorded it and
   when it reached home. Companies and job titles are in it, by design. Voice
-  notes are not: an event names them, the audio stays on the phone and in
-  the owner's Drive. Deleting the account removes it; nothing else does.
+  notes are not: an event names them by id, and their audio is the next
+  item's. Deleting the account removes it; nothing else does.
+- **Voice notes.** The audio of each note the phone sends home, kept for
+  good, with what it was said for (a study session's reflection, a Jobs pick
+  or scout, a drama's next scene) and when it was recorded. A voice
+  identifies its speaker, and what the owner says in a note is theirs: their
+  study, the jobs they weigh, what they want next. Deleting the account
+  removes it; nothing else does.
 - **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
   picked for the owner, with companies and titles), and the reflections
   routine's word sets and dramas (Korean practice written for the owner: a

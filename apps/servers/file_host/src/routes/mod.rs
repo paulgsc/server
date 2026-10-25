@@ -21,3 +21,4 @@ pub mod tab_metadata;
 pub mod table;
 pub mod ts_emitter;
 pub mod utterance;
+pub mod voice;

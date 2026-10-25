@@ -134,6 +134,7 @@ outcome_repo = { workspace = true }
 publication_repo = { workspace = true }
 presence_repo = { workspace = true }
 session_repo = { workspace = true }
+voice_repo = { workspace = true }
 push_kit = { workspace = true, features = ["reqwest-transport"] }
 intervention = { workspace = true }
 study_domain = { workspace = true }

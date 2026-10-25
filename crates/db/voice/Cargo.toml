@@ -1,0 +1,33 @@
+[package]
+name = "voice_repo"
+description = "The owner's voice notes, audio included: append-only per subject — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["voice", "audio", "record", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+hex = "0.4.3"
+serde = { workspace = true, features = ["derive"] }
+sha2 = "0.10.9"
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "uuid",
+  "time",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

@@ -37,6 +37,7 @@ members = [
   "crates/push_kit",
   "crates/study_domain",
   "crates/db/session",
+  "crates/db/voice",
   "crates/obs-websocket",
   "crates/some-cache",
   "crates/some-metrics",
@@ -150,6 +151,7 @@ intervention = { path = "crates/intervention" }
 playoff_delta = { path = "crates/playoff_delta" }
 study_domain = { path = "crates/study_domain" }
 session_repo = { path = "crates/db/session" }
+voice_repo = { path = "crates/db/voice" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"
