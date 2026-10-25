@@ -223,17 +223,33 @@ never "sounds like good practice."
 
 ## Multi-session relay work
 
-Some stories in this repo span many sessions, each picking up from a self-contained handoff
-document the previous session wrote — a new session has no memory of prior conversation and
-must be able to work from the handoff alone. If you're continuing one, re-read the live
-issue/PR it describes before trusting its summary; it may have moved on since the handoff
-was written. A footgun that recurs across more than one handoff belongs promoted into this
-file instead of left for whichever future session happens to receive that specific handoff —
-that's what the section above is.
+Some stories in this repo span many sessions. A new session has no memory of earlier ones, so
+the record that carries a story between them lives where any session can search it, never in a
+handoff document (owner, 2026-10-25):
 
-If you're leaving unfinished multi-session work: write the next handoff from
-`.claude/skills/steward/handoff-template.md` and deliver it to the user directly (e.g. via
-`SendUserFile`) rather than committing it.
+- **The epic issue holds the detail.** Each story has an epic issue titled `[EPIC][<TAG>] …`,
+  labelled `epic`, whose sub-issues are its stories (`[<TAG>] <ID>: …`). The epic opens with a
+  `**Search words:**` line (the plain words someone might use to ask for it, the paths it
+  touches, the tag) and a "Where we are" section (what landed, what is next, what waits on the
+  owner). An issue says everything a cold session needs: why, what is decided and by whom, the
+  files, what done means. Keep them current while you work, not only at the end.
+- **The Residual Ledger is the owner's index.** It is a private artifact,
+  https://claude.ai/artifact/Ktc1i8JtBGQVdXEraobxgA, and its database's `items` collection
+  holds one item per epic (`kind: "epic"`) with a `summary` of a few sentences the owner reads
+  to get back into it, `issues` linking the epic and its stories, `keywords` matching the
+  search words, and a `status`. Read and write it with `ArtifactData`; add notes to its `log`
+  collection rather than rewriting history. The detail never goes in the ledger.
+- **Starting from a vague ask** ("the jobs thing", "where were we on voice notes"): list the
+  ledger's items and match their `keywords`, then search issues by the same words, then read
+  the epic's "Where we are" and re-check it against the live code and PRs before trusting it.
+- **Winding down,** whether the work is done or too large for one session: open and merge the
+  PR for what you did (`.claude/skills/steward/SKILL.md`), then amend every issue you touched
+  and its epic's "Where we are", then the ledger item's `summary`, `status` and `issues`, then
+  archive the session. Nothing about the story may live only in the session that is ending.
+
+Cloud sessions keep no files between them, so the issues and the ledger are the only memory.
+A footgun that recurs across sessions belongs promoted into this file (the section above) rather
+than left in one epic.
 
 See `.claude/skills/steward/SKILL.md` for how to drive an already-open PR (auto-merge
 mechanics, bot-review handling, the re-review-request idiom) and

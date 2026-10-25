@@ -6,9 +6,9 @@ description: Repo-specific PR-driving policy Claude Code consults before acting 
 # steward
 
 Mechanics for driving a PR to green in this repo, distilled from this org's own multi-session
-relay history — long-running stories that span many sessions, each one picking up from a
-self-contained handoff the previous session wrote (see `handoff-template.md` in this
-directory). Nothing here weakens a "never" rule the parent Claude Code instructions state
+relay history — long-running stories that span many sessions, each one picking up from the
+epic issue and the Residual Ledger item the previous session left current (`CLAUDE.md`,
+"Multi-session relay work"). Nothing here weakens a "never" rule the parent Claude Code instructions state
 (skip a real CI failure, disable or quarantine a test, rewrite someone else's branch history,
 widen a PR beyond what a finding needs) — it only nails down mechanics sessions on this relay
 have gotten wrong before, so the next one doesn't have to relearn them.
@@ -57,8 +57,8 @@ not anything this PR already fixes. For each one:
 - **Search first.** If an issue already covers it, comment there with the new evidence instead
   of opening a duplicate.
 - **Make it self-contained:** what fails or is missing, the evidence (a log excerpt, a SHA, a
-  `file:line`), and a proposed fix. A future session must be able to act on it cold, like a
-  handoff.
+  `file:line`), and a proposed fix. A future session must be able to act on it cold, like an
+  epic's story issue.
 - **Link it from where you found it** (the PR description, the review thread, or your
   standing-down comment), and list it in your final message to the user.
 - **Label it `priority: high`** when it meets the definition in `CLAUDE.md`'s first section,
@@ -134,9 +134,9 @@ checks are actively running.
 
 ## Auto-merge, when the user has standing-authorized it for this repo
 
-Standing authorization is scoped to the exact repo(s) it was granted for and must be restated
-in every handoff, not assumed to persist silently — a grant for this repo does not imply
-`paulgsc/some-ui`, or vice versa. When it applies here: confirm CI is green on the *current*
+Standing authorization is scoped to the exact repo(s) it was granted for and must be written
+in the epic it was granted for, not assumed to persist silently — a grant for this repo does
+not imply `paulgsc/some-ui`, or vice versa. When it applies here: confirm CI is green on the *current*
 head (per the freshness check above), confirm `mergeable_state: "clean"`, confirm bot-review
 coverage on the current head is actually confirmed if this repo's reviewer doesn't auto-review
 pushes — "no unresolved thread" is not the same as "reviewed," since a review requested but
