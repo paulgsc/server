@@ -1,5 +1,5 @@
 //! The Jobs arrival notice's two tables
-//! (`20261025000300_create_jobs_notice.up.sql` records the design):
+//! (`20261025000400_create_jobs_notice.up.sql` records the design):
 //!
 //! - **`jobs_notice_device`**, the phones that asked to be told when the
 //!   morning run is in. A standing request: [`register`] adds one,
