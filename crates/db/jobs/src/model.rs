@@ -178,6 +178,17 @@ pub enum Event {
 		pick_id: String,
 		fingerprint: String,
 	},
+	/// A posting read through, with no verdict on it.
+	#[serde(rename_all = "camelCase")]
+	Read {
+		id: String,
+		at: String,
+		day: String,
+		pick_id: String,
+		fingerprint: String,
+	},
+	/// How applying went. The phone sends `minutes` and `friction` as `null`
+	/// when they went unsaid; one it leaves out reads back as `null` too.
 	#[serde(rename_all = "camelCase")]
 	Debrief {
 		id: String,
@@ -185,8 +196,8 @@ pub enum Event {
 		day: String,
 		pick_id: String,
 		fingerprint: String,
-		minutes: i64,
-		friction: i64,
+		minutes: Option<i64>,
+		friction: Option<i64>,
 		chips: Vec<Friction>,
 		what: String,
 		voice: Vec<String>,
@@ -241,6 +252,7 @@ impl Event {
 			| Self::FitNote { id, .. }
 			| Self::ResumeReady { id, .. }
 			| Self::ApplyOpened { id, .. }
+			| Self::Read { id, .. }
 			| Self::Debrief { id, .. }
 			| Self::Outcome { id, .. }
 			| Self::Disagree { id, .. }
@@ -260,6 +272,7 @@ impl Event {
 			| Self::FitNote { at, .. }
 			| Self::ResumeReady { at, .. }
 			| Self::ApplyOpened { at, .. }
+			| Self::Read { at, .. }
 			| Self::Debrief { at, .. }
 			| Self::Outcome { at, .. }
 			| Self::Disagree { at, .. }
@@ -373,7 +386,8 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 		Event::Taken { day, pick_id, fingerprint, .. }
 		| Event::Archived { day, pick_id, fingerprint, .. }
 		| Event::ResumeReady { day, pick_id, fingerprint, .. }
-		| Event::ApplyOpened { day, pick_id, fingerprint, .. } => {
+		| Event::ApplyOpened { day, pick_id, fingerprint, .. }
+		| Event::Read { day, pick_id, fingerprint, .. } => {
 			pick_ref(problems, day, pick_id, fingerprint);
 		}
 		Event::Passed {
@@ -419,11 +433,11 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 			..
 		} => {
 			pick_ref(problems, day, pick_id, fingerprint);
-			if !(1..=600).contains(minutes) {
-				problems.push(("minutes", "is a whole number of minutes, 1 to 600"));
+			if minutes.is_some_and(|minutes| !(1..=600).contains(&minutes)) {
+				problems.push(("minutes", "is a whole number of minutes, 1 to 600, or unsaid"));
 			}
-			if !(1..=5).contains(friction) {
-				problems.push(("friction", "is 1 to 5"));
+			if friction.is_some_and(|friction| !(1..=5).contains(&friction)) {
+				problems.push(("friction", "is 1 to 5, or unsaid"));
 			}
 			if has_duplicates(chips) {
 				problems.push(("chips", "names each chip once"));
@@ -527,6 +541,10 @@ mod tests {
 			}
 			event
 		};
+		let mut unsaid = debrief();
+		unsaid["minutes"] = Value::Null;
+		unsaid["friction"] = Value::Null;
+		unsaid["result"] = json!("gave-up");
 		let events = [
 			with("taken", json!({})),
 			with("archived", json!({})),
@@ -537,7 +555,9 @@ mod tests {
 			),
 			with("resume-ready", json!({})),
 			with("apply-opened", json!({})),
+			with("read", json!({})),
 			debrief(),
+			unsaid,
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "outcome", "fingerprint": "a|b|c", "event": "no-reply-30d", "on": "2026-11-17", "note": "" }),
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "disagree", "day": "2026-10-18", "fingerprint": "a|b|c", "note": "I'd take it" }),
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
@@ -600,6 +620,9 @@ mod tests {
 			fields("e1", &wrong),
 			["at", "chips", "day", "fingerprint", "friction", "minutes", "pickId", "voice", "what"]
 		);
+		let read = json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "read",
+			"day": "2026-10-18T00:00", "pickId": "-blu", "fingerprint": "a||c" });
+		assert_eq!(fields("e1", &read), ["day", "fingerprint", "pickId"], "a read names a pick as apply-opened does");
 		assert_eq!(fields("e2", &debrief()), ["id"], "the id the path names");
 		assert_eq!(fields("e/1", &debrief()), ["id"], "a plain id");
 
@@ -622,6 +645,20 @@ mod tests {
 		let shared =
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "shared", "kind": "scouts", "day": "2026-10-18", "file": "../scouts.txt", "through": -1, "voice": [] });
 		assert_eq!(fields("e1", &shared), ["file", "through"]);
+	}
+
+	#[test]
+	fn minutes_and_friction_left_out_read_back_as_null() {
+		let mut left_out = debrief();
+		let body = left_out.as_object_mut().unwrap();
+		body.remove("minutes");
+		body.remove("friction");
+		let mut unsaid = debrief();
+		unsaid["minutes"] = Value::Null;
+		unsaid["friction"] = Value::Null;
+		let parsed = parse_event("e1", left_out.to_string().as_bytes()).unwrap();
+		assert_eq!(parsed, parse_event("e1", unsaid.to_string().as_bytes()).unwrap(), "a resend either way is the same event");
+		assert_eq!(serde_json::to_value(&parsed).unwrap(), unsaid);
 	}
 
 	#[test]
