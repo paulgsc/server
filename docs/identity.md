@@ -159,7 +159,7 @@ above the button that deletes (invariant 22):
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed` |
 | LeetType sessions | `leetype_session_event` |
-| Voice notes | `voice_note`, `voice_note_audio` |
+| Voice notes | `voice_note`, `voice_note_audio`, `voice_transcript` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -724,14 +724,50 @@ nowhere is marked as such and belongs to review.
     so neither the audio nor its hash reaches a log line; it is readable by
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
+
+    **What home heard in a note is `voice_transcript`, append-only too**
+    (paulgsc/server#462). `file_host`'s `transcribe` worker, on only when
+    `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
+    with whisper.cpp: oldest first, one at a time, on a blocking thread by a
+    deadline, never on a request's path. Each attempt is a row: the model
+    file and engine, the attempt's number, its outcome (`heard`, with the
+    text, the language and its probability; `silent`, when the VAD found no
+    speech; or why not: `unreadable`, `too_long`, `deadline`, `failed`), the
+    audio's length, how long it took and when. A model that has heard a note
+    or found it silent never hears it again (a partial unique index), and
+    one that fails on a note stops after three attempts; a better model adds
+    rows of its own and replaces none, and a reader takes the newest that
+    heard something. No row is updated (the trigger aborts an `UPDATE`), and
+    one is written only for a note the subject still holds, in the
+    transaction that writes, under the deletion hold (invariant 9). The
+    worker reads `voice_note_audio` and never writes it. To decode, it writes
+    the note to a fresh `0700` temporary directory inside the container
+    (ffmpeg cannot read the phone's `m4a` from a pipe) and removes it when
+    the attempt ends; that file is the one place audio is held outside these
+    tables, for the length of one decode. Neither the text nor the audio
+    reaches a log line: whisper.cpp's log is dropped, ffmpeg's output is
+    discarded, and a pass logs only how many attempts of each kind it kept.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
     `a_note_whose_audio_fails_leaves_no_description` and
-    `the_notes_leave_with_the_account`, and `handlers::voice`'s
+    `the_notes_leave_with_the_account`; `voice_repo::transcript`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `notes_wait_oldest_first_until_heard`,
+    `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
+    `the_schema_refuses_a_rewrite_a_second_ending_or_a_heard_row_without_text`
+    and `the_transcripts_leave_with_the_account`; `transcribe::pass`'s
+    `every_note_gets_a_row_and_a_failure_is_retried_a_few_times`,
+    `a_shutdown_keeps_nothing_for_the_note_it_interrupts`,
+    `nothing_is_kept_for_a_note_that_left_with_its_account` and
+    `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s
+    `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
     `refusals_name_their_fields_and_notes_stay_apart`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n voice_note -- '*.rs'` shows today and review keeps.
+    which `git grep -n 'voice_note\|voice_transcript' -- '*.rs'` shows today
+    and review keeps; and that the temporary directory is removed when a
+    decode is killed by the process dying, which only a restart's fresh
+    `/tmp` covers.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
@@ -777,8 +813,10 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   good, with what it was said for (a study session's reflection, a Jobs pick
   or scout, a drama's next scene) and when it was recorded. A voice
   identifies its speaker, and what the owner says in a note is theirs: their
-  study, the jobs they weigh, what they want next. Deleting the account
-  removes it; nothing else does.
+  study, the jobs they weigh, what they want next. What home heard in each
+  (its transcript, every attempt, every model) is kept beside it for good
+  too, and says the same things in text. Deleting the account removes both;
+  nothing else does.
 - **The Jobs mailbox, at Cloudflare.** The daily digests (job postings
   picked for the owner, with companies and titles), and the reflections
   routine's word sets and dramas (Korean practice written for the owner: a

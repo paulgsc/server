@@ -175,6 +175,9 @@ serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.93"
 sqlx = "0.8"
 tempfile = "3.3.0"
+# whisper.cpp, built from source into file_host for its voice-note transcriber
+# (`file_host::transcribe`). No GPU feature: home transcribes on its CPU.
+whisper-rs = { version = "0.16.0", default-features = false }
 thiserror = "1.0.48"
 tokio = "1.41.0"
 tokio-util = "0.7.17"

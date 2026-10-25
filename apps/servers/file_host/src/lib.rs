@@ -27,6 +27,7 @@ pub mod routes;
 pub mod schema;
 pub mod subject;
 pub mod trace;
+pub mod transcribe;
 pub mod utils;
 pub mod websocket;
 
@@ -105,6 +106,9 @@ pub struct AppState {
 	/// `None` unless `MAILBOX_ENABLED`: no poller runs, and
 	/// `GET /api/v1/jobs/digests` answers from whatever copy home holds.
 	pub mailbox: Option<mailbox::MailboxContext>,
+	/// `None` unless `TRANSCRIBE_ENABLED`: no voice note is heard, and home
+	/// keeps notes as they arrive.
+	pub transcribe: Option<transcribe::TranscribeContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -161,12 +165,14 @@ impl AppState {
 
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
+		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock())?;
 
 		Ok(Self {
 			core,
 			realtime,
 			nudge,
 			mailbox,
+			transcribe,
 			auth,
 		})
 	}

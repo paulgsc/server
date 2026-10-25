@@ -382,6 +382,41 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90")]
 	pub mailbox_archive_days: u64,
 
+	// ── Voice-note transcription ──────────────────────────────────────────────
+	//
+	// See `transcribe`. Home hears each voice note the phone sends it with
+	// whisper.cpp on its CPU. Off unless `TRANSCRIBE_ENABLED`; on, the server
+	// refuses to start unless both models load and ffmpeg runs. Not the
+	// `WHISPER_*` variables an older `example.env` set, which named an
+	// English-only model and nothing read.
+	/// Whether home transcribes voice notes at all.
+	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	pub transcribe_enabled: bool,
+
+	/// The multilingual whisper.cpp model, as a path inside the container.
+	/// The default is where `infra/compose/file_host.yml` mounts the host's
+	/// models directory (HOST-SPECIFIC there), with the model `nix/whisper-manager`
+	/// downloads.
+	#[arg(long, env = "TRANSCRIBE_MODEL", default_value = "/models/ggml-small-q5_1.bin")]
+	pub transcribe_model: String,
+
+	/// The Silero VAD model that finds a note's speech, mounted beside it.
+	#[arg(long, env = "TRANSCRIBE_VAD_MODEL", default_value = "/models/ggml-silero-v5.1.2.bin")]
+	pub transcribe_vad_model: String,
+
+	/// Threads one note is heard with. Unset, one fewer than the cores the
+	/// container may use, and at least one.
+	#[arg(long, env = "TRANSCRIBE_THREADS")]
+	pub transcribe_threads: Option<usize>,
+
+	/// Seconds one note may take, decoding included. At least 60.
+	#[arg(long, env = "TRANSCRIBE_DEADLINE_SECONDS", default_value = "600")]
+	pub transcribe_deadline_seconds: u64,
+
+	/// Seconds between looks for notes to hear. At least 10.
+	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60")]
+	pub transcribe_seconds: u64,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,

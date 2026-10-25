@@ -33,6 +33,13 @@ services:
       - ${REPO_ROOT}/data:/app/data:rw
       - ${REPO_ROOT}/config:/app/config:ro
       - ${REPO_ROOT}/logs:/app/logs:rw
+      # The voice-note transcriber's models, read-only: the multilingual
+      # Whisper model and the Silero VAD model `nix/whisper-manager`'s
+      # `whisper fetch` downloads. TRANSCRIBE_MODEL and TRANSCRIBE_VAD_MODEL
+      # default to these under /models. HOST-SPECIFIC default: the
+      # nixos.local dev host's models directory (#406); another host sets
+      # TRANSCRIBE_MODELS_DIR.
+      - ${TRANSCRIBE_MODELS_DIR:-/mnt/storage/users/dev/models/whisper-models}:/models:ro
     networks:
       - monitoring-network
     restart: unless-stopped

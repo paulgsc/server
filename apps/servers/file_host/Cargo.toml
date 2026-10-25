@@ -135,6 +135,11 @@ publication_repo = { workspace = true }
 presence_repo = { workspace = true }
 session_repo = { workspace = true }
 voice_repo = { workspace = true }
+whisper-rs = { workspace = true }
+# The transcriber's private scratch directory, and (in tests) a real on-disk
+# database for the waker's lock-classification test: two connections to
+# `:memory:` would be two databases, not one contended one.
+tempfile = { workspace = true }
 push_kit = { workspace = true, features = ["reqwest-transport"] }
 intervention = { workspace = true }
 study_domain = { workspace = true }
@@ -150,9 +155,6 @@ tokio = { workspace = true, features = [
   "test-util",
 ] }
 metrics-util = { workspace = true }
-# A real on-disk database for the waker's lock-classification test: two
-# connections to `:memory:` would be two databases, not one contended one.
-tempfile = { workspace = true }
 # Real passkey ceremonies in `handlers::auth`'s tests; see the workspace
 # manifest.
 webauthn-authenticator-rs = { workspace = true }
