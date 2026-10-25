@@ -28,7 +28,7 @@ pub mod transport;
 pub use transport::{Bearer, FcmTransport, Request, Response};
 
 #[cfg(feature = "reqwest-transport")]
-pub use transport::reqwest_transport::ReqwestTransport;
+pub use transport::reqwest_transport::{ReqwestTransport, TransportError};
 
 use jwt_simple::prelude::{Claims, Duration, RS256KeyPair, RSAKeyPairLike};
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,8 @@ pub enum KeyError {
 	Missing(&'static str),
 	/// `private_key` is not an RSA key in PEM.
 	PrivateKey,
+	/// `token_uri` is not `https://`, so the assertion would travel in the clear.
+	NotHttps,
 }
 
 impl fmt::Display for KeyError {
@@ -63,6 +65,7 @@ impl fmt::Display for KeyError {
 			Self::NotAKeyFile => f.write_str("not a service account's JSON key"),
 			Self::Missing(field) => write!(f, "the key file has no {field}"),
 			Self::PrivateKey => f.write_str("the key file's private_key is not an RSA key in PEM"),
+			Self::NotHttps => f.write_str("the key file's token_uri is not https://"),
 		}
 	}
 }
@@ -108,6 +111,9 @@ impl ServiceAccount {
 			if value.trim().is_empty() {
 				return Err(KeyError::Missing(field));
 			}
+		}
+		if !file.token_uri.starts_with("https://") {
+			return Err(KeyError::NotHttps);
 		}
 		let key = RS256KeyPair::from_pem(&file.private_key).map_err(|_| KeyError::PrivateKey)?;
 		Ok(Self {
@@ -403,6 +409,9 @@ mod tests {
 		file["client_email"] = "".into();
 		assert_eq!(ServiceAccount::from_json(&file.to_string()).unwrap_err(), KeyError::Missing("client_email"));
 		file["client_email"] = "fcm@some-ui.iam.gserviceaccount.com".into();
+		file["token_uri"] = "http://oauth2.googleapis.com/token".into();
+		assert_eq!(ServiceAccount::from_json(&file.to_string()).unwrap_err(), KeyError::NotHttps);
+		file["token_uri"] = TOKEN_URI.into();
 		file["private_key"] = "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----".into();
 		assert_eq!(ServiceAccount::from_json(&file.to_string()).unwrap_err(), KeyError::PrivateKey);
 	}
@@ -510,6 +519,23 @@ mod tests {
 		fake.answer(200, "{}");
 		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Delivered);
 		assert_eq!(fake.urls().iter().filter(|url| *url == TOKEN_URI).count(), 2);
+	}
+
+	/// Nothing travels outside https: the transport refuses before sending.
+	#[cfg(feature = "reqwest-transport")]
+	#[tokio::test]
+	async fn the_reqwest_transport_sends_nothing_outside_https() {
+		let transport = ReqwestTransport::new(reqwest::Client::new());
+		for url in ["http://127.0.0.1:9/token", "not a url"] {
+			let request = Request {
+				url: String::from(url),
+				bearer: Some(Bearer::new(String::from("ya29.secret"))),
+				content_type: "application/json",
+				body: b"{}".to_vec(),
+			};
+			let err = transport.send(request).await.unwrap_err();
+			assert!(matches!(err, TransportError::NotHttps), "{url}: {err}");
+		}
 	}
 
 	#[tokio::test]

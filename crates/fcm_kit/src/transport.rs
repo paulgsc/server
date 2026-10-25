@@ -58,6 +58,26 @@ pub trait FcmTransport: Send + Sync {
 #[cfg(feature = "reqwest-transport")]
 pub mod reqwest_transport {
 	use super::{FcmTransport, Request, Response};
+	use std::fmt;
+
+	/// Why a request got no answer. Names neither a token nor a URL.
+	#[derive(Debug)]
+	pub enum TransportError {
+		/// The URL is not `https://`: a bearer or a token never travels in the
+		/// clear, so nothing was sent.
+		NotHttps,
+		/// The request was sent and failed; the URL is stripped.
+		Http(reqwest::Error),
+	}
+
+	impl fmt::Display for TransportError {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			match self {
+				Self::NotHttps => f.write_str("refused to send outside https"),
+				Self::Http(err) => err.fmt(f),
+			}
+		}
+	}
 
 	/// The adapter for hosts that already have a `reqwest` client.
 	#[derive(Debug, Clone)]
@@ -73,18 +93,22 @@ pub mod reqwest_transport {
 	}
 
 	impl FcmTransport for ReqwestTransport {
-		type Error = reqwest::Error;
+		type Error = TransportError;
 
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
-			let outgoing = self.client.post(&request.url).header(reqwest::header::CONTENT_TYPE, request.content_type);
+			let url = reqwest::Url::parse(&request.url).map_err(|_| TransportError::NotHttps)?;
+			if url.scheme() != "https" {
+				return Err(TransportError::NotHttps);
+			}
+			let outgoing = self.client.post(url).header(reqwest::header::CONTENT_TYPE, request.content_type);
 			let outgoing = match request.bearer {
 				Some(bearer) => outgoing.bearer_auth(bearer.expose()),
 				None => outgoing,
 			};
 			// `without_url`: the send URL names the owner's Firebase project.
-			let response = outgoing.body(request.body).send().await.map_err(reqwest::Error::without_url)?;
+			let response = outgoing.body(request.body).send().await.map_err(|err| TransportError::Http(err.without_url()))?;
 			let status = response.status().as_u16();
-			let body = response.bytes().await.map_err(reqwest::Error::without_url)?;
+			let body = response.bytes().await.map_err(|err| TransportError::Http(err.without_url()))?;
 			Ok(Response { status, body: body.to_vec() })
 		}
 	}

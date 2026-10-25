@@ -25,8 +25,9 @@
 //!
 //! **Delivery.** A phone FCM no longer knows ([`SendOutcome::Unregistered`])
 //! is forgotten. A record is recorded once any phone took it, or every phone
-//! answered for good; when none took it and one never got an answer, nothing
-//! is recorded and the next pass tries again within the window. A token
+//! answered for good; when none took it and one never got an answer, or FCM
+//! said to try later (a `429` or a `5xx`), nothing is recorded and the next
+//! pass tries again within the window. A token
 //! never reaches a log line (docs/identity.md invariant 24): outcomes are
 //! logged as counts.
 //!
@@ -193,6 +194,12 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 			match sender.send(&DeviceToken::new(token.clone()), &notice, unix).await {
 				SendOutcome::Delivered => took += 1,
 				SendOutcome::Unregistered => gone.push(token.clone()),
+				// Throttling and FCM's own failures pass (FCM's error codes say
+				// to retry them); any other refusal is final for this record.
+				SendOutcome::Refused(status) if status == 429 || status >= 500 => {
+					tracing::warn!(status, "FCM could not take a Jobs arrival notice now");
+					unanswered = true;
+				}
 				SendOutcome::Refused(status) => tracing::warn!(status, "FCM refused a Jobs arrival notice"),
 				SendOutcome::Transport(why) => {
 					tracing::warn!(error = %why, "a Jobs arrival notice got no answer from FCM");
@@ -503,6 +510,22 @@ mod tests {
 		for line in &lines {
 			assert!(!line.contains("-token"), "{line}");
 		}
+	}
+
+	#[tokio::test]
+	async fn fcm_saying_try_later_leaves_the_record_for_the_next_pass() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		let sender = sender(&fake);
+		phone(&pool, "phone-1").await;
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		for status in [429, 500, 503] {
+			fake.answer("phone-1", Ok(status));
+			assert_eq!(pass(&pool, &sender, now()).await, Outcome { unsent: 1, ..Outcome::default() }, "{status}");
+			assert!(sent(&pool).await.is_empty(), "{status} is not final");
+		}
+		fake.answer("phone-1", Ok(200));
+		assert_eq!(pass(&pool, &sender, now()).await, Outcome { noticed: 1, ..Outcome::default() });
 	}
 
 	#[tokio::test]
