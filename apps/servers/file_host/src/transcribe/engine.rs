@@ -325,7 +325,7 @@ enum Decoded {
 /// `audio` as 16 kHz mono samples, decoded by ffmpeg in a private temporary
 /// directory that is removed on return.
 fn decode(audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Decoded, Cancelled> {
-	let Ok(scratch) = tempfile::Builder::new().prefix("voice-note-").tempdir() else {
+	let Ok(scratch) = scratch() else {
 		return Ok(Decoded::Unreadable);
 	};
 	let (note, pcm) = (scratch.path().join("note"), scratch.path().join("pcm"));
@@ -351,6 +351,15 @@ fn decode(audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result
 	} else {
 		Decoded::Pcm(samples)
 	})
+}
+
+/// A fresh directory only this process's user can enter (`0700`), removed
+/// when dropped. tempfile's own default is `0777` less the umask, `0755`
+/// under the usual one, which would let any local user read a note while it
+/// decodes.
+fn scratch() -> std::io::Result<tempfile::TempDir> {
+	use std::os::unix::fs::PermissionsExt as _;
+	tempfile::Builder::new().prefix("voice-note-").permissions(std::fs::Permissions::from_mode(0o700)).tempdir()
 }
 
 /// ffmpeg decoding `note` into raw little-endian f32 at `pcm`, at most
@@ -471,6 +480,15 @@ mod tests {
 		}
 		let long = encoded(u32::try_from(MAX_SECONDS).unwrap() + 5, "ogg", "libopus");
 		assert_eq!(decode(&long, later(), &CancellationToken::new()), Ok(Decoded::TooLong));
+	}
+
+	/// docs/identity.md invariant 23: the one place audio sits outside the
+	/// tables is a directory no other user can enter.
+	#[test]
+	fn a_note_decodes_in_a_directory_only_its_owner_can_enter() {
+		use std::os::unix::fs::PermissionsExt as _;
+		let dir = super::scratch().unwrap();
+		assert_eq!(dir.path().metadata().unwrap().permissions().mode() & 0o777, 0o700);
 	}
 
 	#[test]

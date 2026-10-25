@@ -758,7 +758,8 @@ nowhere is marked as such and belongs to review.
     `every_note_gets_a_row_and_a_failure_is_retried_a_few_times`,
     `a_shutdown_keeps_nothing_for_the_note_it_interrupts`,
     `nothing_is_kept_for_a_note_that_left_with_its_account` and
-    `no_transcript_or_audio_reaches_a_log_line`; and `handlers::voice`'s
+    `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s
+    `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
     `refusals_name_their_fields_and_notes_stay_apart`.
     *Not enforced:* that nothing else writes these tables or holds audio,
     which `git grep -n 'voice_note\|voice_transcript' -- '*.rs'` shows today
