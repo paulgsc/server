@@ -28,3 +28,11 @@ rustflags = [
 [build]
 rustflags = ["-D warnings"]
 
+
+[env]
+# whisper-rs-sys (file_host's voice-note transcriber) uses the bindings it
+# ships for the whisper.cpp it vendors, instead of generating them with
+# bindgen. Generating needs a libclang that loads in the build's environment,
+# which the Nix CI shell's does not (it finds the runner's, and the runner's
+# libstdc++ is outside the shell). The Dockerfile sets the same variable.
+WHISPER_DONT_GENERATE_BINDINGS = "1"

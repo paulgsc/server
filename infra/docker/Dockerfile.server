@@ -19,16 +19,14 @@ WORKDIR /app
 RUN cargo install cargo-chef --locked
 
 # Install system dependencies required for building the workspace
-# cmake and libclang build whisper.cpp and its bindings (`whisper-rs-sys`,
-# file_host's voice-note transcriber).
+# cmake builds whisper.cpp (`whisper-rs-sys`, file_host's voice-note
+# transcriber).
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     ca-certificates \
     build-essential \
     cmake \
-    clang \
-    libclang-dev \
     libasound2-dev \
     libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -40,8 +38,11 @@ RUN apt-get update && apt-get install -y \
 # Haswell, AMD since Excavator). HOST-SPECIFIC: a host without AVX2 needs
 # these off, at about a third of the speed. OpenMP off, so the binary needs
 # no libgomp at runtime; ggml's own thread pool runs it. whisper-rs-sys passes
-# every GGML_* variable to cmake.
-ENV GGML_NATIVE=OFF \
+# every GGML_* variable to cmake. WHISPER_DONT_GENERATE_BINDINGS: use the
+# bindings the crate ships rather than bindgen, as `.cargo/config.toml` does
+# outside the image (this build does not copy `.cargo/`), so no libclang.
+ENV WHISPER_DONT_GENERATE_BINDINGS=1 \
+    GGML_NATIVE=OFF \
     GGML_AVX=ON \
     GGML_AVX2=ON \
     GGML_FMA=ON \
