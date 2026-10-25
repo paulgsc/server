@@ -318,13 +318,37 @@ pub async fn routine_files(conn: &mut SqliteConnection, subject: &str, limit: i6
 /// `subject`'s newest run records from the reflections routine (the `run`
 /// folder: what each run found and added), newest first, at most `limit`.
 ///
+/// The jobs routine's (`run-jobs-*`) are read by [`jobs_runs`], so neither
+/// routine's runs crowd out the other's.
+///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn routine_runs(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<RoutineFile>, MailboxError> {
 	let runs = sqlx::query_as!(
 		RoutineFile,
 		"SELECT folder, name, body FROM mailbox_item
-		 WHERE subject_id = ?1 AND folder = 'run'
+		 WHERE subject_id = ?1 AND folder = 'run' AND name NOT LIKE 'run-jobs-%'
+		 ORDER BY seq DESC
+		 LIMIT ?2",
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(runs)
+}
+
+/// `subject`'s newest run records from the jobs routine (`run-jobs-*` in
+/// the `run` folder: what each morning run found and added, a stopped one
+/// included), newest first, at most `limit`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn jobs_runs(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<RoutineFile>, MailboxError> {
+	let runs = sqlx::query_as!(
+		RoutineFile,
+		"SELECT folder, name, body FROM mailbox_item
+		 WHERE subject_id = ?1 AND folder = 'run' AND name LIKE 'run-jobs-%'
 		 ORDER BY seq DESC
 		 LIMIT ?2",
 		subject,
