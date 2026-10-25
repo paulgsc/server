@@ -18,8 +18,9 @@
 //!
 //! **Digests come from the mailbox copy.** [`get_digests`] serves the daily
 //! job digests home read from the Jobs mailbox, which only the `mailbox`
-//! poller writes (`mailbox_repo`, docs/identity.md invariant 19). It reads,
-//! and writes nothing; `jobs_event` still has no writer but the two above.
+//! poller writes (`mailbox_repo`, docs/identity.md invariant 19), and
+//! [`get_runs`] the jobs routine's run records from the same copy. Both read,
+//! and write nothing; `jobs_event` still has no writer but the two above.
 //!
 //! **Files for the mailbox carry no voice notes.** [`put_file`] files the
 //! phone's decisions or scouts file for the poller to hand to the mailbox,
@@ -171,6 +172,64 @@ pub async fn get_digests(subject: SubjectId, State(db): State<SqlitePool>, Query
 		.collect::<Result<Vec<_>, ()>>()
 		.map_err(|()| FileHostError::OperationError("a held digest does not read back".to_owned()))?;
 	Ok(Json(Digests { digests }))
+}
+
+/// The most run records one answer holds: a week of mornings, as many as the
+/// phone keeps (`RUNS_KEPT` in paulgsc/some-ui `apps/www/src/lib/jobs/model.ts`).
+pub const RUNS_PER_ANSWER: i64 = 7;
+
+/// `GET /jobs/runs`
+#[derive(Debug, Serialize)]
+pub struct Runs {
+	/// Newest first.
+	pub runs: Vec<HeldRun>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HeldRun {
+	/// Its name in the mailbox, `run-jobs-<stamp>.json`.
+	pub name: String,
+	/// The run record as the mailbox held it, verbatim.
+	pub run: Box<RawValue>,
+}
+
+/// `GET /jobs/runs`: the jobs routine's newest run records home holds.
+///
+/// The caller's, newest first, at most [`RUNS_PER_ANSWER`]: what each
+/// morning run found and added, and what it couldn't do, a stopped run
+/// included.
+///
+/// A held record that does not read back as JSON is left out and logged, so
+/// one bad record never hides the rest.
+///
+/// # Errors
+/// 401 without a session, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_runs", skip_all, fields(otel.kind = "server"))]
+pub async fn get_runs(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Runs>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let held = mailbox_repo::jobs_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await.map_err(|err| match err {
+		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+		mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
+	})?;
+	let runs = held
+		.into_iter()
+		.filter_map(|held| {
+			// The poller kept only JSON (invariant 19), so a body that fails
+			// here was written some other way: say so by name, never by body.
+			let run = String::from_utf8(held.body)
+				.map_err(|_| "utf8")
+				.and_then(|text| RawValue::from_string(text).map_err(|_| "json"));
+			match run {
+				Ok(run) => Some(HeldRun { name: held.name, run }),
+				Err(kind) => {
+					tracing::error!(name = %held.name, kind, "a held jobs run record does not read back; left out");
+					None
+				}
+			}
+		})
+		.collect();
+	Ok(Json(Runs { runs }))
 }
 
 /// The most a filed file may hold: the Jobs record's own body ceiling.
@@ -447,7 +506,7 @@ mod tests {
 				)
 			})
 			.collect();
-		assert_eq!(routes.len(), 4, "{routes:?}");
+		assert_eq!(routes.len(), 5, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -631,6 +690,87 @@ mod tests {
 			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{after}: {answer}");
 			assert!(answer["error"]["details"]["after"].is_array(), "{answer}");
 		}
+	}
+
+	/// A run record home read from the mailbox's `run` folder for `subject`,
+	/// under `name`, as the poller keeps one.
+	async fn hold_run(state: &TestState, subject: &str, name: &str, seq: i64, body: &[u8]) {
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'run', ?2, ?3, 's', 0, ?4, 'now')")
+			.bind(subject)
+			.bind(name)
+			.bind(seq)
+			.bind(body)
+			.execute(&state.pool)
+			.await
+			.unwrap();
+	}
+
+	fn run(outcome: &str) -> Value {
+		json!({ "schema": "some-ui.routine-run/1", "routine": "jobs", "outcome": outcome, "problems": [] })
+	}
+
+	fn names(answer: &Value) -> Vec<&str> {
+		answer["runs"].as_array().unwrap().iter().map(|held| held["name"].as_str().unwrap()).collect()
+	}
+
+	/// Only the jobs routine's records, only the caller's, newest first, each
+	/// verbatim: the reflections routine's runs share the folder.
+	#[tokio::test]
+	async fn runs_answer_the_callers_jobs_runs_newest_first() {
+		let state = state().await;
+		let a = session(&state, A, Carrier::Bearer).await;
+		let b = session(&state, B, Carrier::Bearer).await;
+		hold_run(&state, A, "run-jobs-20261025T145200Z.json", 1, run("done").to_string().as_bytes()).await;
+		hold_run(&state, A, "run-reflections-20261025T160454Z.json", 2, b"{\"routine\":\"reflections\"}").await;
+		hold_run(&state, A, "run-jobs-20261025T170000Z.json", 3, run("stopped").to_string().as_bytes()).await;
+		hold(&state, A, "2026-10-25").await;
+		let app = app(state);
+		let (status, answer) = call(&app, Method::GET, "/jobs/runs", Some(&a), &Value::Null).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(
+			answer,
+			json!({ "runs": [
+				{ "name": "run-jobs-20261025T170000Z.json", "run": run("stopped") },
+				{ "name": "run-jobs-20261025T145200Z.json", "run": run("done") },
+			] })
+		);
+		assert_eq!(
+			call(&app, Method::GET, "/jobs/runs", Some(&b), &Value::Null).await.1,
+			json!({ "runs": [] }),
+			"B reads none of A's"
+		);
+	}
+
+	#[tokio::test]
+	async fn runs_answer_at_most_a_week_and_skip_one_that_does_not_read() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		for seq in 1..=10 {
+			hold_run(
+				&state,
+				A,
+				&(String::from("run-jobs-") + &seq.to_string() + ".json"),
+				seq,
+				run("done").to_string().as_bytes(),
+			)
+			.await;
+		}
+		hold_run(&state, A, "run-jobs-11.json", 11, b"not json").await;
+		let app = app(state);
+		let (status, answer) = call(&app, Method::GET, "/jobs/runs", Some(&phone), &Value::Null).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(
+			names(&answer),
+			[
+				"run-jobs-10.json",
+				"run-jobs-9.json",
+				"run-jobs-8.json",
+				"run-jobs-7.json",
+				"run-jobs-6.json",
+				"run-jobs-5.json"
+			],
+			"the newest seven, less the one that does not read"
+		);
 	}
 
 	fn decisions(day: &str, voice: &[&str]) -> Value {

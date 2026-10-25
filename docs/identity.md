@@ -592,16 +592,18 @@ nowhere is marked as such and belongs to review.
     names, `file_host`'s `mailbox` poller reads only its `brief` folder (the
     routine's daily job digests), its `scene` and `drama` folders (the
     reflections routine's word sets and dramas) and its `run` folder (a
-    record of what each of that routine's runs found and added, which the
-    phone shows as when the routine last ran; owner, 2026-10-24),
+    record of what each routine's runs found and added, which the phone
+    shows as when the routine last ran and, for the jobs routine, what this
+    morning's run couldn't do; owner, 2026-10-24),
     `mailbox::pass::READS`, and puts only to `decisions`, `scout` and
     `opened`.
     - `mailbox_item`, written only by the poller: each file it kept from
       those four folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
       sequence number, and when home read it. Read only by
-      `GET /jobs/digests` (`brief`) and `GET /routine/files` (`scene`,
-      `drama` and `run`), each for its own subject.
+      `GET /jobs/digests` (`brief`), `GET /jobs/runs` (the jobs routine's
+      `run-jobs-*` records in `run`) and `GET /routine/files` (`scene`,
+      `drama` and the other `run` records), each for its own subject.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name` and
       `PUT /routine/opened`: a decisions or scouts file the phone filed, or
       which of the routine's lessons it opened, its bytes, hash and when.

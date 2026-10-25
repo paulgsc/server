@@ -34,7 +34,8 @@ pub const RUNS_PER_ANSWER: i64 = 31;
 pub struct Files {
 	/// Newest first.
 	pub files: Vec<HeldFile>,
-	/// What each of the routine's runs found and added, newest first.
+	/// What each of the routine's runs found and added, newest first. The
+	/// jobs routine's are served by `GET /jobs/runs`, not here.
 	pub runs: Vec<HeldFile>,
 	/// When home answered (ISO-8601 UTC): the phone keeps the runs it saw,
 	/// and tells a routine that went quiet from a look made before it was due.
@@ -370,6 +371,27 @@ mod tests {
 		assert_eq!(runs.len(), 31);
 		assert_eq!((runs[0]["file"]["seq"].as_i64(), runs[30]["file"]["seq"].as_i64()), (Some(40), Some(10)));
 		assert_eq!(answer["files"].as_array().unwrap().len(), 1, "runs take no file's place");
+	}
+
+	/// The jobs routine's records are served by `GET /jobs/runs`, so a month of its
+	/// mornings never crowds the reflections routine's runs out of these.
+	#[tokio::test]
+	async fn runs_leave_out_the_jobs_routines() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		hold(&state, A, "run", 1, &json!({ "routine": "reflections" })).await;
+		for seq in 2..=40 {
+			sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'run', ?2, ?3, 's', 0, ?4, 'now')")
+				.bind(A)
+				.bind(String::from("run-jobs-") + &seq.to_string() + ".json")
+				.bind(seq)
+				.bind(json!({ "routine": "jobs" }).to_string().into_bytes())
+				.execute(&state.pool)
+				.await
+				.unwrap();
+		}
+		let (_, answer) = get(state, Some(&phone)).await;
+		assert_eq!(answer["runs"], json!([{ "folder": "run", "name": "run-1.json", "file": { "routine": "reflections" } }]));
 	}
 
 	async fn put(state: TestState, auth: Option<&str>, body: &Value) -> (StatusCode, Value) {

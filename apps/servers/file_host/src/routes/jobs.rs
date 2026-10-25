@@ -8,6 +8,8 @@
 //! GET /jobs/digests      → { digests }: the daily job digests home holds,
 //!                          oldest first, at most 7; `?after=YYYY-MM-DD` for
 //!                          the days after it
+//! GET /jobs/runs         → { runs }: the jobs routine's run records home
+//!                          holds, newest first, at most 7
 //! PUT /jobs/files/:name  → { change }: a voice-free decisions or scouts file,
 //!                          for the mailbox poller to hand on
 //! ```
@@ -21,7 +23,8 @@
 //! body under a held id is a `409`; there is no `DELETE`. See
 //! `handlers::jobs` and `jobs_repo`.
 //!
-//! **Digests** are read only: the `mailbox` poller is their one writer.
+//! **Digests** and **runs** are read only: the `mailbox` poller is their one
+//! writer.
 //! **Files** are filed once per name, never replaced, and never with a voice
 //! note.
 
@@ -50,6 +53,7 @@ where
 		.get("/jobs", handlers::get_record)
 		.put("/jobs/events/:id", handlers::put_event)
 		.get("/jobs/digests", handlers::get_digests)
+		.get("/jobs/runs", handlers::get_runs)
 		.put("/jobs/files/:name", handlers::put_file);
 
 	Module::versioned("jobs", table).with_cors(cors)
