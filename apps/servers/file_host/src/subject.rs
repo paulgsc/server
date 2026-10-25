@@ -57,6 +57,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's Jobs log (paulgsc/some-ui `apps/www/src/lib/jobs`), every event: picks taken, passed or archived and why, why the owner fits one taken, how applying went, outcomes, postings found by hand, as written, and when each was recorded and reached home; see docs/identity.md",
 	),
 	(
+		"jobs_notice_device",
+		"the owner's phones that asked to be told when a morning run's record arrives: each one's FCM registration token, which names that install of the app to Google, and when it asked; see docs/identity.md invariant 24",
+	),
+	(
+		"jobs_notice_sent",
+		"which of the owner's morning runs home told the phones of: the run record's name, what was said (picks, couldn't finish, or nothing for a re-run), to how many phones, and when; see docs/identity.md invariant 24",
+	),
+	(
 		"learner_shelf",
 		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
 	),

@@ -382,6 +382,17 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90")]
 	pub mailbox_archive_days: u64,
 
+	// ── The Jobs arrival notice ───────────────────────────────────────────────
+	//
+	// See `jobs_notice`. With the mailbox on, home tells each phone that asked
+	// (`PUT /jobs/notice`), through Firebase Cloud Messaging, when a morning
+	// run's record arrives. Off unless this is set; set, the server refuses to
+	// start unless the file is a service account's key.
+	/// A Google service account's JSON key, allowed to send through FCM for
+	/// the app's Firebase project. Unset, home tells no phone anything.
+	#[arg(long, env = "FCM_SERVICE_ACCOUNT_FILE")]
+	pub fcm_service_account_file: Option<std::path::PathBuf>,
+
 	// ── Voice-note transcription ──────────────────────────────────────────────
 	//
 	// See `transcribe`. Home hears each voice note the phone sends it with

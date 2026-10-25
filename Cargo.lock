@@ -1455,6 +1455,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fcm_kit"
+version = "0.0.0"
+dependencies = [
+ "jwt-simple",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1487,10 +1498,12 @@ dependencies = [
  "curriculum_repo",
  "dotenvy",
  "engagement_repo",
+ "fcm_kit",
  "futures",
  "hex",
  "intervention",
  "jobs_repo",
+ "jwt-simple",
  "lazy_static",
  "learner_shelf_repo",
  "leetype_log_repo",
@@ -1501,6 +1514,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "mood_event",
+ "notice_repo",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -2870,6 +2884,14 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "notice_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

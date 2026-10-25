@@ -37,6 +37,10 @@
 //! pass also moves each file live there for `MAILBOX_ARCHIVE_DAYS` into
 //! `mailbox_archive`, then has the mailbox drop its bytes, and puts an
 //! archived file back when the routine asks (`pass`'s module doc).
+//!
+//! **The arrival notice** (`jobs_notice`). With `FCM_SERVICE_ACCOUNT_FILE`,
+//! each pass is followed by one of [`crate::jobs_notice::run_once`], which
+//! tells the phones that asked when a morning run's record has arrived.
 
 pub mod pass;
 
@@ -77,6 +81,9 @@ pub struct MailboxContext {
 	pub archive: Option<Arc<Mailbox<ReqwestTransport>>>,
 	/// Days a file stays live in the mailbox before home archives it.
 	pub archive_days: u64,
+	/// FCM, as the service account `FCM_SERVICE_ACCOUNT_FILE` names, or
+	/// `None` when the deployment tells no phone anything.
+	pub notice: Option<Arc<fcm_kit::Sender<fcm_kit::ReqwestTransport>>>,
 }
 
 impl MailboxContext {
@@ -91,10 +98,14 @@ impl MailboxContext {
 	/// `MAILBOX_ENABLED` with `MAILBOX_URL`, `MAILBOX_TOKEN` or
 	/// `MAILBOX_SUBJECT` unset or empty, a URL that is not `https://` and a
 	/// host, `MAILBOX_SECONDS` below 60, or a `MAILBOX_ARCHIVE_TOKEN` that is
-	/// `MAILBOX_TOKEN` again or comes with `MAILBOX_ARCHIVE_DAYS` below 30.
+	/// `MAILBOX_TOKEN` again or comes with `MAILBOX_ARCHIVE_DAYS` below 30,
+	/// or an `FCM_SERVICE_ACCOUNT_FILE` that is not a service account's key.
 	pub fn from_config(config: &Config, deletion: DeletionLock) -> anyhow::Result<Option<Self>> {
 		if !config.mailbox_enabled {
 			info!("the Jobs mailbox is not enabled; home will not read digests from it");
+			if config.fcm_service_account_file.is_some() {
+				info!("FCM_SERVICE_ACCOUNT_FILE is set, but with the mailbox off no run arrives to tell a phone of");
+			}
 			return Ok(None);
 		}
 		let set = |value: Option<&String>| value.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
@@ -121,12 +132,19 @@ impl MailboxContext {
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 		let mailbox = Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		let archive = archive_token
-			.map(|token| Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client)).map(Arc::new))
+			.map(|token| Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map(Arc::new))
 			.transpose()
 			.map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		if archive.is_none() {
 			info!("MAILBOX_ARCHIVE_TOKEN is not set; home will archive nothing from the mailbox");
 		}
+		let notice = if let Some(path) = &config.fcm_service_account_file {
+			let account = crate::jobs_notice::load(path)?;
+			Some(Arc::new(fcm_kit::Sender::new(account, fcm_kit::ReqwestTransport::new(client))))
+		} else {
+			info!("FCM_SERVICE_ACCOUNT_FILE is not set; home will tell no phone when a run arrives");
+			None
+		};
 		Ok(Some(Self {
 			mailbox: Arc::new(mailbox),
 			subject,
@@ -134,6 +152,7 @@ impl MailboxContext {
 			deletion,
 			archive,
 			archive_days: config.mailbox_archive_days,
+			notice,
 		}))
 	}
 }
@@ -192,6 +211,19 @@ fn spawn(state: &AppState, context: MailboxContext) {
 						Err(err) => {
 							error!(error = %err, class = err.class(), "Jobs mailbox pass failed");
 							crate::metrics::mailbox::record_pass(&err.outcome, Some(err.class()));
+						}
+					}
+					if let Some(sender) = context.notice.as_deref() {
+						match crate::jobs_notice::run_once(&db, &context.deletion, &context.subject, sender, chrono::Utc::now()).await {
+							Ok(outcome) if outcome.busy() => info!(
+								noticed = outcome.noticed,
+								skipped = outcome.skipped,
+								forgotten = outcome.forgotten,
+								unsent = outcome.unsent,
+								"Jobs arrival notice pass"
+							),
+							Ok(_) => {}
+							Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
 						}
 					}
 				}

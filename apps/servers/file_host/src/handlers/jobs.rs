@@ -232,6 +232,81 @@ pub async fn get_runs(subject: SubjectId, State(db): State<SqlitePool>) -> Resul
 	Ok(Json(Runs { runs }))
 }
 
+/// The longest FCM registration token taken: `jobs_notice_device`'s own
+/// ceiling. Tokens are about 160 characters today.
+pub const NOTICE_TOKEN_CEILING: usize = 4096;
+
+/// `PUT` and `DELETE /jobs/notice`: one phone's FCM registration token.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoticeDevice {
+	pub token: String,
+}
+
+/// `PUT` and `DELETE /jobs/notice`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoticeChanged {
+	/// `added` or `unchanged` for a `PUT`, `removed` or `unchanged` for a
+	/// `DELETE`.
+	pub change: &'static str,
+}
+
+/// The token in `body`, if it reads as one: `{ "token": … }`, printable
+/// ASCII, no spaces, at most [`NOTICE_TOKEN_CEILING`]. Read from the bytes,
+/// as the other Jobs writes are, so a phone's request needs no content type.
+/// What it says is never logged (docs/identity.md invariant 24).
+fn notice_token(body: &[u8]) -> Result<String, FileHostError> {
+	let refused = || FileHostError::unprocessable_entity([("token", "not an FCM registration token")]);
+	let device: NoticeDevice = serde_json::from_slice(body).map_err(|_| refused())?;
+	let token = device.token;
+	if token.is_empty() || token.len() > NOTICE_TOKEN_CEILING || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+		return Err(refused());
+	}
+	Ok(token)
+}
+
+/// `PUT /jobs/notice`: tell this phone when a morning run's record arrives
+/// (`jobs_notice`). Asking again changes nothing.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 for a token that
+/// is not one, 409 from a paired phone that stopped sending Jobs home
+/// (`handlers::sharing::refusing`), and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_notice_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_notice(subject: SubjectId, State(db): State<SqlitePool>, headers: HeaderMap, body: Bytes) -> Result<Json<NoticeChanged>, FileHostError> {
+	let token = notice_token(&body)?;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
+	let change = match notice_repo::register(&mut tx, subject.as_str(), &token, &now()).await? {
+		notice_repo::Change::Added => "added",
+		notice_repo::Change::Unchanged => "unchanged",
+		// `SubjectId` found the account, so this is not reachable; if it
+		// were, nothing was written.
+		notice_repo::Change::NoAccount => return Err(FileHostError::OperationError("the account is gone".to_owned())),
+	};
+	tx.commit().await?;
+	Ok(Json(NoticeChanged { change }))
+}
+
+/// `DELETE /jobs/notice`: stop telling this phone. Never refused for sharing:
+/// a phone that stopped sending Jobs home can always stop being told.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 for a token that
+/// is not one, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_notice_delete", skip_all, fields(otel.kind = "server"))]
+pub async fn delete_notice(subject: SubjectId, State(db): State<SqlitePool>, body: Bytes) -> Result<Json<NoticeChanged>, FileHostError> {
+	let token = notice_token(&body)?;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let removed = notice_repo::forget(&mut tx, subject.as_str(), &token).await?;
+	tx.commit().await?;
+	Ok(Json(NoticeChanged {
+		change: if removed { "removed" } else { "unchanged" },
+	}))
+}
+
 /// The most a filed file may hold: the Jobs record's own body ceiling.
 pub const FILE_CEILING: usize = jobs_repo::EVENT_BODY_CEILING;
 
@@ -506,7 +581,7 @@ mod tests {
 				)
 			})
 			.collect();
-		assert_eq!(routes.len(), 5, "{routes:?}");
+		assert_eq!(routes.len(), 7, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -771,6 +846,53 @@ mod tests {
 			],
 			"the newest seven, less the one that does not read"
 		);
+	}
+
+	#[tokio::test]
+	async fn a_phone_asks_to_be_told_once_and_can_stop() {
+		let state = state().await;
+		let a = session(&state, A, Carrier::Bearer).await;
+		let b = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let token = json!({ "token": "dK3x:APA91bH-phone_token.1" });
+		assert_eq!(
+			call(&app, Method::PUT, "/jobs/notice", Some(&a), &token).await,
+			(StatusCode::OK, json!({ "change": "added" }))
+		);
+		assert_eq!(
+			call(&app, Method::PUT, "/jobs/notice", Some(&a), &token).await,
+			(StatusCode::OK, json!({ "change": "unchanged" }))
+		);
+		assert_eq!(
+			call(&app, Method::DELETE, "/jobs/notice", Some(&b), &token).await,
+			(StatusCode::OK, json!({ "change": "unchanged" })),
+			"B cannot stop A's phone"
+		);
+		assert_eq!(
+			call(&app, Method::DELETE, "/jobs/notice", Some(&a), &token).await,
+			(StatusCode::OK, json!({ "change": "removed" }))
+		);
+		assert_eq!(
+			call(&app, Method::DELETE, "/jobs/notice", Some(&a), &token).await,
+			(StatusCode::OK, json!({ "change": "unchanged" }))
+		);
+	}
+
+	#[tokio::test]
+	async fn notice_refuses_what_is_not_a_token() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		let long = "x".repeat(super::NOTICE_TOKEN_CEILING + 1);
+		for token in ["", "has a space", "line\nbreak", long.as_str()] {
+			for method in [Method::PUT, Method::DELETE] {
+				let (status, answer) = call(&app, method.clone(), "/jobs/notice", Some(&phone), &json!({ "token": token })).await;
+				assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{method} {token:?}: {answer}");
+				assert!(answer["error"]["details"]["token"].is_array(), "{answer}");
+			}
+		}
+		let (status, _) = call(&app, Method::PUT, "/jobs/notice", Some(&phone), &json!({ "token": "t", "topics": [] })).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "an unknown field is refused");
 	}
 
 	fn decisions(day: &str, voice: &[&str]) -> Value {

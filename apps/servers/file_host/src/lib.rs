@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod health;
+pub mod jobs_notice;
 pub mod listen;
 pub mod mailbox;
 pub mod metrics;
