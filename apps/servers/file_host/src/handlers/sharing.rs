@@ -8,7 +8,7 @@
 //!
 //! **No other writer.** [`put_choice`] is the only caller of
 //! `sharing_repo::choose`. What reads the choices is [`get_choices`] and each
-//! aph and Jobs write's check ([`refusing`]), a batch's included.
+//! aph, Jobs and voice-note write's check ([`refusing`]), a batch's included.
 
 use crate::subject::{pairing_in, Paired};
 use crate::FileHostError;
@@ -82,7 +82,7 @@ pub async fn get_choices(paired: Paired, State(db): State<SqlitePool>) -> Result
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "sharing_choose", skip_all, fields(otel.kind = "server"))]
 pub async fn put_choice(paired: Paired, State(db): State<SqlitePool>, Path(scope): Path<String>, body: axum::body::Bytes) -> Result<Json<Choices>, FileHostError> {
-	let scope = Scope::named(&scope).ok_or_else(|| FileHostError::unprocessable_entity([("scope", "is sessions, shelf, aph or jobs")]))?;
+	let scope = Scope::named(&scope).ok_or_else(|| FileHostError::unprocessable_entity([("scope", "is sessions, shelf, aph, jobs or voice")]))?;
 	let choice: Choice = serde_json::from_slice(&body).map_err(|_| FileHostError::unprocessable_entity([("body", "is { \"kept\": true } or { \"kept\": false }")]))?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let changes = sharing_repo::choose(&mut tx, paired.subject.as_str(), paired.pairing(), scope, choice.kept, &now()).await?;
@@ -94,8 +94,9 @@ pub async fn put_choice(paired: Paired, State(db): State<SqlitePool>, Path(scope
 /// (`sharing_repo::refuses`); a browser's write is never refused here. Run it
 /// on the write's own transaction, before the write.
 ///
-/// Only aph's and the Jobs record's writes call it (`handlers::aph`,
-/// `handlers::jobs`, and a batch of either, `handlers::sync`). The phone
+/// Only aph's, the Jobs record's and voice notes' writes call it
+/// (`handlers::aph`, `handlers::jobs`, a batch of aph or Jobs,
+/// `handlers::sync`, and `handlers::voice`). The phone
 /// sends sessions and the shelf on a tap too (paulgsc/some-ui `apps/www/src/lib/home-link/send.ts`,
 /// Settings' one-time send), which no standing choice covers, so they are
 /// not checked.
