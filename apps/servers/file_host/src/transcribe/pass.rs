@@ -367,9 +367,9 @@ mod tests {
 		crate::transcribe::log_pass(&Ok(done));
 		let lines = captured.lines();
 		assert!(lines.iter().any(|line| line.contains("heard")), "sanity check: the summary was captured: {lines:?}");
-		for line in lines {
-			for secret in [SAID, "words", "noise", "은"] {
-				assert!(!line.contains(secret), "{secret:?} reached a log line: {line}");
+		for line in &lines {
+			for heard in [SAID, "words", "noise", "은"] {
+				assert!(!line.contains(heard), "what a note said, or its audio, reached a log line");
 			}
 		}
 	}
