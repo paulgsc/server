@@ -522,9 +522,6 @@
   },
   "apps/servers/file_host/src/metrics/observability.rs": {
     "clippy::missing_errors_doc": {
-      "fn new": {
-        "pub fn new() -> Result<Self, ObservabilityError> {": 1
-      },
       "fn shutdown": {
         "pub async fn shutdown(self) -> Result<(), ObservabilityError> {": 1
       }

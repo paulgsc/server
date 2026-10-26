@@ -58,7 +58,11 @@ lists groups separately under `groups`.
 
 ## Configuration
 
-`ObsConfig::from_env()` reads `OBS_HOST`, `OBS_PORT` and `OBS_PASSWORD`.
+`ObsConfig` is filled in by its caller; this crate reads no environment
+(#484). `some-obs` reads `OBS_HOST`, `OBS_PORT` and `OBS_PASSWORD` into it, and
+so do the examples (`examples/common/mod.rs`), each through clap: a value that
+does not parse stops the program at start, naming the variable. Unset, each
+takes `ObsConfig::default()`'s value.
 
 ## Examples
 

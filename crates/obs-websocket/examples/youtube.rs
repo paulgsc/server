@@ -9,16 +9,30 @@
 //! a live broadcast, and with what title or privacy, is decided on the `YouTube`
 //! side (the broadcast bound to that key), not by OBS.
 
-use obs_websocket::{ObsCommand, ObsConfig, ObsEvent, ObsWebSocketManager, PollingConfig, StreamKey};
+mod common;
+
+use clap::Parser;
+use obs_websocket::{ObsCommand, ObsEvent, ObsWebSocketManager, PollingConfig, StreamKey};
 use tokio::time::{timeout, Duration};
+
+#[derive(Parser)]
+struct Args {
+	#[command(flatten)]
+	obs: common::ObsArgs,
+
+	/// Your `YouTube` stream key.
+	#[arg(long, env = "YOUTUBE_STREAM_KEY", hide_env_values = true)]
+	youtube_stream_key: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	let args = Args::parse();
 	tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
-	let stream_key = std::env::var("YOUTUBE_STREAM_KEY").map_err(|_| "set YOUTUBE_STREAM_KEY to your YouTube stream key")?;
+	let stream_key = args.youtube_stream_key;
 
-	let obs = ObsWebSocketManager::new(ObsConfig::from_env());
+	let obs = ObsWebSocketManager::new(args.obs.into_config());
 	obs.connect(PollingConfig::none()).await?;
 	tracing::info!("Connected to OBS");
 
