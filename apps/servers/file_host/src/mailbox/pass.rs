@@ -2,8 +2,10 @@
 //!
 //! It reads what each folder home reads ([`READS`]: the Jobs digests, and the
 //! reflections routine's word sets, dramas and run records) holds after home's cursor for
-//! it and keeps each file that checks out, then hands the mailbox the
-//! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`).
+//! it and keeps each file that checks out, then files each transcript home
+//! heard and has not filed ([`TRANSCRIPT_SCHEMA`]), and hands the mailbox
+//! what is filed: the voice-free decisions and scouts the phone filed
+//! (`PUT /jobs/files/:name`), which lessons it opened, and those transcripts.
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -12,6 +14,13 @@
 //! and the pass goes on: one bad file never holds back the days after it.
 //! A refused file that is the newest in its folder is asked for again each
 //! pass until a newer one is kept, since the cursor is the highest `seq` held.
+//!
+//! A transcript is text only: the note's id, what it was said for and when,
+//! what was heard, its language and model, and when home heard it. Never
+//! audio and never a Drive id; nothing it names points at audio. Each is
+//! filed once, under the next number its note's names have
+//! (`mailbox_repo::file_transcript`), so a better model's transcript goes
+//! under a new name.
 //!
 //! Handing over is once per file: the mailbox's answer, whatever it is, is
 //! recorded and final (a `conflict` or a refusal is not retried), and only a
@@ -28,8 +37,9 @@
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
-use mailbox_repo::{Answer, ArchiveIn, Change, ItemIn};
+use mailbox_repo::{Answer, ArchiveIn, Change, Heard, ItemIn};
 use serde::de::IgnoredAny;
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fmt;
 
@@ -41,6 +51,10 @@ pub const ITEMS_PER_PASS: u32 = 20;
 /// (`GET /jobs/digests`), and its word sets, dramas and run records
 /// (`GET /routine/files`).
 pub const READS: [Folder; 4] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run];
+
+/// What a transcript put to the mailbox's `transcript` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
 
 /// The most pages one pass lists per folder. Inbound passes over a file home
 /// already holds (one put back after archiving, under a new `seq`) without
@@ -58,6 +72,8 @@ pub struct Outcome {
 	/// Files refused this pass, each by why: `mismatch`, `bad_name`,
 	/// `not_json` or `rewritten` (`metrics::mailbox::REFUSALS`).
 	pub refused: Vec<&'static str>,
+	/// Transcripts filed for the mailbox this pass.
+	pub filed: usize,
 	/// Filed files handed to the mailbox this pass, each by its answer:
 	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
 	pub handed: Vec<&'static str>,
@@ -156,6 +172,11 @@ pub async fn run_once<T: MailboxTransport>(
 		}
 		inbound = read_folder(db, mailbox, folder, subject, deletion, now, &mut outcome).await;
 	}
+	let filing = if outcome.no_account {
+		Ok(())
+	} else {
+		file_transcripts(db, subject, deletion, now, &mut outcome).await
+	};
 	let outbound = if outcome.no_account {
 		Ok(())
 	} else {
@@ -169,7 +190,7 @@ pub async fn run_once<T: MailboxTransport>(
 		Some(archiving) if !outcome.no_account => archive_old(db, archiving, subject, deletion, now, &mut outcome).await,
 		_ => Ok(()),
 	};
-	match inbound.and(outbound).and(asks).and(old) {
+	match inbound.and(filing).and(outbound).and(asks).and(old) {
 		Ok(()) => Ok(outcome),
 		Err(failure) => Err(PassError { outcome, failure }),
 	}
@@ -279,7 +300,9 @@ async fn hand_over<T: MailboxTransport>(
 			"decisions" => Folder::Decisions,
 			"scout" => Folder::Scout,
 			"opened" => Folder::Opened,
-			// `PUT /jobs/files/:name` and `PUT /routine/opened` file only these.
+			"transcript" => Folder::Transcript,
+			// `PUT /jobs/files/:name`, `PUT /routine/opened` and
+			// `file_transcripts` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -298,6 +321,43 @@ async fn hand_over<T: MailboxTransport>(
 		}
 	}
 	Ok(())
+}
+
+/// Files each transcript home heard and has not filed, oldest heard first,
+/// at most [`ITEMS_PER_PASS`]; more are filed by the next pass.
+async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync), outcome: &mut Outcome) -> Result<(), Failure> {
+	let heard = {
+		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+		mailbox_repo::unfiled_transcripts(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
+	};
+	for transcript in &heard {
+		match file_transcript(db, deletion, subject, transcript, &now()).await.map_err(storage)? {
+			Change::NoAccount => {
+				outcome.no_account = true;
+				return Ok(());
+			}
+			Change::Added | Change::Unchanged => outcome.filed += 1,
+		}
+	}
+	Ok(())
+}
+
+/// A transcript as the mailbox takes it: text, and nothing that points at
+/// audio.
+fn transcript_body(heard: &Heard) -> Vec<u8> {
+	serde_json::json!({
+		"schema": TRANSCRIPT_SCHEMA,
+		"note": heard.note_id,
+		"of": heard.of_kind,
+		"ref": heard.of_ref,
+		"at": heard.recorded_at,
+		"text": heard.text,
+		"language": heard.language,
+		"model": heard.model,
+		"heardAt": heard.heard_at,
+	})
+	.to_string()
+	.into_bytes()
 }
 
 /// Puts back each archived file the routine asked for, from home's archive.
@@ -471,6 +531,19 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 	Ok(change)
 }
 
+/// As [`keep`], for a transcript filed under its note's next number, which
+/// is read in the same transaction.
+async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+	let body = transcript_body(heard);
+	let sha256 = hex::encode(Sha256::digest(&body));
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
+	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
+	tx.commit().await?;
+	Ok(change)
+}
+
 /// As [`keep`], for the mailbox's answer to a handed file.
 async fn record(
 	db: &SqlitePool,
@@ -513,6 +586,8 @@ mod tests {
 		put_answers: Mutex<Vec<(u16, &'static str)>>,
 		puts_fail: Mutex<bool>,
 		puts: Mutex<Vec<String>>,
+		/// The body of each transcript put.
+		transcripts: Mutex<Vec<String>>,
 	}
 
 	impl Fake {
@@ -537,11 +612,16 @@ mod tests {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.method == Method::Put {
 				assert!(
-					["/v1/decisions/items/", "/v1/scout/items/", "/v1/opened/items/"].iter().any(|put| path.starts_with(put)),
-					"puts only decisions, scouts and which lessons were opened: {path}"
+					["/v1/decisions/items/", "/v1/scout/items/", "/v1/opened/items/", "/v1/transcript/items/"]
+						.iter()
+						.any(|put| path.starts_with(put)),
+					"puts only decisions, scouts, which lessons were opened and transcripts: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
+				}
+				if path.starts_with("/v1/transcript/items/") {
+					self.transcripts.lock().unwrap().push(String::from_utf8(request.body.clone().unwrap_or_default()).unwrap());
 				}
 				self.puts.lock().unwrap().push(path);
 				let mut answers = self.put_answers.lock().unwrap();
@@ -854,6 +934,105 @@ mod tests {
 		);
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(fake.puts.lock().unwrap().len(), 2, "neither is handed again");
+	}
+
+	/// A voice note of the owner's, and what `model` heard in it.
+	async fn heard(pool: &SqlitePool, note: &str, model: &str, text: &str) {
+		sqlx::query(
+			"INSERT OR IGNORE INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'scene', 'drama-20261025T031000000Z', '2026-10-25T03:10:00.000Z', 'audio/ogg', 1, 's', 'now')",
+		)
+		.bind(OWNER)
+		.bind(note)
+		.execute(pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'whisper.cpp', 1, 'heard', 'ko', 0.9, 1000, ?4, 10, '2026-10-25T03:12:00.000Z')",
+		)
+		.bind(OWNER)
+		.bind(note)
+		.bind(model)
+		.bind(text)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn outgoing_transcripts(pool: &SqlitePool) -> Vec<String> {
+		sqlx::query_scalar("SELECT name FROM mailbox_outgoing WHERE folder = 'transcript' ORDER BY rowid")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	#[tokio::test]
+	async fn a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name() {
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "다음 장면은 시장에서").await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-n1-1.json"]);
+		let body: serde_json::Value = serde_json::from_str(&fake.transcripts.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			body,
+			serde_json::json!({
+				"schema": "some-ui.voice-transcript/1",
+				"note": "n1",
+				"of": "scene",
+				"ref": "drama-20261025T031000000Z",
+				"at": "2026-10-25T03:10:00.000Z",
+				"text": "다음 장면은 시장에서",
+				"language": "ko",
+				"model": "ggml-small-q5_1.bin",
+				"heardAt": "2026-10-25T03:12:00.000Z",
+			}),
+			"text only, in the mailbox's shape: nothing that points at audio"
+		);
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "filed and handed once");
+
+		heard(&pool, "n1", "ggml-medium-q5_0.bin", "다음 장면은 시장에서요").await;
+		*fake.put_answers.lock().unwrap() = vec![(409, r#"{"error":"conflict"}"#)];
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["conflict"]);
+		assert_eq!(outgoing_transcripts(&pool).await, ["transcript-n1-1.json", "transcript-n1-2.json"]);
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(fake.puts.lock().unwrap().len(), 2, "a conflict is final: not filed or handed again");
+	}
+
+	#[tokio::test]
+	async fn no_transcript_is_filed_for_a_deleted_subject() {
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "하나").await;
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
+		// The note and transcript a deletion took, written again by hand, as a
+		// race with the transcriber could leave them for a moment.
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "하나").await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert!(outcome.no_account);
+		assert_eq!(outcome.filed, 0);
+		assert!(outgoing_transcripts(&pool).await.is_empty());
+		assert!(fake.puts.lock().unwrap().is_empty());
+	}
+
+	/// docs/identity.md invariant 19: a transcript's text reaches no log line,
+	/// and neither does the mailbox's URL.
+	#[tokio::test]
+	async fn no_transcript_text_or_mailbox_url_reaches_a_log_line() {
+		let (captured, _guard) = crate::privacy::capture();
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
+		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		*fake.puts_fail.lock().unwrap() = true;
+		heard(&pool, "n2", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
+		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		let lines = captured.lines();
+		assert!(lines.iter().any(|line| line.contains("filed")), "sanity check: the pass was logged: {lines:?}");
+		assert!(lines.iter().any(|line| line.contains("failed")), "sanity check: the failure was logged: {lines:?}");
+		for line in &lines {
+			assert!(!line.contains("비밀"), "a transcript's text reached a log line");
+			assert!(!line.contains("mailbox.example.test"), "the mailbox's URL reached a log line");
+		}
 	}
 
 	/// The mailbox as the archive token sees it: every folder's live files,

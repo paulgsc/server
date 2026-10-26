@@ -25,6 +25,9 @@
 //! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`
 //!   and `run`), for the one subject `MAILBOX_SUBJECT` names, and writes only
 //!   `mailbox_item`, through [`pass::run_once`].
+//! - It puts only what is filed for the mailbox: the phone's decisions,
+//!   scouts and opened lessons, and each transcript home heard in a voice
+//!   note (`transcript`), text only, which it files itself.
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is
@@ -166,6 +169,30 @@ pub fn start(state: &AppState) {
 	}
 }
 
+/// What a pass did, by counts and kinds only: no file's name or body, so no
+/// transcript's text, reaches the log.
+pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>) {
+	match result {
+		Ok(outcome) => {
+			let busy =
+				outcome.kept > 0 || !outcome.refused.is_empty() || outcome.filed > 0 || !outcome.handed.is_empty() || !outcome.archived.is_empty() || !outcome.restored.is_empty();
+			if busy || outcome.no_account {
+				info!(
+					kept = outcome.kept,
+					refused = ?outcome.refused,
+					filed = outcome.filed,
+					handed = ?outcome.handed,
+					archived = ?outcome.archived,
+					restored = ?outcome.restored,
+					no_account = outcome.no_account,
+					"Jobs mailbox pass"
+				);
+			}
+		}
+		Err(err) => error!(error = %err, class = err.class(), "Jobs mailbox pass failed"),
+	}
+}
+
 /// Spawn the poller, cancelled through the shared token. Its first pass runs
 /// at once, so a restart catches up without waiting an interval.
 fn spawn(state: &AppState, context: MailboxContext) {
@@ -192,27 +219,11 @@ fn spawn(state: &AppState, context: MailboxContext) {
 					});
 					let result = pass::run_once(&db, &context.mailbox, archiving.as_ref(), &context.subject, &context.deletion, &pass::now).await;
 					crate::metrics::mailbox::record_pass_duration(started.elapsed());
-					match result {
-						Ok(outcome) => {
-							crate::metrics::mailbox::record_pass(&outcome, None);
-							let busy = outcome.kept > 0 || !outcome.refused.is_empty() || !outcome.handed.is_empty() || !outcome.archived.is_empty() || !outcome.restored.is_empty();
-							if busy || outcome.no_account {
-								info!(
-									kept = outcome.kept,
-									refused = ?outcome.refused,
-									handed = ?outcome.handed,
-									archived = ?outcome.archived,
-									restored = ?outcome.restored,
-									no_account = outcome.no_account,
-									"Jobs mailbox pass"
-								);
-							}
-						}
-						Err(err) => {
-							error!(error = %err, class = err.class(), "Jobs mailbox pass failed");
-							crate::metrics::mailbox::record_pass(&err.outcome, Some(err.class()));
-						}
+					match &result {
+						Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, None),
+						Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, Some(err.class())),
 					}
+					log_pass(&result);
 					if let Some(sender) = context.notice.as_deref() {
 						match crate::jobs_notice::run_once(&db, &context.deletion, &context.subject, sender, chrono::Utc::now()).await {
 							Ok(outcome) if outcome.busy() => info!(

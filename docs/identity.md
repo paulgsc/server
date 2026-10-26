@@ -158,7 +158,7 @@ above the button that deletes (invariant 22):
 | The Jobs record | `jobs_event` |
 | Telling the phone a morning run is in | `jobs_notice_device`, `jobs_notice_sent` |
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
-| Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed` |
+| Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript` |
 | LeetType sessions | `leetype_session_event` |
 | Voice notes | `voice_note`, `voice_note_audio`, `voice_transcript` |
 | What a phone shares | `sharing_choice` |
@@ -603,8 +603,9 @@ nowhere is marked as such and belongs to review.
     record of what each routine's runs found and added, which the phone
     shows as when the routine last ran and, for the jobs routine, what this
     morning's run couldn't do; owner, 2026-10-24),
-    `mailbox::pass::READS`, and puts only to `decisions`, `scout` and
-    `opened`.
+    `mailbox::pass::READS`, and puts only to `decisions`, `scout`,
+    `opened` and `transcript` (what home heard in a voice note, as text, for
+    the routines to read instead of transcribing; paulgsc/server#463).
     - `mailbox_item`, written only by the poller: each file it kept from
       those four folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -614,9 +615,10 @@ nowhere is marked as such and belongs to review.
       `drama` and the other `run` records), each for its own subject, and by
       the arrival notice's pass (`jobs_notice`), which reads the same
       `run-jobs-*` records for the poller's subject (invariant 24).
-    - `mailbox_outgoing`, written only by `PUT /jobs/files/:name` and
-      `PUT /routine/opened`: a decisions or scouts file the phone filed, or
-      which of the routine's lessons it opened, its bytes, hash and when.
+    - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
+      `PUT /routine/opened` and the poller's `file_transcripts`: a decisions
+      or scouts file the phone filed, which of the routine's lessons it
+      opened, or a transcript, its bytes, hash and when.
       The jobs route refuses a file that names a voice note anywhere (any
       `voice` key that is not an empty list), so no file that points at
       audio is handed on; those go by the phone's share sheet, which carries
@@ -624,6 +626,17 @@ nowhere is marked as such and belongs to review.
       `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
       `drama` and a mailbox name), at most 100, and home's time, nothing
       else (owner, 2026-10-24: the routine keeps three lessons not opened).
+      The poller files each `voice_transcript` row that heard something
+      (never a failure or a silence) as `transcript-<note>-<n>.json` in
+      `some-ui.voice-transcript/1`: the note's id, what it was said for and
+      which one, when it was recorded, the text, its language and model, and
+      when home heard it. That is text; nothing in it points at audio, and the
+      mailbox refuses a body that carries audio or a Drive link.
+    - `mailbox_transcript`, written only by the poller, in the transaction
+      that files the transcript: which transcript (note and model) it filed
+      and the number `n` its name carries, decided once as the note's next,
+      so a better model's transcript goes under a new name and none is filed
+      twice.
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
       each filed file it handed over, once, final.
     - `mailbox_archive`, written only by the poller with the archive token
@@ -632,7 +645,7 @@ nowhere is marked as such and belongs to review.
       size, sequence number, when it was first put and when home stored it.
       Read only by the poller, to put a file back when the routine asks.
 
-    No row of the four is updated (each table's trigger aborts an
+    No row of the five is updated (each table's trigger aborts an
     `UPDATE`), replaced (other bytes under a held or filed name are refused,
     and nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE`
     trigger for) or deleted but with the account, by the sweep and the
@@ -646,19 +659,24 @@ nowhere is marked as such and belongs to review.
     `voice_note_audio` (invariant 23), and the mailbox never carries it.
     *Enforced by* `mailbox_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_held_name_is_not_kept_twice`, `a_filed_name_is_not_filed_twice`,
-    `no_row_is_ever_updated`, `nothing_is_kept_for_a_subject_with_no_account`
-    and `the_copy_leaves_with_the_account`; `mailbox::pass`'s
+    `no_row_is_ever_updated`, `nothing_is_kept_for_a_subject_with_no_account`,
+    `the_copy_leaves_with_the_account`,
+    `only_heard_transcripts_wait_to_be_filed_oldest_first` and
+    `each_transcript_of_a_note_takes_the_next_number_once`; `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
-    `nothing_is_written_for_a_deleted_subject` and
-    `a_conflict_or_a_refusal_is_final_and_not_handed_again`, and its fake
-    transport, which fails a `GET` of anything but those three and a `PUT` of
-    anything but `decisions` or `scout`; `mailbox_kit`'s
+    `nothing_is_written_for_a_deleted_subject`,
+    `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
+    `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
+    `no_transcript_is_filed_for_a_deleted_subject` and
+    `no_transcript_text_or_mailbox_url_reaches_a_log_line`, and its fake
+    transport, which fails a `GET` of anything but the folders home reads and
+    a `PUT` of anything but `decisions`, `scout`, `opened` or `transcript`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
     `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
     *Not enforced:* that nothing else writes these tables, which a
-    `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
+    `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript' -- '*.rs'`
     shows today and review keeps; and what a digest says, which is the
     routine's.
 
@@ -759,6 +777,8 @@ nowhere is marked as such and belongs to review.
     tables, for the length of one decode. Neither the text nor the audio
     reaches a log line: whisper.cpp's log is dropped, ffmpeg's output is
     discarded, and a pass logs only how many attempts of each kind it kept.
+    The text leaves home only as a transcript filed for the Jobs mailbox
+    (invariant 19), for the routines to read, and the audio never does.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
