@@ -15,7 +15,7 @@ mod espn;
 
 use clap::Parser;
 use playoff_delta::{
-	evaluate::{evaluate, Subject},
+	evaluate::{evaluate, Subject, WAYS},
 	league::Team,
 	season::Season,
 };
@@ -79,6 +79,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 		team: code(&args.team)?,
 		rivals: args.rivals.iter().map(|c| code(c)).collect::<Result<_, _>>()?,
 		label: args.label.unwrap_or_else(|| args.season.to_string()),
+		ways: WAYS,
 	};
 	let current = season(&args.scoreboards, args.season)?;
 	let previous = season(&args.previous, args.season - 1)?;
