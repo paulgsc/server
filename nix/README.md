@@ -22,7 +22,7 @@ nix develop
 # Available commands:
 # - cargo, rustc, clippy, rust-analyzer
 # - cargo-audit, cargo-watch, cargo-expand, etc.
-# - whisper download/prune/list
+# - whisper fetch/prune/list
 # - sqlx, just, jq, etc.
 ```
 
@@ -47,7 +47,7 @@ nix develop .#ci --command cargo build --release
 
 The `.#ci` shell removes:
 
-- ❌ Whisper manager (scripts, wget, curl)
+- ❌ Whisper manager (scripts, curl)
 - ❌ Audio libraries (alsa-lib)
 - ❌ Dev tooling (cargo-watch, cargo-audit, flamegraph, etc.)
 - ❌ Database CLIs (sqlite, duckdb)
@@ -81,7 +81,7 @@ nix develop .#ci  # Explicitly uses minimal shell
 ├── flake.nix                 # Main flake with shell definitions
 └── nix/
     ├── rust-env.nix          # Rust toolchain (CI-aware)
-    └── whisper-manager.nix   # Whisper models (disabled in CI)
+    └── whisper-manager/      # Whisper models (disabled in CI)
 ```
 
 ## Modifying Active Packages
@@ -110,12 +110,15 @@ coreBuildInputs = with pkgs; [
 
 ### Change Active Whisper Models
 
-Edit `nix/whisper-manager.nix`:
+Edit `nix/whisper-manager/default.nix`: name the model in `activeModels` and
+give it a `pinnedModels` entry (URL and SHA-256), which is what `whisper fetch`
+downloads. Multilingual only, never `.en`: file_host's transcriber refuses an
+English-only model at startup.
 
 ```nix
 activeModels = [
-  "ggml-base.en-q5_1.bin"   # Uncomment to activate
-  "ggml-small.en-q5_1.bin"  # Add more as needed
+  "ggml-small-q5_1.bin"
+  "ggml-silero-v5.1.2.bin"
 ];
 ```
 

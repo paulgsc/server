@@ -132,6 +132,13 @@ impl AppState {
 				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
 			);
 		}
+		let retired = crate::config::retired_variables_set();
+		if !retired.is_empty() {
+			tracing::warn!(
+				variables = ?retired,
+				"left over from the retired transcriber setup (#407): remove these from .env; the WHISPER_* ones are not read, and OTEL_SERVICE_NAME=transcriber renames file_host's traces (example.env, \"Voice-note transcription\")"
+			);
+		}
 		let core = CoreContext {
 			config: config.clone(),
 			cancel_token: cancel_token.clone(),

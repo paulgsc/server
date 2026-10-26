@@ -399,7 +399,8 @@ pub struct Config {
 	// whisper.cpp on its CPU. Off unless `TRANSCRIBE_ENABLED`; on, the server
 	// refuses to start unless both models load and ffmpeg runs. Not the
 	// `WHISPER_*` variables an older `example.env` set, which named an
-	// English-only model and nothing read.
+	// English-only model and nothing read: startup warns while any is set
+	// (`retired_variables_set`).
 	/// Whether home transcribes voice notes at all.
 	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
 	pub transcribe_enabled: bool,
@@ -474,6 +475,28 @@ impl Config {
 	}
 }
 
+/// Variables the retired transcriber's setup (#407) left set in `.env`.
+///
+/// The `WHISPER_*` three, which nothing reads, and `OTEL_SERVICE_NAME` set to
+/// `transcriber`, which renames `file_host`'s traces. Startup warns with
+/// their names, so a stale `.env` is never silent (#476).
+#[must_use]
+pub fn retired_variables_set() -> Vec<&'static str> {
+	retired_variables_in(|name| std::env::var(name).ok())
+}
+
+/// [`retired_variables_set`] over `var`, which reads one variable.
+fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
+	let mut set: Vec<&'static str> = ["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS"]
+		.into_iter()
+		.filter(|name| var(name).is_some())
+		.collect();
+	if var("OTEL_SERVICE_NAME").as_deref() == Some("transcriber") {
+		set.push("OTEL_SERVICE_NAME");
+	}
+	set
+}
+
 /// Compares values, not where they came from: setting a variable to the dev
 /// host's value explicitly is still running on the dev host's value.
 fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: Option<&str>, redis_url: Option<&str>) -> Vec<&'static str> {
@@ -496,7 +519,7 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 
 #[cfg(test)]
 mod tests {
-	use super::{host_specific_defaults_in_use, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
+	use super::{host_specific_defaults_in_use, retired_variables_in, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
 	use clap::{CommandFactory, Parser};
 
 	#[test]
@@ -528,6 +551,31 @@ mod tests {
 	fn a_host_that_sets_its_own_values_runs_on_none() {
 		let origins = [String::from("https://app.example.com")];
 		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", Some("nats://nats:4222"), Some("redis://redis:6379")).is_empty());
+	}
+
+	/// The `.env` #476 met: every retired variable is named, and only its
+	/// name.
+	#[test]
+	fn a_retired_transcriber_variable_left_set_is_named() {
+		let stale = |name: &str| match name {
+			"WHISPER_MODELS_PATH" => Some(String::from("/mnt/storage/users/dev/models/whisper-models")),
+			"WHISPER_MODEL" => Some(String::from("/models/ggml-tiny.en-q5_1.bin")),
+			"WHISPER_THREADS" => Some(String::from("2")),
+			"OTEL_SERVICE_NAME" => Some(String::from("transcriber")),
+			_ => None,
+		};
+		assert_eq!(
+			retired_variables_in(stale),
+			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
+		);
+	}
+
+	/// `OTEL_SERVICE_NAME` is still read, so only the retired value is named.
+	#[test]
+	fn a_current_env_names_no_retired_variable() {
+		assert!(retired_variables_in(|_| None).is_empty());
+		let renamed = |name: &str| (name == "OTEL_SERVICE_NAME").then(|| String::from("file_host"));
+		assert!(retired_variables_in(renamed).is_empty());
 	}
 
 	/// `AUTH_ENABLED` is on by default, so turning it off has to be possible by

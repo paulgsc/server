@@ -110,8 +110,9 @@ impl Whisper {
 	/// note. Errors name the variable, never its value.
 	///
 	/// # Errors
-	/// A model that does not load or is English-only, a VAD model that does
-	/// not load, a path that is not UTF-8, no ffmpeg, or no threads.
+	/// A model or VAD model that is not there, a model that does not load or
+	/// is English-only, a VAD model that does not load, a path that is not
+	/// UTF-8, no ffmpeg, or no threads.
 	pub fn load(model: &Path, vad_model: &Path, threads: usize) -> anyhow::Result<Self> {
 		whisper_rs::install_logging_hooks();
 		anyhow::ensure!(threads > 0, "TRANSCRIBE_THREADS must be at least 1");
@@ -121,6 +122,11 @@ impl Whisper {
 		let Some(vad_path) = vad_model.to_str() else {
 			anyhow::bail!("TRANSCRIBE_VAD_MODEL is not a UTF-8 path");
 		};
+		// Both, before either loads: whisper.cpp refuses a missing file as it
+		// does a corrupt one, and a box that never fetched the models should
+		// hear how to get them (#476).
+		anyhow::ensure!(!missing(model), "TRANSCRIBE_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+		anyhow::ensure!(!missing(vad_model), "TRANSCRIBE_VAD_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
 		let mut parameters = WhisperContextParameters::default();
 		parameters.use_gpu(false);
 		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("TRANSCRIBE_MODEL does not load as a whisper.cpp model"))?;
@@ -296,6 +302,12 @@ unsafe extern "C" fn should_abort(data: *mut c_void) -> bool {
 	watch.cancel.is_cancelled() || Instant::now() >= watch.deadline
 }
 
+/// Whether nothing is at `path`, as far as the filesystem says: an error
+/// looking (no permission on a directory above it) is not missing.
+fn missing(path: &Path) -> bool {
+	matches!(path.try_exists(), Ok(false))
+}
+
 fn vad_context(threads: usize) -> anyhow::Result<WhisperVadContextParams> {
 	let mut params = WhisperVadContextParams::new();
 	params.set_n_threads(i32::try_from(threads)?);
@@ -410,9 +422,11 @@ fn finish(mut child: Child, deadline: Instant, cancel: &CancellationToken) -> Re
 mod tests {
 	//! The decode half runs against a real ffmpeg, which CI's runners and the
 	//! image both have; a test skips when it is missing. Whisper itself needs
-	//! a model file, so it is exercised through `pass`'s fake and by hand.
+	//! a model file, so it is exercised through `pass`'s fake and by hand;
+	//! what `Whisper::load` refuses before a model loads is tested here.
 
-	use super::{decode, sample_at, Decoded, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use super::{decode, sample_at, Decoded, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use std::path::Path;
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
@@ -494,6 +508,39 @@ mod tests {
 	#[test]
 	fn the_decode_stops_one_second_past_the_longest_note() {
 		assert_eq!(DECODE_SECONDS.parse::<usize>().unwrap(), MAX_SECONDS + 1);
+	}
+
+	/// Why `Whisper::load` refused `model` and `vad_model`, checked to name
+	/// neither path: errors name the variable, never its value.
+	fn refusal(model: &Path, vad_model: &Path) -> String {
+		let Err(err) = Whisper::load(model, vad_model, 1) else {
+			panic!("loaded");
+		};
+		let err = err.to_string();
+		for path in [model, vad_model] {
+			assert!(!err.contains(path.to_str().unwrap()), "{err}");
+		}
+		err
+	}
+
+	/// #476: a box that never fetched the models hears that they are not
+	/// there, and how to get them, not that they do not load.
+	#[test]
+	fn a_model_that_is_not_there_says_so_and_how_to_get_it() {
+		let dir = tempfile::tempdir().unwrap();
+		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+		std::fs::write(&model, b"not a model").unwrap();
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_VAD_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+	}
+
+	#[test]
+	fn a_model_that_is_there_and_does_not_load_says_it_does_not_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
+		std::fs::write(&model, b"not a model").unwrap();
+		std::fs::write(&vad, b"not a model either").unwrap();
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL does not load as a whisper.cpp model");
 	}
 
 	#[test]
