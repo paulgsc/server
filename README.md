@@ -116,9 +116,10 @@ variable; it never becomes the default. Libraries read no environment: they
 take their config from the binary that uses them.
 
 - **ENV1: a variable that does not parse stops its binary at start, by name.**
-  - _Claim:_ every environment variable a binary reads is declared on its clap
-    `Config`, and one whose value the declared parser refuses stops the binary
-    before it does anything else, with an error naming the variable.
+  - _Claim:_ every environment variable this workspace's own code reads is
+    declared on its binary's clap `Config`, and one whose value the declared
+    parser refuses stops the binary before it does anything else, with an
+    error naming the variable.
   - _Family:_ every binary (`file_host`, `orchestrator`, `some-obs`); every
     variable each declares; set or unset; a value of the wrong kind or out of
     range; read from the environment or given as a flag.
@@ -130,13 +131,16 @@ take their config from the binary that uses them.
     binary's `tests/config.rs` runs the binary with one bad variable in its
     environment and requires exit 2 naming it. `clippy.toml`'s
     `disallowed-methods` makes reading the environment anywhere else
-    (`std::env::var`, `var_os`, `vars`, `dotenvy::var`, `EnvFilter`'s
-    environment readers) a lint error; the reads that are not configuration
-    carry an `#[allow]` saying so.
+    (`std::env::var`, `var_os`, `vars`, `dotenvy::var`, `EnvFilter`'s and its
+    builder's environment readers, `tracing_subscriber::fmt::init`) a lint
+    error; the reads that are not configuration carry an `#[allow]` saying so.
   - _Tolerance:_ a free-text value (a URL, a key, a path) is checked by what
     uses it, not by clap. `NUDGE_TIMEZONE` is the one that falls back: a name
     it does not know becomes UTC, with an error and a metric, by design
-    (`nudge::clock::NudgeClock::resolve`).
+    (`nudge::clock::NudgeClock::resolve`). Dependencies read variables of
+    their own that no `Config` declares, with their own fallbacks: tokio's
+    `TOKIO_WORKER_THREADS`, polars' `POLARS_MAX_THREADS`, and the OTel SDK's
+    `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_BSP_*`.
 
 ### Host-specific values
 

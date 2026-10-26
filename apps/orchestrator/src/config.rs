@@ -82,7 +82,10 @@ mod tests {
 			}
 			if refused.is_empty() {
 				assert!(FREE_TEXT.contains(&env), "{env} is in neither REFUSED nor FREE_TEXT");
-				assert!(arg.get_value_parser().type_id() == TypeId::of::<String>(), "{env} is listed as free text but parses");
+				assert!(
+					arg.get_value_parser().type_id() == TypeId::of::<String>(),
+					"{env} is free text, so its parser must be a plain String or PathBuf"
+				);
 			}
 		}
 		let mut declared: Vec<&str> = REFUSED.iter().map(|(name, _)| *name).chain(FREE_TEXT).collect();

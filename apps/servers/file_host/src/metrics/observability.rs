@@ -79,7 +79,7 @@ impl OtelGuard {
 	///
 	/// Fails when the OTLP exporter cannot be built, or `rust_log` does not
 	/// parse (`Config` has already refused one that does not).
-	pub fn new(config: &OtelConfig, rust_log: Option<&str>) -> Result<Self, ObservabilityError> {
+	pub fn new(config: &OtelConfig, rust_log: &str) -> Result<Self, ObservabilityError> {
 		let sampler = sampler(config);
 
 		let resource = Resource::builder()
@@ -108,7 +108,7 @@ impl OtelGuard {
 		global::set_tracer_provider(tracer_provider.clone());
 
 		let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-		let env_filter = EnvFilter::try_new(rust_log.unwrap_or("info"))?;
+		let env_filter = EnvFilter::try_new(rust_log)?;
 
 		tracing_subscriber::registry()
 			.with(env_filter)

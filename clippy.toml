@@ -35,6 +35,11 @@ disallowed-methods = [
   { path = "tracing_subscriber::EnvFilter::try_from_default_env", reason = "reads RUST_LOG around the Config; declare RUST_LOG there and use EnvFilter::try_new (#484)" },
   { path = "tracing_subscriber::EnvFilter::from_env", reason = "reads the environment around the Config, ignoring a bad value; declare it there and use EnvFilter::try_new (#484)" },
   { path = "tracing_subscriber::EnvFilter::try_from_env", reason = "reads the environment around the Config; declare it there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::filter::Builder::from_env", reason = "reads the environment around the Config; declare it there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::filter::Builder::from_env_lossy", reason = "reads the environment around the Config, dropping a bad value; declare it there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::filter::Builder::try_from_env", reason = "reads the environment around the Config; declare it there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::fmt::init", reason = "reads RUST_LOG around the Config; declare RUST_LOG there and build the subscriber with EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::fmt::try_init", reason = "reads RUST_LOG around the Config; declare RUST_LOG there and build the subscriber with EnvFilter::try_new (#484)" },
 ]
 
 # Ban std logging macros (enforce tracing-only)

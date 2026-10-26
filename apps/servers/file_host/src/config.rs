@@ -27,12 +27,9 @@ pub struct Config {
 	#[arg(long, env = "LOG_JSON", default_value_t = false, action = clap::ArgAction::Set)]
 	pub log_json: bool,
 
-	/// `tracing` filter directives, e.g. `info,file_host=debug`. Unset, `info`.
-	///
-	/// Until #484 `OtelGuard` read it itself, and a value it could not parse
-	/// silently became `info`.
-	#[arg(long, env = "RUST_LOG", value_parser = parse_filter)]
-	pub rust_log: Option<String>,
+	/// `tracing` filter directives, e.g. `info,file_host=debug`.
+	#[arg(long, env = "RUST_LOG", default_value = "info", value_parser = parse_filter)]
+	pub rust_log: String,
 
 	/// Database connection timeout in seconds
 	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30")]
@@ -166,11 +163,11 @@ pub struct Config {
 	pub obs_host: String,
 
 	/// OBS Websocket Server Password
-	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD")]
+	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD", hide_env_values = true)]
 	pub obs_password: String,
 
 	/// DATABASE URL
-	#[arg(long, env = "DATABASE_URL")]
+	#[arg(long, env = "DATABASE_URL", hide_env_values = true)]
 	pub database_url: String,
 
 	// ── Study nudge ──────────────────────────────────────────────────────────
@@ -195,7 +192,7 @@ pub struct Config {
 	pub vapid_public_key: Option<String>,
 
 	/// VAPID private key, base64url, the raw 32-byte P-256 scalar. Secret.
-	#[arg(long, env = "VAPID_PRIVATE_KEY")]
+	#[arg(long, env = "VAPID_PRIVATE_KEY", hide_env_values = true)]
 	pub vapid_private_key: Option<String>,
 
 	/// The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender.
@@ -449,9 +446,6 @@ pub struct Config {
 }
 
 /// Where traces go and how many are kept (`metrics::observability`).
-///
-/// Until #484 `OtelGuard` read these itself, and a sampler or ratio it could
-/// not parse silently became sampling every trace.
 #[derive(clap::Args, Clone, Debug, Serialize, Deserialize)]
 pub struct OtelConfig {
 	/// The `service.name` traces are exported under.
@@ -541,19 +535,20 @@ fn parse_ratio(ratio: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sy
 ///
 /// The one read around clap (#484): the `WHISPER_*` three are declared
 /// nowhere, and are looked for only so a stale `.env` is named.
+/// `otel_service_name` is the `Config`'s.
 #[must_use]
 #[allow(clippy::disallowed_methods)]
-pub fn retired_variables_set() -> Vec<&'static str> {
-	retired_variables_in(|name| std::env::var(name).ok())
+pub fn retired_variables_set(otel_service_name: &str) -> Vec<&'static str> {
+	retired_variables_in(|name| std::env::var(name).ok(), otel_service_name)
 }
 
 /// [`retired_variables_set`] over `var`, which reads one variable.
-fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
+fn retired_variables_in(var: impl Fn(&str) -> Option<String>, otel_service_name: &str) -> Vec<&'static str> {
 	let mut set: Vec<&'static str> = ["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS"]
 		.into_iter()
 		.filter(|name| var(name).is_some())
 		.collect();
-	if var("OTEL_SERVICE_NAME").as_deref() == Some("transcriber") {
+	if otel_service_name == "transcriber" {
 		set.push("OTEL_SERVICE_NAME");
 	}
 	set
@@ -697,7 +692,7 @@ mod tests {
 				let parser = arg.get_value_parser().type_id();
 				assert!(
 					parser == TypeId::of::<String>() || parser == TypeId::of::<PathBuf>(),
-					"{env} is listed as free text but parses"
+					"{env} is free text, so its parser must be a plain String or PathBuf"
 				);
 			}
 		}
@@ -737,13 +732,9 @@ mod tests {
 	/// The `.env` #476 met: every retired variable left set is named.
 	#[test]
 	fn a_retired_transcriber_variable_left_set_is_named() {
-		let stale = |name: &str| match name {
-			"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" => Some(String::new()),
-			"OTEL_SERVICE_NAME" => Some(String::from("transcriber")),
-			_ => None,
-		};
+		let stale = |name: &str| matches!(name, "WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS").then(String::new);
 		assert_eq!(
-			retired_variables_in(stale),
+			retired_variables_in(stale, "transcriber"),
 			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
 		);
 	}
@@ -751,9 +742,7 @@ mod tests {
 	/// `OTEL_SERVICE_NAME` is still read, so only the retired value is named.
 	#[test]
 	fn a_current_env_names_no_retired_variable() {
-		assert!(retired_variables_in(|_| None).is_empty());
-		let renamed = |name: &str| (name == "OTEL_SERVICE_NAME").then(|| String::from("file_host"));
-		assert!(retired_variables_in(renamed).is_empty());
+		assert!(retired_variables_in(|_| None, "file_host").is_empty());
 	}
 
 	/// `AUTH_ENABLED` is on by default, so turning it off has to be possible by

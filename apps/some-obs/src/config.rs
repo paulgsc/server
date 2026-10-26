@@ -41,10 +41,6 @@ pub struct Config {
 	pub shutdown_timeout: Duration,
 
 	/// `tracing` filter directives, e.g. `some_obs=debug`.
-	///
-	/// Until #484 a value that did not parse was replaced by a default that
-	/// named a crate that does not exist (`obs_nats_service`), so the service's
-	/// own lines were dropped.
 	#[arg(long, env = "RUST_LOG", default_value = "some_obs=info,obs_websocket=info,some_shutdown=info", value_parser = parse_filter)]
 	pub rust_log: String,
 }
@@ -142,7 +138,10 @@ mod tests {
 			}
 			if refused.is_empty() {
 				assert!(FREE_TEXT.contains(&env), "{env} is in neither REFUSED nor FREE_TEXT");
-				assert!(arg.get_value_parser().type_id() == TypeId::of::<String>(), "{env} is listed as free text but parses");
+				assert!(
+					arg.get_value_parser().type_id() == TypeId::of::<String>(),
+					"{env} is free text, so its parser must be a plain String or PathBuf"
+				);
 			}
 		}
 		let mut declared: Vec<&str> = REFUSED.iter().map(|(name, _)| *name).chain(FREE_TEXT).collect();
