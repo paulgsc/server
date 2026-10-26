@@ -36,7 +36,6 @@ async fn main() -> Result<()> {
 	let service = OrchestratorService::new(transport);
 	tracing::info!("🎯 Service initialized");
 
-	// Ctrl-C, or SIGTERM from `docker stop`: see `some_shutdown`.
 	let shutdown_signal = some_shutdown::shutdown_signal();
 	let service_shutdown = service.clone();
 	tokio::spawn(async move {

@@ -12,10 +12,11 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-# `rt`: `tokio::signal::unix::signal` registers with the runtime's driver.
-# `tests/sigterm.rs` uses these features too (`#[tokio::test]`).
-tokio = { workspace = true, features = ["macros", "rt", "signal"] }
+tokio = { workspace = true, features = ["macros", "signal"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

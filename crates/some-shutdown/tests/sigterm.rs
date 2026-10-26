@@ -28,7 +28,7 @@ async fn child_waits_for_shutdown_signal() {
 #[test]
 fn sigterm_stops_the_process_cleanly() {
 	let mut child = Command::new(std::env::current_exe().unwrap())
-		.args(["--exact", "child_waits_for_shutdown_signal", "--nocapture"])
+		.args(["--exact", "child_waits_for_shutdown_signal"])
 		.env(CHILD, "1")
 		.stdout(Stdio::piped())
 		.spawn()

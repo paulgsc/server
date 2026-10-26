@@ -53,7 +53,6 @@ impl ObsNatsService {
 	pub async fn run(self) -> Result<()> {
 		let service = Arc::new(self);
 
-		// Ctrl-C, or SIGTERM from `docker stop`: see `some_shutdown`.
 		let shutdown_signal = some_shutdown::shutdown_signal();
 		let shutdown_token = service.cancel_token.clone();
 		tokio::spawn(async move {

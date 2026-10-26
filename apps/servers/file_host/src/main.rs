@@ -215,7 +215,6 @@ async fn main() -> Result<()> {
 	// so a reader never finds the port of a server that has stopped.
 	let (listener, _port_file) = file_host::listen::from_config(&config).await?;
 
-	// Ctrl-C, or SIGTERM from `docker stop`: see `some_shutdown`.
 	let shutdown_signal = some_shutdown::shutdown_signal();
 	let signal_shutdown_token = shutdown_token.clone();
 	tokio::spawn(async move {
