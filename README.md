@@ -215,8 +215,5 @@ and VAPID keys, it runs a second nudge waker beside the container's.
 * [Study nudge design](./docs/study-nudge.md)
 * [Google Sheets ingestion pipeline](./docs/system_design/gsheets_webhook/README.md)
 
-### Models
-* [Whisper Model Optimization Guide](./docs/models/whisper-optimization.md)
-
 ### Caveats
 * [⚠️ Important Warnings](./docs/WARNING.md)

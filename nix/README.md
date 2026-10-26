@@ -22,7 +22,7 @@ nix develop
 # Available commands:
 # - cargo, rustc, clippy, rust-analyzer
 # - cargo-audit, cargo-watch, cargo-expand, etc.
-# - whisper download/prune/list
+# - whisper fetch/prune/list
 # - sqlx, just, jq, etc.
 ```
 
@@ -47,7 +47,7 @@ nix develop .#ci --command cargo build --release
 
 The `.#ci` shell removes:
 
-- ❌ Whisper manager (scripts, wget, curl)
+- ❌ Whisper manager (scripts, curl)
 - ❌ Audio libraries (alsa-lib)
 - ❌ Dev tooling (cargo-watch, cargo-audit, flamegraph, etc.)
 - ❌ Database CLIs (sqlite, duckdb)
@@ -80,15 +80,15 @@ nix develop .#ci  # Explicitly uses minimal shell
 .
 ├── flake.nix                 # Main flake with shell definitions
 └── nix/
-    ├── rust-env.nix          # Rust toolchain (CI-aware)
-    └── whisper-manager.nix   # Whisper models (disabled in CI)
+    ├── rust-env/default.nix  # Rust toolchain (CI-aware)
+    └── whisper-manager/      # Whisper models (disabled in CI)
 ```
 
 ## Modifying Active Packages
 
 ### Add a Dev Tool (Local Only)
 
-Edit `nix/rust-env.nix`:
+Edit `nix/rust-env/default.nix`:
 
 ```nix
 devTools = with pkgs; [
@@ -99,7 +99,7 @@ devTools = with pkgs; [
 
 ### Add a Build Dependency (Included in CI)
 
-Edit `nix/rust-env.nix`:
+Edit `nix/rust-env/default.nix`:
 
 ```nix
 coreBuildInputs = with pkgs; [
@@ -110,12 +110,20 @@ coreBuildInputs = with pkgs; [
 
 ### Change Active Whisper Models
 
-Edit `nix/whisper-manager.nix`:
+Edit `nix/whisper-manager/default.nix`: add a `pinnedModels` entry (name, URL
+and SHA-256). `whisper fetch` downloads every entry, and `whisper prune` keeps
+exactly those. Multilingual only, never `.en`: file_host's transcriber refuses
+an English-only model at startup.
 
 ```nix
-activeModels = [
-  "ggml-base.en-q5_1.bin"   # Uncomment to activate
-  "ggml-small.en-q5_1.bin"  # Add more as needed
+pinnedModels = [
+  {
+    name = "ggml-small-q5_1.bin";
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin";
+    sha256 = "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb";
+    size = "190MB";
+  }
+  # ...
 ];
 ```
 
