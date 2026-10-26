@@ -17,16 +17,15 @@
 //! function `nudge::waker::consider` calls in production, not a
 //! reimplementation of it.
 //!
-//! The client repo checks the output in
-//! (`apps/www/src/lib/tenant/testdata/`) and a test there round-trips it
+//! The client repo checks the output in as
+//! `provisioned-session.snapshot.json` and a test there round-trips it
 //! through the real `SessionRecord` type and the real `sequenceScenes`/
-//! `defaultSessionName`/`totalDurationOfScenes` functions -- same by-hand
-//! copy discipline `dump-routes`/`dump-proposed-session` already established;
-//! see either's doc comment for why nothing automates the bridge yet.
+//! `defaultSessionName`/`totalDurationOfScenes` functions.
 //!
-//! Regenerate and re-copy whenever the seed migration or the recommender's
-//! rules change in a way that would move which activities this produces,
-//! what they're scheduled at, or what they're named.
+//! `.github/workflows/routes.yml` runs this bin on every PR that touches
+//! `file_host` and fails when the client's copy differs from its output
+//! (`scripts/check_client_fixtures.py`). When it does, regenerate the
+//! client's copy in the same change as whatever moved it.
 
 use activity_repo::{ActivityMaturity, ActivityRecord, LayoutTree};
 use chrono::{TimeZone, Utc};

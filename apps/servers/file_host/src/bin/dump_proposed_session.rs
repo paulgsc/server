@@ -14,17 +14,16 @@
 //! migration against the client, so this bin only needs to be faithful to
 //! *it*, not to re-derive anything.
 //!
-//! The client repo checks the output in
-//! (`apps/www/src/lib/session-duration-policy/testdata/`) and a test there
-//! feeds it through the real `sequenceScenes` and `checkSessionDuration` --
-//! #281's own acceptance criterion that this is verified "by a fixture
-//! consumed on the client side, not by re-implementing the check here."
-//! Same by-hand copy discipline as `dump-routes`/`dump-activity-catalog.ts`;
-//! see either's doc comment for why nothing automates the bridge yet.
+//! The client repo checks the output in as `proposed-session.snapshot.json`
+//! and a test there feeds it through the real `sequenceScenes` and
+//! `checkSessionDuration` -- #281's own acceptance criterion that this is
+//! verified "by a fixture consumed on the client side, not by re-implementing
+//! the check here."
 //!
-//! Regenerate and re-copy whenever the seed migration or the recommender's
-//! rules change in a way that would move which two activities this
-//! produces or what they're scheduled at.
+//! `.github/workflows/routes.yml` runs this bin on every PR that touches
+//! `file_host` and fails when the client's copy differs from its output
+//! (`scripts/check_client_fixtures.py`). When it does, regenerate the
+//! client's copy in the same change as whatever moved it.
 
 use activity_repo::{provision, recommend, ActivityMaturity, ActivityRecord, LayoutTree, DEFAULT_RECOMMENDATION_COUNT};
 use chrono::{TimeZone, Utc};
