@@ -27,7 +27,7 @@ use chrono::{SecondsFormat, Utc};
 use jobs_repo::{JobsError, REWRITTEN};
 use korean_repo::KoreanError;
 use serde::{Deserialize, Serialize};
-use serde_json::{value::RawValue, Value};
+use serde_json::value::RawValue;
 use sharing_repo::Scope;
 use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ pub(crate) const BATCH_CEILING: usize = 100;
 enum Outcome {
 	/// Stored, or already held: the route's `change`, and what the record now
 	/// holds under the id, which the phone compares with what it sent.
-	Written(&'static str, Value),
+	Written(&'static str, Box<RawValue>),
 	/// A `422`: each refused field and why.
 	Refused(Vec<(&'static str, &'static str)>),
 	/// A `409`: what it conflicts with.
@@ -62,7 +62,7 @@ impl Collection for Jobs {
 
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match jobs_repo::put_event(conn, subject, id, body, now).await {
-			Ok((change, event)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(event)?)),
+			Ok((change, event)) => Ok(Outcome::Written(change.as_str(), serde_json::value::to_raw_value(&event)?)),
 			Err(JobsError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(JobsError::Rewritten) => Ok(Outcome::Conflict(REWRITTEN)),
 			Err(JobsError::Unreadable) => Err(FileHostError::OperationError("a stored Jobs event does not read back".to_owned())),
@@ -78,7 +78,7 @@ impl Collection for Aph {
 
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match aph_repo::put_entry(conn, subject, id, body, now).await {
-			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(entry)?)),
+			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::value::to_raw_value(&entry)?)),
 			Err(AphError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(AphError::Unreadable) => Err(FileHostError::OperationError("a stored aph revision does not read back".to_owned())),
 			Err(AphError::Storage(err)) => Err(FileHostError::Sqlite(err)),
@@ -103,7 +103,7 @@ impl Collection for Korean {
 			korean_repo::put(conn, subject, kind, key, body, now).await.map(|(change, entry)| (change, Some(entry)))
 		};
 		match written {
-			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(entry)?)),
+			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::value::to_raw_value(&entry)?)),
 			Err(KoreanError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(KoreanError::Unreadable) => Err(FileHostError::OperationError("a stored Korean revision does not read back".to_owned())),
 			Err(KoreanError::Storage(err)) => Err(FileHostError::Sqlite(err)),
@@ -137,7 +137,7 @@ pub struct Answer {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub change: Option<&'static str>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub held: Option<Value>,
+	pub held: Option<Box<RawValue>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub refused: Option<BTreeMap<&'static str, Vec<&'static str>>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -453,6 +453,28 @@ mod tests {
 		assert_eq!(results[2]["held"]["body"], Value::Null);
 		assert_eq!(results[3]["refused"], json!({ "id": ["is <kind>/<key>"] }));
 		assert!(results[4]["refused"]["kind"].is_array());
+	}
+
+	/// What home holds is answered as the bytes it kept, as the item's own
+	/// route answers it: never re-read as a `Value`, which would reformat a
+	/// body and refuse a number it cannot hold.
+	#[tokio::test]
+	async fn a_korean_batch_answers_each_body_byte_for_byte() {
+		let state = state().await;
+		let a = phone(&state, A).await;
+		let app = app(state);
+		let body = r#"{ "n" : 1e400,  "n" : 2 }"#;
+		let batch = String::from(r#"{ "items": [{ "id": "record/it", "body": "#) + body + " }] }";
+		let request = Request::builder()
+			.method(Method::POST)
+			.uri("/sync/korean/batch")
+			.header(&a.0, &a.1)
+			.body(Body::from(batch))
+			.unwrap();
+		let response = app.oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let text = String::from_utf8(axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+		assert!(text.contains(&(String::from(r#""body":"#) + body)), "{text}");
 	}
 
 	#[tokio::test]
