@@ -61,6 +61,9 @@ const FFMPEG: &str = "ffmpeg";
 /// How often a running decode is checked against its deadline.
 const DECODE_POLL: Duration = Duration::from_millis(20);
 
+/// What fetches the models, as example.env says it.
+const FETCH: &str = "nix develop .#whisper -c whisper fetch";
+
 /// How a note was heard, and how long its audio is when it decoded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heard {
@@ -110,7 +113,8 @@ impl Whisper {
 	/// note. Errors name the variable, never its value.
 	///
 	/// # Errors
-	/// A model or VAD model that is not there, a model that does not load or
+	/// A model or VAD model that is not there, is not a file or cannot be
+	/// looked at, a model that does not load or
 	/// is English-only, a VAD model that does not load, a path that is not
 	/// UTF-8, no ffmpeg, or no threads.
 	pub fn load(model: &Path, vad_model: &Path, threads: usize) -> anyhow::Result<Self> {
@@ -125,8 +129,8 @@ impl Whisper {
 		// Both, before either loads: whisper.cpp refuses a missing file as it
 		// does a corrupt one, and a box that never fetched the models should
 		// hear how to get them (#476).
-		anyhow::ensure!(!missing(model), "TRANSCRIBE_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
-		anyhow::ensure!(!missing(vad_model), "TRANSCRIBE_VAD_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+		model_file(model, "TRANSCRIBE_MODEL")?;
+		model_file(vad_model, "TRANSCRIBE_VAD_MODEL")?;
 		let mut parameters = WhisperContextParameters::default();
 		parameters.use_gpu(false);
 		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("TRANSCRIBE_MODEL does not load as a whisper.cpp model"))?;
@@ -302,10 +306,17 @@ unsafe extern "C" fn should_abort(data: *mut c_void) -> bool {
 	watch.cancel.is_cancelled() || Instant::now() >= watch.deadline
 }
 
-/// Whether nothing is at `path`, as far as the filesystem says: an error
-/// looking (no permission on a directory above it) is not missing.
-fn missing(path: &Path) -> bool {
-	matches!(path.try_exists(), Ok(false))
+/// Refuses `path`, which `variable` names, unless a file is there: a path
+/// with nothing at it, with a directory at it, or that cannot be looked at
+/// (no permission on a directory above it) each says which. Errors name the
+/// variable, never the path or the filesystem's error.
+fn model_file(path: &Path, variable: &str) -> anyhow::Result<()> {
+	match path.metadata() {
+		Ok(metadata) if metadata.is_file() => Ok(()),
+		Ok(_) => anyhow::bail!("{variable} is not a file: it must name the model file itself"),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => anyhow::bail!("{variable} is not there: run `{FETCH}`"),
+		Err(_) => anyhow::bail!("{variable} cannot be looked at: check its directory's permissions"),
+	}
 }
 
 fn vad_context(threads: usize) -> anyhow::Result<WhisperVadContextParams> {
@@ -423,7 +434,7 @@ mod tests {
 	//! The decode half runs against a real ffmpeg, which CI's runners and the
 	//! image both have; a test skips when it is missing. Whisper itself needs
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
-	//! what `Whisper::load` refuses before a model loads is tested here.
+	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
 	use super::{decode, sample_at, Decoded, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
 	use std::path::Path;
@@ -510,17 +521,12 @@ mod tests {
 		assert_eq!(DECODE_SECONDS.parse::<usize>().unwrap(), MAX_SECONDS + 1);
 	}
 
-	/// Why `Whisper::load` refused `model` and `vad_model`, checked to name
-	/// neither path: errors name the variable, never its value.
+	/// Why `Whisper::load` refused `model` and `vad_model`.
 	fn refusal(model: &Path, vad_model: &Path) -> String {
 		let Err(err) = Whisper::load(model, vad_model, 1) else {
 			panic!("loaded");
 		};
-		let err = err.to_string();
-		for path in [model, vad_model] {
-			assert!(!err.contains(path.to_str().unwrap()), "{err}");
-		}
-		err
+		err.to_string()
 	}
 
 	/// #476: a box that never fetched the models hears that they are not
@@ -529,9 +535,40 @@ mod tests {
 	fn a_model_that_is_not_there_says_so_and_how_to_get_it() {
 		let dir = tempfile::tempdir().unwrap();
 		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
 		std::fs::write(&model, b"not a model").unwrap();
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_VAD_MODEL is not there: run `whisper fetch` (nix/whisper-manager)");
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_VAD_MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
+	}
+
+	#[test]
+	fn a_directory_where_a_model_goes_is_not_a_model_file() {
+		let dir = tempfile::tempdir().unwrap();
+		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
+		std::fs::create_dir(&model).unwrap();
+		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not a file: it must name the model file itself");
+	}
+
+	/// A model behind a directory nobody may enter is not called missing, and
+	/// the same for the VAD model.
+	#[test]
+	fn a_model_that_cannot_be_looked_at_says_so() {
+		use std::os::unix::fs::PermissionsExt as _;
+		let dir = tempfile::tempdir().unwrap();
+		let locked = dir.path().join("locked");
+		std::fs::create_dir(&locked).unwrap();
+		// A file that is there, and a path nobody may look past.
+		let (there, hidden) = (dir.path().join("ggml-small-q5_1.bin"), locked.join("ggml-silero-v5.1.2.bin"));
+		std::fs::write(&there, b"not a model").unwrap();
+		std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+		// Root ignores modes, so where the locked directory still reads (a
+		// test run as root), there is nothing to show and the test skips.
+		let refused = std::fs::read_dir(&locked).is_err().then(|| (refusal(&hidden, &there), refusal(&there, &hidden)));
+		std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+		let Some((model_refused, vad_refused)) = refused else {
+			return;
+		};
+		assert_eq!(model_refused, "TRANSCRIBE_MODEL cannot be looked at: check its directory's permissions");
+		assert_eq!(vad_refused, "TRANSCRIBE_VAD_MODEL cannot be looked at: check its directory's permissions");
 	}
 
 	#[test]

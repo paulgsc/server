@@ -80,7 +80,7 @@ nix develop .#ci  # Explicitly uses minimal shell
 .
 ├── flake.nix                 # Main flake with shell definitions
 └── nix/
-    ├── rust-env.nix          # Rust toolchain (CI-aware)
+    ├── rust-env/default.nix  # Rust toolchain (CI-aware)
     └── whisper-manager/      # Whisper models (disabled in CI)
 ```
 
@@ -88,7 +88,7 @@ nix develop .#ci  # Explicitly uses minimal shell
 
 ### Add a Dev Tool (Local Only)
 
-Edit `nix/rust-env.nix`:
+Edit `nix/rust-env/default.nix`:
 
 ```nix
 devTools = with pkgs; [
@@ -99,7 +99,7 @@ devTools = with pkgs; [
 
 ### Add a Build Dependency (Included in CI)
 
-Edit `nix/rust-env.nix`:
+Edit `nix/rust-env/default.nix`:
 
 ```nix
 coreBuildInputs = with pkgs; [
@@ -110,15 +110,20 @@ coreBuildInputs = with pkgs; [
 
 ### Change Active Whisper Models
 
-Edit `nix/whisper-manager/default.nix`: name the model in `activeModels` and
-give it a `pinnedModels` entry (URL and SHA-256), which is what `whisper fetch`
-downloads. Multilingual only, never `.en`: file_host's transcriber refuses an
-English-only model at startup.
+Edit `nix/whisper-manager/default.nix`: add a `pinnedModels` entry (name, URL
+and SHA-256). `whisper fetch` downloads every entry, and `whisper prune` keeps
+exactly those. Multilingual only, never `.en`: file_host's transcriber refuses
+an English-only model at startup.
 
 ```nix
-activeModels = [
-  "ggml-small-q5_1.bin"
-  "ggml-silero-v5.1.2.bin"
+pinnedModels = [
+  {
+    name = "ggml-small-q5_1.bin";
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin";
+    sha256 = "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb";
+    size = "190MB";
+  }
+  # ...
 ];
 ```
 

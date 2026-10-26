@@ -399,8 +399,7 @@ pub struct Config {
 	// whisper.cpp on its CPU. Off unless `TRANSCRIBE_ENABLED`; on, the server
 	// refuses to start unless both models load and ffmpeg runs. Not the
 	// `WHISPER_*` variables an older `example.env` set, which named an
-	// English-only model and nothing read: startup warns while any is set
-	// (`retired_variables_set`).
+	// English-only model and nothing read.
 	/// Whether home transcribes voice notes at all.
 	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
 	pub transcribe_enabled: bool,
@@ -553,14 +552,11 @@ mod tests {
 		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", Some("nats://nats:4222"), Some("redis://redis:6379")).is_empty());
 	}
 
-	/// The `.env` #476 met: every retired variable is named, and only its
-	/// name.
+	/// The `.env` #476 met: every retired variable left set is named.
 	#[test]
 	fn a_retired_transcriber_variable_left_set_is_named() {
 		let stale = |name: &str| match name {
-			"WHISPER_MODELS_PATH" => Some(String::from("/mnt/storage/users/dev/models/whisper-models")),
-			"WHISPER_MODEL" => Some(String::from("/models/ggml-tiny.en-q5_1.bin")),
-			"WHISPER_THREADS" => Some(String::from("2")),
+			"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" => Some(String::new()),
 			"OTEL_SERVICE_NAME" => Some(String::from("transcriber")),
 			_ => None,
 		};

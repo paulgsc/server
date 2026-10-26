@@ -15,14 +15,9 @@ else let
   # paulgsc/server#462), mounted into its container at /models by
   # infra/compose/file_host.yml. `whisper fetch` downloads exactly these.
   # Multilingual, not `.en`: the notes mix Korean into English, and the
-  # transcriber refuses an English-only model at startup.
-  activeModels = [
-    "ggml-small-q5_1.bin"
-    "ggml-silero-v5.1.2.bin"
-  ];
-
-  # Each active model's source and SHA-256 (Hugging Face's own, from the
-  # file's `X-Linked-ETag`), so a fetch keeps only the bytes it expects.
+  # transcriber refuses an English-only model at startup. Each with its
+  # source and SHA-256 (Hugging Face's own, from the file's `X-Linked-ETag`),
+  # so a fetch keeps only the bytes it expects.
   pinnedModels = [
     {
       name = "ggml-small-q5_1.bin";
@@ -38,21 +33,18 @@ else let
     }
   ];
 
+  # What `whisper prune` keeps and `whisper list` shows as active.
+  activeModels = map (m: m.name) pinnedModels;
+
   # Where the models go: the directory infra/compose/file_host.yml mounts at
   # /models, and its HOST-SPECIFIC default (#406). TRANSCRIBE_MODELS_DIR, the
-  # variable that mount reads, overrides it here too, but only when exported
-  # and nix evaluates impurely (`nix develop --impure`): a pure evaluation
-  # reads every variable as unset.
-  modelsDir = let
-    envPath = builtins.getEnv "TRANSCRIBE_MODELS_DIR";
-  in
-    if envPath != ""
-    then envPath
-    else "/mnt/storage/users/dev/models/whisper-models";
+  # variable that mount reads, overrides it when exported: each command
+  # reads it as it runs.
+  modelsDir = "/mnt/storage/users/dev/models/whisper-models";
   # ======================================
   pruneUnusedModels = pkgs.writeShellScriptBin "whisper-prune" ''
     set -euo pipefail
-    MODELS_DIR="${modelsDir}"
+    MODELS_DIR="''${TRANSCRIBE_MODELS_DIR:-${modelsDir}}"
 
     echo "🧹 Pruning models not in active registry..."
 
@@ -85,7 +77,7 @@ else let
   # there with the right hash. Prunes nothing.
   fetchModels = pkgs.writeShellScriptBin "whisper-fetch" ''
     set -euo pipefail
-    MODELS_DIR="${modelsDir}"
+    MODELS_DIR="''${TRANSCRIBE_MODELS_DIR:-${modelsDir}}"
     mkdir -p "$MODELS_DIR"
     ${builtins.concatStringsSep "\n" (map (m: ''
         if [ -f "$MODELS_DIR/${m.name}" ] && echo "${m.sha256}  $MODELS_DIR/${m.name}" | ${pkgs.coreutils}/bin/sha256sum --check --status; then
@@ -119,7 +111,7 @@ else let
     BLUE='\033[0;34m'
     NC='\033[0m'
 
-    MODELS_DIR="${modelsDir}"
+    MODELS_DIR="''${TRANSCRIBE_MODELS_DIR:-${modelsDir}}"
 
     echo -e "''${BLUE}📋 Whisper Models Status''${NC}"
     echo ""
@@ -140,28 +132,29 @@ else let
     fi
 
     echo ""
-    FREE_GB=$(df -BG "${modelsDir}" 2>/dev/null | awk 'NR==2 {gsub("G","",$4); print $4}' || echo "?")
+    FREE_GB=$(df -BG "$MODELS_DIR" 2>/dev/null | awk 'NR==2 {gsub("G","",$4); print $4}' || echo "?")
     echo "💾 Free space: ''${FREE_GB}GB"
   '';
 
   whisperCLI = pkgs.writeShellScriptBin "whisper" ''
-    case "''${1:-help}" in
+    usage() {
+      echo "Whisper Model Manager"
+      echo ""
+      echo "Usage:"
+      echo "  whisper fetch  - Download the transcriber's models, verified"
+      echo "  whisper prune  - Remove models not in pinnedModels"
+      echo "  whisper list   - Show active vs downloaded models"
+    }
+
+    case "''${1:-}" in
       fetch) ${fetchModels}/bin/whisper-fetch ;;
       prune) ${pruneUnusedModels}/bin/whisper-prune ;;
       list)  ${listModels}/bin/whisper-list ;;
-      # Retired (#476): an interactive menu of English-only models the
-      # transcriber refuses, without the VAD model, that pruned first.
-      download)
-        echo "whisper download is retired: run 'whisper fetch' for the transcriber's models" >&2
-        exit 1
-        ;;
+      help|"") usage ;;
       *)
-        echo "Whisper Model Manager"
-        echo ""
-        echo "Usage:"
-        echo "  whisper fetch  - Download the transcriber's models, verified"
-        echo "  whisper prune  - Remove models not in activeModels list"
-        echo "  whisper list   - Show active vs downloaded models"
+        echo "whisper: unknown command '$1'" >&2
+        usage >&2
+        exit 1
         ;;
     esac
   '';
@@ -174,12 +167,11 @@ else let
     pkgs.curl
   ];
 
-  # Exports nothing: file_host warns at startup about the retired
-  # WHISPER_MODELS_PATH (#476), and this hook runs in the default shell too.
+  # Export no WHISPER_* variable: file_host warns at startup on any.
   hookScript = ''
     echo "🎯 Whisper Manager loaded"
     echo "   Commands: whisper {fetch|prune|list}"
-    echo "   Models: ${modelsDir}"
+    echo "   Models: ''${TRANSCRIBE_MODELS_DIR:-${modelsDir}}"
   '';
 in {
   packages = packagesList;
