@@ -79,9 +79,14 @@ pub enum TabError {
 	ValidationError(String),
 }
 
+// A missing tab answers 404, as `tabs.get_by_id` in some-ui's contract harness
+// expects (`.github/workflows/routes.yml` runs it against this server).
 impl From<TabError> for FileHostError {
 	fn from(err: TabError) -> Self {
-		FileHostError::OperationError(err.to_string())
+		match err {
+			TabError::NotFound => Self::NotFound,
+			TabError::ValidationError(_) => Self::OperationError(err.to_string()),
+		}
 	}
 }
 
