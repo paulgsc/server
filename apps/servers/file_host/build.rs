@@ -21,6 +21,10 @@
 // lines are how this file's whole job gets done, not a logging shortcut the
 // workspace's tracing-only convention has an alternative for.
 #![allow(clippy::disallowed_macros)]
+// Cargo hands a build script its inputs as environment variables, so reading
+// them is this script's configuration, not a runtime read around a binary's
+// clap `Config` (#484).
+#![allow(clippy::disallowed_methods)]
 
 use std::env;
 use std::process::Command;

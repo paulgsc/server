@@ -18,6 +18,23 @@ disallowed-methods = [
   # route registered any other way is served but missing from the client's
   # snapshot. See apps/servers/file_host/src/routes/table.rs.
   { path = "axum::routing::Router::route", reason = "register on file_host::routes::table::RouteTable so the route inventory records it" },
+  # Each binary reads its environment through one clap `Config` (#410, #484):
+  # a value read around it is one that can fall back to a default when it
+  # does not parse, instead of stopping the binary at start. Libraries take
+  # their config from their caller. The reads that are not configuration (a
+  # build script's inputs, what `leetype_runner` forwards to a child, a test's
+  # own marker) and file_host's retired-variable check carry an `#[allow]`
+  # saying so.
+  { path = "std::env::var", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "std::env::var_os", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "std::env::vars", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "std::env::vars_os", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "dotenvy::var", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "dotenvy::vars", reason = "declare it on the binary's clap Config (`env = \"...\"`) and pass the value down (#484)" },
+  { path = "tracing_subscriber::EnvFilter::from_default_env", reason = "reads RUST_LOG around the Config, ignoring a bad one; declare RUST_LOG there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::EnvFilter::try_from_default_env", reason = "reads RUST_LOG around the Config; declare RUST_LOG there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::EnvFilter::from_env", reason = "reads the environment around the Config, ignoring a bad value; declare it there and use EnvFilter::try_new (#484)" },
+  { path = "tracing_subscriber::EnvFilter::try_from_env", reason = "reads the environment around the Config; declare it there and use EnvFilter::try_new (#484)" },
 ]
 
 # Ban std logging macros (enforce tracing-only)

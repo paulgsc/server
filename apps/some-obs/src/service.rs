@@ -1,5 +1,5 @@
 use crate::{Config, Result};
-use obs_websocket::{ObsConfig, ObsWebSocketManager};
+use obs_websocket::ObsWebSocketManager;
 use some_transport::NatsTransport;
 use std::sync::Arc;
 use tokio::time::timeout;
@@ -27,8 +27,7 @@ impl ObsNatsService {
 	pub async fn new(config: Config) -> Result<Self> {
 		tracing::info!("🔌 Initializing OBS NATS Service");
 
-		// Create OBS manager (OBS_HOST / OBS_PORT / OBS_PASSWORD)
-		let obs_manager = Arc::new(ObsWebSocketManager::new(ObsConfig::from_env()));
+		let obs_manager = Arc::new(ObsWebSocketManager::new(config.obs()));
 
 		// Create NATS transports using pooled connections
 		tracing::info!("📡 Connecting to NATS at {}", config.nats_url);

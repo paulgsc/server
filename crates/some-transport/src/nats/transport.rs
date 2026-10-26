@@ -294,9 +294,10 @@ mod tests {
 		message: String,
 	}
 
-	// Helper to get test NATS URL from environment or use default
+	// The NATS these tests use, and skip without: the dev host's own. A
+	// library reads no environment (#484), its tests included.
 	fn nats_url() -> String {
-		std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string())
+		crate::DEV_HOST_NATS_URL.to_string()
 	}
 
 	// Helper to check if NATS is available

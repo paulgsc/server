@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Where to reach obs-websocket and how to authenticate.
+///
+/// The caller fills it in: this crate reads no environment (#484). `some-obs`
+/// reads `OBS_HOST`, `OBS_PORT` and `OBS_PASSWORD` into it through clap, so a
+/// port that does not parse stops it at start instead of becoming the default.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ObsConfig {
 	pub host: String,
@@ -10,20 +14,9 @@ pub struct ObsConfig {
 	pub password: String,
 }
 
-impl ObsConfig {
-	/// Reads `OBS_HOST`, `OBS_PORT` and `OBS_PASSWORD`, falling back to
-	/// [`Self::default`] for any that are unset or, for the port, unparsable.
-	#[must_use]
-	pub fn from_env() -> Self {
-		let defaults = Self::default();
-		Self {
-			host: std::env::var("OBS_HOST").unwrap_or(defaults.host),
-			port: std::env::var("OBS_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(defaults.port),
-			password: std::env::var("OBS_PASSWORD").unwrap_or(defaults.password),
-		}
-	}
-}
-
+/// `OBS_HOST`'s, `OBS_PORT`'s and `OBS_PASSWORD`'s defaults in `some-obs` and
+/// the examples. HOST-SPECIFIC (#406): the host is a machine on the dev host's
+/// LAN; the image sets `OBS_HOST` (`infra/docker/Dockerfile.obs`).
 impl Default for ObsConfig {
 	fn default() -> Self {
 		Self {

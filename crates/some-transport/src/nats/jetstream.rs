@@ -41,7 +41,7 @@ pub struct JetStreamConfig {
 impl Default for JetStreamConfig {
 	fn default() -> Self {
 		Self {
-			nats_url: "nats://localhost:4222".into(),
+			nats_url: super::DEV_HOST_NATS_URL.into(),
 			consumer_name: "pipeline-worker".into(),
 			max_bytes: 512 * 1024 * 1024,
 			max_message_size: 8 * 1024 * 1024,

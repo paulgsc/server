@@ -106,6 +106,38 @@ nix develop  # default shell: Rust + dev tools + Whisper + audio libs
 `whisper`, and `llm` — see [Nix Development Environment](./nix/README.md)
 for the first three.
 
+### Configuration
+
+Each binary (`file_host`, `orchestrator`, `some-obs`) reads its environment
+through one clap `Config`, in its `config.rs`, and nowhere else (#410, #484).
+`<binary> --help` lists every variable it reads, with its default. A value
+that does not parse stops the binary at start with an error naming the
+variable; it never becomes the default. Libraries read no environment: they
+take their config from the binary that uses them.
+
+- **ENV1: a variable that does not parse stops its binary at start, by name.**
+  - _Claim:_ every environment variable a binary reads is declared on its clap
+    `Config`, and one whose value the declared parser refuses stops the binary
+    before it does anything else, with an error naming the variable.
+  - _Family:_ every binary (`file_host`, `orchestrator`, `some-obs`); every
+    variable each declares; set or unset; a value of the wrong kind or out of
+    range; read from the environment or given as a flag.
+  - _Proof:_ each `Config`'s `every_variable_that_does_not_parse_is_refused_by_name`
+    walks every declared variable: each is its own value name (clap's error
+    names the value name, never the variable a value came from), each one that
+    parses is refused with a bad value by an error naming it, and a variable
+    in neither its refused nor its free-text list fails the test. Each
+    binary's `tests/config.rs` runs the binary with one bad variable in its
+    environment and requires exit 2 naming it. `clippy.toml`'s
+    `disallowed-methods` makes reading the environment anywhere else
+    (`std::env::var`, `var_os`, `vars`, `dotenvy::var`, `EnvFilter`'s
+    environment readers) a lint error; the reads that are not configuration
+    carry an `#[allow]` saying so.
+  - _Tolerance:_ a free-text value (a URL, a key, a path) is checked by what
+    uses it, not by clap. `NUDGE_TIMEZONE` is the one that falls back: a name
+    it does not know becomes UTC, with an error and a metric, by design
+    (`nudge::clock::NudgeClock::resolve`).
+
 ### Host-specific values
 
 This server runs on one machine today: the NixOS dev host `nixos.local`, with
@@ -114,8 +146,8 @@ paths and example values are right only there. They are allowed, but never
 silent:
 
 * **Marked.** Each one carries the word `HOST-SPECIFIC` where it is defined:
-  `grep -rn HOST-SPECIFIC example.env infra/ apps/` lists every value a new
-  host (a VPS, say) must replace.
+  `grep -rn HOST-SPECIFIC example.env infra/ apps/ crates/` lists every value
+  a new host (a VPS, say) must replace.
 * **Announced.** `file_host` logs one `HOST-SPECIFIC` warning at startup naming
   every variable it is running on a dev-host value for
   (`Config::host_specific_defaults_in_use`).

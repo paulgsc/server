@@ -13,7 +13,7 @@ pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://loc
 /// `APP_BASE_URL`'s default. HOST-SPECIFIC: the `nixos.local` dev host.
 pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
 /// Used when `NATS_URL` is unset. HOST-SPECIFIC: a NATS on this machine.
-pub const DEV_HOST_NATS_URL: &str = "nats://localhost:4222";
+pub use some_transport::DEV_HOST_NATS_URL;
 /// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
 pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
@@ -24,11 +24,14 @@ pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 #[command(author, version, about, long_about = None)]
 pub struct Config {
 	/// Use JSON formatting for tracing
-	#[arg(long, env = "LOG_JSON", default_value = "false")]
+	#[arg(long, env = "LOG_JSON", default_value_t = false, action = clap::ArgAction::Set)]
 	pub log_json: bool,
 
-	/// Log level
-	#[arg(long, env = "RUST_LOG")]
+	/// `tracing` filter directives, e.g. `info,file_host=debug`. Unset, `info`.
+	///
+	/// Until #484 `OtelGuard` read it itself, and a value it could not parse
+	/// silently became `info`.
+	#[arg(long, env = "RUST_LOG", value_parser = parse_filter)]
 	pub rust_log: Option<String>,
 
 	/// Database connection timeout in seconds
@@ -45,27 +48,27 @@ pub struct Config {
 	/// These two were once `HOST`/`PORT` and read by nothing (the listener was
 	/// hard-coded to `0.0.0.0:3000`); the defaults are that address, so honouring
 	/// them changes nothing for a server started without them.
-	#[arg(long = "bind", env = "FILE_HOST_BIND", default_value = "0.0.0.0")]
+	#[arg(long = "bind", env = "FILE_HOST_BIND", value_name = "FILE_HOST_BIND", default_value = "0.0.0.0")]
 	pub host: String,
 
 	/// Port to listen on.
 	///
 	/// `FILE_HOST_PORT`, not `PORT`: the container reads the repo's `.env`, and
 	/// a bare `PORT` there meant for another service would move this one.
-	#[arg(long, env = "FILE_HOST_PORT", default_value = "3000")]
+	#[arg(long, env = "FILE_HOST_PORT", value_name = "FILE_HOST_PORT", default_value = "3000")]
 	pub port: u16,
 
 	/// Dev only: when the port is taken, listen on the next free one instead
 	/// of failing (`listen::bind`). `make dev` sets it, so a server run from
 	/// source can sit beside the production container. Never set it in
 	/// production: its published port and healthcheck assume `FILE_HOST_PORT`.
-	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", default_value = "false")]
+	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", value_name = "FILE_HOST_PORT_FALLBACK", default_value_t = false, action = clap::ArgAction::Set)]
 	pub port_fallback: bool,
 
 	/// Where to record the port actually listened on, as `{ port, pid }`, for
 	/// `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on
 	/// shutdown. `make dev` sets it.
-	#[arg(long, env = "FILE_HOST_PORT_FILE")]
+	#[arg(long, env = "FILE_HOST_PORT_FILE", value_name = "FILE_HOST_PORT_FILE")]
 	pub port_file: Option<std::path::PathBuf>,
 
 	/// Number of worker threads
@@ -85,7 +88,7 @@ pub struct Config {
 	pub rate_limit: u32,
 
 	/// Enable CORS
-	#[arg(long, env = "ENABLE_CORS")]
+	#[arg(long, env = "ENABLE_CORS", default_value_t = false, action = clap::ArgAction::Set)]
 	pub enable_cors: bool,
 
 	/// Comma-separated list of allowed CORS origins for browser-facing read routes
@@ -127,7 +130,7 @@ pub struct Config {
 	pub cache_ttl: u64,
 
 	/// Enable Prometheus metrics
-	#[arg(long, env = "ENABLE_PROMETHEUS")]
+	#[arg(long, env = "ENABLE_PROMETHEUS", default_value_t = false, action = clap::ArgAction::Set)]
 	pub enable_prometheus: bool,
 
 	/// Prometheus metrics port
@@ -135,19 +138,19 @@ pub struct Config {
 	pub prometheus_port: u16,
 
 	/// Enable development mode
-	#[arg(long, env = "DEV_MODE")]
+	#[arg(long, env = "DEV_MODE", default_value_t = false, action = clap::ArgAction::Set)]
 	pub dev_mode: bool,
 
 	/// Streaming Chunk Size
-	#[arg(long, env = "BUFFER_SIZE", default_value = "65536")]
+	#[arg(long, env = "BUFFER_SIZE", value_name = "BUFFER_SIZE", default_value = "65536")]
 	pub chunk_size: usize,
 
 	/// Individual request payload lmit in MB
-	#[arg(long, env = "MAX_REQUEST_SIZE_MB", default_value = "10")]
+	#[arg(long, env = "MAX_REQUEST_SIZE_MB", value_name = "MAX_REQUEST_SIZE_MB", default_value = "10")]
 	pub max_request_size: usize,
 
 	/// Active request limit
-	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", default_value = "100")]
+	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", value_name = "MAX_CONCURRENT_REQUESTS", default_value = "100")]
 	pub max_concurrent_req: usize,
 
 	/// Hard timeout for any operation
@@ -155,15 +158,15 @@ pub struct Config {
 	pub task_timeout_ms: u64,
 
 	/// Streaming Max Chunk Size
-	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
+	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", value_name = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
 	pub max_chunks: usize,
 
 	/// OBS Websocket Server IP Address
-	#[arg(long, env = "OBS_WEBSOCKET_IP")]
+	#[arg(long, env = "OBS_WEBSOCKET_IP", value_name = "OBS_WEBSOCKET_IP")]
 	pub obs_host: String,
 
 	/// OBS Websocket Server Password
-	#[arg(long, env = "OBS_WEBSOCKET_PWD")]
+	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD")]
 	pub obs_password: String,
 
 	/// DATABASE URL
@@ -180,7 +183,7 @@ pub struct Config {
 	///
 	/// With this off, the `/push` routes still work — a browser can subscribe and
 	/// a manual send can be triggered — but nothing fires on a schedule.
-	#[arg(long, env = "NUDGE_ENABLED", default_value = "false")]
+	#[arg(long, env = "NUDGE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
 	pub nudge_enabled: bool,
 
 	/// VAPID public key, base64url, uncompressed P-256 point.
@@ -261,7 +264,7 @@ pub struct Config {
 	/// "Outcome stats and the flag that gates them", for what would justify
 	/// turning it on. Off, the recommender sees every activity as unplayed,
 	/// exactly as it did before `activity_outcome` existed.
-	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value = "false")]
+	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value_t = false, action = clap::ArgAction::Set)]
 	pub recommender_uses_outcomes: bool,
 
 	/// How long a client-written presence lease stays fresh before a due
@@ -428,6 +431,10 @@ pub struct Config {
 	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60")]
 	pub transcribe_seconds: u64,
 
+	// ── Tracing ───────────────────────────────────────────────────────────────
+	#[command(flatten)]
+	pub otel: OtelConfig,
+
 	/// Perform health check and exit
 	#[arg(long, help = "Perform health check against running server")]
 	pub health_check: bool,
@@ -439,6 +446,44 @@ pub struct Config {
 	/// Host for health check (defaults to localhost)
 	#[arg(long, default_value = "127.0.0.1", help = "Host to check for health endpoint")]
 	pub health_check_host: String,
+}
+
+/// Where traces go and how many are kept (`metrics::observability`).
+///
+/// Until #484 `OtelGuard` read these itself, and a sampler or ratio it could
+/// not parse silently became sampling every trace.
+#[derive(clap::Args, Clone, Debug, Serialize, Deserialize)]
+pub struct OtelConfig {
+	/// The `service.name` traces are exported under.
+	#[arg(long, env = "OTEL_SERVICE_NAME", default_value = "file_host")]
+	pub otel_service_name: String,
+
+	/// The OTLP (gRPC) collector traces are exported to.
+	#[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT", default_value = "http://localhost:4317")]
+	pub otel_exporter_otlp_endpoint: String,
+
+	/// Which traces are kept: all (`always_on`), none (`always_off`), or the
+	/// share `OTEL_TRACES_SAMPLER_ARG` names (`traceidratio`).
+	#[arg(long, env = "OTEL_TRACES_SAMPLER", value_enum, default_value = "traceidratio")]
+	pub otel_traces_sampler: TraceSampler,
+
+	/// With `traceidratio`, the share of traces kept, from 0 to 1.
+	#[arg(long, env = "OTEL_TRACES_SAMPLER_ARG", default_value = "1", value_parser = parse_ratio)]
+	pub otel_traces_sampler_arg: f64,
+
+	/// The `service.environment` traces carry.
+	#[arg(long, env = "ENVIRONMENT", default_value = "development")]
+	pub environment: String,
+}
+
+/// `OTEL_TRACES_SAMPLER`'s values that `file_host` implements, spelled as the
+/// OpenTelemetry spec spells them.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Serialize, Deserialize)]
+#[value(rename_all = "snake_case")]
+pub enum TraceSampler {
+	AlwaysOn,
+	AlwaysOff,
+	Traceidratio,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
@@ -474,12 +519,30 @@ impl Config {
 	}
 }
 
+/// Rejects a filter `EnvFilter` can't parse, so a bad `RUST_LOG` is a clap
+/// error naming the variable rather than one raised after parsing.
+fn parse_filter(directives: &str) -> Result<String, tracing_subscriber::filter::ParseError> {
+	tracing_subscriber::EnvFilter::try_new(directives).map(|_| directives.to_owned())
+}
+
+fn parse_ratio(ratio: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+	let ratio: f64 = ratio.parse()?;
+	if !(0.0..=1.0).contains(&ratio) {
+		return Err("must be from 0 to 1".into());
+	}
+	Ok(ratio)
+}
+
 /// Variables the retired transcriber's setup (#407) left set in `.env`.
 ///
 /// The `WHISPER_*` three, which nothing reads, and `OTEL_SERVICE_NAME` set to
 /// `transcriber`, which renames `file_host`'s traces. Startup warns with
 /// their names, so a stale `.env` is never silent (#476).
+///
+/// The one read around clap (#484): the `WHISPER_*` three are declared
+/// nowhere, and are looked for only so a stale `.env` is named.
 #[must_use]
+#[allow(clippy::disallowed_methods)]
 pub fn retired_variables_set() -> Vec<&'static str> {
 	retired_variables_in(|name| std::env::var(name).ok())
 }
@@ -519,11 +582,130 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 #[cfg(test)]
 mod tests {
 	use super::{host_specific_defaults_in_use, retired_variables_in, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
-	use clap::{CommandFactory, Parser};
+	use clap::{error::ErrorKind, CommandFactory, Parser};
+	use std::any::TypeId;
+	use std::path::PathBuf;
 
 	#[test]
 	fn config_definition_is_valid() {
 		Config::command().debug_assert();
+	}
+
+	/// ENV1 (README.md, "Configuration"), for every variable this `Config`
+	/// declares: one whose value can fail to parse is refused, by an error
+	/// naming it, and one that can't is listed as free text. A variable added
+	/// to neither list fails here.
+	///
+	/// Clap applies the same parser to the flag and the variable, so the flag
+	/// stands in for the variable without touching the process environment.
+	/// Its error names the argument by its value name, never by the variable
+	/// a value came from, so each variable is its own value name.
+	#[test]
+	fn every_variable_that_does_not_parse_is_refused_by_name() {
+		const REFUSED: [(&str, &str); 40] = [
+			("LOG_JSON", "yes"),
+			("RUST_LOG", "info,=[bad"),
+			("CONNECTION_TIMEOUT", "soon"),
+			("MAX_IN_FLIGHT", "-1"),
+			("FILE_HOST_PORT", "70000"),
+			("FILE_HOST_PORT_FALLBACK", "1"),
+			("WORKERS", "four"),
+			("RATE_LIMIT", "-1"),
+			("ENABLE_CORS", "on"),
+			("LOG_LEVEL", "loud"),
+			("CACHE_TTL", "1.5"),
+			("ENABLE_PROMETHEUS", "on"),
+			("PROMETHEUS_PORT", "70000"),
+			("DEV_MODE", "on"),
+			("BUFFER_SIZE", "64k"),
+			("MAX_REQUEST_SIZE_MB", "10MB"),
+			("MAX_CONCURRENT_REQUESTS", "many"),
+			("TASK_TIMEOUT_MS", "15s"),
+			("MAX_CHUNKS_IN_FLIGHT", "-5"),
+			("NUDGE_ENABLED", "on"),
+			("NUDGE_QUIET_HOURS_START", "10pm"),
+			("NUDGE_QUIET_HOURS_END", "8am"),
+			("NUDGE_WAKER_SECONDS", "5m"),
+			("PUSH_DELIVERY_TIMEOUT_MS", "10s"),
+			("WAKER_PASS_DEADLINE_MS", "2m"),
+			("RECOMMENDER_USES_OUTCOMES", "on"),
+			("NUDGE_PRESENCE_LEASE_TTL_SECONDS", "75s"),
+			("AUTH_ENABLED", "off"),
+			("AUTH_SESSION_DAYS", "a month"),
+			("AUTH_NEW_ACCOUNTS_PER_DAY", "-1"),
+			("MAILBOX_ENABLED", "on"),
+			("MAILBOX_SECONDS", "15m"),
+			("MAILBOX_ARCHIVE_DAYS", "90d"),
+			("TRANSCRIBE_ENABLED", "on"),
+			("TRANSCRIBE_THREADS", "all"),
+			("TRANSCRIBE_DEADLINE_SECONDS", "10m"),
+			("TRANSCRIBE_SECONDS", "1m"),
+			("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
+			("OTEL_TRACES_SAMPLER_ARG", "half"),
+			("OTEL_TRACES_SAMPLER_ARG", "2"),
+		];
+		// `NUDGE_TIMEZONE` is parsed once the nudge starts, and a name it does
+		// not know falls back to UTC with an error and a metric, by design
+		// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
+		// checked by what uses them, which refuses to start on a bad one.
+		const FREE_TEXT: [&str; 29] = [
+			"FILE_HOST_BIND",
+			"FILE_HOST_PORT_FILE",
+			"API_VERSION",
+			"ALLOWED_ORIGINS",
+			"LOG_FILE",
+			"REDIS_URL",
+			"NATS_URL",
+			"OBS_WEBSOCKET_IP",
+			"OBS_WEBSOCKET_PWD",
+			"DATABASE_URL",
+			"VAPID_PUBLIC_KEY",
+			"VAPID_PRIVATE_KEY",
+			"VAPID_SUBJECT",
+			"NUDGE_TIMEZONE",
+			"APP_BASE_URL",
+			"WEBAUTHN_RP_ID",
+			"WEBAUTHN_ORIGINS",
+			"AUTH_LEGACY_CLAIM_TOKEN",
+			"OPERATOR_SUBJECTS",
+			"MAILBOX_URL",
+			"MAILBOX_TOKEN",
+			"MAILBOX_SUBJECT",
+			"MAILBOX_ARCHIVE_TOKEN",
+			"FCM_SERVICE_ACCOUNT_FILE",
+			"TRANSCRIBE_MODEL",
+			"TRANSCRIBE_VAD_MODEL",
+			"OTEL_SERVICE_NAME",
+			"OTEL_EXPORTER_OTLP_ENDPOINT",
+			"ENVIRONMENT",
+		];
+		let mut seen = Vec::new();
+		for arg in Config::command().get_arguments() {
+			let Some(env) = arg.get_env().and_then(std::ffi::OsStr::to_str) else { continue };
+			seen.push(env.to_owned());
+			let value_names: Vec<&str> = arg.get_value_names().unwrap_or_default().iter().map(clap::builder::Str::as_str).collect();
+			assert_eq!(value_names, [env], "{env} is not its own value name, so its errors do not name it");
+			let refused: Vec<&str> = REFUSED.iter().filter(|(name, _)| *name == env).map(|(_, bad)| *bad).collect();
+			for bad in &refused {
+				let flag = String::from("--") + arg.get_long().unwrap() + "=" + bad;
+				let err = Config::try_parse_from(["file_host", &flag]).unwrap_err();
+				assert!(matches!(err.kind(), ErrorKind::ValueValidation | ErrorKind::InvalidValue), "{env}={bad}: {err}");
+				assert!(err.to_string().contains(env), "{env}={bad}: {err}");
+			}
+			if refused.is_empty() {
+				assert!(FREE_TEXT.contains(&env), "{env} is in neither REFUSED nor FREE_TEXT");
+				let parser = arg.get_value_parser().type_id();
+				assert!(
+					parser == TypeId::of::<String>() || parser == TypeId::of::<PathBuf>(),
+					"{env} is listed as free text but parses"
+				);
+			}
+		}
+		let mut declared: Vec<&str> = REFUSED.iter().map(|(name, _)| *name).chain(FREE_TEXT).collect();
+		declared.sort_unstable();
+		declared.dedup();
+		seen.sort_unstable();
+		assert_eq!(seen, declared, "a listed variable is no longer declared");
 	}
 
 	#[test]

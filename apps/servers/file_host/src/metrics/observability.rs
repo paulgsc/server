@@ -1,3 +1,4 @@
+use crate::config::{OtelConfig, TraceSampler};
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -56,6 +57,9 @@ pub enum ObservabilityError {
 
 	#[error("OpenTelemetry error: {0}")]
 	OpenTelemetry(String),
+
+	#[error("RUST_LOG: {0}")]
+	Filter(#[from] tracing_subscriber::filter::ParseError),
 }
 
 /// Tracing-only. Per #139 (P1), application measurements go through the
@@ -68,11 +72,18 @@ pub struct OtelGuard {
 
 impl OtelGuard {
 	/// Create and initialize `OpenTelemetry` tracing with the tracing subscriber.
-	pub fn new() -> Result<Self, ObservabilityError> {
-		let config = OtelConfig::from_env();
+	///
+	/// Both arguments are `Config`'s: this module reads no environment (#484).
+	///
+	/// # Errors
+	///
+	/// Fails when the OTLP exporter cannot be built, or `rust_log` does not
+	/// parse (`Config` has already refused one that does not).
+	pub fn new(config: &OtelConfig, rust_log: Option<&str>) -> Result<Self, ObservabilityError> {
+		let sampler = sampler(config);
 
 		let resource = Resource::builder()
-			.with_service_name(config.service_name.clone())
+			.with_service_name(config.otel_service_name.clone())
 			.with_attributes(vec![
 				KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
 				KeyValue::new("service.environment", config.environment.clone()),
@@ -81,23 +92,23 @@ impl OtelGuard {
 
 		let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
 			.with_tonic()
-			.with_endpoint(&config.otlp_endpoint)
+			.with_endpoint(&config.otel_exporter_otlp_endpoint)
 			.with_timeout(Duration::from_secs(3))
 			.build()?;
 
 		let tracer_provider = SdkTracerProvider::builder()
 			.with_resource(resource)
-			.with_sampler(config.sampler.clone())
+			.with_sampler(sampler.clone())
 			.with_id_generator(RandomIdGenerator::default())
 			.with_batch_exporter(trace_exporter)
 			.build();
 
-		let tracer = tracer_provider.tracer(config.service_name.clone());
+		let tracer = tracer_provider.tracer(config.otel_service_name.clone());
 
 		global::set_tracer_provider(tracer_provider.clone());
 
 		let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-		let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+		let env_filter = EnvFilter::try_new(rust_log.unwrap_or("info"))?;
 
 		tracing_subscriber::registry()
 			.with(env_filter)
@@ -110,9 +121,9 @@ impl OtelGuard {
 			.init();
 
 		tracing::info!(
-			service_name = %config.service_name,
-			otlp_endpoint = %config.otlp_endpoint,
-			sampler = ?config.sampler,
+			service_name = %config.otel_service_name,
+			otlp_endpoint = %config.otel_exporter_otlp_endpoint,
+			sampler = ?sampler,
 			"OpenTelemetry tracing initialized"
 		);
 
@@ -133,31 +144,11 @@ impl Drop for OtelGuard {
 	}
 }
 
-struct OtelConfig {
-	service_name: String,
-	otlp_endpoint: String,
-	sampler: Sampler,
-	environment: String,
-}
-
-impl OtelConfig {
-	fn from_env() -> Self {
-		Self {
-			service_name: std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "file_host".to_string()),
-			otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4317".to_string()),
-			sampler: Self::sampler_from_env(),
-			environment: std::env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()),
-		}
-	}
-
-	fn sampler_from_env() -> Sampler {
-		match std::env::var("OTEL_TRACES_SAMPLER").as_deref() {
-			Ok("always_on") => Sampler::AlwaysOn,
-			Ok("always_off") => Sampler::AlwaysOff,
-			_ => {
-				let ratio = std::env::var("OTEL_TRACES_SAMPLER_ARG").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(1.0);
-				Sampler::TraceIdRatioBased(ratio)
-			}
-		}
+/// The sampler `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` name.
+const fn sampler(config: &OtelConfig) -> Sampler {
+	match config.otel_traces_sampler {
+		TraceSampler::AlwaysOn => Sampler::AlwaysOn,
+		TraceSampler::AlwaysOff => Sampler::AlwaysOff,
+		TraceSampler::Traceidratio => Sampler::TraceIdRatioBased(config.otel_traces_sampler_arg),
 	}
 }

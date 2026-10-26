@@ -5,13 +5,23 @@
 //! OBS_HOST=127.0.0.1 OBS_PASSWORD=... cargo run -p obs-websocket --example stream --features websocket
 //! ```
 
-use obs_websocket::{ObsConfig, ObsWebSocketManager, PollingConfig, RetryConfig};
+mod common;
+
+use clap::Parser;
+use obs_websocket::{ObsWebSocketManager, PollingConfig, RetryConfig};
+
+#[derive(Parser)]
+struct Args {
+	#[command(flatten)]
+	obs: common::ObsArgs,
+}
 
 #[tokio::main]
 async fn main() {
+	let args = Args::parse();
 	tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
 
-	let obs = ObsWebSocketManager::new(ObsConfig::from_env());
+	let obs = ObsWebSocketManager::new(args.obs.into_config());
 	let retry_delay = RetryConfig::default().initial_delay;
 
 	tokio::select! {
