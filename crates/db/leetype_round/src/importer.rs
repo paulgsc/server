@@ -1,5 +1,6 @@
-//! The importer for a round corpus exported by `@some-ui/leetype` (#326,
-//! LTY-SRV2).
+//! The importer for a round corpus in the layout `@some-ui/leetype`'s export
+//! wrote (#326, LTY-SRV2). some-ui retired that export (#1941); rounds are now
+//! written through the operator routes, and this still imports a directory.
 //!
 //! The same discipline as `curriculum_repo::importer`, and for the same
 //! reasons: an **offline operator command**, never a startup hook or a request
@@ -7,9 +8,9 @@
 //! file's exact bytes; **failures are per round**, so one bad file fails alone
 //! and is named in the report; and it **reads the filesystem, never a URL**.
 //!
-//! The directory is the client's export (`packages/ui/leetype/corpus/rounds/`
-//! in `paulgsc/some-ui`): `manifest.json`, `{ "rounds": ["<id>", ...] }`, and
-//! one `<id>.json` per round, stored byte for byte as read.
+//! The directory holds `manifest.json`, `{ "rounds": ["<id>", ...] }`, and one
+//! `<id>.json` per round, stored byte for byte as read
+//! (`crates/db/leetype_round/testdata/rounds/` is one).
 //!
 //! **No baseline, and no publication log.** Unlike lessons, rounds do not feed
 //! `curriculum_publication` or the study nudge, so there is no first import to

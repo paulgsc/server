@@ -30,13 +30,19 @@ Making the surface an artifact turns that into a diff.
 
 CI does it; nothing is copied by hand. `.github/workflows/routes.yml`:
 
-- **On every PR** that touches `file_host`, builds the snapshot and runs the
-  client's `scripts/sync-server-routes.sh --verify` against the client's
-  `main`. That runs `contract:drift` and the `server-routes` consistency test,
-  so a rename that leaves a client contract pointing at nothing fails on the
-  server PR that did it. The run summary shows the `ServerRoute` diff. If the
-  break is intended, label the PR `client-breaking-route`: the check still
-  reports but no longer fails, and the client catches up through the sync PR.
+- **On every PR** that touches anything `file_host` is built from, builds
+  the snapshot and runs the client's `scripts/sync-server-routes.sh --verify`
+  against the client's `main`. That runs `contract:drift` and the
+  `server-routes` consistency test, so a rename that leaves a client contract
+  pointing at nothing fails on the server PR that did it. The same job then
+  starts the PR's own `file_host` on a throwaway database and runs every
+  client contract against it, so a response that no longer matches what the
+  client expects fails too, on the routes that have a contract; and it
+  compares the fixtures each repo keeps of the other's output with fresh
+  dumps (`scripts/check_client_fixtures.py`). The run summary shows the
+  snapshot diff. If the break is intended, label the PR
+  `client-breaking-route`: the checks still report but no longer fail, and
+  the client catches up through the sync PR.
 - **On every merge to `main`**, opens (or updates) one PR in `paulgsc/some-ui`
   on the `bot/server-route-snapshot` branch carrying both files. That PR runs
   the client's own CI, contract drift included. This needs the

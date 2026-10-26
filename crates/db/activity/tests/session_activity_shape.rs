@@ -18,7 +18,7 @@
 //! The client-side half of the same claim -- that a `SessionActivity` built
 //! from exactly this shape survives an actual JSON round trip into a
 //! playable scene -- lives in `paulgsc/some-ui`'s
-//! `packages/activity-catalog/src/lib/to-scene-config/session-activity-round-trip.test.ts`,
+//! `packages/activity-catalog/src/lib/to-scene-config/__tests__/session-activity-round-trip.test.ts`,
 //! per #272's own acceptance criterion that this is "most cheaply ... a
 //! fixture consumed by a test in `paulgsc/some-ui`."
 

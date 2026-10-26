@@ -258,9 +258,10 @@ settles each one with a single check against a hunk.
 <out>/runs/<id>.json         GET /leetype/rounds/:id/runs's body (RoundRuns)
 ```
 
-It uses the export's layout (`packages/ui/leetype/corpus/rounds/` in
-`paulgsc/some-ui`, written by `export-round-corpus.ts`). JSON is written the
-way the client's export writes it: two-space indent and a final newline.
+It uses the layout `import-leetype-rounds` reads, the one `paulgsc/some-ui`'s
+round export wrote until that export was retired (some-ui #1941);
+`crates/db/leetype_round/testdata/rounds/` is in it. JSON is written the way
+that export wrote it: two-space indent and a final newline.
 
 **Deterministic.** Rounds are listed by id and runs in transcript order.
 `recorded_at` is not part of the dump. A file whose bytes would not change is
@@ -275,14 +276,12 @@ checked-in copy.
 
 **How drift is caught.**
 
-- **Rounds.** A snapshot round file is the stored body, and the stored body
-  is the export's file byte for byte (`round_corpus_parity.rs` proves the
-  import direction). So `rounds/<id>.json` must equal `corpus/rounds/<id>.json`
-  in `paulgsc/some-ui`, which that repo's `export-round-corpus.ts --check`
-  already pins to its authored rounds. **One exception:** `manifest.json` is
-  ordered by id, because the database keeps no authored order. The client's
-  export lists rounds in `AUTHORED_ROUNDS` order. Compare manifests as sets,
-  or have the export sort.
+- **Rounds.** A snapshot round file is the stored body, byte for byte, and
+  an imported body is its file byte for byte (`leetype_round_repo::importer`'s
+  tests). `paulgsc/some-ui` retired the corpus export this was once compared
+  with (#1941), and rounds are written through the operator routes now, so
+  the database is their only source. `manifest.json` is ordered by id,
+  because the database keeps no authored order.
 - **Runs.** They are keyed by content hash. `runs/<id>.json` names the
   `contentHash` it was recorded for, so a client can check it against the
   round file's own hash (SHA-256 of its bytes). A transcript left behind when

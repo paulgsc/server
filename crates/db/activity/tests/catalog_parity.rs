@@ -10,11 +10,16 @@
 //! ## Mechanism chosen, and the ones rejected
 //!
 //! #270 named three options and called "(3) both" the likely answer. This
-//! PR ships **(1) only** -- a checked-in fixture
+//! PR shipped **(1) only** -- a checked-in fixture
 //! (`testdata/activity_catalog.snapshot.json`), exported from the client by
-//! `paulgsc/some-ui`'s `scripts/dump-activity-catalog.ts`
-//! (`pnpm dump:activity-catalog > activity-catalog.snapshot.json`, then
-//! copied here by hand) and compared against the seeded rows below.
+//! `paulgsc/some-ui`'s `pnpm dump:activity-catalog`, and compared against the
+//! seeded rows below.
+//!
+//! The fixture is not a hand-kept copy: `.github/workflows/routes.yml` runs
+//! that dump on some-ui's `main` for every PR here that touches the server
+//! or this file, and fails when the two differ
+//! (`scripts/check_client_fixtures.py`, which names the differences still
+//! waiting on a decision). Regenerate it with the dump, never by editing it.
 //!
 //! Rejected, for now:
 //!
@@ -32,15 +37,8 @@
 //!   need yet, at the cost of a second repo's PR landing in lockstep with
 //!   this one.
 //!
-//! This mirrors an existing asymmetry in this codebase, not a new pattern:
-//! `routes.server.json` (`packages/contract-harness/`, `some-ui`) is exactly
-//! this shape in the other direction -- the server's route surface,
-//! exported by `cargo run --bin dump-routes`, copied by hand into the client
-//! repo, and diffed there. #267 (SC2) is the story that would make *that*
-//! copy stop being manual; it has not landed as of this writing, so this
-//! fixture's freshness is the same by-hand discipline `routes.server.json`
-//! already runs on, not a regression from some sharper mechanism this story
-//! skipped.
+//! (2) has since landed beside it: `routes.yml` also runs some-ui's contract
+//! harness, `activities.contract.ts` included, against a live `file_host`.
 //!
 //! ## What a failure here means
 //!
