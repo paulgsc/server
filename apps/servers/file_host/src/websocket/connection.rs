@@ -148,8 +148,13 @@ impl WebSocketFsm {
 		connections
 	}
 
-	/// Remove a connection with comprehensive cleanup and observability
-	pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), ConnectionError> {
+	/// Remove a connection with comprehensive cleanup and observability.
+	///
+	/// Infallible on purpose: a key already gone is the race every removal
+	/// path expects (several can fire for one socket), and an actor that fails
+	/// to shut down is logged and counted here (`actor_shutdown_failed`), so a
+	/// caller has nothing left to handle or drop (#488).
+	pub async fn remove_connection(&self, client_key: &str, reason: String) {
 		let start = Instant::now();
 
 		match self.store.remove(client_key).await {
@@ -167,6 +172,7 @@ impl WebSocketFsm {
 						error = %e,
 						"Failed to gracefully shutdown connection actor"
 					);
+					instrument::record_error("actor_shutdown_failed", "teardown");
 				}
 
 				let elapsed = start.elapsed();
@@ -190,8 +196,6 @@ impl WebSocketFsm {
 				// `connected` — cheap, and this store entry genuinely just
 				// left — is refreshed here for immediacy.
 				instrument::set_connected(self.store.len());
-
-				Ok(())
 			}
 			None => {
 				warn!(
@@ -199,7 +203,6 @@ impl WebSocketFsm {
 					reason = %reason,
 					"Attempted to remove non-existent connection"
 				);
-				Ok(())
 			}
 		}
 	}

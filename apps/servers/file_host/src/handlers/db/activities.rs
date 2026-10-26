@@ -12,7 +12,6 @@ use axum::{
 	response::{IntoResponse, Response},
 	Json,
 };
-use std::fmt::Write as _;
 use tracing::instrument;
 
 fn repo(state: &AppState) -> ActivityRepository {
@@ -23,11 +22,12 @@ fn repo(state: &AppState) -> ActivityRepository {
 /// to react to differently — it maps onto the record-limit refusal
 /// `FileHostError` already carries for exactly this shape of problem.
 /// Everything else is an operational failure with no more specific meaning
-/// a client could act on.
+/// a client could act on. Named rather than `_`, so a new variant is mapped
+/// here before it compiles (ER1, `crate::error`).
 fn to_http(err: &ActivityRepoError) -> FileHostError {
 	match err {
 		ActivityRepoError::CatalogTooLarge { .. } => FileHostError::MaxRecordLimitExceeded,
-		other => FileHostError::OperationError(other.to_string()),
+		other @ (ActivityRepoError::Sqlx(_) | ActivityRepoError::Row(_)) => FileHostError::OperationError(other.to_string()),
 	}
 }
 
@@ -36,11 +36,12 @@ fn to_http(err: &ActivityRepoError) -> FileHostError {
 /// does not fail in practice; a tag that somehow isn't valid header content
 /// is a 500, not a panic — `clippy.toml` denies `expect` outside tests.
 pub(crate) fn etag_value(tag: &str) -> Result<HeaderValue, FileHostError> {
-	// `write!` rather than `format!`: `clippy.toml` disallows `format!`
-	// (eager allocation ahead of tracing) — same substitution
-	// `ts_emitter::render_ts` already makes.
+	// Pushed rather than `format!`ed: `clippy.toml` disallows `format!`
+	// (eager allocation ahead of tracing).
 	let mut quoted = String::with_capacity(tag.len() + 2);
-	let _ = write!(quoted, "\"{tag}\"");
+	quoted.push('"');
+	quoted.push_str(tag);
+	quoted.push('"');
 	HeaderValue::from_str(&quoted).map_err(|err| FileHostError::OperationError(err.to_string()))
 }
 
@@ -118,8 +119,9 @@ pub async fn list_activities(State(state): State<AppState>, headers: HeaderMap) 
 pub async fn get_activity(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
 	let repo = repo(&state);
 	let record: ActivityRecord = repo.get(&id).await.map_err(|err| to_http(&err))?.ok_or(FileHostError::NotFound)?;
-	let mut tag = String::new();
-	let _ = write!(tag, "{}@{}", record.id, record.version);
+	let mut tag = record.id.clone();
+	tag.push('@');
+	tag.push_str(&record.version.to_string());
 	let etag = etag_value(&tag)?;
 
 	if if_none_match_hits(&headers, &etag) {

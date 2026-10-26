@@ -166,6 +166,10 @@ webauthn-authenticator-rs = { workspace = true }
 # time so no private key sits in the repo; the crate and feature `fcm_kit`
 # already builds.
 jwt-simple = { version = "0.12.11", default-features = false, features = ["pure-rust"] }
+# A NATS client that never connects, for the tests of what a failed broadcast
+# is answered with (`websocket::broadcast::disconnected_transport`). The same
+# version and trimmed features `some-transport` builds.
+async-nats = { version = "0.50.0", default-features = false }
 
 [lints]
 workspace = true

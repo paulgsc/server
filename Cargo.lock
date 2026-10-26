@@ -1488,6 +1488,7 @@ dependencies = [
  "activity_repo",
  "anyhow",
  "aph_repo",
+ "async-nats",
  "auth_repo",
  "axum",
  "base64 0.22.1",
