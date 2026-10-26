@@ -14,15 +14,13 @@ subject, to keep one client from starving another, and to run the study
 features that subject turns on. The code is built so that nothing it stores or
 logs names a person.
 
-One deployment runs today: the owner's, on their home network, where the owner
-is the only person who signs in and this server is their own store, as private
-as their phone (paulgsc/some-ui#2174). Nothing below is relaxed for it.
-Pseudonymous ids, passkeys, pairing and the exposure list still hold, because
-anything on that network can reach the box, and because they keep the server
-usable by other people later. What is built for strangers rather than for the
-owner is slated for removal: open sign-up, the operator and mailbox ids copied
-out of a log line (#510), and the per-pairing sharing choice that home enforces
-(invariant 17; paulgsc/some-ui#2182).
+The owner's deployment: on their home network, the owner is the only person
+who signs in, and this server is their own store, as private as their phone
+(paulgsc/some-ui#2174). Nothing below is relaxed for it, since anything on that
+network can reach the box, and what "What is still exposed" lists is unchanged.
+#510 and paulgsc/some-ui#2182 track removing what serves strangers rather than
+the owner: open sign-up, the operator and mailbox ids copied from a log line,
+and invariant 17's sharing choice.
 
 That is a statement about what the code asks for. It is not a promise about
 what people choose to send it (a kept shelf item or a captured page can say
