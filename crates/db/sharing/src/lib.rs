@@ -1,8 +1,9 @@
 //! What a paired phone's person chose to keep sending to home, and when each
 //! choice began and ended (paulgsc/some-ui `apps/www/src/lib/home-link`, its
 //! consent log). `20261019000100_create_sharing_choice.up.sql` records the
-//! design, and `20261025000300_add_voice_to_sharing_choice.up.sql` adds
-//! voice notes to what can be chosen; in short:
+//! design, and `20261025000300_add_voice_to_sharing_choice.up.sql` and
+//! `20261026000300_add_korean_to_sharing_choice.up.sql` add voice notes and
+//! Korean's record to what can be chosen; in short:
 //!
 //! - **Per pairing.** A choice is made on one phone, under one pairing
 //!   (`pairing_id`, a digest of that pairing's session), and counts for it
@@ -29,10 +30,13 @@ pub enum Scope {
 	Jobs,
 	/// Voice notes, audio included (`PUT /voice-notes/:id`).
 	Voice,
+	/// Korean's word sets and reading records (`PUT` and
+	/// `DELETE /korean/:kind/:key`).
+	Korean,
 }
 
 impl Scope {
-	pub const ALL: [Self; 5] = [Self::Sessions, Self::Shelf, Self::Aph, Self::Jobs, Self::Voice];
+	pub const ALL: [Self; 6] = [Self::Sessions, Self::Shelf, Self::Aph, Self::Jobs, Self::Voice, Self::Korean];
 
 	/// The wire and stored name.
 	#[must_use]
@@ -43,6 +47,7 @@ impl Scope {
 			Self::Aph => "aph",
 			Self::Jobs => "jobs",
 			Self::Voice => "voice",
+			Self::Korean => "korean",
 		}
 	}
 
@@ -157,6 +162,8 @@ mod tests {
 	const PREVIOUS_MIGRATION: i64 = 20_261_018_000_100;
 	/// The migration before `20261025000300_add_voice_to_sharing_choice`.
 	const BEFORE_VOICE: i64 = 20_261_025_000_200;
+	/// The migration before `20261026000300_add_korean_to_sharing_choice`.
+	const BEFORE_KOREAN: i64 = 20_261_026_000_200;
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 
@@ -316,6 +323,30 @@ mod tests {
 		assert!(update.unwrap_err().to_string().contains("append-only"), "the append-only trigger is still there");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
 		assert!(changes(&mut conn, A, "d1").await.unwrap().is_empty(), "the account trigger is still there");
+	}
+
+	/// `korean` is a scope like the rest, and rolling back past it once a
+	/// pairing chose it fails and changes nothing.
+	#[tokio::test]
+	async fn korean_is_chosen_like_the_rest_and_a_rollback_refuses_to_discard_it() {
+		let pool = pool().await;
+		account(&pool, A).await;
+		let mut conn = pool.acquire().await.unwrap();
+		choose(&mut conn, A, "d1", Scope::Voice, true, "t1").await.unwrap();
+		choose(&mut conn, A, "d1", Scope::Korean, true, "t2").await.unwrap();
+		assert!(!refuses(&mut conn, A, "d1", Scope::Korean).await.unwrap());
+		let held = choose(&mut conn, A, "d1", Scope::Korean, false, "t3").await.unwrap();
+		assert_eq!(held.last().map(|change| (change.scope, change.kept)), Some((Scope::Korean, false)));
+		assert!(refuses(&mut conn, A, "d1", Scope::Korean).await.unwrap());
+		assert_eq!(Scope::named("korean"), Some(Scope::Korean));
+		drop(conn);
+
+		let refused = MIGRATOR.undo(&pool, BEFORE_KOREAN).await.unwrap_err().to_string();
+		assert!(refused.contains("CHECK constraint failed"), "{refused}");
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(changes(&mut conn, A, "d1").await.unwrap().len(), 3, "every choice is still held");
+		let update = sqlx::query("UPDATE sharing_choice SET kept = 1").execute(&mut *conn).await;
+		assert!(update.unwrap_err().to_string().contains("append-only"), "the append-only trigger is still there");
 	}
 
 	#[tokio::test]

@@ -65,6 +65,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"which of the owner's morning runs home told the phones of: the run record's name, what was said (picks, couldn't finish, or nothing for a re-run), to how many phones, and when; see docs/identity.md invariant 24",
 	),
 	(
+		"korean_entry",
+		"the owner's Korean record (paulgsc/some-ui#2100), every revision of every entry: the word sets they study on, each word's pace, each sentence's tally, the lens record, the practice record, the set left unfinished and their answers at a sitting's end, as the phone sent them, and when each revision was written; see docs/identity.md invariant 25",
+	),
+	(
 		"learner_shelf",
 		"items a learner generated and chose to keep (#387): key, content hash, when kept, and the body verbatim — nothing derived from play; see docs/identity.md",
 	),

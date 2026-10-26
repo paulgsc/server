@@ -5,11 +5,12 @@
 //! POST /sync/:collection/batch → { results }: each item as its own PUT answers it
 //! ```
 //!
-//! `:collection` is `jobs` (the Jobs record's events) or `aph` (aph's entry
-//! revisions). A batch is one request against the rate limit, where the
+//! `:collection` is `jobs` (the Jobs record's events), `aph` (aph's entry
+//! revisions) or `korean` (Korean's entries, each item's id `<kind>/<key>`). A batch is one request against the rate limit, where the
 //! routes it stands for are one per item.
 //!
-//! **Trust model:** a subject route, as `routes::jobs` and `routes::aph`:
+//! **Trust model:** a subject route, as `routes::jobs`, `routes::aph` and
+//! `routes::korean`:
 //! the handler takes a `SubjectId`, and a paired phone's batch is refused
 //! once its person stopped sending that record (`handlers::sharing`). See
 //! `handlers::sync`.
