@@ -1536,6 +1536,7 @@ dependencies = [
  "some-cache",
  "some-metrics",
  "some-services",
+ "some-shutdown",
  "some-transport",
  "sqlx",
  "study_domain",
@@ -3196,6 +3197,7 @@ dependencies = [
  "cursorium",
  "dashmap",
  "some-metrics",
+ "some-shutdown",
  "some-transport",
  "tokio",
  "tokio-util",
@@ -4519,6 +4521,7 @@ dependencies = [
  "obs-websocket",
  "serde",
  "serde_json",
+ "some-shutdown",
  "some-transport",
  "thiserror 1.0.69",
  "tokio",
@@ -4536,6 +4539,14 @@ dependencies = [
  "dashmap",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "some-shutdown"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

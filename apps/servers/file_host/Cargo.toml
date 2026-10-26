@@ -113,6 +113,7 @@ tracing-opentelemetry = { workspace = true }
 metrics = { workspace = true }
 some-cache.workspace = true
 some-metrics.workspace = true
+some-shutdown.workspace = true
 activity_repo = { workspace = true }
 aph_repo = { workspace = true }
 auth_repo = { workspace = true }

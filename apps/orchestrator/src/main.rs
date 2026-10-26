@@ -36,18 +36,11 @@ async fn main() -> Result<()> {
 	let service = OrchestratorService::new(transport);
 	tracing::info!("🎯 Service initialized");
 
-	// Setup signal handling for graceful shutdown
+	let shutdown_signal = some_shutdown::shutdown_signal();
 	let service_shutdown = service.clone();
 	tokio::spawn(async move {
-		match tokio::signal::ctrl_c().await {
-			Ok(()) => {
-				tracing::info!("🛑 Received shutdown signal (Ctrl+C)");
-				service_shutdown.shutdown();
-			}
-			Err(e) => {
-				tracing::error!("Failed to listen for shutdown signal: {}", e);
-			}
-		}
+		shutdown_signal.await;
+		service_shutdown.shutdown();
 	});
 
 	tracing::info!("🚀 Orchestrator service running");

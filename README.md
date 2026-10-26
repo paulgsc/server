@@ -53,9 +53,9 @@ crates/
 │                       session)
 ├── ws-connection/, ws-conn-manager/, ws-events/
 │                       WebSocket connection lifecycle and event types
-├── some-cache/, some-transport/, some-metrics/, some-services/
-│                       Shared caching, NATS transport, metrics, and service
-│                       abstractions
+├── some-cache/, some-transport/, some-metrics/, some-services/, some-shutdown/
+│                       Shared caching, NATS transport, metrics, service
+│                       abstractions, and the shutdown signal
 ├── push_kit/           Web Push (VAPID) actuation
 ├── intervention/, study_domain/
 │                       Domain logic for when and what the system intervenes on

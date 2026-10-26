@@ -215,11 +215,10 @@ async fn main() -> Result<()> {
 	// so a reader never finds the port of a server that has stopped.
 	let (listener, _port_file) = file_host::listen::from_config(&config).await?;
 
-	// Spawn signal handler task with proper shutdown coordination
+	let shutdown_signal = some_shutdown::shutdown_signal();
 	let signal_shutdown_token = shutdown_token.clone();
 	tokio::spawn(async move {
-		tokio::signal::ctrl_c().await.ok();
-		tracing::info!("Received Ctrl+C, initiating shutdown...");
+		shutdown_signal.await;
 		signal_shutdown_token.cancel();
 	});
 
