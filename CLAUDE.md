@@ -225,9 +225,7 @@ never "sounds like good practice."
 
 Some stories in this repo span many sessions. A new session has no memory of earlier ones, so
 the record that carries a story between them lives where any session can search it, never in a
-handoff document (owner, 2026-10-25):
-
-Two places, two readers:
+handoff document (owner, 2026-10-25). It lives in two places, for two readers:
 
 - **The epic issue holds the detail, for the next session.** Each story has an epic issue titled
   `[EPIC][<TAG>] …`, labelled `epic`, whose sub-issues are its stories (`[<TAG>] <ID>: …`), each
@@ -237,14 +235,16 @@ Two places, two readers:
   session needs: why, what is decided and by whom, the files, what done means. What a handoff
   used to carry goes there too: the gaps a PR disclosed and left, and what a session working on
   the story should know (a fixture's quirk, a check that misleads). Keep them current while you
-  work, not only at the end.
+  work, not only at the end. The epic closes once its stories have landed and nothing in "Where
+  we are" still waits on the owner.
 - **The Residual Ledger is the owner's index, for the owner.** It is a private artifact,
   https://claude.ai/artifact/Ktc1i8JtBGQVdXEraobxgA, and its database's `items` collection
   holds one item per epic (`kind: "epic"`). Each item has:
 
   - a `summary` of a few sentences the owner reads to get back into it;
-  - what waits on the owner: a `status` of `decide` and a `flag` of `Waits on you` while
-    something does, and a `first_step` that names the owner's step before Claude's;
+  - a `status`: `decide` while something waits on the owner, with `flag: "Waits on you"`;
+    otherwise `open`, `doing` or `done`, and no `flag`;
+  - a `first_step`: the next step, the owner's first when there is one;
   - `issues` linking the epic and its stories, and `keywords` matching the search words.
 
   Read and write it with `ArtifactData`; add notes to its `log` collection rather than
@@ -254,11 +254,13 @@ Two places, two readers:
   ledger's items and match their `keywords`, then search issues by the same words, then read
   the epic's "Where we are" and re-check it against the live code and PRs before trusting it.
   An open epic with no ledger item (one filed before 2026-10-25, say) gets one from the first
-  session that touches it, and a "Where we are" if it lacks one.
+  session that touches it, and the epic gets a `**Search words:**` line and a "Where we are"
+  if it lacks them.
 - **Winding down,** whether the work is done or too large for one session: open and merge the
   PR for what you did (`.claude/skills/steward/SKILL.md`), then amend every issue you touched
-  and its epic's "Where we are", then the ledger item's `summary`, `status` and `issues`, then
-  archive the session. Nothing about the story may live only in the session that is ending.
+  and its epic's "Where we are", then the ledger item (`summary`, `status`, `flag`,
+  `first_step`, `issues`, `keywords`), then archive the session. Nothing about the story may
+  live only in the session that is ending.
 
 Cloud sessions keep no files between them, so the issues and the ledger are the only memory.
 A footgun that recurs across sessions belongs promoted into this file (the section above) rather
