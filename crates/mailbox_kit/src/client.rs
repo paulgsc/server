@@ -393,11 +393,13 @@ impl<T: MailboxTransport> Mailbox<T> {
 	}
 }
 
-/// A name the mailbox's patterns allow is letters, digits, `-`, `_` and `.`,
-/// which a URL path carries as they are. Anything else is refused rather than
-/// escaped: it is not a name the mailbox could hold.
+/// A name the mailbox's patterns allow is letters, digits, `-`, `_`, `.` and
+/// `:` (a transcript's name carries its note's id, which may hold one), which
+/// a URL path segment carries as they are: the mailbox decodes nothing, so a
+/// name is never escaped. Anything else is refused: it is not a name the
+/// mailbox could hold.
 fn plain_name(name: &str) -> Result<&str, MailboxError> {
-	let plain = !name.is_empty() && name != "." && name != ".." && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+	let plain = !name.is_empty() && name != "." && name != ".." && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'));
 	if plain {
 		Ok(name)
 	} else {
@@ -546,9 +548,18 @@ mod tests {
 		assert_eq!(sent(&mailbox)[0], (Method::Get, String::from(BASE) + "/v1/brief/items/digest-2026-10-22.json"));
 
 		let mailbox = super::Mailbox::new(BASE, Token::new(SECRET.to_owned()), mailbox.transport).unwrap();
-		for name in ["../v1/decisions/items", "a b.json", "", ".."] {
+		for name in ["../v1/decisions/items", "a b.json", "", "..", "a/b.json", "a%3Ab.json", "a?b.json"] {
 			assert_eq!(mailbox.get(Folder::Brief, &item(name, body)).await, Err(MailboxError::BadName), "{name}");
 		}
+	}
+
+	/// A transcript's name carries its note's id, which may hold a `:`: it goes
+	/// as it is, since the mailbox decodes nothing.
+	#[tokio::test]
+	async fn a_name_with_a_colon_goes_unescaped() {
+		let mailbox = mailbox(vec![(201, r#"{"change":"added","seq":1}"#)]);
+		mailbox.put(Folder::Transcript, "transcript-note:1-1.json", b"{}".to_vec()).await.unwrap();
+		assert_eq!(sent(&mailbox)[0], (Method::Put, String::from(BASE) + "/v1/transcript/items/transcript-note:1-1.json"));
 	}
 
 	#[tokio::test]

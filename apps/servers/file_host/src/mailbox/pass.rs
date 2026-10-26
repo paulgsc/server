@@ -1004,6 +1004,16 @@ mod tests {
 		assert_eq!(fake.puts.lock().unwrap().len(), 2, "a conflict is final: not filed or handed again");
 	}
 
+	/// A note id may hold a `:` (`voice_repo::is_name`), and the mailbox's
+	/// transcript names allow one: its transcript is handed, not refused.
+	#[tokio::test]
+	async fn a_transcript_of_a_note_whose_id_holds_a_colon_is_handed_over() {
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "note:1", "ggml-small-q5_1.bin", "하나").await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-note:1-1.json"]);
+	}
+
 	#[tokio::test]
 	async fn no_transcript_is_filed_for_a_deleted_subject() {
 		let (pool, fake) = (pool().await, Fake::default());
