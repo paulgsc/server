@@ -54,6 +54,57 @@ pub struct Scenario {
 	pub seed: u8,
 	/// Each team's record over its remaining games, indexed by [`Team::index`].
 	pub rest: [Record; 32],
+	/// By [`Team::index`]: the team may finish above the asked one on this
+	/// way in, so its record in `rest` is one choice, not a requirement.
+	pub free: [bool; 32],
+}
+
+/// A team in a pigeonhole: what it has banked, and how many more wins it can
+/// take without passing the asked team's line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bucket {
+	pub team: Team,
+	pub wins: u8,
+	pub room: u8,
+}
+
+/// Teams that still play `games` games among themselves, more than their
+/// room adds up to: some win has to land above the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pigeonhole {
+	pub teams: Vec<Bucket>,
+	pub games: u16,
+}
+
+/// Why the division can't be won at the asked number of wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DivisionRoute {
+	/// A division mate is already past the line.
+	Above(Team),
+	Pigeonhole(Pigeonhole),
+}
+
+/// Why no wild card is left at the asked number of wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WildCardRoute {
+	/// Conference teams already past the line.
+	pub above: Vec<Team>,
+	/// The first overflowing group the search met, if the teams already above
+	/// leave a wild card open: at least `must_pass` more of them finish above
+	/// the asked team, so its best wild card is `seed_at_best` (past
+	/// [`LAST_SEED`]: none).
+	pub pigeonhole: Option<(Pigeonhole, u8)>,
+	pub seed_at_best: u8,
+	/// Placements of who else may finish above that the search tried; every
+	/// one overflowed.
+	pub cases: u32,
+}
+
+/// Why `extra` more wins can't get the team in: both routes, closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Impossible {
+	pub division: DivisionRoute,
+	pub wild_card: WildCardRoute,
 }
 
 /// The best seed `team` can reach winning exactly `extra` more games, with a
@@ -61,6 +112,25 @@ pub struct Scenario {
 #[must_use]
 pub fn best(table: &Table, team: Team, extra: u8) -> Option<Scenario> {
 	Ask::new(table, team, extra)?.solve()
+}
+
+/// When `team` can't get in winning exactly `extra` more, why: the
+/// pigeonholes the solver's minimum cuts name. `None` when it can, or when
+/// `extra` is more than it has left.
+#[must_use]
+pub fn impossible(table: &Table, team: Team, extra: u8) -> Option<Impossible> {
+	let ask = Ask::new(table, team, extra)?;
+	if ask.as_division_winner().is_some() {
+		return None;
+	}
+	let (found, cases) = ask.search_wild_card();
+	if found.is_some() {
+		return None;
+	}
+	Some(Impossible {
+		division: ask.why_no_division()?,
+		wild_card: ask.why_no_wild_card(cases)?,
+	})
 }
 
 /// What [`best`] depends on: the pending games (fixed by `through` within
@@ -152,7 +222,7 @@ impl<'a> Ask<'a> {
 	}
 
 	fn solve(&self) -> Option<Scenario> {
-		self.as_division_winner().or_else(|| self.as_wild_card())
+		self.as_division_winner().or_else(|| self.search_wild_card().0)
 	}
 
 	fn as_division_winner(&self) -> Option<Scenario> {
@@ -185,7 +255,8 @@ impl<'a> Ask<'a> {
 		5u8.saturating_add(u8::try_from(extra_teams).unwrap_or(u8::MAX))
 	}
 
-	fn as_wild_card(&self) -> Option<Scenario> {
+	/// The best wild card, and how many placements the search tried.
+	fn search_wild_card(&self) -> (Option<Scenario>, u32) {
 		let mut best: Option<Scenario> = None;
 		let mut visited = HashSet::new();
 		let mut stack = vec![self.forced];
@@ -208,7 +279,68 @@ impl<'a> Ask<'a> {
 				}
 			}
 		}
-		best
+		(best, u32::try_from(visited.len()).unwrap_or(u32::MAX))
+	}
+
+	fn why_no_division(&self) -> Option<DivisionRoute> {
+		let own = self.divisions[self.own_division];
+		if let Some(i) = (0..self.conf.len()).find(|i| self.forced & own & (1 << i) != 0) {
+			return Some(DivisionRoute::Above(self.conf[i]));
+		}
+		// Every other division allowed above: what is left is the division.
+		let free = (0..self.divisions.len()).filter(|d| *d != self.own_division).fold(0, |m, d| m | self.divisions[d]);
+		match self.place(free) {
+			Placed::No(cut) => self.pigeonhole(cut).map(DivisionRoute::Pigeonhole),
+			Placed::Yes(_) => None,
+		}
+	}
+
+	fn why_no_wild_card(&self, cases: u32) -> Option<WildCardRoute> {
+		let above = self.members(self.forced);
+		let seed = self.wild_card_seed(self.forced);
+		if seed > LAST_SEED {
+			return Some(WildCardRoute {
+				above,
+				pigeonhole: None,
+				seed_at_best: seed,
+				cases,
+			});
+		}
+		let Placed::No(cut) = self.place(self.forced) else {
+			return None;
+		};
+		let must_pass = self.frees_still_needed(self.forced, cut);
+		Some(WildCardRoute {
+			above,
+			pigeonhole: Some((self.pigeonhole(cut)?, must_pass)),
+			seed_at_best: seed.saturating_add(must_pass).min(LAST_SEED + 1),
+			cases,
+		})
+	}
+
+	fn members(&self, mask: Mask) -> Vec<Team> {
+		(0..self.conf.len()).filter(|i| mask & (1 << i) != 0).map(|i| self.conf[i]).collect()
+	}
+
+	/// The capped teams of a failed placement's minimum cut, as a pigeonhole;
+	/// `None` if their games among themselves don't overflow their room.
+	fn pigeonhole(&self, cut: Mask) -> Option<Pigeonhole> {
+		let members: Vec<usize> = (0..self.conf.len()).filter(|i| cut & (1 << i) != 0).collect();
+		let inside = |t: Team| members.iter().any(|&i| self.conf[i] == t);
+		let games = self.table.pending().iter().filter(|p| inside(p.home) && inside(p.away)).count();
+		let teams: Vec<Bucket> = members
+			.iter()
+			.map(|&i| Bucket {
+				team: self.conf[i],
+				wins: self.table.record(self.conf[i]).w,
+				room: u8::try_from(self.cap(i).unwrap_or(0) / 2).unwrap_or(u8::MAX),
+			})
+			.collect();
+		let room: usize = teams.iter().map(|b| usize::from(b.room)).sum();
+		(games > room).then(|| Pigeonhole {
+			teams,
+			games: u16::try_from(games).unwrap_or(u16::MAX),
+		})
 	}
 
 	/// A lower bound on the seeds still to lose from `free`, given `cut`: the
@@ -356,7 +488,11 @@ impl<'a> Ask<'a> {
 			rest[w.index()].w += 1;
 			rest[(if w == p.home { p.away } else { p.home }).index()].l += 1;
 		}
-		Scenario { seed, rest }
+		let mut allowed = [false; 32];
+		for t in self.members(free) {
+			allowed[t.index()] = true;
+		}
+		Scenario { seed, rest, free: allowed }
 	}
 }
 

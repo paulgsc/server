@@ -12,6 +12,7 @@ use crate::{
 /// A game still to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pending {
+	pub week: u8,
 	pub home: Team,
 	pub away: Team,
 }
@@ -49,7 +50,11 @@ impl Table {
 		for g in season.games() {
 			match g.outcome().filter(|_| g.week <= week) {
 				Some(outcome) => table.bank(g, outcome),
-				None => table.pending.push(Pending { home: g.home, away: g.away }),
+				None => table.pending.push(Pending {
+					week: g.week,
+					home: g.home,
+					away: g.away,
+				}),
 			}
 		}
 		table
