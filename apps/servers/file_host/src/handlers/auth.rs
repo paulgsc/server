@@ -1169,6 +1169,7 @@ mod tests {
 				"INSERT INTO aph_entry (subject_id, entry_id, revision, day, checkpoint, plain, body, written_at) VALUES (?1, 'e', 1, 'd', NULL, 0, '{}', 'now')",
 				"INSERT INTO aph_settings (subject_id, revision, body, written_at) VALUES (?1, 1, '{}', 'now')",
 				"INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, 'e', 'now', '{}', 'now')",
+				"INSERT INTO korean_entry (subject_id, kind, entry_key, revision, body, sha256, written_at) VALUES (?1, 'set', 'k', 1, '{}', 's', 'now')",
 				"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
 				"INSERT INTO sharing_choice (subject_id, pairing_id, seq, scope, kept, at) VALUES (?1, 'p', 1, 'aph', 1, 'now')",
 				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",

@@ -25,6 +25,7 @@ use axum::{
 };
 use chrono::{SecondsFormat, Utc};
 use jobs_repo::{JobsError, REWRITTEN};
+use korean_repo::KoreanError;
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
 use sharing_repo::Scope;
@@ -81,6 +82,31 @@ impl Collection for Aph {
 			Err(AphError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
 			Err(AphError::Unreadable) => Err(FileHostError::OperationError("a stored aph revision does not read back".to_owned())),
 			Err(AphError::Storage(err)) => Err(FileHostError::Sqlite(err)),
+		}
+	}
+}
+
+struct Korean;
+
+impl Collection for Korean {
+	const SCOPE: Scope = Scope::Korean;
+
+	/// `id` is `<kind>/<key>`, the route's path, and a `null` body is a
+	/// removal, as `DELETE /korean/:kind/:key` answers it.
+	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
+		let Some((kind, key)) = id.split_once('/') else {
+			return Ok(Outcome::Refused(vec![("id", "is <kind>/<key>")]));
+		};
+		let written = if body == b"null" {
+			korean_repo::remove(conn, subject, kind, key, now).await
+		} else {
+			korean_repo::put(conn, subject, kind, key, body, now).await.map(|(change, entry)| (change, Some(entry)))
+		};
+		match written {
+			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::to_value(entry)?)),
+			Err(KoreanError::Invalid(problems)) => Ok(Outcome::Refused(problems)),
+			Err(KoreanError::Unreadable) => Err(FileHostError::OperationError("a stored Korean revision does not read back".to_owned())),
+			Err(KoreanError::Storage(err)) => Err(FileHostError::Sqlite(err)),
 		}
 	}
 }
@@ -182,7 +208,9 @@ async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMa
 /// `POST /sync/:collection/batch`, `{ "items": [{ "id", "body" }, …] }`.
 ///
 /// At most [`BATCH_CEILING`] items; `:collection` is `jobs` (events, as
-/// `PUT /jobs/events/:id`) or `aph` (entries, as `PUT /aph/entries/:id`).
+/// `PUT /jobs/events/:id`), `aph` (entries, as `PUT /aph/entries/:id`) or
+/// `korean` (entries, each `id` a `<kind>/<key>`, as
+/// `PUT /korean/:kind/:key`, or `DELETE` for a `null` body).
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 404 for an unknown
@@ -204,6 +232,7 @@ pub async fn write_batch(
 	match collection.as_str() {
 		"jobs" => write::<Jobs>(&db, subject, &headers, &body).await.map(Json),
 		"aph" => write::<Aph>(&db, subject, &headers, &body).await.map(Json),
+		"korean" => write::<Korean>(&db, subject, &headers, &body).await.map(Json),
 		_ => Err(FileHostError::NotFound),
 	}
 }
@@ -385,6 +414,45 @@ mod tests {
 			call(&app, Method::POST, "/sync/aph/batch", &a, &items(super::BATCH_CEILING + 1).to_string()).await.0,
 			StatusCode::UNPROCESSABLE_ENTITY
 		);
+	}
+
+	/// A Korean batch answers each item as `PUT` (or, for a `null` body,
+	/// `DELETE`) `/korean/:kind/:key` would, and refuses an id that names no
+	/// kind and key.
+	#[tokio::test]
+	async fn a_korean_batch_writes_and_removes_entries_by_kind_and_key() {
+		let state = state().await;
+		let a = phone(&state, A).await;
+		let app = app(state);
+		let batch = json!({ "items": [
+			{ "id": "set/cafe", "body": { "deck": { "id": "cafe" } } },
+			{ "id": "pace/w-1", "body": { "factor": 1 } },
+			{ "id": "set/cafe", "body": null },
+			{ "id": "cafe", "body": {} },
+			{ "id": "words/w-1", "body": {} },
+		] });
+		let (status, written) = call(&app, Method::POST, "/sync/korean/batch", &a, &batch.to_string()).await;
+		assert_eq!(status, StatusCode::OK, "{written}");
+		let results = written["results"].as_array().unwrap();
+		let said: Vec<(u64, &Value)> = results.iter().map(|result| (result["status"].as_u64().unwrap(), &result["change"])).collect();
+		assert_eq!(
+			said,
+			[
+				(200, &json!("kept")),
+				(200, &json!("kept")),
+				(200, &json!("removed")),
+				(422, &Value::Null),
+				(422, &Value::Null)
+			]
+		);
+		assert_eq!(
+			results[0]["held"]["body"],
+			json!({ "deck": { "id": "cafe" } }),
+			"what home holds, to compare with what was sent"
+		);
+		assert_eq!(results[2]["held"]["body"], Value::Null);
+		assert_eq!(results[3]["refused"], json!({ "id": ["is <kind>/<key>"] }));
+		assert!(results[4]["refused"]["kind"].is_array());
 	}
 
 	#[tokio::test]

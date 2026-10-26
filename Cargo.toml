@@ -19,6 +19,7 @@ members = [
   "crates/db/capture",
   "crates/db/curriculum",
   "crates/db/jobs",
+  "crates/db/korean",
   "crates/db/mailbox",
   "crates/db/notice",
   "crates/db/sharing",
@@ -136,6 +137,7 @@ auth_repo = { path = "crates/db/auth" }
 capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }
 jobs_repo = { path = "crates/db/jobs" }
+korean_repo = { path = "crates/db/korean" }
 mailbox_kit = { path = "crates/mailbox_kit" }
 notice_repo = { path = "crates/db/notice" }
 fcm_kit = { path = "crates/fcm_kit" }

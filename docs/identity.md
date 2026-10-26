@@ -160,6 +160,7 @@ above the button that deletes (invariant 22):
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript` |
 | LeetType sessions | `leetype_session_event` |
+| Korean's word sets and reading records | `korean_entry` |
 | Voice notes | `voice_note`, `voice_note_audio`, `voice_transcript` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -418,9 +419,10 @@ nowhere is marked as such and belongs to review.
     fails it until someone decides what it tells the server and says why.
 
 11. **The learner shelf holds content only** (#387). `learner_shelf` is one
-    of the four subject-scoped places that store something the learner wrote
-    rather than something the server observed (the aph and Jobs records and
-    the LeetType session log, invariants 15, 16 and 18, are the others): items
+    of the five subject-scoped places that store something the learner wrote
+    rather than something the server observed (the aph and Jobs records, the
+    LeetType session log and the Korean record, invariants 15, 16, 18 and 25,
+    are the others): items
     they generated and chose to keep (`PUT /shelf/:activity/:key`,
     docs/study-nudge.md, "Learner shelf").
     A row is the subject, the activity, the item's key, its content hash, when
@@ -536,12 +538,13 @@ nowhere is marked as such and belongs to review.
     never one per item.** `sharing_choice` keeps what each paired phone's
     person chose to keep sending home (paulgsc/some-ui
     `apps/www/src/lib/home-link`, its consent log): one row each time sharing
-    a kind of record (`sessions`, `shelf`, `aph`, `jobs`, `voice`) began or
+    a kind of record (`sessions`, `shelf`, `aph`, `jobs`, `voice`, `korean`) began or
     ended under a pairing, with when home heard it, and nothing about when
     anything was sent under it. Those times are kept so home can refuse the
-    aph, Jobs and voice-note writes a phone sends after its person stopped
-    them (`PUT /aph/*`, `PUT /jobs/events/:id`, `POST /sync/:collection/batch`
-    and `PUT /voice-notes/:id` answer `409`, code `sharing_stopped`; sessions, the shelf and the LeetType session log
+    aph, Jobs, voice-note and Korean writes a phone sends after its person
+    stopped them (`PUT /aph/*`, `PUT /jobs/events/:id`,
+    `POST /sync/:collection/batch`, `PUT /voice-notes/:id` and `PUT` and
+    `DELETE /korean/:kind/:key` answer `409`, code `sharing_stopped`; sessions, the shelf and the LeetType session log
     also go home on a tap no choice covers, and are not refused),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
@@ -558,13 +561,16 @@ nowhere is marked as such and belongs to review.
     `only_a_paired_phone_makes_or_reads_a_choice` and
     `home_refuses_only_what_a_phone_stopped`, `handlers::sync`'s
     `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`, and
-    `handlers::voice`'s `home_refuses_a_note_once_its_phone_stopped_sending_them`.
+    `handlers::voice`'s `home_refuses_a_note_once_its_phone_stopped_sending_them`,
+    and `handlers::korean`'s `home_refuses_a_write_once_its_phone_stopped_sending_korean`.
     A new scope widens the table's CHECK by rebuilding it with every row
-    copied (`20261025000300_add_voice_to_sharing_choice`, held by
+    copied (`20261025000300_add_voice_to_sharing_choice` and
+    `20261026000300_add_korean_to_sharing_choice`, held by
     `sharing_repo`'s `adding_voice_keeps_every_change_and_both_triggers`), and
     rolling that back once a pairing has chosen the scope fails rather than
     discarding the choice
-    (`rolling_back_past_voice_refuses_rather_than_discards`).
+    (`rolling_back_past_voice_refuses_rather_than_discards`,
+    `korean_is_chosen_like_the_rest_and_a_rollback_refuses_to_discard_it`).
 
 18. **The LeetType session log is append-only, holds what the owner played,
     and holds no soundbite.** `leetype_session_event` keeps the phone's
@@ -830,6 +836,36 @@ nowhere is marked as such and belongs to review.
     *Not enforced:* that the three notices stay free of anything personal,
     which review keeps; and that nothing else writes these tables, which
     `git grep -n 'jobs_notice_' -- '*.rs'` shows today.
+
+25. **The Korean record is append-only, holds what the owner read as the
+    phone sent it, and is never parsed.** `korean_entry` keeps Korean's
+    record once the phone is opted in to keeping it on home
+    (paulgsc/some-ui#2100): the word sets the owner studies on and what the
+    phone records as they are read, one kind per store the phone keeps
+    (`korean_repo::Kind`: `set`, `pace`, `tally`, `lens`, `record`,
+    `progress`, `feedback`, a closed list). Every write is a revision and
+    every earlier one stays: no row is updated (a trigger aborts an
+    `UPDATE`), a removal (`DELETE /korean/:kind/:key`) is a revision with no
+    body, and nothing is deleted but with the account. A revision is the
+    subject, the kind, the phone's key for the entry, its number, the body
+    byte for byte with its SHA-256, and when it was written. Home checks
+    only that a body is one JSON object or array within
+    `korean_repo::BODY_CEILING`, as the learner shelf does (invariant 11),
+    so what a word set or a pace *is* stays the phone's to judge. It is
+    written only by `PUT` and `DELETE /korean/:kind/:key` and
+    `POST /sync/korean/batch`, each refused for a pairing that stopped
+    sending Korean (invariant 17), readable only by its own subject, and
+    deleted with the account by both the sweep and the migration's trigger
+    (invariant 12). Rolling back the migration that creates it fails once it
+    holds a row, rather than dropping the record.
+    *Enforced by* `korean_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `every_change_is_a_new_revision_and_every_old_one_stays` (an `UPDATE` is
+    refused), `the_answer_is_the_bytes_sent_verbatim`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::korean`'s
+    `refusals_name_their_fields_and_records_stay_apart`.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n korean_entry -- '*.rs'` shows today.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
