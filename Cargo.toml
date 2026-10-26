@@ -45,6 +45,7 @@ members = [
   "crates/some-cache",
   "crates/some-metrics",
   "crates/some-services",
+  "crates/some-shutdown",
   "crates/some-transport",
   "crates/ws-conn-manager",
   "crates/ws-connection",
@@ -131,6 +132,7 @@ ws-events = { path = "crates/ws-events" }
 cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
+some-shutdown = { path = "crates/some-shutdown" }
 activity_repo = { path = "crates/db/activity" }
 aph_repo = { path = "crates/db/aph" }
 auth_repo = { path = "crates/db/auth" }
