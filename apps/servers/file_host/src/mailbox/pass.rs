@@ -621,7 +621,11 @@ mod tests {
 					return Err("connection refused");
 				}
 				if path.starts_with("/v1/transcript/items/") {
-					self.transcripts.lock().unwrap().push(String::from_utf8(request.body.clone().unwrap_or_default()).unwrap());
+					self
+						.transcripts
+						.lock()
+						.unwrap()
+						.push(String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned());
 				}
 				self.puts.lock().unwrap().push(path);
 				let mut answers = self.put_answers.lock().unwrap();

@@ -499,8 +499,9 @@ pub struct Heard {
 	pub heard_at: String,
 }
 
-/// `subject`'s transcripts that heard something and are not filed yet,
-/// oldest heard first, at most `limit`. A note heard as nothing at all, or
+/// `subject`'s transcripts that heard something and are not filed yet.
+///
+/// Oldest heard first, at most `limit`. A note heard as nothing at all, or
 /// not heard, is never one: the routine reads that from the absence.
 ///
 /// # Errors
@@ -547,11 +548,12 @@ pub async fn next_transcript_number(conn: &mut SqliteConnection, subject: &str, 
 /// The name a note's `n`th filed transcript goes under in the mailbox.
 #[must_use]
 pub fn transcript_name(note_id: &str, n: i64) -> String {
-	format!("transcript-{note_id}-{n}.json")
+	String::from("transcript-") + note_id + "-" + &n.to_string() + ".json"
 }
 
-/// Files `subject`'s transcript of `note_id` by `model` as number `n`, with
-/// `body`, as of `now`: the number in `mailbox_transcript`, the file in
+/// Files `subject`'s transcript of `note_id` by `model` as number `n`.
+///
+/// The number goes in `mailbox_transcript`, and `body`, as of `now`, in
 /// `mailbox_outgoing` under [`transcript_name`], for the poller to hand on.
 ///
 /// Run it in one `BEGIN IMMEDIATE` transaction with
