@@ -848,7 +848,9 @@ nowhere is marked as such and belongs to review.
     `UPDATE`), a removal (`DELETE /korean/:kind/:key`) is a revision with no
     body, and nothing is deleted but with the account. A revision is the
     subject, the kind, the phone's key for the entry, its number, the body
-    byte for byte with its SHA-256, and when it was written. Home checks
+    byte for byte (the JSON value's own text: the whitespace around it is
+    trimmed, nothing within it changed) with its SHA-256, and when it was
+    written. Home checks
     only that a body is one JSON object or array within
     `korean_repo::BODY_CEILING`, as the learner shelf does (invariant 11),
     so what a word set or a pace *is* stays the phone's to judge. It is

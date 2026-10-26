@@ -36,6 +36,9 @@ use sqlx::SqliteConnection;
 /// `progress`, `feedback`) to a few.
 pub const BODY_CEILING: usize = 256 * 1024;
 
+/// What JSON counts as whitespace between tokens (RFC 8259, section 2).
+const JSON_WHITESPACE: [char; 4] = [' ', '\t', '\n', '\r'];
+
 /// Which of the phone's stores an entry is from (paulgsc/some-ui
 /// `packages/ui/topik/src/lib/topik/adapter`). Closed: another kind is a
 /// reviewed diff here that says which store it is.
@@ -203,7 +206,7 @@ fn check_body(body: &[u8]) -> Result<(), &'static str> {
 		return Err("is over the 262144-byte ceiling");
 	}
 	let text = std::str::from_utf8(body).map_err(|_| "is not UTF-8")?;
-	if !text.trim_start_matches([' ', '\t', '\n', '\r']).starts_with(['{', '[']) {
+	if !text.trim_start_matches(JSON_WHITESPACE).starts_with(['{', '[']) {
 		return Err("must be a JSON object or array");
 	}
 	serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| "is not JSON")?;
@@ -261,6 +264,9 @@ async fn insert(conn: &mut SqliteConnection, subject: &str, kind: Kind, key: &st
 /// Writes `body` as `key`'s next revision of `kind` for `subject`, as of
 /// `now`, and answers what it did with the entry as it now stands.
 ///
+/// What is kept is the body's bytes with the JSON whitespace around the
+/// value trimmed, and nothing else changed.
+///
 /// Run it in a `BEGIN IMMEDIATE` transaction, so the read that decides and
 /// the write see one snapshot.
 ///
@@ -271,11 +277,16 @@ async fn insert(conn: &mut SqliteConnection, subject: &str, kind: Kind, key: &st
 /// [`KoreanError::Storage`] for any `sqlx` failure.
 pub async fn put(conn: &mut SqliteConnection, subject: &str, kind: &str, key: &str, body: &[u8], now: &str) -> Result<(Change, Entry), KoreanError> {
 	let kind = validate(kind, key, Some(body)).map_err(KoreanError::Invalid)?;
-	// `validate` held it to UTF-8.
-	let text = std::str::from_utf8(body).map_err(|_| KoreanError::Invalid(vec![("body", "is not UTF-8")]))?;
+	// `validate` held it to UTF-8. What is kept is the JSON value's own text:
+	// whitespace around it is no part of it, and a `RawValue` (an answer, or a
+	// batch item as it arrives) carries none, so the bytes kept, hashed and
+	// answered are the same bytes whichever route wrote them.
+	let text = std::str::from_utf8(body)
+		.map_err(|_| KoreanError::Invalid(vec![("body", "is not UTF-8")]))?
+		.trim_matches(JSON_WHITESPACE);
 	let standing = latest(conn, subject, kind, key).await?;
 	if let Some((entry, Some(sha256))) = &standing {
-		if *sha256 == content_hash(body) {
+		if *sha256 == content_hash(text.as_bytes()) {
 			return Ok((Change::Unchanged, entry.clone()));
 		}
 	}
@@ -465,8 +476,15 @@ mod tests {
 	async fn the_answer_is_the_bytes_sent_verbatim() {
 		let pool = pool().await;
 		let sent = br#"{ "factor" : 1.25,"seen":3 }"#;
-		let (change, entry) = put(&mut pool.acquire().await.unwrap(), A, "pace", "w-1", sent, T0).await.unwrap();
-		assert_eq!((change, entry.body.unwrap().get()), (Change::Kept, std::str::from_utf8(sent).unwrap()));
+		let padded = b" \n{ \"factor\" : 1.25,\"seen\":3 }\r\n\t";
+		let (change, entry) = put(&mut pool.acquire().await.unwrap(), A, "pace", "w-1", padded, T0).await.unwrap();
+		assert_eq!(
+			(change, entry.body.unwrap().get()),
+			(Change::Kept, std::str::from_utf8(sent).unwrap()),
+			"the value's own text, without the whitespace around it"
+		);
+		let (again, _) = put(&mut pool.acquire().await.unwrap(), A, "pace", "w-1", sent, T1).await.unwrap();
+		assert_eq!(again, Change::Unchanged, "so the same value, padded or not, is the same bytes");
 		let stood = standing(&mut pool.acquire().await.unwrap(), A, Kind::Pace).await.unwrap();
 		assert_eq!(
 			stood[0].body.as_ref().unwrap().get(),

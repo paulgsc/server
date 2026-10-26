@@ -27,7 +27,8 @@
 --   entry_key   -- the phone's key for the entry within its kind: a URL
 --                  path segment, held to `curriculum_repo::is_plain_key`.
 --   revision    -- 1 for the entry as first written, then 2, 3 … per change.
---   body        -- the entry's JSON as the phone sent it, byte for byte, or
+--   body        -- the entry's JSON as the phone sent it, byte for byte but
+--                  for the whitespace around the value, which is trimmed; or
 --                  NULL for a revision that removed it.
 --   sha256      -- lowercase hex SHA-256 over `body`'s bytes, NULL with it:
 --                  how a write of the bytes already standing is told apart.
