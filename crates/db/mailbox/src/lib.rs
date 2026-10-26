@@ -16,10 +16,17 @@
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
 //! - **One writer per table.** `file_host`'s `mailbox` poller is the only
-//!   caller of [`keep_item`], [`record_handed`] and [`keep_archived`], and
-//!   `PUT /api/v1/jobs/files/:name` the only caller of [`file_outgoing`];
-//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive' -- '*.rs'`
+//!   caller of [`keep_item`], [`record_handed`], [`keep_archived`] and
+//!   [`file_transcript`], and `PUT /api/v1/jobs/files/:name` and
+//!   `PUT /api/v1/routine/opened` the only callers of [`file_outgoing`]
+//!   besides it;
+//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript' -- '*.rs'`
 //!   shows no other.
+//! - **A transcript is filed once, under a number decided once.**
+//!   [`file_transcript`] records which of home's transcripts it filed, by note
+//!   and model, and the number its name carries, so a better model's goes
+//!   under a new name and none is filed twice
+//!   (`20261026000100_create_mailbox_transcript.up.sql`).
 //! - **Archived here first** (docs/identity.md invariant 21): see
 //!   [`keep_archived`].
 //! - **Handed once.** A file filed for the mailbox is handed until the
@@ -473,10 +480,118 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
+/// The folder home's transcripts go to.
+pub const TRANSCRIPT: &str = "transcript";
+
+/// One transcript home heard and has not filed for the mailbox: what the
+/// mailbox's `some-ui.voice-transcript/1` body is built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+	pub note_id: String,
+	pub model: String,
+	/// What the note was said for, and which one (`voice_note`).
+	pub of_kind: String,
+	pub of_ref: String,
+	/// When the phone recorded it.
+	pub recorded_at: String,
+	pub text: String,
+	pub language: String,
+	pub heard_at: String,
+}
+
+/// `subject`'s transcripts that heard something and are not filed yet.
+///
+/// Oldest heard first, at most `limit`. A note heard as nothing at all, or
+/// not heard, is never one: the routine reads that from the absence.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Heard>, MailboxError> {
+	let heard = sqlx::query_as!(
+		Heard,
+		r#"SELECT heard.note_id, heard.model, note.of_kind, note.of_ref, note.recorded_at,
+		          heard.text AS "text!", heard.language AS "language!", heard.heard_at
+		   FROM voice_transcript AS heard
+		   JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
+		   WHERE heard.subject_id = ?1
+		     AND heard.outcome = 'heard'
+		     AND trim(heard.text) <> ''
+		     AND NOT EXISTS (
+		       SELECT 1 FROM mailbox_transcript AS filed
+		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
+		     )
+		   ORDER BY heard.heard_at, heard.note_id, heard.model
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(heard)
+}
+
+/// The number `subject`'s next filed transcript of `note_id` takes, from 1.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn next_transcript_number(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<i64, MailboxError> {
+	let last = sqlx::query_scalar!(
+		r#"SELECT MAX(n) AS "n: i64" FROM mailbox_transcript WHERE subject_id = ?1 AND note_id = ?2"#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(last.unwrap_or(0) + 1)
+}
+
+/// The name a note's `n`th filed transcript goes under in the mailbox.
+#[must_use]
+pub fn transcript_name(note_id: &str, n: i64) -> String {
+	String::from("transcript-") + note_id + "-" + &n.to_string() + ".json"
+}
+
+/// Files `subject`'s transcript of `note_id` by `model` as number `n`.
+///
+/// The number goes in `mailbox_transcript`, and `body`, as of `now`, in
+/// `mailbox_outgoing` under [`transcript_name`], for the poller to hand on.
+///
+/// Run it in one `BEGIN IMMEDIATE` transaction with
+/// [`next_transcript_number`], under the deletion hold.
+///
+/// # Errors
+/// [`MailboxError::Rewritten`] when that name already holds other bytes, and
+/// [`MailboxError::Storage`] for any `sqlx` failure, a transcript filed
+/// twice or a number taken included.
+pub async fn file_transcript(
+	conn: &mut SqliteConnection,
+	subject: &str,
+	(note_id, model, n): (&str, &str, i64),
+	(sha256, body): (&str, &[u8]),
+	now: &str,
+) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		note_id,
+		model,
+		n,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	if written.rows_affected() == 0 {
+		return Ok(Change::NoAccount);
+	}
+	file_outgoing(conn, subject, TRANSCRIPT, &transcript_name(note_id, n), sha256, body, now).await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
-		archived_body, cursor, digests_after, file_outgoing, keep_archived, keep_item, pending_outgoing, record_handed, Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF,
+		archived_body, cursor, digests_after, file_outgoing, file_transcript, keep_archived, keep_item, next_transcript_number, pending_outgoing, record_handed,
+		unfiled_transcripts, Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -529,12 +644,12 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mailbox_%'");
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 4);
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 5);
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops them");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 4, "up recreates them");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 5, "up recreates them");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
@@ -550,6 +665,7 @@ mod tests {
 				"mailbox_archive",
 				&["subject_id", "folder", "name", "seq", "sha256", "size", "put_at", "body", "kept_at"][..],
 			),
+			("mailbox_transcript", &["subject_id", "note_id", "model", "n", "filed_at"][..]),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -586,11 +702,18 @@ mod tests {
 			"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'd', 's', x'00', 'now')",
 			"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'd', 'added', 'now')",
 			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
+			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
-		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive"] {
-			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET name = 'other'")).execute(&pool).await;
+		for (table, column) in [
+			("mailbox_item", "name"),
+			("mailbox_outgoing", "name"),
+			("mailbox_handed", "name"),
+			("mailbox_archive", "name"),
+			("mailbox_transcript", "n"),
+		] {
+			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET " + column + " = 2")).execute(&pool).await;
 			assert!(update.unwrap_err().to_string().contains("append-only"), "{table}");
 		}
 	}
@@ -679,9 +802,14 @@ mod tests {
 				.await
 				.unwrap();
 			archive(&pool, subject, "digest-2026-07-01.json", "{}").await.unwrap();
+			sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')")
+				.bind(subject)
+				.execute(&pool)
+				.await
+				.unwrap();
 		}
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
-		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive"] {
+		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive", "mailbox_transcript"] {
 			let left: Vec<String> = sqlx::query_scalar(&(String::from("SELECT subject_id FROM ") + table)).fetch_all(&pool).await.unwrap();
 			assert_eq!(left, [B], "{table}: A's rows went with A's account, B's stayed");
 		}
@@ -766,5 +894,96 @@ mod tests {
 			record_handed(&mut conn, "subject-gone", "decisions", "x", Answer::Refused, NOW).await.unwrap(),
 			Change::NoAccount
 		);
+	}
+
+	/// A voice note `note` of `subject`'s, and one attempt by `model` to hear it.
+	async fn heard(pool: &SqlitePool, subject: &str, (note, model, attempt): (&str, &str, i64), outcome: &str, text: Option<&str>, at: &str) {
+		sqlx::query(
+			"INSERT OR IGNORE INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'jobs', '2026-10-25:acme-sre', '2026-10-25T08:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+		)
+		.bind(subject)
+		.bind(note)
+		.execute(pool)
+		.await
+		.unwrap();
+		let language = text.map(|_| "ko");
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'whisper.cpp', ?4, ?5, ?6, CASE WHEN ?6 IS NULL THEN NULL ELSE 0.9 END, CASE WHEN ?5 IN ('heard', 'silent') THEN 1000 END, ?7, 10, ?8)",
+		)
+		.bind(subject)
+		.bind(note)
+		.bind(model)
+		.bind(attempt)
+		.bind(outcome)
+		.bind(language)
+		.bind(text)
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn unfiled(pool: &SqlitePool, subject: &str) -> Vec<(String, String)> {
+		unfiled_transcripts(&mut pool.acquire().await.unwrap(), subject, 10)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|heard| (heard.note_id, heard.model))
+			.collect()
+	}
+
+	async fn file_next(pool: &SqlitePool, subject: &str, note: &str, model: &str) -> Result<(i64, Change), MailboxError> {
+		let mut tx = pool.begin().await.unwrap();
+		let n = next_transcript_number(&mut tx, subject, note).await?;
+		let change = file_transcript(&mut tx, subject, (note, model, n), ("sha", b"{}"), NOW).await?;
+		tx.commit().await.unwrap();
+		Ok((n, change))
+	}
+
+	#[tokio::test]
+	async fn only_heard_transcripts_wait_to_be_filed_oldest_first() {
+		let pool = pool().await;
+		heard(&pool, A, ("n2", "small", 1), "heard", Some("둘"), "2026-10-25T09:02:00.000Z").await;
+		heard(&pool, A, ("n1", "small", 1), "failed", None, "2026-10-25T09:00:00.000Z").await;
+		heard(&pool, A, ("n1", "small", 2), "heard", Some("하나"), "2026-10-25T09:01:00.000Z").await;
+		heard(&pool, A, ("n3", "small", 1), "silent", None, "2026-10-25T09:03:00.000Z").await;
+		heard(&pool, A, ("n4", "small", 1), "heard", Some("   "), "2026-10-25T09:04:00.000Z").await;
+		heard(&pool, B, ("n9", "small", 1), "heard", Some("b"), "2026-10-25T09:00:00.000Z").await;
+		assert_eq!(
+			unfiled(&pool, A).await,
+			[(String::from("n1"), String::from("small")), (String::from("n2"), String::from("small"))],
+			"oldest heard first; never a failure, a silence or nothing but blanks, nor another subject's"
+		);
+		let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
+		assert_eq!((all[0].text.as_str(), all[0].language.as_str(), all[0].of_kind.as_str()), ("하나", "ko", "jobs"));
+		file_next(&pool, A, "n1", "small").await.unwrap();
+		assert_eq!(unfiled(&pool, A).await, [(String::from("n2"), String::from("small"))], "a filed one waits no more");
+	}
+
+	#[tokio::test]
+	async fn each_transcript_of_a_note_takes_the_next_number_once() {
+		let pool = pool().await;
+		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-10-25T09:01:00.000Z").await;
+		heard(&pool, A, ("n1", "medium", 1), "heard", Some("하나요"), "2026-10-26T09:01:00.000Z").await;
+		assert_eq!(file_next(&pool, A, "n1", "small").await.unwrap(), (1, Change::Added));
+		assert_eq!(
+			file_next(&pool, A, "n1", "medium").await.unwrap(),
+			(2, Change::Added),
+			"a better model's goes under a new name"
+		);
+		assert_eq!(file_next(&pool, B, "n1", "small").await.unwrap(), (1, Change::Added), "numbers are per subject");
+		assert!(
+			matches!(file_next(&pool, A, "n1", "small").await, Err(MailboxError::Storage(_))),
+			"a transcript is filed once"
+		);
+		let names: Vec<String> = sqlx::query_scalar("SELECT name FROM mailbox_outgoing WHERE subject_id = ?1 AND folder = 'transcript' ORDER BY rowid")
+			.bind(A)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(names, ["transcript-n1-1.json", "transcript-n1-2.json"]);
+		assert_eq!(file_next(&pool, "subject-gone", "n1", "small").await.unwrap(), (1, Change::NoAccount));
 	}
 }
