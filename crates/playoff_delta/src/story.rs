@@ -87,7 +87,8 @@ pub struct Share(pub f64);
 
 impl Serialize for Share {
 	fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-		s.serialize_f64((self.0 * 10_000.0).round() / 10_000.0)
+		// `+ 0.0` turns a rounded -0.0 into 0.0.
+		s.serialize_f64((self.0 * 10_000.0).round() / 10_000.0 + 0.0)
 	}
 }
 
@@ -163,7 +164,7 @@ pub struct StoryPaths {
 pub struct StoryShare {
 	pub before: Share,
 	pub after: Share,
-	/// The change the team's own result made (0 on a bye).
+	/// The change the team's own result made (0 on a bye or a tie).
 	pub own: Share,
 	/// The rest of the change: everyone else's results.
 	pub league: Share,
@@ -225,13 +226,25 @@ pub enum DivisionRoute {
 	Pigeonhole { teams: Vec<Bucket>, games: u16 },
 }
 
+/// A group that alone, with the teams already above, closes the wild card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WildCardPigeonhole {
+	pub teams: Vec<Bucket>,
+	pub games: u16,
+	/// At least this many of them, besides one division winner per division,
+	/// must finish above the team.
+	pub must_pass: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WildCardRoute {
 	pub above: Vec<Team>,
-	pub pigeonhole: Option<Pigeonhole>,
-	pub must_pass: u8,
-	pub seed_at_best: u8,
+	/// When one group closes it; otherwise the proof is the search.
+	pub pigeonhole: Option<WildCardPigeonhole>,
+	/// Placements of who else finishes above that the search tried (0 when
+	/// the teams already above close it).
 	pub cases: u32,
 }
 

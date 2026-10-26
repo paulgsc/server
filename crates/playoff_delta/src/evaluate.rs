@@ -34,7 +34,7 @@ use crate::{
 	solver::{self, Memo, Scenario},
 	story::{
 		Benchmark, Boundary, Bucket, Claim, Collapse, Collision, DivisionRoute, Kind, Left, LowestBar, Moved, Need, Next, Pigeonhole, Points, Relation, RivalGame, RivalWeek,
-		Score, Share, Shares, StoryGame, StoryPath, StoryPaths, StoryResult, StorySeason, StoryShare, StoryWeek, WildCardRoute, WinLoss,
+		Score, Share, Shares, StoryGame, StoryPath, StoryPaths, StoryResult, StorySeason, StoryShare, StoryWeek, WildCardPigeonhole, WildCardRoute, WinLoss,
 	},
 	table::Table,
 };
@@ -111,7 +111,15 @@ pub fn evaluate(season: &Season, previous: &Season, subject: &Subject) -> Result
 	let (memo, last_memo) = (Memo::default(), Memo::default());
 	let tables: Vec<Table> = (0..=through).map(|w| Table::after(season, w)).collect();
 	let claims: Vec<[Claim; 32]> = tables.iter().map(|t| Team::ALL.map(|team| claim(&memo, t, team))).collect();
-	let tallies: Vec<Tally> = tables.iter().map(|t| count::tally(t, subject.team, subject.ways)).collect();
+	// Each table's next week's games, both sides counted: the subject's own
+	// one splits that week's change, and the rest are the ones to root for.
+	let tallies: Vec<Tally> = tables
+		.iter()
+		.map(|t| {
+			let next: Vec<usize> = (0..t.pending().len()).filter(|&i| t.pending()[i].week.checked_sub(1) == Some(t.through())).collect();
+			count::tally(t, subject.team, subject.ways, &next)
+		})
+		.collect();
 	let rival_shares: Vec<Vec<f64>> = tables.iter().map(|t| subject.rivals.iter().map(|r| count::share(t, *r, subject.ways)).collect()).collect();
 	let mut so_far = Score::default();
 	let mut weeks = Vec::new();
@@ -449,7 +457,7 @@ impl<'a> Week<'a> {
 			.pending()
 			.iter()
 			.zip(&tally.given)
-			.filter(|(p, _)| p.week == self.number + 1 && p.home != me && p.away != me)
+			.filter(|(p, _)| p.week.checked_sub(1) == Some(self.number) && p.home != me && p.away != me)
 			.filter_map(|(p, given)| {
 				let (home_won, away_won) = (*given)?;
 				let swing = home_won - away_won;
@@ -480,12 +488,15 @@ impl<'a> Week<'a> {
 			.collect();
 		// The teams this way holds down first, those that had to fall furthest
 		// leading: lowest share of their remaining games won (compared as cross
-		// products, no floats). A team it lets finish above comes last.
+		// products, no floats). A team with none left holds nothing down, and
+		// a team it lets finish above comes last.
 		let rest = |t: &Team| scenario.rest[t.index()];
+		let done = |t: &Team| rest(t).w + rest(t).l == 0;
 		others.sort_by(|a, b| {
 			let (ra, rb) = (rest(a), rest(b));
 			free(*a)
 				.cmp(&free(*b))
+				.then(done(a).cmp(&done(b)))
 				.then((u16::from(ra.w) * u16::from(rb.w + rb.l)).cmp(&(u16::from(rb.w) * u16::from(ra.w + ra.l))))
 				.then(a.code().cmp(b.code()))
 		});
@@ -540,15 +551,19 @@ impl<'a> Week<'a> {
 			}
 		};
 		let w = why.wild_card;
-		let (wild_pigeonhole, must_pass) = w.pigeonhole.map_or((None, 0), |(p, k)| (Some(pigeonhole(p)), k));
 		Some(Boundary {
 			wins: wins + fewer,
 			division,
 			wild_card: WildCardRoute {
 				above: w.above,
-				pigeonhole: wild_pigeonhole,
-				must_pass,
-				seed_at_best: w.seed_at_best,
+				pigeonhole: w.pigeonhole.map(|(p, must_pass)| {
+					let p = pigeonhole(p);
+					WildCardPigeonhole {
+						teams: p.teams,
+						games: p.games,
+						must_pass,
+					}
+				}),
 				cases: w.cases,
 			},
 		})

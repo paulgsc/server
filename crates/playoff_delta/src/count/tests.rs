@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::{
-	league::Conference,
 	table::{Pending, Record},
 	testing::{random_case, Lcg},
 };
@@ -38,7 +37,8 @@ fn counting_every_way_matches_brute_force() {
 		let (records, pending) = random_case(&mut rng, 10);
 		let table = Table::from_parts(records, pending.clone());
 		for team in [Team::Sf, Team::Dal, Team::Kc, Team::Buf] {
-			let t = tally(&table, team, 1 << 12);
+			let all: Vec<usize> = (0..pending.len()).collect();
+			let t = tally(&table, team, 1 << 12, &all);
 			assert!(t.exact);
 			let (share, given) = brute_force(&records, &pending, team);
 			assert!((t.share - share).abs() < 1e-12, "{}: {} vs {share}", team.code(), t.share);
@@ -72,27 +72,29 @@ fn a_sample_lands_near_the_exact_share_and_repeats_itself() {
 			continue;
 		}
 		checked += 1;
-		let exact = tally(&table, team, 1 << n);
-		let sampled = tally(&table, team, 20_000);
+		let exact = tally(&table, team, 1 << n, &[]);
+		let sampled = tally(&table, team, 20_000, &[]);
 		assert!(exact.exact && !sampled.exact);
 		// Four standard errors of a share near one half over 20,000 ways.
 		assert!((exact.share - sampled.share).abs() < 0.015, "{}: {} vs {}", team.code(), exact.share, sampled.share);
-		assert_eq!(sampled, tally(&table, team, 20_000));
+		assert_eq!(sampled, tally(&table, team, 20_000, &[]));
 	}
 	assert!(checked > 0, "no team has 16 to 19 games to count");
 }
 
 /// A conference team's loss to the other conference never lowers the share
 /// (conservation: the win leaves the conference), so given it, the share is
-/// at least the share given the conference team won.
+/// at least the share given the conference team won: counted every way, and
+/// sampled, since both sides are counted on the same ways.
 #[test]
 fn a_loss_to_the_other_conference_never_hurts() {
 	let mut rng = Lcg(0xF00D);
-	for _ in 0..20 {
+	for round in 0..20 {
 		let (records, pending) = random_case(&mut rng, 12);
 		let table = Table::from_parts(records, pending.clone());
+		let all: Vec<usize> = (0..pending.len()).collect();
 		for team in [Team::Sf, Team::Ne] {
-			let t = tally(&table, team, 1 << 12);
+			let t = tally(&table, team, if round % 2 == 0 { 1 << 12 } else { 300 }, &all);
 			for (i, p) in pending.iter().enumerate() {
 				let ours = |x: Team| x.conference() == team.conference() && x != team;
 				let Some((home_won, away_won)) = t.given[i] else { continue };
@@ -105,5 +107,4 @@ fn a_loss_to_the_other_conference_never_hurts() {
 			}
 		}
 	}
-	assert_ne!(Team::Sf.conference(), Conference::Afc);
 }

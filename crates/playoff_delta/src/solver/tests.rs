@@ -97,15 +97,49 @@ fn every_closed_row_has_a_proof() {
 				let why = impossible(&table, team, extra);
 				assert_eq!(why.is_some(), best(&table, team, extra).is_none(), "{} +{extra}", team.code());
 				let Some(why) = why else { continue };
-				let holds = |p: &Pigeonhole| p.games > p.teams.iter().map(|b| u16::from(b.room)).sum() && p.teams.iter().any(|b| b.team == team);
+				let holds = |p: &Pigeonhole| p.games > p.teams.iter().map(|b| u16::from(b.room)).sum();
 				match &why.division {
 					DivisionRoute::Above(t) => assert!(t.division() == team.division() && table.points(*t) > table.points(team) + u16::from(extra) * 2),
 					DivisionRoute::Pigeonhole(p) => assert!(holds(p) && p.teams.iter().all(|b| b.team.division() == team.division()), "{} +{extra}", team.code()),
 				}
-				if let Some((p, _)) = &why.wild_card.pigeonhole {
-					assert!(p.games > p.teams.iter().map(|b| u16::from(b.room)).sum(), "{} +{extra}", team.code());
+				if let Some((p, must_pass)) = &why.wild_card.pigeonhole {
+					assert!(holds(p) && *must_pass > 0, "{} +{extra}", team.code());
+				} else {
+					// No group closes it alone: the search did, or the teams above did.
+					assert!(why.wild_card.cases > 0 || !why.wild_card.above.is_empty(), "{} +{extra}", team.code());
 				}
 			}
 		}
 	}
+}
+
+#[test]
+fn a_pigeonhole_need_not_hold_the_asked_team() {
+	// The Rams and Seahawks are level with the Niners and still play each
+	// other: whoever wins passes them, so the division's proof is those two.
+	let mut records = [Record { w: 6, l: 8, t: 0 }; 32];
+	for t in [Team::Sf, Team::Lar, Team::Sea] {
+		records[t.index()] = Record { w: 8, l: 6, t: 0 };
+	}
+	for t in [Team::Phi, Team::Dal, Team::Det, Team::Gb, Team::Tb, Team::Atl] {
+		records[t.index()] = Record { w: 10, l: 4, t: 0 };
+	}
+	let pending = vec![
+		Pending {
+			week: 15,
+			home: Team::Lar,
+			away: Team::Sea,
+		},
+		Pending {
+			week: 15,
+			home: Team::Sf,
+			away: Team::Kc,
+		},
+	];
+	let why = impossible(&Table::from_parts(records, pending), Team::Sf, 0).unwrap();
+	let DivisionRoute::Pigeonhole(p) = why.division else { panic!("{:?}", why.division) };
+	assert_eq!(p.teams.iter().map(|b| b.team).collect::<Vec<_>>(), [Team::Lar, Team::Sea]);
+	assert_eq!((p.games, p.teams.iter().map(|b| b.room).sum::<u8>()), (1, 0));
+	// Six teams already past 8-9, two in each of three divisions: no wild card.
+	assert_eq!((why.wild_card.pigeonhole, why.wild_card.cases), (None, 0));
 }

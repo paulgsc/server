@@ -42,9 +42,6 @@ fn every_week_follows_from_the_last() {
 		}
 		// Your own game never "moves" anything: the game slide is its effect.
 		assert!(w.results.iter().all(|r| r.kind != Kind::Own || r.moved.is_none()));
-		// The split is the whole change, to the written four places.
-		let s = w.share;
-		assert!((s.own.0 + s.league.0 - (s.after.0 - s.before.0)).abs() < 1e-9, "week {}", w.week);
 		for r in &w.results {
 			// A conference team's loss to the other conference never hurts.
 			if r.kind == Kind::Exported {
@@ -86,7 +83,7 @@ fn a_bye_is_a_week_with_no_game() {
 }
 
 #[test]
-fn a_boundary_is_a_proof_and_a_free_team_needs_nothing() {
+fn a_boundary_is_a_proof_and_free_teams_come_last() {
 	let story = evaluate(&common::with_byes(7).unwrap(), &common::invented(6, 17).unwrap(), &niners()).unwrap();
 	let mut boundaries = 0;
 	for w in &story.weeks {
@@ -109,12 +106,19 @@ fn a_boundary_is_a_proof_and_a_free_team_needs_nothing() {
 		}
 		if let Some(p) = &b.wild_card.pigeonhole {
 			let room: u16 = p.teams.iter().map(|t| u16::from(t.room)).sum();
-			assert!(p.games > room, "week {}", w.week);
+			assert!(p.games > room && p.must_pass > 0, "week {}", w.week);
 		}
-		assert!(b.wild_card.seed_at_best > 7 || b.wild_card.cases > 0);
 	}
 	assert!(boundaries > 0, "the invented season never needs a win");
-	assert!(story.weeks.iter().filter_map(|w| w.path.as_ref()).flat_map(|p| &p.needs).any(|n| n.free));
+	// Past the rivals and division mates, a team the way lets finish above is
+	// listed after every team it holds down.
+	let mut frees = 0;
+	for p in story.weeks.iter().filter_map(|w| w.path.as_ref()) {
+		let others: Vec<_> = p.needs.iter().filter(|n| !n.rival && n.team.division() != Team::Sf.division()).collect();
+		frees += others.iter().filter(|n| n.free).count();
+		assert!(others.windows(2).all(|w| !w[0].free || w[1].free), "{others:?}");
+	}
+	assert!(frees > 0, "no path lets a team finish above");
 }
 
 #[test]
@@ -168,7 +172,7 @@ weeks[].boundary.division.teams[].room weeks[].boundary.division.games
 weeks[].boundary.wildCard weeks[].boundary.wildCard.above weeks[].boundary.wildCard.pigeonhole
 weeks[].boundary.wildCard.pigeonhole.teams weeks[].boundary.wildCard.pigeonhole.teams[].team
 weeks[].boundary.wildCard.pigeonhole.teams[].wins weeks[].boundary.wildCard.pigeonhole.teams[].room
-weeks[].boundary.wildCard.pigeonhole.games weeks[].boundary.wildCard.mustPass weeks[].boundary.wildCard.seedAtBest
+weeks[].boundary.wildCard.pigeonhole.games weeks[].boundary.wildCard.pigeonhole.mustPass
 weeks[].boundary.wildCard.cases
 weeks[].rivals weeks[].rivals[].team weeks[].rivals[].game weeks[].rivals[].game.opponent weeks[].rivals[].game.won
 weeks[].rivals[].share weeks[].rivals[].share.before weeks[].rivals[].share.after

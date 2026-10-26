@@ -89,14 +89,14 @@ pub enum DivisionRoute {
 pub struct WildCardRoute {
 	/// Conference teams already past the line.
 	pub above: Vec<Team>,
-	/// The first overflowing group the search met, if the teams already above
-	/// leave a wild card open: at least `must_pass` more of them finish above
-	/// the asked team, so its best wild card is `seed_at_best` (past
-	/// [`LAST_SEED`]: none).
+	/// When the teams already above leave a wild card open, and one group
+	/// closes it alone: the group the search's first minimum cut names, and
+	/// how many of it, besides one division winner per division, must finish
+	/// above the asked team (enough to leave no wild card). Otherwise the
+	/// proof is the search.
 	pub pigeonhole: Option<(Pigeonhole, u8)>,
-	pub seed_at_best: u8,
 	/// Placements of who else may finish above that the search tried; every
-	/// one overflowed.
+	/// one overflowed (0 when the teams already above close it).
 	pub cases: u32,
 }
 
@@ -129,7 +129,7 @@ pub fn impossible(table: &Table, team: Team, extra: u8) -> Option<Impossible> {
 	}
 	Some(Impossible {
 		division: ask.why_no_division()?,
-		wild_card: ask.why_no_wild_card(cases)?,
+		wild_card: ask.why_no_wild_card(cases),
 	})
 }
 
@@ -295,27 +295,24 @@ impl<'a> Ask<'a> {
 		}
 	}
 
-	fn why_no_wild_card(&self, cases: u32) -> Option<WildCardRoute> {
-		let above = self.members(self.forced);
+	fn why_no_wild_card(&self, cases: u32) -> WildCardRoute {
 		let seed = self.wild_card_seed(self.forced);
-		if seed > LAST_SEED {
-			return Some(WildCardRoute {
-				above,
-				pigeonhole: None,
-				seed_at_best: seed,
-				cases,
-			});
-		}
-		let Placed::No(cut) = self.place(self.forced) else {
-			return None;
-		};
-		let must_pass = self.frees_still_needed(self.forced, cut);
-		Some(WildCardRoute {
-			above,
-			pigeonhole: Some((self.pigeonhole(cut)?, must_pass)),
-			seed_at_best: seed.saturating_add(must_pass).min(LAST_SEED + 1),
+		// The seeds still to lose before none is left, when any are.
+		let pigeonhole = (LAST_SEED + 1).checked_sub(seed).filter(|needed| *needed > 0).and_then(|needed| {
+			let Placed::No(cut) = self.place(self.forced) else {
+				return None;
+			};
+			// `frees_still_needed` is a lower bound: the group proves the route
+			// closed only when that bound already reaches past the last seed.
+			(self.frees_still_needed(self.forced, cut) >= needed)
+				.then(|| self.pigeonhole(cut).map(|p| (p, needed)))
+				.flatten()
+		});
+		WildCardRoute {
+			above: self.members(self.forced),
+			pigeonhole,
 			cases,
-		})
+		}
 	}
 
 	fn members(&self, mask: Mask) -> Vec<Team> {

@@ -71,9 +71,11 @@ game changes its seed. When there are few enough of them that every way fits
 in `ways` (`evaluate::WAYS`, 100,000), every way is counted (`exact`);
 otherwise `ways` are drawn from a fixed-seed generator, so the same table
 always gives the same share (PD2). A sample's draws depend only on its number
-and the game's place among the pending games, so a table and itself with one
-banked result flipped are compared on the same ways, which is what keeps a
-result's leverage much closer than the share's own error.
+and the game's place among the conference's pending games, so a table and
+itself with one banked result flipped are compared on the same ways, and so
+are a pending game's two sides (each way is seeded again with that one game
+flipped). That is what keeps a result's leverage, a week's split and a next
+week's swing much closer than the share's own error.
 
 `src/count/tests.rs` checks it against brute force (every outcome, exact to
 the last bit), a sample against the exact share, and the sign conservation
@@ -92,8 +94,8 @@ null).
   "exactly" and "at most" agree.
 - **claim**: the first `x` with a way in, and its seed. Found by binary search.
 - **share**: `before` and `after`; `own` is the change the subject's own
-  result made (the share given that result, read off the `before` count,
-  minus `before`; 0 on a bye), `league` the rest. `exact` when every way
+  result made (the share had it gone as it did, read off the `before`
+  count, minus `before`; 0 on a bye or a tie), `league` the rest. `exact` when every way
   was counted at both tables.
 - **pending**: games left in the league, before and after.
 - **results**: every decided game of the week with a side in the subject's
@@ -113,13 +115,15 @@ null).
   not a requirement.
 - **boundary**: when the claim needs at least one more win, why one fewer
   final win (`wins`) can't get in. `division`: a division mate already past
-  that line (`above`), or the pigeonhole the solver's minimum cut names: the
-  division teams (the subject among them) whose remaining games among
-  themselves (`games`) are more than their room under the line adds up to.
-  `wildCard`: the teams already past the line, the first overflowing group
-  the wild-card search meets (with `mustPass`, how many more of them must
-  finish above, and `seedAtBest`, the wild card that leaves at best; past 7:
-  none), and `cases`, the placements the search tried.
+  that line (`above`), or the pigeonhole the solver's minimum cut names:
+  division teams (the subject among them or not) whose remaining games
+  among themselves (`games`) are more than their room under the line adds
+  up to. `wildCard`: the teams already past the line; when one group closes
+  the wild card on its own, that group (the search's first minimum cut) with
+  `mustPass`, how many of it besides one division winner per division must
+  finish above (enough to leave none); and `cases`, the placements of who
+  else finishes above the search tried, every one overflowing (0 when the
+  teams already above close it).
 - **rivals[]**: each named rival's claim and share, before and after, and
   its game (null on its bye).
 - **collisions**: a result where the winner worst for a rival is not the one
