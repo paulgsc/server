@@ -3,7 +3,7 @@
 //! **Import is not migration.** This runs as an operator command, offline —
 //! not a startup hook, not a lazy backfill, not an endpoint — so nothing in
 //! the request path, and nothing in `file_host`'s `main.rs`, ever waits on it.
-//! `paulgsc/some-ui@apps/www/src/lib/tenant/sessions-migration.ts` is the
+//! `paulgsc/some-ui`'s `sessions-migration` (removed there in #1639) was the
 //! cautionary example: a one-time data move that runs where users are waiting
 //! becomes a permanent startup barrier.
 //!

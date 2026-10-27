@@ -10,12 +10,19 @@
 # missing five routes this server already served.
 #
 #   snapshot  builds both files and uploads them as the `route-snapshot` artifact.
-#   client    (PRs) runs some-ui's own `scripts/sync-server-routes.sh --verify`
-#             against some-ui's main. A route change that leaves a some-ui
-#             contract pointing at nothing fails here, on the PR that caused it.
-#             When the break is intended, label the PR `client-breaking-route`:
-#             the check still runs and reports, but no longer fails, and the
-#             matching some-ui change lands with the sync PR below.
+#   client    (PRs) checks some-ui's main against this PR, three ways:
+#             - some-ui's own `scripts/sync-server-routes.sh --verify`: a
+#               route change that leaves a contract pointing at nothing;
+#             - some-ui's contract harness, every contract (mutating ones
+#               included, on a throwaway database), against this PR's
+#               file_host, started here: a response that no longer matches
+#               what the client expects;
+#             - `scripts/check_client_fixtures.py`: a fixture either repo keeps
+#               of the other's output that no longer matches a fresh dump.
+#             Each fails here, on the PR that caused it. When the break is
+#             intended, label the PR `client-breaking-route`: the checks still
+#             run and report, but no longer fail, and the matching some-ui
+#             change lands with the sync PR below.
 #   sync      (main) opens or updates one PR in some-ui carrying the snapshot.
 #             Needs the `SOME_UI_SYNC_TOKEN` secret: a fine-grained token on
 #             paulgsc/some-ui with Contents and Pull requests read/write. A PR
@@ -27,8 +34,10 @@
 #             `server-route-snapshot.yml` re-runs it (`workflow_dispatch`)
 #             when that main moves, or on a `/resync` comment on the PR.
 #
-# The copy destinations live in some-ui's script, not here, so moving either
-# file is a change to that repo alone.
+# No some-ui path is named here. The copy destinations live in some-ui's
+# script, `sync` commits whatever that script changed, and the fixture check
+# finds some-ui's copies by file name, so moving any of them is a change to
+# that repo alone.
 name: Routes
 
 on:
@@ -36,8 +45,15 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - main
+    # Everything file_host is built from, since `client` runs it, and the
+    # fixtures the check compares.
     paths:
       - 'apps/servers/file_host/**'
+      - 'crates/**'
+      - 'migrations/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/check_client_fixtures.py'
       - '.github/workflows/routes.yml'
   push:
     branches:
@@ -113,12 +129,59 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # What `client` runs some-ui's checks against: this PR's file_host, the
+      # database the snapshot was built with (migrated by sqlx-cli above), and
+      # the two sessions some-ui keeps a copy of. Stripped: the debug binary
+      # is mostly debug info, about 370 MB against 60.
+      - name: Build file_host and dump the sessions some-ui copies
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p contract-run
+          cargo build -q --bin file_host
+          strip -o contract-run/file_host target/debug/file_host
+          cargo run -q --bin dump-provisioned-session > contract-run/provisioned-session.json
+          cargo run -q --bin dump-proposed-session > contract-run/proposed-session.json
+          python3 - routes.db contract-run/file_host.db <<'EOF'
+          import sqlite3, sys
+          source, copy = sqlite3.connect(sys.argv[1]), sqlite3.connect(sys.argv[2])
+          source.backup(copy)
+          copy.close()
+          EOF
+
+      # Read only by `client`, in this same run, so a day is plenty. Past that
+      # day, "Re-run failed jobs" finds no artifact: use "Re-run all jobs",
+      # which rebuilds it.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: contract-run
+          path: contract-run/
+          if-no-files-found: error
+          retention-days: 1
+
   client:
     name: Check some-ui against it
     needs: snapshot
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # file_host connects to NATS at startup and checks Redis in `/ready`, which
+    # the start step waits on. Neither needs anything from them beyond that.
+    services:
+      nats:
+        image: nats:2.10
+        ports:
+          - 4222:4222
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
     steps:
+      # This repo: the fixture check and the fixtures it reads.
+      - uses: actions/checkout@v5
+        with:
+          path: server
+
       # Public repository, so no token: this job only reads some-ui.
       - uses: actions/checkout@v5
         with:
@@ -130,6 +193,11 @@ jobs:
           name: route-snapshot
           path: route-snapshot
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: contract-run
+          path: contract-run
+
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: some-ui/package.json
@@ -138,11 +206,19 @@ jobs:
         with:
           node-version-file: some-ui/.nvmrc
 
-      # Only the two packages the check reads, and what they depend on. The
-      # full some-ui install is far larger than this job needs.
-      - name: Install the two packages the check reads
+      # Only the packages the checks read, and what they depend on: the
+      # contract harness, the route union, and the two policies some-ui
+      # dumps. The session-duration policy lives in www's own source and
+      # imports @some-ui/core-utils, which resolves through www's links and
+      # from core-utils' built `dist/`, so www (without its dependencies'
+      # dependencies) and core-utils are installed, and core-utils is built.
+      # The full some-ui install is far larger than this job needs.
+      - name: Install the packages the checks read
         working-directory: some-ui
-        run: pnpm install --frozen-lockfile --filter "@some-ui/contract-harness..." --filter "@some-ui/server-routes..."
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter "@some-ui/contract-harness..." --filter "@some-ui/server-routes..." --filter "@some-ui/activity-catalog..." --filter "@some-ui/core-utils..." --filter www
+          pnpm exec turbo run build --filter=@some-ui/core-utils
 
       - name: Sync and verify
         continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'client-breaking-route') }}
@@ -154,6 +230,73 @@ jobs:
             exit 1
           fi
           bash "$script" route-snapshot/routes.server.json route-snapshot/routes.server.ts --verify
+
+      # A throwaway database, so every contract runs, mutating ones included,
+      # and one signed-in session for the per-person routes. A session is
+      # stored as the SHA-256 of the cookie's 32 bytes (`auth/cookie.rs`), so
+      # writing that row is signing in; the subject is also an operator, for
+      # the operator routes. RATE_LIMIT is per client per minute, and the
+      # harness is one client making about sixty requests in a few seconds.
+      - name: Start this PR's file_host
+        env:
+          SUBJECT: subject-00000000000000000000000000c0ffee
+        run: |
+          set -euo pipefail
+          db="$RUNNER_TEMP/file_host.db"
+          cp contract-run/file_host.db "$db"
+          cookie=$(python3 - "$db" <<'EOF'
+          import base64, hashlib, os, sqlite3, sys, time
+          token = os.urandom(32)
+          db = sqlite3.connect(sys.argv[1])
+          db.execute("INSERT INTO account (subject_id, user_handle) VALUES (?, ?)", (os.environ["SUBJECT"], os.urandom(16)))
+          db.execute(
+              "INSERT INTO auth_session (token_hash, subject_id, expires_at) VALUES (?, ?, ?)",
+              (hashlib.sha256(token).digest(), os.environ["SUBJECT"], int(time.time()) + 3600),
+          )
+          db.commit()
+          print(base64.urlsafe_b64encode(token).rstrip(b"=").decode())
+          EOF
+          )
+          echo "::add-mask::$cookie"
+          echo "CONTRACT_SESSION_COOKIE=$cookie" >> "$GITHUB_ENV"
+
+          chmod +x contract-run/file_host
+          env DATABASE_URL="sqlite://$db" NATS_URL=nats://127.0.0.1:4222 REDIS_URL=redis://127.0.0.1:6379 \
+            FILE_HOST_BIND=127.0.0.1 FILE_HOST_PORT=3000 RATE_LIMIT=6000 \
+            WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=https://localhost OPERATOR_SUBJECTS="$SUBJECT" \
+            ALLOWED_ORIGINS=https://localhost APP_BASE_URL=https://localhost/ \
+            OBS_WEBSOCKET_IP=127.0.0.1 OBS_WEBSOCKET_PWD=unused RUST_LOG=info \
+            nohup contract-run/file_host > "$RUNNER_TEMP/file_host.log" 2>&1 &
+
+          for _ in $(seq 60); do
+            if curl -fsS http://127.0.0.1:3000/ready; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::file_host was not ready within a minute"
+          cat "$RUNNER_TEMP/file_host.log"
+          exit 1
+
+      - name: Contracts against this PR's file_host
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'client-breaking-route') }}
+        working-directory: some-ui
+        run: pnpm --filter @some-ui/contract-harness contract --base-url http://127.0.0.1:3000 --include-mutations
+
+      # some-ui's dumps against this repo's copies, and this PR's dumps against
+      # some-ui's copies. See the script for the differences it knows about.
+      - name: Fixtures each repo keeps of the other
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'client-breaking-route') }}
+        run: |
+          set -euo pipefail
+          mkdir -p dumps
+          (cd some-ui && pnpm -s dump:activity-catalog) > dumps/activity-catalog.json
+          (cd some-ui && pnpm -s dump:session-duration-policy) > dumps/session-duration-policy.json
+          cp contract-run/provisioned-session.json contract-run/proposed-session.json dumps/
+          python3 server/scripts/check_client_fixtures.py --self-test
+          python3 server/scripts/check_client_fixtures.py --some-ui some-ui --dumps dumps
+
+      - name: file_host's log
+        if: always()
+        run: cat "$RUNNER_TEMP/file_host.log" 2>/dev/null || echo "file_host did not start"
 
       # What this PR would change in some-ui, on the run page, whether or not
       # the check above passed.
@@ -168,7 +311,7 @@ jobs:
               echo "No change: some-ui's copy already matches this PR."
             else
               echo '```diff'
-              git --no-pager diff -- packages/server-routes/src/generated/routes.ts
+              git --no-pager diff
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -213,6 +356,10 @@ jobs:
 
       # One standing branch: each merge here updates the same PR rather than
       # stacking a new one, and a merge that changes no route leaves it alone.
+      # No `add-paths`: without it the action commits every change in the
+      # checkout, which is only what the script wrote, since nothing else in
+      # this job touches it. Naming the files here would stop the sync with no
+      # error the day some-ui moved one.
       - uses: peter-evans/create-pull-request@v7
         if: steps.token.outputs.present == 'true'
         with:
@@ -220,9 +367,6 @@ jobs:
           token: ${{ secrets.SOME_UI_SYNC_TOKEN }}
           branch: bot/server-route-snapshot
           delete-branch: true
-          add-paths: |
-            packages/contract-harness/routes.server.json
-            packages/server-routes/src/generated/routes.ts
           commit-message: 'chore(server-routes): sync route snapshot from paulgsc/server@${{ steps.token.outputs.short_sha }}'
           title: 'chore(server-routes): sync route snapshot from paulgsc/server@${{ steps.token.outputs.short_sha }}'
           body: |

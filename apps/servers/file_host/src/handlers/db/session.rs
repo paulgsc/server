@@ -2,7 +2,7 @@
 //!
 //! The endpoint list was not open to invention. It is fixed by the methods
 //! `SessionsRepository` already exposes in
-//! `apps/www/src/lib/tenant/sessions-repository.ts` (`paulgsc/some-ui`), and
+//! `apps/www/src/lib/tenant/sessions-repository/index.ts` (`paulgsc/some-ui`), and
 //! matching them one-to-one is what makes the client change a swap rather than
 //! a rewrite:
 //!

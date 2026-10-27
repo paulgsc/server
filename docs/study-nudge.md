@@ -306,9 +306,10 @@ cannot be timed is not a block that runs for zero minutes).
 `checkSessionDuration`, "verified by a fixture consumed on the client side."
 `cargo run --bin dump-proposed-session` runs `recommend()` and `provision()`
 together against a literal transcription of the seeded catalogue and emits
-the resulting `activities` as JSON; copied by hand into `paulgsc/some-ui`'s
-`apps/www/src/lib/session-duration-policy/testdata/proposed-session.snapshot.json`,
-a client-side test there runs it through the real `sequenceScenes` and
+the resulting `activities` as JSON. `paulgsc/some-ui` checks it in as
+`apps/www/src/lib/session-duration-policy/__tests__/testdata/proposed-session.snapshot.json`
+(`.github/workflows/routes.yml` fails a PR here when that copy differs from
+this bin's output), and a client-side test there runs it through the real `sequenceScenes` and
 `checkSessionDuration` — the same pipeline a real device runs, not a second
 copy of the rule that could quietly drift from the first. `maxTotalDurationMs`
 (4 hours) is trivially true for two 5–10 minute blocks, but `provision()`
@@ -422,9 +423,10 @@ out here rather than silently assumed away.
 `materialize_provisioned_session` directly — the same function `nudge::
 waker::consider` calls in production — against the same fixed subject and
 seeded-catalogue transcription `dump-proposed-session` uses, and emits a
-full `SessionRecord` as JSON. Copied by hand into `paulgsc/some-ui`'s
-`apps/www/src/lib/tenant/testdata/provisioned-session.snapshot.json`, a
-client-side test there round-trips it through the real `SessionRecord` type
+full `SessionRecord` as JSON. `paulgsc/some-ui` checks it in as
+`apps/www/src/lib/tenant/__tests__/testdata/provisioned-session.snapshot.json`
+(`.github/workflows/routes.yml` fails a PR here when that copy differs from
+this bin's output), and a client-side test there round-trips it through the real `SessionRecord` type
 and the real `sequenceScenes`/`defaultSessionName`/`totalDurationOfScenes`
 functions — the same "verified against the real thing, not a
 reimplementation" discipline `#281`'s own fixture already established.
@@ -1400,9 +1402,11 @@ run reaches the ledger, the sampler or the waker. The design, its limits and
 the options rejected are in
 [`apps/servers/file_host/docs/leetype-execution.md`](../apps/servers/file_host/docs/leetype-execution.md).
 
-To bring the client's export across (`packages/ui/leetype/corpus/rounds/` in
-`paulgsc/some-ui`: `manifest.json`, `{ "rounds": ["<id>", …] }`, plus one
-`<id>.json` per round), offline:
+Rounds are written through the operator routes; `paulgsc/some-ui` retired the
+corpus export that used to be imported (#1941). To import a directory in that
+export's layout (`manifest.json`, `{ "rounds": ["<id>", …] }`, plus one
+`<id>.json` per round, as in `crates/db/leetype_round/testdata/rounds/`),
+offline:
 
 ```sh
 DATABASE_URL=sqlite:///path/to/file_host.db \
@@ -1416,9 +1420,9 @@ It is idempotent in the same way as `import-curriculum`: unchanged bytes are
 not written and do not move `published_at`, changed bytes are a version bump.
 A missing, malformed or refused round fails alone and is named; the exit code
 is `1` if anything failed, `2` if the run could not start. It never deletes,
-retires or restores a round. `crates/db/leetype_round/tests/round_corpus_parity.rs`
-imports a checked-in copy of that export and fails if any body would be stored
-differently from its file, or any round refused.
+retires or restores a round. `crates/db/leetype_round/testdata/rounds/` is five
+rounds in that layout; `leetype_runner`'s `record_corpus` test and
+`leetype_round_repo::snapshot`'s tests import it.
 
 ### Learner shelf
 
@@ -1528,7 +1532,7 @@ replaced a WebSocket connection count.
 ### Sessions
 
 One route per `SessionsRepository` method in
-`apps/www/src/lib/tenant/sessions-repository.ts`, matched one-to-one so that the
+`apps/www/src/lib/tenant/sessions-repository/index.ts`, matched one-to-one so that the
 client change is a swap rather than a rewrite:
 
 | Client | Server |
@@ -2030,7 +2034,7 @@ sufficient, as-is, to become a `SessionActivity.config` the client's
 `crates/db/activity/tests/session_activity_shape.rs` here, asserting every
 seeded `default_config` is shaped like `ActivityConfigValues` (a flat object
 of strings and numbers, nothing nested); `paulgsc/some-ui`'s
-`packages/activity-catalog/src/lib/to-scene-config/session-activity-round-trip.test.ts`,
+`packages/activity-catalog/src/lib/to-scene-config/__tests__/session-activity-round-trip.test.ts`,
 asserting a `SessionActivity` built the same way survives an actual JSON
 round trip into a playable scene.
 

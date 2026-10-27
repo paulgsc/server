@@ -333,11 +333,6 @@
       "fn tab_key": {
         "format!(\"tab_{}\", tab_id)": 1
       }
-    },
-    "clippy::use_self": {
-      "fn from": {
-        "FileHostError::OperationError(err.to_string())": 1
-      }
     }
   },
   "apps/servers/file_host/src/handlers/pipeline.rs": {
