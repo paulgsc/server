@@ -1,0 +1,19 @@
+# A probe for paulgsc/some-ui#2206: its upload step has no retention-days, so the
+# Artifact retention check fails. It runs only when dispatched by hand, and the pull
+# request that adds it is closed without merging.
+name: Required-checks probe
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo probe > probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe
+          path: probe.txt
