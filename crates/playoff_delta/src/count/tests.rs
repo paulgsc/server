@@ -108,3 +108,89 @@ fn a_loss_to_the_other_conference_never_hurts() {
 		}
 	}
 }
+
+/// The share given each slate of `games` (bit `j`: the `j`th one's home
+/// side won), every outcome of the rest counted.
+fn slate_shares(records: &[Record; 32], pending: &[Pending], team: Team, games: &[usize]) -> Vec<f64> {
+	let mut ins = vec![(0u32, 0u32); 1 << games.len()];
+	for outcome in 0u32..1 << pending.len() {
+		let mut points = records.map(Record::points);
+		let mut slate = 0;
+		for (i, p) in pending.iter().enumerate() {
+			let home_won = outcome & (1 << i) == 0;
+			points[(if home_won { p.home } else { p.away }).index()] += 2;
+			if let Some(j) = games.iter().position(|&g| g == i) {
+				slate |= usize::from(home_won) << j;
+			}
+		}
+		ins[slate].0 += 1;
+		ins[slate].1 += u32::from(seed(&points, team).is_some());
+	}
+	ins.iter().map(|&(n, x)| f64::from(x) / f64::from(n)).collect()
+}
+
+fn deviation(shares: impl Iterator<Item = f64>) -> f64 {
+	let shares: Vec<f64> = shares.collect();
+	let n = f64::from(u32::try_from(shares.len()).unwrap());
+	let mean = shares.iter().sum::<f64>() / n;
+	(shares.iter().map(|p| (p - mean).powi(2)).sum::<f64>() / n).sqrt()
+}
+
+#[test]
+fn a_spread_counted_every_way_matches_brute_force() {
+	let mut rng = Lcg(0x5107);
+	let mut checked = 0;
+	for _ in 0..12 {
+		let (records, pending) = random_case(&mut rng, 12);
+		let table = Table::from_parts(records, pending.clone());
+		let games: Vec<usize> = (0..5).collect();
+		for team in [Team::Sf, Team::Dal, Team::Kc, Team::Buf] {
+			let s = slates(&table, team, 1 << 12, &games).unwrap();
+			assert!(s.exact);
+			// Only the games the team's conference plays are its slate's.
+			let mine: Vec<usize> = games
+				.iter()
+				.copied()
+				.filter(|&i| pending[i].home.conference() == team.conference() || pending[i].away.conference() == team.conference())
+				.collect();
+			let shares = slate_shares(&records, &pending, team, &mine);
+			assert!((s.spread(None) - deviation(shares.iter().copied())).abs() < 1e-12, "{}", team.code());
+			if let Some(&first) = mine.first() {
+				for home_won in [true, false] {
+					let held = shares.iter().enumerate().filter(|(slate, _)| (slate & 1 == 1) == home_won).map(|(_, p)| *p);
+					assert!((s.spread(Some((first, home_won))) - deviation(held)).abs() < 1e-12, "{} held", team.code());
+				}
+				checked += 1;
+			}
+		}
+	}
+	assert!(checked > 0);
+}
+
+/// Sampled rests land near the spread counted every way, and the same table
+/// gives the same spread (PD2). The cases have sixteen games of rest each, so
+/// every rest can be counted to compare against.
+#[test]
+fn a_sampled_spread_lands_near_the_exact_one() {
+	let mut rng = Lcg(0x5108);
+	let mut checked = 0;
+	for _ in 0..16 {
+		let (records, pending) = random_case(&mut rng, 22);
+		let table = Table::from_parts(records, pending.clone());
+		let games: Vec<usize> = (0..6).collect();
+		for team in [Team::Sf, Team::Kc] {
+			let exact = slates(&table, team, 1 << 16, &games).unwrap();
+			let sampled = slates(&table, team, 2_048, &games).unwrap();
+			if !exact.exact || sampled.exact {
+				continue;
+			}
+			let (e, s) = (exact.spread(None), sampled.spread(None));
+			// A spread a share moves by is at most one half; on these leagues
+			// two thousand rests land within a couple of points of it.
+			assert!((e - s).abs() < 0.03, "{}: exact {e}, sampled {s}", team.code());
+			assert_eq!(sampled, slates(&table, team, 2_048, &games).unwrap());
+			checked += 1;
+		}
+	}
+	assert!(checked > 0, "no case had sixteen games of rest");
+}

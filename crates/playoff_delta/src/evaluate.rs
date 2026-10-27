@@ -1,41 +1,31 @@
 //! A season, week by week, into the story contract ([`crate::story`]).
 //!
-//! Every number is the solver's ([`crate::solver::best`]) or the count's
-//! ([`crate::count`]), asked about a different team or a different table;
-//! nothing here estimates beyond the count's sample. The fan's words are
-//! defined once, below, and each field's doc says which.
+//! Every number is the solver's ([`crate::solver`]) or the count's
+//! ([`crate::count`]), asked of a different table; nothing here estimates
+//! beyond the count's sample. The fan's words are defined once, below, and
+//! each field's doc says which.
 //!
 //! - **Paths** of a team at a table: for `x = 0, 1, ...`, the best seed
 //!   winning exactly `x` more. Rows run to [`WINDOW`], or further when the
 //!   first way in needs more, so a claim read off the rows is never "out"
 //!   when the team is alive.
-//! - **Claim**: the first row with a way in, and its seed.
-//! - **Better for a team**: a lower [`Claim::rank`] (fewer final wins
-//!   needed, then a better seed). For the subject, two equal claims are
-//!   then told apart by open (more wins, seed) cells in its paths grid, which
-//!   is what the stage draws.
 //! - **Share**: of the ways the rest of the season can go, the share in which
-//!   the team gets in ([`count`]).
+//!   the team gets in ([`count`]). It is a fair game: over the ways a week
+//!   can go, the share after it averages to the share before.
 //! - **Leverage** of a result: the share as it happened minus the share had
 //!   it gone the other way, the rest of the week held as it happened.
-//! - **Moved**: flip one of the week's results, hold the rest of the week
-//!   as it happened, and compare paths. `helped` when what happened is
-//!   better for the subject than the flip, `hurt` when worse, `null` when
-//!   equal.
-//! - **Futility points**: the subject's competitors are its division mates
-//!   and named rivals. Each game a competitor plays against anyone else is a
-//!   possible point, scored when the competitor lost. A game between two
-//!   competitors is not counted: one of them had to lose.
+//! - **Spread** of a week: the share's standard deviation over the ways the
+//!   week's results can go ([`count::Tally::spread`]). The league's change
+//!   over its spread is the week's luck; the stage divides, so the contract
+//!   carries each number once.
+//! - **Clinched**: in, whatever happens ([`solver::clinched`]).
 
 use crate::{
-	count::{self, Tally},
+	count::{self, Slates, Tally},
 	league::Team,
 	season::{Game, Outcome, Season},
-	solver::{self, Memo, Scenario},
-	story::{
-		Benchmark, Boundary, Bucket, Claim, Collapse, Collision, DivisionRoute, Kind, Left, LowestBar, Moved, Need, Next, Pigeonhole, Points, Relation, RivalGame, RivalWeek,
-		Score, Share, Shares, StoryGame, StoryPath, StoryPaths, StoryResult, StorySeason, StoryShare, StoryWeek, WildCardPigeonhole, WildCardRoute, WinLoss,
-	},
+	solver::{self, Memo},
+	story::{Collapse, Kind, Left, Next, Relation, Share, Stake, StoryGame, StoryPaths, StoryResult, StorySeason, StoryShare, StoryWeek, WinLoss},
 	table::Table,
 };
 use std::{collections::BTreeMap, fmt};
@@ -43,15 +33,19 @@ use std::{collections::BTreeMap, fmt};
 /// Rows a paths grid shows at least: "never win again" through "+4 wins".
 pub const WINDOW: u8 = 4;
 
-/// How many teams a path lists ("the Seahawks go 4 and 12, ...").
-pub const NEEDS: usize = 6;
-
 /// The ways a share is sampled over when there are more than that to count.
 ///
 /// A share near one half then lands within about a third of a percentage
 /// point (two standard errors), and a result's leverage, compared on the
 /// same sampled ways, much closer.
 pub const WAYS: u32 = 100_000;
+
+/// The most rests of the season a week's slates are counted against.
+///
+/// With more than that to count, these are drawn ([`count::slates`]). On the
+/// 2026 season a quarter as many moved a week's spread by about a tenth of
+/// itself; this many costs a few seconds a season.
+pub const RESTS: u32 = 16_384;
 
 /// How many of next week's games a story names.
 pub const NEXT: usize = 3;
@@ -63,18 +57,17 @@ const MIN_SWING: f64 = 0.0005;
 #[derive(Debug, Clone)]
 pub struct Subject {
 	pub team: Team,
-	/// Named rivals, in the order the stage lists them.
-	pub rivals: Vec<Team>,
 	/// Shown on screen: "2025".
 	pub label: String,
 	/// The most ways a share is sampled over ([`WAYS`] for the story).
 	pub ways: u32,
+	/// The most rests a week's spread is counted against ([`RESTS`] for the
+	/// story).
+	pub rests: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvaluateError {
-	/// The subject is listed among its own rivals.
-	SelfRival,
 	/// No week with a final result for the subject yet.
 	NothingPlayed,
 	/// More games than the contract's counters hold.
@@ -84,7 +77,6 @@ pub enum EvaluateError {
 impl fmt::Display for EvaluateError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		f.write_str(match self {
-			Self::SelfRival => "the team is listed as its own rival",
 			Self::NothingPlayed => "no completed week has a game for the team",
 			Self::SeasonTooLong => "more than 255 games a team",
 		})
@@ -93,98 +85,64 @@ impl fmt::Display for EvaluateError {
 
 impl std::error::Error for EvaluateError {}
 
-/// The story of `season` so far, for `subject`, with `previous` (last
-/// season, complete) as the benchmark: one week per completed week, the
-/// subject's bye included (its `game` is `None`).
+/// The story of `season` so far, for `subject`: one week per completed week,
+/// the subject's bye included (its `game` is `None`).
 ///
 /// # Errors
 /// [`EvaluateError`].
-pub fn evaluate(season: &Season, previous: &Season, subject: &Subject) -> Result<StorySeason, EvaluateError> {
-	if subject.rivals.contains(&subject.team) {
-		return Err(EvaluateError::SelfRival);
-	}
+pub fn evaluate(season: &Season, subject: &Subject) -> Result<StorySeason, EvaluateError> {
 	let season_length = u8::try_from(season.length()).map_err(|_| EvaluateError::SeasonTooLong)?;
 	let through = season.complete_through();
 	if !(1..=through).any(|w| season.game_of(subject.team, w).is_some()) {
 		return Err(EvaluateError::NothingPlayed);
 	}
-	let (memo, last_memo) = (Memo::default(), Memo::default());
+	let memo = Memo::default();
 	let tables: Vec<Table> = (0..=through).map(|w| Table::after(season, w)).collect();
-	let claims: Vec<[Claim; 32]> = tables.iter().map(|t| Team::ALL.map(|team| claim(&memo, t, team))).collect();
 	// Each table's next week's games, both sides counted: the subject's own
-	// one splits that week's change, and the rest are the ones to root for.
-	let tallies: Vec<Tally> = tables
+	// one splits that week's change, the rest are the ones to root for, and
+	// all of them are the slates the week's spread is read over.
+	let (tallies, slates): (Vec<Tally>, Vec<Option<Slates>>) = tables
 		.iter()
 		.map(|t| {
 			let next: Vec<usize> = (0..t.pending().len()).filter(|&i| t.pending()[i].week.checked_sub(1) == Some(t.through())).collect();
-			count::tally(t, subject.team, subject.ways, &next)
+			(count::tally(t, subject.team, subject.ways, &next), count::slates(t, subject.team, subject.rests, &next))
 		})
-		.collect();
-	let rival_shares: Vec<Vec<f64>> = tables.iter().map(|t| subject.rivals.iter().map(|r| count::share(t, *r, subject.ways)).collect()).collect();
-	let mut so_far = Score::default();
-	let mut weeks = Vec::new();
-	for week in 1..=through {
-		let points = futility(season, subject, week);
-		so_far.scored += points.scored;
-		so_far.possible += points.possible;
-		let w = usize::from(week);
-		let view = Week::new(
-			Context {
+		.unzip();
+	let weeks = (1..=through)
+		.map(|week| {
+			let w = usize::from(week);
+			Week {
 				season,
-				previous,
 				subject,
 				memo: &memo,
-				last_memo: &last_memo,
-			},
-			week,
-			Pair {
-				before: &tables[w - 1],
-				after: &tables[w],
-			},
-			Pair {
-				before: &claims[w - 1],
-				after: &claims[w],
-			},
-			Pair {
-				before: (&tallies[w - 1], &rival_shares[w - 1]),
-				after: (&tallies[w], &rival_shares[w]),
-			},
-		);
-		let mut story = view.story();
-		story.points = Points { week: points, season: so_far };
-		weeks.push(story);
-	}
+				number: week,
+				game: season.game_of(subject.team, week),
+				tables: Pair {
+					before: &tables[w - 1],
+					after: &tables[w],
+				},
+				tallies: Pair {
+					before: &tallies[w - 1],
+					after: &tallies[w],
+				},
+				slates: Pair {
+					before: slates[w - 1].as_ref(),
+					after: slates[w].as_ref(),
+				},
+			}
+			.story()
+		})
+		.collect();
 	Ok(StorySeason {
-		version: 2,
+		version: 3,
 		label: subject.label.clone(),
 		season_length,
 		team: subject.team,
-		rivals: subject.rivals.clone(),
 		names: Team::ALL.into_iter().map(|t| (t.code(), t.name())).collect::<BTreeMap<_, _>>(),
 		conference: subject.team.conference().label(),
 		ways: subject.ways,
 		weeks,
 	})
-}
-
-/// Futility points in `week` (see the module doc).
-fn futility(season: &Season, subject: &Subject, week: u8) -> Score {
-	let me = subject.team;
-	let competitor = |t: Team| t != me && (t.division() == me.division() || subject.rivals.contains(&t));
-	let mut score = Score::default();
-	for g in season.week(week) {
-		let (home, away) = (competitor(g.home), competitor(g.away));
-		if home == away {
-			continue;
-		}
-		score.possible += 1;
-		let lost = match g.outcome() {
-			Some(Outcome::Won(w)) => (home && w != g.home) || (away && w != g.away),
-			_ => false,
-		};
-		score.scored += u16::from(lost);
-	}
-	score
 }
 
 /// A team's paths at a table: the best seed for each count of more wins.
@@ -210,62 +168,6 @@ fn claim_extra(memo: &Memo, table: &Table, team: Team) -> Option<u8> {
 	Some(lo)
 }
 
-fn claim_scenario(memo: &Memo, table: &Table, team: Team) -> Option<(u8, Scenario)> {
-	let x = claim_extra(memo, table, team)?;
-	memo.best(table, team, x).map(|s| (x, s))
-}
-
-#[must_use]
-pub fn claim(memo: &Memo, table: &Table, team: Team) -> Claim {
-	let wins = table.record(team).w;
-	Claim::new(wins, claim_scenario(memo, table, team).map(|(x, s)| (x, s.seed)))
-}
-
-/// Open (more wins, seed) cells in a paths grid, rows compared over the
-/// longer of the two.
-fn open_cells(paths: &[Option<u8>], rows: usize) -> usize {
-	(0..rows)
-		.map(|x| paths.get(x).copied().flatten().map_or(0, |s| usize::from(solver::LAST_SEED + 1 - s)))
-		.sum()
-}
-
-/// Is `actual` (a claim's rank and its paths) better for the subject than
-/// `other`: the claim first, then the open cells.
-fn compare(actual: ((u16, u8), &[Option<u8>]), other: ((u16, u8), &[Option<u8>])) -> Option<Moved> {
-	let rows = actual.1.len().max(other.1.len());
-	let key = |(rank, paths): ((u16, u8), &[Option<u8>])| (std::cmp::Reverse(rank), open_cells(paths, rows));
-	match key(actual).cmp(&key(other)) {
-		std::cmp::Ordering::Greater => Some(Moved::Helped),
-		std::cmp::Ordering::Less => Some(Moved::Hurt),
-		std::cmp::Ordering::Equal => None,
-	}
-}
-
-/// The other way a decided game could have gone (`None` for a tie).
-fn flip(game: &Game) -> Option<Outcome> {
-	match game.outcome()? {
-		Outcome::Won(w) => Some(Outcome::Won(game.opponent(w))),
-		Outcome::Tied => None,
-	}
-}
-
-/// One rival's view of one result whose flip changes its claim.
-struct RivalTake {
-	game: usize,
-	/// The winner that leaves the rival's claim worse.
-	worse_winner: Team,
-}
-
-#[derive(Clone, Copy)]
-struct Context<'a> {
-	season: &'a Season,
-	previous: &'a Season,
-	subject: &'a Subject,
-	/// For tables of `season`, and of `previous`.
-	memo: &'a Memo,
-	last_memo: &'a Memo,
-}
-
 /// Something read at the table before the week and at the table after it.
 #[derive(Clone, Copy)]
 struct Pair<T> {
@@ -273,62 +175,23 @@ struct Pair<T> {
 	after: T,
 }
 
-/// The subject's tally at a table, and each named rival's share there.
-type Counted<'a> = (&'a Tally, &'a [f64]);
-
 struct Week<'a> {
-	cx: Context<'a>,
+	season: &'a Season,
+	subject: &'a Subject,
+	memo: &'a Memo,
 	/// The week number.
 	number: u8,
 	/// The subject's game, `None` on its bye.
 	game: Option<&'a Game>,
-	games: Vec<&'a Game>,
 	tables: Pair<&'a Table>,
-	/// Every team's claim at each table.
-	claims: Pair<&'a [Claim; 32]>,
-	counted: Pair<Counted<'a>>,
-	after_paths: Vec<Option<u8>>,
-	/// Per game this week: did it move the subject's paths.
-	moved: Vec<Option<Moved>>,
+	tallies: Pair<&'a Tally>,
+	/// `None` past [`count::SLATE_GAMES`] games in a week, which no week has.
+	slates: Pair<Option<&'a Slates>>,
 }
 
-impl<'a> Week<'a> {
-	fn new(cx: Context<'a>, week: u8, tables: Pair<&'a Table>, claims: Pair<&'a [Claim; 32]>, counted: Pair<(&'a Tally, &'a Vec<f64>)>) -> Self {
-		let me = cx.subject.team;
-		let games: Vec<&Game> = cx.season.week(week).collect();
-		let after_paths = paths(cx.memo, tables.after, me);
-		let actual = (claims.after[me.index()].rank(), after_paths.as_slice());
-		let moved = games
-			.iter()
-			.map(|g| {
-				// A result outside the subject's conference cannot move its seed,
-				// and its own game is the game slide's.
-				if g.involves(me) || (g.home.conference() != me.conference() && g.away.conference() != me.conference()) {
-					return None;
-				}
-				let other = tables.after.decided(g, flip(g)?);
-				compare(actual, (claim(cx.memo, &other, me).rank(), &paths(cx.memo, &other, me)))
-			})
-			.collect();
-		Self {
-			cx,
-			number: week,
-			game: cx.season.game_of(me, week),
-			games,
-			tables,
-			claims,
-			counted: Pair {
-				before: (counted.before.0, counted.before.1.as_slice()),
-				after: (counted.after.0, counted.after.1.as_slice()),
-			},
-			after_paths,
-			moved,
-		}
-	}
-
+impl Week<'_> {
 	fn story(&self) -> StoryWeek {
-		let me = self.cx.subject.team;
-		let takes: Vec<(Team, Vec<RivalTake>)> = self.cx.subject.rivals.iter().map(|r| (*r, self.rival_takes(*r))).collect();
+		let me = self.subject.team;
 		let record = self.tables.before.record(me);
 		let left = |t: &Table| u16::try_from(t.pending().len()).unwrap_or(u16::MAX);
 		StoryWeek {
@@ -336,8 +199,8 @@ impl<'a> Week<'a> {
 			record: WinLoss { w: record.w, l: record.l },
 			game: self.game.map(|g| self.game(g)),
 			paths: StoryPaths {
-				before: paths(self.cx.memo, self.tables.before, me),
-				after: self.after_paths.clone(),
+				before: paths(self.memo, self.tables.before, me),
+				after: paths(self.memo, self.tables.after, me),
 				wins_before: record.w,
 				wins_after: self.tables.after.record(me).w,
 			},
@@ -348,26 +211,16 @@ impl<'a> Week<'a> {
 			},
 			results: self.results(),
 			next: self.next(),
-			path: self.path(),
-			boundary: self.boundary(),
-			rivals: self.rivals(),
-			collisions: self.collisions(&takes),
-			// Filled in by `evaluate`, which counts the season so far.
-			points: Points {
-				week: Score::default(),
-				season: Score::default(),
-			},
-			benchmark: self.benchmark(),
+			stake: self.stake(),
+			clinched: solver::clinched(self.tables.after, me),
 		}
 	}
 
 	fn game(&self, game: &Game) -> StoryGame {
-		let me = self.cx.subject.team;
+		let me = self.subject.team;
 		let opponent = game.opponent(me);
 		let relation = if opponent.division() == me.division() {
 			Relation::Division
-		} else if self.cx.subject.rivals.contains(&opponent) {
-			Relation::Rival
 		} else if opponent.conference() == me.conference() {
 			Relation::Conference
 		} else {
@@ -380,29 +233,35 @@ impl<'a> Week<'a> {
 		}
 	}
 
+	/// The index into a table's pending games of the subject's game in
+	/// `week`, when it has one.
+	fn own_pending(&self, table: &Table, week: u8) -> Option<usize> {
+		let me = self.subject.team;
+		table.pending().iter().position(|p| p.week == week && (p.home == me || p.away == me))
+	}
+
 	/// The share, before and after, with the change split at the subject's
-	/// own result: the share given that result, read off the table before.
+	/// own result (the share given that result, read off the table before),
+	/// and the spread of the rest of the week, that result held.
 	fn share(&self) -> StoryShare {
-		let (before, after) = (self.counted.before.0, self.counted.after.0);
-		let given_own = self.game.and_then(|g| {
+		let (before, after) = (self.tallies.before, self.tallies.after);
+		// The subject's own result, as (its pending index before the week,
+		// whether the home side won): none on a bye or a tie.
+		let own = self.game.and_then(|g| {
 			let Some(Outcome::Won(winner)) = g.outcome() else {
 				return None;
 			};
-			let i = self
-				.tables
-				.before
-				.pending()
-				.iter()
-				.position(|p| (p.week, p.home, p.away) == (self.number, g.home, g.away))?;
-			let (home_won, away_won) = before.given[i]?;
-			Some(if winner == g.home { home_won } else { away_won })
+			Some((self.own_pending(self.tables.before, self.number)?, winner == g.home))
 		});
-		let mid = given_own.unwrap_or(before.share);
+		let mid = own
+			.and_then(|(i, home_won)| before.given[i].map(|(home, away)| if home_won { home } else { away }))
+			.unwrap_or(before.share);
 		StoryShare {
 			before: Share(before.share),
 			after: Share(after.share),
 			own: Share(mid - before.share),
 			league: Share(after.share - mid),
+			spread: Share(self.slates.before.map_or(0.0, |s| s.spread(own))),
 			exact: before.exact && after.exact,
 		}
 	}
@@ -410,14 +269,13 @@ impl<'a> Week<'a> {
 	/// Every decided game this week with a side in the subject's conference,
 	/// most leverage first.
 	fn results(&self) -> Vec<StoryResult> {
-		let me = self.cx.subject.team;
+		let me = self.subject.team;
 		let conf = me.conference();
-		let share = self.counted.after.0.share;
+		let share = self.tallies.after.share;
 		let mut out: Vec<StoryResult> = self
-			.games
-			.iter()
-			.enumerate()
-			.filter_map(|(i, g)| {
+			.season
+			.week(self.number)
+			.filter_map(|g| {
 				let Some(Outcome::Won(winner)) = g.outcome() else {
 					return None;
 				};
@@ -428,13 +286,12 @@ impl<'a> Week<'a> {
 					_ => Kind::Exported,
 				};
 				let loser = g.opponent(winner);
-				let flipped = count::share(&self.tables.after.decided(g, Outcome::Won(loser)), me, self.cx.subject.ways);
+				let flipped = count::share(&self.tables.after.decided(g, Outcome::Won(loser)), me, self.subject.ways);
 				Some(StoryResult {
 					winner,
 					loser,
 					kind,
 					leverage: Share(share - flipped),
-					moved: self.moved[i],
 					collapse: g.collapse.map(|c| Collapse {
 						peak_win_probability: c.peak_win_probability,
 						led: c.led,
@@ -449,14 +306,13 @@ impl<'a> Week<'a> {
 	/// Next week's games with a side in the conference, other than the
 	/// subject's own, by how far the share swings on them.
 	fn next(&self) -> Vec<Next> {
-		let me = self.cx.subject.team;
-		let tally = self.counted.after.0;
+		let me = self.subject.team;
 		let mut out: Vec<Next> = self
 			.tables
 			.after
 			.pending()
 			.iter()
-			.zip(&tally.given)
+			.zip(&self.tallies.after.given)
 			.filter(|(p, _)| p.week.checked_sub(1) == Some(self.number) && p.home != me && p.away != me)
 			.filter_map(|(p, given)| {
 				let (home_won, away_won) = (*given)?;
@@ -474,211 +330,32 @@ impl<'a> Week<'a> {
 		out
 	}
 
-	fn index_of(&self, team: Team) -> Option<usize> {
-		self.games.iter().position(|g| g.involves(team))
-	}
-
-	fn path(&self) -> Option<StoryPath> {
-		let me = self.cx.subject.team;
-		let (extra_wins, scenario) = claim_scenario(self.cx.memo, self.tables.after, me)?;
-		let rivals = &self.cx.subject.rivals;
-		let free = |t: Team| scenario.free[t.index()];
-		let mut others: Vec<Team> = Team::of_conference(me.conference())
-			.filter(|t| *t != me && !rivals.contains(t) && t.division() != me.division())
-			.collect();
-		// The teams this way holds down first, those that had to fall furthest
-		// leading: lowest share of their remaining games won (compared as cross
-		// products, no floats). A team with none left holds nothing down, and
-		// a team it lets finish above comes last.
-		let rest = |t: &Team| scenario.rest[t.index()];
-		let done = |t: &Team| rest(t).w + rest(t).l == 0;
-		others.sort_by(|a, b| {
-			let (ra, rb) = (rest(a), rest(b));
-			free(*a)
-				.cmp(&free(*b))
-				.then(done(a).cmp(&done(b)))
-				.then((u16::from(ra.w) * u16::from(rb.w + rb.l)).cmp(&(u16::from(rb.w) * u16::from(ra.w + ra.l))))
-				.then(a.code().cmp(b.code()))
-		});
-		let needs = rivals
-			.iter()
-			.copied()
-			.chain(me.division_rivals().filter(|t| !rivals.contains(t)))
-			.chain(others)
-			.take(NEEDS)
-			.map(|team| {
-				let r = scenario.rest[team.index()];
-				Need {
-					team,
-					rest: WinLoss { w: r.w, l: r.l },
-					rival: rivals.contains(&team),
-					free: free(team),
-				}
-			})
-			.collect();
-		Some(StoryPath {
-			extra_wins,
-			seed: scenario.seed,
-			needs,
-		})
-	}
-
-	/// Why one fewer final win than the claim's can't get the subject in.
-	fn boundary(&self) -> Option<Boundary> {
-		let me = self.cx.subject.team;
-		let Claim::In { wins, extra_wins, .. } = self.claims.after[me.index()] else {
+	/// What next week can do: the subject's own game, and every result
+	/// together.
+	fn stake(&self) -> Option<Stake> {
+		let table = self.tables.after;
+		if table.pending().is_empty() {
 			return None;
-		};
-		let fewer = extra_wins.checked_sub(1)?;
-		let why = solver::impossible(self.tables.after, me, fewer)?;
-		let pigeonhole = |p: solver::Pigeonhole| Pigeonhole {
-			teams: p
-				.teams
-				.iter()
-				.map(|b| Bucket {
-					team: b.team,
-					wins: b.wins,
-					room: b.room,
-				})
-				.collect(),
-			games: p.games,
-		};
-		let division = match why.division {
-			solver::DivisionRoute::Above(team) => DivisionRoute::Above { team },
-			solver::DivisionRoute::Pigeonhole(p) => {
-				let p = pigeonhole(p);
-				DivisionRoute::Pigeonhole { teams: p.teams, games: p.games }
-			}
-		};
-		let w = why.wild_card;
-		Some(Boundary {
-			wins: wins + fewer,
-			division,
-			wild_card: WildCardRoute {
-				above: w.above,
-				pigeonhole: w.pigeonhole.map(|(p, must_pass)| {
-					let p = pigeonhole(p);
-					WildCardPigeonhole {
-						teams: p.teams,
-						games: p.games,
-						must_pass,
-					}
-				}),
-				cases: w.cases,
-			},
+		}
+		let tally = self.tallies.after;
+		let own = self
+			.own_pending(table, self.number + 1)
+			.and_then(|i| tally.given[i])
+			.map_or(0.0, |(home, away)| (home - away).abs());
+		// Each game's own effect is measured exactly (both sides on every
+		// way), and the spread can be no smaller than they add up to.
+		let own_effects: f64 = table
+			.pending()
+			.iter()
+			.zip(&tally.given)
+			.filter(|(p, _)| p.week.checked_sub(1) == Some(self.number))
+			.filter_map(|(_, given)| given.map(|(home, away)| ((home - away) / 2.0).powi(2)))
+			.sum();
+		let slates = self.slates.after;
+		Some(Stake {
+			own: Share(own),
+			spread: Share(slates.map_or(0.0, |s| s.spread(None)).max(own_effects.sqrt())),
+			exact: slates.is_some_and(|s| s.exact),
 		})
-	}
-
-	/// Each of the week's decided results whose flip changes `rival`'s claim.
-	fn rival_takes(&self, rival: Team) -> Vec<RivalTake> {
-		let actual = self.claims.after[rival.index()].rank();
-		self
-			.games
-			.iter()
-			.enumerate()
-			.filter_map(|(i, g)| {
-				let Outcome::Won(winner) = g.outcome()? else {
-					return None;
-				};
-				if g.home.conference() != rival.conference() && g.away.conference() != rival.conference() {
-					return None;
-				}
-				let other = claim(self.cx.memo, &self.tables.after.decided(g, flip(g)?), rival).rank();
-				(other != actual).then(|| RivalTake {
-					game: i,
-					worse_winner: if actual > other { winner } else { g.opponent(winner) },
-				})
-			})
-			.collect()
-	}
-
-	fn rivals(&self) -> Vec<RivalWeek> {
-		self
-			.cx
-			.subject
-			.rivals
-			.iter()
-			.enumerate()
-			.map(|(j, rival)| RivalWeek {
-				team: *rival,
-				game: self.index_of(*rival).map(|i| {
-					let g = self.games[i];
-					RivalGame {
-						opponent: g.opponent(*rival),
-						won: g.outcome() == Some(Outcome::Won(*rival)),
-					}
-				}),
-				before: self.claims.before[rival.index()],
-				after: self.claims.after[rival.index()],
-				share: Shares {
-					before: Share(self.counted.before.1[j]),
-					after: Share(self.counted.after.1[j]),
-				},
-			})
-			.collect()
-	}
-
-	fn collisions(&self, takes: &[(Team, Vec<RivalTake>)]) -> Vec<Collision> {
-		let mut out = Vec::new();
-		for (rival, takes) in takes {
-			for t in takes {
-				let g = self.games[t.game];
-				// A rival's own game is the rivals slide's, not a collision.
-				let Some(Outcome::Won(winner)) = g.outcome().filter(|_| !g.involves(*rival)) else {
-					continue;
-				};
-				let best_for_you = match self.moved[t.game] {
-					Some(Moved::Helped) => winner,
-					Some(Moved::Hurt) => g.opponent(winner),
-					None => continue,
-				};
-				if best_for_you != t.worse_winner {
-					out.push(Collision::RivalVsYou {
-						home: g.home,
-						away: g.away,
-						winner,
-						rival: *rival,
-						worst_for_rival: t.worse_winner,
-						best_for_you,
-					});
-				}
-			}
-		}
-		let rivals = &self.cx.subject.rivals;
-		for g in &self.games {
-			if let (true, true, Some(Outcome::Won(winner))) = (rivals.contains(&g.home), rivals.contains(&g.away), g.outcome()) {
-				out.push(Collision::RivalVsRival {
-					home: g.home,
-					away: g.away,
-					winner,
-				});
-			}
-		}
-		out
-	}
-
-	fn benchmark(&self) -> Benchmark {
-		let last = Table::after(self.cx.previous, self.number.min(self.cx.previous.complete_through()));
-		let lowest_bar = Team::ALL
-			.into_iter()
-			.filter_map(|team| match self.claims.after[team.index()] {
-				Claim::In { wins, extra_wins, seed, .. } => Some(LowestBar {
-					team,
-					wins: wins + extra_wins,
-					seed,
-				}),
-				Claim::Out { .. } => None,
-			})
-			.min_by_key(|b| (b.wins, b.seed, b.team.code()))
-			// Every table has teams with a way in: any finish seeds fourteen.
-			.unwrap_or_else(|| LowestBar {
-				team: self.cx.subject.team,
-				wins: u8::try_from(self.cx.season.length()).unwrap_or(u8::MAX),
-				seed: solver::LAST_SEED,
-			});
-		Benchmark {
-			last_season: claim(self.cx.last_memo, &last, self.cx.subject.team),
-			lowest_bar,
-		}
 	}
 }

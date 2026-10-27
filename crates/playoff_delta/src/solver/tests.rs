@@ -86,60 +86,60 @@ fn more_than_the_remaining_games_is_no_path() {
 	assert!(best(&table, Team::Sf, 2).is_none());
 }
 
+/// Clinched against brute force: whenever it says in, every outcome of the
+/// pending games seeds the team; and it says so often enough to be tested.
 #[test]
-fn every_closed_row_has_a_proof() {
+fn a_clinch_holds_in_every_outcome() {
 	let mut rng = Lcg(0x9F00);
+	let mut proven = 0;
 	for _ in 0..30 {
 		let (records, pending) = random_case(&mut rng, 11);
-		let table = Table::from_parts(records, pending);
-		for team in Team::ALL {
-			for extra in 0..=table.remaining(team) {
-				let why = impossible(&table, team, extra);
-				assert_eq!(why.is_some(), best(&table, team, extra).is_none(), "{} +{extra}", team.code());
-				let Some(why) = why else { continue };
-				let holds = |p: &Pigeonhole| p.games > p.teams.iter().map(|b| u16::from(b.room)).sum();
-				match &why.division {
-					DivisionRoute::Above(t) => assert!(t.division() == team.division() && table.points(*t) > table.points(team) + u16::from(extra) * 2),
-					DivisionRoute::Pigeonhole(p) => assert!(holds(p) && p.teams.iter().all(|b| b.team.division() == team.division()), "{} +{extra}", team.code()),
+		let table = Table::from_parts(records, pending.clone());
+		for team in Team::ALL.into_iter().filter(|t| clinched(&table, *t)) {
+			proven += 1;
+			for outcome in 0u32..1 << pending.len() {
+				let mut points = records.map(Record::points);
+				for (i, p) in pending.iter().enumerate() {
+					points[(if outcome & (1 << i) == 0 { p.home } else { p.away }).index()] += 2;
 				}
-				if let Some((p, must_pass)) = &why.wild_card.pigeonhole {
-					assert!(holds(p) && *must_pass > 0, "{} +{extra}", team.code());
-				} else {
-					// No group closes it alone: the search did, or the teams above did.
-					assert!(why.wild_card.cases > 0 || !why.wild_card.above.is_empty(), "{} +{extra}", team.code());
-				}
+				assert!(seed_of(&points, team).is_some(), "{}: outcome {outcome:b} leaves it out", team.code());
 			}
 		}
 	}
+	assert!(proven > 0, "no random league clinched anyone");
 }
 
 #[test]
-fn a_pigeonhole_need_not_hold_the_asked_team() {
-	// The Rams and Seahawks are level with the Niners and still play each
-	// other: whoever wins passes them, so the division's proof is those two.
-	let mut records = [Record { w: 6, l: 8, t: 0 }; 32];
-	for t in [Team::Sf, Team::Lar, Team::Sea] {
-		records[t.index()] = Record { w: 8, l: 6, t: 0 };
+fn a_clinch_by_the_division_or_by_the_wild_card() {
+	// Everyone 8-8 with one game left, the Niners 10-6: no one can catch them.
+	let mut records = [Record { w: 8, l: 8, t: 0 }; 32];
+	records[Team::Sf.index()] = Record { w: 10, l: 6, t: 0 };
+	let pending = |a: Team, b: Team| Pending { week: 17, home: a, away: b };
+	let table = Table::from_parts(records, vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)]);
+	assert!(clinched(&table, Team::Sf));
+	// The Rams 10-6 can pass them, so the division is not proven; with only
+	// one other team able to pass, the wild card is.
+	records[Team::Lar.index()] = Record { w: 10, l: 6, t: 0 };
+	let table = Table::from_parts(records, vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)]);
+	assert!(clinched(&table, Team::Sf));
+	// Two teams in each of three other divisions who can pass: one of each
+	// pair wins its division, and the other three are wild cards above them.
+	let mut games = vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)];
+	for (t, opponent) in [
+		(Team::Dal, Team::Buf),
+		(Team::Phi, Team::Mia),
+		(Team::Det, Team::Ne),
+		(Team::Gb, Team::Nyj),
+		(Team::Tb, Team::Bal),
+		(Team::Atl, Team::Pit),
+	] {
+		records[t.index()] = Record { w: 10, l: 6, t: 0 };
+		games.push(pending(t, opponent));
 	}
-	for t in [Team::Phi, Team::Dal, Team::Det, Team::Gb, Team::Tb, Team::Atl] {
-		records[t.index()] = Record { w: 10, l: 4, t: 0 };
-	}
-	let pending = vec![
-		Pending {
-			week: 15,
-			home: Team::Lar,
-			away: Team::Sea,
-		},
-		Pending {
-			week: 15,
-			home: Team::Sf,
-			away: Team::Kc,
-		},
-	];
-	let why = impossible(&Table::from_parts(records, pending), Team::Sf, 0).unwrap();
-	let DivisionRoute::Pigeonhole(p) = why.division else { panic!("{:?}", why.division) };
-	assert_eq!(p.teams.iter().map(|b| b.team).collect::<Vec<_>>(), [Team::Lar, Team::Sea]);
-	assert_eq!((p.games, p.teams.iter().map(|b| b.room).sum::<u8>()), (1, 0));
-	// Six teams already past 8-9, two in each of three divisions: no wild card.
-	assert_eq!((why.wild_card.pigeonhole, why.wild_card.cases), (None, 0));
+	let table = Table::from_parts(records, games.clone());
+	assert!(!clinched(&table, Team::Sf));
+	// One of those pairs short of a game to play: two wild cards above, at most.
+	games.retain(|p| p.home != Team::Atl);
+	let table = Table::from_parts(records, games);
+	assert!(clinched(&table, Team::Sf));
 }
