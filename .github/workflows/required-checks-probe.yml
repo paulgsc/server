@@ -17,3 +17,4 @@ jobs:
         with:
           name: probe
           path: probe.txt
+          retention-days: 1
