@@ -4,7 +4,9 @@
 //! nothing new is the healthy case, so "nothing kept" must not read the same
 //! as "nothing running". `mailbox_poll_last_attempt_timestamp_seconds` moves
 //! when a pass starts, so stale means the task died or a pass hangs;
-//! `mailbox_poll_failing{error}` says the last pass ended early, and why.
+//! `mailbox_poll_failing{error}` says the last pass ended early, and every
+//! reason it did: one series at 1 per failure class, so a second failing
+//! phase is not hidden behind the first.
 //! Both are read by the MAILBOX dashboard (`infra/grafana/dashboards/mailbox.jsonnet`).
 
 use crate::mailbox::pass::Outcome;
@@ -65,7 +67,7 @@ pub fn record_enabled(enabled: bool, archiving: bool) {
 /// every failure class and refusal at 0.
 pub fn record_interval(interval: Duration) {
 	metrics::gauge!("mailbox_poll_interval_seconds").set(interval.as_secs_f64());
-	set_failing(None);
+	set_failing(&[]);
 	for why in REFUSALS {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => why).increment(0);
 	}
@@ -92,9 +94,9 @@ pub fn record_pass_duration(duration: Duration) {
 	metrics::gauge!("mailbox_poll_last_pass_duration_seconds").set(duration.as_secs_f64());
 }
 
-/// What a pass did, and the class it failed in, if it did. A failure stays
-/// set until the next pass succeeds.
-pub fn record_pass(outcome: &Outcome, failed: Option<&'static str>) {
+/// What a pass did, and every class it failed in (none when it succeeded). A
+/// failure stays set until the next pass succeeds.
+pub fn record_pass(outcome: &Outcome, failed: &[&'static str]) {
 	metrics::counter!("mailbox_poll_items_kept_total").increment(outcome.kept as u64);
 	for why in &outcome.refused {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => *why).increment(1);
@@ -110,11 +112,12 @@ pub fn record_pass(outcome: &Outcome, failed: Option<&'static str>) {
 	}
 	// A subject with no account keeps nothing, pass after pass: the
 	// configured `MAILBOX_SUBJECT` names nobody. Read as a failure.
-	set_failing(failed.or(if outcome.no_account { Some("no_account") } else { None }));
+	let no_account: &[&'static str] = if outcome.no_account { &["no_account"] } else { &[] };
+	set_failing(&[failed, no_account].concat());
 }
 
-fn set_failing(class: Option<&'static str>) {
+fn set_failing(classes: &[&'static str]) {
 	for candidate in PASS_ERROR_CLASSES {
-		metrics::gauge!("mailbox_poll_failing", "error" => candidate).set(if Some(candidate) == class { 1.0 } else { 0.0 });
+		metrics::gauge!("mailbox_poll_failing", "error" => candidate).set(if classes.contains(&candidate) { 1.0 } else { 0.0 });
 	}
 }

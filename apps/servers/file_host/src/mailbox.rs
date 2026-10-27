@@ -189,7 +189,11 @@ pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>) {
 				);
 			}
 		}
-		Err(err) => error!(error = %err, class = err.class(), "Jobs mailbox pass failed"),
+		Err(err) => {
+			for (phase, failure) in &err.failures {
+				error!(error = %failure, phase = phase.name(), class = failure.class(), "Jobs mailbox pass failed");
+			}
+		}
 	}
 }
 
@@ -220,8 +224,8 @@ fn spawn(state: &AppState, context: MailboxContext) {
 					let result = pass::run_once(&db, &context.mailbox, archiving.as_ref(), &context.subject, &context.deletion, &pass::now).await;
 					crate::metrics::mailbox::record_pass_duration(started.elapsed());
 					match &result {
-						Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, None),
-						Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, Some(err.class())),
+						Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, &[]),
+						Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
 					}
 					log_pass(&result);
 					if let Some(sender) = context.notice.as_deref() {
