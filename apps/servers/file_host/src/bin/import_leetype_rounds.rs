@@ -1,5 +1,5 @@
-//! Imports the round corpus exported by `@some-ui/leetype` into
-//! `leetype_round` (#326, LTY-SRV2).
+//! Imports a round corpus, in the layout `@some-ui/leetype`'s retired export
+//! wrote, into `leetype_round` (#326, LTY-SRV2).
 //!
 //! ```sh
 //! DATABASE_URL=sqlite:///path/to/file_host.db \

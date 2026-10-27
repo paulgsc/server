@@ -81,13 +81,15 @@ carries method, path, the versioning flag, and module — it proves a route exis
 nothing about its request/response shape. When a change here adds, removes, renames, or moves
 a route, the snapshot changes with it and CI hands it off (below) so `some-ui`'s contract
 harness catches the diff; a payload-only change won't show up in this artifact at all, so don't treat a clean
-route-snapshot diff as proof a payload change made it across — see that repo's own `CLAUDE.md`
-for how it consumes the snapshot.
+route-snapshot diff as proof a payload change made it across. What does catch one is the same
+CI job running `some-ui`'s contracts against this PR's own `file_host`, and only on routes that
+have a contract — see that repo's own `CLAUDE.md` for how it consumes the snapshot.
 
 The hand-off is CI's job, not yours: `.github/workflows/routes.yml` runs `some-ui`'s
-`scripts/sync-server-routes.sh --verify` against every PR that touches `file_host` (so a route
-change that breaks a `some-ui` contract goes red *here*), and opens the sync PR in `some-ui` on
-merge. A red `Routes / Check some-ui against it` is a real client break, not a flake: fix the
+`scripts/sync-server-routes.sh --verify` against every PR that touches what `file_host` is built
+from (so a route change that breaks a `some-ui` contract goes red *here*), runs `some-ui`'s
+contracts against that PR's `file_host` and compares the fixtures each repo keeps of the other
+(`scripts/check_client_fixtures.py`), and opens the sync PR in `some-ui` on merge. A red `Routes / Check some-ui against it` is a real client break, not a flake: fix the
 route, or, if the break is intended, label the PR `client-breaking-route` and say so. Routes are
 registered on a `RouteTable` (`src/routes/table.rs`), never with `Router::route` directly — that
 is a `clippy::disallowed_methods` error, because a route registered any other way would be served
@@ -113,9 +115,9 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
   path is one we want taken. A step with no `retention-days` fails either way: the repo
   default (90 days) is not a period anyone chose. So does a value that is not a literal
   number of days (`0`, empty, a `${{ }}` expression), since each can resolve to that
-  default. The one artifact here, `routes.yml`'s `route-snapshot`, keeps one day, and the
-  comment above it names the recovery for a run whose artifact has expired: that is the
-  shape to follow. Artifacts cannot be overwritten across runs, so a short
+  default. The two artifacts here, `routes.yml`'s `route-snapshot` and `contract-run`, keep
+  one day, and the comment above each names the recovery for a run whose artifact has
+  expired: that is the shape to follow. Artifacts cannot be overwritten across runs, so a short
   `retention-days` is how a recreated one leaves no tail.
 - **Enforced by `scripts/check_artifact_retention.py`** (stdlib, with `--self-test`),
   the `Artifact retention` job in `lint.yml`, which runs on every PR. It reads the value

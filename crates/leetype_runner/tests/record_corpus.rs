@@ -1,6 +1,7 @@
-//! Recording end to end: the round fixture `import-leetype-rounds` is tested
-//! against, imported into a fresh database, one round recorded by the real
-//! runner and `rustc`, and the transcript read back as the route serves it.
+//! Recording end to end: the round fixture in
+//! `crates/db/leetype_round/testdata/rounds/`, imported into a fresh
+//! database, one round recorded by the real runner and `rustc`, and the
+//! transcript read back as the route serves it.
 //!
 //! One round, not five, with a 1 s ceiling rather than the default 2 s: the
 //! point is the path from a stored body to a stored transcript, and what the

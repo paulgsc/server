@@ -15,11 +15,13 @@
 //! Same shape `tests/catalog_parity.rs` already established for
 //! `min_duration_ms`: a checked-in fixture
 //! (`testdata/session_duration_policy.snapshot.json`), exported from the
-//! client by `paulgsc/some-ui`'s `scripts/dump-session-duration-policy.ts`
-//! (`pnpm dump:session-duration-policy > session-duration-policy.snapshot.json`,
-//! then copied here by hand), compared against the constants this crate
-//! actually uses. No live database needed -- these are two plain integers,
-//! not a table.
+//! client by `paulgsc/some-ui`'s `pnpm dump:session-duration-policy`,
+//! compared against the constants this crate actually uses. No live database
+//! needed -- these are two plain integers, not a table.
+//!
+//! `.github/workflows/routes.yml` runs that dump on some-ui's `main` for
+//! every PR here that touches the server or this file, and fails when it
+//! differs from the fixture (`scripts/check_client_fixtures.py`).
 //!
 //! If this test fails after touching `DEFAULT_SESSION_DURATION_POLICY`,
 //! regenerate the fixture (see `dump-session-duration-policy.ts`'s own doc
