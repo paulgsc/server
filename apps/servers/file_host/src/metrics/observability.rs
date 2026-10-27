@@ -49,9 +49,6 @@ where
 
 #[derive(Error, Debug)]
 pub enum ObservabilityError {
-	#[error("Failed to initialize OTLP tracer: {0}")]
-	TracerInit(#[from] opentelemetry_sdk::trace::TraceError),
-
 	#[error("Failed to initialize OTLP exporter: {0}")]
 	ExporterInit(#[from] opentelemetry_otlp::ExporterBuildError),
 
