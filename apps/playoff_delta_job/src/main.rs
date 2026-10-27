@@ -36,9 +36,7 @@ struct Args {
 	/// This season's scoreboard responses, one `*.json` per week.
 	#[arg(long)]
 	scoreboards: PathBuf,
-	/// Accepted and ignored: contract v3 dropped the rivals and the
-	/// benchmark, and paulgsc/testing's `playoff-delta.yml` still passes
-	/// these. Delete them once it stops.
+	/// Accepted and ignored (the README says why).
 	#[arg(long, hide = true, value_delimiter = ',')]
 	rivals: Vec<String>,
 	#[arg(long, hide = true)]

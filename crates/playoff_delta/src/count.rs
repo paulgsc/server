@@ -50,19 +50,12 @@ pub struct Tally {
 /// [`Table::pending`]).
 #[must_use]
 pub fn tally(table: &Table, team: Team, ways: u32, games: &[usize]) -> Tally {
-	let conference = team.conference();
 	let pending = table.pending();
-	let relevant: Vec<usize> = (0..pending.len())
-		.filter(|&i| pending[i].home.conference() == conference || pending[i].away.conference() == conference)
-		.collect();
+	let relevant: Vec<usize> = (0..pending.len()).filter(|&i| counts(table, team, i)).collect();
 	// The asked games that can matter, by their slot among the relevant ones.
 	let asked: Vec<(usize, usize)> = relevant.iter().enumerate().filter(|(_, i)| games.contains(i)).map(|(slot, &i)| (slot, i)).collect();
-	let mut base = [0u16; 32];
-	for t in Team::ALL {
-		base[t.index()] = table.points(t);
-	}
-	let exact = u32::try_from(relevant.len()).is_ok_and(|n| n < 32 && 1u64 << n <= u64::from(ways.max(1)));
-	let total: u64 = if exact { 1u64 << relevant.len() } else { u64::from(ways.max(1)) };
+	let base = standings(table);
+	let (exact, total) = budget(relevant.len(), ways);
 	let mut ins = 0u64;
 	// Per asked game: the ways in had its home side won, and had its away side.
 	let mut sides = vec![(0u64, 0u64); asked.len()];
@@ -134,20 +127,14 @@ pub const SLATE_GAMES: usize = 16;
 /// [`Table::pending`], [`SLATE_GAMES`] at most). `None` past that many.
 #[must_use]
 pub fn slates(table: &Table, team: Team, rests: u32, games: &[usize]) -> Option<Slates> {
-	let conference = team.conference();
 	let pending = table.pending();
-	let relevant = |i: usize| pending[i].home.conference() == conference || pending[i].away.conference() == conference;
-	let games: Vec<usize> = games.iter().copied().filter(|&i| relevant(i)).collect();
+	let games: Vec<usize> = games.iter().copied().filter(|&i| counts(table, team, i)).collect();
 	if games.len() > SLATE_GAMES {
 		return None;
 	}
-	let rest_games: Vec<usize> = (0..pending.len()).filter(|&i| relevant(i) && !games.contains(&i)).collect();
-	let exact = u32::try_from(rest_games.len()).is_ok_and(|n| n < 32 && 1u64 << n <= u64::from(rests.max(1)));
-	let total: u64 = if exact { 1u64 << rest_games.len() } else { u64::from(rests.max(1)) };
-	let mut base = [0u16; 32];
-	for t in Team::ALL {
-		base[t.index()] = table.points(t);
-	}
+	let rest_games: Vec<usize> = (0..pending.len()).filter(|&i| counts(table, team, i) && !games.contains(&i)).collect();
+	let (exact, total) = budget(rest_games.len(), rests);
+	let base = standings(table);
 	let mut ins = vec![0u32; 1 << games.len()];
 	let mut out = Vec::new();
 	for k in 0..total {
@@ -199,7 +186,7 @@ impl Slates {
 	pub fn spread(&self, hold: Option<(usize, bool)>) -> f64 {
 		let fixed = hold.and_then(|(game, home_won)| Some((self.games.iter().position(|&g| g == game)?, home_won)));
 		let on = |slate: usize| fixed.is_none_or(|(j, home_won)| (slate >> j & 1 == 1) == home_won);
-		let m = f64::from(u32::try_from(self.rests.len()).unwrap_or(u32::MAX));
+		let m = to_f64(u64::try_from(self.rests.len()).unwrap_or(u64::MAX));
 		// The variance over the slates of the rests' mean.
 		let (mut s, mut sum, mut squares) = (0.0, 0.0, 0.0);
 		for (_, &x) in self.ins.iter().enumerate().filter(|(slate, _)| on(*slate)) {
@@ -233,6 +220,28 @@ impl Slates {
 		// A sampled estimate can dip just below zero.
 		variance.max(0.0).sqrt()
 	}
+}
+
+/// Can pending game `i` change `team`'s seed: does its conference play in it.
+fn counts(table: &Table, team: Team, i: usize) -> bool {
+	let p = table.pending()[i];
+	p.home.conference() == team.conference() || p.away.conference() == team.conference()
+}
+
+/// Every team's points at `table`, by [`Team::index`].
+fn standings(table: &Table) -> [u16; 32] {
+	let mut points = [0u16; 32];
+	for t in Team::ALL {
+		points[t.index()] = table.points(t);
+	}
+	points
+}
+
+/// Whether `games` games' every outcome fits in `cap` ways (then all are
+/// counted), and how many ways that is.
+fn budget(games: usize, cap: u32) -> (bool, u64) {
+	let exact = u32::try_from(games).is_ok_and(|n| n < 32 && 1u64 << n <= u64::from(cap.max(1)));
+	(exact, if exact { 1u64 << games } else { u64::from(cap.max(1)) })
 }
 
 /// [`Tally::share`] alone, without the per-game shares.

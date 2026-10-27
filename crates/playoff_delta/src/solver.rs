@@ -209,7 +209,6 @@ impl<'a> Ask<'a> {
 		5u8.saturating_add(u8::try_from(extra_teams).unwrap_or(u8::MAX))
 	}
 
-	/// The best wild card.
 	fn search_wild_card(&self) -> Option<Scenario> {
 		let mut best: Option<Scenario> = None;
 		let mut visited = HashSet::new();

@@ -38,3 +38,13 @@ pub(crate) fn random_case(rng: &mut Lcg, games: usize) -> ([Record; 32], Vec<Pen
 		.collect();
 	(records, pending)
 }
+
+/// Final points for one outcome of `pending`: bit `i` of `outcome` clear when
+/// game `i`'s home side won.
+pub(crate) fn final_points(records: &[Record; 32], pending: &[Pending], outcome: u32) -> [u16; 32] {
+	let mut points = records.map(Record::points);
+	for (i, p) in pending.iter().enumerate() {
+		points[(if outcome & (1 << i) == 0 { p.home } else { p.away }).index()] += 2;
+	}
+	points
+}

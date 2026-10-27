@@ -15,7 +15,7 @@
 //! - **Leverage** of a result: the share as it happened minus the share had
 //!   it gone the other way, the rest of the week held as it happened.
 //! - **Spread** of a week: the share's standard deviation over the ways the
-//!   week's results can go ([`count::Tally::spread`]). The league's change
+//!   week's results can go ([`count::Slates::spread`]). The league's change
 //!   over its spread is the week's luck; the stage divides, so the contract
 //!   carries each number once.
 //! - **Clinched**: in, whatever happens ([`solver::clinched`]).
@@ -342,13 +342,8 @@ impl Week<'_> {
 		let own = game.and_then(|i| tally.given[i]).map_or(0.0, |(home, away)| (home - away).abs());
 		// Each game's own effect is measured exactly (both sides on every
 		// way), and the spread can be no smaller than they add up to.
-		let own_effects: f64 = table
-			.pending()
-			.iter()
-			.zip(&tally.given)
-			.filter(|(p, _)| p.week.checked_sub(1) == Some(self.number))
-			.filter_map(|(_, given)| given.map(|(home, away)| ((home - away) / 2.0).powi(2)))
-			.sum();
+		// `given` holds exactly next week's games, the ones asked about.
+		let own_effects: f64 = tally.given.iter().flatten().map(|(home, away)| ((home - away) / 2.0).powi(2)).sum();
 		let slates = self.slates.after;
 		let me = self.subject.team;
 		Some(Stake {

@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
 	table::{Pending, Record},
-	testing::{random_case, Lcg},
+	testing::{final_points, random_case, Lcg},
 };
 
 /// The share of every outcome of `pending` in which `team` gets in, and per
@@ -13,11 +13,7 @@ fn brute_force(records: &[Record; 32], pending: &[Pending], team: Team) -> (f64,
 	let (mut ins, mut home) = (0u32, vec![(0u32, 0u32); pending.len()]);
 	let total = 1u32 << pending.len();
 	for outcome in 0..total {
-		let mut points = records.map(Record::points);
-		for (i, p) in pending.iter().enumerate() {
-			points[(if outcome & (1 << i) == 0 { p.home } else { p.away }).index()] += 2;
-		}
-		let got = u32::from(seed(&points, team).is_some());
+		let got = u32::from(seed(&final_points(records, pending, outcome), team).is_some());
 		ins += got;
 		for (i, h) in home.iter_mut().enumerate() {
 			if outcome & (1 << i) == 0 {
@@ -114,17 +110,9 @@ fn a_loss_to_the_other_conference_never_hurts() {
 fn slate_shares(records: &[Record; 32], pending: &[Pending], team: Team, games: &[usize]) -> Vec<f64> {
 	let mut ins = vec![(0u32, 0u32); 1 << games.len()];
 	for outcome in 0u32..1 << pending.len() {
-		let mut points = records.map(Record::points);
-		let mut slate = 0;
-		for (i, p) in pending.iter().enumerate() {
-			let home_won = outcome & (1 << i) == 0;
-			points[(if home_won { p.home } else { p.away }).index()] += 2;
-			if let Some(j) = games.iter().position(|&g| g == i) {
-				slate |= usize::from(home_won) << j;
-			}
-		}
+		let slate = games.iter().enumerate().fold(0, |slate, (j, &g)| slate | usize::from(outcome & (1 << g) == 0) << j);
 		ins[slate].0 += 1;
-		ins[slate].1 += u32::from(seed(&points, team).is_some());
+		ins[slate].1 += u32::from(seed(&final_points(records, pending, outcome), team).is_some());
 	}
 	ins.iter().map(|&(n, x)| f64::from(x) / f64::from(n)).collect()
 }
@@ -148,11 +136,7 @@ fn a_spread_counted_every_way_matches_brute_force() {
 			let s = slates(&table, team, 1 << 12, &games).unwrap();
 			assert!(s.exact);
 			// Only the games the team's conference plays are its slate's.
-			let mine: Vec<usize> = games
-				.iter()
-				.copied()
-				.filter(|&i| pending[i].home.conference() == team.conference() || pending[i].away.conference() == team.conference())
-				.collect();
+			let mine: Vec<usize> = games.iter().copied().filter(|&i| counts(&table, team, i)).collect();
 			let shares = slate_shares(&records, &pending, team, &mine);
 			assert!((s.spread(None) - deviation(shares.iter().copied())).abs() < 1e-12, "{}", team.code());
 			if let Some(&first) = mine.first() {

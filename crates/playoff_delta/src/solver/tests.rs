@@ -6,7 +6,7 @@ use super::*;
 use crate::{
 	rank::seed as seed_of,
 	table::Pending,
-	testing::{random_case, Lcg},
+	testing::{final_points, random_case, Lcg},
 };
 
 /// best[team][extra] over every outcome of the pending games (no ties).
@@ -98,11 +98,11 @@ fn a_clinch_holds_in_every_outcome() {
 		for team in Team::ALL.into_iter().filter(|t| clinched(&table, *t)) {
 			proven += 1;
 			for outcome in 0u32..1 << pending.len() {
-				let mut points = records.map(Record::points);
-				for (i, p) in pending.iter().enumerate() {
-					points[(if outcome & (1 << i) == 0 { p.home } else { p.away }).index()] += 2;
-				}
-				assert!(seed_of(&points, team).is_some(), "{}: outcome {outcome:b} leaves it out", team.code());
+				assert!(
+					seed_of(&final_points(&records, &pending, outcome), team).is_some(),
+					"{}: outcome {outcome:b} leaves it out",
+					team.code()
+				);
 			}
 		}
 	}

@@ -86,24 +86,14 @@ gives a loss to the other conference.
 
 ## The spread
 
-A week's games can go 2^k ways (its slates; k is 13 or so for the games with
-a side in the conference), and each slate leaves a share. Their standard
-deviation is the week's spread. Sampling ways at random cannot read it: a
-spread of a point is a variance of 10⁻⁴, far below a sampled share's noise.
-So `count::slates` counts every slate against the same rests of the season
-(the other games), in Gray-code order (one game turns around per step), so
-what the rest decides cancels out. With few enough rests every one is
-counted and the spread is exact; otherwise `evaluate::RESTS` (16,384) are
-drawn, and the variance is read from pairs of different rests, which is
-unbiased. On the 2026 season, a quarter as many rests moved a week's spread
-by about a tenth of itself. Next week's spread is never less than the
-games' own effects add up to (each measured exactly by the count), and is
-held there.
-
-`src/count/tests.rs` checks a counted spread, plain and with one game held,
-against brute force, and a sampled one against it. The whole 2025 season
-evaluates in about 32 s, release build (as with contract v2, which spent
-that time on the rivals and the benchmark).
+A week's spread is how far its results could move the share. Sampling ways
+at random cannot read it (a point's spread is a variance far below a sampled
+share's noise), so `count::slates` counts every slate of the week against
+the same rests of the season; its module doc has the method, and
+`evaluate::RESTS` the sample size and its error. `src/count/tests.rs` checks
+a counted spread, plain and with one game held, against brute force, and a
+sampled one against it. The whole 2025 season evaluates in about 32 s,
+release build.
 
 ## Field definitions
 
@@ -188,8 +178,8 @@ exact one.
   every computation, and the record shown drops it. Remaining games are
   decided as wins and losses only, in the solver and the count, and a tied
   game is not one of a week's `results`.
-- **The week's spread is sampled.** Counted against 16,384 rests, it lands
-  within about a tenth of itself; the luck read off it carries that error.
+- **The week's spread is sampled** (`evaluate::RESTS`), and the luck read
+  off it carries that error.
 - **Tiebreakers in the count.** The count seeds each way under PD1, like the
   solver, so a share is the most generous reading too (paulgsc/server#496).
 - **`collapse`** needs an in-game win-probability feed; the ESPN adapter
