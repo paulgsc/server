@@ -20,3 +20,13 @@ impl WebSocketFsm {
 		Ok(())
 	}
 }
+
+/// A transport whose client never reached a server, so every send fails the
+/// way it does while NATS is down. For tests of what a failed broadcast is
+/// answered with; `retry_on_initial_connect` hands back the client without
+/// waiting for the connection.
+#[cfg(test)]
+pub(crate) async fn disconnected_transport() -> NatsTransport<UnifiedEvent> {
+	let client = async_nats::ConnectOptions::new().retry_on_initial_connect().connect("nats://127.0.0.1:1").await.unwrap();
+	NatsTransport::new(client)
+}

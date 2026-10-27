@@ -167,7 +167,7 @@ impl Drop for ConnectionCleanup {
 				if let Ok(runtime) = tokio::runtime::Handle::try_current() {
 					let reason = String::from("socket ended: ") + self.end_reason;
 					runtime.spawn(async move {
-						let _ = ws.remove_connection(&key, reason).await;
+						ws.remove_connection(&key, reason).await;
 					});
 				}
 			}
@@ -354,7 +354,7 @@ mod tests {
 				// "Closing it": the store entry goes first, the way every
 				// real removal path in `message`/`broadcast` handlers calls
 				// it before `ConnectionCleanup` ever drops.
-				fsm.remove_connection(&key, "test teardown".to_string()).await.expect("remove_connection");
+				fsm.remove_connection(&key, "test teardown".to_string()).await;
 
 				// The socket-level half — built directly rather than through
 				// `handle_socket`'s full upgrade dance, since `Drop` is the
@@ -435,5 +435,34 @@ mod tests {
 		let snapshot = snapshotter.snapshot().into_vec();
 		assert_eq!(gauge(&snapshot, "ws_connections", &[("state", "connected")]), Some(0.0));
 		assert_eq!(gauge(&snapshot, "ws_client_connections", &[("client_type", "direct")]), Some(0.0));
+	}
+
+	/// #488: a client's OBS command that cannot be broadcast (NATS down) is
+	/// counted under `ws_connection_errors_total{error_type="broadcast_failed"}`
+	/// and answered to that client with an `Event::Error`. Before, both
+	/// `process_message` arms dropped the result, and the client heard nothing.
+	#[test]
+	fn a_command_that_cannot_be_broadcast_is_counted_and_answered() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+
+		let answer = metrics::with_local_recorder(&recorder, || {
+			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+			rt.block_on(async {
+				let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+				let transport = broadcast::disconnected_transport().await;
+				let command = String::from(r#"{"type":"obsCmd","cmd":{"type":"startStream"}}"#);
+				WebSocketFsm::new().process_message(transport, ws_tx, "conn", command).await;
+				ws_rx.try_recv()
+			})
+		});
+
+		assert!(matches!(answer, Ok(ws_events::events::Event::Error { .. })), "{answer:?}");
+		let snapshot = snapshotter.snapshot().into_vec();
+		assert_eq!(
+			counter(&snapshot, "ws_connection_errors_total", &[("error_type", "broadcast_failed"), ("phase", "operation")]),
+			Some(1)
+		);
 	}
 }

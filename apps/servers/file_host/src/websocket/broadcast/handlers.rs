@@ -112,7 +112,7 @@ pub(crate) fn spawn_event_forwarder(
 		}
 
 		// Cleanup connection from store
-		let _ = state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
+		state.remove_connection(&conn_key, "Event forwarder ended".to_string()).await;
 
 		info!(connection_id=%conn_key, total_forwarded, "Forwarding ended");
 	})

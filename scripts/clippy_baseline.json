@@ -426,13 +426,6 @@
       }
     }
   },
-  "apps/servers/file_host/src/handlers/utterance.rs": {
-    "clippy::derive_partial_eq_without_eq": {
-      "fn utterance": {
-        "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]": 1
-      }
-    }
-  },
   "apps/servers/file_host/src/health.rs": {
     "clippy::disallowed_macros": {
       "fn perform_health_check": {
@@ -800,7 +793,6 @@
     "clippy::expect_used": {
       "fn opening_and_closing_a_connection_moves_the_lifecycle_counters": {
         "find(&snapshot, \"ws_connection_duration_seconds\", &[(\"end_reason\", \"client_disconnect\")]).expect(\"duration recorded under a real end_reason\")": 1,
-        "fsm.remove_connection(&key, \"test teardown\".to_string()).await.expect(\"remove_connection\");": 1,
         "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1
       }
     },
@@ -904,20 +896,12 @@
     "clippy::missing_errors_doc": {
       "fn handle_subscription_update": {
         "pub async fn handle_subscription_update(&self, connection_id: &str, add_types: Vec<EventType>, remove_types: Vec<EventType>) -> Result<(), ConnectionError> {": 1
-      },
-      "fn remove_connection": {
-        "pub async fn remove_connection(&self, client_key: &str, reason: String) -> Result<(), ConnectionError> {": 1
       }
     },
     "clippy::redundant_closure": {
       "fn handle_subscription_update": {
         "handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1,
         "handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1
-      }
-    },
-    "clippy::single_match_else": {
-      "fn remove_connection": {
-        "match self.store.remove(client_key).await { Some(handle) => { let connection_id = handle.connection.id.clone(); let client_id = handle.connection.client_id.clone(); let duration = handle.connection.get_duration(); let state = handle.get_state().await.ok(); let was_active = state.as_ref().map(|s| s.is_active).unwrap_or(false); if let Err(e) = handle.shutdown().await { warn!( connection_id = %connection_id, error = %e, \"Failed to gracefully shutdown connection actor\" ); } let elapsed = start.elapsed(); info!( connection_id = %connection_id, client_id = %client_id, lifetime_ms = duration.as_millis(), was_active = was_active, reason = %reason, cleanup_duration_ms = elapsed.as_millis(), \"Connection removed\" ); // `ws_connection_lifecycle_total{event=\"removed\"}` and the // duration histogram are recorded once per socket at // `ConnectionCleanup::drop` (websocket.rs), not here \u2014 this // function is called from several places that Drop still // runs after (stale timeout, client close, forwarder end), // and double-instrumenting both would double-count. Only // `connected` \u2014 cheap, and this store entry genuinely just // left \u2014 is refreshed here for immediacy. instrument::set_connected(self.store.len()); Ok(()) } None => { warn!( connection_key = client_key, reason = %reason, \"Attempted to remove non-existent connection\" ); Ok(()) } }": 1
       }
     },
     "clippy::unused_async": {
@@ -998,11 +982,6 @@
       },
       "fn send_unsubscription_ack": {
         "\"unsubscribed\": event_types.iter().map(|t| format!(\"{:?}\", t)).collect::<Vec<_>>(),": 1
-      }
-    },
-    "clippy::match_same_arms": {
-      "fn process_message": {
-        "Event::ObsCmd { .. } => { let _ = self.broadcast_event(transport, client_message).await; }": 1
       }
     },
     "clippy::needless_pass_by_value": {

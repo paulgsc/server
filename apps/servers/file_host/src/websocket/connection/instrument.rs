@@ -87,8 +87,8 @@ pub fn record_message(message_type: &'static str) {
 }
 
 /// A connection-related failure, at one of the real failure points in
-/// connection setup (`phase = "creation"`) or message handling
-/// (`phase = "operation"`).
+/// connection setup (`phase = "creation"`), message handling
+/// (`phase = "operation"`) or removal (`phase = "teardown"`).
 pub fn record_error(error_type: &'static str, phase: &'static str) {
 	counter!("ws_connection_errors_total", "error_type" => error_type, "phase" => phase).increment(1);
 }

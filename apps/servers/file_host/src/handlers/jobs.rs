@@ -408,7 +408,7 @@ fn names_voice(value: &Value) -> bool {
 			.iter()
 			.any(|(key, field)| (key == "voice" && field.as_array().is_none_or(|notes| !notes.is_empty())) || names_voice(field)),
 		Value::Array(items) => items.iter().any(names_voice),
-		_ => false,
+		Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
 	}
 }
 

@@ -1,3 +1,10 @@
+//! HTTP handlers.
+//!
+//! A failure on a request is answered as that failure (ER1 in `crate::error`),
+//! so neither a `#[must_use]` result dropped with `let _ =` nor a `_ =>` arm
+//! that folds a new variant into an old answer is allowed here.
+#![warn(clippy::let_underscore_must_use, clippy::wildcard_enum_match_arm)]
+
 pub mod aph;
 pub mod auth;
 pub mod db;
