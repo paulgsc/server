@@ -514,11 +514,6 @@
         "pub async fn shutdown(self) -> Result<(), ObservabilityError> {": 1
       }
     },
-    "clippy::significant_drop_tightening": {
-      "fn new": {
-        "let trace_exporter = opentelemetry_otlp::SpanExporter::builder()": 1
-      }
-    },
     "clippy::too_long_first_doc_paragraph": {
       "enum ObservabilityError": {
         "/// Tracing-only. Per #139 (P1), application measurements go through the /// `metrics` facade and a Prometheus scrape (see `metrics::instruments` /// and the `some-metrics` seam crate), not OTLP \u2014 this guard no longer /// carries a meter provider.": 1
