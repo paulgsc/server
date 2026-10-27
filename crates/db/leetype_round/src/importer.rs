@@ -1,6 +1,7 @@
-//! The importer for a round corpus in the layout `@some-ui/leetype`'s export
-//! wrote (#326, LTY-SRV2). some-ui retired that export (#1941); rounds are now
-//! written through the operator routes, and this still imports a directory.
+//! The importer for a round corpus in the layout of `@some-ui/leetype`'s export.
+//!
+//! #326, LTY-SRV2. some-ui retired that export (#1941); rounds are now written
+//! through the operator routes, and this still imports a directory.
 //!
 //! The same discipline as `curriculum_repo::importer`, and for the same
 //! reasons: an **offline operator command**, never a startup hook or a request
