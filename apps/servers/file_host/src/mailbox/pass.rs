@@ -88,10 +88,42 @@ pub struct Outcome {
 }
 
 /// Why a pass ended early, and what it had done by then.
+///
+/// Every phase that failed is in `failures`, in the order the pass ran them,
+/// so a second failure in an independent phase is never hidden behind the
+/// first. Never empty.
 #[derive(Debug)]
 pub struct PassError {
 	pub outcome: Outcome,
-	pub failure: Failure,
+	pub failures: Vec<(Phase, Failure)>,
+}
+
+/// The independent phases of a pass, in the order it runs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+	/// Reading [`READS`] after the cursor.
+	Inbound,
+	/// Filing transcripts home heard.
+	Filing,
+	/// Handing the mailbox what is filed.
+	Outbound,
+	/// Putting back what the routine asked for.
+	Asks,
+	/// Archiving what is old.
+	Archive,
+}
+
+impl Phase {
+	#[must_use]
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::Inbound => "inbound",
+			Self::Filing => "filing",
+			Self::Outbound => "outbound",
+			Self::Asks => "asks",
+			Self::Archive => "archive",
+		}
+	}
 }
 
 #[derive(Debug)]
@@ -100,23 +132,50 @@ pub enum Failure {
 	Storage(sqlx::Error),
 }
 
-impl PassError {
+impl Failure {
 	/// Which `metrics::mailbox::PASS_ERROR_CLASSES` bucket this lands in.
 	#[must_use]
 	pub const fn class(&self) -> &'static str {
-		match &self.failure {
-			Failure::Mailbox(err) => err.kind(),
-			Failure::Storage(_) => "storage",
+		match self {
+			Self::Mailbox(err) => err.kind(),
+			Self::Storage(_) => "storage",
 		}
+	}
+}
+
+impl fmt::Display for Failure {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Mailbox(err) => err.fmt(f),
+			Self::Storage(err) => write!(f, "database error: {err}"),
+		}
+	}
+}
+
+impl PassError {
+	/// Each `metrics::mailbox::PASS_ERROR_CLASSES` bucket a failed phase lands
+	/// in, once each, in the order the phases ran.
+	#[must_use]
+	pub fn classes(&self) -> Vec<&'static str> {
+		let mut classes: Vec<&'static str> = Vec::new();
+		for (_, failure) in &self.failures {
+			if !classes.contains(&failure.class()) {
+				classes.push(failure.class());
+			}
+		}
+		classes
 	}
 }
 
 impl fmt::Display for PassError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match &self.failure {
-			Failure::Mailbox(err) => err.fmt(f),
-			Failure::Storage(err) => write!(f, "database error: {err}"),
+		for (n, (phase, failure)) in self.failures.iter().enumerate() {
+			if n > 0 {
+				f.write_str("; ")?;
+			}
+			write!(f, "{}: {failure}", phase.name())?;
 		}
+		Ok(())
 	}
 }
 
@@ -149,8 +208,8 @@ fn days_before(now: &str, days: u64) -> Option<String> {
 /// hands the mailbox what the phone filed and it has not answered, then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
-/// The halves are independent: a failure ends its own half, and the pass
-/// reports the first.
+/// The phases are independent: a failure ends its own phase, and the pass
+/// reports every phase that failed.
 ///
 /// # Errors
 /// A [`PassError`] when the mailbox cannot be reached or read (anything but
@@ -190,9 +249,20 @@ pub async fn run_once<T: MailboxTransport>(
 		Some(archiving) if !outcome.no_account => archive_old(db, archiving, subject, deletion, now, &mut outcome).await,
 		_ => Ok(()),
 	};
-	match inbound.and(filing).and(outbound).and(asks).and(old) {
-		Ok(()) => Ok(outcome),
-		Err(failure) => Err(PassError { outcome, failure }),
+	let failures: Vec<(Phase, Failure)> = [
+		(Phase::Inbound, inbound),
+		(Phase::Filing, filing),
+		(Phase::Outbound, outbound),
+		(Phase::Asks, asks),
+		(Phase::Archive, old),
+	]
+	.into_iter()
+	.filter_map(|(phase, result)| result.err().map(|failure| (phase, failure)))
+	.collect();
+	if failures.is_empty() {
+		Ok(outcome)
+	} else {
+		Err(PassError { outcome, failures })
 	}
 }
 
@@ -562,7 +632,7 @@ async fn record(
 
 #[cfg(test)]
 mod tests {
-	use super::{run_once, Failure, Outcome, ITEMS_PER_PASS};
+	use super::{run_once, Failure, Outcome, Phase, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
 	use sha2::{Digest, Sha256};
@@ -779,8 +849,8 @@ mod tests {
 		fake.add(10, &name, &body);
 		*fake.listing_fails.lock().unwrap() = true;
 		let err = pass(&pool, &fake).await.unwrap_err();
-		assert!(matches!(err.failure, Failure::Mailbox(MailboxError::Transport(_))));
-		assert_eq!((err.class(), err.outcome), ("transport", Outcome::default()));
+		assert!(matches!(err.failures[..], [(Phase::Inbound, Failure::Mailbox(MailboxError::Transport(_)))]));
+		assert_eq!((err.classes(), err.outcome), (vec!["transport"], Outcome::default()));
 		assert!(held(&pool).await.is_empty());
 		*fake.listing_fails.lock().unwrap() = false;
 		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1, "the next pass tries again");
@@ -916,7 +986,7 @@ mod tests {
 		filed(&pool, "decisions-2026-10-23.json").await;
 		*fake.puts_fail.lock().unwrap() = true;
 		let err = pass(&pool, &fake).await.unwrap_err();
-		assert_eq!(err.class(), "transport");
+		assert_eq!(err.classes(), ["transport"]);
 		assert!(answers(&pool).await.is_empty());
 		*fake.puts_fail.lock().unwrap() = false;
 		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
@@ -1357,6 +1427,22 @@ mod tests {
 		filed(&pool, "decisions-2026-10-23.json").await;
 		*fake.listing_fails.lock().unwrap() = true;
 		let err = pass(&pool, &fake).await.unwrap_err();
-		assert_eq!((err.class(), err.outcome.handed), ("transport", vec!["added"]), "the halves are independent");
+		assert_eq!((err.classes(), err.outcome.handed), (vec!["transport"], vec!["added"]), "the phases are independent");
+	}
+
+	#[tokio::test]
+	async fn every_failed_phase_is_reported_not_only_the_first() {
+		let (pool, fake) = (pool().await, Fake::default());
+		filed(&pool, "decisions-2026-10-23.json").await;
+		*fake.listing_fails.lock().unwrap() = true;
+		*fake.puts_fail.lock().unwrap() = true;
+		let err = pass(&pool, &fake).await.unwrap_err();
+		let phases: Vec<Phase> = err.failures.iter().map(|(phase, _)| *phase).collect();
+		assert_eq!(phases, [Phase::Inbound, Phase::Outbound], "the second failure is not hidden behind the first");
+		assert_eq!(err.classes(), ["transport"], "one class, counted once");
+		assert_eq!(
+			err.to_string(),
+			"inbound: the mailbox could not be reached: connection refused; outbound: the mailbox could not be reached: connection refused"
+		);
 	}
 }
