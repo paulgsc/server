@@ -207,11 +207,18 @@ jobs:
           node-version-file: some-ui/.nvmrc
 
       # Only the packages the checks read, and what they depend on: the
-      # contract harness, the route union, and the activity catalogue some-ui
-      # dumps. The full some-ui install is far larger than this job needs.
+      # contract harness, the route union, and the two policies some-ui
+      # dumps. The session-duration policy lives in www's own source and
+      # imports @some-ui/core-utils, which resolves through www's links and
+      # from core-utils' built `dist/`, so www (without its dependencies'
+      # dependencies) and core-utils are installed, and core-utils is built.
+      # The full some-ui install is far larger than this job needs.
       - name: Install the packages the checks read
         working-directory: some-ui
-        run: pnpm install --frozen-lockfile --filter "@some-ui/contract-harness..." --filter "@some-ui/server-routes..." --filter "@some-ui/activity-catalog..."
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter "@some-ui/contract-harness..." --filter "@some-ui/server-routes..." --filter "@some-ui/activity-catalog..." --filter "@some-ui/core-utils..." --filter www
+          pnpm exec turbo run build --filter=@some-ui/core-utils
 
       - name: Sync and verify
         continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'client-breaking-route') }}
