@@ -17,6 +17,8 @@ const FORBIDDEN: [&str; 5] = ["study_domain", "intervention", "outcome_repo", "s
 
 #[test]
 fn nothing_in_the_runners_dependency_closure_knows_a_study_signal() {
+	// Set by cargo for the test it runs: the toolchain's own `cargo`.
+	#[allow(clippy::disallowed_methods)]
 	let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
 	let metadata = std::process::Command::new(cargo)
 		.args(["metadata", "--format-version", "1", "--offline", "--manifest-path"])

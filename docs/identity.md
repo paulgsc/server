@@ -14,6 +14,14 @@ subject, to keep one client from starving another, and to run the study
 features that subject turns on. The code is built so that nothing it stores or
 logs names a person.
 
+The owner's deployment: on their home network, the owner is the only person
+who signs in, and this server is their own store, as private as their phone
+(paulgsc/some-ui#2174). Nothing below is relaxed for it, since anything on that
+network can reach the box, and what "What is still exposed" lists is unchanged.
+#510 and paulgsc/some-ui#2182 track removing what serves strangers rather than
+the owner: open sign-up, the operator and mailbox ids copied from a log line,
+and invariant 17's sharing choice.
+
 That is a statement about what the code asks for. It is not a promise about
 what people choose to send it (a kept shelf item or a captured page can say
 anything), and it says nothing about what sits outside this process: the

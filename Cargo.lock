@@ -3002,6 +3002,7 @@ dependencies = [
 name = "obs-websocket"
 version = "0.0.0"
 dependencies = [
+ "clap",
  "futures-util",
  "obws",
  "serde",
@@ -4519,8 +4520,8 @@ dependencies = [
 name = "some-obs"
 version = "0.0.0"
 dependencies = [
+ "clap",
  "obs-websocket",
- "serde",
  "serde_json",
  "some-shutdown",
  "some-transport",

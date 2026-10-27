@@ -17,7 +17,10 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn child_waits_for_shutdown_signal() {
-	if std::env::var_os(CHILD).is_none() {
+	// The child marker this test sets on itself, not configuration (#484).
+	#[allow(clippy::disallowed_methods)]
+	let child = std::env::var_os(CHILD);
+	if child.is_none() {
 		return;
 	}
 	let shutdown = some_shutdown::shutdown_signal();

@@ -193,9 +193,10 @@ pub(crate) fn resolve(program: &Path) -> Option<PathBuf> {
 	if program.components().count() > 1 {
 		return program.is_file().then(|| program.to_path_buf());
 	}
-	std::env::split_paths(&std::env::var_os("PATH")?)
-		.map(|dir| dir.join(program))
-		.find(|candidate| candidate.is_file())
+	// The lookup `Command` would do, not configuration (#484).
+	#[allow(clippy::disallowed_methods)]
+	let path = std::env::var_os("PATH")?;
+	std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file())
 }
 
 /// A child's exit, in words: its code, or the signal that ended it.

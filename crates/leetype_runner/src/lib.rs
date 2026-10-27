@@ -264,7 +264,9 @@ impl Runner {
 			.env_clear()
 			.env("TMPDIR", dir);
 		// What `rustc` (or rustup's proxy for it) and its linker need to be
-		// found, and nothing else.
+		// found, and nothing else. Forwarded to the child as they are, not
+		// configuration read around a binary's clap `Config` (#484).
+		#[allow(clippy::disallowed_methods)]
 		for key in ["PATH", "HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "CARGO_HOME"] {
 			if let Some(value) = std::env::var_os(key) {
 				command.env(key, value);

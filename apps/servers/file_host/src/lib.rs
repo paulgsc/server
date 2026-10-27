@@ -120,7 +120,7 @@ pub struct AppState {
 impl AppState {
 	/// Build the entire universe in one explicit place
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
-		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new()?)));
+		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new(&config.otel, &config.rust_log)?)));
 
 		// The first thing logged once there is a subscriber: which values this
 		// run took from the `nixos.local` dev host (#406). Fine there, wrong on
@@ -132,7 +132,7 @@ impl AppState {
 				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
 			);
 		}
-		let retired = crate::config::retired_variables_set();
+		let retired = crate::config::retired_variables_set(&config.otel.otel_service_name);
 		if !retired.is_empty() {
 			tracing::warn!(
 				variables = ?retired,
