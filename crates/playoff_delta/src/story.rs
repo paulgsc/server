@@ -105,8 +105,10 @@ pub struct StoryShare {
 /// What next week can do to the share, before it is played.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Stake {
+	/// The team's opponent next week; `None` on its bye.
+	pub opponent: Option<Team>,
 	/// The share if the team wins next week minus the share if it loses,
-	/// unsigned; 0 on its bye.
+	/// unsigned; 0 on its bye, or when its game cannot move the share.
 	pub own: Share,
 	/// The share's standard deviation over the ways all of next week's
 	/// results can go, the team's own game among them.

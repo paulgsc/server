@@ -130,8 +130,10 @@ null).
 - **next**: next week's games with a side in the conference, other than the
   subject's, by how far the share swings on them (`swing`: the share if
   `rootFor` wins minus the share if it loses), three at most.
-- **stake**: next week, before it is played: `own`, the share if the subject
-  wins its game minus the share if it loses, unsigned (0 on its bye);
+- **stake**: next week, before it is played: `opponent`, the subject's
+  opponent (null on its bye); `own`, the share if the subject wins its game
+  minus the share if it loses, unsigned (0 on its bye, or when the game
+  cannot move the share);
   `spread`, the share's standard deviation over the ways all of next week's
   results can go, the subject's own among them; `exact` when every rest was
   counted. Null once no game is left.

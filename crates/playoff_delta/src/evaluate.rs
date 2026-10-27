@@ -338,10 +338,8 @@ impl Week<'_> {
 			return None;
 		}
 		let tally = self.tallies.after;
-		let own = self
-			.own_pending(table, self.number + 1)
-			.and_then(|i| tally.given[i])
-			.map_or(0.0, |(home, away)| (home - away).abs());
+		let game = self.own_pending(table, self.number + 1);
+		let own = game.and_then(|i| tally.given[i]).map_or(0.0, |(home, away)| (home - away).abs());
 		// Each game's own effect is measured exactly (both sides on every
 		// way), and the spread can be no smaller than they add up to.
 		let own_effects: f64 = table
@@ -352,7 +350,16 @@ impl Week<'_> {
 			.filter_map(|(_, given)| given.map(|(home, away)| ((home - away) / 2.0).powi(2)))
 			.sum();
 		let slates = self.slates.after;
+		let me = self.subject.team;
 		Some(Stake {
+			opponent: game.map(|i| {
+				let p = table.pending()[i];
+				if p.home == me {
+					p.away
+				} else {
+					p.home
+				}
+			}),
 			own: Share(own),
 			spread: Share(slates.map_or(0.0, |s| s.spread(None)).max(own_effects.sqrt())),
 			exact: slates.is_some_and(|s| s.exact),

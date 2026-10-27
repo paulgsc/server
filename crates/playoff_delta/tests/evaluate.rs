@@ -50,7 +50,11 @@ fn every_week_follows_from_the_last() {
 		}
 		match &w.stake {
 			// Next week's spread is never less than the team's own game's part of it.
-			Some(stake) => assert!(stake.spread.0 >= stake.own.0 / 2.0 - 1e-12, "week {}: {stake:?}", w.week),
+			Some(stake) => {
+				assert!(stake.spread.0 >= stake.own.0 / 2.0 - 1e-12, "week {}: {stake:?}", w.week);
+				// A swing needs a game to swing on.
+				assert!(stake.opponent.is_some() || stake.own.0 == 0.0, "week {}: {stake:?}", w.week);
+			}
 			None => assert_eq!(w.pending.after, 0, "week {}", w.week),
 		}
 	}
@@ -117,7 +121,7 @@ weeks[].pending weeks[].pending.before weeks[].pending.after
 weeks[].results weeks[].results[].winner weeks[].results[].loser weeks[].results[].kind weeks[].results[].leverage
 weeks[].results[].collapse weeks[].results[].collapse.peakWinProbability weeks[].results[].collapse.led
 weeks[].next weeks[].next[].home weeks[].next[].away weeks[].next[].rootFor weeks[].next[].swing
-weeks[].stake weeks[].stake.own weeks[].stake.spread weeks[].stake.exact
+weeks[].stake weeks[].stake.opponent weeks[].stake.own weeks[].stake.spread weeks[].stake.exact
 weeks[].clinched
 ";
 
