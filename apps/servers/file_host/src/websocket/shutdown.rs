@@ -19,17 +19,10 @@ impl WebSocketFsm {
 		info!("Disconnecting {} active connections", connection_keys.len());
 
 		// Remove all connections
-		let mut disconnected_count = 0;
+		let disconnected_count = connection_keys.len();
 
 		for key in connection_keys {
-			match self.remove_connection(&key, "Server shutdown".to_string()).await {
-				Ok(()) => {
-					disconnected_count += 1;
-				}
-				Err(e) => {
-					warn!("Failed to remove connection {} during shutdown: {}", key, e);
-				}
-			}
+			self.remove_connection(&key, "Server shutdown".to_string()).await;
 		}
 
 		info!("WebSocket shutdown completed - disconnected {} connections", disconnected_count);

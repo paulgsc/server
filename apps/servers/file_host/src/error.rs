@@ -1,3 +1,29 @@
+//! `FileHostError`, the one error every handler returns, and its one answer:
+//! the `IntoResponse` below picks the status, `code` and client-facing message.
+//!
+//! **ER1: an error on a request is answered as that error, and a failure
+//! nobody can be answered about is counted.**
+//!
+//! - _Claim:_ every `FileHostError` variant is answered with a status and a
+//!   message chosen for that variant (and, for `Cache`, for each
+//!   `DedupCacheError` inside it); a handler that fails returns its failure
+//!   rather than a success status; and in `crate::websocket`, a client
+//!   command that cannot be broadcast is counted and answered to that client,
+//!   and a connection's removal leaves no `Result` for a caller to drop.
+//! - _Family:_ every variant, today's and any added later; every handler under
+//!   `crate::handlers`, including `POST /api/v1/utter` when its broadcast
+//!   fails; every path that removes a WebSocket connection (close frame,
+//!   stale reaper, forwarder end, socket drop, failed setup, shutdown).
+//! - _Proof:_ `status_code`, `code` and `message` match every variant with no
+//!   `_ =>` arm, so a new variant does not compile until it is mapped, and
+//!   `clippy::wildcard_enum_match_arm` (on for this module and `handlers`)
+//!   fails a wildcard added back. `clippy::let_underscore_must_use` (on for
+//!   `handlers`) fails a dropped `Result`. `WebSocketFsm::remove_connection`
+//!   returns `()`, counting the one failure inside it. Tests answer a failed
+//!   broadcast through a disconnected transport: `handlers::utterance`'s, and
+//!   `websocket`'s `a_command_that_cannot_be_broadcast_is_counted_and_answered`.
+#![warn(clippy::let_underscore_must_use, clippy::wildcard_enum_match_arm)]
+
 use axum::{
 	body::Body,
 	http::{header::WWW_AUTHENTICATE, HeaderValue, Response, StatusCode},
@@ -164,9 +190,17 @@ impl FileHostError {
 			Self::Cache(e) => match e {
 				DedupCacheError::NotFound => StatusCode::NOT_FOUND,
 				DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST,
-				_ => StatusCode::INTERNAL_SERVER_ERROR,
+				DedupCacheError::SerializationError(_) | DedupCacheError::StoreError(_) | DedupCacheError::TypeMismatch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			_ => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::NonSerializableData(_)
+			| Self::ResponseBuildError(_)
+			| Self::IoError(_)
+			| Self::TowerError(_)
+			| Self::NatsTransportError(_)
+			| Self::BroadcastError(_)
+			| Self::Upstream(_)
+			| Self::Sqlite(_)
+			| Self::OperationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 
@@ -202,6 +236,7 @@ impl FileHostError {
 
 	// Client-facing message. Kept generic for anything that might carry
 	// internal details (DB/IO/upstream errors) so those never leak into the response body.
+	// A 4xx says what was wrong with the request, never "internal server error".
 	const fn message(&self) -> &'static str {
 		match self {
 			Self::Unauthorized => "authentication required",
@@ -212,12 +247,27 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => "invalid encoded date",
 			Self::UnprocessableEntity { .. } => "error in request body",
 			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
+			Self::IntegerConversionError(_) => "integer out of range",
+			Self::UnexpectedSinglePair => "expected exactly one key-value pair",
 			Self::Conflict(reason) => reason,
 			Self::Stopped => "this phone stopped sending it to home",
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
-			_ => "internal server error",
+			Self::Cache(e) => match e {
+				DedupCacheError::NotFound => "not found",
+				DedupCacheError::OperationError(_) => "cache operation refused",
+				DedupCacheError::SerializationError(_) | DedupCacheError::StoreError(_) | DedupCacheError::TypeMismatch(_) => "internal server error",
+			},
+			Self::NonSerializableData(_)
+			| Self::ResponseBuildError(_)
+			| Self::IoError(_)
+			| Self::TowerError(_)
+			| Self::NatsTransportError(_)
+			| Self::BroadcastError(_)
+			| Self::Upstream(_)
+			| Self::Sqlite(_)
+			| Self::OperationError(_) => "internal server error",
 		}
 	}
 }
@@ -241,10 +291,9 @@ impl IntoResponse for FileHostError {
 		let code = self.code();
 		let message = self.message();
 		let is_unauthorized = matches!(&self, Self::Unauthorized);
-		let details = match self {
-			Self::UnprocessableEntity { errors } => Some(errors),
-			_ => None,
-		};
+		// Only `UnprocessableEntity` carries details; every other variant's
+		// answer is its `code` and `message` alone.
+		let details = if let Self::UnprocessableEntity { errors } = self { Some(errors) } else { None };
 
 		let mut response = (
 			status,

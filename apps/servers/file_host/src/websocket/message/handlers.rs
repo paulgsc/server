@@ -79,7 +79,7 @@ async fn process_incoming_messages(
 								"Connection is stale - closing"
 							);
 
-							let _ = state
+							state
 								.remove_connection(
 									&conn_key,
 									"Stale connection - no inbound activity".to_string(),
@@ -253,7 +253,7 @@ async fn handle_websocket_message(
 			);
 
 			// Remove the connection (cleanup handled in remove_connection)
-			let _ = state.remove_connection(conn_key, "WebSocket closed".to_string()).await;
+			state.remove_connection(conn_key, "WebSocket closed".to_string()).await;
 			Err(())
 		}
 

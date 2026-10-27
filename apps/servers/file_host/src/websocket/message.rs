@@ -40,15 +40,28 @@ impl WebSocketFsm {
 				self.handle_unsubscribe(ws_tx, conn_key, event_types).await;
 			}
 
-			Event::ObsCmd { .. } => {
-				let _ = self.broadcast_event(transport, client_message).await;
-			}
-
-			Event::OrchestratorCommandData { .. } => {
-				let _ = self.broadcast_event(transport, client_message).await;
+			Event::ObsCmd { .. } | Event::OrchestratorCommandData { .. } => {
+				self.forward_command(transport, ws_tx, conn_key, client_message).await;
 			}
 			_ => {}
 		};
+	}
+
+	/// Broadcast a client's command to its subject. A failure (NATS down, say)
+	/// is counted as `broadcast_failed` and answered to the sender, who would
+	/// otherwise read silence as the command having gone out (#488).
+	async fn forward_command(&self, transport: NatsTransport<UnifiedEvent>, ws_tx: UnboundedSender<Event>, conn_key: &str, command: Event) {
+		if let Err(e) = self.broadcast_event(transport, command).await {
+			warn!(
+				connection_id = %conn_key,
+				error = %e,
+				"Failed to broadcast client command"
+			);
+			instrument::record_error("broadcast_failed", "operation");
+			let mut message = String::from("Command not sent: ");
+			message.push_str(&e.to_string());
+			self.send_error_to_client(ws_tx, &message);
+		}
 	}
 
 	/// Handle subscribe request - add new event type subscriptions

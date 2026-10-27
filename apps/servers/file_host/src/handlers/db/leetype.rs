@@ -479,7 +479,7 @@ mod tests {
 					}
 				}
 				Value::Array(items) => items.iter().for_each(|item| keys(item, found)),
-				_ => {}
+				Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
 			}
 		}
 		let sample = RoundRuns {

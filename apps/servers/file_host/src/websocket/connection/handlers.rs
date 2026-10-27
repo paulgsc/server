@@ -5,7 +5,7 @@ use axum::http::HeaderMap;
 use futures::sink::SinkExt;
 use futures::stream::SplitSink;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::info;
 use ws_events::events::Event;
 
 pub(crate) async fn establish_connection(state: &WebSocketFsm, headers: &HeaderMap, peer: &PeerKey, cancel_token: &CancellationToken) -> Result<String, ConnectionError> {
@@ -37,14 +37,6 @@ pub(crate) async fn send_initial_handshake(sender: &mut SplitSink<WebSocket, Mes
 /// reads the `101` — so labelling this `error` would make the probe the
 /// biggest source of "errors" on the Closes by Reason panel.
 pub(crate) async fn clear_connection(state: &WebSocketFsm, conn_key: &str, client_type: &'static str) {
-	let result = state.remove_connection(conn_key, "Connection failed during setup".to_string()).await;
+	state.remove_connection(conn_key, "Connection failed during setup".to_string()).await;
 	super::instrument::record_removed(client_type, "client_disconnect", 0.0);
-
-	if let Err(e) = result {
-		error!(
-			connection_id = %conn_key,
-			error = %e,
-			"Failed to remove connection during cleanup"
-		);
-	}
 }
