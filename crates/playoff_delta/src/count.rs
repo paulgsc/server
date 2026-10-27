@@ -17,6 +17,17 @@
 //! tables with the same pending games (a table and itself with a banked
 //! result flipped) are compared on the same sampled ways, and a pending
 //! game's two sides are compared on each way with that one game flipped.
+//!
+//! **Spread** ([`slates`]): a week's games can go 2^k ways, its slates, and
+//! each slate leaves a share of its own. The share is a fair game, so those
+//! shares average to the share now; their standard deviation is how far the
+//! week can move it. Every slate is counted, each against the same rests of
+//! the season (the other games), so what the rest decides cancels out and
+//! only what the slate decides is left. When the rests are few enough to
+//! count, each slate's share is exact. Otherwise they are drawn, and the
+//! variance is read from pairs of different rests: two independent rests on
+//! one slate both get in with that slate's share squared, which leaves an
+//! unbiased estimate.
 
 use crate::{league::Team, rank::seed, table::Table};
 
@@ -39,19 +50,12 @@ pub struct Tally {
 /// [`Table::pending`]).
 #[must_use]
 pub fn tally(table: &Table, team: Team, ways: u32, games: &[usize]) -> Tally {
-	let conference = team.conference();
 	let pending = table.pending();
-	let relevant: Vec<usize> = (0..pending.len())
-		.filter(|&i| pending[i].home.conference() == conference || pending[i].away.conference() == conference)
-		.collect();
+	let relevant: Vec<usize> = (0..pending.len()).filter(|&i| counts(table, team, i)).collect();
 	// The asked games that can matter, by their slot among the relevant ones.
 	let asked: Vec<(usize, usize)> = relevant.iter().enumerate().filter(|(_, i)| games.contains(i)).map(|(slot, &i)| (slot, i)).collect();
-	let mut base = [0u16; 32];
-	for t in Team::ALL {
-		base[t.index()] = table.points(t);
-	}
-	let exact = u32::try_from(relevant.len()).is_ok_and(|n| n < 32 && 1u64 << n <= u64::from(ways.max(1)));
-	let total: u64 = if exact { 1u64 << relevant.len() } else { u64::from(ways.max(1)) };
+	let base = standings(table);
+	let (exact, total) = budget(relevant.len(), ways);
 	let mut ins = 0u64;
 	// Per asked game: the ways in had its home side won, and had its away side.
 	let mut sides = vec![(0u64, 0u64); asked.len()];
@@ -94,6 +98,150 @@ pub fn tally(table: &Table, team: Team, ways: u32, games: &[usize]) -> Tally {
 		given[i] = Some((ratio(side.0), ratio(side.1)));
 	}
 	Tally { share: ratio(ins), given, exact }
+}
+
+/// A week's slates, each counted against the same rests of the season.
+///
+/// Per slate, the rests in which the team gets in; per rest, how many slates
+/// get it in (all of them, and those with each slate game's home side won).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slates {
+	/// The slate's games, by index into [`Table::pending`]: bit `j` of a
+	/// slate is whether the `j`th one's home side won.
+	games: Vec<usize>,
+	/// Per slate, the rests that get the team in.
+	ins: Vec<u32>,
+	/// Per rest: the slates that get the team in, then per slate game those
+	/// of them with its home side winning.
+	rests: Vec<(u32, Vec<u32>)>,
+	/// Every rest was counted, not a sample.
+	pub exact: bool,
+}
+
+/// The most games a slate spans: a week has at most one game per team.
+pub const SLATE_GAMES: usize = 16;
+
+/// [`Slates`] for `team` at `table`, against at most `rests` rests.
+///
+/// The slate is the pending games at `games` that can matter (indices into
+/// [`Table::pending`], [`SLATE_GAMES`] at most). `None` past that many.
+#[must_use]
+pub fn slates(table: &Table, team: Team, rests: u32, games: &[usize]) -> Option<Slates> {
+	let pending = table.pending();
+	let games: Vec<usize> = games.iter().copied().filter(|&i| counts(table, team, i)).collect();
+	if games.len() > SLATE_GAMES {
+		return None;
+	}
+	let rest_games: Vec<usize> = (0..pending.len()).filter(|&i| counts(table, team, i) && !games.contains(&i)).collect();
+	let (exact, total) = budget(rest_games.len(), rests);
+	let base = standings(table);
+	let mut ins = vec![0u32; 1 << games.len()];
+	let mut out = Vec::new();
+	for k in 0..total {
+		// Counted, a rest is its own number; drawn, its bits come from a
+		// stream apart from the count's.
+		let mut bits = Bits::new(if exact { k } else { k ^ REST_STREAM }, exact);
+		let mut points = base;
+		for &i in &rest_games {
+			let p = pending[i];
+			points[if bits.next() { p.home } else { p.away }.index()] += 2;
+		}
+		// Every slate in Gray-code order, starting with every away side won:
+		// each step turns one game around.
+		for &i in &games {
+			points[pending[i].away.index()] += 2;
+		}
+		let mut slate = 0usize;
+		let (mut got, mut home) = (0u32, vec![0u32; games.len()]);
+		for step in 0..1usize << games.len() {
+			if step > 0 {
+				let j = usize::try_from(step.trailing_zeros()).unwrap_or(0);
+				let p = pending[games[j]];
+				slate ^= 1 << j;
+				let (winner, loser) = if slate >> j & 1 == 1 { (p.home, p.away) } else { (p.away, p.home) };
+				points[winner.index()] += 2;
+				points[loser.index()] -= 2;
+			}
+			if seed(&points, team).is_some() {
+				ins[slate] += 1;
+				got += 1;
+				for (j, h) in home.iter_mut().enumerate() {
+					*h += u32::from(slate >> j & 1 == 1);
+				}
+			}
+		}
+		out.push((got, home));
+	}
+	Some(Slates { games, ins, rests: out, exact })
+}
+
+/// Turns a rest's number into a stream unrelated to the count's samples.
+const REST_STREAM: u64 = 0xA076_1D64_78BD_642F;
+
+impl Slates {
+	/// The standard deviation of the share over the slates, with the game at
+	/// `hold` (an index into [`Table::pending`]) held to `home_won` when it
+	/// is one of them: each slate counted once.
+	#[must_use]
+	pub fn spread(&self, hold: Option<(usize, bool)>) -> f64 {
+		let fixed = hold.and_then(|(game, home_won)| Some((self.games.iter().position(|&g| g == game)?, home_won)));
+		let on = |slate: usize| fixed.is_none_or(|(j, home_won)| (slate >> j & 1 == 1) == home_won);
+		let m = to_f64(u64::try_from(self.rests.len()).unwrap_or(u64::MAX));
+		// The variance over the slates of the rests' mean.
+		let (mut s, mut sum, mut squares) = (0.0, 0.0, 0.0);
+		for (_, &x) in self.ins.iter().enumerate().filter(|(slate, _)| on(*slate)) {
+			let p = f64::from(x) / m;
+			s += 1.0;
+			sum += p;
+			squares += p * p;
+		}
+		let mean = sum / s;
+		let between = mean.mul_add(-mean, squares / s);
+		let variance = if self.exact || self.rests.len() < 2 {
+			between
+		} else {
+			// Take out each rest's own variance over the slates: what is left
+			// is the pairs of different rests, an unbiased estimate.
+			let own: f64 = self
+				.rests
+				.iter()
+				.map(|(got, home)| {
+					let x = f64::from(match fixed {
+						None => *got,
+						Some((j, true)) => home[j],
+						Some((j, false)) => got - home[j],
+					});
+					let p = x / s;
+					p * (1.0 - p)
+				})
+				.sum();
+			(m * m).mul_add(between, -own) / (m * (m - 1.0))
+		};
+		// A sampled estimate can dip just below zero.
+		variance.max(0.0).sqrt()
+	}
+}
+
+/// Can pending game `i` change `team`'s seed: does its conference play in it.
+fn counts(table: &Table, team: Team, i: usize) -> bool {
+	let p = table.pending()[i];
+	p.home.conference() == team.conference() || p.away.conference() == team.conference()
+}
+
+/// Every team's points at `table`, by [`Team::index`].
+fn standings(table: &Table) -> [u16; 32] {
+	let mut points = [0u16; 32];
+	for t in Team::ALL {
+		points[t.index()] = table.points(t);
+	}
+	points
+}
+
+/// Whether `games` games' every outcome fits in `cap` ways (then all are
+/// counted), and how many ways that is.
+fn budget(games: usize, cap: u32) -> (bool, u64) {
+	let exact = u32::try_from(games).is_ok_and(|n| n < 32 && 1u64 << n <= u64::from(cap.max(1)));
+	(exact, if exact { 1u64 << games } else { u64::from(cap.max(1)) })
 }
 
 /// [`Tally::share`] alone, without the per-game shares.

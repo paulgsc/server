@@ -14,7 +14,10 @@ and run it on its own.
 for w in $(seq 1 18); do
   curl -sf "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=2026&seasontype=2&week=$w&limit=40" \
     -o "espn/2026/week-$(printf %02d "$w").json"
-done   # and the same for 2025
-cargo run -q --release -p playoff_delta_job -- \
-  --season 2026 --team SF --rivals DAL,SEA --scoreboards espn/2026 --previous espn/2025 > SF.json
+done
+cargo run -q --release -p playoff_delta_job -- --season 2026 --team SF --scoreboards espn/2026 > SF.json
 ```
+
+`--rivals` and `--previous` are still accepted, and ignored: contract v3
+dropped the rivals and the benchmark they fed, and paulgsc/testing's
+`playoff-delta.yml` still passes them. Delete them once that workflow stops.

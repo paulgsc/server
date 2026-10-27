@@ -135,12 +135,6 @@ impl Team {
 		self.division().conference()
 	}
 
-	/// The other three teams in this team's division.
-	pub fn division_rivals(self) -> impl Iterator<Item = Self> {
-		let division = self.division();
-		Self::ALL.into_iter().filter(move |t| *t != self && t.division() == division)
-	}
-
 	/// The sixteen teams of a conference, in division order.
 	pub fn of_conference(conference: Conference) -> impl Iterator<Item = Self> {
 		Self::ALL.into_iter().filter(move |t| t.conference() == conference)
@@ -167,6 +161,5 @@ mod tests {
 			assert_eq!(Team::from_code(t.code()), Some(t));
 		}
 		assert_eq!(Team::of_conference(Conference::Nfc).count(), 16);
-		assert_eq!(Team::Sf.division_rivals().collect::<Vec<_>>(), [Team::Lar, Team::Sea, Team::Ari]);
 	}
 }
