@@ -9,8 +9,10 @@
 //!
 //! **The one way audio reaches home** (docs/identity.md invariant 23):
 //! [`put_note`] is the only caller of `voice_repo::put_note`, and nothing
-//! writes `voice_note` or `voice_note_audio` in the background. Neither the
-//! audio nor its hash reaches a log line: the span skips every argument.
+//! writes `voice_note`, `voice_note_audio` or `game_bite` in the background.
+//! Neither the audio, nor its hash, nor a bite's strip or context line
+//! reaches a log line: the span skips every argument, and a refusal names
+//! fields with fixed words, never what was said.
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
@@ -38,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
-use voice_repo::{Note, Said, VoiceError, REWRITTEN};
+use voice_repo::{Note, Said, SaidBite, VoiceError, REWRITTEN};
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
 #[derive(Debug, Deserialize)]
@@ -47,6 +49,18 @@ pub struct NoteQuery {
 	#[serde(rename = "ref")]
 	of_ref: Option<String>,
 	at: Option<String>,
+	/// A game bite's own fields, as `voice_repo::SaidBite` lists them: for
+	/// `of=game` only.
+	scenario: Option<String>,
+	how: Option<String>,
+	seq: Option<String>,
+	strip: Option<String>,
+	context: Option<String>,
+	watching: Option<String>,
+	started: Option<String>,
+	offset: Option<String>,
+	mode: Option<String>,
+	catalog: Option<String>,
 }
 
 /// `PUT /voice-notes/:id`
@@ -75,12 +89,17 @@ fn refusal(err: VoiceError) -> FileHostError {
 /// `PUT /voice-notes/:id?of=&ref=&at=`, the request body being the audio
 /// itself and its `Content-Type` its container.
 ///
+/// A game bite (`of=game`, `ref` the game's id) also says its bite's fields
+/// (`voice_repo::SaidBite`), stored beside the note in the same transaction.
+///
 /// `BEGIN IMMEDIATE`, so the phone's choice, the read that decides and both
 /// writes see one snapshot.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field (`id`, `of`, `ref`, `at`, `contentType`, `body`), 409 for
+/// refused field (`id`, `of`, `ref`, `at`, `contentType`, `body`, and a
+/// bite's fields: missing or wrong for a game note, said at all for any
+/// other), 409 for
 /// another note under a held id or from a paired phone that stopped sending
 /// voice notes home (`handlers::sharing::refusing`), 413 for a body past the
 /// server's limit, and 500 for a storage failure.
@@ -99,6 +118,18 @@ pub async fn put_note(
 		of_ref: query.of_ref.as_deref(),
 		at: query.at.as_deref(),
 		content_type: headers.get(CONTENT_TYPE).and_then(|value| value.to_str().ok()),
+		bite: SaidBite {
+			scenario: query.scenario.as_deref(),
+			how: query.how.as_deref(),
+			seq: query.seq.as_deref(),
+			strip: query.strip.as_deref(),
+			context: query.context.as_deref(),
+			watching: query.watching.as_deref(),
+			started: query.started.as_deref(),
+			offset: query.offset.as_deref(),
+			mode: query.mode.as_deref(),
+			catalog: query.catalog.as_deref(),
+		},
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
@@ -356,5 +387,29 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(held, ["n1", "n2", "n3", "n4"], "nothing refused was written, and what home took before the stop stays");
+	}
+
+	/// A game bite's fields reach the repo from the query, percent-encoding
+	/// undone, and come back as the answer's `bite`. Replays and refusals are
+	/// `voice_repo`'s tests.
+	#[tokio::test]
+	async fn a_game_bite_reaches_home_with_its_metadata() {
+		const BITE: &str = "/voice-notes/b1?of=game&ref=401772981&at=2026-10-26T20:41:09Z&scenario=in.third-long&how=offered&seq=12\
+			&strip=KC%2017%20%E2%80%93%20BUF%2014%20%C2%B7%20Q3%204%3A12&context=Mahomes%209%2F14&watching=1\
+			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=1";
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+
+		let (status, answer) = put(&app, BITE, Some(&phone), "audio/mp4", TAKE).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+		assert_eq!(
+			answer["note"]["bite"],
+			json!({
+				"scenario": "in.third-long", "how": "offered", "seq": 12, "strip": "KC 17 – BUF 14 · Q3 4:12",
+				"context": "Mahomes 9/14", "watching": true, "started": "2026-10-26T20:41:07.250Z", "offset": -1350,
+				"mode": "standard", "catalog": 1
+			})
+		);
 	}
 }

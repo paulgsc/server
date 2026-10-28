@@ -121,7 +121,7 @@ mod tests {
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
 	use voice_repo::transcript::Outcome;
-	use voice_repo::{describe, put_note, Said};
+	use voice_repo::{describe, put_note, Said, SaidBite};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const A: &str = "subject-a";
@@ -200,6 +200,7 @@ mod tests {
 			of_ref: Some("session-7f2a"),
 			at: Some("2026-10-25T03:10:00Z"),
 			content_type: Some("audio/webm"),
+			bite: SaidBite::default(),
 		};
 		let mut tx = pool.begin().await.unwrap();
 		put_note(&mut tx, subject, &describe(id, said, audio).unwrap(), audio, stored_at).await.unwrap();

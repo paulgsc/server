@@ -502,7 +502,10 @@ pub struct Heard {
 /// `subject`'s transcripts that heard something and are not filed yet.
 ///
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
-/// not heard, is never one: the routine reads that from the absence.
+/// not heard, is never one: the routine reads that from the absence. A game
+/// bite is never one either: bites leave home only inside the weekly bundle
+/// (paulgsc/some-ui#2074, GWB8), and the mailbox's `transcript` folder
+/// refuses `of: game`.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -516,6 +519,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
+		     AND note.of_kind <> 'game'
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -960,6 +964,26 @@ mod tests {
 		assert_eq!((all[0].text.as_str(), all[0].language.as_str(), all[0].of_kind.as_str()), ("하나", "ko", "jobs"));
 		file_next(&pool, A, "n1", "small").await.unwrap();
 		assert_eq!(unfiled(&pool, A).await, [(String::from("n2"), String::from("small"))], "a filed one waits no more");
+	}
+
+	#[tokio::test]
+	async fn a_game_bite_is_never_filed_on_its_own() {
+		let pool = pool().await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'bite', 'game', '401772001', '2026-10-25T20:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		heard(&pool, A, ("bite", "small", 1), "heard", Some("third and long"), "2026-10-25T20:01:00.000Z").await;
+		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-10-25T20:02:00.000Z").await;
+		assert_eq!(
+			unfiled(&pool, A).await,
+			[(String::from("n1"), String::from("small"))],
+			"bites leave home only in the weekly bundle"
+		);
 	}
 
 	#[tokio::test]
