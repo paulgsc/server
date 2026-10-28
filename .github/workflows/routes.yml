@@ -131,9 +131,9 @@ jobs:
 
       # What `client` runs some-ui's checks against: this PR's file_host, the
       # database the snapshot was built with (migrated by sqlx-cli above), and
-      # the two sessions some-ui keeps a copy of. Stripped: the debug binary
-      # is mostly debug info, about 370 MB against 60.
-      - name: Build file_host and dump the sessions some-ui copies
+      # the two sessions and the game scenario set some-ui keeps a copy of.
+      # Stripped: the debug binary is mostly debug info, about 370 MB against 60.
+      - name: Build file_host and dump what some-ui copies
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
@@ -142,6 +142,7 @@ jobs:
           strip -o contract-run/file_host target/debug/file_host
           cargo run -q --bin dump-provisioned-session > contract-run/provisioned-session.json
           cargo run -q --bin dump-proposed-session > contract-run/proposed-session.json
+          cargo run -q --bin dump-game-scenarios > contract-run/game-scenarios.json
           python3 - routes.db contract-run/file_host.db <<'EOF'
           import sqlite3, sys
           source, copy = sqlite3.connect(sys.argv[1]), sqlite3.connect(sys.argv[2])
@@ -290,7 +291,7 @@ jobs:
           mkdir -p dumps
           (cd some-ui && pnpm -s dump:activity-catalog) > dumps/activity-catalog.json
           (cd some-ui && pnpm -s dump:session-duration-policy) > dumps/session-duration-policy.json
-          cp contract-run/provisioned-session.json contract-run/proposed-session.json dumps/
+          cp contract-run/provisioned-session.json contract-run/proposed-session.json contract-run/game-scenarios.json dumps/
           python3 server/scripts/check_client_fixtures.py --self-test
           python3 server/scripts/check_client_fixtures.py --some-ui some-ui --dumps dumps
 

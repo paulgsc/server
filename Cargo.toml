@@ -36,6 +36,7 @@ members = [
   "crates/leetype_runner",
   "crates/mailbox_kit",
   "crates/fcm_kit",
+  "crates/game_scenarios",
   "crates/playoff_delta",
   "crates/push_kit",
   "crates/study_domain",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The fixtures this server and paulgsc/some-ui keep of each other agree.
 
-Four JSON files cross the seam, two in each direction. Each side checks its
+Five JSON files cross the seam, two from some-ui and three from here. Each side checks its
 own code against the copy it holds of the other side's output, so a copy that
 falls behind keeps every test green while proving nothing (#490). This
 compares each copy with a fresh dump of what it copies:
@@ -13,6 +13,7 @@ compares each copy with a fresh dump of what it copies:
     some-ui (found by file name)              here (`cargo run --bin ...`)
       provisioned-session.snapshot.json      <- dump-provisioned-session
       proposed-session.snapshot.json         <- dump-proposed-session
+      game-scenarios.snapshot.json           <- dump-game-scenarios
 
 `.github/workflows/routes.yml` runs the dumps and passes their outputs in
 (`--dumps`), with some-ui's `main` checked out (`--some-ui`). some-ui's copies
@@ -64,6 +65,9 @@ PAIRS = (
 	Pair("session duration policy", "some-ui's", "session-duration-policy.json", copy_here=TESTDATA / "session_duration_policy.snapshot.json"),
 	Pair("provisioned session", "the server's", "provisioned-session.json", copy_in_some_ui="provisioned-session.snapshot.json"),
 	Pair("proposed session", "the server's", "proposed-session.json", copy_in_some_ui="proposed-session.snapshot.json"),
+	# The game-week scenario set (crates/game_scenarios): the engine and the
+	# phone's recorder must agree on every id and the version.
+	Pair("game scenarios", "the server's", "game-scenarios.json", copy_in_some_ui="game-scenarios.snapshot.json"),
 )
 
 # Regenerating the catalog fixture makes tests/catalog_parity.rs fail until the
@@ -189,7 +193,7 @@ def self_test() -> None:
 def main() -> int:
 	parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 	parser.add_argument("--some-ui", type=Path, help="a checkout of paulgsc/some-ui")
-	parser.add_argument("--dumps", type=Path, help="the directory holding the four dumps")
+	parser.add_argument("--dumps", type=Path, help="the directory holding the dumps")
 	parser.add_argument("--self-test", action="store_true")
 	args = parser.parse_args()
 	if args.self_test:

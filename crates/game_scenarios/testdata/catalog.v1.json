@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "pre.weather",
+      "phase": "pre",
+      "name": "Weather",
+      "covers": "What the forecast does to the game plan.",
+      "outcomes": [
+        "rain",
+        "snow",
+        "wind",
+        "clear"
+      ],
+      "moment": "pregame"
+    },
+    {
+      "id": "pre.injury-report",
+      "phase": "pre",
+      "name": "Injury report",
+      "covers": "Who is out or limited, and what that changes.",
+      "outcomes": [
+        "key-player-out",
+        "questionable",
+        "all-clear"
+      ],
+      "moment": "pregame"
+    },
+    {
+      "id": "pre.venue",
+      "phase": "pre",
+      "name": "Home or road",
+      "covers": "Where it is played.",
+      "outcomes": [
+        "home",
+        "road",
+        "neutral"
+      ],
+      "moment": "pregame"
+    },
+    {
+      "id": "pre.coin-toss",
+      "phase": "pre",
+      "name": "Coin toss",
+      "covers": "Who got the ball first, and the choice made.",
+      "outcomes": [
+        "won-received",
+        "won-deferred",
+        "lost-received",
+        "lost-deferred"
+      ],
+      "moment": "kickoff"
+    },
+    {
+      "id": "pre.stakes",
+      "phase": "pre",
+      "name": "What it means for the paths",
+      "covers": "Playoff Delta before kickoff: which paths this game keeps open.",
+      "outcomes": [
+        "must-win",
+        "can-afford-it"
+      ],
+      "moment": "pregame"
+    },
+    {
+      "id": "in.first-drive",
+      "phase": "in",
+      "name": "Opening drive",
+      "covers": "The first possession, and whether it ended in points.",
+      "outcomes": [
+        "scored",
+        "stalled"
+      ],
+      "moment": "opening-drive"
+    },
+    {
+      "id": "in.fell-behind",
+      "phase": "in",
+      "name": "Fell behind",
+      "covers": "The score swung against us.",
+      "outcomes": [
+        "fell-behind",
+        "took-the-lead-back"
+      ],
+      "moment": "lead-change"
+    },
+    {
+      "id": "in.third-long",
+      "phase": "in",
+      "name": "Third and long",
+      "covers": "Third down with 7 or more to go.",
+      "outcomes": [
+        "converted",
+        "stopped"
+      ],
+      "moment": "third-and-long"
+    },
+    {
+      "id": "in.fourth-down",
+      "phase": "in",
+      "name": "Fourth down",
+      "covers": "The call on fourth down, and how it went.",
+      "outcomes": [
+        "went-for-it",
+        "field-goal",
+        "punted"
+      ],
+      "moment": "fourth-down"
+    },
+    {
+      "id": "in.two-point",
+      "phase": "in",
+      "name": "Two or one",
+      "covers": "After a touchdown: try for two, or kick.",
+      "outcomes": [
+        "went-for-two",
+        "kicked"
+      ],
+      "moment": "try"
+    },
+    {
+      "id": "in.play-call",
+      "phase": "in",
+      "name": "Run or throw",
+      "covers": "The play call in a moment that called for one.",
+      "outcomes": [
+        "ran",
+        "threw-short",
+        "threw-deep"
+      ],
+      "moment": "snap"
+    },
+    {
+      "id": "in.red-zone",
+      "phase": "in",
+      "name": "Red zone",
+      "covers": "A trip inside the 20.",
+      "outcomes": [
+        "touchdown",
+        "field-goal",
+        "empty"
+      ],
+      "moment": "red-zone"
+    },
+    {
+      "id": "in.two-minute",
+      "phase": "in",
+      "name": "Two-minute drill",
+      "covers": "The end of a half, against the clock.",
+      "outcomes": [
+        "scored",
+        "ran-out-of-time"
+      ],
+      "moment": "two-minute"
+    },
+    {
+      "id": "in.turnover",
+      "phase": "in",
+      "name": "Turnover",
+      "covers": "The ball changed hands.",
+      "outcomes": [
+        "interception",
+        "fumble",
+        "on-downs"
+      ],
+      "moment": "turnover"
+    },
+    {
+      "id": "in.penalty",
+      "phase": "in",
+      "name": "Penalty",
+      "covers": "A flag, or one that should have been.",
+      "outcomes": [
+        "for-us-called",
+        "for-us-missed",
+        "against-us-called",
+        "against-us-missed"
+      ],
+      "moment": "penalty"
+    },
+    {
+      "id": "in.sack",
+      "phase": "in",
+      "name": "Sack",
+      "covers": "The quarterback brought down behind the line.",
+      "outcomes": [
+        "took-one",
+        "got-one"
+      ],
+      "moment": "sack"
+    },
+    {
+      "id": "in.big-play",
+      "phase": "in",
+      "name": "Big play",
+      "covers": "A gain of 20 yards or more.",
+      "outcomes": [
+        "for-us",
+        "against-us"
+      ],
+      "moment": "big-play"
+    },
+    {
+      "id": "in.kick",
+      "phase": "in",
+      "name": "Kick",
+      "covers": "A field goal or extra point.",
+      "outcomes": [
+        "made",
+        "missed",
+        "blocked"
+      ],
+      "moment": "kick"
+    },
+    {
+      "id": "in.injury",
+      "phase": "in",
+      "name": "Injury",
+      "covers": "Someone went down during the game.",
+      "outcomes": [
+        "out",
+        "came-back"
+      ],
+      "moment": "injury"
+    },
+    {
+      "id": "post.result",
+      "phase": "post",
+      "name": "The result",
+      "covers": "The final.",
+      "outcomes": [
+        "won",
+        "lost",
+        "tied"
+      ],
+      "moment": "final"
+    },
+    {
+      "id": "post.paths",
+      "phase": "post",
+      "name": "What it did to the paths",
+      "covers": "Playoff Delta after the final: what the result opened or closed.",
+      "outcomes": [
+        "paths-kept",
+        "paths-lost"
+      ],
+      "moment": "final"
+    },
+    {
+      "id": "post.pattern",
+      "phase": "post",
+      "name": "Same story again",
+      "covers": "Whether the game repeated something seen before.",
+      "outcomes": [
+        "fits-the-pattern",
+        "breaks-it"
+      ],
+      "moment": "final"
+    },
+    {
+      "id": "you.caught-it",
+      "phase": "you",
+      "name": "Watched, and it went our way",
+      "covers": "You were there for it.",
+      "outcomes": [
+        "result",
+        "stretch"
+      ],
+      "moment": "watching"
+    },
+    {
+      "id": "you.sat-through",
+      "phase": "you",
+      "name": "Watched, and it went against us",
+      "covers": "You saw all of it.",
+      "outcomes": [
+        "result",
+        "stretch"
+      ],
+      "moment": "watching"
+    },
+    {
+      "id": "you.missed-it",
+      "phase": "you",
+      "name": "Didn't watch, and missed it going our way",
+      "covers": "It went our way, maybe by a lot, and you braced yourself for nothing.",
+      "outcomes": [
+        "result",
+        "stretch"
+      ],
+      "moment": "watching"
+    },
+    {
+      "id": "you.dodged-it",
+      "phase": "you",
+      "name": "Didn't watch, and dodged it going against us",
+      "covers": "Not watching spared you.",
+      "outcomes": [
+        "result",
+        "stretch"
+      ],
+      "moment": "watching"
+    },
+    {
+      "id": "you.tuned-in-late",
+      "phase": "you",
+      "name": "Tuned in late",
+      "covers": "You came in when it looked lost, and caught the best stretch instead.",
+      "outcomes": [
+        "result",
+        "stretch"
+      ],
+      "moment": "watching"
+    }
+  ]
+}
