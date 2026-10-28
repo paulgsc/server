@@ -770,7 +770,13 @@ nowhere is marked as such and belongs to review.
     note's `ref`, held there only) and written in the same transaction as
     the note and its audio: in short, the scenario and how it came to be
     said, the offer, the live strip and context line the screen showed, and
-    when and how it was said; `voice_repo::SaidBite` lists every field. Only
+    when and how it was said; `voice_repo::SaidBite` lists every field. A
+    bite names its scenario unless it was said first: on the phone, "Say it
+    first" is talk, then pick what it was about from what could be happening
+    then, or leave it for later, which home maps (paulgsc/some-ui#2080,
+    GWB6), so a bite said first names the scenario picked after it, or none
+    while it is left for later, and its `how` still says it was said first
+    (`20261028000300_let_a_said_first_bite_keep_its_scenario`). Only
     a game note has a bite and every game note has one; a bite's fields on
     any other note are a `422`. A bite is never updated (its trigger aborts
     an `UPDATE`) or replaced (another bite under a held id is a `409`, as

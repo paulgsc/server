@@ -99,7 +99,8 @@ pub enum How {
 	Offered,
 	/// The owner said what just happened.
 	JustHappened,
-	/// Said before any scenario was chosen: the bite names none.
+	/// Said before any scenario was chosen: the bite names the scenario
+	/// picked after it, or none while it is left for later (home maps it).
 	SaidFirst,
 	/// Chosen from the whole set.
 	EveryScenario,
@@ -161,8 +162,8 @@ impl Mode {
 #[serde(rename_all = "camelCase")]
 pub struct Bite {
 	/// The scenario's id as the phone's copy of the set names it
-	/// (`in.third-long`); `None` exactly when the bite was said first. See
-	/// [`SaidBite::scenario`].
+	/// (`in.third-long`); `None` only for a bite said first and left for
+	/// later, not yet mapped. See [`SaidBite::scenario`].
 	pub scenario: Option<String>,
 	/// How the scenario came to be said.
 	pub how: How,
@@ -233,15 +234,20 @@ pub struct Said<'a> {
 /// the route and docs/identity.md point to it.
 ///
 /// `how`, `strip`, `watching`, `started`, `mode` and `catalog` are required;
-/// `scenario`, `seq`, `context` and `offset` are said when the bite has them.
+/// `scenario` is required unless the bite was said first; `seq`, `context`
+/// and `offset` are said when the bite has them.
 /// `strip` and `context` are the game situation the screen showed, not what
 /// was said, and travel in the request's URL (docs/identity.md invariant 23).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SaidBite<'a> {
 	/// The scenario's id as the phone's copy of the scenario set names it
-	/// (`in.third-long`), absent exactly when said first. Checked for shape
-	/// only, never against `game_scenarios`' set: a bite said under a newer
-	/// set than home's is still kept.
+	/// (`in.third-long`). Required unless `how` is `said-first`. A bite said
+	/// first (paulgsc/some-ui#2080's "Say it first": talk, then pick what it
+	/// was about, or leave it for later) names the scenario picked after it,
+	/// or none while it is left for later and not yet mapped; `how` still
+	/// says it was said first. Checked for shape only, never against
+	/// `game_scenarios`' set: a bite said under a newer set than home's is
+	/// still kept.
 	pub scenario: Option<&'a str>,
 	/// `offered`, `just-happened`, `said-first` or `every-scenario`.
 	pub how: Option<&'a str>,
@@ -339,11 +345,9 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if how.is_none() {
 		problems.push(("how", "not how a bite was said: offered, just-happened, said-first or every-scenario"));
 	}
+	// A bite said first may name the scenario picked after it, or none
+	// while it is left for later; every other bite names its scenario.
 	let scenario = match (how, said.scenario) {
-		(Some(How::SaidFirst), Some(_)) => {
-			problems.push(("scenario", "a bite said first names no scenario"));
-			None
-		}
 		(Some(How::SaidFirst) | None, None) => None,
 		(_, Some(scenario)) if is_name(scenario, MAX_SCENARIO_CHARS) => Some(scenario.to_owned()),
 		(_, Some(_)) => {
@@ -657,6 +661,8 @@ mod tests {
 	const PREVIOUS_MIGRATION: i64 = 20_261_023_000_200;
 	/// The migration before `game` was a note's kind.
 	const BEFORE_GAME: i64 = 20_261_026_000_300;
+	/// The migration before a bite said first could keep its scenario.
+	const BEFORE_SAID_FIRST_SCENARIO: i64 = 20_261_028_000_200;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
@@ -974,19 +980,27 @@ mod tests {
 		};
 		assert_eq!(fields(describe("b1", said_game(too_long), b"take").unwrap_err()), ["strip", "context"]);
 
-		let mut scenario_for_said_first = said_bite();
-		scenario_for_said_first.how = Some("said-first");
+		for how in ["offered", "just-happened", "every-scenario"] {
+			let no_scenario = SaidBite {
+				scenario: None,
+				how: Some(how),
+				..said_bite()
+			};
+			assert_eq!(
+				fields(describe("b1", said_game(no_scenario), b"take").unwrap_err()),
+				["scenario"],
+				"{how}: a bite not said first names its scenario"
+			);
+		}
+		let odd_pick = SaidBite {
+			scenario: Some("in third"),
+			how: Some("said-first"),
+			..said_bite()
+		};
 		assert_eq!(
-			fields(describe("b1", said_game(scenario_for_said_first), b"take").unwrap_err()),
+			fields(describe("b1", said_game(odd_pick), b"take").unwrap_err()),
 			["scenario"],
-			"a bite said first names no scenario"
-		);
-		let mut no_scenario = said_bite();
-		no_scenario.scenario = None;
-		assert_eq!(
-			fields(describe("b1", said_game(no_scenario), b"take").unwrap_err()),
-			["scenario"],
-			"any other bite names one"
+			"a scenario picked after saying it is checked for shape too"
 		);
 		for number in ["+1", "1.0", "1e3", " 1", "0x1", "99999999999999999999"] {
 			let mut odd = said_bite();
@@ -1114,6 +1128,78 @@ mod tests {
 		assert_eq!(rows(&pool, "game_bite").await, 2);
 	}
 
+	/// "Say it first" (paulgsc/some-ui#2080): the owner talks, then picks
+	/// what it was about or leaves it for later. Either way `how` stays
+	/// `said-first`, and a picked scenario is kept as said.
+	#[tokio::test]
+	async fn a_bite_said_first_keeps_the_scenario_picked_after_it() {
+		type Row = (Option<String>, String, Option<i64>, String, Option<String>, i64, String, Option<i64>, String, i64);
+		let pool = pool().await;
+		let picked = SaidBite {
+			how: Some("said-first"),
+			seq: None,
+			..said_bite()
+		};
+		let left = SaidBite { scenario: None, ..picked };
+		let picked_note = describe("b1", said_game(picked), b"take one").unwrap();
+		let left_note = describe("b2", said_game(left), b"take two").unwrap();
+		let held = picked_note.bite.as_ref().unwrap();
+		assert_eq!((held.scenario.as_deref(), held.how), (Some("in.third-long"), super::How::SaidFirst));
+		assert_eq!(left_note.bite.as_ref().unwrap().scenario, None, "left for later: not yet mapped");
+
+		assert_eq!(put(&pool, A, &picked_note, b"take one").await.unwrap(), Change::Added);
+		assert_eq!(put(&pool, A, &left_note, b"take two").await.unwrap(), Change::Added);
+		for (note, body) in [(&picked_note, &b"take one"[..]), (&left_note, &b"take two"[..])] {
+			assert_eq!(put(&pool, A, note, body).await.unwrap(), Change::Unchanged, "{}: a replay writes nothing", note.id);
+		}
+
+		let row = |id: &'static str| {
+			let pool = pool.clone();
+			async move {
+				sqlx::query_as::<_, Row>(
+					"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version
+					 FROM game_bite WHERE subject_id = ?1 AND note_id = ?2",
+				)
+				.bind(A)
+				.bind(id)
+				.fetch_one(&pool)
+				.await
+				.unwrap()
+			}
+		};
+		let expected = |scenario: Option<&str>| -> Row {
+			(
+				scenario.map(String::from),
+				String::from("said-first"),
+				None,
+				String::from("KC 17 – BUF 14 · Q3 4:12 · 3rd & 8 at BUF 41 ✓"),
+				Some(String::from("Mahomes 9/14 on third down")),
+				1,
+				String::from("2026-10-26T20:41:07.250Z"),
+				Some(-1350),
+				String::from("standard"),
+				1,
+			)
+		};
+		assert_eq!(row("b1").await, expected(Some("in.third-long")), "the picked scenario, byte for byte");
+		assert_eq!(row("b2").await, expected(None), "left for later");
+
+		// A bite is never rewritten: mapping one left for later is not a
+		// replay of it, and another pick is not either.
+		let mut mapped_later = left_note.clone();
+		if let Some(bite) = mapped_later.bite.as_mut() {
+			bite.scenario = Some(String::from("in.third-long"));
+		}
+		let mut picked_again = picked_note.clone();
+		if let Some(bite) = picked_again.bite.as_mut() {
+			bite.scenario = Some(String::from("in.red-zone"));
+		}
+		for (changed, body) in [(&mapped_later, &b"take two"[..]), (&picked_again, &b"take one"[..])] {
+			assert!(matches!(put(&pool, A, changed, body).await, Err(VoiceError::Rewritten)), "{}", changed.id);
+		}
+		assert_eq!(rows(&pool, "game_bite").await, 2);
+	}
+
 	#[tokio::test]
 	async fn a_bite_whose_write_fails_leaves_no_note() {
 		let pool = pool().await;
@@ -1136,14 +1222,113 @@ mod tests {
 	#[tokio::test]
 	async fn the_schema_refuses_a_bite_that_breaks_its_rules() {
 		let pool = pool().await;
-		for (bad, why) in [("NULL, 'offered'", "a scenario unless said first"), ("'in.x', 'said-first'", "no scenario when said first")] {
-			let insert = String::from(
-				"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, watching, mode, catalog_version, live_strip, started_at)
-				 VALUES ('s', 'b', ",
-			) + bad
-				+ ", 0, 'light', 1, '', 'then')";
-			assert!(sqlx::query(&insert).execute(&pool).await.is_err(), "{why}");
+		let insert =
+			|id: &str, scenario: &str, how: &str| {
+				String::from(
+					"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, watching, mode, catalog_version, live_strip, started_at)
+				 VALUES ('s', '",
+				) + id + "', "
+					+ scenario
+					+ ", '"
+					+ how + "', 0, 'light', 1, '', 'then')"
+			};
+		for how in ["offered", "just-happened", "every-scenario"] {
+			assert!(sqlx::query(&insert("b", "NULL", how)).execute(&pool).await.is_err(), "{how}: a scenario unless said first");
 		}
+		for (id, scenario, why) in [("picked", "'in.x'", "said first, then picked"), ("left", "NULL", "said first, left for later")] {
+			assert!(sqlx::query(&insert(id, scenario, "said-first")).execute(&pool).await.is_ok(), "{why}");
+		}
+	}
+
+	/// The rebuild that let a bite said first keep its scenario keeps every
+	/// bite held before it, still append-only and still leaving with the
+	/// account; going back refuses while a said-first bite holds a scenario.
+	#[tokio::test]
+	async fn the_rebuilt_bites_keep_what_was_held_before() {
+		type Row = (String, Option<String>, String, Option<i64>, String, Option<String>, i64, String, Option<i64>, String, i64);
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_SAID_FIRST_SCENARIO).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		for values in [
+			"(?1, 'old1', NULL, 'said-first', NULL, 'strip one', NULL, 0, 'then', NULL, 'light', 1)",
+			"(?1, 'old2', 'in.x', 'offered', 3, 'strip two', 'line', 1, 'later', -20, 'full', 2)",
+		] {
+			sqlx::query(
+				&(String::from(
+					"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching,
+					 started_at, clock_offset_ms, mode, catalog_version) VALUES ",
+				) + values),
+			)
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let held: Vec<Row> = sqlx::query_as(
+			"SELECT note_id, scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version
+			 FROM game_bite ORDER BY note_id",
+		)
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		assert_eq!(
+			held,
+			[
+				(
+					"old1".into(),
+					None,
+					"said-first".into(),
+					None,
+					"strip one".into(),
+					None,
+					0,
+					"then".into(),
+					None,
+					"light".into(),
+					1
+				),
+				(
+					"old2".into(),
+					Some("in.x".into()),
+					"offered".into(),
+					Some(3),
+					"strip two".into(),
+					Some("line".into()),
+					1,
+					"later".into(),
+					Some(-20),
+					"full".into(),
+					2
+				),
+			]
+		);
+		let refused = sqlx::query("UPDATE game_bite SET live_strip = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+
+		// Going back refuses rather than discards once a said-first bite
+		// holds the scenario picked after it.
+		let picked = SaidBite {
+			how: Some("said-first"),
+			..said_bite()
+		};
+		put(&pool, A, &describe("b1", said_game(picked), b"take").unwrap(), b"take").await.unwrap();
+		assert!(
+			MIGRATOR.undo(&pool, BEFORE_SAID_FIRST_SCENARIO).await.is_err(),
+			"a said-first bite with a scenario refuses the rollback"
+		);
+		let kept: Option<String> = sqlx::query_scalar("SELECT scenario_id FROM game_bite WHERE note_id = 'b1'").fetch_one(&pool).await.unwrap();
+		assert_eq!((rows(&pool, "game_bite").await, kept.as_deref()), (3, Some("in.third-long")), "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "game_bite").await, 0, "still leaves with the account");
 	}
 
 	/// The rebuild that widened `voice_note` for `game` keeps every note held
