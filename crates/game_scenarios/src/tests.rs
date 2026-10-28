@@ -82,6 +82,9 @@ fn the_set_matches_its_released_file() {
 		"the set differs from testdata/catalog.v{CATALOG_VERSION}.json. A released version never changes: bump CATALOG_VERSION and add the next file (see the README)"
 	);
 	for (version, old) in files.range(..CATALOG_VERSION) {
-		assert_ne!(*old, current, "v{version} and v{CATALOG_VERSION} are the same set: a version is only bumped for a change");
+		assert_ne!(
+			old["scenarios"], current["scenarios"],
+			"v{version} and v{CATALOG_VERSION} are the same set: a version is only bumped for a change"
+		);
 	}
 }
