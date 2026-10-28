@@ -29,6 +29,10 @@ pub struct Game {
 	/// `None` until the game is final.
 	pub score: Option<Score>,
 	pub collapse: Option<Collapse>,
+	/// When it kicks off, as any key that sorts the week's games in the
+	/// order they start (the ESPN adapter writes minutes since the Unix
+	/// epoch). `None` when the feed has no time; such games sort last.
+	pub kickoff: Option<u64>,
 }
 
 /// Who a final game went to.

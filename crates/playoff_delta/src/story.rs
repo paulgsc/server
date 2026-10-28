@@ -1,4 +1,4 @@
-//! The output, contract version 3.
+//! The output, contract version 4.
 //!
 //! `paulgsc/some-ui`'s `packages/ui/playoff-delta/src/lib/story.ts`, field
 //! for field. That zod schema is the contract; these types
@@ -103,7 +103,7 @@ pub struct StoryShare {
 }
 
 /// What next week can do to the share, before it is played.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Stake {
 	/// The team's opponent next week; `None` on its bye.
 	pub opponent: Option<Team>,
@@ -115,6 +115,124 @@ pub struct Stake {
 	pub spread: Share,
 	/// Every way was counted, not a sample.
 	pub exact: bool,
+	/// Next week's best way: its games with a side in the conference, in
+	/// kickoff order, each with its piece.
+	pub pieces: Vec<NextPiece>,
+}
+
+/// A game's place in the best way a week can go ([`crate::ways`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Piece {
+	/// The side the best way needs.
+	pub want: Team,
+	/// The best share any way reaches with the game won by `want`, minus the
+	/// best with it won by the other side.
+	pub price: Share,
+	/// Half the gap between the price read off two independent halves of the
+	/// rests; 0 when every rest was counted.
+	pub error: Share,
+}
+
+/// A game of next week, with its piece.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NextPiece {
+	pub home: Team,
+	pub away: Team,
+	#[serde(flatten)]
+	pub piece: Piece,
+}
+
+/// One of the week's games that could move the team, with its piece.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct WayGame {
+	pub home: Team,
+	pub away: Team,
+	pub kind: Kind,
+	pub winner: Team,
+	#[serde(flatten)]
+	pub piece: Piece,
+}
+
+/// The week's ways read with the team's own result held as it happened.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Given {
+	pub best: Share,
+	pub rank: Share,
+	/// Aligned with [`Ways::games`]; the own game's piece is its actual
+	/// winner, at no price.
+	pub pieces: Vec<Piece>,
+}
+
+/// Every way the week's results could have gone, each counted against the
+/// same rests of the season: one table, so every derivation adds up.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Ways {
+	/// The week's games with a side in the conference, in kickoff order.
+	pub games: Vec<WayGame>,
+	pub best: Share,
+	pub worst: Share,
+	pub actual: Share,
+	/// Of the week's ways, the share that would have left the team worse
+	/// than `actual`, ties counted half.
+	pub rank: Share,
+	/// `None` on a bye or a tied own game.
+	pub given: Option<Given>,
+	/// The best share still reachable before any result, then after each, in
+	/// kickoff order: the first is `best`, the last `actual`.
+	pub road: Vec<Share>,
+	/// The mean share of the ways still possible, at the same points.
+	pub mean: Vec<Share>,
+	/// At the same points, the ways still possible per bin of
+	/// [`crate::ways::BINS`] over `[worst, best]`.
+	pub strip: Vec<Vec<u32>>,
+	/// Every rest was counted, not a sample.
+	pub exact: bool,
+}
+
+/// A team's own result in a week.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Played {
+	Won,
+	Lost,
+	Tie,
+	Bye,
+}
+
+/// A medal's piece: whether the week gave the side its best way wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct MedalPiece {
+	pub home: Team,
+	pub away: Team,
+	pub want: Team,
+	pub price: Share,
+	pub made: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Medal {
+	pub team: Team,
+	/// 1 + the eligible teams with a strictly higher rank.
+	pub place: u8,
+	pub rank: Share,
+	pub best: Share,
+	pub worst: Share,
+	pub actual: Share,
+	pub game: Played,
+	/// Its dearest pieces, at most three, dearest first.
+	pub pieces: Vec<MedalPiece>,
+}
+
+/// Every team's actual week ranked among its own ways.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Podium {
+	/// Every eligible team placed 1 to 3, best first.
+	pub medals: Vec<Medal>,
+	/// The team's own place among the eligible; `None` when not eligible.
+	pub place: Option<u8>,
+	/// Teams whose week could move their share by at least
+	/// [`crate::evaluate::ELIGIBLE`].
+	pub eligible: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -152,6 +270,8 @@ pub struct StoryWeek {
 	/// Proven: every way the rest of the season can go gets the team in
 	/// (PD1). `false` is "not proven", not "can miss".
 	pub clinched: bool,
+	pub ways: Ways,
+	pub podium: Podium,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
