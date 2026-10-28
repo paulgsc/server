@@ -1,0 +1,26 @@
+[package]
+name = "game_scenarios"
+description = "The fixed set of NFL game-week scenarios a bite is said about, shared by the scenario engine and the phone's recorder"
+categories = ["data-structures"]
+keywords = ["nfl", "scenarios", "catalog"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "dump-game-scenarios"
+path = "src/bin/dump_game_scenarios.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

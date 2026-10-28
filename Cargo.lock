@@ -1725,6 +1725,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "game_scenarios"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "generator"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
