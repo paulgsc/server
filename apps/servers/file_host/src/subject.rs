@@ -51,6 +51,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("auth_session", "hashes of the account's sign-in sessions, and when they expire"),
 	("engagement_charge", "engagement model state"),
 	("engagement_gate", "the waker's due index"),
+	(
+		"game_bite",
+		"what each of the owner's game bites (a voice note said while watching a game) was said about and what the screen showed: the scenario and how it came to be said, the offer, the live strip and context line, the game, whether they were watching, when they started saying it, the phone's clock offset, the mode and the scenario set's version; see docs/identity.md invariant 23",
+	),
 	("intervention_log", "what the waker decided and when"),
 	(
 		"jobs_event",
@@ -109,7 +113,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"voice_note",
-		"the owner's voice notes sent home by the phone (paulgsc/server#460), each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
+		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
 	),
 	(
 		"voice_note_audio",

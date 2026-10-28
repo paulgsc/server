@@ -8,6 +8,11 @@
 //!                                      request's `Content-Type`
 //! ```
 //!
+//! A game bite is a note said for `game` (`ref` the game's id), whose
+//! query also carries the bite: `scenario`, `how`, `seq`, `strip`,
+//! `context`, `watching`, `started`, `offset`, `mode` and `catalog`
+//! (`voice_repo::SaidBite`), and whose answer's `note` carries it as `bite`.
+//!
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer

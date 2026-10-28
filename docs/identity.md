@@ -169,7 +169,7 @@ above the button that deletes (invariant 22):
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript` |
 | LeetType sessions | `leetype_session_event` |
 | Korean's word sets and reading records | `korean_entry` |
-| Voice notes | `voice_note`, `voice_note_audio`, `voice_transcript` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `game_bite` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -451,7 +451,12 @@ nowhere is marked as such and belongs to review.
     table created after account deletion shipped (#395) also carries a trigger
     `AFTER DELETE ON account` that deletes the subject's rows. `learner_shelf`
     is the first (#398). A new subject-scoped table adds its own trigger, in
-    the migration that creates it, and drops it first in the down migration.
+    the migration that creates it, and drops it first in the down migration
+    (`game_bite`'s is `game_bite_leaves_with_account`). A migration that
+    rebuilds a table (SQLite cannot alter a CHECK) drops that table's trigger
+    first and recreates it word for word once the rebuilt table holds its
+    name again, as `20261028000100_add_game_bite_to_voice_note` does for
+    `voice_note`.
     *Enforced by* `file_host::privacy`'s
     `every_table_newer_than_account_deletion_leaves_with_the_account`, which
     fails on a subject-scoped table outside the #395 list with no such
@@ -738,7 +743,9 @@ nowhere is marked as such and belongs to review.
     `subject::SUBJECT_SCOPED_TABLES` a kind, the unit the Account screen
     tells the person, so a table that deletion erases cannot go unsaid by being
     left off the list (#452: archived mailbox files went with an account
-    before the screen said so). A table is listed once.
+    before the screen said so). A table is listed once. `game_bite` is a
+    voice note's, so it is listed under voice notes, and that kind's words
+    name game bites (the Account screen's words follow, by review).
     *Enforced by* `file_host::privacy`'s
     `every_subject_scoped_table_is_named_in_what_deleting_erases`, which fails
     on a subject-scoped table the list omits, a name it lists that is not one,
@@ -750,11 +757,28 @@ nowhere is marked as such and belongs to review.
 
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
-    (paulgsc/server#460): what it was said for (`reflection`, `jobs` or
-    `scene`) and which one, when the phone recorded it and when it reached
+    (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
+    `scene` or `game`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
-    written in the same transaction. These two tables are the only place home
+    written in the same transaction. **A game bite is a voice note** (owner,
+    paulgsc/some-ui#2074, "Decided" 1, 2026-10-26: bites are voice notes;
+    paulgsc/some-ui#2079, GWB5): one said for `game`, its `ref` the game's id
+    (ESPN's event id, as the phone names it), whose audio is kept as every
+    note's is. What the bite was said about and what the screen showed is
+    `game_bite`'s row beside it, keyed as the note is and written in the same
+    transaction as the note and its audio: the scenario (none exactly when
+    it was said first), how it came to be said (`offered`, `just-happened`,
+    `said-first` or `every-scenario`), the offer the screen showed, the live
+    strip and context line as text, the game, whether the owner was
+    watching, when they started saying it on the phone's clock, home's clock
+    minus the phone's when known, the mode (`light`, `standard` or `full`)
+    and the scenario set's version. Only a game note has a bite and every
+    game note has one; a bite's fields on any other note are a `422`. A bite
+    is never updated (its trigger aborts an `UPDATE`) or replaced (another
+    bite under a held id is a `409`, as other bytes are), and leaves with the
+    account by both the sweep and its own trigger. Neither its strip nor its
+    context line reaches a log line. These two tables are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -797,7 +821,13 @@ nowhere is marked as such and belongs to review.
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
     `a_note_whose_audio_fails_leaves_no_description` and
-    `the_notes_leave_with_the_account`; `voice_repo::transcript`'s
+    `the_notes_leave_with_the_account`, and for bites
+    `a_bite_is_stored_once_with_every_field_and_never_replaced`,
+    `a_bite_whose_write_fails_leaves_no_note`,
+    `a_game_note_missing_or_misstating_its_bite_is_refused`,
+    `a_note_said_for_anything_else_carries_no_bite`,
+    `the_schema_refuses_a_bite_that_breaks_its_rules` and
+    `the_rebuilt_notes_keep_what_was_held_before`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
@@ -808,10 +838,11 @@ nowhere is marked as such and belongs to review.
     `nothing_is_kept_for_a_note_that_left_with_its_account` and
     `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s
     `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
-    `refusals_name_their_fields_and_notes_stay_apart` and
-    `home_refuses_a_note_once_its_phone_stopped_sending_them`.
+    `refusals_name_their_fields_and_notes_stay_apart`,
+    `home_refuses_a_note_once_its_phone_stopped_sending_them` and
+    `a_game_bite_is_kept_with_its_metadata_once`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript' -- '*.rs'` shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite' -- '*.rs'` shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.
@@ -925,7 +956,10 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   item's. Deleting the account removes it; nothing else does.
 - **Voice notes.** The audio of each note the phone sends home, kept for
   good, with what it was said for (a study session's reflection, a Jobs pick
-  or scout, a drama's next scene) and when it was recorded. A voice
+  or scout, a drama's next scene, a game being watched) and when it was
+  recorded. A game bite also keeps which game, what it was said about, what
+  the screen showed (the live score strip and a context line), whether the
+  owner was watching, and when they started saying it. A voice
   identifies its speaker, and what the owner says in a note is theirs: their
   study, the jobs they weigh, what they want next. What home heard in each
   (its transcript, every attempt, every model) is kept beside it for good

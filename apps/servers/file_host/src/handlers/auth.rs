@@ -1180,6 +1180,8 @@ mod tests {
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
 				 VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
 				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
+				"INSERT INTO game_bite (subject_id, note_id, how, live_strip, game_id, watching, started_at, mode, catalog_version)
+				 VALUES (?1, 'n', 'said-first', '', 'g', 1, 'then', 'light', 1)",
 				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
 				 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",

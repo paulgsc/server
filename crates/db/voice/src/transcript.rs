@@ -203,7 +203,7 @@ pub async fn keep_attempt(conn: &mut SqliteConnection, subject: &str, note_id: &
 #[cfg(test)]
 mod tests {
 	use super::{audio, keep_attempt, waiting, Attempt, Kept, Outcome, Waiting};
-	use crate::{describe, put_note, Said};
+	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -226,6 +226,7 @@ mod tests {
 			of_ref: Some("session-7f2a"),
 			at: Some("2026-10-25T03:10:00Z"),
 			content_type: Some("audio/webm"),
+			bite: SaidBite::default(),
 		};
 		let mut tx = pool.begin().await.unwrap();
 		put_note(&mut tx, subject, &describe(id, said, body).unwrap(), body, stored_at).await.unwrap();
