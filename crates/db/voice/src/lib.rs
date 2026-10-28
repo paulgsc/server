@@ -100,7 +100,7 @@ pub enum How {
 	/// The owner said what just happened.
 	JustHappened,
 	/// Said before any scenario was chosen: the bite names the scenario
-	/// picked after it, or none while it is left for later (home maps it).
+	/// picked after it, or none when it was left for later.
 	SaidFirst,
 	/// Chosen from the whole set.
 	EveryScenario,
@@ -163,7 +163,7 @@ impl Mode {
 pub struct Bite {
 	/// The scenario's id as the phone's copy of the set names it
 	/// (`in.third-long`); `None` only for a bite said first and left for
-	/// later, not yet mapped. See [`SaidBite::scenario`].
+	/// later. See [`SaidBite::scenario`].
 	pub scenario: Option<String>,
 	/// How the scenario came to be said.
 	pub how: How,
@@ -244,8 +244,10 @@ pub struct SaidBite<'a> {
 	/// (`in.third-long`). Required unless `how` is `said-first`. A bite said
 	/// first (paulgsc/some-ui#2080's "Say it first": talk, then pick what it
 	/// was about, or leave it for later) names the scenario picked after it,
-	/// or none while it is left for later and not yet mapped; `how` still
-	/// says it was said first. Checked for shape only, never against
+	/// or none when it was left for later; `how` still says it was said
+	/// first. A bite is never rewritten, so a scenario sent for a held bite
+	/// is refused: home's later mapping of one left for later (the
+	/// reconciler, GWB7) goes in its own table. Checked for shape only, never against
 	/// `game_scenarios`' set: a bite said under a newer set than home's is
 	/// still kept.
 	pub scenario: Option<&'a str>,
@@ -345,8 +347,6 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if how.is_none() {
 		problems.push(("how", "not how a bite was said: offered, just-happened, said-first or every-scenario"));
 	}
-	// A bite said first may name the scenario picked after it, or none
-	// while it is left for later; every other bite names its scenario.
 	let scenario = match (how, said.scenario) {
 		(Some(How::SaidFirst) | None, None) => None,
 		(_, Some(scenario)) if is_name(scenario, MAX_SCENARIO_CHARS) => Some(scenario.to_owned()),
@@ -1313,8 +1313,6 @@ mod tests {
 		let refused = sqlx::query("UPDATE game_bite SET live_strip = 'x'").execute(&pool).await;
 		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
 
-		// Going back refuses rather than discards once a said-first bite
-		// holds the scenario picked after it.
 		let picked = SaidBite {
 			how: Some("said-first"),
 			..said_bite()

@@ -1,11 +1,13 @@
 -- A bite said first may keep the scenario the owner picked after it
 -- (paulgsc/some-ui#2080, GWB6). On the phone, "Say it first" is: talk, then
 -- pick what it was about from what could be happening then, or leave it for
--- later (home maps it). `how` still records that it was said first (GW4:
+-- later. `how` still records that it was said first (GW4:
 -- every bite carries how it was chosen), so a said-first bite's
 -- `scenario_id` is the scenario picked after speaking, or NULL when it was
--- left for later and is not yet mapped. Every other `how` still names its
--- scenario.
+-- left for later (home's later mapping, GWB7, goes in its own table: a bite
+-- is never rewritten). Every other `how` still names its scenario. This
+-- supersedes the column comment in 20261028000100 ("NULL exactly when it was
+-- said first").
 --
 -- 20261028000100_add_game_bite_to_voice_note has shipped, so it is not
 -- edited: SQLite cannot alter a CHECK, so `game_bite` is rebuilt as that
