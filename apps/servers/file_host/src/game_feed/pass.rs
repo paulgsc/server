@@ -25,10 +25,11 @@ use std::{collections::BTreeMap, future::Future, time::Duration};
 /// (a delayed or postponed game).
 pub const PRE_GRACE: Span = Span::hours(4);
 
-/// How long after kickoff a `post` game that is not yet final is fetched.
+/// How long after kickoff a `post` game the scoreboard does not call
+/// completed is fetched.
 ///
-/// Its summary may lag the scoreboard, or the game was postponed (`post`,
-/// not completed) and is then left. Longer than any game runs.
+/// Such a game was postponed or cancelled; it is left after this, and
+/// followed again if the scoreboard says `pre` once more.
 pub const POST_GRACE: Span = Span::hours(8);
 
 /// What a fetch answered.
@@ -121,6 +122,8 @@ fn span(duration: Duration) -> Span {
 struct Track {
 	kickoff: Option<DateTime<Utc>>,
 	state: Option<GameState>,
+	/// The scoreboard says the game is final (`post` and completed).
+	completed: bool,
 	/// A summary saying the game is final is kept: nothing more to fetch.
 	done: bool,
 	target: Target,
@@ -132,7 +135,10 @@ impl Track {
 		match self.state {
 			_ if self.done => false,
 			Some(GameState::In) => true,
-			Some(GameState::Post) => self.kickoff.is_some_and(|kickoff| now - kickoff < POST_GRACE),
+			// A completed game is fetched until its final summary is kept,
+			// however late home first sees it; one not completed
+			// (postponed or cancelled) only for the grace.
+			Some(GameState::Post) => self.completed || self.kickoff.is_some_and(|kickoff| now - kickoff < POST_GRACE),
 			Some(GameState::Pre) | None => self.kickoff.is_some_and(|kickoff| kickoff <= now && now - kickoff < PRE_GRACE),
 		}
 	}
@@ -184,10 +190,12 @@ impl Schedule {
 			let track = self.games.entry(game.id.clone()).or_insert_with(|| Track {
 				kickoff: None,
 				state: None,
+				completed: false,
 				done: done.contains(&game.id),
 				target: Target::now(now),
 			});
 			track.kickoff = game.kickoff.or(track.kickoff);
+			track.completed = game.status.is_final();
 			// `pre` again after `post` is a postponed game rescheduled under
 			// the same event id: follow it again from its new kickoff.
 			track.state = if game.status.state == Some(GameState::Pre) && !track.done {
@@ -570,11 +578,28 @@ mod tests {
 		assert_eq!(schedule.followed(later_kickoff + Span::seconds(1)), 1);
 	}
 
+	#[tokio::test]
+	async fn a_completed_game_first_seen_long_after_is_still_fetched() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let mut page: serde_json::Value = serde_json::from_slice(BOARD).unwrap();
+		page["events"][0]["status"]["type"]["state"] = serde_json::json!("post");
+		page["events"][0]["status"]["type"]["completed"] = serde_json::json!(true);
+		let a_day_on = at(KICKOFF) + Span::days(1);
+		let mut schedule = Schedule::new(a_day_on);
+		fetch.answer(&board_url, 200, page.to_string().as_bytes());
+		fetch.answer(&nfl_feed::summary_url(GAME), 200, &final_of_game());
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, a_day_on).await.fetched, ["scoreboard", "summary"]);
+		assert_eq!(schedule.followed(a_day_on + Span::seconds(15)), 0);
+	}
+
 	#[test]
 	fn a_postponed_game_is_left_after_the_post_grace() {
 		let track = Track {
 			kickoff: Some(at(KICKOFF)),
 			state: Some(GameState::Post),
+			completed: false,
 			done: false,
 			target: Target::now(at(KICKOFF)),
 		};
@@ -587,6 +612,7 @@ mod tests {
 		let track = Track {
 			kickoff: Some(at(KICKOFF)),
 			state: Some(GameState::Pre),
+			completed: false,
 			done: false,
 			target: Target::now(at(KICKOFF)),
 		};
