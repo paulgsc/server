@@ -160,23 +160,25 @@ impl Mode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bite {
-	/// The scenario's id in the catalogue (`in.third-long`); `None` exactly
-	/// when the bite was said first.
+	/// The scenario's id as the phone's copy of the set names it
+	/// (`in.third-long`); `None` exactly when the bite was said first. See
+	/// [`SaidBite::scenario`].
 	pub scenario: Option<String>,
 	/// How the scenario came to be said.
 	pub how: How,
 	/// Which offer the screen was showing, when it showed one.
 	pub seq: Option<i64>,
-	/// The live strip as the screen showed it. Never logged.
+	/// The live strip as the screen showed it.
 	pub strip: String,
-	/// The line of context the screen showed, if any. Never logged.
+	/// The line of context the screen showed, if any.
 	pub context: Option<String>,
 	/// Whether the owner said they were watching the game.
 	pub watching: bool,
 	/// When the owner started saying it, on the phone's clock, as ISO-8601
 	/// UTC to the millisecond.
 	pub started: String,
-	/// Home's clock minus the phone's, in milliseconds, when known.
+	/// Home's clock minus the phone's, in milliseconds, when known. Not
+	/// compared on a replay: see [`SaidBite::offset`].
 	pub offset: Option<i64>,
 	/// How much the screen offered.
 	pub mode: Mode,
@@ -227,19 +229,43 @@ pub struct Said<'a> {
 }
 
 /// What the phone says about a game bite, before home checks it: the query's
-/// `scenario`, `how`, `seq`, `strip`, `context`, `watching`, `started`,
-/// `offset`, `mode` and `catalog`.
+/// bite fields, each named as here. This is the one full list; the handler,
+/// the route and docs/identity.md point to it.
+///
+/// `how`, `strip`, `watching`, `started`, `mode` and `catalog` are required;
+/// `scenario`, `seq`, `context` and `offset` are said when the bite has them.
+/// `strip` and `context` are the game situation the screen showed, not what
+/// was said, and travel in the request's URL (docs/identity.md invariant 23).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SaidBite<'a> {
+	/// The scenario's id as the phone's copy of the scenario set names it
+	/// (`in.third-long`), absent exactly when said first. Checked for shape
+	/// only, never against `game_scenarios`' set: a bite said under a newer
+	/// set than home's is still kept.
 	pub scenario: Option<&'a str>,
+	/// `offered`, `just-happened`, `said-first` or `every-scenario`.
 	pub how: Option<&'a str>,
+	/// Which offer the screen was showing, a whole number from 0.
 	pub seq: Option<&'a str>,
+	/// The live strip as the screen showed it, empty included.
 	pub strip: Option<&'a str>,
+	/// The line of context the screen showed; empty is the same as absent.
 	pub context: Option<&'a str>,
+	/// `1` (watching) or `0`.
 	pub watching: Option<&'a str>,
+	/// When the owner started saying it, on the phone's clock (RFC 3339).
 	pub started: Option<&'a str>,
+	/// Home's clock minus the phone's, in whole milliseconds, once known.
+	///
+	/// **Not part of a bite's identity.** A retry may learn the offset after
+	/// the first try (absent, then said) or learn a better one, and a bite
+	/// refused for that would be stranded on the phone. So a replay is
+	/// compared without it: the first stored value stays, and a replay that
+	/// differs only here is [`Change::Unchanged`].
 	pub offset: Option<&'a str>,
+	/// `light`, `standard` or `full`.
 	pub mode: Option<&'a str>,
+	/// The scenario set's version, a whole number from 1.
 	pub catalog: Option<&'a str>,
 }
 
@@ -293,7 +319,7 @@ fn is_name(text: &str, max: usize) -> bool {
 /// only, with a leading `-` when `signed`.
 fn whole(text: &str, signed: bool, max: i64) -> Option<i64> {
 	let digits = if signed { text.strip_prefix('-').unwrap_or(text) } else { text };
-	if digits.is_empty() || digits.len() > 18 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+	if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
 		return None;
 	}
 	let value: i64 = text.parse().ok()?;
@@ -340,11 +366,12 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if strip.is_none() {
 		problems.push(("strip", "not the live strip: at most 500 characters, no control characters"));
 	}
-	let context = match said.context {
+	// An empty context is no context: a bite is never refused for it.
+	let context = match said.context.filter(|context| !context.is_empty()) {
 		None => None,
-		Some(context) if !context.is_empty() && is_line(context) => Some(context.to_owned()),
+		Some(context) if is_line(context) => Some(context.to_owned()),
 		Some(_) => {
-			problems.push(("context", "not a context line: 1 to 500 characters, no control characters"));
+			problems.push(("context", "not a context line: at most 500 characters, no control characters"));
 			None
 		}
 	};
@@ -406,7 +433,7 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
-		problems.push(("of", "not what a note is said for: reflection, jobs or scene"));
+		problems.push(("of", "not what a note is said for: reflection, jobs, scene or game"));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
 	if of_ref.is_none() {
@@ -510,7 +537,8 @@ pub const REWRITTEN: &str = "this note id already holds a different note: voice 
 ///
 /// # Errors
 /// [`VoiceError::Rewritten`] when the note's id already holds other bytes or
-/// another description, [`VoiceError::Unreadable`] for a held description
+/// another description (a bite's offset aside: see [`SaidBite::offset`]),
+/// [`VoiceError::Unreadable`] for a held description
 /// that does not read back, and [`VoiceError::Storage`] for any `sqlx`
 /// failure. A refusal is decided before anything is written.
 pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, body: &[u8], now: &str) -> Result<Change, VoiceError> {
@@ -524,7 +552,13 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	if let Some(standing) = standing {
 		let of = Of::named(&standing.of_kind).ok_or(VoiceError::Unreadable)?;
 		let bite = if of == Of::Game {
-			Some(held_bite(conn, subject, &note.id, &standing.of_ref).await?)
+			let mut held = held_bite(conn, subject, &note.id).await?;
+			// The offset is no part of a bite's identity (`SaidBite::offset`):
+			// the stored one stays, and a replay is compared without it.
+			if let Some(said) = &note.bite {
+				held.offset = said.offset;
+			}
+			Some(held)
 		} else {
 			None
 		};
@@ -562,9 +596,9 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	if let Some(bite) = &note.bite {
 		let (how, mode, watching) = (bite.how.as_str(), bite.mode.as_str(), i64::from(bite.watching));
 		sqlx::query!(
-			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, game_id, watching,
+			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching,
 			                        started_at, clock_offset_ms, mode, catalog_version)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
 			subject,
 			note.id,
 			bite.scenario,
@@ -572,7 +606,6 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 			bite.seq,
 			bite.strip,
 			bite.context,
-			note.of_ref,
 			watching,
 			bite.started,
 			bite.offset,
@@ -585,17 +618,15 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	Ok(Change::Added)
 }
 
-/// The bite held beside `subject`'s game note `note_id`, whose `ref` is
-/// `game`.
+/// The bite held beside `subject`'s game note `note_id`.
 ///
 /// # Errors
 /// [`VoiceError::Unreadable`] when the note has no bite, or one that does not
 /// read back as this crate wrote it, and [`VoiceError::Storage`] for any
 /// `sqlx` failure.
-async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str, game: &str) -> Result<Bite, VoiceError> {
+async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Bite, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, game_id, watching, started_at, clock_offset_ms, mode,
-		          catalog_version
+		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version
 		   FROM game_bite WHERE subject_id = ?1 AND note_id = ?2"#,
 		subject,
 		note_id
@@ -603,9 +634,6 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str, ga
 	.fetch_optional(&mut *conn)
 	.await?
 	.ok_or(VoiceError::Unreadable)?;
-	if row.game_id != game {
-		return Err(VoiceError::Unreadable);
-	}
 	Ok(Bite {
 		scenario: row.scenario_id,
 		how: How::named(&row.how).ok_or(VoiceError::Unreadable)?,
@@ -622,7 +650,7 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str, ga
 
 #[cfg(test)]
 mod tests {
-	use super::{describe, put_note, Bite, Change, How, Mode, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
+	use super::{describe, put_note, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -730,7 +758,6 @@ mod tests {
 					"offer_seq",
 					"live_strip",
 					"context_line",
-					"game_id",
 					"watching",
 					"started_at",
 					"clock_offset_ms",
@@ -885,25 +912,13 @@ mod tests {
 		}
 	}
 
+	/// Every field of a whole bite is checked as stored, in
+	/// `a_bite_is_stored_once_with_every_field_and_never_replaced`; this is
+	/// the bite that leaves out all it may.
 	#[test]
 	fn a_bite_is_described_as_home_keeps_it() {
 		let held = game("b1", b"take");
 		assert_eq!((held.of, held.of_ref.as_str(), held.content_type), (Of::Game, "401772981", "audio/mp4"));
-		assert_eq!(
-			held.bite,
-			Some(Bite {
-				scenario: Some(String::from("in.third-long")),
-				how: How::Offered,
-				seq: Some(12),
-				strip: String::from("KC 17 – BUF 14 · Q3 4:12 · 3rd & 8 at BUF 41 ✓"),
-				context: Some(String::from("Mahomes 9/14 on third down")),
-				watching: true,
-				started: String::from("2026-10-26T20:41:07.250Z"),
-				offset: Some(-1350),
-				mode: Mode::Standard,
-				catalog: 1,
-			})
-		);
 		assert_eq!(note("n1", b"take").bite, None, "a note said for anything else has none");
 
 		let first = SaidBite {
@@ -923,6 +938,10 @@ mod tests {
 			"said first: no scenario, and every nullable field may be left out"
 		);
 		assert_eq!(said_first.strip, "", "an empty strip is what the screen showed");
+
+		let empty_context = SaidBite { context: Some(""), ..said_bite() };
+		let bite = describe("b3", said_game(empty_context), b"take").unwrap().bite.unwrap();
+		assert_eq!(bite.context, None, "an empty context is no context, never a refusal");
 	}
 
 	#[test]
@@ -935,7 +954,7 @@ mod tests {
 			how: Some("guessed"),
 			seq: Some("-1"),
 			strip: Some("line\nbreak"),
-			context: Some(""),
+			context: Some("tab\there"),
 			watching: Some("true"),
 			started: Some("at kickoff"),
 			offset: Some("86400001"),
@@ -997,14 +1016,14 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_bite_is_stored_once_with_every_field_and_never_replaced() {
-		type Row = (Option<String>, String, Option<i64>, String, Option<String>, String, i64, String, Option<i64>, String, i64);
+		type Row = (Option<String>, String, Option<i64>, String, Option<String>, i64, String, Option<i64>, String, i64);
 		let pool = pool().await;
 		let first = game("b1", b"take one");
 		assert_eq!(put(&pool, A, &first, b"take one").await.unwrap(), Change::Added);
 		assert_eq!(put(&pool, A, &first, b"take one").await.unwrap(), Change::Unchanged, "the same bite writes nothing");
 
 		let row: Row = sqlx::query_as(
-			"SELECT scenario_id, how, offer_seq, live_strip, context_line, game_id, watching, started_at, clock_offset_ms, mode, catalog_version
+			"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version
 			 FROM game_bite WHERE subject_id = ?1 AND note_id = 'b1'",
 		)
 		.bind(A)
@@ -1019,7 +1038,6 @@ mod tests {
 				Some(12),
 				String::from("KC 17 – BUF 14 · Q3 4:12 · 3rd & 8 at BUF 41 ✓"),
 				Some(String::from("Mahomes 9/14 on third down")),
-				String::from("401772981"),
 				1,
 				String::from("2026-10-26T20:41:07.250Z"),
 				Some(-1350),
@@ -1035,13 +1053,9 @@ mod tests {
 		if let Some(bite) = other_strip.bite.as_mut() {
 			bite.strip.push('!');
 		}
-		let mut no_offset = first.clone();
-		if let Some(bite) = no_offset.bite.as_mut() {
-			bite.offset = None;
-		}
 		let mut other_game = first.clone();
 		other_game.of_ref = String::from("401772982");
-		for (changed, what) in [(other_strip, "another strip"), (no_offset, "an offset left out"), (other_game, "another game")] {
+		for (changed, what) in [(other_strip, "another strip"), (other_game, "another game")] {
 			assert!(matches!(put(&pool, A, &changed, b"take one").await, Err(VoiceError::Rewritten)), "{what} under a held id");
 		}
 		assert!(
@@ -1065,14 +1079,49 @@ mod tests {
 		assert!(refused.unwrap_err().to_string().contains("append-only"), "no bite is ever updated");
 	}
 
+	/// A retry whose clock offset became known, or changed, is the same bite:
+	/// the first stored offset stays, and nothing is refused or stranded.
+	#[tokio::test]
+	async fn a_bite_replayed_with_another_offset_is_unchanged() {
+		let pool = pool().await;
+		let offset_of = |id: &'static str| {
+			let pool = pool.clone();
+			async move {
+				sqlx::query_scalar::<_, Option<i64>>("SELECT clock_offset_ms FROM game_bite WHERE note_id = ?1")
+					.bind(id)
+					.fetch_one(&pool)
+					.await
+					.unwrap()
+			}
+		};
+		let with_offset = |id: &str, offset: Option<&'static str>| {
+			let mut bite = said_bite();
+			bite.offset = offset;
+			describe(id, said_game(bite), b"take").unwrap()
+		};
+
+		assert_eq!(put(&pool, A, &with_offset("b1", None), b"take").await.unwrap(), Change::Added);
+		for later in [Some("-1350"), Some("20"), None] {
+			assert_eq!(put(&pool, A, &with_offset("b1", later), b"take").await.unwrap(), Change::Unchanged, "{later:?}");
+		}
+		assert_eq!(offset_of("b1").await, None, "the first stored offset stays: unknown");
+
+		assert_eq!(put(&pool, A, &with_offset("b2", Some("-1350")), b"take").await.unwrap(), Change::Added);
+		for later in [Some("20"), None] {
+			assert_eq!(put(&pool, A, &with_offset("b2", later), b"take").await.unwrap(), Change::Unchanged, "{later:?}");
+		}
+		assert_eq!(offset_of("b2").await, Some(-1350), "the first stored offset stays");
+		assert_eq!(rows(&pool, "game_bite").await, 2);
+	}
+
 	#[tokio::test]
 	async fn a_bite_whose_write_fails_leaves_no_note() {
 		let pool = pool().await;
 		// A bite already held under the id with no note: its insert fails, and
 		// the transaction keeps neither the note nor its audio.
 		sqlx::query(
-			"INSERT INTO game_bite (subject_id, note_id, how, live_strip, game_id, watching, started_at, mode, catalog_version)
-			 VALUES (?1, 'b1', 'said-first', '', 'g', 0, 'then', 'light', 1)",
+			"INSERT INTO game_bite (subject_id, note_id, how, live_strip, watching, started_at, mode, catalog_version)
+			 VALUES (?1, 'b1', 'said-first', '', 0, 'then', 'light', 1)",
 		)
 		.bind(A)
 		.execute(&pool)
@@ -1082,22 +1131,17 @@ mod tests {
 		assert_eq!((rows(&pool, "voice_note").await, rows(&pool, "voice_note_audio").await), (0, 0));
 	}
 
+	/// The rule between two columns, which the schema holds on its own; each
+	/// column's own values are `describe`'s, tested above.
 	#[tokio::test]
 	async fn the_schema_refuses_a_bite_that_breaks_its_rules() {
 		let pool = pool().await;
-		for (bad, why) in [
-			("NULL, 'offered', 0, 'light', 1", "a scenario unless said first"),
-			("'in.x', 'said-first', 0, 'light', 1", "no scenario when said first"),
-			("'in.x', 'guessed', 0, 'light', 1", "how"),
-			("'in.x', 'offered', 2, 'light', 1", "watching"),
-			("'in.x', 'offered', 0, 'loud', 1", "mode"),
-			("'in.x', 'offered', 0, 'light', 0", "catalog"),
-		] {
+		for (bad, why) in [("NULL, 'offered'", "a scenario unless said first"), ("'in.x', 'said-first'", "no scenario when said first")] {
 			let insert = String::from(
-				"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, watching, mode, catalog_version, live_strip, game_id, started_at)
+				"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, watching, mode, catalog_version, live_strip, started_at)
 				 VALUES ('s', 'b', ",
 			) + bad
-				+ ", '', 'g', 'then')";
+				+ ", 0, 'light', 1, '', 'then')";
 			assert!(sqlx::query(&insert).execute(&pool).await.is_err(), "{why}");
 		}
 	}

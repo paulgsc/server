@@ -49,9 +49,8 @@ pub struct NoteQuery {
 	#[serde(rename = "ref")]
 	of_ref: Option<String>,
 	at: Option<String>,
-	/// A game bite's own fields (`voice_repo::SaidBite`): required (but
-	/// `scenario`, `seq`, `context` and `offset`) when `of=game`, refused for
-	/// any other `of`.
+	/// A game bite's own fields, as `voice_repo::SaidBite` lists them: for
+	/// `of=game` only.
 	scenario: Option<String>,
 	how: Option<String>,
 	seq: Option<String>,
@@ -90,10 +89,8 @@ fn refusal(err: VoiceError) -> FileHostError {
 /// `PUT /voice-notes/:id?of=&ref=&at=`, the request body being the audio
 /// itself and its `Content-Type` its container.
 ///
-/// A game bite (`of=game`, `ref` the game's id) also says `how`, `strip`,
-/// `watching`, `started`, `mode` and `catalog`, and `scenario`, `seq`,
-/// `context` and `offset` when it has them; they are stored beside the note
-/// in the same transaction.
+/// A game bite (`of=game`, `ref` the game's id) also says its bite's fields
+/// (`voice_repo::SaidBite`), stored beside the note in the same transaction.
 ///
 /// `BEGIN IMMEDIATE`, so the phone's choice, the read that decides and both
 /// writes see one snapshot.
@@ -392,23 +389,20 @@ mod tests {
 		assert_eq!(held, ["n1", "n2", "n3", "n4"], "nothing refused was written, and what home took before the stop stays");
 	}
 
-	/// A game bite: kept with every field, answered with its bite, the same
-	/// bite unchanged, another bite under its id a 409, one missing its
-	/// fields a 422 naming them, and a bite's fields on any other note a 422.
+	/// A game bite's fields reach the repo from the query, percent-encoding
+	/// undone, and come back as the answer's `bite`. Replays and refusals are
+	/// `voice_repo`'s tests.
 	#[tokio::test]
-	async fn a_game_bite_is_kept_with_its_metadata_once() {
+	async fn a_game_bite_reaches_home_with_its_metadata() {
 		const BITE: &str = "/voice-notes/b1?of=game&ref=401772981&at=2026-10-26T20:41:09Z&scenario=in.third-long&how=offered&seq=12\
 			&strip=KC%2017%20%E2%80%93%20BUF%2014%20%C2%B7%20Q3%204%3A12&context=Mahomes%209%2F14&watching=1\
 			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=1";
 		let state = state().await;
-		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
 
 		let (status, answer) = put(&app, BITE, Some(&phone), "audio/mp4", TAKE).await;
 		assert_eq!(status, StatusCode::OK, "{answer}");
-		assert_eq!(answer["change"], "added");
-		assert_eq!(answer["note"]["of"], "game");
 		assert_eq!(
 			answer["note"]["bite"],
 			json!({
@@ -417,34 +411,5 @@ mod tests {
 				"mode": "standard", "catalog": 1
 			})
 		);
-		assert_eq!(put(&app, BITE, Some(&phone), "audio/mp4", TAKE).await.1["change"], "unchanged");
-		let (status, answer) = put(&app, &BITE.replace("mode=standard", "mode=full"), Some(&phone), "audio/mp4", TAKE).await;
-		assert_eq!((status, &answer["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")), "{answer}");
-
-		let strip: String = sqlx::query_scalar("SELECT live_strip FROM game_bite WHERE subject_id = ?1 AND note_id = 'b1'")
-			.bind(A)
-			.fetch_one(&pool)
-			.await
-			.unwrap();
-		assert_eq!(strip, "KC 17 – BUF 14 · Q3 4:12");
-
-		let named = |answer: (StatusCode, Value)| {
-			assert_eq!(answer.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", answer.1);
-			let mut fields: Vec<String> = answer.1["error"]["details"].as_object().unwrap().keys().cloned().collect();
-			fields.sort();
-			fields
-		};
-		assert_eq!(
-			named(put(&app, "/voice-notes/b2?of=game&ref=401772981&at=2026-10-26T20:41:09Z", Some(&phone), "audio/mp4", TAKE).await),
-			["catalog", "how", "mode", "started", "strip", "watching"]
-		);
-		assert_eq!(
-			named(put(&app, &(String::from(NOTE) + "&how=offered&strip=x"), Some(&phone), "audio/webm", TAKE).await),
-			["how", "strip"],
-			"a reflection carries no bite"
-		);
-		let notes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note").fetch_one(&pool).await.unwrap();
-		let bites: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_bite").fetch_one(&pool).await.unwrap();
-		assert_eq!((notes, bites), (1, 1), "nothing refused was written");
 	}
 }

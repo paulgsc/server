@@ -53,7 +53,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("engagement_gate", "the waker's due index"),
 	(
 		"game_bite",
-		"what each of the owner's game bites (a voice note said while watching a game) was said about and what the screen showed: the scenario and how it came to be said, the offer, the live strip and context line, the game, whether they were watching, when they started saying it, the phone's clock offset, the mode and the scenario set's version; see docs/identity.md invariant 23",
+		"what each of the owner's game bites (a voice note said while watching a game) was said about and what the screen showed: the scenario and how it came to be said, the offer, the live strip and context line, whether they were watching, when they started saying it, the phone's clock offset, the mode and the scenario set's version; see docs/identity.md invariant 23",
 	),
 	("intervention_log", "what the waker decided and when"),
 	(

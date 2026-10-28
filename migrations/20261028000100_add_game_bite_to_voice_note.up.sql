@@ -22,11 +22,15 @@
 -- Columns of `game_bite` (one row per `game` note, keyed as the note is):
 --
 --   subject_id      -- whose bite.
---   note_id         -- which note: `voice_note`'s id.
+--   note_id         -- which note: `voice_note`'s id. The game is that
+--                      note's `of_ref` (ESPN's event id, as the phone names
+--                      it), held there only.
 --   scenario_id     -- the scenario it was said about, as the phone's copy
---                      of the catalogue (crate `game_scenarios`) names it
---                      (`in.third-long`); NULL exactly when it was said first,
---                      before any scenario.
+--                      of the scenario set names it (`in.third-long`); NULL
+--                      exactly when it was said first, before any scenario.
+--                      Checked for shape only, never against the set in
+--                      crate `game_scenarios`: a bite said under a newer set
+--                      than home's is still kept.
 --   how             -- how the scenario came to be said: `offered` (the
 --                      screen offered it), `just-happened` (the owner said
 --                      what just happened), `said-first` (said before
@@ -34,17 +38,19 @@
 --                      the whole set).
 --   offer_seq       -- which offer the screen was showing, when it showed one.
 --   live_strip      -- the live strip as the screen showed it: the owner's
---                      game as text (score, clock, down). Never logged.
---   context_line    -- the line of context the screen showed, if any. Never
---                      logged.
---   game_id         -- the game: ESPN's event id, as the phone names it; the
---                      note's `of_ref`.
+--                      game as text (score, clock, down). No log line
+--                      file_host writes holds it (docs/identity.md
+--                      invariant 23 says where else it travels).
+--   context_line    -- the line of context the screen showed, if any; as
+--                      `live_strip`, in no log line file_host writes.
 --   watching        -- 1 when the owner said they were watching the game, 0
 --                      when not.
 --   started_at      -- when the owner started saying it, on the phone's
 --                      clock, as ISO-8601 UTC to the millisecond.
 --   clock_offset_ms -- home's clock minus the phone's, in milliseconds, from
---                      the live connection; NULL while unknown.
+--                      the live connection; NULL while unknown. Not part of
+--                      what a replay compares: the first row's value stays,
+--                      and a retry that differs only here is unchanged.
 --   mode            -- how much the screen offered: `light`, `standard` or
 --                      `full`.
 --   catalog_version -- the version of the scenario set it was said under.
@@ -95,7 +101,6 @@ CREATE TABLE game_bite (
     offer_seq       INTEGER CHECK (offer_seq >= 0),
     live_strip      TEXT    NOT NULL,
     context_line    TEXT,
-    game_id         TEXT    NOT NULL,
     watching        INTEGER NOT NULL CHECK (watching IN (0, 1)),
     started_at      TEXT    NOT NULL,
     clock_offset_ms INTEGER,

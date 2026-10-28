@@ -766,19 +766,22 @@ nowhere is marked as such and belongs to review.
     paulgsc/some-ui#2079, GWB5): one said for `game`, its `ref` the game's id
     (ESPN's event id, as the phone names it), whose audio is kept as every
     note's is. What the bite was said about and what the screen showed is
-    `game_bite`'s row beside it, keyed as the note is and written in the same
-    transaction as the note and its audio: the scenario (none exactly when
-    it was said first), how it came to be said (`offered`, `just-happened`,
-    `said-first` or `every-scenario`), the offer the screen showed, the live
-    strip and context line as text, the game, whether the owner was
-    watching, when they started saying it on the phone's clock, home's clock
-    minus the phone's when known, the mode (`light`, `standard` or `full`)
-    and the scenario set's version. Only a game note has a bite and every
-    game note has one; a bite's fields on any other note are a `422`. A bite
-    is never updated (its trigger aborts an `UPDATE`) or replaced (another
-    bite under a held id is a `409`, as other bytes are), and leaves with the
-    account by both the sweep and its own trigger. Neither its strip nor its
-    context line reaches a log line. These two tables are the only place home
+    `game_bite`'s row beside it, keyed as the note is (the game is the
+    note's `ref`, held there only) and written in the same transaction as
+    the note and its audio: in short, the scenario and how it came to be
+    said, the offer, the live strip and context line the screen showed, and
+    when and how it was said; `voice_repo::SaidBite` lists every field. Only
+    a game note has a bite and every game note has one; a bite's fields on
+    any other note are a `422`. A bite is never updated (its trigger aborts
+    an `UPDATE`) or replaced (another bite under a held id is a `409`, as
+    other bytes are; the phone's clock offset alone is no part of that
+    comparison, so a retry that learned it is the same bite and the first
+    stored value stays), and leaves with the account by both the sweep and
+    its own trigger. No log line `file_host` writes holds a bite's strip or
+    context line. Both are the game situation the screen showed, not what
+    was said, and they travel in the request's query, so a reverse proxy in
+    front of home that logs request URIs would see them; this repo does not
+    configure that proxy, and nothing here holds it to that. These two tables are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -823,6 +826,7 @@ nowhere is marked as such and belongs to review.
     `a_note_whose_audio_fails_leaves_no_description` and
     `the_notes_leave_with_the_account`, and for bites
     `a_bite_is_stored_once_with_every_field_and_never_replaced`,
+    `a_bite_replayed_with_another_offset_is_unchanged`,
     `a_bite_whose_write_fails_leaves_no_note`,
     `a_game_note_missing_or_misstating_its_bite_is_refused`,
     `a_note_said_for_anything_else_carries_no_bite`,
@@ -840,7 +844,7 @@ nowhere is marked as such and belongs to review.
     `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
     `refusals_name_their_fields_and_notes_stay_apart`,
     `home_refuses_a_note_once_its_phone_stopped_sending_them` and
-    `a_game_bite_is_kept_with_its_metadata_once`.
+    `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
     which `git grep -n 'voice_note\|voice_transcript\|game_bite' -- '*.rs'` shows today
     and review keeps; and that the temporary directory is removed when a
