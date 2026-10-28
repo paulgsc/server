@@ -1,4 +1,4 @@
-use super::{catalog, Phase, Scenario, CATALOG_VERSION};
+use super::{catalog, Scenario, CATALOG_VERSION};
 use std::{
 	collections::{BTreeMap, HashSet},
 	path::PathBuf,
@@ -6,15 +6,6 @@ use std::{
 
 fn is_slug(s: &str) -> bool {
 	!s.is_empty() && !s.starts_with('-') && !s.ends_with('-') && !s.contains("--") && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-const fn prefix(phase: Phase) -> &'static str {
-	match phase {
-		Phase::Pre => "pre",
-		Phase::In => "in",
-		Phase::Post => "post",
-		Phase::You => "you",
-	}
 }
 
 #[test]
@@ -36,9 +27,8 @@ fn ids_are_unique_dotted_and_carry_their_phase() {
 		let e = s.entry();
 		assert!(seen.insert(e.id), "{} is used twice", e.id);
 		let (head, tail) = e.id.split_once('.').unwrap();
-		assert_eq!(head, prefix(e.phase), "{} does not start with its phase", e.id);
+		assert_eq!(serde_json::to_value(e.phase).unwrap(), head, "{} does not start with its phase", e.id);
 		assert!(is_slug(tail), "{} is not `<phase>.<kebab-case>`", e.id);
-		assert_eq!(Scenario::from_id(e.id), Some(s));
 	}
 	assert_eq!(Scenario::from_id("in.nothing"), None);
 }

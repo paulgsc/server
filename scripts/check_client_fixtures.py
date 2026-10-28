@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The fixtures this server and paulgsc/some-ui keep of each other agree.
 
-Five JSON files cross the seam, two from some-ui and three from here. Each side checks its
+JSON files cross the seam in both directions. Each side checks its
 own code against the copy it holds of the other side's output, so a copy that
 falls behind keeps every test green while proving nothing (#490). This
 compares each copy with a fresh dump of what it copies:
@@ -65,8 +65,6 @@ PAIRS = (
 	Pair("session duration policy", "some-ui's", "session-duration-policy.json", copy_here=TESTDATA / "session_duration_policy.snapshot.json"),
 	Pair("provisioned session", "the server's", "provisioned-session.json", copy_in_some_ui="provisioned-session.snapshot.json"),
 	Pair("proposed session", "the server's", "proposed-session.json", copy_in_some_ui="proposed-session.snapshot.json"),
-	# The game-week scenario set (crates/game_scenarios): the engine and the
-	# phone's recorder must agree on every id and the version.
 	Pair("game scenarios", "the server's", "game-scenarios.json", copy_in_some_ui="game-scenarios.snapshot.json"),
 )
 

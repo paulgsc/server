@@ -6,17 +6,7 @@
 //! owner's own watching. The scenario engine (GWB3) compiles against
 //! [`Scenario`], and the phone's recorder reads a copy of [`catalog`]'s JSON
 //! (`dump-game-scenarios`), so both agree on every id and on
-//! [`CATALOG_VERSION`]. paulgsc/server's `scripts/check_client_fixtures.py`
-//! fails when some-ui's copy and a fresh dump differ.
-//!
-//! Every game is read through one team, "us": a result "for us" is the one
-//! that team wants, in its own game or anyone else's.
-//!
-//! **Changing the set is a release.** Adding, removing or rewording a
-//! scenario bumps [`CATALOG_VERSION`] and adds `testdata/catalog.v<N>.json`
-//! beside the earlier ones, which stay as they are: a bite records the
-//! version it was said under, and its scenario is read against that version's
-//! file. The tests fail until both are done. The README says how.
+//! [`CATALOG_VERSION`]. Changing the set is a release: the README says how.
 
 use serde::Serialize;
 
@@ -100,8 +90,7 @@ pub struct Entry {
 	pub moment: Moment,
 }
 
-/// The set. Append a scenario at the end of the enum and of [`Scenario::ALL`]
-/// (the tests check both orders agree), and add its [`Scenario::entry`].
+/// The set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scenario {
 	Weather,

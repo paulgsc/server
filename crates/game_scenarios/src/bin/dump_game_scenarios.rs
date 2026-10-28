@@ -10,7 +10,6 @@ use std::io::{self, Write};
 fn main() -> io::Result<()> {
 	let stdout = io::stdout();
 	let mut out = stdout.lock();
-	// `to_writer_pretty` rather than `to_string`, which `clippy.toml` disallows.
 	serde_json::to_writer_pretty(&mut out, &game_scenarios::catalog()).map_err(io::Error::other)?;
 	out.write_all(b"\n")?;
 	out.flush()
