@@ -4,6 +4,7 @@
 // had the opposite problem (declared, never called). Removed here so the
 // lint gate covers this module again.
 pub mod build_info;
+pub mod game_feed;
 pub mod http;
 pub mod instruments;
 pub mod mailbox;

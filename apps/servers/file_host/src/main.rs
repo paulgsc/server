@@ -195,12 +195,9 @@ async fn main() -> Result<()> {
 		tracing::info!("engagement waker is not running; /api/v1/push and /api/v1/signals still work");
 	}
 
-	// A poll, unlike the waker: home is LAN-only, so the mailbox cannot tell
-	// it a digest arrived. See `mailbox`.
-	file_host::mailbox::start(&app_state);
-
-	// A poll too, over home's own database: see `transcribe`.
-	file_host::transcribe::start(&app_state);
+	// The polls, unlike the waker: the mailbox, the transcriber and the game
+	// feed. See `file_host::start_polls`.
+	file_host::start_polls(&app_state);
 
 	// #227 (C2) / #228 (C3): `connected`/`live`/`subscribed`, guard
 	// occupancy, and SQLite pool gauges — unconditional, unlike the nudge

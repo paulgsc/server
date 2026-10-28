@@ -1,0 +1,22 @@
+[package]
+name = "nfl_feed"
+description = "ESPN's NFL scoreboard and play-by-play responses, parsed into normalized games and plays: pure, no I/O"
+readme = "README.md"
+categories = ["parser-implementations"]
+keywords = ["nfl", "espn", "play-by-play", "parser"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

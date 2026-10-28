@@ -1501,6 +1501,7 @@ dependencies = [
  "engagement_repo",
  "fcm_kit",
  "futures",
+ "game_feed_repo",
  "hex",
  "intervention",
  "jobs_repo",
@@ -1516,6 +1517,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "mood_event",
+ "nfl_feed",
  "notice_repo",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1722,6 +1724,17 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "game_feed_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "nfl_feed",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -2881,6 +2894,14 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
+]
+
+[[package]]
+name = "nfl_feed"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde_json",
 ]
 
 [[package]]

@@ -428,6 +428,29 @@ pub struct Config {
 	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60")]
 	pub transcribe_seconds: u64,
 
+	// ── The NFL game feed ─────────────────────────────────────────────────────
+	//
+	// See `game_feed`. Home follows the games of the week through ESPN's public
+	// site API and keeps every response and the play log read from them. Off
+	// unless `GAME_FEED_ENABLED`; on, the server refuses to start with a cadence
+	// out of range.
+	/// Whether home follows the games of the week at all.
+	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	pub game_feed_enabled: bool,
+
+	/// Seconds between reads of the week's scoreboard. At least 60.
+	#[arg(long, env = "GAME_FEED_SCOREBOARD_SECONDS", default_value = "600")]
+	pub game_feed_scoreboard_seconds: u64,
+
+	/// Seconds between reads of a live game's play-by-play. At least 5.
+	#[arg(long, env = "GAME_FEED_LIVE_SECONDS", default_value = "15")]
+	pub game_feed_live_seconds: u64,
+
+	/// The longest a refused or failed fetch waits before the next try. At
+	/// least both cadences above.
+	#[arg(long, env = "GAME_FEED_BACKOFF_CAP_SECONDS", default_value = "900")]
+	pub game_feed_backoff_cap_seconds: u64,
+
 	// ── Tracing ───────────────────────────────────────────────────────────────
 	#[command(flatten)]
 	pub otel: OtelConfig,
@@ -586,6 +609,88 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
+	const REFUSED: [(&str, &str); 44] = [
+		("LOG_JSON", "yes"),
+		("RUST_LOG", "info,=[bad"),
+		("CONNECTION_TIMEOUT", "soon"),
+		("MAX_IN_FLIGHT", "-1"),
+		("FILE_HOST_PORT", "70000"),
+		("FILE_HOST_PORT_FALLBACK", "1"),
+		("WORKERS", "four"),
+		("RATE_LIMIT", "-1"),
+		("ENABLE_CORS", "on"),
+		("LOG_LEVEL", "loud"),
+		("CACHE_TTL", "1.5"),
+		("ENABLE_PROMETHEUS", "on"),
+		("PROMETHEUS_PORT", "70000"),
+		("DEV_MODE", "on"),
+		("BUFFER_SIZE", "64k"),
+		("MAX_REQUEST_SIZE_MB", "10MB"),
+		("MAX_CONCURRENT_REQUESTS", "many"),
+		("TASK_TIMEOUT_MS", "15s"),
+		("MAX_CHUNKS_IN_FLIGHT", "-5"),
+		("NUDGE_ENABLED", "on"),
+		("NUDGE_QUIET_HOURS_START", "10pm"),
+		("NUDGE_QUIET_HOURS_END", "8am"),
+		("NUDGE_WAKER_SECONDS", "5m"),
+		("PUSH_DELIVERY_TIMEOUT_MS", "10s"),
+		("WAKER_PASS_DEADLINE_MS", "2m"),
+		("RECOMMENDER_USES_OUTCOMES", "on"),
+		("NUDGE_PRESENCE_LEASE_TTL_SECONDS", "75s"),
+		("AUTH_ENABLED", "off"),
+		("AUTH_SESSION_DAYS", "a month"),
+		("AUTH_NEW_ACCOUNTS_PER_DAY", "-1"),
+		("MAILBOX_ENABLED", "on"),
+		("MAILBOX_SECONDS", "15m"),
+		("MAILBOX_ARCHIVE_DAYS", "90d"),
+		("TRANSCRIBE_ENABLED", "on"),
+		("TRANSCRIBE_THREADS", "all"),
+		("TRANSCRIBE_DEADLINE_SECONDS", "10m"),
+		("TRANSCRIBE_SECONDS", "1m"),
+		("GAME_FEED_ENABLED", "on"),
+		("GAME_FEED_SCOREBOARD_SECONDS", "10m"),
+		("GAME_FEED_LIVE_SECONDS", "15s"),
+		("GAME_FEED_BACKOFF_CAP_SECONDS", "-1"),
+		("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
+		("OTEL_TRACES_SAMPLER_ARG", "half"),
+		("OTEL_TRACES_SAMPLER_ARG", "2"),
+	];
+	// `NUDGE_TIMEZONE` is parsed once the nudge starts, and a name it does
+	// not know falls back to UTC with an error and a metric, by design
+	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
+	// checked by what uses them, which refuses to start on a bad one.
+	const FREE_TEXT: [&str; 29] = [
+		"FILE_HOST_BIND",
+		"FILE_HOST_PORT_FILE",
+		"API_VERSION",
+		"ALLOWED_ORIGINS",
+		"LOG_FILE",
+		"REDIS_URL",
+		"NATS_URL",
+		"OBS_WEBSOCKET_IP",
+		"OBS_WEBSOCKET_PWD",
+		"DATABASE_URL",
+		"VAPID_PUBLIC_KEY",
+		"VAPID_PRIVATE_KEY",
+		"VAPID_SUBJECT",
+		"NUDGE_TIMEZONE",
+		"APP_BASE_URL",
+		"WEBAUTHN_RP_ID",
+		"WEBAUTHN_ORIGINS",
+		"AUTH_LEGACY_CLAIM_TOKEN",
+		"OPERATOR_SUBJECTS",
+		"MAILBOX_URL",
+		"MAILBOX_TOKEN",
+		"MAILBOX_SUBJECT",
+		"MAILBOX_ARCHIVE_TOKEN",
+		"FCM_SERVICE_ACCOUNT_FILE",
+		"TRANSCRIBE_MODEL",
+		"TRANSCRIBE_VAD_MODEL",
+		"OTEL_SERVICE_NAME",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"ENVIRONMENT",
+	];
+
 	/// ENV1 (README.md, "Configuration"), for every variable this `Config`
 	/// declares: one whose value can fail to parse is refused, by an error
 	/// naming it, and one that can't is listed as free text. A variable added
@@ -597,83 +702,6 @@ mod tests {
 	/// a value came from, so each variable is its own value name.
 	#[test]
 	fn every_variable_that_does_not_parse_is_refused_by_name() {
-		const REFUSED: [(&str, &str); 40] = [
-			("LOG_JSON", "yes"),
-			("RUST_LOG", "info,=[bad"),
-			("CONNECTION_TIMEOUT", "soon"),
-			("MAX_IN_FLIGHT", "-1"),
-			("FILE_HOST_PORT", "70000"),
-			("FILE_HOST_PORT_FALLBACK", "1"),
-			("WORKERS", "four"),
-			("RATE_LIMIT", "-1"),
-			("ENABLE_CORS", "on"),
-			("LOG_LEVEL", "loud"),
-			("CACHE_TTL", "1.5"),
-			("ENABLE_PROMETHEUS", "on"),
-			("PROMETHEUS_PORT", "70000"),
-			("DEV_MODE", "on"),
-			("BUFFER_SIZE", "64k"),
-			("MAX_REQUEST_SIZE_MB", "10MB"),
-			("MAX_CONCURRENT_REQUESTS", "many"),
-			("TASK_TIMEOUT_MS", "15s"),
-			("MAX_CHUNKS_IN_FLIGHT", "-5"),
-			("NUDGE_ENABLED", "on"),
-			("NUDGE_QUIET_HOURS_START", "10pm"),
-			("NUDGE_QUIET_HOURS_END", "8am"),
-			("NUDGE_WAKER_SECONDS", "5m"),
-			("PUSH_DELIVERY_TIMEOUT_MS", "10s"),
-			("WAKER_PASS_DEADLINE_MS", "2m"),
-			("RECOMMENDER_USES_OUTCOMES", "on"),
-			("NUDGE_PRESENCE_LEASE_TTL_SECONDS", "75s"),
-			("AUTH_ENABLED", "off"),
-			("AUTH_SESSION_DAYS", "a month"),
-			("AUTH_NEW_ACCOUNTS_PER_DAY", "-1"),
-			("MAILBOX_ENABLED", "on"),
-			("MAILBOX_SECONDS", "15m"),
-			("MAILBOX_ARCHIVE_DAYS", "90d"),
-			("TRANSCRIBE_ENABLED", "on"),
-			("TRANSCRIBE_THREADS", "all"),
-			("TRANSCRIBE_DEADLINE_SECONDS", "10m"),
-			("TRANSCRIBE_SECONDS", "1m"),
-			("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
-			("OTEL_TRACES_SAMPLER_ARG", "half"),
-			("OTEL_TRACES_SAMPLER_ARG", "2"),
-		];
-		// `NUDGE_TIMEZONE` is parsed once the nudge starts, and a name it does
-		// not know falls back to UTC with an error and a metric, by design
-		// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
-		// checked by what uses them, which refuses to start on a bad one.
-		const FREE_TEXT: [&str; 29] = [
-			"FILE_HOST_BIND",
-			"FILE_HOST_PORT_FILE",
-			"API_VERSION",
-			"ALLOWED_ORIGINS",
-			"LOG_FILE",
-			"REDIS_URL",
-			"NATS_URL",
-			"OBS_WEBSOCKET_IP",
-			"OBS_WEBSOCKET_PWD",
-			"DATABASE_URL",
-			"VAPID_PUBLIC_KEY",
-			"VAPID_PRIVATE_KEY",
-			"VAPID_SUBJECT",
-			"NUDGE_TIMEZONE",
-			"APP_BASE_URL",
-			"WEBAUTHN_RP_ID",
-			"WEBAUTHN_ORIGINS",
-			"AUTH_LEGACY_CLAIM_TOKEN",
-			"OPERATOR_SUBJECTS",
-			"MAILBOX_URL",
-			"MAILBOX_TOKEN",
-			"MAILBOX_SUBJECT",
-			"MAILBOX_ARCHIVE_TOKEN",
-			"FCM_SERVICE_ACCOUNT_FILE",
-			"TRANSCRIBE_MODEL",
-			"TRANSCRIBE_VAD_MODEL",
-			"OTEL_SERVICE_NAME",
-			"OTEL_EXPORTER_OTLP_ENDPOINT",
-			"ENVIRONMENT",
-		];
 		let mut seen = Vec::new();
 		for arg in Config::command().get_arguments() {
 			let Some(env) = arg.get_env().and_then(std::ffi::OsStr::to_str) else { continue };
