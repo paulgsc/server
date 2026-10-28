@@ -26,6 +26,7 @@ mod privacy;
 pub mod rate_limiter;
 pub mod redacted;
 pub mod routes;
+pub mod routine_watch;
 pub mod schema;
 pub mod subject;
 pub mod trace;

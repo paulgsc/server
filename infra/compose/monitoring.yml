@@ -89,6 +89,7 @@ services:
       - '127.0.0.1:9090:9090'
     volumes:
       - ${REPO_ROOT}/infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${REPO_ROOT}/infra/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     networks:
       - monitoring-network

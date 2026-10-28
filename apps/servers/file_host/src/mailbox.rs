@@ -41,6 +41,10 @@
 //! `mailbox_archive`, then has the mailbox drop its bytes, and puts an
 //! archived file back when the routine asks (`pass`'s module doc).
 //!
+//! **Expected runs** (`routine_watch`). After each pass, home says when each
+//! routine in `ROUTINE_SCHEDULE` was last due and when its newest run started,
+//! so an alert can tell a run that never came from a quiet morning.
+//!
 //! **The arrival notice** (`jobs_notice`). With `FCM_SERVICE_ACCOUNT_FILE`,
 //! each pass is followed by one of [`crate::jobs_notice::run_once`], which
 //! tells the phones that asked when a morning run's record has arrived.
@@ -87,6 +91,9 @@ pub struct MailboxContext {
 	/// FCM, as the service account `FCM_SERVICE_ACCOUNT_FILE` names, or
 	/// `None` when the deployment tells no phone anything.
 	pub notice: Option<Arc<fcm_kit::Sender<fcm_kit::ReqwestTransport>>>,
+	/// When each routine is due (`ROUTINE_SCHEDULE`), for
+	/// [`crate::routine_watch::stamp`] after each pass.
+	pub schedules: Vec<crate::routine_watch::Schedule>,
 }
 
 impl MailboxContext {
@@ -102,7 +109,8 @@ impl MailboxContext {
 	/// `MAILBOX_SUBJECT` unset or empty, a URL that is not `https://` and a
 	/// host, `MAILBOX_SECONDS` below 60, or a `MAILBOX_ARCHIVE_TOKEN` that is
 	/// `MAILBOX_TOKEN` again or comes with `MAILBOX_ARCHIVE_DAYS` below 30,
-	/// or an `FCM_SERVICE_ACCOUNT_FILE` that is not a service account's key.
+	/// an `FCM_SERVICE_ACCOUNT_FILE` that is not a service account's key, or a
+	/// `ROUTINE_SCHEDULE` that does not parse.
 	pub fn from_config(config: &Config, deletion: DeletionLock) -> anyhow::Result<Option<Self>> {
 		if !config.mailbox_enabled {
 			info!("the Jobs mailbox is not enabled; home will not read digests from it");
@@ -121,6 +129,7 @@ impl MailboxContext {
 		let Some(subject) = set(config.mailbox_subject.as_ref()) else {
 			anyhow::bail!("MAILBOX_ENABLED is set but MAILBOX_SUBJECT is not");
 		};
+		let schedules = crate::routine_watch::parse_schedules(&config.routine_schedule).map_err(|why| anyhow::anyhow!("ROUTINE_SCHEDULE: {why}"))?;
 		let interval = Duration::from_secs(config.mailbox_seconds);
 		if interval < MIN_INTERVAL {
 			anyhow::bail!("MAILBOX_SECONDS must be at least 60");
@@ -156,6 +165,7 @@ impl MailboxContext {
 			archive,
 			archive_days: config.mailbox_archive_days,
 			notice,
+			schedules,
 		}))
 	}
 }
@@ -228,6 +238,7 @@ fn spawn(state: &AppState, context: MailboxContext) {
 						Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
 					}
 					log_pass(&result);
+					crate::routine_watch::stamp(&db, &context.subject, &context.schedules, chrono::Utc::now()).await;
 					if let Some(sender) = context.notice.as_deref() {
 						match crate::jobs_notice::run_once(&db, &context.deletion, &context.subject, sender, chrono::Utc::now()).await {
 							Ok(outcome) if outcome.busy() => info!(

@@ -51,6 +51,17 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 4h
+      # home-alerts.yml: one message per Prometheus alert (and routine), so a
+      # stopped poller and an overdue run are two messages, not one digest.
+      - receiver: file-host-operations
+        object_matchers:
+          - [alert_scope, '=', home_watchers]
+        group_by:
+          - prom_alert
+          - routine
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 4h
 
 groups:
   - orgId: 1

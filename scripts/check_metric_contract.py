@@ -31,6 +31,9 @@ the cheapest invariant in the repo the most expensive one to run. Instead:
     dashboard is exactly how this repo shelves a design without deleting
     it — see #220), so a metric a parked dashboard queries is not a claim
     Grafana is currently making.
+  * and every `expr:` in an alert rule (`infra/prometheus/rules/*.yml`
+    and `infra/grafana/provisioning/alerting/*.yml`, AS7 #525): an alert
+    on a name nothing emits never fires, which is the same lie.
 
 Not in scope, both by the same reasoning inventory.rs states for routes:
 label-set correctness (names only) and PromQL semantic validation (a
@@ -46,6 +49,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARDS_DIR = REPO_ROOT / "infra" / "grafana" / "dashboards"
+# Alert rules read metrics too, and one on a name nothing emits never fires:
+# Prometheus's (`rules/*.yml`, not their promtool tests) and Grafana's
+# provisioned ones.
+ALERT_RULE_GLOBS = [
+	(REPO_ROOT / "infra" / "prometheus" / "rules", "*.yml"),
+	(REPO_ROOT / "infra" / "grafana" / "provisioning" / "alerting", "*.yml"),
+]
 RUST_ROOTS = [REPO_ROOT / "apps", REPO_ROOT / "crates"]
 
 # Series produced by an exporter, or by Prometheus/Grafana itself, rather
@@ -180,6 +190,36 @@ def active_dashboard_sources() -> list[Path]:
 	return sorted(p for p in DASHBOARDS_DIR.rglob("*.*sonnet") if parked not in p.parents)
 
 
+def alert_rule_sources() -> list[Path]:
+	return sorted(p for root, glob in ALERT_RULE_GLOBS for p in root.glob(glob) if not p.name.endswith(".test.yml"))
+
+
+# A YAML `expr:` either inline or as a `|` block whose lines sit deeper than
+# the key. Line-based on purpose, like the rest of this stdlib-only scan.
+YAML_EXPR = re.compile(r"^(\s*)expr:\s*(.*)$")
+
+
+def yaml_exprs(text: str) -> list[tuple[int, str]]:
+	"""(line, PromQL) for every `expr:` in a YAML file."""
+	lines = text.splitlines()
+	found: list[tuple[int, str]] = []
+	for i, line in enumerate(lines):
+		match = YAML_EXPR.match(line)
+		if not match:
+			continue
+		indent, rest = len(match.group(1)), match.group(2).strip()
+		if rest not in ("|", "|-", ">", ">-"):
+			found.append((i + 1, rest.strip("'\"")))
+			continue
+		body = []
+		for following in lines[i + 1 :]:
+			if following.strip() and len(following) - len(following.lstrip()) <= indent:
+				break
+			body.append(following)
+		found.append((i + 1, "\n".join(body)))
+	return found
+
+
 def extract_metric_tokens(expr: str) -> set[str]:
 	expr = LABEL_VALUES_CALL_FULL.sub(" ", expr)  # handled separately, via LABEL_VALUES_CALL
 	expr = GROUPING_CLAUSE.sub(" ", expr)
@@ -203,6 +243,10 @@ def queried_metrics() -> dict[str, list[str]]:
 			names = {m.group(1) for m in LABEL_VALUES_CALL.finditer(expr)}
 			names |= extract_metric_tokens(expr)
 			for name in names:
+				sites.setdefault(name, []).append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
+	for path in alert_rule_sources():
+		for lineno, expr in yaml_exprs(path.read_text()):
+			for name in extract_metric_tokens(expr):
 				sites.setdefault(name, []).append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
 	return sites
 
