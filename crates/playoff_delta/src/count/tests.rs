@@ -133,16 +133,18 @@ fn a_spread_counted_every_way_matches_brute_force() {
 		let table = Table::from_parts(records, pending.clone());
 		let games: Vec<usize> = (0..5).collect();
 		for team in [Team::Sf, Team::Dal, Team::Kc, Team::Buf] {
-			let s = slates(&table, team, 1 << 12, &games).unwrap();
+			let s = slates(&table, &[team], 1 << 12, &games).unwrap();
 			assert!(s.exact);
 			// Only the games the team's conference plays are its slate's.
-			let mine: Vec<usize> = games.iter().copied().filter(|&i| counts(&table, team, i)).collect();
+			let mine: Vec<usize> = games.iter().copied().filter(|&i| counts(&table, team.conference(), i)).collect();
 			let shares = slate_shares(&records, &pending, team, &mine);
-			assert!((s.spread(None) - deviation(shares.iter().copied())).abs() < 1e-12, "{}", team.code());
-			if let Some(&first) = mine.first() {
+			assert!((s.spread(0, None) - deviation(shares.iter().copied())).abs() < 1e-12, "{}", team.code());
+			let column = s.column(0);
+			assert!(column.share.iter().zip(&shares).all(|(a, b)| (a - b).abs() < 1e-12), "{}: every slate's share", team.code());
+			if let Some(j) = s.own(0) {
 				for home_won in [true, false] {
-					let held = shares.iter().enumerate().filter(|(slate, _)| (slate & 1 == 1) == home_won).map(|(_, p)| *p);
-					assert!((s.spread(Some((first, home_won))) - deviation(held)).abs() < 1e-12, "{} held", team.code());
+					let held = shares.iter().enumerate().filter(|(slate, _)| (slate >> j & 1 == 1) == home_won).map(|(_, p)| *p);
+					assert!((s.spread(0, Some(home_won)) - deviation(held)).abs() < 1e-12, "{} held", team.code());
 				}
 				checked += 1;
 			}
@@ -163,18 +165,46 @@ fn a_sampled_spread_lands_near_the_exact_one() {
 		let table = Table::from_parts(records, pending.clone());
 		let games: Vec<usize> = (0..6).collect();
 		for team in [Team::Sf, Team::Kc] {
-			let exact = slates(&table, team, 1 << 16, &games).unwrap();
-			let sampled = slates(&table, team, 2_048, &games).unwrap();
+			let exact = slates(&table, &[team], 1 << 16, &games).unwrap();
+			let sampled = slates(&table, &[team], 2_048, &games).unwrap();
 			if !exact.exact || sampled.exact {
 				continue;
 			}
-			let (e, s) = (exact.spread(None), sampled.spread(None));
+			let (e, s) = (exact.spread(0, None), sampled.spread(0, None));
 			// A spread a share moves by is at most one half; on these leagues
 			// two thousand rests land within a couple of points of it.
 			assert!((e - s).abs() < 0.03, "{}: exact {e}, sampled {s}", team.code());
-			assert_eq!(sampled, slates(&table, team, 2_048, &games).unwrap());
+			assert_eq!(sampled, slates(&table, &[team], 2_048, &games).unwrap());
+			// Every price read off the sample lands near the counted one,
+			// within a few of its own errors.
+			let (e, s) = (exact.column(0).best(|_| true), sampled.column(0).best(|_| true));
+			for (pe, ps) in e.pieces.iter().zip(&s.pieces) {
+				assert!((pe.price - ps.price).abs() < ps.error.mul_add(4.0, 0.02), "{}: {pe:?} vs {ps:?}", team.code());
+			}
 			checked += 1;
 		}
 	}
 	assert!(checked > 0, "no case had sixteen games of rest");
+}
+
+/// Counting a conference's teams together gives each the column, spreads
+/// and own game it gets counted alone: they share the rests.
+#[test]
+fn a_conference_counted_together_is_each_team_counted_alone() {
+	let mut rng = Lcg(0x5109);
+	for rests in [1 << 12, 300] {
+		let (records, pending) = random_case(&mut rng, 14);
+		let table = Table::from_parts(records, pending.clone());
+		let games: Vec<usize> = (0..5).collect();
+		let teams: Vec<Team> = Team::of_conference(Team::Sf.conference()).collect();
+		let together = slates(&table, &teams, rests, &games).unwrap();
+		for (t, &team) in teams.iter().enumerate() {
+			let alone = slates(&table, &[team], rests, &games).unwrap();
+			assert_eq!(together.column(t), alone.column(0), "{}", team.code());
+			assert_eq!(together.own(t), alone.own(0));
+			for held in [None, Some(true), Some(false)] {
+				assert!((together.spread(t, held) - alone.spread(0, held)).abs() < 1e-12, "{} {held:?}", team.code());
+			}
+		}
+	}
 }

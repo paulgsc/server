@@ -80,7 +80,26 @@ fn game(event: &Value, year: u16) -> Result<Option<Game>, FeedError> {
 		away,
 		score,
 		collapse: None,
+		kickoff: event["date"].as_str().and_then(minutes),
 	}))
+}
+
+/// Minutes since the Unix epoch of an ESPN `date` (`2026-11-01T18:00Z`, UTC,
+/// seconds optional); `None` for anything else.
+fn minutes(date: &str) -> Option<u64> {
+	let num = |range: std::ops::Range<usize>| date.get(range)?.parse::<u64>().ok();
+	let (y, m, d, h, min) = (num(0..4)?, num(5..7)?, num(8..10)?, num(11..13)?, num(14..16)?);
+	if date.get(4..5) != Some("-") || date.get(10..11) != Some("T") || !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || min > 59 {
+		return None;
+	}
+	// Days from the civil date (Howard Hinnant's algorithm), March-based years.
+	let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+	let era = y / 400;
+	let yoe = y % 400;
+	let doy = (153 * m + 2) / 5 + d - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	let days = (era * 146_097 + doe).checked_sub(719_468)?;
+	Some((days * 24 + h) * 60 + min)
 }
 
 /// The regular season `year` from ESPN scoreboard responses, one per week, in
@@ -120,10 +139,12 @@ mod tests {
 			.map(|i| {
 				let (home, away) = (Team::ALL[ring[i]], Team::ALL[ring[31 - i]]);
 				let (home_score, away_score) = if done { ("24", "17") } else { ("0", "0") };
+				let date = ["2026-09-10T17:00Z", "2026-09-10T18:00Z", "2026-09-10T19:00Z"][i % 3];
 				json!({
 					"id": "401",
 					"season": { "year": year, "type": 2 },
 					"week": { "number": week },
+					"date": date,
 					"status": { "type": { "completed": done } },
 					"competitions": [{ "competitors": [
 						{ "homeAway": "home", "team": { "abbreviation": code(home) }, "score": home_score },
@@ -153,5 +174,21 @@ mod tests {
 		let half = scoreboard(2026, 1, true).replacen("\"completed\":true", "\"completed\":false", 1);
 		let pages = [half, scoreboard(2026, 2, true)];
 		assert!(matches!(season_from_scoreboards(pages.iter().map(String::as_str), 2026), Err(FeedError::Season(_))));
+	}
+
+	#[test]
+	fn reads_a_kickoff_as_minutes_since_the_epoch() {
+		assert_eq!(minutes("1970-01-01T00:00Z"), Some(0));
+		assert_eq!(minutes("1970-01-02T01:30Z"), Some(24 * 60 + 90));
+		// 2026-11-01T18:00Z is 1,793,556,000 s after the epoch.
+		assert_eq!(minutes("2026-11-01T18:00Z"), Some(1_793_556_000 / 60));
+		assert_eq!(minutes("2024-02-29T12:00:00Z"), Some(1_709_208_000 / 60));
+		for bad in ["", "2026-11-01", "2026/11/01T18:00Z", "2026-13-01T18:00Z", "2026-11-01T24:00Z"] {
+			assert_eq!(minutes(bad), None, "{bad}");
+		}
+		// Each event's `date` reaches its game.
+		let page = scoreboard(2026, 1, true);
+		let season = season_from_scoreboards([page.as_str()], 2026).unwrap();
+		assert!(season.games().iter().all(|g| g.kickoff.is_some_and(|k| k >= minutes("2026-09-10T17:00Z").unwrap())));
 	}
 }

@@ -19,16 +19,26 @@
 //!   over its spread is the week's luck; the stage divides, so the contract
 //!   carries each number once.
 //! - **Clinched**: in, whatever happens ([`solver::clinched`]).
+//! - **Ways** of a week: every way its results can go, each counted against
+//!   the same rests of the season, for every team ([`count::slates`], read by
+//!   [`crate::ways`]): the best way and what each game is worth in it, the
+//!   road from it to the way the week went, and that way's rank among them.
+//! - **Podium**: every team's week ranked among its own ways, among the
+//!   teams the week could move by at least [`ELIGIBLE`].
 
 use crate::{
 	count::{self, Slates, Tally},
 	league::Team,
 	season::{Game, Outcome, Season},
 	solver::{self, Memo},
-	story::{Collapse, Kind, Left, Next, Relation, Share, Stake, StoryGame, StoryPaths, StoryResult, StorySeason, StoryShare, StoryWeek, WinLoss},
-	table::Table,
+	story::{
+		Collapse, Given, Kind, Left, Medal, MedalPiece, Next, NextPiece, Piece, Played, Podium, Relation, Share, Stake, StoryGame, StoryPaths, StoryResult, StorySeason,
+		StoryShare, StoryWeek, WayGame, Ways, WinLoss,
+	},
+	table::{Pending, Table},
+	ways,
 };
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, num::NonZeroUsize};
 
 /// Rows a paths grid shows at least: "never win again" through "+4 wins".
 pub const WINDOW: u8 = 4;
@@ -53,6 +63,14 @@ pub const NEXT: usize = 3;
 /// A swing smaller than this (a twentieth of a point) is not named.
 const MIN_SWING: f64 = 0.0005;
 
+/// How far a team's week must be able to move its share (its standard
+/// deviation over the week's ways: a point) for the team to be ranked on
+/// the week's podium.
+pub const ELIGIBLE: f64 = 0.01;
+
+/// The pieces a medal carries, dearest first.
+const MEDAL_PIECES: usize = 3;
+
 /// Who the story is about.
 #[derive(Debug, Clone)]
 pub struct Subject {
@@ -72,6 +90,9 @@ pub enum EvaluateError {
 	NothingPlayed,
 	/// More games than the contract's counters hold.
 	SeasonTooLong,
+	/// More than [`count::SLATE_GAMES`] games in a week, which a checked
+	/// season cannot have.
+	WeekTooFull,
 }
 
 impl fmt::Display for EvaluateError {
@@ -79,6 +100,7 @@ impl fmt::Display for EvaluateError {
 		f.write_str(match self {
 			Self::NothingPlayed => "no completed week has a game for the team",
 			Self::SeasonTooLong => "more than 255 games a team",
+			Self::WeekTooFull => "more than 16 games in a week",
 		})
 	}
 }
@@ -99,15 +121,23 @@ pub fn evaluate(season: &Season, subject: &Subject) -> Result<StorySeason, Evalu
 	let memo = Memo::default();
 	let tables: Vec<Table> = (0..=through).map(|w| Table::after(season, w)).collect();
 	// Each table's next week's games, both sides counted: the subject's own
-	// one splits that week's change, the rest are the ones to root for, and
-	// all of them are the slates the week's spread is read over.
-	let (tallies, slates): (Vec<Tally>, Vec<Option<Slates>>) = tables
-		.iter()
-		.map(|t| {
-			let next: Vec<usize> = (0..t.pending().len()).filter(|&i| t.pending()[i].week.checked_sub(1) == Some(t.through())).collect();
-			(count::tally(t, subject.team, subject.ways, &next), count::slates(t, subject.team, subject.rests, &next))
-		})
-		.unzip();
+	// one splits that week's change, the rest are the ones to root for. And
+	// the week's ways: the spread, the best way, the road and the podium.
+	let read = parallel(&tables, |t| {
+		let next: Vec<usize> = (0..t.pending().len()).filter(|&i| t.pending()[i].week.checked_sub(1) == Some(t.through())).collect();
+		Ok((count::tally(t, subject.team, subject.ways, &next), ahead(season, subject, t, through)?))
+	})
+	.into_iter()
+	.collect::<Result<Vec<_>, EvaluateError>>()?;
+	let mut tallies = Vec::with_capacity(read.len());
+	let mut upcoming = Vec::with_capacity(read.len());
+	// One per table but the last: the week after it has been played.
+	let mut played = Vec::with_capacity(read.len());
+	for (tally, (up, week)) in read {
+		tallies.push(tally);
+		upcoming.push(up);
+		played.extend(week);
+	}
 	let weeks = (1..=through)
 		.map(|week| {
 			let w = usize::from(week);
@@ -125,16 +155,14 @@ pub fn evaluate(season: &Season, subject: &Subject) -> Result<StorySeason, Evalu
 					before: &tallies[w - 1],
 					after: &tallies[w],
 				},
-				slates: Pair {
-					before: slates[w - 1].as_ref(),
-					after: slates[w].as_ref(),
-				},
+				played: &played[w - 1],
+				upcoming: &upcoming[w],
 			}
 			.story()
 		})
 		.collect();
 	Ok(StorySeason {
-		version: 3,
+		version: 4,
 		label: subject.label.clone(),
 		season_length,
 		team: subject.team,
@@ -185,8 +213,10 @@ struct Week<'a> {
 	game: Option<&'a Game>,
 	tables: Pair<&'a Table>,
 	tallies: Pair<&'a Tally>,
-	/// `None` past [`count::SLATE_GAMES`] games in a week, which no week has.
-	slates: Pair<Option<&'a Slates>>,
+	/// The week's ways, read off the table before it.
+	played: &'a WeekWays,
+	/// Next week's, read off the table after it.
+	upcoming: &'a Upcoming,
 }
 
 impl Week<'_> {
@@ -213,6 +243,8 @@ impl Week<'_> {
 			next: self.next(),
 			stake: self.stake(),
 			clinched: solver::clinched(self.tables.after, me),
+			ways: self.played.ways.clone(),
+			podium: podium(&self.played.entries, me),
 		}
 	}
 
@@ -261,7 +293,7 @@ impl Week<'_> {
 			after: Share(after.share),
 			own: Share(mid - before.share),
 			league: Share(after.share - mid),
-			spread: Share(self.slates.before.map_or(0.0, |s| s.spread(own))),
+			spread: Share(self.played.spread),
 			exact: before.exact && after.exact,
 		}
 	}
@@ -344,7 +376,7 @@ impl Week<'_> {
 		// way), and the spread can be no smaller than they add up to.
 		// `given` holds exactly next week's games, the ones asked about.
 		let own_effects: f64 = tally.given.iter().flatten().map(|(home, away)| ((home - away) / 2.0).powi(2)).sum();
-		let slates = self.slates.after;
+		let up = self.upcoming;
 		let me = self.subject.team;
 		Some(Stake {
 			opponent: game.map(|i| {
@@ -356,8 +388,286 @@ impl Week<'_> {
 				}
 			}),
 			own: Share(own),
-			spread: Share(slates.map_or(0.0, |s| s.spread(None)).max(own_effects.sqrt())),
-			exact: slates.is_some_and(|s| s.exact),
+			spread: Share(up.spread.max(own_effects.sqrt())),
+			exact: up.exact,
+			pieces: up.pieces.clone(),
 		})
 	}
+}
+
+/// What one table says about the week after it, played.
+struct WeekWays {
+	/// The subject's.
+	ways: Ways,
+	/// The subject's spread, its own result held as it happened (none held
+	/// on a bye or a tie).
+	spread: f64,
+	/// Every team's week, unplaced, for the podium.
+	entries: Vec<Entry>,
+}
+
+/// One team's week, for the podium.
+struct Entry {
+	/// Placed 0 until the podium places it.
+	medal: Medal,
+	/// Its week could move its share by at least [`ELIGIBLE`].
+	eligible: bool,
+}
+
+/// What one table says about the week after it, before it is played: the
+/// subject's spread over all of it, and its best way.
+struct Upcoming {
+	spread: f64,
+	exact: bool,
+	pieces: Vec<NextPiece>,
+}
+
+/// The week after `table`, for `subject`: before it is played, and as it
+/// went when it has been (through `through`).
+fn ahead(season: &Season, subject: &Subject, table: &Table, through: u8) -> Result<(Upcoming, Option<WeekWays>), EvaluateError> {
+	let me = subject.team;
+	let week = table.through() + 1;
+	let read = |t: &Table, teams: &[Team]| {
+		let games: Vec<usize> = (0..t.pending().len()).filter(|&i| t.pending()[i].week == week).collect();
+		count::slates(t, teams, subject.rests, &games).ok_or(EvaluateError::WeekTooFull)
+	};
+	if week > through {
+		return Ok((upcoming(season, table, &read(table, &[me])?), None));
+	}
+	// A tied game is banked before the week: it is none of the week's ways.
+	let ties: Vec<&Game> = season.week(week).filter(|g| g.outcome() == Some(Outcome::Tied)).collect();
+	let banked = ties.iter().fold(table.clone(), |t, g| t.banking(g));
+	// The subject first among its conference's teams.
+	let ours: Vec<Team> = std::iter::once(me).chain(Team::of_conference(me.conference()).filter(|&t| t != me)).collect();
+	let theirs: Vec<Team> = Team::ALL.into_iter().filter(|t| t.conference() != me.conference()).collect();
+	let (ours, theirs) = (read(&banked, &ours)?, read(&banked, &theirs)?);
+	let up = if ties.is_empty() {
+		upcoming(season, table, &ours)
+	} else {
+		upcoming(season, table, &read(table, &[me])?)
+	};
+	Ok((up, Some(week_ways(season, &banked, week, &ours, &theirs))))
+}
+
+/// The pending game behind slate bit `j`.
+fn pending_of(table: &Table, slates: &Slates, j: usize) -> Pending {
+	table.pending()[slates.games[j]]
+}
+
+/// The season's game for a pending one.
+fn game_of(season: &Season, p: Pending) -> Option<&Game> {
+	season.week(p.week).find(|g| g.home == p.home && g.away == p.away)
+}
+
+/// The slate's bits in kickoff order: a game the feed gives no time sorts
+/// last, and games at one time by their sides.
+fn kickoff_order(season: &Season, table: &Table, slates: &Slates) -> Vec<usize> {
+	let mut order: Vec<usize> = (0..slates.games.len()).collect();
+	order.sort_by_key(|&j| {
+		let p = pending_of(table, slates, j);
+		(game_of(season, p).and_then(|g| g.kickoff).unwrap_or(u64::MAX), p.home, p.away)
+	});
+	order
+}
+
+/// The slate the week's results made: bit `j` set when the home side won.
+fn actual_slate(season: &Season, table: &Table, slates: &Slates) -> usize {
+	(0..slates.games.len()).fold(0, |slate, j| {
+		let p = pending_of(table, slates, j);
+		let home_won = game_of(season, p).and_then(Game::outcome) == Some(Outcome::Won(p.home));
+		slate | usize::from(home_won) << j
+	})
+}
+
+const fn piece(p: Pending, piece: ways::Piece) -> Piece {
+	Piece {
+		want: if piece.want_home { p.home } else { p.away },
+		price: Share(piece.price),
+		error: Share(piece.error),
+	}
+}
+
+/// [`piece`], for `team`: a free piece of its own game wants its win, since
+/// a win never hurts it (the best way is as good either way).
+fn piece_for(p: Pending, wp: ways::Piece, team: Team) -> Piece {
+	let mut out = piece(p, wp);
+	if wp.price <= 0.0 && (p.home == team || p.away == team) {
+		out.want = team;
+	}
+	out
+}
+
+fn upcoming(season: &Season, table: &Table, slates: &Slates) -> Upcoming {
+	// The subject is the first team counted.
+	let me = slates.teams[0];
+	let best = slates.column(0).best(|_| true);
+	Upcoming {
+		spread: slates.spread(0, None),
+		exact: slates.exact,
+		pieces: kickoff_order(season, table, slates)
+			.into_iter()
+			.map(|j| {
+				let p = pending_of(table, slates, j);
+				NextPiece {
+					home: p.home,
+					away: p.away,
+					piece: piece_for(p, best.pieces[j], me),
+				}
+			})
+			.collect(),
+	}
+}
+
+/// The subject's week (the first team of `ours`) and every team's entry.
+fn week_ways(season: &Season, table: &Table, week: u8, ours: &Slates, theirs: &Slates) -> WeekWays {
+	let me = ours.teams[0];
+	let column = ours.column(0);
+	let actual = actual_slate(season, table, ours);
+	let order = kickoff_order(season, table, ours);
+	let all = column.best(|_| true);
+	let own = ours.own(0);
+	let in_order = |pieces: &[ways::Piece]| order.iter().map(|&j| piece(pending_of(table, ours, j), pieces[j])).collect::<Vec<_>>();
+	let all_in_order = order.iter().map(|&j| piece_for(pending_of(table, ours, j), all.pieces[j], me));
+	let given = own.map(|j| {
+		let held = |s: usize| s >> j & 1 == actual >> j & 1;
+		let best = column.best(held);
+		Given {
+			best: Share(best.best),
+			rank: Share(column.rank(actual, held)),
+			pieces: in_order(&best.pieces),
+		}
+	});
+	let road = column.road(actual, &order);
+	let ways = Ways {
+		games: order
+			.iter()
+			.zip(all_in_order)
+			.map(|(&j, piece)| {
+				let p = pending_of(table, ours, j);
+				let kind = if p.home == me || p.away == me {
+					Kind::Own
+				} else if p.home.conference() == p.away.conference() {
+					Kind::Inside
+				} else {
+					Kind::Exported
+				};
+				WayGame {
+					home: p.home,
+					away: p.away,
+					kind,
+					winner: if actual >> j & 1 == 1 { p.home } else { p.away },
+					piece,
+				}
+			})
+			.collect(),
+		best: Share(all.best),
+		worst: Share(column.worst()),
+		actual: Share(column.share[actual]),
+		rank: Share(column.rank(actual, |_| true)),
+		given,
+		road: road.best.into_iter().map(Share).collect(),
+		mean: road.mean.into_iter().map(Share).collect(),
+		strip: road.strip,
+		exact: ours.exact,
+	};
+	let entries = [ours, theirs]
+		.into_iter()
+		.flat_map(|slates| (0..slates.teams.len()).map(move |t| entry(season, table, week, slates, t)))
+		.collect();
+	WeekWays {
+		ways,
+		spread: ours.spread(0, own.map(|j| actual >> j & 1 == 1)),
+		entries,
+	}
+}
+
+/// The `t`th team of `slates`' week, for the podium.
+fn entry(season: &Season, table: &Table, week: u8, slates: &Slates, t: usize) -> Entry {
+	let team = slates.teams[t];
+	let column = slates.column(t);
+	let actual = actual_slate(season, table, slates);
+	let all = column.best(|_| true);
+	let game = match season.game_of(team, week).and_then(Game::outcome) {
+		None => Played::Bye,
+		Some(Outcome::Won(w)) if w == team => Played::Won,
+		Some(Outcome::Won(_)) => Played::Lost,
+		Some(Outcome::Tied) => Played::Tie,
+	};
+	let mut pieces: Vec<MedalPiece> = all
+		.pieces
+		.iter()
+		.enumerate()
+		.map(|(j, wp)| {
+			let p = pending_of(table, slates, j);
+			let piece = piece_for(p, *wp, team);
+			let winner = if actual >> j & 1 == 1 { p.home } else { p.away };
+			MedalPiece {
+				home: p.home,
+				away: p.away,
+				want: piece.want,
+				price: piece.price,
+				made: winner == piece.want,
+			}
+		})
+		.collect();
+	pieces.sort_by(|a, b| b.price.0.total_cmp(&a.price.0));
+	pieces.truncate(MEDAL_PIECES);
+	Entry {
+		medal: Medal {
+			team,
+			place: 0,
+			rank: Share(column.rank(actual, |_| true)),
+			best: Share(all.best),
+			worst: Share(column.worst()),
+			actual: Share(column.share[actual]),
+			game,
+			pieces,
+		},
+		eligible: slates.spread(t, None) >= ELIGIBLE,
+	}
+}
+
+/// The week's podium: every eligible team placed 1 to 3 (1 + the eligible
+/// teams ranked strictly higher, so equal ranks share a place), and `me`'s.
+fn podium(entries: &[Entry], me: Team) -> Podium {
+	let eligible: Vec<&Medal> = entries.iter().filter(|e| e.eligible).map(|e| &e.medal).collect();
+	let place = |m: &Medal| u8::try_from(1 + eligible.iter().filter(|o| o.rank.0 > m.rank.0).count()).unwrap_or(u8::MAX);
+	let mut medals: Vec<Medal> = eligible
+		.iter()
+		.filter_map(|m| {
+			let p = place(m);
+			(p <= 3).then(|| Medal { place: p, ..(*m).clone() })
+		})
+		.collect();
+	medals.sort_by_key(|m| (m.place, m.team));
+	Podium {
+		medals,
+		place: eligible.iter().find(|m| m.team == me).map(|m| place(m)),
+		eligible: u8::try_from(eligible.len()).unwrap_or(u8::MAX),
+	}
+}
+
+/// `f` over `items` on every core, in order. Each item's result depends on
+/// it alone, so the output is the same whatever the core count (PD2).
+fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+	let workers = std::thread::available_parallelism().map_or(1, NonZeroUsize::get).clamp(1, items.len().max(1));
+	let mut out: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+	std::thread::scope(|scope| {
+		let f = &f;
+		// Round robin: early tables, with the most season left, cost most.
+		let handles: Vec<_> = (0..workers)
+			.map(|w| scope.spawn(move || items.iter().enumerate().skip(w).step_by(workers).map(|(i, x)| (i, f(x))).collect::<Vec<_>>()))
+			.collect();
+		for handle in handles {
+			match handle.join() {
+				Ok(done) => {
+					for (i, r) in done {
+						out[i] = Some(r);
+					}
+				}
+				Err(panic) => std::panic::resume_unwind(panic),
+			}
+		}
+	});
+	out.into_iter().flatten().collect()
 }

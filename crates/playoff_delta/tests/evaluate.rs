@@ -55,6 +55,69 @@ fn every_week_follows_from_the_last() {
 }
 
 #[test]
+fn a_week_s_ways_add_up() {
+	let season = common::invented(7, 12).unwrap();
+	let story = evaluate(&season, &niners()).unwrap();
+	for w in &story.weeks {
+		let ways = &w.ways;
+		let games = ways.games.len();
+		assert!(ways.worst.0 <= ways.actual.0 && ways.actual.0 <= ways.best.0, "week {}", w.week);
+		// The road runs from the best way to the actual one and never rises;
+		// the mean of the ways still possible ends at the actual share.
+		assert_eq!(ways.road.len(), games + 1);
+		assert!((ways.road[0].0 - ways.best.0).abs() < 1e-12);
+		assert!((ways.road[games].0 - ways.actual.0).abs() < 1e-12);
+		assert!((ways.mean[games].0 - ways.actual.0).abs() < 1e-12);
+		assert!(ways.road.windows(2).all(|p| p[1].0 <= p[0].0), "week {}", w.week);
+		// The strip halves at each result.
+		for (p, row) in ways.strip.iter().enumerate() {
+			assert_eq!(row.iter().sum::<u32>(), (1 << games) >> p, "week {} point {p}", w.week);
+		}
+		// Every piece names a side of its game.
+		for g in &ways.games {
+			assert!(g.piece.want == g.home || g.piece.want == g.away);
+			assert!(g.winner == g.home || g.winner == g.away);
+		}
+		match (&w.game, &ways.given) {
+			(None, given) => assert!(given.is_none(), "a bye holds no result"),
+			(Some(_), Some(given)) => {
+				assert!(given.best.0 <= ways.best.0 + 1e-12);
+				assert_eq!(given.pieces.len(), games);
+				let own = ways.games.iter().position(|g| g.kind == Kind::Own).unwrap();
+				assert_eq!(given.pieces[own].want, ways.games[own].winner);
+				assert!(given.pieces[own].price.0.abs() < 1e-12);
+			}
+			(Some(_), None) => panic!("week {}: a played week holds its result", w.week),
+		}
+		// Kickoff order: the invented season's slots run backwards.
+		let slots: Vec<u64> = ways
+			.games
+			.iter()
+			.map(|g| season.week(w.week).find(|s| s.home == g.home && s.away == g.away).and_then(|s| s.kickoff).unwrap())
+			.collect();
+		assert!(slots.windows(2).all(|p| p[0] <= p[1]), "week {}: {slots:?}", w.week);
+		// The podium places only eligible teams, 1 to 3, best rank first.
+		let p = &w.podium;
+		assert!(p.medals.len() >= usize::from(p.eligible.min(3)));
+		assert!(p.medals.windows(2).all(|m| m[0].place <= m[1].place && m[0].rank.0 >= m[1].rank.0));
+		assert!(p.medals.iter().all(|m| (1..=3).contains(&m.place) && m.pieces.len() <= 3));
+		if let Some(first) = p.medals.first() {
+			assert_eq!(first.place, 1);
+		}
+		if let Some(place) = p.place {
+			assert!(place >= 1 && place <= p.eligible);
+			// Our rank is the one our ways give.
+			if let Some(us) = p.medals.iter().find(|m| m.team == Team::Sf) {
+				assert!((us.rank.0 - ways.rank.0).abs() < 1e-12);
+			}
+		}
+		if let Some(stake) = &w.stake {
+			assert!(stake.pieces.iter().all(|g| g.piece.want == g.home || g.piece.want == g.away));
+		}
+	}
+}
+
+#[test]
 fn the_same_season_tells_the_same_story() {
 	let season = common::invented(11, 9).unwrap();
 	let a = serde_json::to_value(evaluate(&season, &niners()).unwrap()).unwrap();
@@ -102,7 +165,7 @@ fn key_paths(value: &Value, at: &str, out: &mut BTreeSet<String>) {
 	}
 }
 
-/// The keys `story.ts` (contract v3) declares. A key added there is added
+/// The keys `story.ts` (contract v4) declares. A key added there is added
 /// here, and to `story.rs`, in the same pair of changes.
 const CONTRACT: &str = "
 version label seasonLength team names conference ways weeks
@@ -115,7 +178,20 @@ weeks[].results weeks[].results[].winner weeks[].results[].loser weeks[].results
 weeks[].results[].collapse weeks[].results[].collapse.peakWinProbability weeks[].results[].collapse.led
 weeks[].next weeks[].next[].home weeks[].next[].away weeks[].next[].rootFor weeks[].next[].swing
 weeks[].stake weeks[].stake.opponent weeks[].stake.own weeks[].stake.spread weeks[].stake.exact
+weeks[].stake.pieces weeks[].stake.pieces[].home weeks[].stake.pieces[].away
+weeks[].stake.pieces[].want weeks[].stake.pieces[].price weeks[].stake.pieces[].error
 weeks[].clinched
+weeks[].ways weeks[].ways.games weeks[].ways.games[].home weeks[].ways.games[].away weeks[].ways.games[].kind
+weeks[].ways.games[].winner weeks[].ways.games[].want weeks[].ways.games[].price weeks[].ways.games[].error
+weeks[].ways.best weeks[].ways.worst weeks[].ways.actual weeks[].ways.rank
+weeks[].ways.given weeks[].ways.given.best weeks[].ways.given.rank weeks[].ways.given.pieces
+weeks[].ways.given.pieces[].want weeks[].ways.given.pieces[].price weeks[].ways.given.pieces[].error
+weeks[].ways.road weeks[].ways.mean weeks[].ways.strip weeks[].ways.exact
+weeks[].podium weeks[].podium.medals weeks[].podium.medals[].team weeks[].podium.medals[].place
+weeks[].podium.medals[].rank weeks[].podium.medals[].best weeks[].podium.medals[].worst weeks[].podium.medals[].actual
+weeks[].podium.medals[].game weeks[].podium.medals[].pieces weeks[].podium.medals[].pieces[].home
+weeks[].podium.medals[].pieces[].away weeks[].podium.medals[].pieces[].want weeks[].podium.medals[].pieces[].price
+weeks[].podium.medals[].pieces[].made weeks[].podium.place weeks[].podium.eligible
 ";
 
 #[test]
@@ -126,7 +202,15 @@ fn serializes_to_the_contract_keys() {
 	let allowed: BTreeSet<String> = CONTRACT.split_whitespace().map(String::from).collect();
 	let extra: Vec<_> = seen.difference(&allowed).collect();
 	assert!(extra.is_empty(), "keys the contract does not have: {extra:?}");
-	for required in ["weeks[].results[].leverage", "weeks[].next[].rootFor", "weeks[].stake.spread"] {
+	for required in [
+		"weeks[].results[].leverage",
+		"weeks[].next[].rootFor",
+		"weeks[].stake.spread",
+		"weeks[].stake.pieces[].want",
+		"weeks[].ways.games[].price",
+		"weeks[].ways.given.pieces[].price",
+		"weeks[].podium.medals[].pieces[].made",
+	] {
 		assert!(seen.contains(required), "missing {required}");
 	}
 }

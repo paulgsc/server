@@ -71,6 +71,19 @@ impl Table {
 		table
 	}
 
+	/// The same table with pending `game` banked as it went: no longer
+	/// pending. Unchanged when the game is not final or not pending.
+	#[must_use]
+	pub fn banking(&self, game: &Game) -> Self {
+		let mut table = self.clone();
+		let at = table.pending.iter().position(|p| p.week == game.week && p.home == game.home && p.away == game.away);
+		if let (Some(at), Some(outcome)) = (at, game.outcome()) {
+			table.pending.remove(at);
+			table.bank(game, outcome);
+		}
+		table
+	}
+
 	fn unbank(&mut self, g: &Game, outcome: Outcome) {
 		match outcome {
 			Outcome::Won(winner) => {
