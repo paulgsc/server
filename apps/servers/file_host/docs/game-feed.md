@@ -78,7 +78,7 @@ wake), `game_feed_pass_failing` (a storage failure), `game_feed_games_followed`,
 `game_feed_fetches_total{kind}` (what each fetch read as: `scoreboard`,
 `summary`, `rate_limited`, `status`, `not_json`, `not_an_object`, or why there
 was no answer: `timeout`, `connect`, `transport`) and
-`game_feed_plays_added_total`. No dashboard panel shows them yet.
+`game_feed_plays_added_total`. The GAME FEED dashboard (`infra/grafana/dashboards/game-feed.jsonnet`) shows them.
 
 ## What ESPN's data is like
 
