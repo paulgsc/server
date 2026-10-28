@@ -179,7 +179,7 @@ fn a_sampled_spread_lands_near_the_exact_one() {
 			// within a few of its own errors.
 			let (e, s) = (exact.column(0).best(|_| true), sampled.column(0).best(|_| true));
 			for (pe, ps) in e.pieces.iter().zip(&s.pieces) {
-				assert!((pe.price - ps.price).abs() < 0.02 + 4.0 * ps.error, "{}: {pe:?} vs {ps:?}", team.code());
+				assert!((pe.price - ps.price).abs() < ps.error.mul_add(4.0, 0.02), "{}: {pe:?} vs {ps:?}", team.code());
 			}
 			checked += 1;
 		}

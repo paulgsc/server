@@ -119,7 +119,8 @@ near the counted ones.
 
 Counting every team costs what the rest of the evaluation does sixteen times
 over per conference, so `evaluate` reads its tables on every core (the
-output does not depend on how many). RUNTIME
+output does not depend on how many). The whole 2025 season evaluates in
+about 4 min 20 s on four cores, release build (32 s before the ways).
 
 ## Field definitions
 
@@ -173,7 +174,9 @@ null).
   at the same points; `strip`, at the same points, the ways still possible
   per bin of `ways::BINS` (20) equal bins over `[worst, best]`. These are
   read off the same rests as `share.spread`, not as `share`: `actual` and
-  `share.after` differ by about the sample's error (a tenth of a point).
+  `share.after` differ by up to the sample's error (about half a point on
+  2025). A piece at no price wants the team's own win when the game is its
+  own (a win never hurts it), and otherwise its home side.
 - **podium**: every team's own week ranked among its own ways (its `rank`),
   among the teams whose week could move their share by at least
   `evaluate::ELIGIBLE` (one point, its standard deviation over the week's
@@ -246,5 +249,6 @@ exact one.
   many noisy ways beats the true best. `error` says how far the two halves
   of the rests disagree, not that bias.
 - **`ways` and `share` are two samples.** `ways.actual` and `share.after`
-  (and `ways.mean[0]` and `share.before`) differ by about a tenth of a
-  point; neighbouring weeks' `ways` come from different rests too.
+  (and `ways.mean[0]` and `share.before`) differ by up to about half a point
+  (the rests' sampling error; most 2025 weeks were within a quarter);
+  neighbouring weeks' `ways` come from different rests too.

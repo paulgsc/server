@@ -68,7 +68,7 @@ pub struct Road {
 }
 
 impl Column {
-	fn slates(&self) -> usize {
+	const fn slates(&self) -> usize {
 		self.share.len()
 	}
 

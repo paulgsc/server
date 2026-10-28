@@ -455,7 +455,7 @@ fn pending_of(table: &Table, slates: &Slates, j: usize) -> Pending {
 }
 
 /// The season's game for a pending one.
-fn game_of<'s>(season: &'s Season, p: Pending) -> Option<&'s Game> {
+fn game_of(season: &Season, p: Pending) -> Option<&Game> {
 	season.week(p.week).find(|g| g.home == p.home && g.away == p.away)
 }
 
@@ -479,7 +479,7 @@ fn actual_slate(season: &Season, table: &Table, slates: &Slates) -> usize {
 	})
 }
 
-fn piece(p: Pending, piece: ways::Piece) -> Piece {
+const fn piece(p: Pending, piece: ways::Piece) -> Piece {
 	Piece {
 		want: if piece.want_home { p.home } else { p.away },
 		price: Share(piece.price),
@@ -487,8 +487,19 @@ fn piece(p: Pending, piece: ways::Piece) -> Piece {
 	}
 }
 
+/// [`piece`], for `team`: a free piece of its own game wants its win, since
+/// a win never hurts it (the best way is as good either way).
+fn piece_for(p: Pending, wp: ways::Piece, team: Team) -> Piece {
+	let mut out = piece(p, wp);
+	if wp.price <= 0.0 && (p.home == team || p.away == team) {
+		out.want = team;
+	}
+	out
+}
+
 fn upcoming(season: &Season, table: &Table, slates: &Slates) -> Upcoming {
 	// The subject is the first team counted.
+	let me = slates.teams[0];
 	let best = slates.column(0).best(|_| true);
 	Upcoming {
 		spread: slates.spread(0, None),
@@ -500,7 +511,7 @@ fn upcoming(season: &Season, table: &Table, slates: &Slates) -> Upcoming {
 				NextPiece {
 					home: p.home,
 					away: p.away,
-					piece: piece(p, best.pieces[j]),
+					piece: piece_for(p, best.pieces[j], me),
 				}
 			})
 			.collect(),
@@ -516,6 +527,7 @@ fn week_ways(season: &Season, table: &Table, week: u8, ours: &Slates, theirs: &S
 	let all = column.best(|_| true);
 	let own = ours.own(0);
 	let in_order = |pieces: &[ways::Piece]| order.iter().map(|&j| piece(pending_of(table, ours, j), pieces[j])).collect::<Vec<_>>();
+	let all_in_order = order.iter().map(|&j| piece_for(pending_of(table, ours, j), all.pieces[j], me));
 	let given = own.map(|j| {
 		let held = |s: usize| s >> j & 1 == actual >> j & 1;
 		let best = column.best(held);
@@ -529,7 +541,7 @@ fn week_ways(season: &Season, table: &Table, week: u8, ours: &Slates, theirs: &S
 	let ways = Ways {
 		games: order
 			.iter()
-			.zip(in_order(&all.pieces))
+			.zip(all_in_order)
 			.map(|(&j, piece)| {
 				let p = pending_of(table, ours, j);
 				let kind = if p.home == me || p.away == me {
@@ -587,13 +599,14 @@ fn entry(season: &Season, table: &Table, week: u8, slates: &Slates, t: usize) ->
 		.enumerate()
 		.map(|(j, wp)| {
 			let p = pending_of(table, slates, j);
-			let piece = piece(p, *wp);
+			let piece = piece_for(p, *wp, team);
+			let winner = if actual >> j & 1 == 1 { p.home } else { p.away };
 			MedalPiece {
 				home: p.home,
 				away: p.away,
 				want: piece.want,
 				price: piece.price,
-				made: (actual >> j & 1 == 1) == wp.want_home,
+				made: winner == piece.want,
 			}
 		})
 		.collect();

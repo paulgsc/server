@@ -215,7 +215,7 @@ impl Slates {
 	}
 
 	/// The rests counted.
-	fn total(&self) -> usize {
+	const fn total(&self) -> usize {
 		self.rests.len() / self.teams.len()
 	}
 
@@ -244,18 +244,18 @@ impl Slates {
 		let fixed = home_won.and_then(|h| Some((self.own[t]?, h)));
 		let on = |slate: usize| fixed.is_none_or(|(j, h)| (slate >> j & 1 == 1) == h);
 		let width = self.teams.len();
-		let m = to_f64(u64::try_from(self.total()).unwrap_or(u64::MAX));
+		let rests = to_f64(u64::try_from(self.total()).unwrap_or(u64::MAX));
 		// The variance over the slates of the rests' mean.
-		let (mut s, mut sum, mut squares) = (0.0, 0.0, 0.0);
+		let (mut kept, mut sum, mut squares) = (0.0, 0.0, 0.0);
 		for slate in (0..1usize << self.games.len()).filter(|&slate| on(slate)) {
-			let c = self.ins[slate * width + t];
-			let p = f64::from(c[0] + c[1]) / m;
-			s += 1.0;
-			sum += p;
-			squares += p * p;
+			let cell = self.ins[slate * width + t];
+			let share = f64::from(cell[0] + cell[1]) / rests;
+			kept += 1.0;
+			sum += share;
+			squares = share.mul_add(share, squares);
 		}
-		let mean = sum / s;
-		let between = mean.mul_add(-mean, squares / s);
+		let mean = sum / kept;
+		let between = mean.mul_add(-mean, squares / kept);
 		let variance = if self.exact || self.total() < 2 {
 			between
 		} else {
@@ -272,11 +272,11 @@ impl Slates {
 						Some((_, true)) => home,
 						Some((_, false)) => got - home,
 					});
-					let p = x / s;
-					p * (1.0 - p)
+					let share = x / kept;
+					share * (1.0 - share)
 				})
 				.sum();
-			(m * m).mul_add(between, -own) / (m * (m - 1.0))
+			(rests * rests).mul_add(between, -own) / (rests * (rests - 1.0))
 		};
 		// A sampled estimate can dip just below zero.
 		variance.max(0.0).sqrt()

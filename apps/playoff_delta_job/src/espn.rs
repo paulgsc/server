@@ -139,11 +139,12 @@ mod tests {
 			.map(|i| {
 				let (home, away) = (Team::ALL[ring[i]], Team::ALL[ring[31 - i]]);
 				let (home_score, away_score) = if done { ("24", "17") } else { ("0", "0") };
+				let date = ["2026-09-10T17:00Z", "2026-09-10T18:00Z", "2026-09-10T19:00Z"][i % 3];
 				json!({
 					"id": "401",
 					"season": { "year": year, "type": 2 },
 					"week": { "number": week },
-					"date": format!("2026-09-10T{}:00Z", 17 + i % 3),
+					"date": date,
 					"status": { "type": { "completed": done } },
 					"competitions": [{ "competitors": [
 						{ "homeAway": "home", "team": { "abbreviation": code(home) }, "score": home_score },
