@@ -202,6 +202,10 @@ services:
     restart: unless-stopped
     command:
       - '--path.rootfs=/host'
+      # upgrade_* series: the nightly NixOS upgrade's verdict, written by
+      # paulgsc/dotfiles nixos/auto-upgrade/report.sh after every run and
+      # read here through the host root mounted below. UPGRADES dashboard.
+      - '--collector.textfile.directory=/host/var/lib/upgrade-report/metrics'
     volumes:
       - '/:/host:ro,rslave'
     mem_limit: 128M
