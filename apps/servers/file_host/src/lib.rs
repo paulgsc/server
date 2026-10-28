@@ -11,6 +11,7 @@ pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod error;
+pub mod game_feed;
 pub mod handlers;
 pub mod health;
 pub mod jobs_notice;
@@ -110,6 +111,8 @@ pub struct AppState {
 	/// `None` unless `TRANSCRIBE_ENABLED`: no voice note is heard, and home
 	/// keeps notes as they arrive.
 	pub transcribe: Option<transcribe::TranscribeContext>,
+	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
+	pub game_feed: Option<game_feed::GameFeedContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -174,6 +177,7 @@ impl AppState {
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock())?;
+		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 
 		Ok(Self {
 			core,
@@ -181,6 +185,7 @@ impl AppState {
 			nudge,
 			mailbox,
 			transcribe,
+			game_feed,
 			auth,
 		})
 	}
@@ -247,6 +252,20 @@ impl AppState {
 			deletion,
 		}))
 	}
+}
+
+/// Start the background polls the deployment turned on, each saying on its
+/// metrics whether it runs:
+///
+/// - the Jobs mailbox (`mailbox`): home is LAN-only, so the mailbox cannot
+///   tell it a digest arrived;
+/// - the voice-note transcriber (`transcribe`), over home's own database;
+/// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
+///   which games are live.
+pub fn start_polls(state: &AppState) {
+	mailbox::start(state);
+	transcribe::start(state);
+	game_feed::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

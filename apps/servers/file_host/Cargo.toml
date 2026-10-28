@@ -119,10 +119,12 @@ aph_repo = { workspace = true }
 auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
+game_feed_repo = { workspace = true }
 jobs_repo = { workspace = true }
 korean_repo = { workspace = true }
 mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
 mailbox_repo = { workspace = true }
+nfl_feed = { workspace = true }
 fcm_kit = { workspace = true, features = ["reqwest-transport"] }
 notice_repo = { workspace = true }
 sharing_repo = { workspace = true }
