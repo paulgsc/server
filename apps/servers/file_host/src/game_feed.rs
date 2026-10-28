@@ -41,6 +41,10 @@ pub const MIN_SCOREBOARD: Duration = Duration::from_secs(60);
 /// The shortest `GAME_FEED_LIVE_SECONDS`: ESPN caches its responses for 5 s
 /// (`cache-control: max-age=5`), so asking more often gets the same bytes.
 pub const MIN_LIVE: Duration = Duration::from_secs(5);
+/// The longest any cadence or the backoff cap may be: a day. Past it a
+/// fetch would be due beyond any game it is for, and a time that far out can
+/// overflow the scheduler's arithmetic.
+const MAX_CADENCE: Duration = Duration::from_secs(86_400);
 
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -74,6 +78,10 @@ impl GameFeedContext {
 		};
 		anyhow::ensure!(cadence.scoreboard >= MIN_SCOREBOARD, "GAME_FEED_SCOREBOARD_SECONDS must be at least 60");
 		anyhow::ensure!(cadence.live >= MIN_LIVE, "GAME_FEED_LIVE_SECONDS must be at least 5");
+		anyhow::ensure!(
+			cadence.backoff_cap <= MAX_CADENCE,
+			"GAME_FEED_BACKOFF_CAP_SECONDS, and so both cadences, must be at most 86400 (a day)"
+		);
 		anyhow::ensure!(
 			cadence.backoff_cap >= cadence.scoreboard.max(cadence.live),
 			"GAME_FEED_BACKOFF_CAP_SECONDS must be at least GAME_FEED_SCOREBOARD_SECONDS and GAME_FEED_LIVE_SECONDS"

@@ -25,6 +25,12 @@ use std::{collections::BTreeMap, future::Future, time::Duration};
 /// (a delayed or postponed game).
 pub const PRE_GRACE: Span = Span::hours(4);
 
+/// How long after kickoff a `post` game that is not yet final is fetched.
+///
+/// Its summary may lag the scoreboard, or the game was postponed (`post`,
+/// not completed) and is then left. Longer than any game runs.
+pub const POST_GRACE: Span = Span::hours(8);
+
 /// What a fetch answered.
 #[derive(Debug, Clone)]
 pub struct Answer {
@@ -115,7 +121,7 @@ fn span(duration: Duration) -> Span {
 struct Track {
 	kickoff: Option<DateTime<Utc>>,
 	state: Option<GameState>,
-	/// A summary saying the game is over is kept: nothing more to fetch.
+	/// A summary saying the game is final is kept: nothing more to fetch.
 	done: bool,
 	target: Target,
 }
@@ -125,7 +131,8 @@ impl Track {
 	fn followed(&self, now: DateTime<Utc>) -> bool {
 		match self.state {
 			_ if self.done => false,
-			Some(GameState::In | GameState::Post) => true,
+			Some(GameState::In) => true,
+			Some(GameState::Post) => self.kickoff.is_some_and(|kickoff| now - kickoff < POST_GRACE),
 			Some(GameState::Pre) | None => self.kickoff.is_some_and(|kickoff| kickoff <= now && now - kickoff < PRE_GRACE),
 		}
 	}
@@ -181,7 +188,13 @@ impl Schedule {
 				target: Target::now(now),
 			});
 			track.kickoff = game.kickoff.or(track.kickoff);
-			track.state = later(track.state, game.status.state);
+			// `pre` again after `post` is a postponed game rescheduled under
+			// the same event id: follow it again from its new kickoff.
+			track.state = if game.status.state == Some(GameState::Pre) && !track.done {
+				game.status.state
+			} else {
+				later(track.state, game.status.state)
+			};
 		}
 		self.games.retain(|id, track| board.games.iter().any(|game| &game.id == id) || track.followed(now));
 	}
@@ -227,7 +240,13 @@ pub async fn run_once<F: Fetch>(
 	let now = clock();
 	if schedule.scoreboard.next_at <= now {
 		let url = nfl_feed::scoreboard_url();
-		match fetch_and_keep(db, fetch, Fetched::Scoreboard, &url, clock, &mut pass).await? {
+		let read = fetch_and_keep(db, fetch, Fetched::Scoreboard, &url, clock, &mut pass).await;
+		if read.is_err() {
+			// A storage failure ends the pass; the target still waits, so
+			// a failing store is not asked again every wake.
+			schedule.scoreboard.failed(now, cadence.scoreboard, cadence.backoff_cap);
+		}
+		match read? {
 			Some(Read::Scoreboard(board)) => {
 				let mut done = Vec::new();
 				let mut conn = db.acquire().await?;
@@ -244,12 +263,18 @@ pub async fn run_once<F: Fetch>(
 	}
 	for game in schedule.due(now) {
 		let url = nfl_feed::summary_url(&game);
-		let read = fetch_and_keep(db, fetch, Fetched::Summary(&game), &url, clock, &mut pass).await?;
+		let read = fetch_and_keep(db, fetch, Fetched::Summary(&game), &url, clock, &mut pass).await;
 		let Some(track) = schedule.games.get_mut(&game) else { continue };
-		match read {
+		if read.is_err() {
+			track.target.failed(now, cadence.live, cadence.backoff_cap);
+		}
+		match read? {
 			Some(Read::Summary(summary)) => {
 				track.state = later(track.state, summary.status.state);
-				track.done = track.state == Some(GameState::Post);
+				// The summary's own word, not the scoreboard's: the
+				// scoreboard can say `post` before the summary has the
+				// last plays.
+				track.done = summary.status.is_final();
 				track.target.succeeded(now, cadence.live);
 			}
 			_ => track.target.failed(now, cadence.live, cadence.backoff_cap),
@@ -485,6 +510,76 @@ mod tests {
 		// Every answer was kept, the refusals included; the timeout had none.
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_feed_response").fetch_one(&db).await.unwrap();
 		assert_eq!(kept, 3);
+	}
+
+	#[tokio::test]
+	async fn a_game_is_left_only_once_its_own_summary_is_final() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let game_url = nfl_feed::summary_url(GAME);
+		let mut page: serde_json::Value = serde_json::from_slice(BOARD).unwrap();
+		page["events"][0]["status"]["type"]["state"] = serde_json::json!("post");
+		page["events"][0]["status"]["type"]["completed"] = serde_json::json!(true);
+		let final_board = page.to_string();
+
+		// The scoreboard says final while the summary is still live: the
+		// game is fetched again, and left only once its summary is final.
+		let mut schedule = Schedule::new(kickoff_plus(10_000));
+		fetch.answer(&board_url, 200, final_board.as_bytes());
+		fetch.answer(&game_url, 200, &live_of_game(10));
+		pass_at(&db, &fetch, &mut schedule, kickoff_plus(10_000)).await;
+		assert_eq!(schedule.followed(kickoff_plus(10_015)), 1);
+		let mut conn = db.acquire().await.unwrap();
+		assert!(!game_feed_repo::holds_final(&mut conn, GAME).await.unwrap(), "a live summary is not final");
+		drop(conn);
+		fetch.answer(&game_url, 200, &final_of_game());
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff_plus(10_015)).await.added, 10);
+		assert_eq!(schedule.followed(kickoff_plus(10_030)), 0);
+	}
+
+	#[tokio::test]
+	async fn a_postponed_game_is_not_final_and_is_followed_again_once_rescheduled() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let game_url = nfl_feed::summary_url(GAME);
+		let board_with = |state: &str, date: &str| {
+			let mut page: serde_json::Value = serde_json::from_slice(BOARD).unwrap();
+			page["events"][0]["status"]["type"]["state"] = serde_json::json!(state);
+			page["events"][0]["status"]["type"]["completed"] = serde_json::json!(false);
+			page["events"][0]["date"] = serde_json::json!(date);
+			page.to_string()
+		};
+		let mut postponed: serde_json::Value = serde_json::from_slice(PRE).unwrap();
+		postponed["header"]["competitions"][0]["status"]["type"]["state"] = serde_json::json!("post");
+
+		let mut schedule = Schedule::new(kickoff_plus(60));
+		fetch.answer(&board_url, 200, board_with("post", "2026-10-30T00:15Z").as_bytes());
+		fetch.answer(&game_url, 200, postponed.to_string().as_bytes());
+		pass_at(&db, &fetch, &mut schedule, kickoff_plus(60)).await;
+		let mut conn = db.acquire().await.unwrap();
+		assert!(!game_feed_repo::holds_final(&mut conn, GAME).await.unwrap(), "postponed is not final");
+		drop(conn);
+
+		// Two days on, the scoreboard has it again, before a new kickoff.
+		let later_kickoff = at(KICKOFF) + Span::days(2);
+		fetch.answer(&board_url, 200, board_with("pre", "2026-11-01T00:15Z").as_bytes());
+		pass_at(&db, &fetch, &mut schedule, later_kickoff - Span::hours(1)).await;
+		assert_eq!(schedule.followed(later_kickoff - Span::hours(1)), 0, "not before its new kickoff");
+		assert_eq!(schedule.followed(later_kickoff + Span::seconds(1)), 1);
+	}
+
+	#[test]
+	fn a_postponed_game_is_left_after_the_post_grace() {
+		let track = Track {
+			kickoff: Some(at(KICKOFF)),
+			state: Some(GameState::Post),
+			done: false,
+			target: Target::now(at(KICKOFF)),
+		};
+		assert!(track.followed(kickoff_plus(60)));
+		assert!(!track.followed(at(KICKOFF) + POST_GRACE));
 	}
 
 	#[test]

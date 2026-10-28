@@ -243,7 +243,7 @@ pub async fn holds_final(conn: &mut SqliteConnection, game: &str) -> Result<bool
 	.fetch_optional(&mut *conn)
 	.await?;
 	Ok(body.is_some_and(|body| match read(Fetched::Summary(game), 200, &body) {
-		Read::Summary(summary) => summary.status.state == Some(nfl_feed::GameState::Post),
+		Read::Summary(summary) => summary.status.is_final(),
 		_ => false,
 	}))
 }

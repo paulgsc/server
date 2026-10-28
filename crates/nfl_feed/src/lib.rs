@@ -120,6 +120,14 @@ pub struct Status {
 }
 
 impl Status {
+	/// Whether the game is over and final: `post` and `completed`. A `post`
+	/// game that is not completed was postponed or cancelled, and may come
+	/// back.
+	#[must_use]
+	pub fn is_final(&self) -> bool {
+		self.state == Some(GameState::Post) && self.completed == Some(true)
+	}
+
 	fn read(status: &Value) -> Self {
 		Self {
 			state: status["type"]["state"].as_str().and_then(GameState::from_espn),

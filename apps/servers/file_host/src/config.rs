@@ -447,7 +447,7 @@ pub struct Config {
 	pub game_feed_live_seconds: u64,
 
 	/// The longest a refused or failed fetch waits before the next try. At
-	/// least both cadences above.
+	/// least both cadences above, and at most 86400 (a day).
 	#[arg(long, env = "GAME_FEED_BACKOFF_CAP_SECONDS", default_value = "900")]
 	pub game_feed_backoff_cap_seconds: u64,
 
