@@ -323,7 +323,7 @@ fn whole(text: &str, signed: bool, max: i64) -> Option<i64> {
 		return None;
 	}
 	let value: i64 = text.parse().ok()?;
-	(value.abs() <= max).then_some(value)
+	(-max..=max).contains(&value).then_some(value)
 }
 
 /// Whether `text` is a line of at most [`MAX_LINE_CHARS`] characters, none a
@@ -650,7 +650,7 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 
 #[cfg(test)]
 mod tests {
-	use super::{describe, put_note, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
+	use super::{describe, put_note, whole, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -1208,5 +1208,14 @@ mod tests {
 
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
+	}
+
+	#[test]
+	fn a_number_is_whole_and_in_range_or_refused() {
+		assert_eq!(whole("-86400000", true, 86_400_000), Some(-86_400_000));
+		assert_eq!(whole("-86400001", true, 86_400_000), None);
+		assert_eq!(whole("-9223372036854775808", true, 86_400_000), None, "i64::MIN is refused, not wrapped");
+		assert_eq!(whole("+1", true, 10), None);
+		assert_eq!(whole("-1", false, 10), None);
 	}
 }
