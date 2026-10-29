@@ -1,0 +1,93 @@
+# What home owes and did not do (AS7, #525): each alert here is one
+# objective in paulgsc/some-ui's assurance ledger, named on its `objective`
+# label. Prometheus evaluates them (rule_files in ../prometheus.yml); it has
+# no Alertmanager, so Grafana reads the firing ones from `ALERTS` and sends
+# them to the owner (infra/grafana/provisioning/alerting/home-alerts.yml).
+#
+# `promtool test rules home.test.yml` proves each fires when its behaviour
+# breaks and stays quiet when it holds, in CI (test.yml, metric_contract_ci).
+#
+# Each alert's words are its `says` label, not an annotation: `ALERTS`, all
+# Grafana sees, carries labels only.
+#
+# A watcher that is switched off is not stale: every stale rule requires its
+# `*_enabled` gauge at 1, and its value is the age of its last stamp. A
+# mailbox poller or nudge waker that is on with its stamp gone is its own
+# alert, and so is file_host itself not answering a scrape.
+groups:
+  - name: home-watchers
+    rules:
+      - alert: FileHostDown
+        # Every watcher's gauges come from this one scrape, so without it
+        # every rule below reads nothing, and nothing would say why.
+        expr: (max(up{job="file_host"}) == 0) or absent(up{job="file_host"})
+        for: 2m
+        labels:
+          objective: MI3 NW2 GA4 RR2
+          says: "Home's server has not answered for 2 minutes, so nothing on it is being watched."
+
+      - alert: MailboxPollerStale
+        # MI3: no pass started within the interval, the pass budget (120 s,
+        # AS4 #524) and 60 s: 900 + 120 + 60 = 1080 s at today's settings.
+        expr: |
+          (time() - max(mailbox_poll_last_attempt_timestamp_seconds))
+            > max(mailbox_poll_interval_seconds) + 120 + 60
+          and on() max(mailbox_poll_enabled) == 1
+        labels:
+          objective: MI3
+          says: "The Jobs mailbox poller has not started a pass within its interval, its budget and a minute."
+
+      - alert: MailboxPollerMetricsMissing
+        # MI3: the poller is on (file_host says so) but its stamp is gone.
+        expr: |
+          max(mailbox_poll_enabled) == 1
+          unless on() max(mailbox_poll_last_attempt_timestamp_seconds)
+        for: 5m
+        labels:
+          objective: MI3
+          says: "The Jobs mailbox poller is on, but home reports no pass at all."
+
+      - alert: NudgeWakerStale
+        # NW2: no pass started within the waker's interval, its pass deadline
+        # and 60 s.
+        expr: |
+          (time() - max(nudge_waker_last_attempt_timestamp_seconds))
+            > max(nudge_waker_interval_seconds) + max(nudge_waker_pass_deadline_seconds) + 60
+          and on() max(nudge_waker_enabled) == 1
+        labels:
+          objective: NW2
+          says: "The study nudge waker has not started a pass within its interval, its deadline and a minute."
+
+      - alert: NudgeWakerMetricsMissing
+        expr: |
+          max(nudge_waker_enabled) == 1
+          unless on() max(nudge_waker_last_attempt_timestamp_seconds)
+        for: 5m
+        labels:
+          objective: NW2
+          says: "The study nudge waker is on, but home reports no pass at all."
+
+      - alert: GameFeedStale
+        # GA4: the feed wakes every 5 s whether or not a game is due, so two
+        # minutes without a wake is a task that stopped, not a quiet week.
+        expr: |
+          (time() - max(game_feed_last_attempt_timestamp_seconds)) > 120
+          and on() max(game_feed_enabled) == 1
+        labels:
+          objective: GA4
+          says: "The game feed has not woken for two minutes."
+
+      - alert: RoutineRunOverdue
+        # RR2: 30 minutes after a routine was due, home holds no run that
+        # started for it. A run counts for a due time if it started no more
+        # than an hour before it, so a run that starts a little early is not
+        # missing. `crate::routine_watch` sets both gauges. A record arrives
+        # when its run ends and reaches home on the next mailbox pass, so a
+        # run that takes more than about 15 minutes trips this on time:
+        # RR2's 30 minutes is the owner's bound (#525).
+        expr: |
+          (time() - routine_due_timestamp_seconds > 1800)
+          and on(routine) (routine_last_run_timestamp_seconds + 3600 < routine_due_timestamp_seconds)
+        labels:
+          objective: RR2
+          says: "A routine was due more than 30 minutes ago, and home has no record of its run."

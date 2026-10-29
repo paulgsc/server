@@ -1,0 +1,80 @@
+apiVersion: 1
+
+# Delivery for infra/prometheus/rules/home.yml (AS7, #525). Prometheus
+# evaluates those rules but has no Alertmanager, so this one rule reads every
+# alert it has firing from `ALERTS` and sends each to the owner through
+# file-host-errors.yml's contact point, one message per alert and routine
+# (that file's `home_watchers` route). The words are the rule's own `says`
+# label; `objective` names the promise in paulgsc/some-ui's ledger.
+#
+# The rule's `alertname` is copied to `prom_alert`, because `alertname` is
+# Grafana's own label for this rule.
+#
+# Prometheus not answering is an error here, and an error alerts
+# (execErrState), so a dead Prometheus is not read as nothing firing.
+groups:
+  - orgId: 1
+    name: home-watchers
+    folder: file_host operations
+    interval: 1m
+    rules:
+      - uid: home-prometheus-alerts
+        title: Home owes something it has not done
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: |
+                max by (prom_alert, routine, objective, says) (
+                  label_join(ALERTS{alertstate="firing"}, "prom_alert", "", "alertname")
+                )
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ $labels.says }}'
+          description: '{{ $labels.prom_alert }}{{ if $labels.routine }} ({{ $labels.routine }}){{ end }}, for promise {{ $labels.objective }}. Prometheus on home (localhost:9090/alerts) shows when it started.'
+        labels:
+          alert_scope: home_watchers
+          severity: warning
+        isPaused: false

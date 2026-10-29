@@ -17,6 +17,10 @@ pub use some_transport::DEV_HOST_NATS_URL;
 /// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
 pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
+/// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`
+/// and `packages/ui/topik/ROUTINE.md`).
+pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; reflections 09:00 America/Los_Angeles";
+
 // One bool per command-line switch is what a clap `Parser` is; grouping them
 // into enums would change every flag and env var the deployment sets.
 #[allow(clippy::struct_excessive_bools)]
@@ -371,6 +375,13 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900")]
 	pub mailbox_seconds: u64,
 
+	/// When each routine that leaves run records in the mailbox is due:
+	/// `<routine> <HH:MM> <IANA zone>` entries separated by `;`, the routine
+	/// `jobs` or `reflections`. Empty expects no run. Read only with the
+	/// mailbox on (`routine_watch`).
+	#[arg(long, env = "ROUTINE_SCHEDULE", default_value = DEFAULT_ROUTINE_SCHEDULE)]
+	pub routine_schedule: String,
+
 	/// Home's second mailbox token (the Worker's `ARCHIVE_TOKEN`): it moves a
 	/// file live there long enough home, and puts one back when the routine
 	/// asks. Unset, nothing is archived. Never logged.
@@ -658,8 +669,9 @@ mod tests {
 	// `NUDGE_TIMEZONE` is parsed once the nudge starts, and a name it does
 	// not know falls back to UTC with an error and a metric, by design
 	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
-	// checked by what uses them, which refuses to start on a bad one.
-	const FREE_TEXT: [&str; 29] = [
+	// checked by what uses them, which refuses to start on a bad one, as the
+	// mailbox does `ROUTINE_SCHEDULE`.
+	const FREE_TEXT: [&str; 30] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
 		"API_VERSION",
@@ -683,6 +695,7 @@ mod tests {
 		"MAILBOX_TOKEN",
 		"MAILBOX_SUBJECT",
 		"MAILBOX_ARCHIVE_TOKEN",
+		"ROUTINE_SCHEDULE",
 		"FCM_SERVICE_ACCOUNT_FILE",
 		"TRANSCRIBE_MODEL",
 		"TRANSCRIBE_VAD_MODEL",

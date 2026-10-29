@@ -1,8 +1,11 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+# What home owes and did not do (AS7, #525), each alert tested by
+# rules/home.test.yml. Grafana delivers what fires
+# (infra/grafana/provisioning/alerting/home-alerts.yml).
 rule_files:
-# - 'first_rules.yml'
+  - /etc/prometheus/rules/home.yml
 scrape_configs:
   # Prometheus itself
   - job_name: 'prometheus'

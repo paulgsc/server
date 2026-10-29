@@ -35,6 +35,27 @@ Every dashboard above binds to the one provisioned Prometheus datasource —
 prometheus`, and `dashboards/lib/config.libsonnet` is the single jsonnet-side
 definition every panel takes it from (#218).
 
+## Alerts
+
+Two paths reach the owner, both through the Slack contact point in
+`provisioning/alerting/file-host-errors.yml` (`FILE_HOST_ALERT_SLACK_WEBHOOK_URL`):
+
+- **ERROR-level events**, counted by target (`file-host-errors.yml`).
+- **What home owes and did not do** (AS7, #525): a stopped mailbox poller,
+  nudge waker or game feed, a watcher whose stamp is gone, a routine run that
+  never came, and file_host not answering. Prometheus evaluates
+  `infra/prometheus/rules/home.yml`, which `rules/home.test.yml` proves with
+  `promtool test rules` in CI. Prometheus has no Alertmanager, so
+  `provisioning/alerting/home-alerts.yml` reads what fires from `ALERTS`
+  and sends one message per alert.
+
+**Delivery is not tested by CI.** Whether a message reaches the owner depends
+on the webhook set on home. Test it once after deploying, and again whenever
+the contact point changes: in Grafana, Alerting → Contact points →
+`file-host-operations` → Test. Record the date on paulgsc/some-ui's ledger
+(MI3, NW2, GA4, RR2): until then, those promises can't say an alert reaches
+the owner.
+
 ## Parked
 
 `dashboards/parked/` holds designs whose queries assume metrics that don't
