@@ -2,7 +2,9 @@ name: CI Workflow
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    # `reopened` too: a branch pushed while its pull request was closed would
+    # otherwise reopen with no run here, which PR gate (gate.yml) expects.
+    types: [opened, synchronize, reopened]
     branches:
       - main
   release:
