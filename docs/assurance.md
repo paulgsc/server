@@ -57,11 +57,11 @@ mean something this reader does not know.
   poller added to `main.rs` is seen.
 - `KNOWN_UNPLACED` lists real background tasks the ledger has not placed yet. They are warnings,
   not failures: placing one is a some-ui change, and failing here would turn every server pull
-  request red until it lands. On the day this check landed there were two:
-  - `apps/servers/file_host/src/storage.rs`, the daily storage sampler (STORAGE1, #542). It fits
-    family `what-is-kept`, whose `paths` need `server:apps/servers/file_host/src/storage.rs`.
-  - `apps/servers/file_host/src/metrics/periodic.rs`, the 10 s operational-gauge sweep. No family
-    fits it yet; where it goes is the owner's call.
+  request red until it lands. One is left: `apps/servers/file_host/src/metrics/periodic.rs`, the
+  10 s operational-gauge sweep. No family fits it yet; where it goes is the owner's call
+  (paulgsc/some-ui#2272), and until then GC4 reads `broken`. The daily storage sampler
+  (`storage.rs`), the other on the day this check landed, is in `what-is-kept` since
+  paulgsc/some-ui#2271.
 
   Once the ledger places one, the check warns that its entry can go; it does not fail, for the
   same reason. A new unplaced task, in a file in neither list, fails.
