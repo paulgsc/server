@@ -30,18 +30,20 @@ fn every_week_follows_from_the_last() {
 		assert!(!pair[0].clinched || pair[1].clinched, "week {}", pair[1].week);
 	}
 	for w in &story.weeks {
-		for r in &w.results {
-			// A conference team's loss to the other conference never hurts.
-			if r.kind == Kind::Exported {
-				let sign = if r.winner.conference() == Team::Sf.conference() { -1.0 } else { 1.0 };
-				assert!(sign * r.leverage.0 >= 0.0, "week {}: {} beat {}", w.week, r.winner.code(), r.loser.code());
+		// A conference team's loss to the other conference never hurts, so
+		// the best way never needs a conference team to win one (a piece at
+		// a price; a free one wants its home side).
+		let wants = w
+			.ways
+			.games
+			.iter()
+			.map(|g| (g.kind, g.piece))
+			.chain(w.stake.iter().flat_map(|s| s.pieces.iter().map(|p| (p.kind, p.piece))));
+		for (kind, piece) in wants {
+			if kind == Kind::Exported && piece.price.0 > 0.0 {
+				assert_ne!(piece.want.conference(), Team::Sf.conference(), "week {}: {piece:?}", w.week);
 			}
 		}
-		assert!(w.results.windows(2).all(|p| p[0].leverage.0.abs() >= p[1].leverage.0.abs()));
-		assert!(w
-			.next
-			.iter()
-			.all(|n| n.home != Team::Sf && n.away != Team::Sf && (n.root_for == n.home || n.root_for == n.away)));
 		// A clinch is every way in: a share of one.
 		if w.clinched {
 			assert!((w.share.after.0 - 1.0).abs() < 1e-12, "week {}", w.week);
@@ -136,7 +138,7 @@ fn a_bye_is_a_week_with_no_game() {
 	assert!(bye.week == 9 || bye.week == 10);
 	assert_eq!(bye.paths.wins_before, bye.paths.wins_after);
 	assert!(bye.share.own.0.abs() < 1e-12, "a bye has no result of its own");
-	assert!(bye.results.iter().all(|r| r.kind != Kind::Own));
+	assert!(bye.ways.games.iter().all(|g| g.kind != Kind::Own));
 }
 
 #[test]
@@ -165,7 +167,7 @@ fn key_paths(value: &Value, at: &str, out: &mut BTreeSet<String>) {
 	}
 }
 
-/// The keys `story.ts` (contract v4) declares. A key added there is added
+/// The keys `story.ts` (contract v5) declares. A key added there is added
 /// here, and to `story.rs`, in the same pair of changes.
 const CONTRACT: &str = "
 version label seasonLength team names conference ways weeks
@@ -174,11 +176,8 @@ weeks[].game weeks[].game.opponent weeks[].game.won weeks[].game.relation
 weeks[].paths weeks[].paths.before weeks[].paths.after weeks[].paths.winsBefore weeks[].paths.winsAfter
 weeks[].share weeks[].share.before weeks[].share.after weeks[].share.own weeks[].share.league weeks[].share.spread weeks[].share.exact
 weeks[].pending weeks[].pending.before weeks[].pending.after
-weeks[].results weeks[].results[].winner weeks[].results[].loser weeks[].results[].kind weeks[].results[].leverage
-weeks[].results[].collapse weeks[].results[].collapse.peakWinProbability weeks[].results[].collapse.led
-weeks[].next weeks[].next[].home weeks[].next[].away weeks[].next[].rootFor weeks[].next[].swing
 weeks[].stake weeks[].stake.opponent weeks[].stake.own weeks[].stake.spread weeks[].stake.exact
-weeks[].stake.pieces weeks[].stake.pieces[].home weeks[].stake.pieces[].away
+weeks[].stake.pieces weeks[].stake.pieces[].home weeks[].stake.pieces[].away weeks[].stake.pieces[].kind
 weeks[].stake.pieces[].want weeks[].stake.pieces[].price weeks[].stake.pieces[].error
 weeks[].clinched
 weeks[].ways weeks[].ways.games weeks[].ways.games[].home weeks[].ways.games[].away weeks[].ways.games[].kind
@@ -203,8 +202,7 @@ fn serializes_to_the_contract_keys() {
 	let extra: Vec<_> = seen.difference(&allowed).collect();
 	assert!(extra.is_empty(), "keys the contract does not have: {extra:?}");
 	for required in [
-		"weeks[].results[].leverage",
-		"weeks[].next[].rootFor",
+		"weeks[].stake.pieces[].kind",
 		"weeks[].stake.spread",
 		"weeks[].stake.pieces[].want",
 		"weeks[].ways.games[].price",

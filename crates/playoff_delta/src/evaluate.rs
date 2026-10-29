@@ -12,8 +12,6 @@
 //! - **Share**: of the ways the rest of the season can go, the share in which
 //!   the team gets in ([`count`]). It is a fair game: over the ways a week
 //!   can go, the share after it averages to the share before.
-//! - **Leverage** of a result: the share as it happened minus the share had
-//!   it gone the other way, the rest of the week held as it happened.
 //! - **Spread** of a week: the share's standard deviation over the ways the
 //!   week's results can go ([`count::Slates::spread`]). The league's change
 //!   over its spread is the week's luck; the stage divides, so the contract
@@ -32,8 +30,8 @@ use crate::{
 	season::{Game, Outcome, Season},
 	solver::{self, Memo},
 	story::{
-		Collapse, Given, Kind, Left, Medal, MedalPiece, Next, NextPiece, Piece, Played, Podium, Relation, Share, Stake, StoryGame, StoryPaths, StoryResult, StorySeason,
-		StoryShare, StoryWeek, WayGame, Ways, WinLoss,
+		Given, Kind, Left, Medal, MedalPiece, NextPiece, Piece, Played, Podium, Relation, Share, Stake, StoryGame, StoryPaths, StorySeason, StoryShare, StoryWeek, WayGame, Ways,
+		WinLoss,
 	},
 	table::{Pending, Table},
 	ways,
@@ -56,12 +54,6 @@ pub const WAYS: u32 = 100_000;
 /// 2026 season a quarter as many moved a week's spread by about a tenth of
 /// itself; this many costs a few seconds a season.
 pub const RESTS: u32 = 16_384;
-
-/// How many of next week's games a story names.
-pub const NEXT: usize = 3;
-
-/// A swing smaller than this (a twentieth of a point) is not named.
-const MIN_SWING: f64 = 0.0005;
 
 /// How far a team's week must be able to move its share (its standard
 /// deviation over the week's ways: a point) for the team to be ranked on
@@ -142,7 +134,6 @@ pub fn evaluate(season: &Season, subject: &Subject) -> Result<StorySeason, Evalu
 		.map(|week| {
 			let w = usize::from(week);
 			Week {
-				season,
 				subject,
 				memo: &memo,
 				number: week,
@@ -162,7 +153,7 @@ pub fn evaluate(season: &Season, subject: &Subject) -> Result<StorySeason, Evalu
 		})
 		.collect();
 	Ok(StorySeason {
-		version: 4,
+		version: 5,
 		label: subject.label.clone(),
 		season_length,
 		team: subject.team,
@@ -204,7 +195,6 @@ struct Pair<T> {
 }
 
 struct Week<'a> {
-	season: &'a Season,
 	subject: &'a Subject,
 	memo: &'a Memo,
 	/// The week number.
@@ -239,8 +229,6 @@ impl Week<'_> {
 				before: left(self.tables.before),
 				after: left(self.tables.after),
 			},
-			results: self.results(),
-			next: self.next(),
 			stake: self.stake(),
 			clinched: solver::clinched(self.tables.after, me),
 			ways: self.played.ways.clone(),
@@ -296,70 +284,6 @@ impl Week<'_> {
 			spread: Share(self.played.spread),
 			exact: before.exact && after.exact,
 		}
-	}
-
-	/// Every decided game this week with a side in the subject's conference,
-	/// most leverage first.
-	fn results(&self) -> Vec<StoryResult> {
-		let me = self.subject.team;
-		let conf = me.conference();
-		let share = self.tallies.after.share;
-		let mut out: Vec<StoryResult> = self
-			.season
-			.week(self.number)
-			.filter_map(|g| {
-				let Some(Outcome::Won(winner)) = g.outcome() else {
-					return None;
-				};
-				let kind = match (g.involves(me), g.home.conference() == conf, g.away.conference() == conf) {
-					(true, _, _) => Kind::Own,
-					(false, true, true) => Kind::Inside,
-					(false, false, false) => return None,
-					_ => Kind::Exported,
-				};
-				let loser = g.opponent(winner);
-				let flipped = count::share(&self.tables.after.decided(g, Outcome::Won(loser)), me, self.subject.ways);
-				Some(StoryResult {
-					winner,
-					loser,
-					kind,
-					leverage: Share(share - flipped),
-					collapse: g.collapse.map(|c| Collapse {
-						peak_win_probability: c.peak_win_probability,
-						led: c.led,
-					}),
-				})
-			})
-			.collect();
-		out.sort_by(|a, b| b.leverage.0.abs().total_cmp(&a.leverage.0.abs()));
-		out
-	}
-
-	/// Next week's games with a side in the conference, other than the
-	/// subject's own, by how far the share swings on them.
-	fn next(&self) -> Vec<Next> {
-		let me = self.subject.team;
-		let mut out: Vec<Next> = self
-			.tables
-			.after
-			.pending()
-			.iter()
-			.zip(&self.tallies.after.given)
-			.filter(|(p, _)| p.week.checked_sub(1) == Some(self.number) && p.home != me && p.away != me)
-			.filter_map(|(p, given)| {
-				let (home_won, away_won) = (*given)?;
-				let swing = home_won - away_won;
-				(swing.abs() >= MIN_SWING).then_some(Next {
-					home: p.home,
-					away: p.away,
-					root_for: if swing > 0.0 { p.home } else { p.away },
-					swing: Share(swing.abs()),
-				})
-			})
-			.collect();
-		out.sort_by(|a, b| b.swing.0.total_cmp(&a.swing.0));
-		out.truncate(NEXT);
-		out
 	}
 
 	/// What next week can do: the subject's own game, and every result
@@ -479,6 +403,18 @@ fn actual_slate(season: &Season, table: &Table, slates: &Slates) -> usize {
 	})
 }
 
+/// What kind of game `p` is for `me`. A slate's games all have a side in
+/// `me`'s conference.
+fn kind_of(p: Pending, me: Team) -> Kind {
+	if p.home == me || p.away == me {
+		Kind::Own
+	} else if p.home.conference() == p.away.conference() {
+		Kind::Inside
+	} else {
+		Kind::Exported
+	}
+}
+
 const fn piece(p: Pending, piece: ways::Piece) -> Piece {
 	Piece {
 		want: if piece.want_home { p.home } else { p.away },
@@ -511,6 +447,7 @@ fn upcoming(season: &Season, table: &Table, slates: &Slates) -> Upcoming {
 				NextPiece {
 					home: p.home,
 					away: p.away,
+					kind: kind_of(p, me),
 					piece: piece_for(p, best.pieces[j], me),
 				}
 			})
@@ -544,17 +481,10 @@ fn week_ways(season: &Season, table: &Table, week: u8, ours: &Slates, theirs: &S
 			.zip(all_in_order)
 			.map(|(&j, piece)| {
 				let p = pending_of(table, ours, j);
-				let kind = if p.home == me || p.away == me {
-					Kind::Own
-				} else if p.home.conference() == p.away.conference() {
-					Kind::Inside
-				} else {
-					Kind::Exported
-				};
 				WayGame {
 					home: p.home,
 					away: p.away,
-					kind,
+					kind: kind_of(p, me),
 					winner: if actual >> j & 1 == 1 { p.home } else { p.away },
 					piece,
 				}

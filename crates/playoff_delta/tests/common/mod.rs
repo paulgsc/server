@@ -64,7 +64,6 @@ fn invented_games(seed: u64, through: u8) -> Vec<Game> {
 				home: Team::ALL[home],
 				away: Team::ALL[away],
 				score,
-				collapse: None,
 				// Four games a slot, the slots in the reverse of the ring's
 				// order, so kickoff order is not the schedule's.
 				kickoff: Some(u64::from(week) * 100 + u64::try_from(15 - i).unwrap_or_default() / 4),

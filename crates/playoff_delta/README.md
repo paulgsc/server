@@ -3,7 +3,7 @@
 The deterministic evaluator behind the Playoff Delta vlog: one NFL regular
 season in, one team's week-by-week story out, as the JSON
 `paulgsc/some-ui`'s `@some-ui/playoff-delta` stage renders
-(`packages/ui/playoff-delta/src/lib/story.ts`, contract version 4).
+(`packages/ui/playoff-delta/src/lib/story.ts`, contract version 5).
 
 The short asks, every week, whether following the team paid, and whether it
 is still worth following. Both answers come from one count: **of the ways the
@@ -47,7 +47,7 @@ commits the JSON the stage fetches.
 | `count` | `tally(table, team, ways)`: the share of the ways the rest can go in which the team gets in; `slates`: every way a week can go, for every team of a conference, and its spread |
 | `ways` | a team's column of `slates`: the best way, each game's price, the road in kickoff order, the rank |
 | `evaluate` | the story's fields, from the solver and the count |
-| `story` | the contract types, serialized to `story.ts` v4 |
+| `story` | the contract types, serialized to `story.ts` v5 |
 
 ## The solver
 
@@ -85,8 +85,8 @@ always gives the same share (PD2). A sample's draws depend only on its number
 and the game's place among the conference's pending games, so a table and
 itself with one banked result flipped are compared on the same ways, and so
 are a pending game's two sides (each way is seeded again with that one game
-flipped). That is what keeps a result's leverage, a week's split and a next
-week's swing much closer than the share's own error.
+flipped). That is what keeps a week's split and next week's own swing much
+closer than the share's own error.
 
 `src/count/tests.rs` checks it against brute force (every outcome, exact to
 the last bit), a sample against the exact share, and the sign conservation
@@ -120,7 +120,7 @@ near the counted ones.
 Counting every team costs what the rest of the evaluation does sixteen times
 over per conference, so `evaluate` reads its tables on every core (the
 output does not depend on how many). The whole 2025 season evaluates in
-about 4 min 20 s on four cores, release build (32 s before the ways).
+about 2.5 min on four cores, release build (32 s before the ways).
 
 ## Field definitions
 
@@ -140,13 +140,6 @@ null).
   (every result on a bye or a tie). `exact` when every way was counted at
   both tables.
 - **pending**: games left in the league, before and after.
-- **results**: every decided game of the week with a side in the subject's
-  conference: `kind` `own`, `exported` (against the other conference) or
-  `inside`; `leverage`, the share as it happened minus the share with that
-  result flipped and the rest of the week held. Most leverage first.
-- **next**: next week's games with a side in the conference, other than the
-  subject's, by how far the share swings on them (`swing`: the share if
-  `rootFor` wins minus the share if it loses), three at most.
 - **stake**: next week, before it is played: `opponent`, the subject's
   opponent (null on its bye); `own`, the share if the subject wins its game
   minus the share if it loses, unsigned (0 on its bye, or when the game
@@ -155,8 +148,9 @@ null).
   results can go, the subject's own among them; `exact` when every rest was
   counted. Null once no game is left.
 - **stake.pieces**: next week's best way: its games with a side in the
-  conference, in kickoff order, each with `want`, `price` and `error` as in
-  `ways`.
+  conference, in kickoff order, each with its `kind` (`own`, `exported`
+  against the other conference, or `inside`) and `want`, `price` and
+  `error` as in `ways`.
 - **ways**: every way the week's results could have gone, counted against
   the same rests (`count::slates`), from the table before the week with its
   tied games banked first (a tie is none of its ways). `games`: the week's
@@ -221,7 +215,7 @@ exact one.
     `std::env` or `rand` use under `src/`.
   - _Scope:_ `crates/playoff_delta/src` (tests excepted).
   - _Why not enforced:_ a lint for std paths is mechanical; not yet a rule.
-- **PD3: `story.rs` serializes to `story.ts` v4, and only to it.**
+- **PD3: `story.rs` serializes to `story.ts` v5, and only to it.**
   - _Claim:_ every key `story.rs` emits is declared by the client schema.
   - _Falsified by_ a hunk that adds, renames or removes a field in
     `src/story.rs` without the same change to `CONTRACT` in
@@ -231,18 +225,19 @@ exact one.
     holds a hand copy of it. Validating real output with the client's
     `parseStorySeason` is the full check (done by hand when this landed).
 
-## Known gaps in contract v4
+## Known gaps in contract v5
 
 - **Tied games.** `record` has no `t`. A banked tie counts as half a win in
   every computation, and the record shown drops it. Remaining games are
   decided as wins and losses only, in the solver and the count, and a tied
-  game is not one of a week's `results`.
+  game is banked before its week, so it is none of the week's `ways`.
 - **The week's spread is sampled** (`evaluate::RESTS`), and the luck read
   off it carries that error.
 - **Tiebreakers in the count.** The count seeds each way under PD1, like the
   solver, so a share is the most generous reading too (paulgsc/server#496).
-- **`collapse`** needs an in-game win-probability feed; the ESPN adapter
-  reads scoreboards only, so it is never set.
+- **No win probabilities.** The ESPN adapter reads scoreboards only, so
+  nothing says whether a loser led or was the likelier winner (v4's
+  `results[].collapse`, never set, retired in v5).
 - **Postponed games.** A week with a pending game while a later week has
   finals is refused (`ResultsOutOfOrder`), not guessed around.
 - **A price is a max of sampled shares**, so it leans high: the best of

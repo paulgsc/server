@@ -79,7 +79,6 @@ fn game(event: &Value, year: u16) -> Result<Option<Game>, FeedError> {
 		home,
 		away,
 		score,
-		collapse: None,
 		kickoff: event["date"].as_str().and_then(minutes),
 	}))
 }

@@ -1,4 +1,4 @@
-//! The output, contract version 4.
+//! The output, contract version 5.
 //!
 //! `paulgsc/some-ui`'s `packages/ui/playoff-delta/src/lib/story.ts`, field
 //! for field. That zod schema is the contract; these types
@@ -28,14 +28,7 @@ impl Serialize for Share {
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Collapse {
-	pub peak_win_probability: f64,
-	pub led: bool,
-}
-
-/// What kind of game a result was, for the team the story follows.
+/// What kind of game a piece is, for the team the story follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -45,19 +38,6 @@ pub enum Kind {
 	Exported,
 	/// Two conference teams, neither of them the team.
 	Inside,
-}
-
-/// One decided game that can matter to the team.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct StoryResult {
-	pub winner: Team,
-	pub loser: Team,
-	pub kind: Kind,
-	/// The share as it happened, minus the share had it gone the other way.
-	pub leverage: Share,
-	/// The loser's best moment in the game, when the feed has it.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub collapse: Option<Collapse>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -138,6 +118,7 @@ pub struct Piece {
 pub struct NextPiece {
 	pub home: Team,
 	pub away: Team,
+	pub kind: Kind,
 	#[serde(flatten)]
 	pub piece: Piece,
 }
@@ -241,17 +222,6 @@ pub struct Left {
 	pub after: u16,
 }
 
-/// A game next week, worth rooting for.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Next {
-	pub home: Team,
-	pub away: Team,
-	pub root_for: Team,
-	/// The share if `root_for` wins, minus the share if it loses.
-	pub swing: Share,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StoryWeek {
 	pub week: u8,
@@ -262,9 +232,6 @@ pub struct StoryWeek {
 	pub share: StoryShare,
 	/// Games left in the league.
 	pub pending: Left,
-	/// Every decided game this week that can matter, most leverage first.
-	pub results: Vec<StoryResult>,
-	pub next: Vec<Next>,
 	/// `None` once no game is left.
 	pub stake: Option<Stake>,
 	/// Proven: every way the rest of the season can go gets the team in
