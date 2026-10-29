@@ -7,28 +7,19 @@
 use crate::league::Team;
 use std::fmt;
 
-/// The loser's best moment in a game, when the feed has it: its peak win
-/// probability (0-1) and whether it ever led.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Collapse {
-	pub peak_win_probability: f64,
-	pub led: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Score {
 	pub home: u16,
 	pub away: u16,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
 	pub week: u8,
 	pub home: Team,
 	pub away: Team,
 	/// `None` until the game is final.
 	pub score: Option<Score>,
-	pub collapse: Option<Collapse>,
 	/// When it kicks off, as any key that sorts the week's games in the
 	/// order they start (the ESPN adapter writes minutes since the Unix
 	/// epoch). `None` when the feed has no time; such games sort last.
