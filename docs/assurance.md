@@ -19,8 +19,7 @@ Each script's docstring is the precise rule; this page says why, and where each 
 
 It checks out some-ui's `main` the way `routes.yml` does (public, no token), finds the ledger by
 its `schema` among the files named `ledger.json`, and reads only what its rules need. Fields it
-does not read (a top-level `stores` list, a new field on an objective) are ignored, never
-rejected: some-ui's check holds the ledger's shape, and some-ui's grammar can grow without a
+does not read (a store's `growth`, a new field on an objective) are ignored, never rejected: some-ui's check holds the ledger's shape, and some-ui's grammar can grow without a
 change here. A `schema` other than `some-ui.assurance-ledger/1` fails, since a new grammar may
 mean something this reader does not know.
 
@@ -38,6 +37,17 @@ mean something this reader does not know.
    module's root, where the mailbox poller is spawned) and everything under `src/mailbox/`. The
    families already name the modules their work lives in, so the rule asks nothing new of the
    ledger.
+
+4. **Every table is a store, and every store a table** (STORAGE5, some-ui#2226; some-ui's check
+   holds the mailbox and phone halves). The tables `migrations/*.up.sql` leave standing, applied
+   in file-name order (`CREATE TABLE` adds, `DROP TABLE` removes, `ALTER TABLE x RENAME TO y`
+   renames, comments and string literals read out first), each have a `server:<table>` entry in
+   the ledger's `stores`, and every `server:` store names one of them. `TEMP` tables, sqlx's
+   `_sqlx_migrations` and `sqlite_*` are not stores. The reading is lexical, so SQLite then
+   applies the same files to an empty database and the check fails if the two table sets differ:
+   a statement the reading misses is seen rather than passed. A new table therefore needs its
+   store in some-ui's ledger, saying how it grows, before the migration that adds it merges. On
+   the day this landed, the migrations left 40 tables standing and the ledger listed all 40.
 
 ### What is not a background task, and what is not placed yet
 

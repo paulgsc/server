@@ -8,7 +8,9 @@
 #   - a `server:` proof of a promise that holds whose file is gone or no longer
 #     contains the name (a renamed test, say);
 #   - a `server:` path in a family, an evidence ref or a watch that is gone;
-#   - a background task file_host spawns that no family's paths cover.
+#   - a background task file_host spawns that no family's paths cover;
+#   - a table the migrations leave standing with no `server:<table>` store, or
+#     a `server:` store naming a table that is not there.
 # scripts/check_assurance_ledger.py holds the rules; docs/assurance.md says
 # why and where they stop.
 #
@@ -46,7 +48,7 @@ jobs:
           repository: paulgsc/some-ui
           path: some-ui
 
-      - name: The ledger's server proofs, paths and background tasks
+      - name: The ledger's server proofs, paths, background tasks and tables
         run: |
           set -euo pipefail
           python3 server/scripts/check_assurance_ledger.py --self-test

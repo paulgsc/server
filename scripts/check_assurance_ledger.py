@@ -7,7 +7,7 @@ some-ui keeps one record of what the system promises about outcomes and work,
 everything it can see, but it cannot see this repository, so a `server:` path
 it names is taken as written. This script reads that ledger, as
 `.github/workflows/assurance.yml` checks it out from some-ui's `main`, and
-holds three rules against this repository as the PR leaves it:
+holds four rules against this repository as the PR leaves it:
 
 1. **A proof that holds exists.** Every `server:<file>#<name>` proof of an
    objective whose verdict is `holds` (and that has not retired) names a
@@ -30,6 +30,16 @@ holds three rules against this repository as the PR leaves it:
    sites that no family covers fails, unless it is in NOT_BACKGROUND (below,
    spawns that owe no later outcome, with their exact count) or KNOWN_UNPLACED
    (a real background task the ledger has not placed yet; a warning).
+4. **Every table is a store, and every store a table** (STORAGE5,
+   some-ui#2226). The tables `migrations/*.up.sql` leave standing, applied
+   in file-name order (`CREATE TABLE` adds, `DROP TABLE` removes,
+   `ALTER TABLE x RENAME TO y` renames; `--` and `/* */` comments and string
+   literals are read out first; `TEMP` tables, sqlx's `_sqlx_migrations` and
+   `sqlite_*` are not stores), each have a `server:<table>` entry in the
+   ledger's `stores`, and every `server:` store names one of them. SQLite
+   itself then applies the same files to an empty database, and a table set
+   that differs from this reading fails, so a statement shape the reading
+   misses is seen. A ledger with no `stores` list warns.
 
 Why file_host, and why by module: the ledger's families describe home, and
 home is file_host. Its families already name the modules their work lives in
@@ -54,9 +64,10 @@ fails, because some-ui's `main` moves on its own, and a server PR that did
 not touch a task would otherwise turn red the day the ledger placed it.
 
 The ledger is read for what these rules need and nothing else: fields the
-rules do not read (a top-level `stores` list, say) are ignored, never
-rejected; some-ui's own check holds the ledger's shape. A field these rules
-do need that is missing or of the wrong kind fails, naming the field.
+rules do not read (a store's `growth`, `synchronous`, a field added later)
+are ignored, never rejected; some-ui's own check holds the ledger's shape. A
+field these rules do need that is missing or of the wrong kind fails, naming
+the field.
 
     python3 scripts/check_assurance_ledger.py --some-ui <checkout of paulgsc/some-ui>
     python3 scripts/check_assurance_ledger.py --ledger <ledger.json>
@@ -74,6 +85,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -188,6 +200,13 @@ class Family:
 	id: str
 	paths: tuple[str, ...]
 	objectives: tuple[Objective, ...]
+
+
+def read_stores(data: dict[str, Any]) -> list[str] | None:
+	"""Each `stores` entry's `store` name; None when the ledger has no `stores` list."""
+	if "stores" not in data:
+		return None
+	return [need(need(e, dict, f"stores[{i}]").get("store"), str, f"stores[{i}].store") for i, e in enumerate(need(data["stores"], list, "stores"))]
 
 
 def read_ledger(data: Any) -> list[Family]:
@@ -444,6 +463,105 @@ def check_tasks(families: list[Family], repo: Repo, report: Report) -> None:
 	report.notes.append(f"{sum(len(v) for v in scan.sites.values())} spawn sites in {len(scan.sites)} files: {placed} files in a family, {unplaced} in none")
 
 
+# --- rule 4: tables and stores ----------------------------------------------------------
+
+
+def sql_name(group: str) -> str:
+	"""A table name, perhaps quoted, perhaps after `schema.`; the name itself captured as `group`."""
+	quoted = r"""(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+)"""
+	return rf"(?:{quoted}\s*\.\s*)?(?P<{group}>{quoted})"
+
+
+SQL_STATEMENT = re.compile(
+	rf"\bCREATE\s+(?P<temp>(?:TEMP|TEMPORARY)\s+)?(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{sql_name('created')}"
+	rf"|\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?{sql_name('dropped')}"
+	rf"|\bALTER\s+TABLE\s+{sql_name('renamed')}\s+RENAME\s+TO\s+{sql_name('to')}",
+	re.IGNORECASE,
+)
+NOT_A_STORE = re.compile(r"^(?:_sqlx_migrations|sqlite_.*)$")
+
+
+def sql_code(sql: str) -> str:
+	"""The SQL with `--` and `/* */` comments and the insides of '...' literals blanked."""
+	out, i, n = [], 0, len(sql)
+	while i < n:
+		if sql.startswith("--", i):
+			end = sql.find("\n", i)
+			i = n if end == -1 else end
+		elif sql.startswith("/*", i):
+			end = sql.find("*/", i + 2)
+			i = n if end == -1 else end + 2
+			out.append(" ")
+		elif sql[i] == "'":
+			j = i + 1
+			while j < n and not (sql[j] == "'" and not sql.startswith("''", j)):
+				j += 2 if sql.startswith("''", j) else 1
+			out.append("''")
+			i = j + 1
+		else:
+			out.append(sql[i])
+			i += 1
+	return "".join(out)
+
+
+def unquote(name: str) -> str:
+	return (name[1:-1] if name[:1] in "\"`[" else name).lower()
+
+
+def standing_tables(repo: Repo) -> set[str]:
+	"""The tables `migrations/*.up.sql`, applied in file-name order, leave standing (temp ones aside)."""
+	standing: set[str] = set()
+	for path in sorted(f for f in repo.files if re.fullmatch(r"migrations/[^/]+\.up\.sql", f)):
+		temp: set[str] = set()
+		for m in SQL_STATEMENT.finditer(sql_code(repo.read(path))):
+			if m.group("created"):
+				(temp if m.group("temp") else standing).add(unquote(m.group("created")))
+			elif m.group("dropped"):
+				name = unquote(m.group("dropped"))
+				(temp if name in temp else standing).discard(name)
+			else:
+				old, new = unquote(m.group("renamed")), unquote(m.group("to"))
+				where = temp if old in temp else standing
+				if old in where:
+					where.discard(old)
+					where.add(new)
+	return {t for t in standing if not NOT_A_STORE.match(t)}
+
+
+def applied_tables(repo: Repo) -> set[str] | str:
+	"""The same set, from SQLite itself applying the migrations to an empty database; why not, if it cannot."""
+	db = sqlite3.connect(":memory:")
+	try:
+		for path in sorted(f for f in repo.files if re.fullmatch(r"migrations/[^/]+\.up\.sql", f)):
+			db.executescript(repo.read(path))
+		names = {row[0].lower() for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+	except sqlite3.Error as err:
+		return f"{path}: {err}"
+	finally:
+		db.close()
+	return {t for t in names if not NOT_A_STORE.match(t)}
+
+
+def check_stores(stores: list[str] | None, repo: Repo, report: Report) -> None:
+	if stores is None:
+		report.warn("No stores list", "the ledger has no `stores` list, so no table was checked against it")
+		return
+	listed = {s[len("server:") :].lower() for s in stores if s.startswith("server:")}
+	standing = standing_tables(repo)
+	# The rule is the lexical reading; SQLite applying the same files checks it,
+	# so a statement shape the reader misses fails instead of passing silently.
+	applied = applied_tables(repo)
+	if isinstance(applied, str):
+		report.warn("Migrations not applied", f"SQLite could not apply the migrations ({applied}), so the reading of their tables is not cross-checked")
+	elif applied != standing:
+		report.error("Migrations read wrongly", f"SQLite leaves {sorted(applied - standing)} standing and the reader does not; the reader leaves {sorted(standing - applied)} and SQLite does not: fix sql_code or SQL_STATEMENT")
+	for table in sorted(standing - listed):
+		report.error("Table in no store", f"migrations leave table {table} standing, and the ledger's `stores` has no server:{table}: add it in some-ui's ledger, with how it grows")
+	for table in sorted(listed - standing):
+		report.error("Store names no table", f"the ledger's `stores` lists server:{table}, and no migration here leaves that table standing")
+	report.notes.append(f"{len(standing)} tables the migrations leave standing, {len(listed)} server stores listed")
+
+
 # --- running it --------------------------------------------------------------------------
 
 
@@ -451,12 +569,14 @@ def check(data: Any, repo: Repo) -> Report:
 	report = Report()
 	try:
 		families = read_ledger(data)
+		stores = read_stores(data)
 	except LedgerShape as err:
 		report.error("Ledger unreadable", str(err))
 		return report
 	proofs = check_proofs_and_paths(families, repo, report)
 	report.notes.insert(0, f"{len(families)} families, {proofs} server proofs of a holds checked")
 	check_tasks(families, repo, report)
+	check_stores(stores, repo, report)
 	return report
 
 
@@ -509,8 +629,11 @@ def objective(oid: str, verdict: str = "holds", proof: list[str] | None = None, 
 	return o
 
 
+STORES = [{"store": f"server:{t}", "class": "record", "growth": "x", "family": "f"} for t in ("account", "notes", "game_body")] + [{"store": "mailbox:item", "family": "f"}]
+
+
 def ledger(*families: dict[str, Any], **extra: Any) -> dict[str, Any]:
-	return {"schema": SCHEMA, "families": list(families), "synchronous": [], **extra}
+	return {"schema": SCHEMA, "families": list(families), "synchronous": [], "stores": STORES, **extra}
 
 
 def fam(fid: str, paths: list[str], *objectives: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -534,6 +657,10 @@ BASE_FILES = {
 	f"{SRC}/handlers/auth.rs": "fn h() {}\n#[cfg(test)]\nmod tests {\n\t#[tokio::test(flavor = \"multi_thread\")]\n\tasync fn t() { let x = tokio::spawn(async { '{' }); }\n}\n",
 	".github/workflows/lint.yml": "",
 	"docs/study-nudge.md": "",
+	"migrations/0001_init.up.sql": "-- CREATE TABLE ghost (a);\nCREATE TABLE IF NOT EXISTS \"Account\" (id TEXT DEFAULT '-- DROP TABLE account');\n/* DROP TABLE account; */\nCREATE TABLE notes_old (a);\nCREATE TABLE _sqlx_migrations (v);\n",
+	"migrations/0001_init.down.sql": "DROP TABLE account;\n",
+	"migrations/0002_rename.up.sql": "ALTER TABLE notes_old RENAME TO notes;\nCREATE TABLE game_response (a);\n",
+	"migrations/0003_rebuild.up.sql": "CREATE TABLE game_body (a);\nCREATE TEMP TABLE game_check (a);\nDROP TABLE game_check;\nCREATE TEMP TABLE scratch AS SELECT 1;\nDROP TABLE game_response;\n",
 }
 GOOD_FAMILIES = [
 	fam("routine-to-home", ["some-ui:apps/mailbox", f"server:{SRC}/mailbox"], objective("MI1", proof=[f"server:{SRC}/mailbox/pass.rs#every_failed_phase_is_reported"], refs=[f"server:{SRC}/mailbox/pass.rs", "server#523", None])),
@@ -566,7 +693,7 @@ def self_test() -> int:
 	if spawning != {f"{SRC}/{f}" for f in ("main.rs", "websocket.rs", "websocket/broadcast/handlers.rs", "websocket/message/handlers.rs", "mailbox.rs", "storage.rs", "metrics/periodic.rs", "transcribe/engine.rs")} - {f"{SRC}/storage.rs", f"{SRC}/metrics/periodic.rs"}:
 		failures.append(f"the files read as spawning (placed or exempt) are {sorted(spawning)}")
 	# Fields the rules do not read are ignored, never rejected.
-	expect("unknown fields", run(ledger(*GOOD_FAMILIES, stores=[{"store": "x", "family": "y"}], future={"a": 1})), [])
+	expect("unknown fields", run(ledger(*GOOD_FAMILIES, stores=[{**e, "later": [1]} for e in STORES], future={"a": 1})), [])
 	expect("unknown field in an objective", run(ledger(fam("f", [f"server:{SRC}/mailbox"], objective("MI1", proof=[f"server:{SRC}/mailbox/pass.rs#every_failed"], newField=[1])), *GOOD_FAMILIES[1:])), [])
 
 	# Rule 1: a holds' server proof.
@@ -592,6 +719,24 @@ def self_test() -> int:
 	expect("schema moved", run({**ledger(*GOOD_FAMILIES), "schema": "some-ui.assurance-ledger/2"}), ["Ledger unreadable"])
 	expect("paths not a list", run(ledger(fam("f", f"server:{SRC}/mailbox"))), ["Ledger unreadable"])  # type: ignore[arg-type]
 	expect("evidence missing", run(ledger(fam("f", [], {"id": "X1", "verdict": "holds", "watch": {"by": "none"}}))), ["Ledger unreadable"])
+
+	# Rule 4: tables and stores.
+	def stores_less(*tables: str, more: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+		return [e for e in STORES if e["store"] not in {f"server:{t}" for t in tables}] + [{"store": s} for s in more]
+
+	expect("table in no store", run(ledger(*GOOD_FAMILIES, stores=stores_less("notes"))), ["Table in no store"])
+	expect("store names a dropped table", run(ledger(*GOOD_FAMILIES, stores=stores_less(more=("server:game_response",)))), ["Store names no table"])
+	expect("store names a temp table", run(ledger(*GOOD_FAMILIES, stores=stores_less(more=("server:scratch",)))), ["Store names no table"])
+	expect("store names a commented table", run(ledger(*GOOD_FAMILIES, stores=stores_less(more=("server:ghost",)))), ["Store names no table"])
+	expect("store names a renamed table's old name", run(ledger(*GOOD_FAMILIES, stores=stores_less("notes", more=("server:notes_old",)))), ["Store names no table", "Table in no store"])
+	expect("store for sqlx's own table", run(ledger(*GOOD_FAMILIES, stores=stores_less(more=("server:_sqlx_migrations",)))), ["Store names no table"])
+	expect("a new migration's table", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "create table `More` (a);"}), ["Table in no store"])
+	expect("a later drop", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "DROP TABLE IF EXISTS main.notes;"}), ["Store names no table"])
+	expect("reader and SQLite disagree", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": 'CREATE TABLE "a""b" (x);'}), ["Migrations read wrongly", "Table in no store"])
+	expect("SQLite cannot apply them", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "NOT SQL AT ALL;"}), [], warnings=3)
+	expect("no stores list warns", run({k: v for k, v in ledger(*GOOD_FAMILIES).items() if k != "stores"}), [], warnings=3)
+	expect("stores not a list", run(ledger(*GOOD_FAMILIES, stores={"server:x": 1})), ["Ledger unreadable"])
+	expect("store without a name", run(ledger(*GOOD_FAMILIES, stores=[{"class": "x"}])), ["Ledger unreadable"])
 
 	# Rule 3: tasks.
 	def files_with(**changes: str | None) -> dict[str, str]:
