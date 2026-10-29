@@ -22,7 +22,6 @@
 use chrono::Utc;
 use clap::Parser;
 use leetype_round_repo::import_dir;
-use sqlx::sqlite::SqlitePoolOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -46,13 +45,7 @@ async fn main() -> ExitCode {
 	let stdout = io::stdout();
 	let mut out = stdout.lock();
 
-	// The server's own options (`file_host::db`): one policy for every opener of
-	// this file, the WAL size cap included.
-	let connected = match file_host::db::connect_options(&args.database_url) {
-		Ok(options) => SqlitePoolOptions::new().max_connections(1).connect_with(options).await,
-		Err(err) => Err(err),
-	};
-	let pool = match connected {
+	let pool = match file_host::db::connect_single(&args.database_url).await {
 		Ok(pool) => pool,
 		Err(err) => {
 			let _ = writeln!(io::stderr(), "import-leetype-rounds: could not open {}: {err}", args.database_url);

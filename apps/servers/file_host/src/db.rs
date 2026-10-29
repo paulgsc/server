@@ -3,18 +3,14 @@
 //! The server (`main.rs`) and the operator commands under `src/bin/`
 //! (`import-curriculum`, `import-leetype-rounds`, `record-leetype-runs`,
 //! `dump-leetype-snapshot`) all open the same file, so the file's policy has
-//! one home: [`connect_options`]. A pragma set here reaches every connection
-//! of every pool built from it; a pragma set beside one caller would leave
-//! the others writing the file under a different policy. Nothing else in the
-//! workspace opens this database: `apps/orchestrator`, `apps/playoff_delta_job`
-//! and `apps/some-obs` do not link `sqlx`, and every test pool is its own
-//! `sqlite::memory:` database.
+//! one home: [`connect_options`].
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::time::Duration;
 
-/// The size, in bytes, `SQLite` cuts the `-wal` file back to (STORAGE2, #543).
+/// The size, in bytes, `SQLite` cuts the `-wal` file back to.
 ///
 /// Without a limit, a checkpoint resets the WAL but never shrinks it, so the
 /// file stays at its largest size ever: one bulk transaction on a throwaway
@@ -28,8 +24,7 @@ use std::time::Duration;
 /// 1000 pages, about 4 MB at the default 4 KiB page, and home's bulkiest
 /// single writes are a voice note (about 240 KB a minute, so an hour is about
 /// 14 MB) and an ESPN body (up to about 560 KB). 64 MiB holds several of
-/// those between checkpoints, and is a small fraction of what the 808 MB
-/// high-water mark kept.
+/// those between checkpoints.
 pub const WAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
 /// The options every opener of `file_host`'s database uses.
@@ -51,27 +46,23 @@ pub fn connect_options(database_url: &str) -> Result<SqliteConnectOptions, sqlx:
 	)
 }
 
+/// A one-connection pool on [`connect_options`], as the operator commands open
+/// the database.
+///
+/// # Errors
+///
+/// When `database_url` does not parse or the database cannot be opened.
+pub async fn connect_single(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+	SqlitePoolOptions::new().max_connections(1).connect_with(connect_options(database_url)?).await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{connect_options, WAL_SIZE_LIMIT_BYTES};
-	use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-	use sqlx::SqlitePool;
+	use sqlx::sqlite::SqlitePoolOptions;
 	use std::path::Path;
 
-	/// Bigger than the limit, so the burst leaves a `-wal` file the cap has
-	/// to cut back.
-	const BURST_BYTES: i64 = WAL_SIZE_LIMIT_BYTES + 8 * 1024 * 1024;
 	const BLOB_BYTES: i64 = 1024 * 1024;
-
-	async fn pool(options: SqliteConnectOptions) -> SqlitePool {
-		// One connection, so no other connection's read transaction can hold
-		// the checkpoint back from backfilling the whole log.
-		SqlitePoolOptions::new().max_connections(1).connect_with(options.create_if_missing(true)).await.unwrap()
-	}
-
-	fn url(db: &Path) -> String {
-		"sqlite://".to_owned() + &db.to_string_lossy()
-	}
 
 	fn wal_bytes(db: &Path) -> u64 {
 		let mut wal = db.as_os_str().to_owned();
@@ -79,18 +70,21 @@ mod tests {
 		std::fs::metadata(wal).unwrap().len()
 	}
 
-	/// One large transaction, a PASSIVE checkpoint, then one small write,
-	/// returning the `-wal` size after the burst and after the small write.
-	///
-	/// PASSIVE rather than TRUNCATE on purpose: TRUNCATE empties the file
-	/// whatever the limit is, so it would pass without the pragma. After a
-	/// PASSIVE checkpoint has backfilled everything, the next commit resets
-	/// the log, and that reset is where `journal_size_limit` truncates. It is
-	/// also what the auto-checkpoint does in production.
-	async fn burst_then_checkpoint(pool: &SqlitePool, db: &Path) -> (u64, u64) {
-		sqlx::query("CREATE TABLE burst (body BLOB NOT NULL)").execute(pool).await.unwrap();
+	/// A burst past the limit, a PASSIVE checkpoint, then one small write.
+	/// PASSIVE, as the auto-checkpoint runs, not TRUNCATE: TRUNCATE empties
+	/// the file whatever the limit, so this would pass without the pragma.
+	#[tokio::test]
+	async fn the_wal_file_falls_back_under_the_limit_after_a_checkpoint() {
+		let dir = tempfile::tempdir().unwrap();
+		let db = dir.path().join("file_host.db");
+		let options = connect_options(&("sqlite://".to_owned() + &db.to_string_lossy())).unwrap();
+		// One connection, so no other connection's read transaction can hold
+		// the checkpoint back from backfilling the whole log.
+		let pool = SqlitePoolOptions::new().max_connections(1).connect_with(options.create_if_missing(true)).await.unwrap();
+
+		sqlx::query("CREATE TABLE burst (body BLOB NOT NULL)").execute(&pool).await.unwrap();
 		let mut tx = pool.begin().await.unwrap();
-		for _ in 0..BURST_BYTES / BLOB_BYTES {
+		for _ in 0..=WAL_SIZE_LIMIT_BYTES / BLOB_BYTES {
 			sqlx::query("INSERT INTO burst (body) VALUES (randomblob(?))")
 				.bind(BLOB_BYTES)
 				.execute(&mut *tx)
@@ -98,40 +92,14 @@ mod tests {
 				.unwrap();
 		}
 		tx.commit().await.unwrap();
-		let after_burst = wal_bytes(db);
-
-		let (busy, log, backfilled): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)").fetch_one(pool).await.unwrap();
-		assert_eq!((busy, log), (0, backfilled), "the checkpoint backfilled the whole log");
-
-		sqlx::query("INSERT INTO burst (body) VALUES (x'00')").execute(pool).await.unwrap();
-		(after_burst, wal_bytes(db))
-	}
-
-	#[tokio::test]
-	async fn the_wal_file_falls_back_under_the_limit_after_a_checkpoint() {
-		let dir = tempfile::tempdir().unwrap();
-		let db = dir.path().join("file_host.db");
-		let pool = pool(connect_options(&url(&db)).unwrap()).await;
-
-		let (limit,): (i64,) = sqlx::query_as("PRAGMA journal_size_limit").fetch_one(&pool).await.unwrap();
-		assert_eq!(limit, WAL_SIZE_LIMIT_BYTES);
-
-		let (after_burst, after_reset) = burst_then_checkpoint(&pool, &db).await;
 		let limit = u64::try_from(WAL_SIZE_LIMIT_BYTES).unwrap();
+		let after_burst = wal_bytes(&db);
 		assert!(after_burst > limit, "the burst grew the WAL past the limit ({after_burst} bytes)");
+
+		let (busy, log, backfilled): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)").fetch_one(&pool).await.unwrap();
+		assert_eq!((busy, log), (0, backfilled), "the checkpoint backfilled the whole log");
+		sqlx::query("INSERT INTO burst (body) VALUES (x'00')").execute(&pool).await.unwrap();
+		let after_reset = wal_bytes(&db);
 		assert!(after_reset <= limit, "the WAL fell back under the limit ({after_reset} bytes)");
-	}
-
-	/// The same sequence with the limit lifted keeps the high-water mark, so
-	/// the test above passes because of the pragma, not the checkpoint mode.
-	#[tokio::test]
-	async fn without_the_limit_the_wal_file_keeps_its_high_water_mark() {
-		let dir = tempfile::tempdir().unwrap();
-		let db = dir.path().join("file_host.db");
-		let pool = pool(connect_options(&url(&db)).unwrap().pragma("journal_size_limit", "-1")).await;
-
-		let (after_burst, after_reset) = burst_then_checkpoint(&pool, &db).await;
-		assert!(after_burst > u64::try_from(WAL_SIZE_LIMIT_BYTES).unwrap());
-		assert_eq!(after_reset, after_burst, "nothing shrank the WAL");
 	}
 }

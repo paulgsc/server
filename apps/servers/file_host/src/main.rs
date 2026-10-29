@@ -90,8 +90,6 @@ async fn main() -> Result<()> {
 	file_host::websocket::connection::instrument::set_guard_capacity(ws_conn_manager::MAX_GLOBAL);
 
 	let config = Arc::new(config);
-	// WAL, `synchronous`, the busy timeout and the WAL file's size cap live in
-	// `file_host::db`, shared with the operator commands that open this file.
 	let connection_options = file_host::db::connect_options(&config.database_url)?.create_if_missing(true);
 
 	let pool = SqlitePoolOptions::new()
