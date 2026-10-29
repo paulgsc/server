@@ -46,7 +46,13 @@ async fn main() -> ExitCode {
 	let stdout = io::stdout();
 	let mut out = stdout.lock();
 
-	let pool = match SqlitePoolOptions::new().max_connections(1).connect(&args.database_url).await {
+	// The server's own options (`file_host::db`): one policy for every opener of
+	// this file, the WAL size cap included.
+	let connected = match file_host::db::connect_options(&args.database_url) {
+		Ok(options) => SqlitePoolOptions::new().max_connections(1).connect_with(options).await,
+		Err(err) => Err(err),
+	};
+	let pool = match connected {
 		Ok(pool) => pool,
 		Err(err) => {
 			let _ = writeln!(io::stderr(), "import-leetype-rounds: could not open {}: {err}", args.database_url);

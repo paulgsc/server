@@ -96,7 +96,13 @@ async fn main() -> ExitCode {
 		let _ = writeln!(out, "note: prlimit is not installed, so runs have no memory ceiling");
 	}
 
-	let pool = match SqlitePoolOptions::new().max_connections(1).connect(&args.database_url).await {
+	// The server's own options (`file_host::db`): one policy for every opener of
+	// this file, the WAL size cap included.
+	let connected = match file_host::db::connect_options(&args.database_url) {
+		Ok(options) => SqlitePoolOptions::new().max_connections(1).connect_with(options).await,
+		Err(err) => Err(err),
+	};
+	let pool = match connected {
 		Ok(pool) => pool,
 		Err(error) => {
 			let _ = writeln!(err, "record-leetype-runs: could not open {}: {error}", args.database_url);

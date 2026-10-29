@@ -16,8 +16,8 @@ use file_host::routes::{inventory, metrics::get_metrics};
 use file_host::trace::RouteSpan;
 use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use sqlx::sqlite::SqlitePoolOptions;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -90,11 +90,9 @@ async fn main() -> Result<()> {
 	file_host::websocket::connection::instrument::set_guard_capacity(ws_conn_manager::MAX_GLOBAL);
 
 	let config = Arc::new(config);
-	let connection_options = SqliteConnectOptions::from_str(&config.database_url)?
-		.create_if_missing(true)
-		.journal_mode(SqliteJournalMode::Wal) // Allows concurrent reads/writes
-		.synchronous(SqliteSynchronous::Normal) // Best performance for WAL mode
-		.busy_timeout(std::time::Duration::from_secs(5)); // Prevents instant crashes on locks
+	// WAL, `synchronous`, the busy timeout and the WAL file's size cap live in
+	// `file_host::db`, shared with the operator commands that open this file.
+	let connection_options = file_host::db::connect_options(&config.database_url)?.create_if_missing(true);
 
 	let pool = SqlitePoolOptions::new()
 		.max_connections(5) // Don't go too high with SQLite
