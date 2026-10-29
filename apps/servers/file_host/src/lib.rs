@@ -29,6 +29,7 @@ pub mod redacted;
 pub mod routes;
 pub mod routine_watch;
 pub mod schema;
+pub mod storage;
 pub mod subject;
 pub mod trace;
 pub mod transcribe;

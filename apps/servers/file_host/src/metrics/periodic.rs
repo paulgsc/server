@@ -43,6 +43,7 @@ pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, 
 					instrument::set_presence_gauges(snapshot.connected, snapshot.live, snapshot.subscribed);
 					instrument::set_guard_occupancy(state.core.connection_guard.active_global());
 					crate::metrics::pool::record(&state.core.shared_db);
+					crate::storage::refresh_footprint(&state.core.shared_db).await;
 
 					let evicted = rate_limiter.evict_idle();
 					if evicted > 0 {

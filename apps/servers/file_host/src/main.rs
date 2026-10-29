@@ -195,6 +195,8 @@ async fn main() -> Result<()> {
 	// feed. See `file_host::start_polls`.
 	file_host::start_polls(&app_state);
 
+	file_host::storage::spawn(&app_state);
+
 	// #227 (C2) / #228 (C3): `connected`/`live`/`subscribed`, guard
 	// occupancy, and SQLite pool gauges — unconditional, unlike the nudge
 	// waker above, since none of them depend on optional configuration.

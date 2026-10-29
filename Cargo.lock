@@ -1531,6 +1531,7 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "session_repo",
@@ -1542,6 +1543,7 @@ dependencies = [
  "some-shutdown",
  "some-transport",
  "sqlx",
+ "storage_repo",
  "study_domain",
  "tempfile",
  "thiserror 1.0.69",
@@ -4798,6 +4800,14 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "storage_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "stringprep"

@@ -73,6 +73,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("leetype_round_witness", "each round's μ into the canon register, derived from its body — corpus-wide"),
 	("mood_events", "editorial content, not per-person"),
 	(
+		"storage_sample",
+		"bytes per table, index and file, sampled daily (docs/storage.md) — the database's own size, nobody's record",
+	),
+	(
 		"tabs",
 		"browser-extension page captures (URL, title, content), keyed by URL hash — no subject column, but the content itself can identify whoever captured it; see docs/identity.md",
 	),
