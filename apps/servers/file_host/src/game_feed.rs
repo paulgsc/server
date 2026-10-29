@@ -16,10 +16,11 @@
 //! What this module promises (`docs/game-feed.md` in this app):
 //!
 //! - **Every response is kept, raw, before it is read** (GW10), in
-//!   `game_feed_response`, and the play log (`game_feed_play`) is appended
-//!   from it in the same transaction. Both tables are append-only; nothing
-//!   here updates or deletes, and a revised play is a new row.
-//! - **It reads ESPN's public API and writes only those two tables.** No
+//!   `game_feed_response`, its bytes once by SHA-256 in `game_feed_body`,
+//!   and the play log (`game_feed_play`) is appended from it in the same
+//!   transaction. All three tables are append-only; nothing here updates or
+//!   deletes, and a revised play is a new row.
+//! - **It reads ESPN's public API and writes only those three tables.** No
 //!   route serves them yet, and no person's data is read or written.
 //! - **Logs and metrics carry counts and kinds,** never a URL, a body or a
 //!   play's text.
