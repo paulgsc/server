@@ -83,9 +83,6 @@ KNOWN: dict[tuple[str, str], str] = {
 	("activity catalog", "[id=leetype]/input: only in the dump"): (
 		f"some-ui added `input` (some-ui #1176); the seed has no column for it and the parity test refuses unknown fields, {SEED_WAITS}"
 	),
-	("provisioned session", "/origin: only in the dump"): (
-		"some-ui's copy predates `origin` and its `SessionRecord` has no such field; paulgsc/some-ui#2117 (U9) regenerates it"
-	),
 }
 
 
