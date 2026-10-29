@@ -308,12 +308,22 @@ class Verdict:
 	passed: list[str] = field(default_factory=list)
 
 
-def latest_runs(runs: list[dict[str, Any]], head_sha: str, self_path: str, self_run_id: int) -> dict[str, dict[str, Any]]:
+def for_this_pr(run: dict[str, Any], pr: int) -> bool:
+	"""Whether a run is this PR's. Two PRs can share a head SHA, and a run on the other one (a labelled
+	routes.yml, say) must not stand in for this one's. A run GitHub lists no PR for (a fork's) is kept:
+	it cannot be told apart."""
+	if run.get("event") not in ("pull_request", "pull_request_target"):
+		return True
+	numbers = [p.get("number") for p in run.get("pull_requests") or []]
+	return not numbers or pr in numbers
+
+
+def latest_runs(runs: list[dict[str, Any]], head_sha: str, self_path: str, self_run_id: int, pr: int) -> dict[str, dict[str, Any]]:
 	latest: dict[str, dict[str, Any]] = {}
 	for run in runs:
 		if run.get("head_sha") != head_sha or run.get("event") not in AWAITED_EVENTS:
 			continue
-		if run.get("id") == self_run_id or run.get("path") == self_path:
+		if run.get("id") == self_run_id or run.get("path") == self_path or not for_this_pr(run, pr):
 			continue
 		path = run.get("path") or run.get("name") or str(run.get("id"))
 		if path not in latest or run["id"] > latest[path]["id"]:
@@ -438,7 +448,7 @@ def gate(api: Api, pr: int, self_path: str, self_run_id: int, minutes: float, on
 	started = time.monotonic()
 	jobs: dict[tuple[int, int], list[dict[str, Any]]] = {}
 	while True:
-		runs = latest_runs(api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5), head_sha, self_path, self_run_id)
+		runs = latest_runs(api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5), head_sha, self_path, self_run_id, pr)
 		for run in runs.values():
 			key = (run["id"], run.get("run_attempt", 1))
 			if run.get("status") == "completed" and key not in jobs:
@@ -566,8 +576,18 @@ def self_test() -> int:
 		run(4, "old.yml", head_sha="other"),
 		run(6, "dynamic/github-code-scanning/codeql", event="dynamic"),
 	]
-	same("latest per workflow, not self, not push", {p: r["id"] for p, r in latest_runs(listed, head, "gate.yml", 99).items()}, {"lint.yml": 5, "dynamic/github-code-scanning/codeql": 6})
-	same("own run id left out", list(latest_runs([run(7, "x.yml")], head, "gate.yml", 7)), [])
+	same("latest per workflow, not self, not push", {p: r["id"] for p, r in latest_runs(listed, head, "gate.yml", 99, 1).items()}, {"lint.yml": 5, "dynamic/github-code-scanning/codeql": 6})
+	same("own run id left out", list(latest_runs([run(7, "x.yml")], head, "gate.yml", 7, 1)), [])
+	shared = [
+		run(10, "routes.yml", conclusion="failure", pull_requests=[{"number": 1}]),
+		run(11, "routes.yml", pull_requests=[{"number": 2}]),
+		run(12, "fork.yml", pull_requests=[]),
+	]
+	same(
+		"another PR's newer run on the same head does not stand in for this one's",
+		{p: r["id"] for p, r in latest_runs(shared, head, "gate.yml", 99, 1).items()},
+		{"routes.yml": 10, "fork.yml": 12},
+	)
 
 	ok_runs = {"lint.yml": run(5, "lint.yml"), "test.yml": run(8, "test.yml")}
 	ok_jobs = {5: [job("Rust lint"), job("Artifact retention")], 8: [job("rust_ci"), job("infra_ci", "skipped")]}
