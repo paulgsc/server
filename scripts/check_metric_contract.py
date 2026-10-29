@@ -49,9 +49,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARDS_DIR = REPO_ROOT / "infra" / "grafana" / "dashboards"
-# Alert rules read metrics too, and one on a name nothing emits never fires:
-# Prometheus's (`rules/*.yml`, not their promtool tests) and Grafana's
-# provisioned ones.
+# Alert rules (see the docstring); `*.test.yml` promtool tests are skipped.
 ALERT_RULE_GLOBS = [
 	(REPO_ROOT / "infra" / "prometheus" / "rules", "*.yml"),
 	(REPO_ROOT / "infra" / "grafana" / "provisioning" / "alerting", "*.yml"),

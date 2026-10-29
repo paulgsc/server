@@ -62,6 +62,27 @@ tests:
         alertname: GameFeedStale
         exp_alerts: []
 
+  - name: a mailbox poller that is off is neither stale nor missing its stamp
+    interval: 1m
+    input_series:
+      - series: 'up{job="file_host"}'
+        values: '1x40'
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '0x40'
+      - series: 'mailbox_poll_interval_seconds{job="file_host"}'
+        values: '900x40'
+      - series: 'mailbox_poll_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x40'
+      - series: 'nudge_waker_enabled{job="file_host"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MailboxPollerStale
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NudgeWakerMetricsMissing
+        exp_alerts: []
+
   - name: a watcher that is on with no stamp at all is its own alert
     interval: 1m
     input_series:
@@ -152,7 +173,7 @@ tests:
               job: file_host
               routine: jobs
               objective: RR2
-              says: "A routine was due 30 minutes ago, and home has no record of its run."
+              says: "A routine was due more than 30 minutes ago, and home has no record of its run."
 
   - name: a routine home holds no run of at all is overdue too
     interval: 1m
@@ -169,7 +190,7 @@ tests:
               job: file_host
               routine: jobs
               objective: RR2
-              says: "A routine was due 30 minutes ago, and home has no record of its run."
+              says: "A routine was due more than 30 minutes ago, and home has no record of its run."
 
   - name: a file_host that stops answering is down after two minutes
     interval: 1m

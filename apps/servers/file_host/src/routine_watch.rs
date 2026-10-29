@@ -13,7 +13,7 @@
 //! `infra/prometheus/rules/home.yml`'s `RoutineRunOverdue` compares them.
 //! Only those two instants leave home: no record's body or name.
 
-use chrono::{DateTime, Duration, LocalResult, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use sqlx::SqlitePool;
 
@@ -77,43 +77,51 @@ pub fn parse_schedules(text: &str) -> Result<Vec<Schedule>, String> {
 	Ok(schedules)
 }
 
-/// The latest scheduled start at or before `now`. On a day the clock skips
-/// the time, the run is due at the first instant after the gap; on a day it
-/// repeats it, at the first of the two.
+/// The latest scheduled start at or before `now`, by the routine's zone.
+///
+/// Today's, or else yesterday's. On a day the clock skips the time, the run
+/// is due at the first instant after the gap; on a day it repeats it, at the
+/// first of the two.
 #[must_use]
 pub fn last_due(schedule: &Schedule, now: DateTime<Utc>) -> DateTime<Utc> {
 	let today = now.with_timezone(&schedule.zone).date_naive();
-	[today, today - Duration::days(1), today - Duration::days(2)]
-		.into_iter()
-		.filter_map(|day| {
-			let local = day.and_time(schedule.at);
-			match schedule.zone.from_local_datetime(&local) {
-				LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => Some(at.with_timezone(&Utc)),
-				LocalResult::None => (1..=180)
-					.find_map(|minutes| schedule.zone.from_local_datetime(&(local + Duration::minutes(minutes))).earliest())
-					.map(|at| at.with_timezone(&Utc)),
-			}
-		})
-		.find(|due| *due <= now)
-		.unwrap_or(now)
+	due_on(schedule, today)
+		.filter(|due| *due <= now)
+		.or_else(|| due_on(schedule, today - Duration::days(1)))
+		// No zone skips the same three hours two days running. Were one to,
+		// a day back reads as due, so the run is expected, not excused.
+		.unwrap_or(now - Duration::days(1))
+}
+
+fn due_on(schedule: &Schedule, day: NaiveDate) -> Option<DateTime<Utc>> {
+	let local = day.and_time(schedule.at);
+	match schedule.zone.from_local_datetime(&local) {
+		LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => Some(at.with_timezone(&Utc)),
+		LocalResult::None => (1..=180)
+			.find_map(|minutes| schedule.zone.from_local_datetime(&(local + Duration::minutes(minutes))).earliest())
+			.map(|at| at.with_timezone(&Utc)),
+	}
 }
 
 /// How many of a routine's newest records to read for the latest start: a
 /// re-run can arrive after the run it follows.
 const RECORDS_READ: i64 = 5;
 
-/// The newest `startedAt` among `routine`'s run records home holds for
-/// `subject`, or `None` when it holds none that say when they started.
+/// The newest `startedAt` at or before `now` of `routine`'s runs.
+///
+/// Among the run records home holds for `subject`, or `None` when it holds
+/// none. A start in the future (a clock or a typo) is not a run, or it would
+/// excuse every due time until it passed.
 ///
 /// # Errors
 /// Any storage failure.
-pub async fn last_started(db: &SqlitePool, subject: &str, routine: Routine) -> Result<Option<DateTime<Utc>>, mailbox_repo::MailboxError> {
+pub async fn last_started(db: &SqlitePool, subject: &str, routine: Routine, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, mailbox_repo::MailboxError> {
 	let mut conn = db.acquire().await.map_err(mailbox_repo::MailboxError::Storage)?;
 	let records = match routine {
 		Routine::Jobs => mailbox_repo::jobs_runs(&mut conn, subject, RECORDS_READ).await,
 		Routine::Reflections => mailbox_repo::routine_runs(&mut conn, subject, RECORDS_READ).await,
 	}?;
-	Ok(records.iter().filter_map(|record| started_at(&record.body)).max())
+	Ok(records.iter().filter_map(|record| started_at(&record.body)).filter(|started| *started <= now).max())
 }
 
 fn started_at(body: &[u8]) -> Option<DateTime<Utc>> {
@@ -128,7 +136,7 @@ pub async fn stamp(db: &SqlitePool, subject: &str, schedules: &[Schedule], now: 
 	for schedule in schedules {
 		let routine = schedule.routine.name();
 		crate::metrics::routine::record_due(routine, last_due(schedule, now));
-		match last_started(db, subject, schedule.routine).await {
+		match last_started(db, subject, schedule.routine, now).await {
 			Ok(started) => crate::metrics::routine::record_last_run(routine, started),
 			Err(err) => tracing::error!(error = %err, routine, "could not read the routine's newest run"),
 		}
@@ -172,15 +180,18 @@ mod tests {
 	#[tokio::test]
 	async fn each_routines_latest_start_is_read_from_its_own_records() {
 		let pool = pool().await;
-		assert_eq!(last_started(&pool, A, Routine::Jobs).await.unwrap(), None);
+		let now = utc("2026-10-28T18:00:00Z");
+		assert_eq!(last_started(&pool, A, Routine::Jobs, now).await.unwrap(), None);
 		run(&pool, 1, "jobs", r#"{"startedAt":"2026-10-27T14:52:07Z"}"#).await;
 		// A re-run of an earlier morning, arriving after a later one.
 		run(&pool, 2, "jobs", r#"{"startedAt":"2026-10-28T14:52:07Z"}"#).await;
 		run(&pool, 3, "jobs", r#"{"startedAt":"2026-10-26T15:10:00Z"}"#).await;
 		run(&pool, 4, "reflections", r#"{"startedAt":"2026-10-28T16:00:03Z"}"#).await;
 		run(&pool, 5, "reflections", "not json").await;
-		assert_eq!(last_started(&pool, A, Routine::Jobs).await.unwrap(), Some(utc("2026-10-28T14:52:07Z")));
-		assert_eq!(last_started(&pool, A, Routine::Reflections).await.unwrap(), Some(utc("2026-10-28T16:00:03Z")));
+		// A start in the future is no run: it would excuse every due time.
+		run(&pool, 6, "jobs", r#"{"startedAt":"2027-10-28T14:52:07Z"}"#).await;
+		assert_eq!(last_started(&pool, A, Routine::Jobs, now).await.unwrap(), Some(utc("2026-10-28T14:52:07Z")));
+		assert_eq!(last_started(&pool, A, Routine::Reflections, now).await.unwrap(), Some(utc("2026-10-28T16:00:03Z")));
 	}
 
 	fn utc(at: &str) -> DateTime<Utc> {
@@ -225,6 +236,13 @@ mod tests {
 		let at_two = parse_schedules("jobs 02:30 America/Los_Angeles").unwrap().remove(0);
 		// 2027-03-14: 02:00 Pacific jumps to 03:00, 10:00Z.
 		assert_eq!(last_due(&at_two, utc("2027-03-14T12:00:00Z")), utc("2027-03-14T10:00:00Z"));
+	}
+
+	#[test]
+	fn a_start_the_clock_repeats_is_due_at_the_first_of_the_two() {
+		let at_one = parse_schedules("jobs 01:30 America/Los_Angeles").unwrap().remove(0);
+		// 2026-11-01: 01:30 Pacific happens at 08:30Z (daylight) and 09:30Z.
+		assert_eq!(last_due(&at_one, utc("2026-11-01T12:00:00Z")), utc("2026-11-01T08:30:00Z"));
 	}
 
 	#[test]

@@ -11,9 +11,9 @@
 # Grafana sees, carries labels only.
 #
 # A watcher that is switched off is not stale: every stale rule requires its
-# `*_enabled` gauge at 1, and its value is the age of its last stamp. One
-# that is on but whose stamp is gone is its own alert, and so is file_host
-# itself not answering a scrape.
+# `*_enabled` gauge at 1, and its value is the age of its last stamp. A
+# mailbox poller or nudge waker that is on with its stamp gone is its own
+# alert, and so is file_host itself not answering a scrape.
 groups:
   - name: home-watchers
     rules:
@@ -81,10 +81,13 @@ groups:
         # RR2: 30 minutes after a routine was due, home holds no run that
         # started for it. A run counts for a due time if it started no more
         # than an hour before it, so a run that starts a little early is not
-        # missing. `crate::routine_watch` sets both gauges.
+        # missing. `crate::routine_watch` sets both gauges. A record arrives
+        # when its run ends and reaches home on the next mailbox pass, so a
+        # run that takes more than about 15 minutes trips this on time:
+        # RR2's 30 minutes is the owner's bound (#525).
         expr: |
           (time() - routine_due_timestamp_seconds > 1800)
           and on(routine) (routine_last_run_timestamp_seconds + 3600 < routine_due_timestamp_seconds)
         labels:
           objective: RR2
-          says: "A routine was due 30 minutes ago, and home has no record of its run."
+          says: "A routine was due more than 30 minutes ago, and home has no record of its run."
