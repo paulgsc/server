@@ -1,12 +1,19 @@
 //! Home's record of ESPN's NFL feed (paulgsc/some-ui#2076, GWB2):
-//! `game_feed_response` and `game_feed_play`.
+//! `game_feed_response`, `game_feed_body` and `game_feed_play`.
 //!
-//! `20261028000200_create_game_feed.up.sql` records the design; in short:
+//! `20261028000200_create_game_feed.up.sql` and
+//! `20261029000200_store_each_game_feed_body_once.up.sql` record the design;
+//! in short:
 //!
 //! - **Every response is kept, first.** [`keep`] stores the bytes as they
 //!   arrived (a 429 and an HTML error page included), then reads them, then
 //!   appends what they add to the play log, in one transaction the caller
 //!   opens. Nothing else writes these tables.
+//! - **Each body once, by content** (STORAGE4, paulgsc/server#544). Every
+//!   fetch is its own `game_feed_response` row, naming its bytes by SHA-256;
+//!   the bytes are a `game_feed_body` row, written `INSERT OR IGNORE`, so a
+//!   body ESPN sends again unchanged adds a response row and no body. The
+//!   store grows with the unique bodies per followed game, not the fetches.
 //! - **Append-only.** No row is updated or deleted (the triggers abort both).
 //!   A play ESPN revises is a new row superseding the one before
 //!   ([`nfl_feed::log::changes`]); a play seen again unchanged adds nothing.
@@ -108,17 +115,19 @@ pub async fn keep(conn: &mut SqliteConnection, response: &Response<'_>) -> Resul
 	let sha256 = hex::encode(Sha256::digest(response.body));
 	let size = i64::try_from(response.body.len()).unwrap_or(i64::MAX);
 	let body = response.body;
+	sqlx::query!("INSERT OR IGNORE INTO game_feed_body (sha256, body) VALUES (?1, ?2)", sha256, body)
+		.execute(&mut *conn)
+		.await?;
 	let response_id = sqlx::query!(
-		"INSERT INTO game_feed_response (kind, game_id, url, fetched_at, status, sha256, size, body)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+		"INSERT INTO game_feed_response (kind, game_id, url, fetched_at, status, sha256, size)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
 		kind,
 		game_id,
 		response.url,
 		response.fetched_at,
 		response.status,
 		sha256,
-		size,
-		body
+		size
 	)
 	.execute(&mut *conn)
 	.await?
@@ -235,9 +244,9 @@ async fn append(conn: &mut SqliteConnection, game: &str, response_id: i64, seen_
 /// Any `sqlx` failure.
 pub async fn holds_final(conn: &mut SqliteConnection, game: &str) -> Result<bool, sqlx::Error> {
 	let body = sqlx::query_scalar!(
-		"SELECT body FROM game_feed_response
-		 WHERE game_id = ?1 AND kind = 'summary' AND status = 200
-		 ORDER BY response_id DESC LIMIT 1",
+		"SELECT b.body FROM game_feed_response r JOIN game_feed_body b ON b.sha256 = r.sha256
+		 WHERE r.game_id = ?1 AND r.kind = 'summary' AND r.status = 200
+		 ORDER BY r.response_id DESC LIMIT 1",
 		game
 	)
 	.fetch_optional(&mut *conn)
@@ -278,15 +287,17 @@ pub async fn log(conn: &mut SqliteConnection) -> Result<Vec<Entry>, sqlx::Error>
 	)
 }
 
-/// The play log rebuilt from the kept responses alone, by the rule [`keep`]
-/// follows. Equal to [`log`] while both hold (GW10).
+/// The play log rebuilt from the kept responses alone, each read through its
+/// hash to the body it names, by the rule [`keep`] follows. Equal to [`log`]
+/// while both hold (GW10).
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn replay(conn: &mut SqliteConnection) -> Result<Vec<Entry>, sqlx::Error> {
 	let responses = sqlx::query!(
-		r#"SELECT response_id AS "response_id!", game_id AS "game_id!", fetched_at, status, body
-		   FROM game_feed_response WHERE kind = 'summary' ORDER BY response_id"#
+		r#"SELECT r.response_id AS "response_id!", r.game_id AS "game_id!", r.fetched_at, r.status, b.body
+		   FROM game_feed_response r JOIN game_feed_body b ON b.sha256 = r.sha256
+		   WHERE r.kind = 'summary' ORDER BY r.response_id"#
 	)
 	.fetch_all(&mut *conn)
 	.await?;
@@ -380,8 +391,29 @@ mod tests {
 
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_feed_response").fetch_one(&mut *conn).await.unwrap();
 		assert_eq!(kept, 7, "every response is kept, the 429 and the HTML page included");
+		let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_feed_body").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(bodies, 6, "the final summary fetched twice is one body");
 		assert!(holds_final(&mut conn, GAME).await.unwrap());
 		assert!(!holds_final(&mut conn, "401873023").await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn the_same_body_stored_twice_is_one_body_row() {
+		let pool = pool().await;
+		let first = keep_one(&pool, &summary(FINAL, "2026-10-23T03:30:00.000Z")).await;
+		let second = keep_one(&pool, &summary(FINAL, "2026-10-23T03:30:15.000Z")).await;
+		assert_ne!(first.response_id, second.response_id);
+		let mut conn = pool.acquire().await.unwrap();
+		let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_feed_body").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(bodies, 1);
+		let named: Vec<(String, i64)> = sqlx::query_as("SELECT sha256, size FROM game_feed_response ORDER BY response_id")
+			.fetch_all(&mut *conn)
+			.await
+			.unwrap();
+		let expected = (hex::encode(Sha256::digest(FINAL)), i64::try_from(FINAL.len()).unwrap());
+		assert_eq!(named, [expected.clone(), expected], "each fetch keeps its row, naming the one body");
+		let held: Vec<u8> = sqlx::query_scalar("SELECT body FROM game_feed_body").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(held, FINAL);
 	}
 
 	#[tokio::test]
@@ -394,14 +426,81 @@ mod tests {
 			"DELETE FROM game_feed_response",
 			"UPDATE game_feed_play SET text = 'x'",
 			"DELETE FROM game_feed_play",
+			"UPDATE game_feed_body SET body = x'00'",
+			"DELETE FROM game_feed_body",
 		] {
 			let err = sqlx::query(statement).execute(&mut *conn).await.unwrap_err();
 			assert!(err.to_string().contains("append-only"), "{statement}: {err}");
+		}
+		// An insert over a held body, whatever its conflict clause, keeps the
+		// first; a response names a body already kept, at its length.
+		let sha256 = hex::encode(Sha256::digest(FINAL));
+		sqlx::query("INSERT OR REPLACE INTO game_feed_body (sha256, body) VALUES (?1, x'00')")
+			.bind(&sha256)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		let held: Vec<u8> = sqlx::query_scalar("SELECT body FROM game_feed_body").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(held, FINAL);
+		for (sha256, size) in [("0".repeat(64), 0), (sha256, 1)] {
+			let orphan = sqlx::query("INSERT INTO game_feed_response (kind, url, fetched_at, status, sha256, size) VALUES ('scoreboard', 'u', 'now', 200, ?1, ?2)")
+				.bind(sha256)
+				.bind(size)
+				.execute(&mut *conn)
+				.await
+				.unwrap_err();
+			assert!(orphan.to_string().contains("kept first"), "{orphan}");
 		}
 		let foreign = sqlx::query("INSERT INTO game_feed_play (game_id, espn_play_id, response_id, supersedes, seen_at) VALUES ('401873010', 'another', 1, 1, 'now')")
 			.execute(&mut *conn)
 			.await
 			.unwrap_err();
 		assert!(foreign.to_string().contains("same play"), "{foreign}");
+	}
+
+	/// `20261029000200` moved the bodies out of `game_feed_response`. Undone
+	/// and run again over a recorded game, it keeps every row and id, and the
+	/// game replays to the same log.
+	#[tokio::test]
+	async fn moving_the_bodies_keeps_every_row_and_the_replay() {
+		const BEFORE: i64 = 20_261_029_000_100;
+		type Row = (i64, String, Option<String>, String, String, i64, String, i64);
+		let pool = pool().await;
+		let revised = revised();
+		for (body, at) in [
+			(PRE, "2026-10-23T00:10:00.000Z"),
+			(FINAL, "2026-10-23T03:30:00.000Z"),
+			(FINAL, "2026-10-23T03:30:15.000Z"),
+			(&revised, "2026-10-23T03:31:00.000Z"),
+		] {
+			keep_one(&pool, &summary(body, at)).await;
+		}
+		let rows = "SELECT response_id, kind, game_id, url, fetched_at, status, sha256, size FROM game_feed_response ORDER BY response_id";
+		let mut conn = pool.acquire().await.unwrap();
+		let stored = log(&mut conn).await.unwrap();
+		assert_eq!(stored.len(), 181);
+		assert_eq!(replay(&mut conn).await.unwrap(), stored);
+		let responses: Vec<Row> = sqlx::query_as(rows).fetch_all(&mut *conn).await.unwrap();
+		drop(conn);
+
+		MIGRATOR.undo(&pool, BEFORE).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		let inline: Vec<Vec<u8>> = sqlx::query_scalar("SELECT body FROM game_feed_response ORDER BY response_id")
+			.fetch_all(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(inline, [PRE, FINAL, FINAL, revised.as_slice()], "undone, each row holds its bytes again");
+		drop(conn);
+
+		MIGRATOR.run(&pool).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(sqlx::query_as::<_, Row>(rows).fetch_all(&mut *conn).await.unwrap(), responses);
+		let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_feed_body").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(bodies, 3, "the final summary held twice became one body");
+		assert_eq!(log(&mut conn).await.unwrap(), stored);
+		assert_eq!(replay(&mut conn).await.unwrap(), stored);
+		drop(conn);
+		let next = keep_one(&pool, &summary(FINAL, "2026-10-23T03:31:15.000Z")).await;
+		assert_eq!(next.response_id, 5, "ids continue where they were");
 	}
 }

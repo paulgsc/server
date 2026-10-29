@@ -63,10 +63,14 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("activities", "the activity catalogue — corpus-wide"),
 	("curriculum", "lesson content — corpus-wide"),
 	("curriculum_publication", "curriculum release ledger"),
+	(
+		"game_feed_body",
+		"each distinct body ESPN's public NFL feed answered, once, by its SHA-256 — public game data, nobody's record",
+	),
 	("game_feed_play", "the NFL play log read from ESPN's public feed — public game data, nobody's record"),
 	(
 		"game_feed_response",
-		"every response home fetched from ESPN's public NFL feed, kept raw — public game data, nobody's record",
+		"every response home fetched from ESPN's public NFL feed, its bytes kept by hash in game_feed_body — public game data, nobody's record",
 	),
 	("leetype_round", "LeetType round content — corpus-wide"),
 	("leetype_round_run", "recorded runs of each round's programs, per round version — corpus-wide, recorded offline, never about who asked"),

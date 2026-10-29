@@ -157,8 +157,10 @@ No fallback is built. If a later build lacks `dbstat`, that test fails first.
 On home, the pass would then fail with `no such table: dbstat` and FAILING
 would read 1; it would not write partial numbers. The fallback the issue names
 would replace the per-table rows: `SUM(size)` on the tables that record a
-size (`voice_note`, `game_feed_response`, the mailbox tables), plus the
-database's bytes.
+size (`voice_note`, the mailbox tables), `SUM(length(body))` on
+`game_feed_body` (the game feed keeps each body once, so `game_feed_response`'s
+`size` counts a body once per fetch, not the bytes held), plus the database's
+bytes.
 
 ## Deliberately not measured
 
