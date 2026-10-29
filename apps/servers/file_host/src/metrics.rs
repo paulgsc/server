@@ -14,6 +14,7 @@ pub mod pool;
 pub mod rate_limit;
 pub mod refusals;
 pub mod routine;
+pub mod storage;
 pub mod transcribe;
 pub mod waker;
 

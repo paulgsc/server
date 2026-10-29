@@ -128,6 +128,7 @@ nfl_feed = { workspace = true }
 fcm_kit = { workspace = true, features = ["reqwest-transport"] }
 notice_repo = { workspace = true }
 sharing_repo = { workspace = true }
+storage_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
 learner_shelf_repo = { workspace = true }
@@ -150,6 +151,9 @@ push_kit = { workspace = true, features = ["reqwest-transport"] }
 intervention = { workspace = true }
 study_domain = { workspace = true }
 chrono-tz = "0.10"
+# `statvfs` on the database's filesystem, for the daily storage sample's
+# free-space row (`storage`).
+rustix = { version = "1.1.5", features = ["fs"] }
 
 
 [dev-dependencies]
