@@ -112,10 +112,6 @@ NOT_BACKGROUND: dict[str, tuple[int, str]] = {
 # Real background tasks the ledger has not placed yet: warned, not failed
 # (see the docstring). Each says what some-ui's ledger needs.
 KNOWN_UNPLACED: dict[str, str] = {
-	"apps/servers/file_host/src/storage.rs": (
-		"the daily storage sampler (STORAGE1, #542). It fits family `what-is-kept`: add "
-		"`server:apps/servers/file_host/src/storage.rs` to its `paths` in some-ui's ledger"
-	),
 	"apps/servers/file_host/src/metrics/periodic.rs": (
 		"the 10 s operational-gauge sweep (connections, pool, rate limiter, storage footprint). No family "
 		"covers it: some-ui's ledger needs a placement the owner chooses (a family whose paths include "
@@ -666,6 +662,7 @@ GOOD_FAMILIES = [
 	fam("routine-to-home", ["some-ui:apps/mailbox", f"server:{SRC}/mailbox"], objective("MI1", proof=[f"server:{SRC}/mailbox/pass.rs#every_failed_phase_is_reported"], refs=[f"server:{SRC}/mailbox/pass.rs", "server#523", None])),
 	fam("voice", [f"server:{SRC}/transcribe"], objective("VH1", "broken", tracked="server#1", refs=[f"server:{SRC}/transcribe/engine.rs"])),
 	fam("checks", ["server:.github/workflows/"], objective("GC1", proof=["some-ui:packages/x.ts#readBranchRules", "server:docs/study-nudge.md#xx"], verdict="unproven"), objective("GC9", watch="server:docs/study-nudge.md#Scaling")),
+	fam("what-is-kept", [f"server:{SRC}/storage.rs"]),
 ]
 
 
@@ -688,9 +685,9 @@ def self_test() -> int:
 
 	# The baseline: proofs and paths present, tasks placed, known and exempt.
 	good = run(ledger(*GOOD_FAMILIES))
-	expect("compliant ledger", good, [], warnings=2)
+	expect("compliant ledger", good, [], warnings=1)
 	spawning = {line.split(" ")[0] for line in good.notes if line.startswith(SRC)}
-	if spawning != {f"{SRC}/{f}" for f in ("main.rs", "websocket.rs", "websocket/broadcast/handlers.rs", "websocket/message/handlers.rs", "mailbox.rs", "storage.rs", "metrics/periodic.rs", "transcribe/engine.rs")} - {f"{SRC}/storage.rs", f"{SRC}/metrics/periodic.rs"}:
+	if spawning != {f"{SRC}/{f}" for f in ("main.rs", "websocket.rs", "websocket/broadcast/handlers.rs", "websocket/message/handlers.rs", "mailbox.rs", "storage.rs", "metrics/periodic.rs", "transcribe/engine.rs")} - {f"{SRC}/metrics/periodic.rs"}:
 		failures.append(f"the files read as spawning (placed or exempt) are {sorted(spawning)}")
 	# Fields the rules do not read are ignored, never rejected.
 	expect("unknown fields", run(ledger(*GOOD_FAMILIES, stores=[{**e, "later": [1]} for e in STORES], future={"a": 1})), [])
@@ -733,8 +730,8 @@ def self_test() -> int:
 	expect("a new migration's table", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "create table `More` (a);"}), ["Table in no store"])
 	expect("a later drop", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "DROP TABLE IF EXISTS main.notes;"}), ["Store names no table"])
 	expect("reader and SQLite disagree", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": 'CREATE TABLE "a""b" (x);'}), ["Migrations read wrongly", "Table in no store"])
-	expect("SQLite cannot apply them", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "NOT SQL AT ALL;"}), [], warnings=3)
-	expect("no stores list warns", run({k: v for k, v in ledger(*GOOD_FAMILIES).items() if k != "stores"}), [], warnings=3)
+	expect("SQLite cannot apply them", run(ledger(*GOOD_FAMILIES), {**BASE_FILES, "migrations/0004_more.up.sql": "NOT SQL AT ALL;"}), [], warnings=2)
+	expect("no stores list warns", run({k: v for k, v in ledger(*GOOD_FAMILIES).items() if k != "stores"}), [], warnings=2)
 	expect("stores not a list", run(ledger(*GOOD_FAMILIES, stores={"server:x": 1})), ["Ledger unreadable"])
 	expect("store without a name", run(ledger(*GOOD_FAMILIES, stores=[{"class": "x"}])), ["Ledger unreadable"])
 
@@ -762,7 +759,7 @@ def self_test() -> int:
 	expect("test module after a raw string", run(ledger(*GOOD_FAMILIES), files_with(jobs_notice='const Q: &str = r#"}{"#;\n#[cfg(test)]\nmod tests { fn t() { if x { tokio::spawn(a); } } }\n')), [])
 	expect("code after a test module still read", run(ledger(*GOOD_FAMILIES), files_with(jobs_notice="#[cfg(test)]\nmod tests { fn t() {} }\nfn f() { tokio::spawn(a); }\n")), ["Background task in no family"])
 	expect("lifetimes are not chars", run(ledger(*GOOD_FAMILIES), files_with(jobs_notice="fn f<'a>(x: &'a str) {}\nfn g() { tokio::spawn(a); }\n")), ["Background task in no family"])
-	expect("a placed known task warns", run(ledger(*GOOD_FAMILIES, fam("what-is-kept", [f"server:{SRC}/storage.rs"]))), [], warnings=2)
+	expect("a placed known task warns", run(ledger(*GOOD_FAMILIES, fam("health", [f"server:{SRC}/metrics/periodic.rs"]))), [], warnings=1)
 	expect("child module of a file path", run(ledger(fam("p", [f"server:{SRC}/jobs_notice.rs"]), *GOOD_FAMILIES), files_with(jobs_notice__send="fn f() { tokio::spawn(a); }\n", jobs_notice="")), [])
 
 	for name, path, file, want in (
