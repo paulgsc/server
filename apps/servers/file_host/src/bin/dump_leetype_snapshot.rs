@@ -22,7 +22,6 @@
 
 use clap::Parser;
 use leetype_round_repo::{dump_snapshot, RoundRepository, SnapshotMode};
-use sqlx::sqlite::SqlitePoolOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -46,7 +45,7 @@ async fn main() -> ExitCode {
 	let stdout = io::stdout();
 	let mut out = stdout.lock();
 
-	let pool = match SqlitePoolOptions::new().max_connections(1).connect(&args.database_url).await {
+	let pool = match file_host::db::connect_single(&args.database_url).await {
 		Ok(pool) => pool,
 		Err(err) => {
 			let _ = writeln!(io::stderr(), "dump-leetype-snapshot: could not open {}: {err}", args.database_url);

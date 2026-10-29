@@ -10,6 +10,7 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 pub mod auth;
 pub mod cache;
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod game_feed;
 pub mod handlers;

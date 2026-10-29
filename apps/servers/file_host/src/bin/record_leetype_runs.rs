@@ -31,7 +31,6 @@ use chrono::Utc;
 use clap::Parser;
 use leetype_round_repo::{RoundRepository, RunResult};
 use leetype_runner::{record_listed, Limits, RoundOutcome, Runner, Selection, DEFAULT_MEMORY_CEILING};
-use sqlx::sqlite::SqlitePoolOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -96,7 +95,7 @@ async fn main() -> ExitCode {
 		let _ = writeln!(out, "note: prlimit is not installed, so runs have no memory ceiling");
 	}
 
-	let pool = match SqlitePoolOptions::new().max_connections(1).connect(&args.database_url).await {
+	let pool = match file_host::db::connect_single(&args.database_url).await {
 		Ok(pool) => pool,
 		Err(error) => {
 			let _ = writeln!(err, "record-leetype-runs: could not open {}: {error}", args.database_url);
