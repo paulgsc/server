@@ -103,6 +103,15 @@ The Worker is not the owner's to deploy by hand. A session whose environment car
 (`some-ui`'s `apps/mailbox/README.md`, "Deploy"). A session started before those were
 added doesn't have them, so check `[ -n "$CLOUDFLARE_API_TOKEN" ]` (never print it) first.
 
+`some-ui`'s assurance ledger names files here as the proofs of its promises
+(`server:<file>#<name>`). `Assurance ledger` (`.github/workflows/assurance.yml`) reads it from
+`some-ui`'s `main` on every PR and fails one that is gone, a `server:` path that is gone, a
+task file_host spawns that no family covers, or a table the migrations leave standing that the
+ledger's `stores` does not list (so a new table needs its store there first);
+`docs/assurance.md` says which side to fix. `PR gate`
+(`gate.yml`) waits on every other check of the head commit: after re-running a failed check,
+re-run it too, since nothing starts it again.
+
 ## Workflow storage
 
 Everything a workflow stores costs GitHub space for as long as it lives, so the default is

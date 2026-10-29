@@ -1,0 +1,55 @@
+# The server's half of paulgsc/some-ui's assurance ledger (AS10, #526; GC4).
+#
+# some-ui keeps the record of what the system promises about outcomes and work
+# (`ledger.json`, found in some-ui by its schema), and its own check cannot see
+# this repository. This job reads that ledger from some-ui's `main`, the way
+# routes.yml reads some-ui, and fails a pull request here that leaves it
+# pointing at nothing:
+#   - a `server:` proof of a promise that holds whose file is gone or no longer
+#     contains the name (a renamed test, say);
+#   - a `server:` path in a family, an evidence ref or a watch that is gone;
+#   - a background task file_host spawns that no family's paths cover;
+#   - a table the migrations leave standing with no `server:<table>` store, or
+#     a `server:` store naming a table that is not there.
+# scripts/check_assurance_ledger.py holds the rules; docs/assurance.md says
+# why and where they stop.
+#
+# No path filter: some-ui's main moves on its own, so a pull request that
+# touches nothing here can still be the first to meet a ledger that names a
+# server path that is gone. The message says which side to fix.
+name: Assurance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: Assurance ledger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: server
+
+      # Public repository, so no token: this job only reads some-ui.
+      - uses: actions/checkout@v5
+        with:
+          repository: paulgsc/some-ui
+          path: some-ui
+
+      - name: The ledger's server proofs, paths, background tasks and tables
+        run: |
+          set -euo pipefail
+          python3 server/scripts/check_assurance_ledger.py --self-test
+          python3 server/scripts/check_assurance_ledger.py --some-ui some-ui

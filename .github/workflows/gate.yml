@@ -1,0 +1,58 @@
+# One check for main's ruleset to require: `PR gate` passes only when every
+# other check this repository runs on the pull request passed (GC5, #526).
+#
+# The checks live in several workflows, some filtered by path (routes.yml) and
+# some skipped inside a run when their paths did not change (test.yml's
+# rust_ci and infra_ci), and a job cannot `needs` a job in another workflow.
+# So scripts/pr_gate.py works out which workflows GitHub starts for this pull
+# request (each one's own `pull_request` branch and path filters, against the
+# changed files), then polls the head commit's workflow runs and other apps'
+# check runs until every one has finished, and fails on any failure,
+# cancellation or timeout, or on an expected run that never appears. See the
+# script and docs/assurance.md for the rules and their boundaries.
+#
+# This workflow holds the gate and nothing else: the gate never waits on its
+# own workflow, so another job here would be waited on by nothing (the script
+# fails if one is added).
+#
+# After "Re-run failed jobs" on another workflow, re-run this one too: nothing
+# starts it again on its own.
+#
+# `labeled`/`unlabeled` because routes.yml re-runs on them (the
+# `client-breaking-route` label changes its verdict), and the gate must judge
+# that run, not the one it replaced.
+name: PR gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - main
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: PR gate
+    runs-on: ubuntu-latest
+    # The script gives up at 60 minutes and reports what is unfinished; this
+    # is the backstop if the API itself hangs.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Wait on every other check for this commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/pr_gate.py --self-test
+          python3 scripts/pr_gate.py --minutes 60
