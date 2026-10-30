@@ -1,0 +1,42 @@
+{
+  "binary": "orchestrator",
+  "about": "Service orchestration application",
+  "variables": [
+    {
+      "name": "METRICS_ADDR",
+      "group": null,
+      "required": false,
+      "default": "0.0.0.0:9464",
+      "kind": "socket_addr",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Where the Prometheus `/metrics` listener binds.\n\nOrchestrator has no other HTTP surface (#143 (C1)) — this listener exists purely to be scraped. All interfaces, so it's reachable from `monitoring-network`, but `infra/compose/orchestrator.yml` deliberately publishes no port to the host, and this must not change that.",
+      "required_when": null
+    },
+    {
+      "name": "NATS_URL",
+      "group": "NATS",
+      "required": false,
+      "default": "nats://localhost:4222",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "The NATS server to connect to.\n\nThe default only works beside a NATS that publishes 4222 on the same machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see `some_transport::DEV_HOST_NATS_URL`. Every container sets it.",
+      "required_when": null
+    },
+    {
+      "name": "RUST_LOG",
+      "group": "Logging",
+      "required": false,
+      "default": "info",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
+      "required_when": null
+    }
+  ]
+}

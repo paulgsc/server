@@ -1,0 +1,25 @@
+[package]
+name = "app-config"
+description = "The configuration groups every binary shares (NATS, RUST_LOG, OTel), declared once"
+categories = ["config"]
+keywords = ["config", "clap", "environment"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+some-transport = { workspace = true, features = ["nats"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

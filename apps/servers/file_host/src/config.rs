@@ -1,3 +1,5 @@
+use app_config::schema::RequiredWhen;
+pub use app_config::{LogArgs, NatsArgs, OtelArgs, TraceSampler, DEV_HOST_NATS_URL};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
@@ -12,10 +14,52 @@ use serde::{Deserialize, Serialize};
 pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
 /// `APP_BASE_URL`'s default. HOST-SPECIFIC: the `nixos.local` dev host.
 pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
-/// Used when `NATS_URL` is unset. HOST-SPECIFIC: a NATS on this machine.
-pub use some_transport::DEV_HOST_NATS_URL;
 /// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
 pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
+
+/// What `Config` requires only while another variable is on.
+///
+/// Each is checked where the server refuses to start without it
+/// (`auth::configured_relying_party`, `mailbox::Mailbox::from_config`,
+/// `build_nudge`), and declared here so the schema
+/// (`infra/env/file_host.json`) and `make preflight` know it (#504).
+pub const REQUIRED_WHEN: &[RequiredWhen] = &[
+	RequiredWhen {
+		variable: "WEBAUTHN_RP_ID",
+		when: "AUTH_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "WEBAUTHN_ORIGINS",
+		when: "AUTH_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "MAILBOX_URL",
+		when: "MAILBOX_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "MAILBOX_TOKEN",
+		when: "MAILBOX_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "MAILBOX_SUBJECT",
+		when: "MAILBOX_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "VAPID_PUBLIC_KEY",
+		when: "NUDGE_ENABLED",
+		is: "true",
+	},
+	RequiredWhen {
+		variable: "VAPID_PRIVATE_KEY",
+		when: "NUDGE_ENABLED",
+		is: "true",
+	},
+];
 
 /// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`
 /// and `packages/ui/topik/ROUTINE.md`).
@@ -26,21 +70,14 @@ pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; refl
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
+#[command(mut_arg("otel_service_name", app_config::default_service_name("file_host")))]
 pub struct Config {
-	/// Use JSON formatting for tracing
-	#[arg(long, env = "LOG_JSON", default_value_t = false, action = clap::ArgAction::Set)]
-	pub log_json: bool,
-
-	/// `tracing` filter directives, e.g. `info,file_host=debug`.
-	#[arg(long, env = "RUST_LOG", default_value = "info", value_parser = parse_filter)]
-	pub rust_log: String,
-
 	/// Database connection timeout in seconds
-	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30")]
+	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30", help_heading = "Server")]
 	pub connection_timeout: u64,
 
 	/// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded.
-	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256")]
+	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256", help_heading = "Server")]
 	pub max_in_flight: u64,
 
 	/// Address to listen on.
@@ -49,48 +86,36 @@ pub struct Config {
 	/// These two were once `HOST`/`PORT` and read by nothing (the listener was
 	/// hard-coded to `0.0.0.0:3000`); the defaults are that address, so honouring
 	/// them changes nothing for a server started without them.
-	#[arg(long = "bind", env = "FILE_HOST_BIND", value_name = "FILE_HOST_BIND", default_value = "0.0.0.0")]
+	#[arg(long = "bind", env = "FILE_HOST_BIND", value_name = "FILE_HOST_BIND", default_value = "0.0.0.0", help_heading = "Server")]
 	pub host: String,
 
 	/// Port to listen on.
 	///
 	/// `FILE_HOST_PORT`, not `PORT`: the container reads the repo's `.env`, and
 	/// a bare `PORT` there meant for another service would move this one.
-	#[arg(long, env = "FILE_HOST_PORT", value_name = "FILE_HOST_PORT", default_value = "3000")]
+	#[arg(long, env = "FILE_HOST_PORT", value_name = "FILE_HOST_PORT", default_value = "3000", help_heading = "Server")]
 	pub port: u16,
 
 	/// Dev only: when the port is taken, listen on the next free one instead
 	/// of failing (`listen::bind`). `make dev` sets it, so a server run from
 	/// source can sit beside the production container. Never set it in
 	/// production: its published port and healthcheck assume `FILE_HOST_PORT`.
-	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", value_name = "FILE_HOST_PORT_FALLBACK", default_value_t = false, action = clap::ArgAction::Set)]
+	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", value_name = "FILE_HOST_PORT_FALLBACK", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Server")]
 	pub port_fallback: bool,
 
 	/// Where to record the port actually listened on, as `{ port, pid }`, for
 	/// `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on
 	/// shutdown. `make dev` sets it.
-	#[arg(long, env = "FILE_HOST_PORT_FILE", value_name = "FILE_HOST_PORT_FILE")]
+	#[arg(long, env = "FILE_HOST_PORT_FILE", value_name = "FILE_HOST_PORT_FILE", help_heading = "Server")]
 	pub port_file: Option<std::path::PathBuf>,
-
-	/// Number of worker threads
-	#[arg(long, env = "WORKERS", default_value = "4")]
-	pub workers: usize,
-
-	/// API version
-	#[arg(long, env = "API_VERSION", default_value = "v1")]
-	pub api_version: String,
 
 	/// Rate limit, in requests per minute, per client (`main.rs`'s
 	/// `rate_limit_middleware` partitions by peer IP). See #215/#231: this
 	/// field previously declared the right unit but was unread — the
 	/// limiter's capacity was `max_request_size` (megabytes of upload
 	/// payload) instead.
-	#[arg(long, env = "RATE_LIMIT", default_value = "60")]
+	#[arg(long, env = "RATE_LIMIT", default_value = "60", help_heading = "Server")]
 	pub rate_limit: u32,
-
-	/// Enable CORS
-	#[arg(long, env = "ENABLE_CORS", default_value_t = false, action = clap::ArgAction::Set)]
-	pub enable_cors: bool,
 
 	/// Comma-separated list of allowed CORS origins for browser-facing read routes
 	/// (push and sessions). Other routes deliberately allow any origin
@@ -103,75 +128,57 @@ pub struct Config {
 	/// admits the Storybook origin blocks it.
 	///
 	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
-	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = DEV_HOST_ALLOWED_ORIGINS)]
+	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = DEV_HOST_ALLOWED_ORIGINS, help_heading = "Server")]
 	pub allowed_origins: Vec<String>,
-
-	/// Log level
-	#[arg(long, env = "LOG_LEVEL", default_value = "info")]
-	pub log_level: LogLevel,
-
-	/// Log file path
-	#[arg(long, env = "LOG_FILE")]
-	pub log_file: Option<String>,
 
 	/// Redis URL for caching.
 	///
 	/// Unset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).
-	#[arg(long, env = "REDIS_URL")]
+	#[arg(long, env = "REDIS_URL", help_heading = "Server")]
 	pub redis_url: Option<String>,
 
-	/// NATS URL for broker messaging.
-	///
-	/// Unset, a NATS on this machine (HOST-SPECIFIC; see `DEV_HOST_NATS_URL`).
-	#[arg(long, env = "NATS_URL")]
-	pub nats_url: Option<String>,
-
 	/// Cache TTL in seconds
-	#[arg(long, env = "CACHE_TTL", default_value = "600")]
+	#[arg(long, env = "CACHE_TTL", default_value = "600", help_heading = "Server")]
 	pub cache_ttl: u64,
 
-	/// Enable Prometheus metrics
-	#[arg(long, env = "ENABLE_PROMETHEUS", default_value_t = false, action = clap::ArgAction::Set)]
-	pub enable_prometheus: bool,
-
 	/// Prometheus metrics port
-	#[arg(long, env = "PROMETHEUS_PORT", default_value = "9090")]
+	#[arg(long, env = "PROMETHEUS_PORT", default_value = "9090", help_heading = "Server")]
 	pub prometheus_port: u16,
 
-	/// Enable development mode
-	#[arg(long, env = "DEV_MODE", default_value_t = false, action = clap::ArgAction::Set)]
-	pub dev_mode: bool,
-
 	/// Streaming Chunk Size
-	#[arg(long, env = "BUFFER_SIZE", value_name = "BUFFER_SIZE", default_value = "65536")]
+	#[arg(long, env = "BUFFER_SIZE", value_name = "BUFFER_SIZE", default_value = "65536", help_heading = "Server")]
 	pub chunk_size: usize,
 
 	/// Individual request payload lmit in MB
-	#[arg(long, env = "MAX_REQUEST_SIZE_MB", value_name = "MAX_REQUEST_SIZE_MB", default_value = "10")]
+	#[arg(long, env = "MAX_REQUEST_SIZE_MB", value_name = "MAX_REQUEST_SIZE_MB", default_value = "10", help_heading = "Server")]
 	pub max_request_size: usize,
 
 	/// Active request limit
-	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", value_name = "MAX_CONCURRENT_REQUESTS", default_value = "100")]
+	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", value_name = "MAX_CONCURRENT_REQUESTS", default_value = "100", help_heading = "Server")]
 	pub max_concurrent_req: usize,
 
 	/// Hard timeout for any operation
-	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000")]
+	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000", help_heading = "Server")]
 	pub task_timeout_ms: u64,
 
 	/// Streaming Max Chunk Size
-	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", value_name = "MAX_CHUNKS_IN_FLIGHT", default_value = "5")]
+	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", value_name = "MAX_CHUNKS_IN_FLIGHT", default_value = "5", help_heading = "Server")]
 	pub max_chunks: usize,
 
 	/// OBS Websocket Server IP Address
-	#[arg(long, env = "OBS_WEBSOCKET_IP", value_name = "OBS_WEBSOCKET_IP")]
+	#[arg(long, env = "OBS_WEBSOCKET_IP", value_name = "OBS_WEBSOCKET_IP", help_heading = "Server")]
 	pub obs_host: String,
 
 	/// OBS Websocket Server Password
-	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD", hide_env_values = true)]
+	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD", hide_env_values = true, help_heading = "Server")]
 	pub obs_password: String,
 
-	/// DATABASE URL
-	#[arg(long, env = "DATABASE_URL", hide_env_values = true)]
+	/// The `SQLite` database, as `sqlite://<path>`.
+	///
+	/// The container sets its own (`infra/compose/file_host.yml`), so in
+	/// `.env` this is `make dev`'s. Pointed at the directory the container
+	/// mounts, a dev run opens the container's live database.
+	#[arg(long, env = "DATABASE_URL", hide_env_values = true, help_heading = "Server")]
 	pub database_url: String,
 
 	// ── Study nudge ──────────────────────────────────────────────────────────
@@ -183,25 +190,28 @@ pub struct Config {
 	/// Whether the daily nudge tick runs at all.
 	///
 	/// With this off, the `/push` routes still work — a browser can subscribe and
-	/// a manual send can be triggered — but nothing fires on a schedule.
-	#[arg(long, env = "NUDGE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	/// a manual send can be triggered — but nothing fires on a schedule. On,
+	/// the server refuses to start without a usable VAPID pair. A dev run
+	/// beside the container keeps it off, or a learner is nudged twice.
+	#[arg(long, env = "NUDGE_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Study nudge")]
 	pub nudge_enabled: bool,
 
 	/// VAPID public key, base64url, uncompressed P-256 point.
 	///
 	/// Handed to the browser as `applicationServerKey`. It is baked into every
 	/// subscription made with it, so changing it does not re-key them — it
-	/// silently invalidates all of them.
-	#[arg(long, env = "VAPID_PUBLIC_KEY")]
+	/// silently invalidates all of them. Treat rotation as a migration.
+	/// Generate a pair with `npx web-push generate-vapid-keys`.
+	#[arg(long, env = "VAPID_PUBLIC_KEY", help_heading = "Study nudge")]
 	pub vapid_public_key: Option<String>,
 
 	/// VAPID private key, base64url, the raw 32-byte P-256 scalar. Secret.
-	#[arg(long, env = "VAPID_PRIVATE_KEY", hide_env_values = true)]
+	#[arg(long, env = "VAPID_PRIVATE_KEY", hide_env_values = true, help_heading = "Study nudge")]
 	pub vapid_private_key: Option<String>,
 
 	/// The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender.
 	/// Push services reject or deprioritise senders without one.
-	#[arg(long, env = "VAPID_SUBJECT", default_value = "mailto:admin@maishatu.com")]
+	#[arg(long, env = "VAPID_SUBJECT", default_value = "mailto:admin@maishatu.com", help_heading = "Study nudge")]
 	pub vapid_subject: String,
 
 	/// IANA timezone name deciding when a day starts and when quiet hours apply.
@@ -209,16 +219,16 @@ pub struct Config {
 	/// Deliberately an `Option` with no default. A container is UTC unless told
 	/// otherwise, and a silent UTC fallback is how an evening reminder arrives at
 	/// 3am; leaving this unset is allowed but is logged as the choice it is.
-	#[arg(long, env = "NUDGE_TIMEZONE")]
+	#[arg(long, env = "NUDGE_TIMEZONE", help_heading = "Study nudge")]
 	pub nudge_timezone: Option<String>,
 
 	/// Local hour, 0-23, at which nudges stop.
-	#[arg(long, env = "NUDGE_QUIET_HOURS_START", default_value = "22")]
+	#[arg(long, env = "NUDGE_QUIET_HOURS_START", default_value = "22", help_heading = "Study nudge")]
 	pub nudge_quiet_hours_start: u32,
 
 	/// Local hour, 0-23, at which nudges resume. May be less than the start hour;
 	/// the range wraps midnight. Equal bounds mean no quiet hours at all.
-	#[arg(long, env = "NUDGE_QUIET_HOURS_END", default_value = "8")]
+	#[arg(long, env = "NUDGE_QUIET_HOURS_END", default_value = "8", help_heading = "Study nudge")]
 	pub nudge_quiet_hours_end: u32,
 
 	/// How often the waker picks up work the engine already decided.
@@ -227,7 +237,7 @@ pub struct Config {
 	/// written to an index; this is the resolution at which they are noticed, so
 	/// shortening it lands interventions closer to their computed instant
 	/// without changing which ones happen.
-	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300")]
+	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300", help_heading = "Study nudge")]
 	pub nudge_waker_seconds: u64,
 
 	/// How long one push delivery may take before it counts as a failure
@@ -241,7 +251,7 @@ pub struct Config {
 	/// than the transport's own (unbounded) patience. A timed-out delivery is
 	/// recorded as a failure — never a prune, never `Accepted` — and does not
 	/// hand the claim back: see `nudge::waker::actuate`.
-	#[arg(long, env = "PUSH_DELIVERY_TIMEOUT_MS", default_value = "10000")]
+	#[arg(long, env = "PUSH_DELIVERY_TIMEOUT_MS", default_value = "10000", help_heading = "Study nudge")]
 	pub push_delivery_timeout_ms: u64,
 
 	/// How long one waker pass may run before it stops taking on new subjects
@@ -256,7 +266,7 @@ pub struct Config {
 	/// what the pass has left — but never cancels a subject part-way, so a
 	/// claim already written stands. Subjects it did not reach are still due on
 	/// the next pass, the property `BATCH` already relies on.
-	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000")]
+	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000", help_heading = "Study nudge")]
 	pub waker_pass_deadline_ms: u64,
 
 	/// Whether the recommender ranks a provisioned session with this subject's
@@ -265,7 +275,7 @@ pub struct Config {
 	/// "Outcome stats and the flag that gates them", for what would justify
 	/// turning it on. Off, the recommender sees every activity as unplayed,
 	/// exactly as it did before `activity_outcome` existed.
-	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value_t = false, action = clap::ArgAction::Set)]
+	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Study nudge")]
 	pub recommender_uses_outcomes: bool,
 
 	/// How long a client-written presence lease stays fresh before a due
@@ -277,7 +287,7 @@ pub struct Config {
 	/// underneath, and a smaller default — a client renewing roughly every
 	/// 45s while visible only needs a TTL wide enough to absorb timer
 	/// throttling and scheduling jitter, not two minutes of slack.
-	#[arg(long, env = "NUDGE_PRESENCE_LEASE_TTL_SECONDS", default_value = "75")]
+	#[arg(long, env = "NUDGE_PRESENCE_LEASE_TTL_SECONDS", default_value = "75", help_heading = "Study nudge")]
 	pub nudge_presence_lease_ttl_seconds: u64,
 
 	/// Base URL of the study app, used to build the notification's deep link.
@@ -285,7 +295,7 @@ pub struct Config {
 	/// the server has to produce the same shape or clicks land on the dashboard.
 	///
 	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
-	#[arg(long, env = "APP_BASE_URL", default_value = DEV_HOST_APP_BASE_URL)]
+	#[arg(long, env = "APP_BASE_URL", default_value = DEV_HOST_APP_BASE_URL, help_heading = "Study nudge")]
 	pub app_base_url: String,
 
 	// ── Passkey auth ──────────────────────────────────────────────────────────
@@ -302,7 +312,7 @@ pub struct Config {
 	/// needs nobody signed in: every ceremony answers `503` and every
 	/// subject-scoped route `401`. `false` with `WEBAUTHN_RP_ID` set is refused
 	/// as a contradiction.
-	#[arg(long, env = "AUTH_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
+	#[arg(long, env = "AUTH_ENABLED", default_value_t = true, action = clap::ArgAction::Set, help_heading = "Passkey auth")]
 	pub auth_enabled: bool,
 
 	/// The WebAuthn relying party id: the registrable domain the app is served
@@ -310,31 +320,33 @@ pub struct Config {
 	/// bound to it for good, so changing it strands every passkey made under
 	/// the old one, which also makes it HOST-SPECIFIC in the strongest sense:
 	/// moving to a new domain strands every passkey made on this one.
-	#[arg(long, env = "WEBAUTHN_RP_ID")]
+	/// Required while `AUTH_ENABLED` is on. For local development on
+	/// `https://localhost:5173`, `localhost`.
+	#[arg(long, env = "WEBAUTHN_RP_ID", help_heading = "Passkey auth")]
 	pub webauthn_rp_id: Option<String>,
 
 	/// Comma-separated origins the app is served from, scheme and port
 	/// included (`https://nixos.local:5173`). A passkey ceremony from any
 	/// other origin fails verification. Required when `WEBAUTHN_RP_ID` is set.
-	#[arg(long, env = "WEBAUTHN_ORIGINS", value_delimiter = ',')]
+	#[arg(long, env = "WEBAUTHN_ORIGINS", value_delimiter = ',', help_heading = "Passkey auth")]
 	pub webauthn_origins: Vec<String>,
 
 	/// How long a sign-in lasts, in days. It slides: opening the app past the
 	/// halfway point renews it to a full term.
-	#[arg(long, env = "AUTH_SESSION_DAYS", default_value = "30")]
+	#[arg(long, env = "AUTH_SESSION_DAYS", default_value = "30", help_heading = "Passkey auth")]
 	pub auth_session_days: u32,
 
 	/// How many accounts may be created per UTC day, across the server. A
 	/// backstop against a flood of empty accounts; the per-client rate limit
 	/// already bounds any one client.
-	#[arg(long, env = "AUTH_NEW_ACCOUNTS_PER_DAY", default_value = "100")]
+	#[arg(long, env = "AUTH_NEW_ACCOUNTS_PER_DAY", default_value = "100", help_heading = "Passkey auth")]
 	pub auth_new_accounts_per_day: u32,
 
 	/// A one-time secret that lets one new account take over the data saved
 	/// before auth existed (the `subject-local` rows). Unset, nobody can: every
 	/// new account starts empty. Set it, open `/auth#claim=<token>` in the app
 	/// and create a passkey there; then unset it. Never logged.
-	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true)]
+	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true, help_heading = "Passkey auth")]
 	pub auth_legacy_claim_token: Option<String>,
 
 	/// Comma-separated subject ids allowed to use the operator routes: the
@@ -343,7 +355,11 @@ pub struct Config {
 	/// entries are ignored. Unset or empty, nobody is an operator and those
 	/// routes answer 403 to every signed-in subject. Anyone can make an
 	/// account, so being signed in is not enough; see `auth::operator`.
-	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',')]
+	///
+	/// To find your subject id, sign in where you operate from and call any
+	/// operator route: the refusal is logged at info with your `subject=`.
+	/// The pre-auth data's claimant (`AUTH_LEGACY_CLAIM_TOKEN`) is `subject-local`.
+	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',', help_heading = "Passkey auth")]
 	pub operator_subjects: Vec<String>,
 
 	// ── The Jobs mailbox ──────────────────────────────────────────────────────
@@ -352,45 +368,47 @@ pub struct Config {
 	// Cloudflare Worker, paulgsc/some-ui `apps/mailbox`) so the phone can take
 	// it from home. Off unless `MAILBOX_ENABLED` says otherwise; on, the server
 	// refuses to start unless the other four are set and usable.
-	/// Whether home reads the Jobs mailbox at all.
-	#[arg(long, env = "MAILBOX_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	/// Whether home reads the Jobs mailbox at all. On, the server refuses to
+	/// start unless `MAILBOX_URL`, `MAILBOX_TOKEN` and `MAILBOX_SUBJECT` are set
+	/// and usable.
+	#[arg(long, env = "MAILBOX_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Jobs mailbox")]
 	pub mailbox_enabled: bool,
 
 	/// The mailbox's base URL: `https://` and a host, no path
 	/// (`https://some-ui-mailbox.<account>.workers.dev`).
-	#[arg(long, env = "MAILBOX_URL")]
+	#[arg(long, env = "MAILBOX_URL", help_heading = "Jobs mailbox")]
 	pub mailbox_url: Option<String>,
 
 	/// Home's own mailbox token: it reads `brief` and puts `decisions` and
 	/// `scout`. Never logged.
-	#[arg(long, env = "MAILBOX_TOKEN", hide_env_values = true)]
+	#[arg(long, env = "MAILBOX_TOKEN", hide_env_values = true, help_heading = "Jobs mailbox")]
 	pub mailbox_token: Option<String>,
 
 	/// The subject whose copy the mailbox's files are kept as: the owner's
 	/// subject id, found as for `OPERATOR_SUBJECTS`.
-	#[arg(long, env = "MAILBOX_SUBJECT")]
+	#[arg(long, env = "MAILBOX_SUBJECT", help_heading = "Jobs mailbox")]
 	pub mailbox_subject: Option<String>,
 
 	/// Seconds between reads of the mailbox. At least 60.
-	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900")]
+	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900", help_heading = "Jobs mailbox")]
 	pub mailbox_seconds: u64,
 
 	/// When each routine that leaves run records in the mailbox is due:
 	/// `<routine> <HH:MM> <IANA zone>` entries separated by `;`, the routine
 	/// `jobs` or `reflections`. Empty expects no run. Read only with the
 	/// mailbox on (`routine_watch`).
-	#[arg(long, env = "ROUTINE_SCHEDULE", default_value = DEFAULT_ROUTINE_SCHEDULE)]
+	#[arg(long, env = "ROUTINE_SCHEDULE", default_value = DEFAULT_ROUTINE_SCHEDULE, help_heading = "Jobs mailbox")]
 	pub routine_schedule: String,
 
 	/// Home's second mailbox token (the Worker's `ARCHIVE_TOKEN`): it moves a
 	/// file live there long enough home, and puts one back when the routine
 	/// asks. Unset, nothing is archived. Never logged.
-	#[arg(long, env = "MAILBOX_ARCHIVE_TOKEN", hide_env_values = true)]
+	#[arg(long, env = "MAILBOX_ARCHIVE_TOKEN", hide_env_values = true, help_heading = "Jobs mailbox")]
 	pub mailbox_archive_token: Option<String>,
 
 	/// Days a file stays live in the mailbox before home archives it. At
 	/// least 30, the mailbox's own floor.
-	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90")]
+	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90", help_heading = "Jobs mailbox")]
 	pub mailbox_archive_days: u64,
 
 	// ── The Jobs arrival notice ───────────────────────────────────────────────
@@ -400,8 +418,13 @@ pub struct Config {
 	// run's record arrives. Off unless this is set; set, the server refuses to
 	// start unless the file is a service account's key.
 	/// A Google service account's JSON key, allowed to send through FCM for
-	/// the app's Firebase project. Unset, home tells no phone anything.
-	#[arg(long, env = "FCM_SERVICE_ACCOUNT_FILE")]
+	/// the app's Firebase project, as the container sees it: the repo's
+	/// `config/` is mounted at `/app/config`, and a name with `secret` in it
+	/// stays out of git (`.gitignore`'s `*secret*`), e.g.
+	/// `/app/config/fcm-service-account-secret.json`. Unset, home tells no
+	/// phone anything; set to a file that is not such a key, the server
+	/// refuses to start.
+	#[arg(long, env = "FCM_SERVICE_ACCOUNT_FILE", help_heading = "Jobs arrival notice")]
 	pub fcm_service_account_file: Option<std::path::PathBuf>,
 
 	// ── Voice-note transcription ──────────────────────────────────────────────
@@ -411,32 +434,39 @@ pub struct Config {
 	// refuses to start unless both models load and ffmpeg runs. Not the
 	// `WHISPER_*` variables an older `example.env` set, which named an
 	// English-only model and nothing read.
-	/// Whether home transcribes voice notes at all.
-	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	/// Whether home transcribes voice notes at all. On, the server refuses to
+	/// start unless both models load and ffmpeg runs. Get the models with
+	/// `nix develop .#whisper -c whisper fetch`.
+	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Voice-note transcription")]
 	pub transcribe_enabled: bool,
 
 	/// The multilingual whisper.cpp model, as a path inside the container.
 	/// The default is where `infra/compose/file_host.yml` mounts the host's
 	/// models directory (HOST-SPECIFIC there), with the model `nix/whisper-manager`
 	/// downloads.
-	#[arg(long, env = "TRANSCRIBE_MODEL", default_value = "/models/ggml-small-q5_1.bin")]
+	#[arg(long, env = "TRANSCRIBE_MODEL", default_value = "/models/ggml-small-q5_1.bin", help_heading = "Voice-note transcription")]
 	pub transcribe_model: String,
 
 	/// The Silero VAD model that finds a note's speech, mounted beside it.
-	#[arg(long, env = "TRANSCRIBE_VAD_MODEL", default_value = "/models/ggml-silero-v5.1.2.bin")]
+	#[arg(
+		long,
+		env = "TRANSCRIBE_VAD_MODEL",
+		default_value = "/models/ggml-silero-v5.1.2.bin",
+		help_heading = "Voice-note transcription"
+	)]
 	pub transcribe_vad_model: String,
 
 	/// Threads one note is heard with. Unset, one fewer than the cores the
 	/// container may use, and at least one.
-	#[arg(long, env = "TRANSCRIBE_THREADS")]
+	#[arg(long, env = "TRANSCRIBE_THREADS", help_heading = "Voice-note transcription")]
 	pub transcribe_threads: Option<usize>,
 
 	/// Seconds one note may take, decoding included. At least 60.
-	#[arg(long, env = "TRANSCRIBE_DEADLINE_SECONDS", default_value = "600")]
+	#[arg(long, env = "TRANSCRIBE_DEADLINE_SECONDS", default_value = "600", help_heading = "Voice-note transcription")]
 	pub transcribe_deadline_seconds: u64,
 
 	/// Seconds between looks for notes to hear. At least 10.
-	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60")]
+	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60", help_heading = "Voice-note transcription")]
 	pub transcribe_seconds: u64,
 
 	// ── The NFL game feed ─────────────────────────────────────────────────────
@@ -446,88 +476,51 @@ pub struct Config {
 	// unless `GAME_FEED_ENABLED`; on, the server refuses to start with a cadence
 	// out of range.
 	/// Whether home follows the games of the week at all.
-	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "NFL game feed")]
 	pub game_feed_enabled: bool,
 
 	/// Seconds between reads of the week's scoreboard. At least 60.
-	#[arg(long, env = "GAME_FEED_SCOREBOARD_SECONDS", default_value = "600")]
+	#[arg(long, env = "GAME_FEED_SCOREBOARD_SECONDS", default_value = "600", help_heading = "NFL game feed")]
 	pub game_feed_scoreboard_seconds: u64,
 
 	/// Seconds between reads of a live game's play-by-play. At least 5.
-	#[arg(long, env = "GAME_FEED_LIVE_SECONDS", default_value = "15")]
+	#[arg(long, env = "GAME_FEED_LIVE_SECONDS", default_value = "15", help_heading = "NFL game feed")]
 	pub game_feed_live_seconds: u64,
 
 	/// The longest a refused or failed fetch waits before the next try. At
 	/// least both cadences above, and at most 86400 (a day).
-	#[arg(long, env = "GAME_FEED_BACKOFF_CAP_SECONDS", default_value = "900")]
+	#[arg(long, env = "GAME_FEED_BACKOFF_CAP_SECONDS", default_value = "900", help_heading = "NFL game feed")]
 	pub game_feed_backoff_cap_seconds: u64,
 
-	// ── Tracing ───────────────────────────────────────────────────────────────
+	// ── Shared with the other binaries (`app_config`) ─────────────────────────
+	/// `NATS_URL`. The container sets it (`infra/compose/file_host.yml`).
 	#[command(flatten)]
-	pub otel: OtelConfig,
+	pub nats: NatsArgs,
+
+	#[command(flatten)]
+	pub log: LogArgs,
+
+	#[command(flatten)]
+	pub otel: OtelArgs,
 
 	/// Perform health check and exit
-	#[arg(long, help = "Perform health check against running server")]
+	#[arg(long, help = "Perform health check against running server", help_heading = "Health check")]
 	pub health_check: bool,
 
 	/// Port for health check (defaults to 3000)
-	#[arg(long, default_value = "3000", help = "Port to check for health endpoint")]
+	#[arg(long, default_value = "3000", help = "Port to check for health endpoint", help_heading = "Health check")]
 	pub health_check_port: u16,
 
 	/// Loopback host for the health check (defaults to 127.0.0.1); any other
 	/// is refused, since it asks over plain HTTP (`health`).
-	#[arg(long, default_value = "127.0.0.1", help = "Loopback host to check for the readiness endpoint")]
+	#[arg(long, default_value = "127.0.0.1", help = "Loopback host to check for the readiness endpoint", help_heading = "Health check")]
 	pub health_check_host: String,
-}
-
-/// Where traces go and how many are kept (`metrics::observability`).
-#[derive(clap::Args, Clone, Debug, Serialize, Deserialize)]
-pub struct OtelConfig {
-	/// The `service.name` traces are exported under.
-	#[arg(long, env = "OTEL_SERVICE_NAME", default_value = "file_host")]
-	pub otel_service_name: String,
-
-	/// The OTLP (gRPC) collector traces are exported to.
-	#[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT", default_value = "http://localhost:4317")]
-	pub otel_exporter_otlp_endpoint: String,
-
-	/// Which traces are kept: all (`always_on`), none (`always_off`), or the
-	/// share `OTEL_TRACES_SAMPLER_ARG` names (`traceidratio`).
-	#[arg(long, env = "OTEL_TRACES_SAMPLER", value_enum, default_value = "traceidratio")]
-	pub otel_traces_sampler: TraceSampler,
-
-	/// With `traceidratio`, the share of traces kept, from 0 to 1.
-	#[arg(long, env = "OTEL_TRACES_SAMPLER_ARG", default_value = "1", value_parser = parse_ratio)]
-	pub otel_traces_sampler_arg: f64,
-
-	/// The `service.environment` traces carry.
-	#[arg(long, env = "ENVIRONMENT", default_value = "development")]
-	pub environment: String,
-}
-
-/// `OTEL_TRACES_SAMPLER`'s values that `file_host` implements, spelled as the
-/// OpenTelemetry spec spells them.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Serialize, Deserialize)]
-#[value(rename_all = "snake_case")]
-pub enum TraceSampler {
-	AlwaysOn,
-	AlwaysOff,
-	Traceidratio,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramMode {
 	Run,
 	PopulateGameClocks,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug, Serialize, Deserialize)]
-pub enum LogLevel {
-	Error,
-	Warn,
-	Info,
-	Debug,
-	Trace,
 }
 
 impl Config {
@@ -544,22 +537,8 @@ impl Config {
 	/// else. Startup logs them, so running on them is never silent.
 	#[must_use]
 	pub fn host_specific_defaults_in_use(&self) -> Vec<&'static str> {
-		host_specific_defaults_in_use(&self.allowed_origins, &self.app_base_url, self.nats_url.as_deref(), self.redis_url.as_deref())
+		host_specific_defaults_in_use(&self.allowed_origins, &self.app_base_url, &self.nats.nats_url, self.redis_url.as_deref())
 	}
-}
-
-/// Rejects a filter `EnvFilter` can't parse, so a bad `RUST_LOG` is a clap
-/// error naming the variable rather than one raised after parsing.
-fn parse_filter(directives: &str) -> Result<String, tracing_subscriber::filter::ParseError> {
-	tracing_subscriber::EnvFilter::try_new(directives).map(|_| directives.to_owned())
-}
-
-fn parse_ratio(ratio: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-	let ratio: f64 = ratio.parse()?;
-	if !(0.0..=1.0).contains(&ratio) {
-		return Err("must be from 0 to 1".into());
-	}
-	Ok(ratio)
 }
 
 /// Variables the retired transcriber's setup (#407) left set in `.env`.
@@ -591,7 +570,7 @@ fn retired_variables_in(var: impl Fn(&str) -> Option<String>, otel_service_name:
 
 /// Compares values, not where they came from: setting a variable to the dev
 /// host's value explicitly is still running on the dev host's value.
-fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: Option<&str>, redis_url: Option<&str>) -> Vec<&'static str> {
+fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: &str, redis_url: Option<&str>) -> Vec<&'static str> {
 	let mut in_use = Vec::new();
 	if allowed_origins.join(",") == DEV_HOST_ALLOWED_ORIGINS {
 		in_use.push("ALLOWED_ORIGINS");
@@ -599,10 +578,10 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 	if app_base_url == DEV_HOST_APP_BASE_URL {
 		in_use.push("APP_BASE_URL");
 	}
-	// Unset falls back to the dev-host value; set to it is the same value.
-	if nats_url.is_none_or(|url| url == DEV_HOST_NATS_URL) {
+	if nats_url == DEV_HOST_NATS_URL {
 		in_use.push("NATS_URL");
 	}
+	// Unset falls back to the dev-host value; set to it is the same value.
 	if redis_url.is_none_or(|url| url == DEV_HOST_REDIS_URL) {
 		in_use.push("REDIS_URL");
 	}
@@ -612,30 +591,22 @@ fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str,
 #[cfg(test)]
 mod tests {
 	use super::{host_specific_defaults_in_use, retired_variables_in, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
-	use clap::{error::ErrorKind, CommandFactory, Parser};
-	use std::any::TypeId;
-	use std::path::PathBuf;
+	use clap::{CommandFactory, Parser};
 
 	#[test]
 	fn config_definition_is_valid() {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 44] = [
-		("LOG_JSON", "yes"),
+	const REFUSED: [(&str, &str); 38] = [
 		("RUST_LOG", "info,=[bad"),
 		("CONNECTION_TIMEOUT", "soon"),
 		("MAX_IN_FLIGHT", "-1"),
 		("FILE_HOST_PORT", "70000"),
 		("FILE_HOST_PORT_FALLBACK", "1"),
-		("WORKERS", "four"),
 		("RATE_LIMIT", "-1"),
-		("ENABLE_CORS", "on"),
-		("LOG_LEVEL", "loud"),
 		("CACHE_TTL", "1.5"),
-		("ENABLE_PROMETHEUS", "on"),
 		("PROMETHEUS_PORT", "70000"),
-		("DEV_MODE", "on"),
 		("BUFFER_SIZE", "64k"),
 		("MAX_REQUEST_SIZE_MB", "10MB"),
 		("MAX_CONCURRENT_REQUESTS", "many"),
@@ -672,12 +643,10 @@ mod tests {
 	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
 	// checked by what uses them, which refuses to start on a bad one, as the
 	// mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 30] = [
+	const FREE_TEXT: [&str; 28] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
-		"API_VERSION",
 		"ALLOWED_ORIGINS",
-		"LOG_FILE",
 		"REDIS_URL",
 		"NATS_URL",
 		"OBS_WEBSOCKET_IP",
@@ -705,51 +674,25 @@ mod tests {
 		"ENVIRONMENT",
 	];
 
-	/// ENV1 (README.md, "Configuration"), for every variable this `Config`
-	/// declares: one whose value can fail to parse is refused, by an error
-	/// naming it, and one that can't is listed as free text. A variable added
-	/// to neither list fails here.
-	///
-	/// Clap applies the same parser to the flag and the variable, so the flag
-	/// stands in for the variable without touching the process environment.
-	/// Its error names the argument by its value name, never by the variable
-	/// a value came from, so each variable is its own value name.
+	/// ENV1 (README.md, "Configuration"); see `app_config::env1`.
 	#[test]
 	fn every_variable_that_does_not_parse_is_refused_by_name() {
-		let mut seen = Vec::new();
-		for arg in Config::command().get_arguments() {
-			let Some(env) = arg.get_env().and_then(std::ffi::OsStr::to_str) else { continue };
-			seen.push(env.to_owned());
-			let value_names: Vec<&str> = arg.get_value_names().unwrap_or_default().iter().map(clap::builder::Str::as_str).collect();
-			assert_eq!(value_names, [env], "{env} is not its own value name, so its errors do not name it");
-			let refused: Vec<&str> = REFUSED.iter().filter(|(name, _)| *name == env).map(|(_, bad)| *bad).collect();
-			for bad in &refused {
-				let flag = String::from("--") + arg.get_long().unwrap() + "=" + bad;
-				let err = Config::try_parse_from(["file_host", &flag]).unwrap_err();
-				assert!(matches!(err.kind(), ErrorKind::ValueValidation | ErrorKind::InvalidValue), "{env}={bad}: {err}");
-				assert!(err.to_string().contains(env), "{env}={bad}: {err}");
-			}
-			if refused.is_empty() {
-				assert!(FREE_TEXT.contains(&env), "{env} is in neither REFUSED nor FREE_TEXT");
-				let parser = arg.get_value_parser().type_id();
-				assert!(
-					parser == TypeId::of::<String>() || parser == TypeId::of::<PathBuf>(),
-					"{env} is free text, so its parser must be a plain String or PathBuf"
-				);
-			}
-		}
-		let mut declared: Vec<&str> = REFUSED.iter().map(|(name, _)| *name).chain(FREE_TEXT).collect();
-		declared.sort_unstable();
-		declared.dedup();
-		seen.sort_unstable();
-		assert_eq!(seen, declared, "a listed variable is no longer declared");
+		app_config::env1::assert_every_variable_is_refused_by_name::<Config>("file_host", &REFUSED, &FREE_TEXT);
+	}
+
+	/// CFG7 (#503): `infra/env/file_host.json` is this `Config`.
+	#[test]
+	fn the_checked_in_schema_is_this_config() {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../infra/env/file_host.json");
+		app_config::schema::assert_checked_in("file_host", &Config::command(), super::REQUIRED_WHEN, &path);
+		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 
 	#[test]
 	fn every_dev_host_default_in_use_is_named() {
 		let dev_origins: Vec<String> = DEV_HOST_ALLOWED_ORIGINS.split(',').map(String::from).collect();
 		assert_eq!(
-			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, None, None),
+			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, None),
 			["ALLOWED_ORIGINS", "APP_BASE_URL", "NATS_URL", "REDIS_URL"]
 		);
 	}
@@ -760,7 +703,7 @@ mod tests {
 	fn a_dev_host_value_set_explicitly_is_still_named() {
 		let origins = [String::from("https://app.example.com")];
 		assert_eq!(
-			host_specific_defaults_in_use(&origins, "https://app.example.com/", Some(DEV_HOST_NATS_URL), Some(DEV_HOST_REDIS_URL)),
+			host_specific_defaults_in_use(&origins, "https://app.example.com/", DEV_HOST_NATS_URL, Some(DEV_HOST_REDIS_URL)),
 			["NATS_URL", "REDIS_URL"]
 		);
 	}
@@ -768,7 +711,7 @@ mod tests {
 	#[test]
 	fn a_host_that_sets_its_own_values_runs_on_none() {
 		let origins = [String::from("https://app.example.com")];
-		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", Some("nats://nats:4222"), Some("redis://redis:6379")).is_empty());
+		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", "nats://nats:4222", Some("redis://redis:6379")).is_empty());
 	}
 
 	/// The `.env` #476 met: every retired variable left set is named.

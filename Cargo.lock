@@ -157,6 +157,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-config"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "some-transport",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1488,6 +1499,7 @@ dependencies = [
  "activity_repo",
  "anyhow",
  "aph_repo",
+ "app-config",
  "async-nats",
  "auth_repo",
  "axum",
@@ -3209,6 +3221,7 @@ name = "orchestrator"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "app-config",
  "clap",
  "cursorium",
  "dashmap",
@@ -4529,6 +4542,7 @@ dependencies = [
 name = "some-obs"
 version = "0.0.0"
 dependencies = [
+ "app-config",
  "clap",
  "obs-websocket",
  "serde_json",

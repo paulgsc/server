@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
 	let config = Config::parse();
 
 	tracing_subscriber::fmt()
-		.with_env_filter(EnvFilter::try_new(&config.rust_log)?)
+		.with_env_filter(EnvFilter::try_new(&config.log.rust_log)?)
 		.with_target(true)
 		.with_line_number(true)
 		.init();
@@ -25,10 +25,10 @@ async fn main() -> Result<()> {
 		}
 	});
 
-	tracing::info!("📡 Connecting to NATS at {}", config.nats_url);
+	tracing::info!("📡 Connecting to NATS at {}", config.nats.nats_url);
 
 	// Create NATS transport using the pooled connection
-	let transport: NatsTransport<UnifiedEvent> = NatsTransport::connect_pooled(&config.nats_url).await?;
+	let transport: NatsTransport<UnifiedEvent> = NatsTransport::connect_pooled(&config.nats.nats_url).await?;
 	tracing::info!("✅ Connected to NATS");
 	tracing::info!("   - Commands: listening on {}", ws_events::events::EventType::OrchestratorCommandData.subject());
 	tracing::info!("   - State: publishing on {}", ws_events::events::EventType::OrchestratorState.subject());

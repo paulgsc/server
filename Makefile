@@ -135,3 +135,32 @@ DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 
 dev: ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
 	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
+
+# ── Configuration: every variable, declared once (#403) ─────────────────────
+#
+# Each binary's clap Config is its schema; its tests hold a copy of it in
+# infra/env/<binary>.json, and example.env is generated from those copies and
+# the compose files' ${...} variables (scripts/env_schema.py). CI fails when
+# either is behind its declaration. `make env-schema` brings both up to date;
+# like `make routes`, building needs DATABASE_URL at a migrated SQLite file.
+#
+# On the host, `make up` is the deploy step: it runs the preflight, which
+# names every required variable .env is missing and every value its binary
+# would refuse, all at once, and only then starts the stack. `make preflight
+# FILL=1` asks for each missing value and writes it to .env.
+
+.PHONY: env-schema env preflight up
+
+env-schema: ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
+	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
+	@python3 scripts/env_schema.py example
+	@echo "Wrote infra/env/*.json and example.env"
+
+env: ## List every variable the stack reads, its default, and whether .env or the environment sets it
+	@python3 scripts/env_schema.py list
+
+preflight: ## Check .env before docker compose up: every missing or refused variable at once (FILL=1 asks for them)
+	@python3 scripts/env_schema.py preflight $(if $(FILL),--fill)
+
+up: preflight ## Start the stack (docker compose up -d), once the preflight passes
+	@docker compose up -d

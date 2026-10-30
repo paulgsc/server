@@ -18,6 +18,7 @@ some-shutdown = { workspace = true }
 ws-events = { workspace = true, features = ["ws-events"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
+app-config = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

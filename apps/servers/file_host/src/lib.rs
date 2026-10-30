@@ -126,7 +126,7 @@ pub struct AppState {
 impl AppState {
 	/// Build the entire universe in one explicit place
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
-		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new(&config.otel, &config.rust_log)?)));
+		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new(&config.otel, &config.log.rust_log)?)));
 
 		// The first thing logged once there is a subscriber: which values this
 		// run took from the `nixos.local` dev host (#406). Fine there, wrong on
@@ -161,7 +161,7 @@ impl AppState {
 		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
 
 		// Initialize NATS transports
-		let nats_url = config.nats_url.as_deref().unwrap_or(crate::config::DEV_HOST_NATS_URL);
+		let nats_url = config.nats.nats_url.as_str();
 		let transport = NatsTransport::connect_pooled(nats_url).await?;
 
 		// Reuse the Arc<Client> from the transport for JetStream

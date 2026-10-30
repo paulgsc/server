@@ -23,16 +23,16 @@ impl ObsNatsService {
 	///
 	/// # Errors
 	///
-	/// Fails when NATS at `config.nats_url` is unreachable.
+	/// Fails when NATS at `config.nats.nats_url` is unreachable.
 	pub async fn new(config: Config) -> Result<Self> {
 		tracing::info!("🔌 Initializing OBS NATS Service");
 
 		let obs_manager = Arc::new(ObsWebSocketManager::new(config.obs()));
 
 		// Create NATS transports using pooled connections
-		tracing::info!("📡 Connecting to NATS at {}", config.nats_url);
+		tracing::info!("📡 Connecting to NATS at {}", config.nats.nats_url);
 
-		let transport = NatsTransport::connect_pooled(&config.nats_url).await?;
+		let transport = NatsTransport::connect_pooled(&config.nats.nats_url).await?;
 
 		tracing::info!("✅ NATS transports initialized");
 

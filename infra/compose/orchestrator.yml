@@ -2,6 +2,10 @@ services:
   orchestrator:
     image: pgathondu/orchestrator:latest
     container_name: orchestrator-service
+    # The binary whose variables `make preflight` checks this service's
+    # environment against (infra/env/orchestrator.json, #504).
+    labels:
+      env-schema: orchestrator
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       RUST_BACKTRACE: "1"
