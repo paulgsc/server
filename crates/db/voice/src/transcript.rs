@@ -341,6 +341,29 @@ mod tests {
 		assert_eq!(audio(&mut conn, B, "late").await.unwrap(), None, "B's ids are B's");
 	}
 
+	/// A Studio take is heard as any note is: it waits until heard, by each
+	/// model on its own.
+	#[tokio::test]
+	async fn a_studio_take_waits_to_be_heard_like_any_note() {
+		let pool = pool().await;
+		let said = Said {
+			of: Some("studio"),
+			of_ref: Some("build-journal-ep04:s3:2"),
+			at: Some("2026-10-30T18:20:00Z"),
+			content_type: Some("audio/mp4"),
+			bite: SaidBite::default(),
+		};
+		let mut tx = pool.begin().await.unwrap();
+		put_note(&mut tx, A, &describe("t1", said, b"take").unwrap(), b"take", "2026-10-30T18:21:00.000Z")
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		assert_eq!(waiting_for(&pool, SMALL).await, named(&[(A, "t1")]));
+		assert_eq!(keep(&pool, A, "t1", &attempt(SMALL, heard("shot three, take two"))).await, Kept::Added(1));
+		assert_eq!(waiting_for(&pool, SMALL).await, named(&[]), "heard once");
+		assert_eq!(waiting_for(&pool, MEDIUM).await, named(&[(A, "t1")]), "a better model hears it again");
+	}
+
 	/// A failure is kept and retried, at most `attempts` times; a note's
 	/// ending is kept once, and nothing is written after it.
 	#[tokio::test]

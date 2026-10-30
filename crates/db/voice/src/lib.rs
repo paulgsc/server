@@ -23,6 +23,10 @@
 //!   row beside it, written in the same transaction as the note and its
 //!   audio, compared on a replay as the note is, and never updated. Only a
 //!   game note carries a bite, and every game note carries one.
+//! - **A Studio take is a voice note** (paulgsc/server#552, paulgsc/some-ui
+//!   ST12). Said for [`Of::Studio`], its `ref` is the take,
+//!   `<project>:<shot>:<take>`, and it carries nothing beside the note: no
+//!   side table, no fields of its own. A redo is a new take under a new id.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -68,10 +72,16 @@ pub enum Of {
 	/// (paulgsc/some-ui#2074). Its `ref` is the game's id, and the bite's own
 	/// description is [`Bite`].
 	Game,
+	/// A Studio take: the phone's Studio records one per shot of a video
+	/// (paulgsc/some-ui#2260, ST12). Its `ref` names the take as
+	/// `<project>:<shot>:<take>` (`build-journal-ep04:s3:2`), within the rule
+	/// every `ref` meets and checked no further, as no other kind's `ref` is.
+	/// A redo is a new take, so a new note: nothing is ever rewritten.
+	Studio,
 }
 
 impl Of {
-	const ALL: [Self; 4] = [Self::Reflection, Self::Jobs, Self::Scene, Self::Game];
+	const ALL: [Self; 5] = [Self::Reflection, Self::Jobs, Self::Scene, Self::Game, Self::Studio];
 
 	/// The wire and stored name.
 	#[must_use]
@@ -81,6 +91,7 @@ impl Of {
 			Self::Jobs => "jobs",
 			Self::Scene => "scene",
 			Self::Game => "game",
+			Self::Studio => "studio",
 		}
 	}
 
@@ -437,7 +448,7 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
-		problems.push(("of", "not what a note is said for: reflection, jobs, scene or game"));
+		problems.push(("of", "not what a note is said for: reflection, jobs, scene, game or studio"));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
 	if of_ref.is_none() {
@@ -663,6 +674,8 @@ mod tests {
 	const BEFORE_GAME: i64 = 20_261_026_000_300;
 	/// The migration before a bite said first could keep its scenario.
 	const BEFORE_SAID_FIRST_SCENARIO: i64 = 20_261_028_000_200;
+	/// The migration before `studio` was a note's kind.
+	const BEFORE_STUDIO: i64 = 20_261_029_000_200;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
@@ -711,6 +724,21 @@ mod tests {
 
 	fn game(id: &str, body: &[u8]) -> Note {
 		describe(id, said_game(said_bite()), body).unwrap()
+	}
+
+	/// What the phone says about take 2 of shot 3 of a Studio project.
+	fn said_studio(of_ref: &str) -> Said<'_> {
+		Said {
+			of: Some("studio"),
+			of_ref: Some(of_ref),
+			at: Some("2026-10-30T18:20:00Z"),
+			content_type: Some("audio/mp4"),
+			bite: SaidBite::default(),
+		}
+	}
+
+	fn take(id: &str, body: &[u8]) -> Note {
+		describe(id, said_studio("build-journal-ep04:s3:2"), body).unwrap()
 	}
 
 	fn fields(problems: Vec<(&'static str, &'static str)>) -> Vec<&'static str> {
@@ -1011,7 +1039,7 @@ mod tests {
 
 	#[test]
 	fn a_note_said_for_anything_else_carries_no_bite() {
-		for of in ["reflection", "jobs", "scene"] {
+		for of in ["reflection", "jobs", "scene", "studio"] {
 			let mut with_bite = said("2026-10-25T03:10:00Z");
 			with_bite.of = Some(of);
 			with_bite.bite = said_bite();
@@ -1026,6 +1054,53 @@ mod tests {
 			};
 			assert_eq!(fields(describe("n1", with_bite, b"take").unwrap_err()), ["context"], "{of}: even one");
 		}
+	}
+
+	/// A Studio take is a note like any other: described, kept with its
+	/// audio, carrying nothing beside it, and never replaced; a redo is a new
+	/// take under a new id.
+	#[tokio::test]
+	async fn a_studio_take_is_kept_as_a_note_and_a_redo_is_a_new_one() {
+		let pool = pool().await;
+		let first = take("t1", b"take one");
+		assert_eq!(
+			(first.of, first.of_ref.as_str(), first.content_type, first.bite.as_ref()),
+			(Of::Studio, "build-journal-ep04:s3:2", "audio/mp4", None)
+		);
+		assert_eq!(put(&pool, A, &first, b"take one").await.unwrap(), Change::Added);
+		assert_eq!(put(&pool, A, &first, b"take one").await.unwrap(), Change::Unchanged, "a retry writes nothing");
+		assert!(
+			matches!(put(&pool, A, &take("t1", b"take two"), b"take two").await, Err(VoiceError::Rewritten)),
+			"a redo is never written over the take it redoes"
+		);
+		let redo = describe("t2", said_studio("build-journal-ep04:s3:3"), b"take two").unwrap();
+		assert_eq!(put(&pool, A, &redo, b"take two").await.unwrap(), Change::Added, "a redo is a new take");
+
+		let held: Vec<(String, String, String)> = sqlx::query_as("SELECT note_id, of_kind, of_ref FROM voice_note ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			held,
+			[
+				("t1".into(), "studio".into(), "build-journal-ep04:s3:2".into()),
+				("t2".into(), "studio".into(), "build-journal-ep04:s3:3".into())
+			]
+		);
+		let audio: Vec<u8> = sqlx::query_scalar("SELECT body FROM voice_note_audio WHERE note_id = 't1'").fetch_one(&pool).await.unwrap();
+		assert_eq!(audio, b"take one");
+		assert_eq!(rows(&pool, "game_bite").await, 0, "a take carries nothing beside its note");
+	}
+
+	/// A take's `ref` meets the rule every `ref` meets, and no other.
+	#[test]
+	fn a_studio_take_whose_ref_breaks_the_rule_is_refused() {
+		let too_long = "p".repeat(201);
+		for of_ref in ["build journal:s3:2", "ep04/s3/2", "", too_long.as_str()] {
+			assert_eq!(fields(describe("t1", said_studio(of_ref), b"take").unwrap_err()), ["ref"], "{of_ref:?}");
+		}
+		let longest = "p".repeat(200);
+		assert!(describe("t1", said_studio(&longest), b"take").is_ok(), "200 characters is allowed");
 	}
 
 	#[tokio::test]
@@ -1391,6 +1466,69 @@ mod tests {
 
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
+	}
+
+	/// The rebuild that widened `voice_note` for `studio` keeps every note
+	/// held before it, a game bite's included, still append-only, still
+	/// indexed for the transcriber, and still leaving with the account; going
+	/// back refuses once a take is held.
+	#[tokio::test]
+	async fn the_notes_rebuilt_for_studio_keep_what_was_held_before() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_STUDIO).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'early', 'studio', 'p:s1:1', 'then', 'audio/mp4', 1, 'abc', 'now')",
+			)
+			.bind(A)
+			.execute(&pool)
+			.await
+			.is_err(),
+			"before the rebuild a take is refused"
+		);
+		put(&pool, A, &note("n1", b"take"), b"take").await.unwrap();
+		put(&pool, A, &game("b1", b"bite"), b"bite").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let held: Vec<(String, String, String, i64, String)> = sqlx::query_as("SELECT note_id, of_kind, of_ref, size, sha256 FROM voice_note ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		let (reflection, bite) = (note("n1", b"take"), game("b1", b"bite"));
+		assert_eq!(
+			held,
+			[
+				("b1".into(), "game".into(), "401772981".into(), 4, bite.sha256),
+				("n1".into(), "reflection".into(), "session-7f2a".into(), 4, reflection.sha256)
+			]
+		);
+		assert_eq!(rows(&pool, "game_bite").await, 1, "the bite beside its note stays");
+		let refused = sqlx::query("UPDATE voice_note SET of_ref = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+		let index: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'voice_note_by_stored_at'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(index, 1, "the transcriber's index is back");
+
+		put(&pool, A, &take("t1", b"take"), b"take").await.unwrap();
+		assert!(MIGRATOR.undo(&pool, BEFORE_STUDIO).await.is_err(), "a held take refuses the rollback");
+		assert_eq!(rows(&pool, "voice_note").await, 3, "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(
+			rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await + rows(&pool, "game_bite").await,
+			0,
+			"still leaves with the account"
+		);
 	}
 
 	#[test]

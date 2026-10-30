@@ -758,7 +758,7 @@ nowhere is marked as such and belongs to review.
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
-    `scene` or `game`) and which one, when the phone recorded it and when it reached
+    `scene`, `game` or `studio`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -789,7 +789,15 @@ nowhere is marked as such and belongs to review.
     context line. Both are the game situation the screen showed, not what
     was said, and they travel in the request's query, so a reverse proxy in
     front of home that logs request URIs would see them; this repo does not
-    configure that proxy, and nothing here holds it to that. These two tables are the only place home
+    configure that proxy, and nothing here holds it to that. **A Studio take is a voice note** too
+    (paulgsc/server#552; paulgsc/some-ui#2260, ST12): one said for
+    `studio`, its `ref` the take as `<project>:<shot>:<take>` within the
+    rule every `ref` meets, and nothing beside it, so no table of its own
+    (`20261030000100_add_studio_to_voice_note`). A redo is a new take under a
+    new id, never an update of the one it redoes. A take is sent under the
+    `voice` scope (invariant 17) like every note, heard by the transcriber
+    like every note, and its transcript filed for the mailbox like every
+    note's but a game bite's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -968,8 +976,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   item's. Deleting the account removes it; nothing else does.
 - **Voice notes.** The audio of each note the phone sends home, kept for
   good, with what it was said for (a study session's reflection, a Jobs pick
-  or scout, a drama's next scene, a game being watched) and when it was
-  recorded. A game bite also keeps which game, what it was said about, what
+  or scout, a drama's next scene, a game being watched, a Studio take of a
+  video's shot) and when it was recorded. A game bite also keeps which game, what it was said about, what
   the screen showed (the live score strip and a context line), whether the
   owner was watching, and when they started saying it. A voice
   identifies its speaker, and what the owner says in a note is theirs: their
