@@ -13,12 +13,16 @@ use crate::{
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
 use game_scenarios::{Moment, Scenario};
 use nfl_feed::GameState;
+use std::cmp::Reverse;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
 	Before,
 	Live,
 	Over,
+	/// Over without being played: ESPN says `post` but not completed
+	/// (postponed or cancelled), and no play is in the log. Nothing fits.
+	NotPlayed,
 }
 
 /// Everything a rule reads.
@@ -40,6 +44,8 @@ impl<'s> Cx<'s> {
 	fn new(game: &'s Game, so_far: &'s SoFar<'s>, at: DateTime<Utc>, mode: Mode, local: FixedOffset, watching: Watching) -> Self {
 		let phase = if so_far.over() {
 			Phase::Over
+		} else if so_far.not_played() {
+			Phase::NotPlayed
 		} else if !so_far.plays.is_empty() || game.status.state == Some(GameState::In) {
 			Phase::Live
 		} else {
@@ -324,7 +330,7 @@ impl<'s> Cx<'s> {
 		let wiped_out = read::text(play).contains("no play");
 		let situation = || Some(words::down_distance(play.down?, play.distance?, play.yards_to_endzone));
 		match moment {
-			Moment::Turnover => {
+			Moment::Turnover if !wiped_out => {
 				let how = match read::turnover(play)? {
 					Turnover::Interception => "threw an interception",
 					Turnover::Fumble => "lost a fumble",
@@ -344,7 +350,7 @@ impl<'s> Cx<'s> {
 			}
 			Moment::Try => {
 				let team = self.scorer(i).or(offense)?;
-				read::is_touchdown(play).then(|| (90, words::touchdown(team, read::went_for_two(play))))
+				read::is_touchdown(play).then(|| (90, words::touchdown(team, read::try_of(play))))
 			}
 			Moment::Kick => {
 				let team = self.scorer(i).or(offense)?;
@@ -379,14 +385,14 @@ impl<'s> Cx<'s> {
 					"touchdown"
 				} else if read::field_goal(play).is_some() {
 					"field goal"
-				} else if read::turnover(play).is_some() || (play.down == Some(4) && !wiped_out) {
+				} else if !wiped_out && (read::turnover(play).is_some() || play.down == Some(4)) {
 					"empty"
 				} else {
 					return None;
 				};
 				Some((55, words::red_zone_trip(offense?, result)))
 			}
-			Moment::Injury => read::injury(play).map(|hurt| (50, words::hurt(offense, !hurt))),
+			Moment::Injury => read::injury(play).map(|hurt| (50, words::hurt(read::injured_team(play).as_deref(), !hurt))),
 			Moment::Penalty => read::penalty(play).map(|(team, foul)| (45, words::flag(&team, foul.as_deref()))),
 			Moment::OpeningDrive if self.so_far.in_first_run(i) => {
 				let result = if read::is_touchdown(play) {
@@ -402,7 +408,7 @@ impl<'s> Cx<'s> {
 				};
 				Some((40, words::first_drive_ended(offense?, result)))
 			}
-			Moment::Kickoff if i == 0 && read::kind(play) == "kickoff" => {
+			Moment::Kickoff if self.so_far.plays.iter().position(|seen| read::kind(seen.play) == "kickoff") == Some(i) => {
 				let kicking = offense?;
 				Some((35, words::kicks_off(kicking, self.so_far.other(kicking))))
 			}
@@ -423,16 +429,11 @@ const fn kick_words(kick: Kick) -> &'static str {
 	}
 }
 
-/// Heaviest first, then in the catalog's order; one line per scenario.
+/// Heaviest first. `found` is in the catalog's order (one entry per
+/// scenario, from [`Scenario::ALL`]) and the sort is stable, so ties keep it.
 fn ranked(mut found: Vec<(u8, Scenario, String)>) -> Vec<(Scenario, String)> {
-	found.sort_by(|a, b| b.0.cmp(&a.0).then((a.1 as usize).cmp(&(b.1 as usize))));
-	let mut out: Vec<(Scenario, String)> = Vec::with_capacity(found.len());
-	for (_, scenario, line) in found {
-		if !out.iter().any(|(held, _)| *held == scenario) {
-			out.push((scenario, line));
-		}
-	}
-	out
+	found.sort_by_key(|f| Reverse(f.0));
+	found.into_iter().map(|(_, scenario, line)| (scenario, line)).collect()
 }
 
 /// The scenarios that fit now, most specific first.

@@ -28,25 +28,29 @@ socket; a scenario is written as its catalog id.
 
 ## The moment rules
 
-One rule per catalog `Moment` (`src/rules.rs`). A rule's weight is its
-specificity; the offer lists the heaviest first, ties in catalog order.
+One rule per catalog `Moment` (`src/rules.rs`). A rule's weight, kept
+there, is its specificity; the offer lists the heaviest first, ties in
+catalog order.
 
-| Moment | Scenarios | On offer now when | Weight | "Just happened" from a play that |
-| --- | --- | --- | --- | --- |
-| `pregame` | `pre.stakes`, `pre.weather`, `pre.injury-report`, `pre.venue` | the mode's window is open and no play is in the log (stakes only with a side wanted) | 40, 35 (15 with no forecast), 25, 20 | |
-| `kickoff` | `pre.coin-toss` | 15 min before kickoff until the first snap | 55 | is the opening kickoff (35) |
-| `opening-drive` | `in.first-drive` | the team with the ball is on its first possession of the game | 50 | ends a team's first possession (40) |
-| `lead-change` | `in.fell-behind` | the latest score put the side wanted behind, or back ahead, and at most 3 snaps followed | 80 | is that score (95) |
-| `third-and-long` | `in.third-long` | 3rd down, 7 or more to go | 85 | was snapped on one: converted or stopped (60) |
-| `fourth-down` | `in.fourth-down` | 4th down | 95 | was snapped on one: went for it, field goal, punted (75) |
-| `try` | `in.two-point` | the latest snap is a touchdown whose try is not in the log | 100 | is a touchdown (90) |
-| `snap` | `in.play-call` | any snap; 3rd or 4th and 2 or less, or 3 yards from the goal line, weighs more | 20, 58 | was such a short-yardage call (30) |
-| `red-zone` | `in.red-zone` | inside the 20 | 70 | ended a trip inside the 20 (55) |
-| `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | 60 | |
-| `kick` | `in.kick` | the try is to come (88), or 4th down within a 57-yard field goal (90) | | is a field goal, or a missed extra point (80) |
-| `turnover`, `sack`, `big-play`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.big-play`, `in.penalty`, `in.injury` | never ahead of time | | was an interception or lost fumble (100), a sack (70), a gain of 20+ (65), a flag (45), a player hurt or back (50) |
-| `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | 50, 40, 30 | |
-| `watching` | `you.*` | the game is final, a side is wanted, the result is not a tie, and the phone has said whether the owner watched | 45 (tuned in late, 47) | |
+| Moment | Scenarios | On offer now when | "Just happened" from a play that |
+| --- | --- | --- | --- |
+| `pregame` | `pre.stakes`, `pre.weather`, `pre.injury-report`, `pre.venue` | the mode's window is open and no play is in the log (stakes only with a side wanted) | |
+| `kickoff` | `pre.coin-toss` | 15 min before kickoff until the first snap | is the opening kickoff |
+| `opening-drive` | `in.first-drive` | the team with the ball is on its first possession of the game | ends a team's first possession |
+| `lead-change` | `in.fell-behind` | the latest score put the side wanted behind, or back ahead, and at most 3 snaps followed | is that score |
+| `third-and-long` | `in.third-long` | 3rd down, 7 or more to go | was snapped on one: converted or stopped |
+| `fourth-down` | `in.fourth-down` | 4th down | was snapped on one: went for it, field goal, punted |
+| `try` | `in.two-point` | the latest snap is a touchdown whose try is not in the log | is a touchdown |
+| `snap` | `in.play-call` | any snap; 3rd or 4th and 2 or less, or 3 yards from the goal line, weighs more | was such a short-yardage call |
+| `red-zone` | `in.red-zone` | inside the 20 | ended a trip inside the 20 |
+| `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | |
+| `kick` | `in.kick` | the try is to come, or 4th down within a 57-yard field goal | is a field goal, or a missed extra point |
+| `turnover`, `sack`, `big-play`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.big-play`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a gain of 20+, a flag, a player hurt or back |
+| `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | |
+| `watching` | `you.*` | the game is final, a side is wanted, the result is not a tie, and the phone has said whether the owner watched | |
+
+A game ESPN calls over that was not completed (postponed or cancelled), with
+no play in the log, offers nothing, and its strip says "Not played".
 
 "Tuned in late" is offered when the owner started watching after kickoff
 with the side wanted behind.
@@ -97,7 +101,8 @@ Before every snap, and 20 s after every play home saw, it takes the offer in
 Standard mode, read through SF wanting CHI. It checks that every snap whose
 own fields make it a moment has that moment's scenario on offer and the most
 specific first, and that every play ESPN typed as an event shows up in "just
-happened" as its scenario, each at least 7 times in 10.
+happened" as its scenario: the moments at least 7 times in 10 (the beta's
+bar), the events at least 8 times in 10.
 
 The whole replay is written to `testdata/replay-401873010.txt`, one line per
 moment, so a rule change shows in its PR as the lines it changed on a real

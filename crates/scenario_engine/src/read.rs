@@ -4,7 +4,7 @@
 
 use crate::Game;
 use chrono::{DateTime, Utc};
-use nfl_feed::{log::Entry, summary::Play};
+use nfl_feed::{log::Entry, summary::Play, GameState};
 use std::collections::HashMap;
 
 /// One play as of `now`: its latest version home had seen by then.
@@ -36,7 +36,9 @@ impl<'a> SoFar<'a> {
 			let Some(seen) = time(&entry.seen_at).filter(|seen| *seen <= now) else {
 				continue;
 			};
-			let first = latest.get(entry.play.id.as_str()).map_or(seen, |held| held.first.min(seen));
+			// The log is appended in the order home saw it, so the first entry
+			// kept for a play is when home first saw it.
+			let first = latest.get(entry.play.id.as_str()).map_or(seen, |held| held.first);
 			let at = entry.play.wallclock.as_deref().and_then(time).unwrap_or(first);
 			latest.insert(entry.play.id.as_str(), Seen { play: &entry.play, first, at });
 		}
@@ -114,6 +116,12 @@ impl<'a> SoFar<'a> {
 	/// last play.
 	pub(crate) fn over(&self) -> bool {
 		self.game.status.is_final() || self.plays.iter().any(|seen| kind(seen.play) == "end of game")
+	}
+
+	/// Whether the game ended without being played: ESPN says `post` but not
+	/// completed (postponed or cancelled), and no play is in the log.
+	pub(crate) fn not_played(&self) -> bool {
+		self.plays.is_empty() && self.game.status.state == Some(GameState::Post) && !self.over()
 	}
 
 	/// The index of the latest snap.
@@ -194,8 +202,23 @@ pub(crate) fn try_pending(play: &Play) -> bool {
 	is_touchdown(play) && !["extra point", "two-point", "kick is"].iter().any(|word| text.contains(word))
 }
 
-pub(crate) fn went_for_two(play: &Play) -> bool {
-	text(play).contains("two-point")
+/// How a touchdown's try went, as far as its text says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Try {
+	/// Not in the log yet.
+	ToCome,
+	Kicked,
+	WentForTwo,
+}
+
+pub(crate) fn try_of(play: &Play) -> Try {
+	if try_pending(play) {
+		Try::ToCome
+	} else if text(play).contains("two-point") {
+		Try::WentForTwo
+	} else {
+		Try::Kicked
+	}
 }
 
 pub(crate) fn is_run(play: &Play) -> bool {
@@ -212,9 +235,25 @@ pub(crate) fn is_punt(play: &Play) -> bool {
 }
 
 /// Yards gained, from ESPN's "for 12 yards" / "for no gain", unless the play
-/// was wiped out ("No Play").
+/// was wiped out ("No Play"). A reviewed play is read as the review left it:
+/// from the text after the last "reversed." or "upheld.", or, when an upheld
+/// ruling is not restated, from the ruling before it.
 pub(crate) fn gain(play: &Play) -> Option<i64> {
 	let text = text(play);
+	let review = ["reversed.", "upheld."]
+		.into_iter()
+		.filter_map(|word| text.rfind(word).map(|at| (at, word)))
+		.max_by_key(|(at, _)| *at);
+	match review {
+		Some((at, word)) => {
+			let (ruling, after) = (&text[..at], &text[at + word.len()..]);
+			gain_in(after).or_else(|| (word == "upheld.").then(|| gain_in(ruling)).flatten())
+		}
+		None => gain_in(&text),
+	}
+}
+
+fn gain_in(text: &str) -> Option<i64> {
 	if text.contains("no play") {
 		return None;
 	}
@@ -298,6 +337,25 @@ pub(crate) fn turnover(play: &Play) -> Option<Turnover> {
 
 pub(crate) fn is_sack(play: &Play) -> bool {
 	kind(play) == "sack" || text(play).contains(" sacked")
+}
+
+/// The team of the player an injury note names, from "NE-K.Byard has
+/// returned to the game": the last `TEAM-Player` before "was injured" or
+/// "has returned", else the first in the text; none when it names none.
+pub(crate) fn injured_team(play: &Play) -> Option<String> {
+	let original = play.text.as_deref()?;
+	let lower = original.to_ascii_lowercase();
+	let named = |text: &str| -> Vec<String> {
+		text
+			.split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+			.filter_map(|word| {
+				let (team, player) = word.split_once('-')?;
+				(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase()) && player.starts_with(|c: char| c.is_ascii_uppercase())).then(|| team.to_owned())
+			})
+			.collect()
+	};
+	let note = ["was injured", "has returned"].into_iter().filter_map(|word| lower.find(word)).min();
+	note.and_then(|at| named(&original[..at]).pop()).or_else(|| named(original).into_iter().next())
 }
 
 /// Whether the play's text says a player was hurt, or came back.

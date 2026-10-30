@@ -25,3 +25,5 @@ workspace = true
 
 [lib]
 doctest = false
+# Its tests are the integration tests in `tests/`.
+test = false

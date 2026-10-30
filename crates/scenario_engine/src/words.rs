@@ -3,13 +3,12 @@
 //! happening now` shows them ("3rd and 8, down 4", "1:52 left, 1 timeout"):
 //! never a field name, an id, or ESPN's spelling of a play type.
 
-use crate::{read::SoFar, Game, Strip};
+use crate::{
+	read::{SoFar, Try},
+	Game, Strip,
+};
 use chrono::{DateTime, Utc};
 use nfl_feed::{GameState, Weather};
-
-fn number(n: i64) -> String {
-	n.to_string()
-}
 
 /// `1st`, `2nd`, `3rd`, `4th`.
 pub(crate) fn ordinal(n: i64) -> String {
@@ -19,7 +18,7 @@ pub(crate) fn ordinal(n: i64) -> String {
 		3 => "rd",
 		_ => "th",
 	};
-	[number(n).as_str(), suffix].concat()
+	[n.to_string().as_str(), suffix].concat()
 }
 
 /// A quarter, or overtime.
@@ -36,7 +35,7 @@ pub(crate) fn down_distance(down: i64, distance: i64, to_endzone: Option<i64>) -
 	if to_endzone.is_some_and(|y| distance >= y) {
 		[ordinal(down).as_str(), " and goal"].concat()
 	} else {
-		[ordinal(down), String::from(" and "), number(distance)].concat()
+		[ordinal(down), String::from(" and "), distance.to_string()].concat()
 	}
 }
 
@@ -44,8 +43,8 @@ pub(crate) fn down_distance(down: i64, distance: i64, to_endzone: Option<i64>) -
 pub(crate) fn spot(to_endzone: i64, offense: &str, defense: &str) -> String {
 	match to_endzone.cmp(&50) {
 		std::cmp::Ordering::Equal => String::from("at midfield"),
-		std::cmp::Ordering::Greater => ["at the ", offense, " ", &number(100 - to_endzone)].concat(),
-		std::cmp::Ordering::Less => ["at the ", defense, " ", &number(to_endzone)].concat(),
+		std::cmp::Ordering::Greater => ["at the ", offense, " ", &(100 - to_endzone).to_string()].concat(),
+		std::cmp::Ordering::Less => ["at the ", defense, " ", &to_endzone.to_string()].concat(),
 	}
 }
 
@@ -53,8 +52,8 @@ pub(crate) fn spot(to_endzone: i64, offense: &str, defense: &str) -> String {
 pub(crate) fn margin(margin: i64) -> String {
 	match margin.cmp(&0) {
 		std::cmp::Ordering::Equal => String::from("tied"),
-		std::cmp::Ordering::Greater => ["up ", &number(margin)].concat(),
-		std::cmp::Ordering::Less => ["down ", &number(-margin)].concat(),
+		std::cmp::Ordering::Greater => ["up ", &margin.to_string()].concat(),
+		std::cmp::Ordering::Less => ["down ", &(-margin).to_string()].concat(),
 	}
 }
 
@@ -62,15 +61,15 @@ pub(crate) fn margin(margin: i64) -> String {
 pub(crate) fn score(game: &Game, (away, home): (i64, i64)) -> String {
 	match away.cmp(&home) {
 		std::cmp::Ordering::Equal if away == 0 => String::from("No score yet"),
-		std::cmp::Ordering::Equal => ["Tied at ", &number(away)].concat(),
-		std::cmp::Ordering::Greater => [game.away.as_str(), " ", &number(away), ", ", &game.home, " ", &number(home)].concat(),
-		std::cmp::Ordering::Less => [game.home.as_str(), " ", &number(home), ", ", &game.away, " ", &number(away)].concat(),
+		std::cmp::Ordering::Equal => ["Tied at ", &away.to_string()].concat(),
+		std::cmp::Ordering::Greater => [game.away.as_str(), " ", &away.to_string(), ", ", &game.home, " ", &home.to_string()].concat(),
+		std::cmp::Ordering::Less => [game.home.as_str(), " ", &home.to_string(), ", ", &game.away, " ", &away.to_string()].concat(),
 	}
 }
 
 /// `30-24`, the winner's points first.
 fn final_score((away, home): (i64, i64)) -> String {
-	[number(away.max(home)), String::from("-"), number(away.min(home))].concat()
+	[away.max(home).to_string(), String::from("-"), away.min(home).to_string()].concat()
 }
 
 /// `1:52 left in the 4th`, `Halftime`, `End of the 1st`.
@@ -91,9 +90,9 @@ pub(crate) fn kickoff_in(seconds: i64) -> String {
 	let minutes = (seconds + 59) / 60;
 	let (hours, minutes) = (minutes / 60, minutes % 60);
 	match (hours, minutes) {
-		(0, m) => ["Kickoff in ", &number(m), " min"].concat(),
-		(h, 0) => ["Kickoff in ", &number(h), " h"].concat(),
-		(h, m) => ["Kickoff in ", &number(h), " h ", &number(m), " min"].concat(),
+		(0, m) => ["Kickoff in ", &m.to_string(), " min"].concat(),
+		(h, 0) => ["Kickoff in ", &h.to_string(), " h"].concat(),
+		(h, m) => ["Kickoff in ", &h.to_string(), " h ", &m.to_string(), " min"].concat(),
 	}
 }
 
@@ -101,9 +100,9 @@ pub(crate) fn kickoff_in(seconds: i64) -> String {
 pub(crate) fn ago(seconds: i64) -> String {
 	match seconds {
 		..15 => String::from("just now"),
-		15..60 => [number(seconds).as_str(), " seconds ago"].concat(),
+		15..60 => [seconds.to_string().as_str(), " seconds ago"].concat(),
 		60..120 => String::from("a minute ago"),
-		_ => [number(seconds / 60).as_str(), " minutes ago"].concat(),
+		_ => [(seconds / 60).to_string().as_str(), " minutes ago"].concat(),
 	}
 }
 
@@ -141,7 +140,7 @@ pub(crate) fn against_the_clock(clock: &str, offense: Option<&str>, us: Option<&
 			line.push_str(&match left {
 				0 => String::from("no timeouts"),
 				1 => String::from("1 timeout"),
-				n => [number(n).as_str(), " timeouts"].concat(),
+				n => [n.to_string().as_str(), " timeouts"].concat(),
 			});
 		}
 		_ => line.push_str(if end_of_game { " in the game" } else { " in the half" }),
@@ -156,14 +155,18 @@ pub(crate) fn first_drive(team: &str) -> String {
 
 /// `A 43-yard try, up 6`; `NE, a 43-yard try, down 6`.
 pub(crate) fn field_goal_try(offense: &str, us: Option<&str>, yards: i64, margin_now: Option<i64>) -> String {
-	let mut line = [who(offense, us).as_str(), "a ", &number(yards), "-yard try"].concat();
+	let mut line = [who(offense, us).as_str(), "a ", &yards.to_string(), "-yard try"].concat();
 	if let Some(m) = margin_now {
 		line.push_str(", ");
 		line.push_str(&margin(m));
 	}
-	let first = line[..1].to_ascii_uppercase();
-	line.replace_range(..1, &first);
-	line
+	capitalized(&line)
+}
+
+/// `line` with its first letter upper-cased.
+fn capitalized(line: &str) -> String {
+	let mut chars = line.chars();
+	chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
 /// `NE touchdown, down 1 before the try`.
@@ -179,12 +182,12 @@ pub(crate) fn kick_or_go(margin_now: Option<i64>) -> String {
 	margin_now.map_or_else(|| String::from("Kick it or go for two"), |m| ["Kick it or go for two, ", &margin(m)].concat())
 }
 
-/// `Down 3 after the NE touchdown`, `Back up 4 after the CHI field goal`.
+/// `Down 3 after the NE touchdown`, `Up 4 after the CHI field goal`.
 pub(crate) fn lead_change(margin_now: i64, by: &str, how: &str) -> String {
 	let state = if margin_now < 0 {
-		["Down ", &number(-margin_now)].concat()
+		["Down ", &(-margin_now).to_string()].concat()
 	} else {
-		["Back up ", &number(margin_now)].concat()
+		["Up ", &margin_now.to_string()].concat()
 	};
 	[state.as_str(), " after the ", by, " ", how].concat()
 }
@@ -224,16 +227,16 @@ pub(crate) fn forecast(weather: Option<&Weather>) -> String {
 	};
 	let mut parts: Vec<String> = Vec::new();
 	if let Some(t) = weather.temperature {
-		parts.push([number(t).as_str(), "°"].concat());
+		parts.push([t.to_string().as_str(), "°"].concat());
 	}
 	if let Some(display) = &weather.display {
 		parts.push(display.to_lowercase());
 	}
 	if let Some(gust) = weather.gust.filter(|g| *g >= 15) {
-		parts.push(["gusts to ", &number(gust), " mph"].concat());
+		parts.push(["gusts to ", &gust.to_string(), " mph"].concat());
 	}
 	if let Some(chance) = weather.precipitation.filter(|p| *p >= 20) {
-		parts.push([number(chance).as_str(), "% chance of rain"].concat());
+		parts.push([chance.to_string().as_str(), "% chance of rain"].concat());
 	}
 	if parts.is_empty() {
 		String::from("No forecast yet")
@@ -297,7 +300,7 @@ pub(crate) fn final_line(game: &Game, score_now: (i64, i64)) -> String {
 
 /// `You watched CHI win 30-24`, `You skipped it, and CHI lost 24-30`.
 pub(crate) fn you(want: &str, watched: bool, late_margin: Option<i64>, our_way: bool, score: (i64, i64)) -> String {
-	let (high, low) = (number(score.0.max(score.1)), number(score.0.min(score.1)));
+	let (high, low) = (score.0.max(score.1).to_string(), score.0.min(score.1).to_string());
 	let outcome = if our_way {
 		[want, " win ", &high, "-", &low].concat()
 	} else {
@@ -338,9 +341,9 @@ pub(crate) fn flag(team: &str, foul: Option<&str>) -> String {
 /// `CHI gained 58`, `NE 48-yard touchdown`.
 pub(crate) fn big_play(offense: &str, yards: i64, touchdown: bool) -> String {
 	if touchdown {
-		[offense, " ", &number(yards), "-yard touchdown"].concat()
+		[offense, " ", &yards.to_string(), "-yard touchdown"].concat()
 	} else {
-		[offense, " gained ", &number(yards)].concat()
+		[offense, " gained ", &yards.to_string()].concat()
 	}
 }
 
@@ -348,17 +351,18 @@ pub(crate) fn big_play(offense: &str, yards: i64, touchdown: bool) -> String {
 pub(crate) fn kicked(offense: &str, what: &str, yards: Option<i64>, how: &str) -> String {
 	yards.map_or_else(
 		|| [offense, " ", what, ", ", how].concat(),
-		|yards| [offense, " ", what, " from ", &number(yards), ", ", how].concat(),
+		|yards| [offense, " ", what, " from ", &yards.to_string(), ", ", how].concat(),
 	)
 }
 
-/// `NE touchdown, kicked the extra point`.
-pub(crate) fn touchdown(offense: &str, went_for_two: bool) -> String {
-	if went_for_two {
-		[offense, " touchdown, went for two"].concat()
-	} else {
-		[offense, " touchdown, kicked the extra point"].concat()
-	}
+/// `NE touchdown, kicked the extra point`; `NE touchdown, the try to come`.
+pub(crate) fn touchdown(offense: &str, try_: Try) -> String {
+	let how = match try_ {
+		Try::ToCome => ", the try to come",
+		Try::Kicked => ", kicked the extra point",
+		Try::WentForTwo => ", went for two",
+	};
+	[offense, " touchdown", how].concat()
 }
 
 /// `3rd and 8: converted`.
@@ -395,6 +399,14 @@ pub(crate) fn strip(game: &Game, so_far: &SoFar<'_>, now: DateTime<Utc>) -> Stri
 			possession: None,
 			down: None,
 			score: Some(score(game, so_far.score())),
+		};
+	}
+	if so_far.not_played() {
+		return Strip {
+			clock: String::from("Not played"),
+			possession: None,
+			down: None,
+			score: None,
 		};
 	}
 	if so_far.plays.is_empty() && game.status.state != Some(GameState::In) {

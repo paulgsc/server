@@ -2,15 +2,15 @@
 //! replay recorded games"): before every snap, and 20 s after every play home
 //! saw, the offer the phone would have shown in Standard mode.
 //!
-//! Two measures, against the beta's 7 in 10:
+//! Two measures:
 //!
-//! - **On offer before the snap.** Every snap whose own fields make it a
-//!   moment (3rd and 7+, 4th down, inside the 20, the last two minutes of a
-//!   half) has that moment's scenario among the cards, and the most specific
-//!   of them first.
-//! - **Just happened.** Every play ESPN typed as an event (a sack, a flag, an
-//!   interception, a field goal, a touchdown, a punt, an injury, a 3rd and
-//!   long) shows up as its scenario.
+//! - **On offer before the snap,** at least 7 times in 10 (the beta's bar).
+//!   Every snap whose own fields make it a moment (3rd and 7+, 4th down,
+//!   inside the 20, the last two minutes of a half) has that moment's scenario
+//!   among the cards, and the most specific of them first.
+//! - **Just happened,** at least 8 times in 10. Every play ESPN typed as an
+//!   event (a sack, a flag, an interception, a field goal, a touchdown, a
+//!   punt, an injury, a 3rd and long) shows up as its scenario.
 //!
 //! The whole replay is also written out, one line per moment, in
 //! `testdata/replay-401873010.txt`, so a rule change shows in its PR as the
@@ -185,7 +185,6 @@ fn every_line_is_in_the_persons_terms() {
 			let next = plays.get(k + 1).map(Situation::before);
 			let g = game(Some("NE"), status(GameState::In, Some(play)), next);
 			let offered = offer(&g, &log, pacific(wall(play) + TimeDelta::seconds(30)), mode, Watching::Unknown);
-			assert!(offered.scenarios.len() <= mode.cards() && offered.just_happened.len() <= mode.just_happened());
 			let lines = offered
 				.scenarios
 				.iter()

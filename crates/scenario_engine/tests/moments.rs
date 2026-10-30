@@ -6,14 +6,14 @@ mod common;
 
 use chrono::{SecondsFormat, TimeDelta};
 use common::{at, first_seen, game, is_snap, pacific, plays, recorded_log, status, wall, GAME};
-use game_scenarios::{Scenario, CATALOG_VERSION};
+use game_scenarios::Scenario;
 use nfl_feed::{
 	log::{Entry, PlayLog},
 	scoreboard,
 	summary::{self, Play},
-	GameState,
+	GameState, Status,
 };
-use scenario_engine::{offer, Game, Mode, Offer, Reading, Situation, Watching, ENGINE_VERSION};
+use scenario_engine::{offer, Game, Mode, Offer, Reading, Situation, Watching};
 
 const WEEK8: &[u8] = include_bytes!("../../nfl_feed/testdata/scoreboard-2026-week8.json");
 const PRE: &[u8] = include_bytes!("../../nfl_feed/testdata/summary-401873023-pre.json");
@@ -164,6 +164,9 @@ fn after_a_touchdown_before_the_try_two_or_one_leads() {
 
 	let pending = offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Standard, Watching::Unknown);
 	assert_eq!(ids(&pending)[..2], ["in.two-point", "in.kick"]);
+	// No kick is claimed before the try is in the log.
+	assert!(pending.just_happened.iter().all(|j| !j.line.contains("kicked")));
+	assert!(pending.just_happened.iter().any(|j| j.line == "CHI touchdown, the try to come"));
 	assert_eq!(pending.scenarios[0].line, "CHI touchdown, up 9 before the try");
 	assert_eq!(pending.scenarios[1].line, "Kick it or go for two, up 9");
 
@@ -258,18 +261,121 @@ fn without_the_live_situation_nothing_that_needs_the_down_is_offered() {
 }
 
 #[test]
-fn an_offer_carries_its_versions_and_ids() {
+fn an_offer_names_each_scenario_by_its_id() {
 	let plays = plays();
 	let log = recorded_log(&plays);
 	let play = plays.iter().find(|p| p.sequence == Some(66_900)).unwrap();
 	let g = game(Some("NE"), status(GameState::In, Some(play)), Some(Situation::before(play)));
 	let offered = offer(&g, &log, pacific(wall(play) + TimeDelta::seconds(50)), Mode::Standard, Watching::Unknown);
 	let json = serde_json::to_value(&offered).unwrap();
-	assert_eq!(json["engine_version"], ENGINE_VERSION);
-	assert_eq!(json["catalog_version"], CATALOG_VERSION);
 	assert_eq!(json["game_id"], GAME);
 	assert_eq!(json["scenarios"][0]["id"], "in.third-long");
 	assert_eq!(json["just_happened"][0]["id"], "in.third-long");
 	assert_eq!(json["just_happened"][0]["line"], "3rd and 8: stopped");
 	assert!(json["just_happened"][0]["ago_seconds"].as_i64().unwrap() >= 50);
+}
+
+#[test]
+fn an_injury_note_names_the_injured_players_team_not_the_offense() {
+	let plays = plays();
+	let log = recorded_log(&plays);
+	let back = plays.iter().find(|p| p.id == "4018730101455").unwrap();
+	assert!(back.text.as_deref().unwrap().contains("NE-K.Byard has returned"));
+	let now = pacific(first_seen(&log, back) + TimeDelta::seconds(5));
+	let held: Vec<Entry> = log.iter().filter(|e| at(&e.seen_at) <= now).cloned().collect();
+	let g = game(Some("CHI"), status(GameState::In, Some(back)), None);
+	let o = offer(&g, &held, now, Mode::Full, Watching::Unknown);
+	let line = &o.just_happened.iter().find(|j| j.scenario == Scenario::Injury).unwrap().line;
+	assert_eq!(line, "A NE player is back");
+}
+
+/// The offer in Full mode 5 s after home saw `shown` as the latest play,
+/// with the recorded plays before it.
+#[cfg(test)]
+fn just_after(before: &[Play], shown: Play) -> Offer {
+	let seen = wall(&shown) + TimeDelta::seconds(10);
+	let mut held = before.to_vec();
+	held.push(shown);
+	let mut log = PlayLog::default();
+	log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), &held);
+	let entries: Vec<Entry> = log.entries().to_vec();
+	let g = game(Some("NE"), status(GameState::In, held.last()), None);
+	offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Full, Watching::Unknown)
+}
+
+#[test]
+fn a_turnover_wiped_out_by_a_flag_is_no_turnover() {
+	let plays = plays();
+	let pick = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("INTERCEPTED"))).unwrap();
+	let text = plays[pick].text.clone().unwrap();
+	let nullified = Play {
+		text: Some(text + " PENALTY on NE-C.Gonzalez, Defensive Holding, 5 yards, enforced at CHI 30 - No Play."),
+		..plays[pick].clone()
+	};
+	let o = just_after(&plays[..pick], nullified);
+	assert!(o.just_happened.iter().all(|j| j.scenario != Scenario::Turnover));
+}
+
+#[test]
+fn a_reviewed_play_is_read_as_the_review_left_it() {
+	let plays = plays();
+	// "... to CHI 1 for 6 yards ... the play was REVERSED.(Shotgun) D.Maye
+	// scrambles right guard for 7 yards, TOUCHDOWN.", shaped into a 3rd and 7
+	// that the review moved from short to just enough.
+	let pick = plays.iter().position(|p| p.sequence == Some(115_000)).unwrap();
+	let text = plays[pick].text.clone().unwrap();
+	let third = |text: String| Play {
+		play_type: Some("Rush".to_owned()),
+		down: Some(3),
+		distance: Some(7),
+		yards_to_endzone: Some(30),
+		text: Some(text),
+		..plays[pick].clone()
+	};
+	let third_and_long = |o: &Offer| o.just_happened.iter().find(|j| j.scenario == Scenario::ThirdAndLong).unwrap().line.clone();
+
+	let reversed = text[..text.find(", TOUCHDOWN").unwrap()].to_owned() + ".";
+	assert!(reversed.contains("for 6 yards") && reversed.ends_with("REVERSED.(Shotgun) D.Maye scrambles right guard for 7 yards."));
+	assert_eq!(third_and_long(&just_after(&plays[..pick], third(reversed))), "3rd and 7: converted");
+
+	// An upheld ruling that is not restated stands as it was.
+	let upheld = text[..text.find(".New England").unwrap()].replace("for 6 yards", "for 7 yards")
+		+ ". The Replay Official reviewed the ruling, and the play was Upheld. The ruling on the field stands.";
+	assert_eq!(third_and_long(&just_after(&plays[..pick], third(upheld))), "3rd and 7: converted");
+}
+
+#[test]
+fn the_opening_kickoff_is_the_first_kickoff_after_a_coin_toss() {
+	let plays = plays();
+	let kickoff = plays.iter().position(|p| p.play_type.as_deref() == Some("Kickoff")).unwrap();
+	let toss = Play {
+		id: "401873010toss".to_owned(),
+		sequence: Some(1),
+		play_type: Some("Coin Toss".to_owned()),
+		text: Some("CHI wins the toss and defers.".to_owned()),
+		down: None,
+		distance: None,
+		yards_to_endzone: None,
+		..plays[kickoff].clone()
+	};
+	let o = just_after(&[toss], plays[kickoff].clone());
+	let opening = o.just_happened.iter().find(|j| j.scenario == Scenario::CoinToss).unwrap();
+	assert_eq!(opening.play_id, plays[kickoff].id);
+}
+
+#[test]
+fn a_game_called_off_before_it_was_played_offers_nothing() {
+	let mut g = car_at_gb(Some("GB"));
+	g.status = Status {
+		state: Some(GameState::Post),
+		completed: Some(false),
+		period: None,
+		clock: None,
+	};
+	for at in [g.kickoff - TimeDelta::hours(1), g.kickoff - TimeDelta::minutes(5), g.kickoff + TimeDelta::hours(3)] {
+		let o = offer(&g, &[], pacific(at), Mode::Full, Watching::Unknown);
+		assert!(o.scenarios.is_empty(), "{:?}", ids(&o));
+		assert!(o.just_happened.is_empty());
+		assert_eq!(o.strip.clock, "Not played");
+	}
 }

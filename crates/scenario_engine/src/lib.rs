@@ -9,21 +9,9 @@
 //! fit this moment (most specific first), what just happened, and the
 //! versions it was made under.
 //!
-//! What this crate promises (the README has them in full):
-//!
-//! - **SE1, pure.** No I/O, no clock, no randomness: `now` is an argument,
-//!   and the same arguments always give the same offer.
-//! - **SE2, replayable at any time.** A log entry home saw after `now` is
-//!   left out, so the whole log replayed at a bite's time gives the offer the
-//!   phone could have shown then (GWB7's reconciler relies on it).
-//! - **SE3, one rule per moment.** Each scenario's rule is keyed by its
-//!   catalog [`game_scenarios::Moment`] in `rules`, and nothing else decides
-//!   what is offered.
-//! - **SE4, the person's terms.** Every string the offer carries comes from
-//!   `words`, which never prints a field name, an id or ESPN's spelling.
-//! - **SE5, read through one team.** Every game is read through
-//!   [`Reading::team`] and the side it wants to win ([`Reading::want`]); a
-//!   game with no side wanted offers nothing that needs one.
+//! What this crate promises, SE1 to SE5 (pure, replayable at any time, one
+//! rule per moment, the person's terms, read through one team), is written
+//! once, in the README's "Invariants".
 
 mod read;
 mod rules;
@@ -185,7 +173,7 @@ pub struct Offer {
 /// The live strip, in words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Strip {
-	/// `14:53 left in the 1st`, `Kickoff in 2 h 10 min`, `Final`.
+	/// `14:53 left in the 1st`, `Kickoff in 2 h 10 min`, `Final`, `Not played`.
 	pub clock: String,
 	/// `NE has the ball`.
 	pub possession: Option<String>,
