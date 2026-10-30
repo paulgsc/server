@@ -179,6 +179,7 @@ mod tests {
 					language: String::from("en"),
 					language_p: 0.97,
 					text: String::from(SAID),
+					words: Vec::new(),
 				},
 			};
 			Ok(Heard {

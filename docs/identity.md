@@ -170,7 +170,7 @@ above the button that deletes (invariant 22):
 | LeetType sessions | `leetype_session_event` |
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
 | Korean's word sets and reading records | `korean_entry` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `game_bite` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -815,8 +815,9 @@ nowhere is marked as such and belongs to review.
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
-    **What home heard in a note is `voice_transcript`, append-only too**
-    (paulgsc/server#462). `file_host`'s `transcribe` worker, on only when
+    **What home heard in a note is `voice_transcript`, and when each word
+    was said is `voice_transcript_word`, append-only too**
+    (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
     with whisper.cpp: oldest first, one at a time, on a blocking thread by a
     deadline, never on a request's path. Each attempt is a row: the model
@@ -827,18 +828,32 @@ nowhere is marked as such and belongs to review.
     or found it silent never hears it again (a partial unique index), and
     one that fails on a note stops after three attempts; a better model adds
     rows of its own and replaces none, and a reader takes the newest that
-    heard something. No row is updated (the trigger aborts an `UPDATE`), and
-    one is written only for a note the subject still holds, in the
+    heard something. A heard attempt also keeps each word it heard, with
+    when the word began and ended in milliseconds from the note's start
+    (whisper.cpp's per-word times, joined from its tokens and moved from the
+    speech the VAD cut out back to the note), as new rows in
+    `voice_transcript_word`, one per word, keyed by the note, the model and
+    the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
+    follow the voice word by word; approved by the owner, paulgsc/some-ui#2074
+    "Decided" 5 and 8). The words are written with their transcript, in the
+    same transaction, and never on their own: a transcript heard before they
+    were kept has none and is never given any. They leave with the account
+    by both the sweep and their own trigger (invariant 12). A reader
+    (`voice_repo::transcript::words`) takes the words of the newest transcript
+    that heard something, so they always match the text it takes. No
+    transcript or word is updated (each table's trigger aborts an `UPDATE`),
+    and one is written only for a note the subject still holds, in the
     transaction that writes, under the deletion hold (invariant 9). The
     worker reads `voice_note_audio` and never writes it. To decode, it writes
     the note to a fresh `0700` temporary directory inside the container
     (ffmpeg cannot read the phone's `m4a` from a pipe) and removes it when
     the attempt ends; that file is the one place audio is held outside these
-    tables, for the length of one decode. Neither the text nor the audio
-    reaches a log line: whisper.cpp's log is dropped, ffmpeg's output is
-    discarded, and a pass logs only how many attempts of each kind it kept.
-    The text leaves home only as a transcript filed for the Jobs mailbox
-    (invariant 19), for the routines to read, and the audio never does.
+    tables, for the length of one decode. Neither the text, its words nor
+    the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
+    output is discarded, and a pass logs only how many attempts of each kind
+    it kept. The text leaves home only as a transcript filed for the Jobs
+    mailbox (invariant 19), for the routines to read; the words are readable
+    by no route yet, and the audio never leaves.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
@@ -855,12 +870,20 @@ nowhere is marked as such and belongs to review.
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
     `the_schema_refuses_a_rewrite_a_second_ending_or_a_heard_row_without_text`
-    and `the_transcripts_leave_with_the_account`; `transcribe::pass`'s
+    and `the_transcripts_leave_with_the_account`, and for words
+    `the_word_table_holds_exactly_its_described_columns`,
+    `a_heard_transcript_keeps_its_words_and_a_reader_takes_the_newest`,
+    `a_transcript_heard_without_words_reads_as_none`,
+    `a_word_time_out_of_order_is_held_not_refused`,
+    `the_schema_refuses_a_rewritten_word_or_a_time_out_of_order` and
+    `the_words_leave_with_the_account`; `transcribe::pass`'s
     `every_note_gets_a_row_and_a_failure_is_retried_a_few_times`,
     `a_shutdown_keeps_nothing_for_the_note_it_interrupts`,
     `nothing_is_kept_for_a_note_that_left_with_its_account` and
     `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s
-    `a_note_decodes_in_a_directory_only_its_owner_can_enter`; and `handlers::voice`'s
+    `a_note_decodes_in_a_directory_only_its_owner_can_enter`,
+    `tokens_join_into_words_on_the_space_that_opens_each` and
+    `a_word_is_timed_in_the_note_not_in_the_speech_cut_from_it`; and `handlers::voice`'s
     `refusals_name_their_fields_and_notes_stay_apart`,
     `home_refuses_a_note_once_its_phone_stopped_sending_them` and
     `a_game_bite_reaches_home_with_its_metadata`.

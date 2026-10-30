@@ -131,6 +131,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"voice_transcript",
 		"what home heard in each of the owner's voice notes, every attempt: the model and engine, what was heard (or that nothing was said, or why it could not be heard), the language and its probability, the audio's length, and when; see docs/identity.md invariant 23",
 	),
+	(
+		"voice_transcript_word",
+		"each word home heard in the owner's voice notes (paulgsc/some-ui GWB11), per transcript that heard something: the word as heard, its place, and when it began and ended in the note; see docs/identity.md invariant 23",
+	),
 ];
 
 /// Who a request is acting for.

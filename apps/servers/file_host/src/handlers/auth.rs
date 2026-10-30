@@ -1186,6 +1186,7 @@ mod tests {
 				 VALUES (?1, 'n', 'said-first', '', 1, 'then', 'light', 1)",
 				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
 				 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
+				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
 			] {

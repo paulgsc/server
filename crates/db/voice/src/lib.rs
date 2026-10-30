@@ -34,9 +34,10 @@
 //!   `git grep -n 'voice_note\b\|voice_note_audio\|game_bite' -- '*.rs'`
 //!   shows no other writer.
 //!
-//! What home heard in each note is [`transcript`]'s: `voice_transcript`,
-//! written only by `file_host`'s `transcribe` worker, which reads a note's
-//! audio and never writes it.
+//! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
+//! each heard word with its time in `voice_transcript_word`, both written
+//! only by `file_host`'s `transcribe` worker, which reads a note's audio and
+//! never writes it.
 
 pub mod transcript;
 
