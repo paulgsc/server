@@ -37,7 +37,8 @@ fn judge(code: u16, body: &str) -> Result<String, String> {
 	if code == 200 {
 		return Ok("Readiness check passed".to_string());
 	}
-	let answer: Answer = serde_json::from_str(body).map_err(|e| "Readiness check failed: HTTP ".to_string() + &code.to_string() + ", and its body did not read: " + &e.to_string())?;
+	let answer: Answer =
+		serde_json::from_str(body).map_err(|e| "Readiness check failed: HTTP ".to_string() + &code.to_string() + ", and its body did not read: " + &e.to_string())?;
 	let down = answer
 		.dependencies
 		.iter()

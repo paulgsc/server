@@ -179,7 +179,10 @@ async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 	match result {
 		Ok(Ok(_)) => DependencyStatus::up("sqlite"),
 		Ok(Err(e)) => DependencyStatus::down("sqlite", e.to_string()),
-		Err(_) => DependencyStatus::down("sqlite", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
+		Err(_) => DependencyStatus::down(
+			"sqlite",
+			"check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s",
+		),
 	}
 }
 
@@ -193,7 +196,10 @@ async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 		Ok(Ok(drift)) if drift.is_current() => DependencyStatus::up("schema"),
 		Ok(Ok(drift)) => DependencyStatus::down("schema", drift.to_string()),
 		Ok(Err(e)) => DependencyStatus::down("schema", "could not read _sqlx_migrations: ".to_string() + &e.to_string()),
-		Err(_) => DependencyStatus::down("schema", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
+		Err(_) => DependencyStatus::down(
+			"schema",
+			"check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s",
+		),
 	}
 }
 
@@ -220,7 +226,10 @@ async fn check_redis(state: &AppState) -> DependencyStatus {
 	match result {
 		Ok(Ok(_)) => DependencyStatus::up("redis"),
 		Ok(Err(e)) => DependencyStatus::down("redis", e.to_string()),
-		Err(_) => DependencyStatus::down("redis", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
+		Err(_) => DependencyStatus::down(
+			"redis",
+			"check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s",
+		),
 	}
 }
 
@@ -231,7 +240,13 @@ mod tests {
 	fn deps(down: &[&'static str]) -> Vec<DependencyStatus> {
 		["sqlite", "nats", "redis", "schema"]
 			.into_iter()
-			.map(|name| if down.contains(&name) { DependencyStatus::down(name, "down".to_string()) } else { DependencyStatus::up(name) })
+			.map(|name| {
+				if down.contains(&name) {
+					DependencyStatus::down(name, "down".to_string())
+				} else {
+					DependencyStatus::up(name)
+				}
+			})
 			.collect()
 	}
 
@@ -260,7 +275,10 @@ mod tests {
 
 	#[test]
 	fn the_status_reads_as_a_lowercase_word() {
-		let words: Vec<String> = [Verdict::Ready, Verdict::Degraded, Verdict::Unavailable].iter().map(|v| serde_json::to_value(v).unwrap().to_string()).collect();
+		let words: Vec<String> = [Verdict::Ready, Verdict::Degraded, Verdict::Unavailable]
+			.iter()
+			.map(|v| serde_json::to_value(v).unwrap().to_string())
+			.collect();
 		assert_eq!(words, ["\"ready\"", "\"degraded\"", "\"unavailable\""]);
 	}
 }
