@@ -426,6 +426,17 @@ def own_environment(service: dict) -> dict[str, str | None]:
     return own
 
 
+def resolve_env(entries: dict[str, tuple[str, bool]], shell: dict[str, str]) -> dict[str, tuple[str, bool]]:
+    """`entries` with each value interpolated as compose does, line by line:
+    from the shell and the lines above it, so `B=${A}` then `C=${B}` gives C
+    A's value. Every value comes back literal, interpolated once."""
+    resolved: dict[str, tuple[str, bool]] = {}
+    for name, (value, literal) in entries.items():
+        known = {**{other: text for other, (text, _) in resolved.items()}, **shell}
+        resolved[name] = (value if literal else interpolate(value, known), True)
+    return resolved
+
+
 def environment_of(service: dict, entries: dict[str, tuple[str, bool]], given: dict[str, str]) -> dict[str, str]:
     """What the container is given: the env file's lines when it reads it, and
     its own `environment:` over them."""
@@ -452,7 +463,7 @@ def reaches(service: dict, name: str) -> bool:
 
 def preflight(schemas: list[dict], compose: dict[str, ComposeVariable], env_text: str, shell: dict[str, str], raw: dict) -> Report:
     report = Report()
-    entries = parse_env_entries(env_text)
+    entries = resolve_env(parse_env_entries(env_text), shell)
     env = {name: value for name, (value, _) in entries.items()}
     given = {**env, **shell}
     by_binary = {schema["binary"]: schema for schema in schemas}
@@ -655,6 +666,9 @@ def self_test() -> None:
     shelled = preflight([schema], compose, env_text + "AUTH=false\n", {"ROOT": "/r", "BARE": "", "KEY": "k"}, raw)
     assert not shelled.missing, "the shell's variables count, `${X?}` allows an empty one, and a condition that is off asks for nothing"
     assert not preflight([schema], compose, env_text, {"ROOT": "/r", "BARE": "b", "KEY": "k"}, {"services": {"app": {"environment": {}}}}).missing, "a service with no env-schema label is not checked"
+    chained = resolve_env(parse_env_entries("A=false\nB=${A}\nC=${B}\nD='${A}'\n"), {})
+    assert {name: value for name, (value, _) in chained.items()} == {"A": "false", "B": "false", "C": "false", "D": "${A}"}, chained
+    assert resolve_env(parse_env_entries("A=x\nB=${A}\n"), {"A": "shell"})["B"] == ("shell", True), "the shell wins over a line"
     literal = environment_of(raw["services"]["app"], parse_env_entries(env_text), {"STORAGE": "/s"})
     assert literal["LIT"] == "$STORAGE" and literal["DBX"] == "/s/y" and literal["MODE"] == "b", literal
     assert reaches(raw["services"]["app"], "LOG") and reaches(raw["services"]["app"], "KEY") and not reaches(raw["services"]["app"], "MODE")
