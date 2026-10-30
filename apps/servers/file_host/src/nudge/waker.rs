@@ -3133,6 +3133,15 @@ mod tests {
 	/// arithmetic landing exactly: they hold for any split in which at least
 	/// one subject was reached and at least one was not, and they check each
 	/// subject against the side of the split it actually landed on.
+	///
+	/// The deadline can also strike inside the last subject the pass
+	/// considered, after `considered` counted it (#572, seen on a slow CI
+	/// runner). With no time left before its delivery, `actuate` tries no
+	/// device and `consider` hands the claim back: the subject is due again,
+	/// and no connection was made. With a sliver left, the delivery times out
+	/// before the provider has counted the connection. So only that one
+	/// subject may lack a claim or a counted connection; every subject before
+	/// it had a whole delivery budget, a claim and a connection.
 	#[test]
 	fn a_pass_that_reaches_its_deadline_leaves_the_subjects_it_never_reached_untouched_and_still_due() {
 		use sqlx::sqlite::SqlitePoolOptions;
@@ -3186,24 +3195,20 @@ mod tests {
 				elapsed < std::time::Duration::from_secs(5),
 				"a pass over a provider that never answers must still end — it took {elapsed:?}"
 			);
-			assert_eq!(
-				connections.load(std::sync::atomic::Ordering::SeqCst),
-				report.considered,
-				"one delivery attempt per considered subject, none for the rest"
-			);
-
 			let still_due: Vec<String> = engagement.due(&now_str, 0, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
 			let sessions = SessionRepository::new(pool.clone());
 			let mut reached = 0;
+			let mut handed_back = 0;
 			for subject_id in &subjects {
 				let (total, actuated) = intervention_rows(&pool, subject_id).await;
 				if total == 0 {
-					// Deferred: not claimed, not proposed to, and still due.
-					assert!(still_due.contains(subject_id), "{subject_id} was never reached, so the next pass must still find it");
-					assert!(
-						sessions.list(subject_id).await.unwrap().is_empty(),
-						"{subject_id} was never reached, so nothing was proposed to it"
-					);
+					// Deferred, or the last considered subject handed back
+					// before its delivery began: either way not claimed, and
+					// still due.
+					assert!(still_due.contains(subject_id), "{subject_id} holds no claim, so the next pass must still find it");
+					if !sessions.list(subject_id).await.unwrap().is_empty() {
+						handed_back += 1;
+					}
 				} else {
 					// Reached: the timeout kept the claim (see the next test).
 					reached += 1;
@@ -3211,7 +3216,19 @@ mod tests {
 					assert!(!still_due.contains(subject_id), "{subject_id}'s claim stands, so it is not retried into a duplicate");
 				}
 			}
-			assert_eq!(reached, report.considered, "the subjects with a claim are exactly the ones the report says were considered");
+			assert!(
+				reached <= report.considered && report.considered - reached <= 1,
+				"every considered subject keeps its claim but the last, which the deadline may cut before its delivery: {reached} claimed of {report:?}"
+			);
+			assert!(
+				handed_back <= report.considered - reached,
+				"only a considered subject whose claim was handed back has been proposed to without a claim: {handed_back} of {report:?}"
+			);
+			let connected = connections.load(std::sync::atomic::Ordering::SeqCst);
+			assert!(
+				connected <= report.considered && connected + 1 >= report.considered,
+				"one delivery attempt per considered subject, none for the rest, and only the last may be cut before it connects: {connected} connections for {report:?}"
+			);
 		});
 	}
 
