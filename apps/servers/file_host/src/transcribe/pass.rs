@@ -9,10 +9,6 @@
 //!   `auth::DeletionLock`, and only for a note the subject still holds,
 //!   checked in the transaction that writes (docs/identity.md invariant 9).
 //!   The lock is never held while a note is heard.
-//! - **A transcript's words go with it.** A heard attempt's words, each with
-//!   its time, are written in the transaction that writes its row
-//!   (`voice_repo::transcript::keep_attempt`), so a transcript is never kept
-//!   without the words heard with it.
 //! - **A shutdown keeps nothing.** An attempt cancelled midway says nothing
 //!   about the note, so it is not written, and the note waits for the next
 //!   start.
@@ -124,7 +120,7 @@ mod tests {
 	use std::sync::{Arc, Mutex};
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
-	use voice_repo::transcript::{Outcome, Word};
+	use voice_repo::transcript::Outcome;
 	use voice_repo::{describe, put_note, Said, SaidBite};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -183,7 +179,7 @@ mod tests {
 					language: String::from("en"),
 					language_p: 0.97,
 					text: String::from(SAID),
-					words: said(),
+					words: Vec::new(),
 				},
 			};
 			Ok(Heard {
@@ -191,18 +187,6 @@ mod tests {
 				duration_ms: Some(28_400),
 			})
 		}
-	}
-
-	/// [`SAID`]'s words, each 300 ms after the one before.
-	fn said() -> Vec<Word> {
-		(0_i64..)
-			.zip(SAID.split_whitespace())
-			.map(|(n, word)| Word {
-				text: word.to_owned(),
-				start_ms: 1_000 + 300 * n,
-				end_ms: 1_250 + 300 * n,
-			})
-			.collect()
 	}
 
 	async fn pool() -> SqlitePool {
@@ -272,27 +256,6 @@ mod tests {
 			.map(|(subject, id, n, kind, text)| (subject.to_owned(), id.to_owned(), n, kind.to_owned(), text.map(str::to_owned)))
 			.collect();
 		assert_eq!(written, expected);
-	}
-
-	/// A heard note's words are kept with its transcript, each with its
-	/// time; a note heard as silence, or not heard, keeps none.
-	#[tokio::test]
-	async fn a_heard_note_keeps_its_words_with_its_transcript() {
-		let pool = pool().await;
-		note(&pool, A, "spoken", "2026-10-25T03:00:00.000Z", b"words").await;
-		note(&pool, A, "quiet", "2026-10-25T02:00:00.000Z", b"silence").await;
-		note(&pool, A, "broken", "2026-10-25T01:00:00.000Z", b"noise").await;
-		let cancel = CancellationToken::new();
-		let fake = Fake::new(&cancel);
-		pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
-
-		let kept: Vec<(String, i64)> = sqlx::query_as("SELECT note_id, COUNT(*) FROM voice_transcript_word GROUP BY note_id")
-			.fetch_all(&pool)
-			.await
-			.unwrap();
-		assert_eq!(kept, [(String::from("spoken"), i64::try_from(said().len()).unwrap())], "only the heard note has words");
-		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(voice_repo::transcript::words(&mut conn, A, "spoken").await.unwrap(), said());
 	}
 
 	/// The engine is handed the per-note deadline, and running past it is

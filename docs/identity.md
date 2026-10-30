@@ -874,10 +874,10 @@ nowhere is marked as such and belongs to review.
     `the_word_table_holds_exactly_its_described_columns`,
     `a_heard_transcript_keeps_its_words_and_a_reader_takes_the_newest`,
     `a_transcript_heard_without_words_reads_as_none`,
+    `a_word_time_out_of_order_is_held_not_refused`,
     `the_schema_refuses_a_rewritten_word_or_a_time_out_of_order` and
     `the_words_leave_with_the_account`; `transcribe::pass`'s
     `every_note_gets_a_row_and_a_failure_is_retried_a_few_times`,
-    `a_heard_note_keeps_its_words_with_its_transcript`,
     `a_shutdown_keeps_nothing_for_the_note_it_interrupts`,
     `nothing_is_kept_for_a_note_that_left_with_its_account` and
     `no_transcript_or_audio_reaches_a_log_line`; `transcribe::engine`'s

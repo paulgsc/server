@@ -283,16 +283,17 @@ impl Whisper {
 		if text.is_empty() {
 			return Ok(Outcome::Silent);
 		}
+		// A heard note always has cuts: one with no speech is silent before
+		// Whisper runs (`hear`), so no word is dropped here.
 		let words = heard
 			.into_iter()
-			.map(|said| Word {
-				text: said.text,
-				start_ms: Cut::in_note(cuts, said.start_ms, Edge::Start),
-				end_ms: Cut::in_note(cuts, said.end_ms, Edge::End),
-			})
-			.map(|word| Word {
-				end_ms: word.end_ms.max(word.start_ms),
-				..word
+			.filter_map(|said| {
+				let (start_ms, end_ms) = Cut::in_note(cuts, said.start_ms, said.end_ms)?;
+				Some(Word {
+					text: said.text,
+					start_ms,
+					end_ms,
+				})
 			})
 			.collect();
 		Ok(Outcome::Heard {
@@ -364,7 +365,7 @@ struct Spoken {
 /// begins a word, and any other joins the word before it (`par` `ticle`,
 /// and the `,` after it). Special tokens are left out, and so is a word with
 /// no text once trimmed. A word runs from its first token's start to its last
-/// token's end, never before 0 or before it began.
+/// token's end, as Whisper timed them.
 fn words(tokens: &[Token]) -> Vec<Spoken> {
 	let mut words = Vec::new();
 	let mut word: Option<(Vec<u8>, i64, i64)> = None;
@@ -372,11 +373,10 @@ fn words(tokens: &[Token]) -> Vec<Spoken> {
 		let Some((bytes, from_cs, to_cs)) = word else { return };
 		let text = String::from_utf8_lossy(&bytes).trim().to_owned();
 		if !text.is_empty() {
-			let start_ms = from_cs.max(0).saturating_mul(10);
 			words.push(Spoken {
 				text,
-				start_ms,
-				end_ms: to_cs.saturating_mul(10).max(start_ms),
+				start_ms: from_cs.saturating_mul(10),
+				end_ms: to_cs.saturating_mul(10),
 			});
 		}
 	};
@@ -393,13 +393,6 @@ fn words(tokens: &[Token]) -> Vec<Spoken> {
 	words
 }
 
-/// Which end of a word a time is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Edge {
-	Start,
-	End,
-}
-
 /// A piece of speech the VAD found: `len` samples from `note_at` in the
 /// note, heard from `speech_at` in the speech Whisper heard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,23 +403,21 @@ struct Cut {
 }
 
 impl Cut {
-	/// `ms` into the speech Whisper heard, as milliseconds into the note
-	/// `cuts` were cut from, held within the cut it falls in. A time where
-	/// two cuts meet is the later cut's start for a word's [`Edge::Start`],
-	/// and the earlier cut's end for its [`Edge::End`], so a word is never
-	/// stretched over the silence between them.
-	fn in_note(cuts: &[Self], ms: i64, edge: Edge) -> i64 {
+	/// A word from `start_ms` to `end_ms` into the speech Whisper heard, as
+	/// milliseconds into the note `cuts` were cut from. The word is held
+	/// within the cut its start falls in (a start where two cuts meet is the
+	/// later one's), so it never runs before 0, ends before it began, or
+	/// stretches over the silence after its cut. `None` only with no cuts,
+	/// since the first cut starts the speech.
+	fn in_note(cuts: &[Self], start_ms: i64, end_ms: i64) -> Option<(i64, i64)> {
 		let per_ms = SAMPLE_RATE / 1000;
-		let sample = usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms);
-		let within = |cut: &&Self| match edge {
-			Edge::Start => cut.speech_at <= sample,
-			Edge::End => cut.speech_at < sample,
-		};
-		let Some(cut) = cuts.iter().rev().find(within).or_else(|| cuts.first()) else {
-			return ms.max(0);
-		};
-		let at = cut.note_at + sample.saturating_sub(cut.speech_at).min(cut.len);
-		i64::try_from(at / per_ms).unwrap_or(i64::MAX)
+		let sample = |ms: i64| usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms);
+		let (start, end) = (sample(start_ms), sample(end_ms));
+		let cut = cuts.iter().rev().find(|cut| cut.speech_at <= start)?;
+		let start_in = (start - cut.speech_at).min(cut.len);
+		let end_in = end.saturating_sub(cut.speech_at).clamp(start_in, cut.len);
+		let ms = |into: usize| i64::try_from((cut.note_at + into) / per_ms).unwrap_or(i64::MAX);
+		Some((ms(start_in), ms(end_in)))
 	}
 }
 
@@ -580,7 +571,7 @@ mod tests {
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
 	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
-	use super::{decode, sample_at, words, Cut, Decoded, Edge, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use super::{decode, sample_at, words, Cut, Decoded, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
 	use std::path::Path;
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
@@ -801,12 +792,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_segment_of_only_special_tokens_has_no_words_and_a_time_never_runs_backwards() {
+	fn a_segment_of_only_special_tokens_has_no_words() {
 		assert_eq!(words(&[special("[_BEG_]", 0), special("[_TT_50]", 50)]), []);
 		assert_eq!(words(&[]), []);
-		// A first token without its space still opens a word, and whisper.cpp
-		// timing a token before 0 or ending one before it began is held.
-		assert_eq!(words(&[token("Hi", -3, 20), token(" there", 40, 30)]), [spoken("Hi", 0, 200), spoken("there", 400, 400)]);
 	}
 
 	/// Whisper heard only the speech the VAD found, run end to end; a word's
@@ -827,18 +815,20 @@ mod tests {
 				len: ms(500),
 			},
 		];
-		let at = |speech_ms, edge| Cut::in_note(&cuts, speech_ms, edge);
-		assert_eq!(at(0, Edge::Start), 1_000);
-		assert_eq!(at(250, Edge::End), 1_250);
-		assert_eq!(at(1_200, Edge::Start), 5_200, "in the second cut");
-		// Where the cuts meet, a start is the later cut's and an end the
-		// earlier's, so no word spans the silence between them.
-		assert_eq!(at(1_000, Edge::Start), 5_000);
-		assert_eq!(at(1_000, Edge::End), 2_000);
-		// Whisper times past the speech it heard, and before it: held to it.
-		assert_eq!(at(9_000, Edge::End), 5_500);
-		assert_eq!(at(-40, Edge::Start), 1_000);
-		// No cuts (none happen: no speech is silent): the time is kept.
-		assert_eq!(Cut::in_note(&[], 300, Edge::Start), 300);
+		let at = |start_ms, end_ms| Cut::in_note(&cuts, start_ms, end_ms).unwrap();
+		assert_eq!(at(0, 250), (1_000, 1_250));
+		assert_eq!(at(1_200, 1_400), (5_200, 5_400), "in the second cut");
+		// A word ends within the cut it starts in, so none spans the silence
+		// between two cuts: one ending just past its cut, or exactly where
+		// the next begins, ends with its cut; one starting there is the next's.
+		assert_eq!(at(900, 1_100), (1_900, 2_000));
+		assert_eq!(at(800, 1_000), (1_800, 2_000));
+		assert_eq!(at(1_000, 1_100), (5_000, 5_100));
+		// Whisper times past the speech it heard, before it, or backwards:
+		// held to it.
+		assert_eq!(at(1_300, 9_000), (5_300, 5_500));
+		assert_eq!(at(-40, 100), (1_000, 1_100));
+		assert_eq!(at(400, 300), (1_400, 1_400));
+		assert_eq!(Cut::in_note(&[], 0, 300), None, "no cuts, no speech to time");
 	}
 }
