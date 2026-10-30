@@ -25,8 +25,8 @@
 use crate::VoiceError;
 use sqlx::SqliteConnection;
 
-/// One word heard, and when it was said.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One word heard, when it was said, and how sure the model was of it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Word {
 	/// The word as heard, with any punctuation that clings to it. Never
 	/// logged.
@@ -35,6 +35,11 @@ pub struct Word {
 	pub start_ms: i64,
 	/// When it ended, the same way; never before it began.
 	pub end_ms: i64,
+	/// How sure the model was of the word, 0 to 1: the lowest of its tokens'
+	/// probabilities (paulgsc/server#577, ST22). None for a word heard before
+	/// it was kept (`20261031000100`). Not text, so it may reach a metric,
+	/// never a log line.
+	pub p: Option<f64>,
 }
 
 /// How an attempt to hear a note ended.
@@ -234,16 +239,18 @@ async fn keep_words(conn: &mut SqliteConnection, subject: &str, note_id: &str, m
 	for (index, word) in (0_i64..).zip(words) {
 		let start_ms = word.start_ms.max(0);
 		let end_ms = word.end_ms.max(start_ms);
+		let p = word.p.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, 1.0));
 		sqlx::query!(
-			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
 			subject,
 			note_id,
 			model,
 			index,
 			word.text,
 			start_ms,
-			end_ms
+			end_ms,
+			p
 		)
 		.execute(&mut *conn)
 		.await?;
@@ -265,7 +272,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	Ok(
 		sqlx::query_as!(
 			Word,
-			r#"SELECT w.text, w.start_ms, w.end_ms FROM voice_transcript_word w
+			r#"SELECT w.text, w.start_ms, w.end_ms, w.p FROM voice_transcript_word w
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
@@ -279,9 +286,31 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	)
 }
 
+/// The words `model` heard in `subject`'s note `note_id`, in the order said.
+///
+/// Each with its time and how sure the model was: what a transcript filed
+/// under that model carries (paulgsc/server#577). Empty for a transcript
+/// heard before words were kept. Only `sqlx` can fail it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str) -> Result<Vec<Word>, sqlx::Error> {
+	sqlx::query_as!(
+		Word,
+		r#"SELECT text, start_ms, end_ms, p FROM voice_transcript_word
+		 WHERE subject_id = ?1 AND note_id = ?2 AND model = ?3
+		 ORDER BY word_index"#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, words, Attempt, Kept, Outcome, Waiting, Word};
+	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Outcome, Waiting, Word};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -329,6 +358,7 @@ mod tests {
 				text: word.to_owned(),
 				start_ms: 500 * n,
 				end_ms: 500 * n + 400,
+				p: Some(0.9),
 			})
 			.collect()
 	}
@@ -564,7 +594,7 @@ mod tests {
 			.fetch_all(&pool)
 			.await
 			.unwrap();
-		assert_eq!(columns, ["subject_id", "note_id", "model", "word_index", "text", "start_ms", "end_ms"]);
+		assert_eq!(columns, ["subject_id", "note_id", "model", "word_index", "text", "start_ms", "end_ms", "p"]);
 	}
 
 	/// A heard attempt keeps its words with it; a failure, silence or a replay
@@ -651,17 +681,58 @@ mod tests {
 					text: String::from("early"),
 					start_ms: -20,
 					end_ms: 300,
+					p: Some(1.5),
 				},
 				Word {
 					text: String::from("late"),
 					start_ms: 900,
 					end_ms: 800,
+					p: Some(f64::NAN),
 				},
 			],
 		};
 		assert_eq!(keep(&pool, A, "n1", &attempt(SMALL, odd)).await, Kept::Added(1));
-		let times: Vec<(i64, i64)> = words_of(&pool, A, "n1").await.iter().map(|word| (word.start_ms, word.end_ms)).collect();
-		assert_eq!(times, [(0, 300), (900, 900)]);
+		let held: Vec<(i64, i64, Option<f64>)> = words_of(&pool, A, "n1").await.iter().map(|word| (word.start_ms, word.end_ms, word.p)).collect();
+		assert_eq!(
+			held,
+			[(0, 300, Some(1.0)), (900, 900, None)],
+			"a probability out of range is held to it, and one that is not a number is none"
+		);
+	}
+
+	/// A transcript filed under a model carries that model's words with how
+	/// sure it was of each (paulgsc/server#577), and a word heard before that
+	/// was kept reads as none.
+	#[tokio::test]
+	async fn a_models_words_read_back_with_how_sure_it_was() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		keep(&pool, A, "n1", &attempt(SMALL, heard("hello there"))).await;
+		let unsure = Outcome::Heard {
+			language: String::from("en"),
+			language_p: 0.99,
+			text: String::from("hello there"),
+			words: vec![
+				Word {
+					text: String::from("hello"),
+					start_ms: 0,
+					end_ms: 400,
+					p: Some(0.3),
+				},
+				Word {
+					text: String::from("there"),
+					start_ms: 500,
+					end_ms: 900,
+					p: None,
+				},
+			],
+		};
+		keep(&pool, A, "n1", &attempt(MEDIUM, unsure.clone())).await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(words_heard_by(&mut conn, A, "n1", SMALL).await.unwrap(), said("hello there"));
+		let Outcome::Heard { words, .. } = unsure else { unreachable!() };
+		assert_eq!(words_heard_by(&mut conn, A, "n1", MEDIUM).await.unwrap(), words);
+		assert_eq!(words_heard_by(&mut conn, A, "n1", "never").await.unwrap(), []);
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.
@@ -674,13 +745,16 @@ mod tests {
 		assert!(refused.unwrap_err().to_string().contains("append-only"), "no word is ever updated");
 		for insert in [
 			// A second word under a held index.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'ggml-small-q5_1.bin', 1, 'again', 2000, 2400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'ggml-small-q5_1.bin', 1, 'again', 2000, 2400, 0.9)",
 			// Ending before it began.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 500, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 500, 400, 0.9)",
 			// Before the note began.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', -1, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', -1, 400, 0.9)",
 			// A place before the first.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', -1, 'x', 0, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', -1, 'x', 0, 400, 0.9)",
+			// Surer than sure, or less than not at all.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, 1.5)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, -0.1)",
 		] {
 			assert!(sqlx::query(insert).execute(&pool).await.is_err(), "{insert}");
 		}

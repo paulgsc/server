@@ -412,9 +412,32 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	Ok(())
 }
 
-/// A transcript as the mailbox takes it: text, and nothing that points at
-/// audio.
-fn transcript_body(heard: &Heard) -> Vec<u8> {
+/// One heard word as the mailbox takes it (paulgsc/server#577, ST22): its
+/// text, when it was said in milliseconds from the note's start, and how
+/// sure the model was of it, left out where the model did not say.
+#[derive(serde::Serialize)]
+struct FiledWord<'a> {
+	text: &'a str,
+	#[serde(rename = "startMs")]
+	start_ms: i64,
+	#[serde(rename = "endMs")]
+	end_ms: i64,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	p: Option<f64>,
+}
+
+/// A transcript as the mailbox takes it: text, its words with their times
+/// and how sure the model was of each, and nothing that points at audio.
+fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec<u8> {
+	let words: Vec<FiledWord<'_>> = words
+		.iter()
+		.map(|word| FiledWord {
+			text: &word.text,
+			start_ms: word.start_ms,
+			end_ms: word.end_ms,
+			p: word.p,
+		})
+		.collect();
 	serde_json::json!({
 		"schema": TRANSCRIPT_SCHEMA,
 		"note": heard.note_id,
@@ -425,6 +448,7 @@ fn transcript_body(heard: &Heard) -> Vec<u8> {
 		"language": heard.language,
 		"model": heard.model,
 		"heardAt": heard.heard_at,
+		"words": words,
 	})
 	.to_string()
 	.into_bytes()
@@ -604,10 +628,15 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 /// As [`keep`], for a transcript filed under its note's next number, which
 /// is read in the same transaction.
 async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
-	let body = transcript_body(heard);
-	let sha256 = hex::encode(Sha256::digest(&body));
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// Read in the transaction that files, so the words are the ones the
+	// transcript was written with (they are written together, invariant 23).
+	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
+		.await
+		.map_err(mailbox_repo::MailboxError::Storage)?;
+	let body = transcript_body(heard, &words);
+	let sha256 = hex::encode(Sha256::digest(&body));
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
 	tx.commit().await?;
@@ -1032,6 +1061,25 @@ mod tests {
 		.execute(pool)
 		.await
 		.unwrap();
+		// Each word half a second long, as sure as its place in the text,
+		// except the last, heard before confidence was kept.
+		let words: Vec<&str> = text.split_whitespace().collect();
+		for (at, word) in words.iter().enumerate() {
+			let index = i64::try_from(at).unwrap();
+			let p: Option<f64> = (at + 1 < words.len()).then_some(0.1_f64.mul_add(f64::from(u8::try_from(at).unwrap()), 0.5));
+			sqlx::query("INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+				.bind(OWNER)
+				.bind(note)
+				.bind(model)
+				.bind(index)
+				.bind(word)
+				.bind(500 * index)
+				.bind(500 * index + 400)
+				.bind(p)
+				.execute(pool)
+				.await
+				.unwrap();
+		}
 	}
 
 	async fn outgoing_transcripts(pool: &SqlitePool) -> Vec<String> {
@@ -1061,8 +1109,13 @@ mod tests {
 				"language": "ko",
 				"model": "ggml-small-q5_1.bin",
 				"heardAt": "2026-10-25T03:12:00.000Z",
+				"words": [
+					{ "text": "다음", "startMs": 0, "endMs": 400, "p": 0.5 },
+					{ "text": "장면은", "startMs": 500, "endMs": 900, "p": 0.6 },
+					{ "text": "시장에서", "startMs": 1000, "endMs": 1400 },
+				],
 			}),
-			"text only, in the mailbox's shape: nothing that points at audio"
+			"text only, in the mailbox's shape, each word with its time and how sure the model was: nothing that points at audio"
 		);
 		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "filed and handed once");
 
