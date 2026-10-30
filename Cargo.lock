@@ -4059,6 +4059,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario_engine"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "game_scenarios",
+ "nfl_feed",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
