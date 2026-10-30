@@ -322,17 +322,38 @@ fn kick_result(text: &str) -> Kick {
 pub(crate) enum Turnover {
 	Interception,
 	Fumble,
+	OnDowns,
 }
 
 pub(crate) fn turnover(play: &Play) -> Option<Turnover> {
 	let text = text(play);
 	if text.contains("intercepted") || kind(play).contains("interception") {
-		return Some(Turnover::Interception);
+		Some(Turnover::Interception)
+	} else if lost_fumble(play, &text) {
+		Some(Turnover::Fumble)
+	} else {
+		on_downs(play).then_some(Turnover::OnDowns)
 	}
-	let offense = play.possession.as_deref()?.to_ascii_lowercase();
-	let at = text.find("recovered by ")? + "recovered by ".len();
-	let by = text[at..].split(['-', ' ']).next()?;
-	(text.contains("fumble") && by != offense).then_some(Turnover::Fumble)
+}
+
+fn lost_fumble(play: &Play, text: &str) -> bool {
+	let (Some(offense), Some(at)) = (play.possession.as_deref(), text.find("recovered by ")) else {
+		return false;
+	};
+	let by = text[at + "recovered by ".len()..].split(['-', ' ']).next();
+	text.contains("fumble") && by.is_some_and(|by| !by.eq_ignore_ascii_case(offense))
+}
+
+/// A fourth-down try from scrimmage that came up short: no kick, no score,
+/// and less gained than the line to gain. A wiped-out play gains nothing
+/// (`gain`), so it is never one.
+fn on_downs(play: &Play) -> bool {
+	play.down == Some(4)
+		&& is_snap(play)
+		&& !is_punt(play)
+		&& field_goal(play).is_none()
+		&& !is_touchdown(play)
+		&& play.distance.is_some_and(|distance| gain(play).is_some_and(|gained| gained < distance))
 }
 
 pub(crate) fn is_sack(play: &Play) -> bool {

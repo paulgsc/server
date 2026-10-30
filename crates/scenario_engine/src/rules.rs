@@ -334,6 +334,7 @@ impl<'s> Cx<'s> {
 				let how = match read::turnover(play)? {
 					Turnover::Interception => "threw an interception",
 					Turnover::Fumble => "lost a fumble",
+					Turnover::OnDowns => "turned it over on downs",
 				};
 				Some((100, words::turned_over(offense?, how)))
 			}
@@ -385,7 +386,7 @@ impl<'s> Cx<'s> {
 					"touchdown"
 				} else if read::field_goal(play).is_some() {
 					"field goal"
-				} else if !wiped_out && (read::turnover(play).is_some() || play.down == Some(4)) {
+				} else if !wiped_out && read::turnover(play).is_some() {
 					"empty"
 				} else {
 					return None;

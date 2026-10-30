@@ -379,3 +379,23 @@ fn a_game_called_off_before_it_was_played_offers_nothing() {
 		assert_eq!(o.strip.clock, "Not played");
 	}
 }
+
+#[test]
+fn a_fourth_down_that_comes_up_short_turns_it_over_on_downs() {
+	let plays = plays();
+	let short = plays.iter().position(|p| p.id == "401873010224").unwrap();
+	assert_eq!(plays[short].down, Some(4));
+	let o = just_after(&plays[..short], plays[short].clone());
+	let turnover = &o.just_happened.iter().find(|j| j.scenario == Scenario::Turnover).unwrap().line;
+	assert_eq!(turnover, "NE turned it over on downs");
+}
+
+#[test]
+fn a_fourth_down_converted_in_the_red_zone_leaves_the_trip_going() {
+	let plays = plays();
+	let made = plays.iter().position(|p| p.id == "4018730101368").unwrap();
+	assert_eq!(plays[made].down, Some(4));
+	let o = just_after(&plays[..made], plays[made].clone());
+	assert!(o.just_happened.iter().all(|j| !j.line.ends_with("red zone: empty")));
+	assert!(o.just_happened.iter().all(|j| j.scenario != Scenario::Turnover));
+}
