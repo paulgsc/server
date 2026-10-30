@@ -1,5 +1,3 @@
-x-environment: &root-env
-  REPO_ROOT: ${REPO_ROOT:-.} # default to current directory if not set externally
 include:
   - path: ./infra/compose/base.yml
   # - path: ./infra/compose/caddy.yml We set caddy at NIXOS sys level

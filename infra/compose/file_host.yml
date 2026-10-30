@@ -2,10 +2,18 @@ services:
   file-host:
     image: pgathondu/server:latest
     container_name: file-host-server
-    # Pass all variables from your .env file into the container, if present:
+    # The binary whose variables `make preflight` checks this service's
+    # environment against (infra/env/file_host.json, #504).
+    labels:
+      env-schema: file_host
     env_file:
-      - path: ${REPO_ROOT}/.env
-        required: false
+      # REPO_ROOT: this checkout's absolute path. Every service mounts files
+      # from under it. The repo's .env, all of it, reaches the container;
+      # required, because without it the container used to start on none of
+      # it, and with REPO_ROOT unset it bind-mounted /data, /config and /logs
+      # from the host's root (#407). HOST-SPECIFIC: wherever the checkout is.
+      - path: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/.env
+        required: true
     ports:
       # Box only: Caddy on the host serves it to the LAN, the phone included,
       # as https://file-host.home.maishatu.com (paulgsc/dotfiles,
@@ -30,9 +38,9 @@ services:
       # HOST-SPECIFIC: the nixos.local dev host's storage mount (#406). Any
       # other host must change this path (example.env's STORAGE is the same one).
       - /mnt/storage/users/dev/databases/hopium:/app/dbs
-      - ${REPO_ROOT}/data:/app/data:rw
-      - ${REPO_ROOT}/config:/app/config:ro
-      - ${REPO_ROOT}/logs:/app/logs:rw
+      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/data:/app/data:rw
+      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/config:/app/config:ro
+      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/logs:/app/logs:rw
       # The voice-note transcriber's models, read-only: the multilingual
       # Whisper model and the Silero VAD model `nix/whisper-manager`'s
       # `whisper fetch` downloads. TRANSCRIBE_MODEL and TRANSCRIBE_VAD_MODEL

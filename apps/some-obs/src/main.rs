@@ -8,13 +8,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let config = Config::parse();
 
 	tracing_subscriber::registry()
-		.with(tracing_subscriber::EnvFilter::try_new(&config.rust_log)?)
+		.with(tracing_subscriber::EnvFilter::try_new(&config.log.rust_log)?)
 		.with(tracing_subscriber::fmt::layer())
 		.init();
 
 	tracing::info!("🚀 Starting OBS NATS Service");
 
-	tracing::info!("📋 Configuration loaded - OBS , NATS: {}", config.nats_url);
+	tracing::info!("📋 Configuration loaded - OBS , NATS: {}", config.nats.nats_url);
 
 	// Create and run the service
 	let service = ObsNatsService::new(config).await?;

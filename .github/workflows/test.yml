@@ -61,6 +61,7 @@ jobs:
           PATTERNS: |
             infra/**
             docker-compose.yml
+            example.env
             scripts/check_scrape_inventory.py
 
     outputs:
@@ -161,6 +162,11 @@ jobs:
       # `include:` directives into the actual service set — see
       # infra/prometheus/inventory.yml's own header for why the check reads
       # that instead of hand-parsing the compose files.
+      # file_host's `env_file` requires the repo's .env (#407); example.env
+      # stands in for it, so this also checks that example.env resolves.
+      - name: Stand in example.env for .env
+        run: cp example.env .env
+
       - name: Validate docker compose config resolves
         run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
 

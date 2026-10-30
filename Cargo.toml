@@ -12,6 +12,7 @@ members = [
   "apps/playoff_delta_job",
 
   # crates (transitive deps of the apps above)
+  "crates/app-config",
   "crates/cursorium",
   "crates/db/activity",
   "crates/db/aph",
@@ -145,6 +146,7 @@ cursorium = { path = "crates/cursorium" }
 some-cache = { path = "crates/some-cache" }
 some-metrics = { path = "crates/some-metrics" }
 some-shutdown = { path = "crates/some-shutdown" }
+app-config = { path = "crates/app-config" }
 activity_repo = { path = "crates/db/activity" }
 aph_repo = { path = "crates/db/aph" }
 auth_repo = { path = "crates/db/auth" }

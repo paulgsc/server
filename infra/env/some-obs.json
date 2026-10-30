@@ -1,0 +1,90 @@
+{
+  "binary": "some-obs",
+  "about": "OBS automation application",
+  "variables": [
+    {
+      "name": "NATS_URL",
+      "group": "NATS",
+      "required": false,
+      "default": "nats://localhost:4222",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "The NATS server to connect to.\n\nThe default only works beside a NATS that publishes 4222 on the same machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see `some_transport::DEV_HOST_NATS_URL`. Every container sets it.",
+      "required_when": null
+    },
+    {
+      "name": "OBS_HOST",
+      "group": "OBS",
+      "required": false,
+      "default": "10.0.0.25",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "obs-websocket's host",
+      "required_when": null
+    },
+    {
+      "name": "OBS_PORT",
+      "group": "OBS",
+      "required": false,
+      "default": "4455",
+      "kind": "u16",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "obs-websocket's port",
+      "required_when": null
+    },
+    {
+      "name": "OBS_PASSWORD",
+      "group": "OBS",
+      "required": false,
+      "default": null,
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": true,
+      "help": "obs-websocket's server password. Empty means OBS has authentication off",
+      "required_when": null
+    },
+    {
+      "name": "HEALTH_CHECK_INTERVAL_SECS",
+      "group": "OBS",
+      "required": false,
+      "default": "30",
+      "kind": "seconds",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Seconds between checks that OBS is still connected. At least 1",
+      "required_when": null
+    },
+    {
+      "name": "SHUTDOWN_TIMEOUT_SECS",
+      "group": "Service",
+      "required": false,
+      "default": "10",
+      "kind": "seconds",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Seconds the service's tasks get to finish once it is told to stop",
+      "required_when": null
+    },
+    {
+      "name": "RUST_LOG",
+      "group": "Logging",
+      "required": false,
+      "default": "some_obs=info,obs_websocket=info,some_shutdown=info",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
+      "required_when": null
+    }
+  ]
+}

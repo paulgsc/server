@@ -1,4 +1,4 @@
-use crate::config::{OtelConfig, TraceSampler};
+use app_config::{OtelArgs, TraceSampler};
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -76,7 +76,7 @@ impl OtelGuard {
 	///
 	/// Fails when the OTLP exporter cannot be built, or `rust_log` does not
 	/// parse (`Config` has already refused one that does not).
-	pub fn new(config: &OtelConfig, rust_log: &str) -> Result<Self, ObservabilityError> {
+	pub fn new(config: &OtelArgs, rust_log: &str) -> Result<Self, ObservabilityError> {
 		let sampler = sampler(config);
 
 		let resource = Resource::builder()
@@ -142,7 +142,7 @@ impl Drop for OtelGuard {
 }
 
 /// The sampler `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` name.
-const fn sampler(config: &OtelConfig) -> Sampler {
+const fn sampler(config: &OtelArgs) -> Sampler {
 	match config.otel_traces_sampler {
 		TraceSampler::AlwaysOn => Sampler::AlwaysOn,
 		TraceSampler::AlwaysOff => Sampler::AlwaysOff,

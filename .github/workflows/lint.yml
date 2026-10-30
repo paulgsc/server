@@ -80,6 +80,18 @@ jobs:
           python3 scripts/check_artifact_retention.py --self-test
           python3 scripts/check_artifact_retention.py
 
+  # No path gate either: example.env is generated from infra/env/*.json and
+  # the compose files (ENV2, README.md, "Configuration"), and a hand edit of
+  # it or of a compose file can come with any kind of PR. Whether the JSON
+  # matches each binary's Config is `cargo test`'s part (test.yml).
+  env_schema:
+    name: Env schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: example.env is what its declarations generate
+        run: python3 scripts/env_schema.py --self-test example --check
+
   rust_lint:
     name: Rust lint
     runs-on: ubuntu-latest

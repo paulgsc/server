@@ -25,6 +25,7 @@ tokio-util = { workspace = true }
 dashmap = "6"
 
 # Config
+app-config = { workspace = true }
 clap = { workspace = true }
 
 # Logging

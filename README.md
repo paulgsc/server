@@ -113,7 +113,21 @@ through one clap `Config`, in its `config.rs`, and nowhere else (#410, #484).
 `<binary> --help` lists every variable it reads, with its default. A value
 that does not parse stops the binary at start with an error naming the
 variable; it never becomes the default. Libraries read no environment: they
-take their config from the binary that uses them.
+take their config from the binary that uses them. A variable more than one
+binary reads (`NATS_URL`, `RUST_LOG`, the `OTEL_*` ones) is declared once, in
+[`crates/app-config`](./crates/app-config), and flattened into each `Config`
+that reads it (#405).
+
+That one declaration is also readable without starting anything (#503). Each
+binary's tests hold a copy of its `Config`'s schema in
+[`infra/env/<binary>.json`](./infra/env): every variable, whether it is
+required, its default, its kind, its help, and whether it is a secret (its
+value hidden, `hide_env_values`). [`example.env`](./example.env) is generated
+from those copies and the compose files' `${...}` variables by
+[`scripts/env_schema.py`](./scripts/env_schema.py); nobody writes a list of
+variables by hand. `make env-schema` regenerates both after a `Config` or a
+compose file changes; `make env` lists every variable the stack reads and
+whether `.env` sets it.
 
 - **ENV1: a variable that does not parse stops its binary at start, by name.**
   - _Claim:_ every environment variable this workspace's own code reads is
@@ -141,6 +155,61 @@ take their config from the binary that uses them.
     their own that no `Config` declares, with their own fallbacks: tokio's
     `TOKIO_WORKER_THREADS`, polars' `POLARS_MAX_THREADS`, and the OTel SDK's
     `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_BSP_*`.
+
+- **ENV2: the schema, `example.env` and each binary's `Config` agree.**
+  - _Claim:_ `infra/env/<binary>.json` is what that binary's `Config`
+    declares, and `example.env` is what `scripts/env_schema.py` writes from
+    those files and the compose files; neither can fall behind its source.
+  - _Family:_ every binary with a `Config`; every variable it declares and
+    every `${...}` the compose files interpolate; a changed name, default,
+    help, kind or secrecy; a hand edit of either generated file.
+  - _Proof:_ each `Config`'s `the_checked_in_schema_is_this_config` compares
+    the file with `app_config::schema` of the `Config` (`cargo test`), and
+    `Lint`'s `Env schema` job runs `env_schema.py example --check`.
+  - _Tolerance:_ clap cannot see a requirement that depends on another
+    variable (`WEBAUTHN_RP_ID` while `AUTH_ENABLED` is on). The binary checks
+    it at start, and declares it beside its `Config` (file_host's
+    `REQUIRED_WHEN`) for the schema; that list agrees with the start-up checks
+    by review, not by a test.
+
+### Deploying the stack
+
+On the host, from the checkout (#504):
+
+```bash
+cp example.env .env          # first time only
+make preflight FILL=1        # names every gap at once, and asks for each
+make up                      # the preflight again, then docker compose up -d
+```
+
+The preflight reads `docker compose config` as compose will, interpolating
+each service's environment from `.env` and the shell, and checks every
+service labelled `env-schema` against that binary's schema. It names every
+required variable that is missing and every value its binary would refuse at
+start, all in one pass (including the ones required only while another is
+on, such as the mailbox's while `MAILBOX_ENABLED`), and exits non-zero if
+there is any, so `make up`
+never starts on a known gap. It also warns about each `.env` line nothing
+reads: a renamed or retired variable is otherwise ignored without a word.
+A `${NAME:?}` in any compose file stops every service, not only its own,
+because compose interpolates the whole project before it starts one; the
+preflight names those too.
+
+- **ENV3: the preflight names every gap before anything starts.**
+  - _Claim:_ given an `.env`, `make preflight` lists every variable a
+    labelled service's binary requires and is not given, every value it
+    would refuse, and every required compose variable unset, in one run, and
+    exits 1 when there is any.
+  - _Family:_ every service labelled `env-schema`; given by `.env`, by the
+    service's own `environment:`, or by the shell; unset, or empty or of the
+    wrong kind where its binary refuses that (an empty value is set: clap
+    hands it to the parser, which takes it as text and refuses it as a
+    number or a switch); required always, or while another variable is on.
+  - _Proof:_ `env_schema.py --self-test` (`Lint`'s `Env schema` job).
+  - _Tolerance:_ a free-text value (a URL, a key, a path) and a condition on
+    another variable are checked by the binary at start, as ENV1 and ENV2
+    say. A container without the label (the third-party ones) is checked
+    only for the compose variables it interpolates.
 
 ### Host-specific values
 
