@@ -192,14 +192,26 @@ pub(crate) fn is_snap(play: &Play) -> bool {
 		&& !["timeout", "end ", "end of", "warning", "kickoff", "coin toss"].iter().any(|word| kind.contains(word))
 }
 
+/// Words in a touchdown's text that begin its try.
+const TRY_WORDS: [&str; 3] = ["extra point", "two-point", "kick is"];
+
+/// A play a flag wiped out: "No Play" before any try, so a flag on the
+/// try alone leaves its touchdown standing. Every outcome below reads a
+/// wiped-out play as having none.
+pub(crate) fn wiped_out(play: &Play) -> bool {
+	let text = text(play);
+	let end = TRY_WORDS.iter().filter_map(|word| text.find(word)).min().unwrap_or(text.len());
+	text[..end].contains("no play")
+}
+
 pub(crate) fn is_touchdown(play: &Play) -> bool {
-	kind(play).contains("touchdown") || text(play).contains("touchdown")
+	!wiped_out(play) && (kind(play).contains("touchdown") || text(play).contains("touchdown"))
 }
 
 /// A touchdown whose try is not in the log yet.
 pub(crate) fn try_pending(play: &Play) -> bool {
 	let text = text(play);
-	is_touchdown(play) && !["extra point", "two-point", "kick is"].iter().any(|word| text.contains(word))
+	is_touchdown(play) && !TRY_WORDS.iter().any(|word| text.contains(word))
 }
 
 /// How a touchdown's try went, as far as its text says.
@@ -284,6 +296,9 @@ pub(crate) fn penalty(play: &Play) -> Option<(String, Option<String>)> {
 
 /// How a field goal went, and from how far.
 pub(crate) fn field_goal(play: &Play) -> Option<(Kick, Option<i64>)> {
+	if wiped_out(play) {
+		return None;
+	}
 	let text = text(play);
 	let at = text.find("yard field goal").or_else(|| text.find("field goal"))?;
 	let distance = text[..at].trim_end().rsplit(' ').next().and_then(|word| word.parse().ok());
@@ -327,7 +342,9 @@ pub(crate) enum Turnover {
 
 pub(crate) fn turnover(play: &Play) -> Option<Turnover> {
 	let text = text(play);
-	if text.contains("intercepted") || kind(play).contains("interception") {
+	if wiped_out(play) {
+		None
+	} else if text.contains("intercepted") || kind(play).contains("interception") {
 		Some(Turnover::Interception)
 	} else if lost_fumble(play, &text) {
 		Some(Turnover::Fumble)
@@ -357,7 +374,7 @@ fn on_downs(play: &Play) -> bool {
 }
 
 pub(crate) fn is_sack(play: &Play) -> bool {
-	kind(play) == "sack" || text(play).contains(" sacked")
+	!wiped_out(play) && (kind(play) == "sack" || text(play).contains(" sacked"))
 }
 
 /// The team of the player an injury note names, from "NE-K.Byard has

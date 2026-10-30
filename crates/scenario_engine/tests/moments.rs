@@ -399,3 +399,17 @@ fn a_fourth_down_converted_in_the_red_zone_leaves_the_trip_going() {
 	assert!(o.just_happened.iter().all(|j| !j.line.ends_with("red zone: empty")));
 	assert!(o.just_happened.iter().all(|j| j.scenario != Scenario::Turnover));
 }
+
+#[test]
+fn a_touchdown_called_back_by_a_flag_is_no_score() {
+	let plays = plays();
+	let td = plays.iter().position(|p| p.id == "401873010832").unwrap();
+	let mut called_back = plays[td].clone();
+	let text = td_before_the_try(&plays[td]).text.unwrap();
+	called_back.text = Some(text + " PENALTY on CHI-D.Wright, Offensive Holding, 10 yards, enforced at NE 20 - No Play.");
+	called_back.home_score = plays[td - 1].home_score;
+	called_back.away_score = plays[td - 1].away_score;
+	let o = just_after(&plays[..td], called_back);
+	assert!(!ids(&o).contains(&"in.two-point"));
+	assert!(o.just_happened.iter().all(|j| !j.line.contains("touchdown")));
+}

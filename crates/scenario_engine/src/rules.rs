@@ -327,10 +327,10 @@ impl<'s> Cx<'s> {
 		let play = self.so_far.plays[i].play;
 		let snap = read::is_snap(play);
 		let offense = play.possession.as_deref();
-		let wiped_out = read::text(play).contains("no play");
+		let wiped_out = read::wiped_out(play);
 		let situation = || Some(words::down_distance(play.down?, play.distance?, play.yards_to_endzone));
 		match moment {
-			Moment::Turnover if !wiped_out => {
+			Moment::Turnover => {
 				let how = match read::turnover(play)? {
 					Turnover::Interception => "threw an interception",
 					Turnover::Fumble => "lost a fumble",
@@ -386,7 +386,7 @@ impl<'s> Cx<'s> {
 					"touchdown"
 				} else if read::field_goal(play).is_some() {
 					"field goal"
-				} else if !wiped_out && read::turnover(play).is_some() {
+				} else if read::turnover(play).is_some() {
 					"empty"
 				} else {
 					return None;
