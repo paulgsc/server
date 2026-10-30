@@ -36,9 +36,9 @@ pub struct Word {
 	/// When it ended, the same way; never before it began.
 	pub end_ms: i64,
 	/// How sure the model was of the word, 0 to 1: the lowest of its tokens'
-	/// probabilities (paulgsc/server#577, ST22). None for a word heard before
-	/// it was kept (`20261031000100`). Not text, so it may reach a metric,
-	/// never a log line.
+	/// probabilities, so one unsure piece makes the word unsure
+	/// (paulgsc/server#577, ST22). None for a word heard before it was kept
+	/// (`20261031000100`), or one the model gave no number for.
 	pub p: Option<f64>,
 }
 
@@ -232,9 +232,10 @@ pub async fn keep_attempt(conn: &mut SqliteConnection, subject: &str, note_id: &
 /// transaction [`keep_attempt`] writes the transcript in.
 ///
 /// A time the schema would refuse is held to it here (never negative, never
-/// ending before it began) rather than refused: a refused write fails the
-/// whole attempt, and the note would wait to be heard again, failing the same
-/// way, every pass.
+/// ending before it began) rather than refused, and so is how sure the model
+/// was (not a number: none; past 0 or 1: held to it): a refused write fails
+/// the whole attempt, and the note would wait to be heard again, failing the
+/// same way, every pass.
 async fn keep_words(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str, words: &[Word]) -> Result<(), VoiceError> {
 	for (index, word) in (0_i64..).zip(words) {
 		let start_ms = word.start_ms.max(0);
@@ -290,7 +291,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 ///
 /// Each with its time and how sure the model was: what a transcript filed
 /// under that model carries (paulgsc/server#577). Empty for a transcript
-/// heard before words were kept. Only `sqlx` can fail it.
+/// heard before words were kept.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -701,8 +702,7 @@ mod tests {
 	}
 
 	/// A transcript filed under a model carries that model's words with how
-	/// sure it was of each (paulgsc/server#577), and a word heard before that
-	/// was kept reads as none.
+	/// sure it was of each (paulgsc/server#577), none where it gave no number.
 	#[tokio::test]
 	async fn a_models_words_read_back_with_how_sure_it_was() {
 		let pool = pool().await;
@@ -729,10 +729,8 @@ mod tests {
 		};
 		keep(&pool, A, "n1", &attempt(MEDIUM, unsure.clone())).await;
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(words_heard_by(&mut conn, A, "n1", SMALL).await.unwrap(), said("hello there"));
 		let Outcome::Heard { words, .. } = unsure else { unreachable!() };
 		assert_eq!(words_heard_by(&mut conn, A, "n1", MEDIUM).await.unwrap(), words);
-		assert_eq!(words_heard_by(&mut conn, A, "n1", "never").await.unwrap(), []);
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.

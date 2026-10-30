@@ -6,6 +6,5 @@
 --
 -- Nullable: a word heard before this column existed has none, and is never
 -- given one (the table is append-only; a better model's hearing adds rows of
--- its own). Where it is set it is 0 to 1. Not text, so it may reach a
--- metric, never a log line (docs/identity.md invariant 23).
+-- its own). Where it is set it is 0 to 1 (docs/identity.md invariant 23).
 ALTER TABLE voice_transcript_word ADD COLUMN p REAL CHECK (p IS NULL OR (p >= 0 AND p <= 1));

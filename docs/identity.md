@@ -856,11 +856,10 @@ nowhere is marked as such and belongs to review.
     output is discarded, and a pass logs only how many attempts of each kind
     it kept. The text leaves home only as a transcript filed for the Jobs
     mailbox (invariant 19), for the routines to read, and since
-    paulgsc/server#577 that file carries the words too, each with its time
-    and how sure the model was (`words`, read in the transaction that files,
-    so they are the ones the transcript was written with); the words are
-    readable by no route yet, and the audio never leaves. A probability is
-    not text, so it may reach a metric, never a log line.
+    paulgsc/server#577 that file carries that model's words too, each with
+    its time and how sure the model was (`words`); the words are readable by
+    no route yet, and the audio never leaves. A probability is not text, so
+    it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,

@@ -630,8 +630,6 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	// Read in the transaction that files, so the words are the ones the
-	// transcript was written with (they are written together, invariant 23).
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
 		.await
 		.map_err(mailbox_repo::MailboxError::Storage)?;

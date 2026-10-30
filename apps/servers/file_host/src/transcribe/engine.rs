@@ -369,9 +369,8 @@ struct Spoken {
 	text: String,
 	start_ms: i64,
 	end_ms: i64,
-	/// How sure Whisper was of the word: the lowest of its tokens'
-	/// probabilities, so one unsure piece makes the word unsure
-	/// (paulgsc/server#577, ST22). Held to 0 to 1.
+	/// How sure Whisper was of the word, as its tokens reported it
+	/// (`voice_repo::transcript::Word::p` says what is kept).
 	p: f64,
 }
 
@@ -380,7 +379,7 @@ struct Spoken {
 /// and the `,` after it). Special tokens are left out, and so is a word with
 /// no text once trimmed. A word runs from its first token's start to its last
 /// token's end, as Whisper timed them, and is as sure as its least sure
-/// token.
+/// token (a token with no probability is left out of that).
 fn words(tokens: &[Token]) -> Vec<Spoken> {
 	let mut words = Vec::new();
 	let mut word: Option<(Vec<u8>, i64, i64, f32)> = None;
@@ -392,20 +391,19 @@ fn words(tokens: &[Token]) -> Vec<Spoken> {
 				text,
 				start_ms: from_cs.saturating_mul(10),
 				end_ms: to_cs.saturating_mul(10),
-				p: f64::from(p.clamp(0.0, 1.0)),
+				p: f64::from(p),
 			});
 		}
 	};
 	for token in tokens.iter().filter(|token| !token.special) {
-		// A probability whisper.cpp did not give (NaN) counts as none at all.
-		let p = if token.p.is_nan() { 0.0 } else { token.p };
 		match &mut word {
 			Some((bytes, _, end_cs, surest)) if !token.bytes.starts_with(b" ") => {
 				bytes.extend_from_slice(&token.bytes);
 				*end_cs = token.end_cs;
-				*surest = surest.min(p);
+				// `min` passes over a NaN on either side.
+				*surest = surest.min(token.p);
 			}
-			_ => close(word.replace((token.bytes.clone(), token.start_cs, token.end_cs, p))),
+			_ => close(word.replace((token.bytes.clone(), token.start_cs, token.end_cs, token.p))),
 		}
 	}
 	close(word);
@@ -812,22 +810,14 @@ mod tests {
 		);
 	}
 
-	/// A word is as sure as its least sure token (paulgsc/server#577): one
-	/// unsure piece makes the word unsure, and a probability whisper.cpp did
-	/// not give, or gave out of range, is held to 0 to 1.
+	/// A word is as sure as its least sure token (paulgsc/server#577); what
+	/// whisper.cpp reports passes through as it is, for `voice_repo` to hold.
 	#[test]
 	fn a_word_is_as_sure_as_its_least_sure_token() {
 		let sure = |text: &str, p: f32| Token { p, ..token(text, 0, 10) };
-		let tokens = [
-			sure(" par", 0.95),
-			sure("ticle", 0.4),
-			sure(",", 0.99),
-			sure(" sure", 0.8),
-			sure(" odd", f32::NAN),
-			sure(" over", 1.5),
-		];
+		let tokens = [sure(" par", 0.95), sure("ticle", 0.4), sure(",", f32::NAN), sure(" sure", 0.8), sure(" over", 1.5)];
 		let p: Vec<f64> = words(&tokens).into_iter().map(|word| word.p).collect();
-		assert_eq!(p, [0.4_f32.into(), 0.8_f32.into(), 0.0, 1.0]);
+		assert_eq!(p, [0.4_f32.into(), 0.8_f32.into(), 1.5]);
 	}
 
 	#[test]
