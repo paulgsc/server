@@ -1,0 +1,29 @@
+[package]
+name = "scenario_engine"
+description = "What can be happening now in an NFL game, and what just happened, as game-week scenarios: pure, time is an argument"
+categories = ["algorithms"]
+keywords = ["nfl", "scenarios", "play-by-play"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+game_scenarios = { workspace = true }
+nfl_feed = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+# Its tests are the integration tests in `tests/`.
+test = false
