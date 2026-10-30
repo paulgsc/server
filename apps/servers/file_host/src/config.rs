@@ -474,8 +474,9 @@ pub struct Config {
 	#[arg(long, default_value = "3000", help = "Port to check for health endpoint")]
 	pub health_check_port: u16,
 
-	/// Host for health check (defaults to localhost)
-	#[arg(long, default_value = "127.0.0.1", help = "Host to check for health endpoint")]
+	/// Loopback host for the health check (defaults to 127.0.0.1); any other
+	/// is refused, since it asks over plain HTTP (`health`).
+	#[arg(long, default_value = "127.0.0.1", help = "Loopback host to check for the readiness endpoint")]
 	pub health_check_host: String,
 }
 

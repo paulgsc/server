@@ -9,9 +9,13 @@ services:
     restart: unless-stopped
     environment:
       - REDIS_ADDR=redis://some-redis:6379
+    # A watcher starts once what it watches has started, never waits for it
+    # to be healthy: a Redis that is down is what this reports
+    # (`redis_up 0`), not a reason to report nothing. Held by
+    # scripts/check_scrape_inventory.py.
     depends_on:
       redis:
-        condition: service_healthy
+        condition: service_started
     mem_limit: 128M
     cpus: 0.25
     pids_limit: 20
@@ -102,11 +106,16 @@ services:
       - '--storage.tsdb.retention.size=10GB'
       - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
+    # Started, never healthy: Prometheus is how anything unhealthy is seen
+    # and alerted on (rules/home.yml). Waiting on file-host's health meant a
+    # file_host that was only degraded, or down, also took Prometheus, every
+    # dashboard and every alert with it (2026-10-30, some-ui#2199). Held by
+    # scripts/check_scrape_inventory.py.
     depends_on:
       file-host:
-        condition: service_healthy
+        condition: service_started
       nats-exporter:
-        condition: service_healthy
+        condition: service_started
       redis-exporter:
         condition: service_started
     mem_limit: 2G
@@ -152,9 +161,12 @@ services:
       # The address browsers use, for links, redirects and the login page;
       # without it Grafana builds them from its own :3000.
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-https://grafana.home.maishatu.com/}
+    # Started, never healthy, as Prometheus above: an unreachable Prometheus
+    # is a datasource error Grafana alerts on (home-alerts.yml's
+    # execErrState), which it can only do while it runs.
     depends_on:
       prometheus:
-        condition: service_healthy
+        condition: service_started
       dashboard-builder:
         condition: service_completed_successfully
     mem_limit: 1G
