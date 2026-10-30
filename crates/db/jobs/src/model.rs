@@ -211,6 +211,14 @@ pub enum Event {
 		on: String,
 		note: String,
 	},
+	/// An outcome I said and take back, named by the phone's id for it: it
+	/// was a mistake, or it no longer stands. The outcome stays in the record.
+	#[serde(rename_all = "camelCase")]
+	OutcomeWithdrawn {
+		id: String,
+		at: String,
+		outcome_id: String,
+	},
 	Disagree {
 		id: String,
 		at: String,
@@ -255,6 +263,7 @@ impl Event {
 			| Self::Read { id, .. }
 			| Self::Debrief { id, .. }
 			| Self::Outcome { id, .. }
+			| Self::OutcomeWithdrawn { id, .. }
 			| Self::Disagree { id, .. }
 			| Self::Scout { id, .. }
 			| Self::Shared { id, .. }
@@ -275,6 +284,7 @@ impl Event {
 			| Self::Read { at, .. }
 			| Self::Debrief { at, .. }
 			| Self::Outcome { at, .. }
+			| Self::OutcomeWithdrawn { at, .. }
 			| Self::Disagree { at, .. }
 			| Self::Scout { at, .. }
 			| Self::Shared { at, .. }
@@ -380,6 +390,21 @@ fn scout_ok(problems: &mut Vec<Problem>, scout: &Scout) {
 	}
 }
 
+/// Problems with a share: the day, the file it went out as, how far into the
+/// log it reaches, and the voice notes it carried.
+fn shared_ok(problems: &mut Vec<Problem>, day: &str, file: &str, through: i64, voice: &[String]) {
+	if !is_day(day) {
+		problems.push(("day", "must be a calendar day, YYYY-MM-DD"));
+	}
+	if !is_file_name(file) {
+		problems.push(("file", "must be a .json file name, at most 128 characters"));
+	}
+	if through < 0 {
+		problems.push(("through", "is a count of events, 0 or more"));
+	}
+	voice_ok(problems, voice, MAX_SHARED_VOICE);
+}
+
 /// The problems with one event's payload, by its type.
 fn payload(event: &Event, problems: &mut Vec<Problem>) {
 	match event {
@@ -452,6 +477,11 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 			}
 			note_ok(problems, "note", note);
 		}
+		Event::OutcomeWithdrawn { outcome_id, .. } => {
+			if !is_event_id(outcome_id) {
+				problems.push(("outcomeId", "must be the phone's id for an outcome"));
+			}
+		}
 		Event::Disagree { day, fingerprint, note, .. } => {
 			if !is_day(day) {
 				problems.push(("day", "must be a calendar day, YYYY-MM-DD"));
@@ -463,18 +493,7 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 			scout_ok(problems, scout);
 			voice_ok(problems, voice, MAX_VOICE);
 		}
-		Event::Shared { day, file, through, voice, .. } => {
-			if !is_day(day) {
-				problems.push(("day", "must be a calendar day, YYYY-MM-DD"));
-			}
-			if !is_file_name(file) {
-				problems.push(("file", "must be a .json file name, at most 128 characters"));
-			}
-			if *through < 0 {
-				problems.push(("through", "is a count of events, 0 or more"));
-			}
-			voice_ok(problems, voice, MAX_SHARED_VOICE);
-		}
+		Event::Shared { day, file, through, voice, .. } => shared_ok(problems, day, file, *through, voice),
 		Event::Arrived { share_id, .. } => {
 			if !is_event_id(share_id) {
 				problems.push(("shareId", "must be the phone's id for a share"));
@@ -559,6 +578,7 @@ mod tests {
 			debrief(),
 			unsaid,
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "outcome", "fingerprint": "a|b|c", "event": "no-reply-30d", "on": "2026-11-17", "note": "" }),
+			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "outcome-withdrawn", "outcomeId": "e0" }),
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "disagree", "day": "2026-10-18", "fingerprint": "a|b|c", "note": "I'd take it" }),
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
 				"id": "sc-a1b2c3d4", "url": "https://www.indeed.com/viewjob?jk=0123", "title": "SDET · Second Dinner",
@@ -645,6 +665,8 @@ mod tests {
 		let shared =
 			json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "shared", "kind": "scouts", "day": "2026-10-18", "file": "../scouts.txt", "through": -1, "voice": [] });
 		assert_eq!(fields("e1", &shared), ["file", "through"]);
+		let withdrawn = json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "outcome-withdrawn", "outcomeId": "../e0" });
+		assert_eq!(fields("e1", &withdrawn), ["outcomeId"], "it names an outcome by the phone's id for it");
 	}
 
 	#[test]
