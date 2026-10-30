@@ -986,6 +986,30 @@ mod tests {
 		);
 	}
 
+	/// A Studio take's transcript is filed as any note's is, said for
+	/// `studio` (paulgsc/server#552).
+	#[tokio::test]
+	async fn a_studio_takes_transcript_is_filed_like_any_note() {
+		let pool = pool().await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 't1', 'studio', 'build-journal-ep04:s3:2', '2026-10-30T18:20:00.000Z', 'audio/mp4', 1, 's', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		heard(&pool, A, ("t1", "small", 1), "heard", Some("shot three, take two"), "2026-10-30T18:22:00.000Z").await;
+		let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
+		assert_eq!(
+			all
+				.iter()
+				.map(|heard| (heard.note_id.as_str(), heard.of_kind.as_str(), heard.of_ref.as_str()))
+				.collect::<Vec<_>>(),
+			[("t1", "studio", "build-journal-ep04:s3:2")]
+		);
+	}
+
 	#[tokio::test]
 	async fn each_transcript_of_a_note_takes_the_next_number_once() {
 		let pool = pool().await;

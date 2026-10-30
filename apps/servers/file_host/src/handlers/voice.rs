@@ -91,6 +91,8 @@ fn refusal(err: VoiceError) -> FileHostError {
 ///
 /// A game bite (`of=game`, `ref` the game's id) also says its bite's fields
 /// (`voice_repo::SaidBite`), stored beside the note in the same transaction.
+/// A Studio take (`of=studio`, `ref` the take as `<project>:<shot>:<take>`)
+/// says nothing more, as a reflection does; a redo is a new note.
 ///
 /// `BEGIN IMMEDIATE`, so the phone's choice, the read that decides and both
 /// writes see one snapshot.
@@ -387,6 +389,36 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(held, ["n1", "n2", "n3", "n4"], "nothing refused was written, and what home took before the stop stays");
+	}
+
+	/// A Studio take is sent home as any note is, and is held said for
+	/// `studio`; its own rules are `voice_repo`'s tests.
+	#[tokio::test]
+	async fn a_studio_take_reaches_home_as_a_note() {
+		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=build-journal-ep04:s3:2&at=2026-10-30T18:20:00Z";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+
+		let (status, answer) = put(&app, TAKE_PATH, Some(&phone), "audio/mp4", TAKE).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+		assert_eq!(
+			answer,
+			json!({
+				"change": "added",
+				"note": {
+					"id": "t1", "of": "studio", "ref": "build-journal-ep04:s3:2", "at": "2026-10-30T18:20:00.000Z",
+					"contentType": "audio/mp4", "size": TAKE.len(), "sha256": TAKE_SHA256
+				}
+			})
+		);
+		let held: (String, String) = sqlx::query_as("SELECT of_kind, of_ref FROM voice_note WHERE subject_id = ?1 AND note_id = 't1'")
+			.bind(A)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(held, (String::from("studio"), String::from("build-journal-ep04:s3:2")));
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

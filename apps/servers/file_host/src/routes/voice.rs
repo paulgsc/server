@@ -11,6 +11,8 @@
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
 //! and whose answer's `note` carries it as `bite`.
+//! A Studio take is a note said for `studio`, its `ref` the take
+//! (`<project>:<shot>:<take>`), and carries nothing more.
 //!
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an

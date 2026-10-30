@@ -9,7 +9,10 @@ said about and what the screen showed is `game_bite`'s row beside it, written
 with the note
 (`migrations/20261028000100_add_game_bite_to_voice_note.up.sql`; a bite said
 first may keep the scenario picked after it since
-`migrations/20261028000300_let_a_said_first_bite_keep_its_scenario.up.sql`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
+`migrations/20261028000300_let_a_said_first_bite_keep_its_scenario.up.sql`). A
+Studio take is a voice note said for `studio`, its `ref` the take
+(`<project>:<shot>:<take>`), with nothing beside it; a redo is a new note
+(`migrations/20261030000100_add_studio_to_voice_note.up.sql`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
 `migrations/20261025000100_create_voice_note.up.sql` and
 `migrations/20261025000200_create_voice_transcript.up.sql`, and in
 `docs/identity.md`, invariant 23.
