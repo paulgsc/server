@@ -27,6 +27,14 @@
 //! Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
 //! noise.
 //!
+//! **Each word keeps its time** (paulgsc/some-ui#2085, GWB11). Whisper
+//! times each token it hears ([`FullParams::set_token_timestamps`]); its
+//! tokens are pieces of words, so [`words`] joins them into words on the
+//! space that opens each, leaving out whisper.cpp's special tokens (its
+//! `[_BEG_]` and timestamps), and [`Cut::in_note`] moves each time from the
+//! speech the VAD cut out to the note itself, so a word's time is from the
+//! note's start, where captions over its audio need it.
+//!
 //! **Nothing heard is logged.** whisper.cpp's own log goes nowhere
 //! (`whisper_rs::install_logging_hooks` with no log backend), ffmpeg's output
 //! is discarded, and this module returns an outcome, never a message.
@@ -36,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use voice_repo::transcript::Outcome;
+use voice_repo::transcript::{Outcome, Word};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
 /// Whisper hears 16 kHz mono.
@@ -153,25 +161,32 @@ impl Whisper {
 		})
 	}
 
-	/// The speech in `pcm`, as the VAD finds it, run end to end; empty when
-	/// it finds none.
-	fn speech(&self, pcm: &[f32]) -> Option<Vec<f32>> {
+	/// The speech in `pcm`, as the VAD finds it, run end to end, and where
+	/// each piece of it was cut from; empty when it finds none.
+	fn speech(&self, pcm: &[f32]) -> Option<(Vec<f32>, Vec<Cut>)> {
 		let mut vad = WhisperVadContext::new(&self.vad_model, vad_context(self.threads).ok()?).ok()?;
 		let segments = vad.segments_from_samples(WhisperVadParams::new(), pcm).ok()?;
 		let mut speech = Vec::new();
+		let mut cuts = Vec::new();
 		for segment in segments {
 			// Centiseconds to samples.
 			let at = |centiseconds: f32| sample_at(centiseconds, pcm.len());
 			let (start, end) = (at(segment.start), at(segment.end));
 			if start < end {
+				cuts.push(Cut {
+					speech_at: speech.len(),
+					note_at: start,
+					len: end - start,
+				});
 				speech.extend_from_slice(&pcm[start..end]);
 			}
 		}
-		Some(speech)
+		Some((speech, cuts))
 	}
 
-	/// What Whisper hears in `speech`, by `deadline`.
-	fn transcribe(&self, speech: &[f32], deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
+	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
+	/// `deadline`.
+	fn transcribe(&self, speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
 		let failed = |cancel: &CancellationToken| {
 			if cancel.is_cancelled() {
 				Err(Cancelled)
@@ -217,6 +232,9 @@ impl Whisper {
 		// faster-whisper's defaults have it; without this, a note's last words
 		// drift into stock phrases.
 		params.set_suppress_nst(true);
+		// A time for each token, which [`words`] gathers into words. It times
+		// what was decoded and changes none of it.
+		params.set_token_timestamps(true);
 		let watch = Watch { deadline, cancel };
 		// SAFETY: `should_abort` reads its data as a `Watch`, and `watch` lives
 		// on this stack, unmoved, until `full` below returns; `full` is the one
@@ -229,6 +247,8 @@ impl Whisper {
 			return failed(cancel);
 		}
 		let mut text = String::new();
+		let mut heard = Vec::new();
+		let special = self.context.token_eot();
 		for segment in state.as_iter() {
 			let Ok(said) = segment.to_str_lossy() else {
 				return Ok(Outcome::Failed);
@@ -240,14 +260,46 @@ impl Whisper {
 				}
 				text.push_str(said);
 			}
+			let mut tokens = Vec::new();
+			for n in 0..segment.n_tokens() {
+				let Some(token) = segment.get_token(n) else {
+					return Ok(Outcome::Failed);
+				};
+				let Ok(bytes) = token.to_bytes() else {
+					return Ok(Outcome::Failed);
+				};
+				let data = token.token_data();
+				tokens.push(Token {
+					bytes: bytes.to_vec(),
+					// whisper.cpp's own test for what its text leaves out:
+					// every special token's id is at or past end-of-text.
+					special: token.token_id() >= special,
+					start_cs: data.t0,
+					end_cs: data.t1,
+				});
+			}
+			heard.extend(words(&tokens));
 		}
 		if text.is_empty() {
 			return Ok(Outcome::Silent);
 		}
+		let words = heard
+			.into_iter()
+			.map(|said| Word {
+				text: said.text,
+				start_ms: Cut::in_note(cuts, said.start_ms, Edge::Start),
+				end_ms: Cut::in_note(cuts, said.end_ms, Edge::End),
+			})
+			.map(|word| Word {
+				end_ms: word.end_ms.max(word.start_ms),
+				..word
+			})
+			.collect();
 		Ok(Outcome::Heard {
 			language: language.to_owned(),
 			language_p: f64::from(*probability),
 			text,
+			words,
 		})
 	}
 }
@@ -270,7 +322,7 @@ impl Hear for Whisper {
 		};
 		let duration_ms = i64::try_from(pcm.len() * 1000 / SAMPLE_RATE).ok();
 		let heard = |outcome| Heard { outcome, duration_ms };
-		let Some(speech) = self.speech(&pcm) else {
+		let Some((speech, cuts)) = self.speech(&pcm) else {
 			return Ok(heard(Outcome::Failed));
 		};
 		if speech.is_empty() {
@@ -282,7 +334,99 @@ impl Hear for Whisper {
 		if Instant::now() >= deadline {
 			return Ok(heard(Outcome::Deadline));
 		}
-		self.transcribe(&speech, deadline, cancel).map(heard)
+		self.transcribe(&speech, &cuts, deadline, cancel).map(heard)
+	}
+}
+
+/// One token Whisper heard, as whisper.cpp gives it: a piece of a word (or a
+/// special token), timed in centiseconds into the speech it heard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Token {
+	/// Its text's bytes. A piece of a Korean syllable can be a token of its
+	/// own, so these are joined before they are read as UTF-8.
+	bytes: Vec<u8>,
+	/// One of whisper.cpp's own (`[_BEG_]`, a timestamp, end-of-text): never
+	/// part of what was said.
+	special: bool,
+	start_cs: i64,
+	end_cs: i64,
+}
+
+/// A word Whisper heard, timed in milliseconds into the speech it heard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Spoken {
+	text: String,
+	start_ms: i64,
+	end_ms: i64,
+}
+
+/// One segment's `tokens` as words: a token whose text opens with a space
+/// begins a word, and any other joins the word before it (`par` `ticle`,
+/// and the `,` after it). Special tokens are left out, and so is a word with
+/// no text once trimmed. A word runs from its first token's start to its last
+/// token's end, never before 0 or before it began.
+fn words(tokens: &[Token]) -> Vec<Spoken> {
+	let mut words = Vec::new();
+	let mut word: Option<(Vec<u8>, i64, i64)> = None;
+	let mut close = |word: Option<(Vec<u8>, i64, i64)>| {
+		let Some((bytes, from_cs, to_cs)) = word else { return };
+		let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+		if !text.is_empty() {
+			let start_ms = from_cs.max(0).saturating_mul(10);
+			words.push(Spoken {
+				text,
+				start_ms,
+				end_ms: to_cs.saturating_mul(10).max(start_ms),
+			});
+		}
+	};
+	for token in tokens.iter().filter(|token| !token.special) {
+		match &mut word {
+			Some((bytes, _, end_cs)) if !token.bytes.starts_with(b" ") => {
+				bytes.extend_from_slice(&token.bytes);
+				*end_cs = token.end_cs;
+			}
+			_ => close(word.replace((token.bytes.clone(), token.start_cs, token.end_cs))),
+		}
+	}
+	close(word);
+	words
+}
+
+/// Which end of a word a time is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+	Start,
+	End,
+}
+
+/// A piece of speech the VAD found: `len` samples from `note_at` in the
+/// note, heard from `speech_at` in the speech Whisper heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cut {
+	speech_at: usize,
+	note_at: usize,
+	len: usize,
+}
+
+impl Cut {
+	/// `ms` into the speech Whisper heard, as milliseconds into the note
+	/// `cuts` were cut from, held within the cut it falls in. A time where
+	/// two cuts meet is the later cut's start for a word's [`Edge::Start`],
+	/// and the earlier cut's end for its [`Edge::End`], so a word is never
+	/// stretched over the silence between them.
+	fn in_note(cuts: &[Self], ms: i64, edge: Edge) -> i64 {
+		let per_ms = SAMPLE_RATE / 1000;
+		let sample = usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms);
+		let within = |cut: &&Self| match edge {
+			Edge::Start => cut.speech_at <= sample,
+			Edge::End => cut.speech_at < sample,
+		};
+		let Some(cut) = cuts.iter().rev().find(within).or_else(|| cuts.first()) else {
+			return ms.max(0);
+		};
+		let at = cut.note_at + sample.saturating_sub(cut.speech_at).min(cut.len);
+		i64::try_from(at / per_ms).unwrap_or(i64::MAX)
 	}
 }
 
@@ -436,7 +580,7 @@ mod tests {
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
 	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
-	use super::{decode, sample_at, Decoded, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use super::{decode, sample_at, words, Cut, Decoded, Edge, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
 	use std::path::Path;
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
@@ -586,5 +730,115 @@ mod tests {
 		assert_eq!(sample_at(0.5, 1_000), 80);
 		assert_eq!(sample_at(-3.0, 1_000), 0);
 		assert_eq!(sample_at(1e9, 1_000), 1_000);
+	}
+
+	/// A token as whisper.cpp gives one: its text, timed in centiseconds.
+	fn token(text: &str, start_cs: i64, end_cs: i64) -> Token {
+		Token {
+			bytes: text.as_bytes().to_vec(),
+			special: false,
+			start_cs,
+			end_cs,
+		}
+	}
+
+	fn special(text: &str, at_cs: i64) -> Token {
+		Token {
+			special: true,
+			..token(text, at_cs, at_cs)
+		}
+	}
+
+	fn spoken(text: &str, start_ms: i64, end_ms: i64) -> Spoken {
+		Spoken {
+			text: text.to_owned(),
+			start_ms,
+			end_ms,
+		}
+	}
+
+	/// What a segment of tokens looks like out of whisper.cpp: its special
+	/// tokens around the text, words in pieces, punctuation on its own, and
+	/// a Korean syllable split between two tokens mid-character.
+	#[test]
+	fn tokens_join_into_words_on_the_space_that_opens_each() {
+		let syllable = "은".as_bytes();
+		let tokens = [
+			special("[_BEG_]", 0),
+			token(" The", 0, 12),
+			token(" par", 12, 30),
+			token("ticle", 30, 55),
+			Token {
+				bytes: [b" ", &syllable[..1]].concat(),
+				..token("", 60, 70)
+			},
+			Token {
+				bytes: syllable[1..].to_vec(),
+				..token("", 70, 80)
+			},
+			token(" again", 85, 120),
+			token(",", 120, 121),
+			special("[_TT_121]", 121),
+			token(" said", 130, 150),
+			token(" ", 150, 151),
+			token(" out", 160, 170),
+			token(" loud.", 170, 200),
+			special("[_EOT_]", 200),
+		];
+		assert_eq!(
+			words(&tokens),
+			[
+				spoken("The", 0, 120),
+				spoken("particle", 120, 550),
+				spoken("은", 600, 800),
+				spoken("again,", 850, 1210),
+				spoken("said", 1300, 1500),
+				spoken("out", 1600, 1700),
+				spoken("loud.", 1700, 2000),
+			],
+			"pieces join, specials and a bare space are left out, and the syllable is whole"
+		);
+	}
+
+	#[test]
+	fn a_segment_of_only_special_tokens_has_no_words_and_a_time_never_runs_backwards() {
+		assert_eq!(words(&[special("[_BEG_]", 0), special("[_TT_50]", 50)]), []);
+		assert_eq!(words(&[]), []);
+		// A first token without its space still opens a word, and whisper.cpp
+		// timing a token before 0 or ending one before it began is held.
+		assert_eq!(words(&[token("Hi", -3, 20), token(" there", 40, 30)]), [spoken("Hi", 0, 200), spoken("there", 400, 400)]);
+	}
+
+	/// Whisper heard only the speech the VAD found, run end to end; a word's
+	/// time is moved back to where that speech sits in the note.
+	#[test]
+	fn a_word_is_timed_in_the_note_not_in_the_speech_cut_from_it() {
+		let ms = |ms: usize| ms * SAMPLE_RATE / 1000;
+		// Speech from 1.0 s to 2.0 s and from 5.0 s to 5.5 s of the note.
+		let cuts = [
+			Cut {
+				speech_at: 0,
+				note_at: ms(1_000),
+				len: ms(1_000),
+			},
+			Cut {
+				speech_at: ms(1_000),
+				note_at: ms(5_000),
+				len: ms(500),
+			},
+		];
+		let at = |speech_ms, edge| Cut::in_note(&cuts, speech_ms, edge);
+		assert_eq!(at(0, Edge::Start), 1_000);
+		assert_eq!(at(250, Edge::End), 1_250);
+		assert_eq!(at(1_200, Edge::Start), 5_200, "in the second cut");
+		// Where the cuts meet, a start is the later cut's and an end the
+		// earlier's, so no word spans the silence between them.
+		assert_eq!(at(1_000, Edge::Start), 5_000);
+		assert_eq!(at(1_000, Edge::End), 2_000);
+		// Whisper times past the speech it heard, and before it: held to it.
+		assert_eq!(at(9_000, Edge::End), 5_500);
+		assert_eq!(at(-40, Edge::Start), 1_000);
+		// No cuts (none happen: no speech is silent): the time is kept.
+		assert_eq!(Cut::in_note(&[], 300, Edge::Start), 300);
 	}
 }

@@ -2,7 +2,8 @@
 //!
 //! The phone sends each note home (`PUT /api/v1/voice-notes/:id`, kept in
 //! `voice_note` and `voice_note_audio`), and this worker transcribes each on
-//! home's CPU with whisper.cpp, keeping what it heard in `voice_transcript`
+//! home's CPU with whisper.cpp, keeping what it heard in `voice_transcript`,
+//! and when each word was said in `voice_transcript_word`
 //! (`voice_repo::transcript`). The routines that used to download notes from
 //! Drive and install Whisper every run will read the text instead (VOICE4,
 //! VOICE6 in #460).

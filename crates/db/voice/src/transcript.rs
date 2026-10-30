@@ -16,9 +16,26 @@
 //!   audio cannot be heard is never retried forever.
 //! - **Per subject.** A row is written only for a note the subject holds, in
 //!   the statement that writes it, so nothing outlives its note or account.
+//! - **Each heard word keeps its time** (paulgsc/some-ui#2085, GWB11;
+//!   `20261030000300_create_voice_transcript_word.up.sql`). A heard attempt's
+//!   [`Word`]s go to `voice_transcript_word` in the transaction that writes
+//!   its row, append-only too, and [`words`] reads back those of the newest
+//!   transcript that heard something, for the captions burned into a short.
 
 use crate::VoiceError;
 use sqlx::SqliteConnection;
+
+/// One word heard, and when it was said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+	/// The word as heard, with any punctuation that clings to it. Never
+	/// logged.
+	pub text: String,
+	/// When it began, in milliseconds from the note's start.
+	pub start_ms: i64,
+	/// When it ended, the same way; never before it began.
+	pub end_ms: i64,
+}
 
 /// How an attempt to hear a note ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +48,9 @@ pub enum Outcome {
 		language_p: f64,
 		/// What was heard. Never logged.
 		text: String,
+		/// The words of `text` in the order said, each with its time. Never
+		/// logged.
+		words: Vec<Word>,
 	},
 	/// No speech was found: nothing was said.
 	Silent,
@@ -175,7 +195,7 @@ pub async fn keep_attempt(conn: &mut SqliteConnection, subject: &str, note_id: &
 	let n = standing.tried + 1;
 	let kind = attempt.outcome.kind();
 	let (language, language_p, text) = match &attempt.outcome {
-		Outcome::Heard { language, language_p, text } => (Some(language.as_str()), Some(*language_p), Some(text.as_str())),
+		Outcome::Heard { language, language_p, text, .. } => (Some(language.as_str()), Some(*language_p), Some(text.as_str())),
 		_ => (None, None, None),
 	};
 	sqlx::query!(
@@ -197,12 +217,71 @@ pub async fn keep_attempt(conn: &mut SqliteConnection, subject: &str, note_id: &
 	)
 	.execute(&mut *conn)
 	.await?;
+	if let Outcome::Heard { words, .. } = &attempt.outcome {
+		keep_words(conn, subject, note_id, attempt.model, words).await?;
+	}
 	Ok(Kept::Added(n))
+}
+
+/// Stores `words`, what `model` heard in `subject`'s note `note_id`, in the
+/// transaction [`keep_attempt`] writes the transcript in.
+///
+/// A time the schema would refuse is held to it here (never negative, never
+/// ending before it began) rather than refused: a refused write fails the
+/// whole attempt, and the note would wait to be heard again, failing the same
+/// way, every pass.
+async fn keep_words(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str, words: &[Word]) -> Result<(), VoiceError> {
+	for (index, word) in (0_i64..).zip(words) {
+		let start_ms = word.start_ms.max(0);
+		let end_ms = word.end_ms.max(start_ms);
+		sqlx::query!(
+			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+			subject,
+			note_id,
+			model,
+			index,
+			word.text,
+			start_ms,
+			end_ms
+		)
+		.execute(&mut *conn)
+		.await?;
+	}
+	Ok(())
+}
+
+/// The words of `subject`'s note `note_id`, each with its time, in the order
+/// said.
+///
+/// They are those of the newest transcript that heard something, as a reader
+/// of the text takes it, so the words always match that text. Empty when no
+/// transcript heard the note, or when the newest was heard before words were
+/// kept (`20261030000300`).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Vec<Word>, VoiceError> {
+	Ok(
+		sqlx::query_as!(
+			Word,
+			r#"SELECT w.text, w.start_ms, w.end_ms FROM voice_transcript_word w
+			 WHERE w.subject_id = ?1 AND w.note_id = ?2
+			   AND w.model = (SELECT t.model FROM voice_transcript t
+			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
+			                  ORDER BY t.heard_at DESC, t.model DESC LIMIT 1)
+			 ORDER BY w.word_index"#,
+			subject,
+			note_id
+		)
+		.fetch_all(&mut *conn)
+		.await?,
+	)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, Attempt, Kept, Outcome, Waiting};
+	use super::{audio, keep_attempt, waiting, words, Attempt, Kept, Outcome, Waiting, Word};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -233,12 +312,30 @@ mod tests {
 		tx.commit().await.unwrap();
 	}
 
+	/// `text` heard, each word half a second long, one after another.
 	fn heard(text: &str) -> Outcome {
 		Outcome::Heard {
 			language: String::from("en"),
 			language_p: 0.99,
 			text: text.to_owned(),
+			words: said(text),
 		}
+	}
+
+	fn said(text: &str) -> Vec<Word> {
+		(0_i64..)
+			.zip(text.split_whitespace())
+			.map(|(n, word)| Word {
+				text: word.to_owned(),
+				start_ms: 500 * n,
+				end_ms: 500 * n + 400,
+			})
+			.collect()
+	}
+
+	async fn words_of(pool: &SqlitePool, subject: &str, id: &str) -> Vec<Word> {
+		let mut conn = pool.acquire().await.unwrap();
+		words(&mut conn, subject, id).await.unwrap()
 	}
 
 	fn attempt(model: &str, outcome: Outcome) -> Attempt<'_> {
@@ -439,5 +536,171 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM voice_transcript").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B], "A's transcripts went with A's account, B's stayed");
+	}
+
+	#[tokio::test]
+	async fn the_word_migration_round_trips() {
+		const BEFORE_WORDS: i64 = 20_261_030_000_200;
+		let pool = pool().await;
+		let table = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'voice_transcript_word%'");
+		assert_eq!(table().fetch_one(&pool).await.unwrap(), 3, "the table and its two triggers");
+		MIGRATOR.undo(&pool, BEFORE_WORDS).await.unwrap();
+		assert_eq!(table().fetch_one(&pool).await.unwrap(), 0, "down drops them");
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('s', x'00')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("DELETE FROM account").execute(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(table().fetch_one(&pool).await.unwrap(), 3, "up recreates them");
+	}
+
+	/// The columns the migration describes and no others: a new one is a
+	/// decision about what the server keeps from a note.
+	#[tokio::test]
+	async fn the_word_table_holds_exactly_its_described_columns() {
+		let pool = pool().await;
+		let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('voice_transcript_word') ORDER BY cid")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(columns, ["subject_id", "note_id", "model", "word_index", "text", "start_ms", "end_ms"]);
+	}
+
+	/// A heard attempt keeps its words with it; a failure, silence or a replay
+	/// keeps none; and a reader gets the words of the newest transcript that
+	/// heard something, matching the text it takes.
+	#[tokio::test]
+	async fn a_heard_transcript_keeps_its_words_and_a_reader_takes_the_newest() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		note(&pool, A, "quiet", "2026-10-25T02:00:00.000Z", b"hush").await;
+		note(&pool, B, "n1", "2026-10-25T03:00:00.000Z", b"other").await;
+		assert_eq!(words_of(&pool, A, "n1").await, [], "nothing heard yet");
+
+		keep(&pool, A, "n1", &attempt(SMALL, Outcome::Failed)).await;
+		assert_eq!(keep(&pool, A, "n1", &attempt(SMALL, heard("the particle 은 again"))).await, Kept::Added(2));
+		assert_eq!(keep(&pool, A, "n1", &attempt(SMALL, heard("a replay"))).await, Kept::Ended);
+		keep(&pool, A, "quiet", &attempt(SMALL, Outcome::Silent)).await;
+		keep(&pool, B, "n1", &attempt(SMALL, heard("someone else"))).await;
+		assert_eq!(words_of(&pool, A, "n1").await, said("the particle 은 again"));
+		assert_eq!(words_of(&pool, A, "quiet").await, [], "silence has no words");
+		assert_eq!(words_of(&pool, B, "n1").await, said("someone else"), "B's words are B's");
+
+		// A better model, later, hears it again: its words are the ones read.
+		let mut tx = pool.begin().await.unwrap();
+		keep_attempt(&mut tx, A, "n1", &attempt(MEDIUM, heard("the particle 은, again")), "2026-10-26T09:00:00.000Z")
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		assert_eq!(words_of(&pool, A, "n1").await, said("the particle 은, again"));
+
+		let kept: Vec<(String, i64, String)> = sqlx::query_as("SELECT model, word_index, text FROM voice_transcript_word WHERE subject_id = ?1 ORDER BY model DESC, word_index")
+			.bind(A)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		let kept: Vec<(&str, i64, &str)> = kept.iter().map(|(model, n, text)| (model.as_str(), *n, text.as_str())).collect();
+		assert_eq!(
+			kept,
+			[
+				(SMALL, 0, "the"),
+				(SMALL, 1, "particle"),
+				(SMALL, 2, "은"),
+				(SMALL, 3, "again"),
+				(MEDIUM, 0, "the"),
+				(MEDIUM, 1, "particle"),
+				(MEDIUM, 2, "은,"),
+				(MEDIUM, 3, "again"),
+			],
+			"the older model's words are kept beside the newer's"
+		);
+	}
+
+	/// A transcript heard before words were kept reads as having none, never
+	/// as an older model's words, which would not match its text.
+	#[tokio::test]
+	async fn a_transcript_heard_without_words_reads_as_none() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		keep(&pool, A, "n1", &attempt(SMALL, heard("hello there"))).await;
+		let mut tx = pool.begin().await.unwrap();
+		let wordless = Outcome::Heard {
+			language: String::from("en"),
+			language_p: 0.99,
+			text: String::from("hello, there"),
+			words: Vec::new(),
+		};
+		keep_attempt(&mut tx, A, "n1", &attempt(MEDIUM, wordless), "2026-10-26T09:00:00.000Z").await.unwrap();
+		tx.commit().await.unwrap();
+		assert_eq!(words_of(&pool, A, "n1").await, []);
+	}
+
+	/// A time the schema would refuse is held to it rather than failing the
+	/// attempt, which would leave the note failing the same way every pass.
+	#[tokio::test]
+	async fn a_word_time_out_of_order_is_held_not_refused() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		let odd = Outcome::Heard {
+			language: String::from("en"),
+			language_p: 0.99,
+			text: String::from("early late"),
+			words: vec![
+				Word {
+					text: String::from("early"),
+					start_ms: -20,
+					end_ms: 300,
+				},
+				Word {
+					text: String::from("late"),
+					start_ms: 900,
+					end_ms: 800,
+				},
+			],
+		};
+		assert_eq!(keep(&pool, A, "n1", &attempt(SMALL, odd)).await, Kept::Added(1));
+		let times: Vec<(i64, i64)> = words_of(&pool, A, "n1").await.iter().map(|word| (word.start_ms, word.end_ms)).collect();
+		assert_eq!(times, [(0, 300), (900, 900)]);
+	}
+
+	/// The schema holds the rules on its own, whatever writes to it.
+	#[tokio::test]
+	async fn the_schema_refuses_a_rewritten_word_or_a_time_out_of_order() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		keep(&pool, A, "n1", &attempt(SMALL, heard("hello there"))).await;
+		let refused = sqlx::query("UPDATE voice_transcript_word SET text = 'other'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "no word is ever updated");
+		for insert in [
+			// A second word under a held index.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'ggml-small-q5_1.bin', 1, 'again', 2000, 2400)",
+			// Ending before it began.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 500, 400)",
+			// Before the note began.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', -1, 400)",
+			// A place before the first.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', -1, 'x', 0, 400)",
+		] {
+			assert!(sqlx::query(insert).execute(&pool).await.is_err(), "{insert}");
+		}
+	}
+
+	#[tokio::test]
+	async fn the_words_leave_with_the_account() {
+		let pool = pool().await;
+		for subject in [A, B] {
+			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+				.bind(subject)
+				.bind(subject.as_bytes())
+				.execute(&pool)
+				.await
+				.unwrap();
+			note(&pool, subject, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+			keep(&pool, subject, "n1", &attempt(SMALL, heard("hello there"))).await;
+		}
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM voice_transcript_word").fetch_all(&pool).await.unwrap();
+		assert_eq!(left, [B], "A's words went with A's account, B's stayed");
 	}
 }
