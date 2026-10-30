@@ -390,6 +390,21 @@ fn scout_ok(problems: &mut Vec<Problem>, scout: &Scout) {
 	}
 }
 
+/// Problems with a share: the day, the file it went out as, how far into the
+/// log it reaches, and the voice notes it carried.
+fn shared_ok(problems: &mut Vec<Problem>, day: &str, file: &str, through: i64, voice: &[String]) {
+	if !is_day(day) {
+		problems.push(("day", "must be a calendar day, YYYY-MM-DD"));
+	}
+	if !is_file_name(file) {
+		problems.push(("file", "must be a .json file name, at most 128 characters"));
+	}
+	if through < 0 {
+		problems.push(("through", "is a count of events, 0 or more"));
+	}
+	voice_ok(problems, voice, MAX_SHARED_VOICE);
+}
+
 /// The problems with one event's payload, by its type.
 fn payload(event: &Event, problems: &mut Vec<Problem>) {
 	match event {
@@ -478,18 +493,7 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 			scout_ok(problems, scout);
 			voice_ok(problems, voice, MAX_VOICE);
 		}
-		Event::Shared { day, file, through, voice, .. } => {
-			if !is_day(day) {
-				problems.push(("day", "must be a calendar day, YYYY-MM-DD"));
-			}
-			if !is_file_name(file) {
-				problems.push(("file", "must be a .json file name, at most 128 characters"));
-			}
-			if *through < 0 {
-				problems.push(("through", "is a count of events, 0 or more"));
-			}
-			voice_ok(problems, voice, MAX_SHARED_VOICE);
-		}
+		Event::Shared { day, file, through, voice, .. } => shared_ok(problems, day, file, *through, voice),
 		Event::Arrived { share_id, .. } => {
 			if !is_event_id(share_id) {
 				problems.push(("shareId", "must be the phone's id for a share"));
