@@ -8,12 +8,19 @@
 //! this build is degraded, so it no longer marks the container unhealthy.
 //! The flag keeps its name, since external scripts and the compose file
 //! already invoke it.
+//!
+//! It asks over plain HTTP, since `file_host` serves no TLS, so it asks a
+//! loopback address only: the probe is of this container's own process,
+//! and a `--health-check-host` anywhere else is refused, not sent over the
+//! network in the clear.
 
 use crate::handlers::readiness::Verdict;
 use crate::Config;
 use anyhow::Result;
+use reqwest::Url;
 use serde::Deserialize;
 use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr};
 
 /// The part of `/ready`'s body this reads.
 #[derive(Deserialize)]
@@ -53,21 +60,43 @@ fn judge(code: u16, body: &str) -> Result<String, String> {
 	}
 }
 
+/// `/ready` on `host:port`, when `host` is a loopback address (`localhost`
+/// or an IP that is one); refused otherwise.
+fn ready_url(host: &str, port: u16) -> Result<Url, String> {
+	let ip: IpAddr = if host.eq_ignore_ascii_case("localhost") {
+		IpAddr::V4(Ipv4Addr::LOCALHOST)
+	} else {
+		host
+			.parse()
+			.map_err(|_| "Readiness check refused: --health-check-host must be a loopback address, not ".to_string() + host)?
+	};
+	if !ip.is_loopback() {
+		return Err("Readiness check refused: --health-check-host must be a loopback address, not ".to_string() + host);
+	}
+	let mut url = Url::parse("http://127.0.0.1/ready").map_err(|e| e.to_string())?;
+	url.set_ip_host(ip).map_err(|()| "Readiness check refused: no URL for ".to_string() + host)?;
+	url
+		.set_port(Some(port))
+		.map_err(|()| "Readiness check refused: no URL for port ".to_string() + &port.to_string())?;
+	Ok(url)
+}
+
 /// Exits 0 when `/ready` says ready or degraded, 1 otherwise, saying why on
 /// the way out: Docker keeps the line in `docker inspect`'s health log.
 ///
 /// # Errors
 /// Never returns: it always exits. The `Result` is `main`'s.
 pub async fn perform_health_check(config: &Config) -> Result<()> {
-	let url = "http://".to_string() + &config.health_check_host + ":" + &config.health_check_port.to_string() + "/ready";
-
-	let verdict = match reqwest::Client::new().get(&url).timeout(std::time::Duration::from_secs(10)).send().await {
-		Ok(response) => {
-			let code = response.status().as_u16();
-			let body = response.text().await.unwrap_or_default();
-			judge(code, &body)
-		}
-		Err(e) => Err("Readiness check failed: ".to_string() + &e.to_string()),
+	let verdict = match ready_url(&config.health_check_host, config.health_check_port) {
+		Ok(url) => match reqwest::Client::new().get(url).timeout(std::time::Duration::from_secs(10)).send().await {
+			Ok(response) => {
+				let code = response.status().as_u16();
+				let body = response.text().await.unwrap_or_default();
+				judge(code, &body)
+			}
+			Err(e) => Err("Readiness check failed: ".to_string() + &e.to_string()),
+		},
+		Err(refused) => Err(refused),
 	};
 
 	match verdict {
@@ -113,6 +142,16 @@ mod tests {
 		// A proxy's error page, or a build from before the three levels.
 		assert!(judge(502, "<html>Bad Gateway</html>").is_err());
 		assert!(judge(503, r#"{"ready":false}"#).is_err());
+	}
+
+	#[test]
+	fn it_asks_a_loopback_address_only() {
+		assert_eq!(ready_url("127.0.0.1", 3000).unwrap().as_str(), "http://127.0.0.1:3000/ready");
+		assert_eq!(ready_url("localhost", 3000).unwrap().as_str(), "http://127.0.0.1:3000/ready");
+		assert_eq!(ready_url("::1", 8080).unwrap().as_str(), "http://[::1]:8080/ready");
+		for elsewhere in ["10.0.0.5", "file-host.home.maishatu.com", "0.0.0.0", ""] {
+			assert!(ready_url(elsewhere, 3000).is_err(), "{elsewhere}");
+		}
 	}
 
 	#[test]
