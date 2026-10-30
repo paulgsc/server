@@ -421,31 +421,6 @@
       }
     }
   },
-  "apps/servers/file_host/src/health.rs": {
-    "clippy::disallowed_macros": {
-      "fn perform_health_check": {
-        "eprintln!(\"Readiness check failed: HTTP {}\", response.status());": 1,
-        "eprintln!(\"Readiness check failed: {}\", e);": 1,
-        "let url = format!(\"http://{}:{}/ready\", config.health_check_host, config.health_check_port);": 1,
-        "println!(\"Readiness check passed\");": 1
-      }
-    },
-    "clippy::missing_errors_doc": {
-      "fn perform_health_check": {
-        "pub async fn perform_health_check(config: &Config) -> Result<()> {": 1
-      }
-    },
-    "clippy::too_long_first_doc_paragraph": {
-      "<file scope>": {
-        "/// The `--health-check` CLI flag's target, invoked by `infra/compose/file_host.yml`'s /// container healthcheck (`file_host --health-check`). Deliberately `/ready`, /// not `/health` \u2014 see #213 (F1). This is what `depends_on: condition: /// service_healthy` gates on elsewhere in the compose stack, so it needs to /// mean \"can serve\", not merely \"the process answers a socket\". The flag /// keeps its name (external scripts and this compose file already invoke it) /// even though its target moved; only the request behind it changed.": 1
-      }
-    },
-    "clippy::uninlined_format_args": {
-      "fn perform_health_check": {
-        "eprintln!(\"Readiness check failed: {}\", e);": 1
-      }
-    }
-  },
   "apps/servers/file_host/src/lib.rs": {
     "clippy::clone_on_copy": {
       "fn build": {
