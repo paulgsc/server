@@ -40,6 +40,16 @@ typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
 database they just migrated themselves. `/ready`'s body names the pending
 migrations; DEPS renders it as `schema down`.
 
+`/ready` answers in three levels, not one bit: its `status` is `ready`,
+`degraded` (only a non-critical dependency is down; today that is `schema`
+alone) or `unavailable` (a critical one is). Each dependency says whether it
+is `critical`. The status code stays 503 for anything short of `ready`, but
+the container healthcheck (`file_host --health-check`) reads `status` and
+fails only on `unavailable`, so a database behind its build leaves the
+container healthy and serving, with DEPS red. Nothing in the monitoring
+stack waits on a health check either (`scripts/check_scrape_inventory.py`),
+so the dashboard and the alerts stay up to say what is wrong.
+
 Two cases look like schema drift and aren't, and both are named as what
 they are. A database with no `_sqlx_migrations` table at all reads "never
 migrated … empty or wrong database file (is its volume mounted?)": with

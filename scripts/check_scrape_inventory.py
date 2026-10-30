@@ -15,6 +15,13 @@ true. It fails when:
 An inventory entry that opts out via `scrape.reason` is accepted without
 a prometheus.yml match — "deliberately unscraped" is a valid answer here,
 "unaccounted for" is not.
+
+It also fails a watcher that waits on anything's health: a service in
+`WATCHERS`, or any `*-exporter`, whose `depends_on` names a condition of
+`service_healthy`. A watcher is how an unhealthy service is seen, so it
+must start whether or not what it watches is healthy. On 2026-10-30
+Prometheus waited on a degraded file_host and took every dashboard and
+alert down with it (some-ui#2199).
 """
 
 from __future__ import annotations
@@ -30,9 +37,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INVENTORY_PATH = REPO_ROOT / "infra" / "prometheus" / "inventory.yml"
 PROMETHEUS_CONFIG_PATH = REPO_ROOT / "infra" / "prometheus" / "prometheus.yml"
 
+# What scrapes, evaluates, shows or delivers what is wrong. Every
+# `*-exporter` is one too, named or not.
+WATCHERS = frozenset({"prometheus", "grafana", "cadvisor"})
 
-def compose_services() -> set[str]:
-	"""The set of services `docker-compose.yml` actually resolves to, includes and all."""
+
+def compose_services() -> dict[str, dict]:
+	"""The services `docker-compose.yml` actually resolves to, includes and all, by name."""
 	result = subprocess.run(
 		["docker", "compose", "config", "--format", "json"],
 		cwd=REPO_ROOT,
@@ -43,7 +54,23 @@ def compose_services() -> set[str]:
 	if result.returncode != 0:
 		print("error: `docker compose config` failed:\n" + result.stderr, file=sys.stderr)
 		sys.exit(1)
-	return set(json.loads(result.stdout)["services"].keys())
+	return json.loads(result.stdout)["services"]
+
+
+def watchers_waiting_on_health(services: dict[str, dict]) -> list[str]:
+	"""`watcher -> dependency` for each watcher whose `depends_on` waits on that dependency's health."""
+	waiting = []
+	for name, service in sorted(services.items()):
+		if name not in WATCHERS and not name.endswith("-exporter"):
+			continue
+		depends_on = service.get("depends_on") or {}
+		# `docker compose config` writes the long form; a list is the short
+		# form, which waits on nothing but the start.
+		if isinstance(depends_on, dict):
+			for dependency, how in sorted(depends_on.items()):
+				if (how or {}).get("condition") == "service_healthy":
+					waiting.append(f"{name} -> {dependency}")
+	return waiting
 
 
 def prometheus_jobs() -> dict[str, set[str]]:
@@ -71,7 +98,8 @@ def main() -> int:
 	errors: list[str] = []
 
 	# ── compose <-> inventory, both directions ──────────────────────────────
-	live_services = compose_services()
+	services = compose_services()
+	live_services = set(services)
 
 	undeclared = live_services - inventory_services
 	if undeclared:
@@ -91,6 +119,13 @@ def main() -> int:
 	overlap = inventory_services & out_of_stack
 	if overlap:
 		errors.append(f"listed both as a live service and as out_of_stack: {sorted(overlap)}")
+
+	waiting = watchers_waiting_on_health(services)
+	if waiting:
+		errors.append(
+			f"watchers that wait on a dependency's health: {waiting} — a watcher starts once what it "
+			"watches has started (`condition: service_started`); see this script's docstring"
+		)
 
 	# ── inventory <-> prometheus.yml ─────────────────────────────────────────
 	jobs = prometheus_jobs()

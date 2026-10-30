@@ -1,4 +1,4 @@
-//! `GET /ready` — can this process serve, not just answer a socket?
+//! `GET /ready` — can this process serve, and how much of it?
 //!
 //! See #213 (F1). `/health` (`handlers::health`) is a liveness probe: it
 //! consults nothing and is correct as long as the runtime is scheduling.
@@ -8,9 +8,20 @@
 //!
 //! `schema` is the fourth, and the only one that isn't a connection: a
 //! reachable `SQLite` file that is missing migrations this binary's queries
-//! were compiled against can't serve either, and it fails on whichever
-//! query happens to touch the missing table first rather than here. See
-//! `crate::schema` for why neither `cargo check` nor CI can catch it.
+//! were compiled against. Only the queries that touch what those migrations
+//! add fail, on whichever one happens to touch it first rather than here.
+//! See `crate::schema` for why neither `cargo check` nor CI can catch it.
+//!
+//! The answer has three levels, not one bit ([`Verdict`]). A dependency is
+//! `critical` when losing it leaves nothing to serve; losing one that is not
+//! leaves the process **degraded**: it serves, minus what that dependency
+//! carries. `ready` and the 503 still mean "every dependency is healthy",
+//! for anyone reading only the status code; the container healthcheck
+//! (`crate::health`) reads `status` and fails only when the process is
+//! **unavailable**, so a degraded one stays up, and so does everything that
+//! starts after it. On 2026-10-30 an image ahead of its database's
+//! migrations served the Jobs flow normally while its 503 held Prometheus
+//! back and blanked every dashboard (some-ui#2199).
 //!
 //! Every check that can actually block is bounded by
 //! [`DEPENDENCY_CHECK_TIMEOUT`] and run concurrently: a readiness probe
@@ -23,7 +34,7 @@ use crate::metrics::build_info;
 use crate::AppState;
 use axum::{extract::State, http::StatusCode, response::Json};
 use metrics::gauge;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::time::Duration;
 use tracing::instrument;
@@ -34,17 +45,75 @@ use tracing::instrument;
 /// resolves in one dependency's worth of this budget, not the sum of three.
 const DEPENDENCY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Whether losing `dependency` leaves this process nothing to serve.
+///
+/// Critical unless shown otherwise, so a dependency added later gates the
+/// healthcheck until someone argues it doesn't. `schema` is shown: a
+/// database behind this build fails only the queries that touch what the
+/// pending migrations add (`main.rs` starts and serves on it for the same
+/// reason), and on 2026-10-30 the Jobs flow worked with five pending. NATS
+/// and Redis stay critical, as they were before this split.
+fn critical(dependency: &str) -> bool {
+	dependency != "schema"
+}
+
 #[derive(Serialize)]
 struct DependencyStatus {
 	name: &'static str,
 	healthy: bool,
+	/// See [`critical`].
+	critical: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	error: Option<String>,
 }
 
+impl DependencyStatus {
+	fn up(name: &'static str) -> Self {
+		Self {
+			name,
+			healthy: true,
+			critical: critical(name),
+			error: None,
+		}
+	}
+
+	fn down(name: &'static str, error: String) -> Self {
+		Self {
+			name,
+			healthy: false,
+			critical: critical(name),
+			error: Some(error),
+		}
+	}
+}
+
+/// How much of this process can serve: every dependency healthy, only
+/// non-critical ones down, or a critical one down.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+	Ready,
+	Degraded,
+	Unavailable,
+}
+
+impl Verdict {
+	fn of(dependencies: &[DependencyStatus]) -> Self {
+		if dependencies.iter().any(|d| !d.healthy && d.critical) {
+			Self::Unavailable
+		} else if dependencies.iter().any(|d| !d.healthy) {
+			Self::Degraded
+		} else {
+			Self::Ready
+		}
+	}
+}
+
 #[derive(Serialize)]
 pub struct ReadinessResponse {
+	/// Every dependency healthy: [`Verdict::Ready`], and the only 200.
 	ready: bool,
+	status: Verdict,
 	service: &'static str,
 	version: &'static str,
 	// #213 (F4): the same identity `service_info` carries, duplicated here
@@ -75,8 +144,7 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 	// whose failure it is; DEPS hides the schema tile while sqlite's is
 	// showing for the same reason.
 	if !sqlite.healthy {
-		schema.healthy = false;
-		schema.error = Some("not checked: sqlite is unreachable".to_string());
+		schema = DependencyStatus::down("schema", "not checked: sqlite is unreachable".to_string());
 	}
 
 	// A gauge per dependency, not just the aggregate `ready` bool — #225's
@@ -86,19 +154,22 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 	gauge!("dependency_up", "dependency" => "redis").set(f64::from(redis.healthy));
 	gauge!("dependency_up", "dependency" => "schema").set(f64::from(schema.healthy));
 
-	let ready = sqlite.healthy && nats.healthy && redis.healthy && schema.healthy;
+	let dependencies = vec![sqlite, nats, redis, schema];
+	let verdict = Verdict::of(&dependencies);
+	let ready = verdict == Verdict::Ready;
 	let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
 
 	(
 		status,
 		Json(ReadinessResponse {
 			ready,
+			status: verdict,
 			service: build_info::SERVICE,
 			version: env!("CARGO_PKG_VERSION"),
 			git_sha: build_info::git_sha_with_dirty_marker(),
 			built_at: build_info::BUILT_AT,
 			rust: build_info::RUSTC_VERSION,
-			dependencies: vec![sqlite, nats, redis, schema],
+			dependencies,
 		}),
 	)
 }
@@ -106,21 +177,9 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, sqlx::query("SELECT 1").fetch_one(pool)).await;
 	match result {
-		Ok(Ok(_)) => DependencyStatus {
-			name: "sqlite",
-			healthy: true,
-			error: None,
-		},
-		Ok(Err(e)) => DependencyStatus {
-			name: "sqlite",
-			healthy: false,
-			error: Some(e.to_string()),
-		},
-		Err(_) => DependencyStatus {
-			name: "sqlite",
-			healthy: false,
-			error: Some("check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
-		},
+		Ok(Ok(_)) => DependencyStatus::up("sqlite"),
+		Ok(Err(e)) => DependencyStatus::down("sqlite", e.to_string()),
+		Err(_) => DependencyStatus::down("sqlite", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
 	}
 }
 
@@ -131,26 +190,10 @@ async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, crate::schema::drift(pool, &crate::schema::MIGRATOR)).await;
 	match result {
-		Ok(Ok(drift)) if drift.is_current() => DependencyStatus {
-			name: "schema",
-			healthy: true,
-			error: None,
-		},
-		Ok(Ok(drift)) => DependencyStatus {
-			name: "schema",
-			healthy: false,
-			error: Some(drift.to_string()),
-		},
-		Ok(Err(e)) => DependencyStatus {
-			name: "schema",
-			healthy: false,
-			error: Some("could not read _sqlx_migrations: ".to_string() + &e.to_string()),
-		},
-		Err(_) => DependencyStatus {
-			name: "schema",
-			healthy: false,
-			error: Some("check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
-		},
+		Ok(Ok(drift)) if drift.is_current() => DependencyStatus::up("schema"),
+		Ok(Ok(drift)) => DependencyStatus::down("schema", drift.to_string()),
+		Ok(Err(e)) => DependencyStatus::down("schema", "could not read _sqlx_migrations: ".to_string() + &e.to_string()),
+		Err(_) => DependencyStatus::down("schema", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
 	}
 }
 
@@ -160,17 +203,9 @@ async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 /// does not need `DEPENDENCY_CHECK_TIMEOUT`.
 fn check_nats(state: &AppState) -> DependencyStatus {
 	if state.realtime.transport.is_connected() {
-		DependencyStatus {
-			name: "nats",
-			healthy: true,
-			error: None,
-		}
+		DependencyStatus::up("nats")
 	} else {
-		DependencyStatus {
-			name: "nats",
-			healthy: false,
-			error: Some("connection not established".to_string()),
-		}
+		DependencyStatus::down("nats", "connection not established".to_string())
 	}
 }
 
@@ -183,20 +218,49 @@ async fn check_redis(state: &AppState) -> DependencyStatus {
 	.await;
 
 	match result {
-		Ok(Ok(_)) => DependencyStatus {
-			name: "redis",
-			healthy: true,
-			error: None,
-		},
-		Ok(Err(e)) => DependencyStatus {
-			name: "redis",
-			healthy: false,
-			error: Some(e.to_string()),
-		},
-		Err(_) => DependencyStatus {
-			name: "redis",
-			healthy: false,
-			error: Some("check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
-		},
+		Ok(Ok(_)) => DependencyStatus::up("redis"),
+		Ok(Err(e)) => DependencyStatus::down("redis", e.to_string()),
+		Err(_) => DependencyStatus::down("redis", "check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn deps(down: &[&'static str]) -> Vec<DependencyStatus> {
+		["sqlite", "nats", "redis", "schema"]
+			.into_iter()
+			.map(|name| if down.contains(&name) { DependencyStatus::down(name, "down".to_string()) } else { DependencyStatus::up(name) })
+			.collect()
+	}
+
+	#[test]
+	fn every_dependency_healthy_is_ready() {
+		assert_eq!(Verdict::of(&deps(&[])), Verdict::Ready);
+	}
+
+	#[test]
+	fn a_database_behind_this_build_is_degraded_not_unavailable() {
+		assert_eq!(Verdict::of(&deps(&["schema"])), Verdict::Degraded);
+	}
+
+	#[test]
+	fn a_critical_dependency_down_is_unavailable_whatever_else_holds() {
+		for down in [&["sqlite"][..], &["nats"], &["redis"], &["sqlite", "schema"], &["redis", "schema"]] {
+			assert_eq!(Verdict::of(&deps(down)), Verdict::Unavailable, "{down:?}");
+		}
+	}
+
+	#[test]
+	fn a_dependency_is_critical_unless_shown_otherwise() {
+		assert!(critical("sqlite") && critical("nats") && critical("redis") && critical("a dependency added later"));
+		assert!(!critical("schema"));
+	}
+
+	#[test]
+	fn the_status_reads_as_a_lowercase_word() {
+		let words: Vec<String> = [Verdict::Ready, Verdict::Degraded, Verdict::Unavailable].iter().map(|v| serde_json::to_value(v).unwrap().to_string()).collect();
+		assert_eq!(words, ["\"ready\"", "\"degraded\"", "\"unavailable\""]);
 	}
 }

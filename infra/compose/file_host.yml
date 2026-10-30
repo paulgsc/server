@@ -70,6 +70,8 @@ services:
         reservations:
           cpus: '0.5'
           memory: 1G
+    # Fails only when /ready says unavailable (a critical dependency down),
+    # not when it says degraded: see apps/servers/file_host/src/health.rs.
     healthcheck:
       test: ['CMD', '/usr/local/bin/file_host', '--health-check']
       interval: 30s
