@@ -1907,6 +1907,24 @@ now, at the two levels where running out means something different:
   the deadline is storage work `busy_timeout` bounds. Subjects the pass did not
   reach are left exactly as `due` found them and are picked up next pass — the
   same property `BATCH` relies on.
+- **A subject is reached whole or not at all (#575).** `considered` counts a
+  subject only once `consider` has seen it through to a decision, and one it
+  decided to notify had a delivery begin. If the deadline comes between a
+  subject's claim and its first delivery (only storage work fills that gap),
+  nothing was sent, so the claim is handed back and the subject counts as
+  `deferred` with the rest the pass did not reach. This reads the same
+  deadline once more, at the one place it can strike inside a subject; it is
+  not a second bound, so invariant 4 holds. Reserving a whole
+  `PUSH_DELIVERY_TIMEOUT_MS` before each subject was the other shape
+  considered, and was turned down: with a delivery timeout longer than the
+  pass deadline, no subject would ever be reached.
+- **The deadline is read through a clock the tests can step (`PassClock`).**
+  Production uses tokio's; the deadline tests use one that moves only when a
+  delivery's budget runs out, so they assert exact counts at the boundary
+  instead of tolerating wherever a slow runner put it (#572). A paused tokio
+  clock does not work for this: sqlx pings a `SQLite` connection on its own
+  thread as it returns to the pool, and a paused runtime waiting on that skips
+  ahead to the next pool timeout.
 
 The NUDGE row's *Waker Pass Duration* panel draws the last pass against the
 configured deadline; `nudge_waker_pass_deadline_exceeded_total` counts passes

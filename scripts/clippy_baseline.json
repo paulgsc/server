@@ -598,14 +598,12 @@
         "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
         "engagement .save(subject_id, &levels, &now_str, &now_str) .await .expect(\"seed a due, nothing-prepared subject\");": 1,
         "let all_sessions = sessions.list(subject_id).await.expect(\"list this subject's sessions\");": 1,
-        "let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()) .await .expect(\"a pass over a freshly-seeded subject should not error\");": 1,
         "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
         "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\")": 1,
         "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\") .expect(\"consider should have written a findable session even though admission later refused\");": 1,
         "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\")": 1,
         "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\") .expect(\"the id first_prepared returned should resolve to a real row\");": 1,
         "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1,
-        "let second_pass = consider(&pool, &nudge, &engagement, subject_id, far_deadline()) .await .expect(\"a second pass should not error\");": 1,
         "let still_the_same = sessions.first_prepared(subject_id).await.expect(\"read back again\").expect(\"still findable\");": 2,
         "let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), \"mailto:test@example.com\").expect(\"the fixed test keypair validates\");": 1
       },
@@ -630,9 +628,6 @@
       }
     },
     "clippy::too_many_lines": {
-      "fn consider": {
-        "async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str, deadline: tokio::time::Instant) -> Result<bool, sqlx::Error> {": 1
-      },
       "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop": {
         "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop() {": 1
       }
