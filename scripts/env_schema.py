@@ -534,7 +534,13 @@ def fill(report: Report, env_file: Path, schemas: list[dict], ask=input, ask_sec
                 break
             say(f"  {problem or ('a value is required' if not value else 'a value with a single quote: write it to the file yourself')}")
         text = set_line(text, gap.name, env_line(gap.name, value) or "")
-    env_file.write_text(text)
+    # In clear text: .env is where compose reads secrets from until #408's
+    # agenix or sops-nix. So it is made readable by its owner alone, which
+    # compose, running as that owner, still is.
+    descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w") as out:
+        out.write(text)
     return skipped
 
 
@@ -672,6 +678,7 @@ def self_test() -> None:
         secrets = iter(["s"])
         skipped = fill(gaps, env_file, [schema], ask=lambda _: next(answers), ask_secret=lambda _: next(secrets), say=lambda _: None)
         assert env_file.read_text() == "KEEP=1\nTOKEN='t$x'\nDB='s'\n", env_file.read_text()
+        assert env_file.stat().st_mode & 0o777 == 0o600, "a file holding a secret is its owner's alone"
         assert len(skipped) == 1 and skipped[0].startswith("KEY:"), skipped
 
     listing = render_list([schema, other], compose, {"DB": "x"})

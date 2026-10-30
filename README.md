@@ -191,6 +191,9 @@ on, such as the mailbox's while `MAILBOX_ENABLED`), and exits non-zero if
 there is any, so `make up`
 never starts on a known gap. It also warns about each `.env` line nothing
 reads: a renamed or retired variable is otherwise ignored without a word.
+`FILL=1` writes what it asks for to `.env` in clear text, where compose reads
+it, and leaves the file readable by its owner alone (mode 600); secrets kept
+encrypted in git come with the NixOS modules (#408).
 A `${NAME:?}` in any compose file stops every service, not only its own,
 because compose interpolates the whole project before it starts one; the
 preflight names those too.
