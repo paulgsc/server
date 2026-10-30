@@ -26,6 +26,7 @@ members = [
   "crates/db/sharing",
   "crates/db/storage",
   "crates/db/leetype_log",
+  "crates/db/studio_log",
   "crates/db/leetype_round",
   "crates/db/learner_shelf",
   "crates/db/mood_event",
@@ -158,6 +159,7 @@ mailbox_repo = { path = "crates/db/mailbox" }
 sharing_repo = { path = "crates/db/sharing" }
 storage_repo = { path = "crates/db/storage" }
 leetype_log_repo = { path = "crates/db/leetype_log" }
+studio_log_repo = { path = "crates/db/studio_log" }
 leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }

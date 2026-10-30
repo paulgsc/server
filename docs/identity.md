@@ -168,6 +168,7 @@ above the button that deletes (invariant 22):
 | Jobs mailbox files home holds | `mailbox_item`, `mailbox_archive` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript` |
 | LeetType sessions | `leetype_session_event` |
+| Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
 | Korean's word sets and reading records | `korean_entry` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `game_bite` |
 | What a phone shares | `sharing_choice` |
@@ -427,10 +428,10 @@ nowhere is marked as such and belongs to review.
     fails it until someone decides what it tells the server and says why.
 
 11. **The learner shelf holds content only** (#387). `learner_shelf` is one
-    of the five subject-scoped places that store something the learner wrote
+    of the six subject-scoped places that store something the learner wrote
     rather than something the server observed (the aph and Jobs records, the
-    LeetType session log and the Korean record, invariants 15, 16, 18 and 25,
-    are the others): items
+    LeetType session log, the Korean record and Studio's log, invariants 15,
+    16, 18, 25 and 26, are the others): items
     they generated and chose to keep (`PUT /shelf/:activity/:key`,
     docs/study-nudge.md, "Learner shelf").
     A row is the subject, the activity, the item's key, its content hash, when
@@ -558,7 +559,9 @@ nowhere is marked as such and belongs to review.
     stopped them (`PUT /aph/*`, `PUT /jobs/events/:id`,
     `POST /sync/:collection/batch`, `PUT /voice-notes/:id` and `PUT` and
     `DELETE /korean/:kind/:key` answer `409`, code `sharing_stopped`; sessions, the shelf and the LeetType session log
-    also go home on a tap no choice covers, and are not refused),
+    also go home on a tap no choice covers, and are not refused, and no
+    choice covers Studio's log yet either: whether it gets a scope of its own
+    is the owner's call, #553),
     and say when each choice started and stopped; a timestamp on each synced
     row stays out. A choice is made only by a paired phone
     (`PUT /sharing/:scope`, a bearer session: a browser's is `403`), counts
@@ -928,6 +931,42 @@ nowhere is marked as such and belongs to review.
     *Not enforced:* that nothing else writes the table, which
     `git grep -n korean_entry -- '*.rs'` shows today.
 
+26. **Studio's log is append-only, holds when each screen was open and how
+    each sitting went, and names a voice note only by its id.**
+    `studio_sitting_event` keeps the phone's Studio time log once the phone
+    sends it home (paulgsc/some-ui ST9, #2257): every event of every sitting,
+    as the phone recorded it, checked and re-serialised (the sitting opened
+    or closed, a screen entered or left, by the phone's name for it, the page
+    hidden or shown), the sitting's kind (`record`, `watch`, `shape`,
+    `finish`), which every event of a sitting carries alike, its type, when
+    the phone recorded it and when it reached home. `studio_friction` keeps a
+    friction report for a sitting: how it went (`smooth`, `some_snags`,
+    `rough`), the cause chosen or said (at most
+    `studio_log_repo::MAX_CAUSE_CHARS` characters, one line, possibly typed by
+    the owner), the sitting and its kind, the shot it was on, and a voice
+    note by the phone's id only (its audio, once sent, is
+    `voice_note_audio`'s, invariant 23). A report holds no other free text.
+    Neither table is ever updated (a trigger aborts an `UPDATE`) or replaced
+    (a different body under a held id is a `409`), and neither is deleted but
+    with the account. They are written only by
+    `PUT /studio/sittings/:sitting/events/:id` and `PUT /studio/friction/:id`,
+    readable only by their own subject (`GET /studio/sittings`,
+    `GET /studio/sittings/:sitting/events` and `GET /studio/friction`), and
+    deleted with the account by both the sweep and the migration's triggers
+    (invariant 12). Rolling back the migration that creates them fails once
+    either holds a row, rather than dropping the record. No sharing choice
+    covers them yet (invariant 17).
+    *Enforced by* `studio_log_repo`'s `the_tables_hold_exactly_their_described_columns`,
+    `an_event_is_stored_once_and_never_replaced`,
+    `a_report_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::studio_log`'s
+    `refusals_name_their_fields_and_records_stay_apart` and
+    `nothing_a_report_says_reaches_a_log_line`.
+    *Not enforced:* that nothing else writes the tables, which
+    `git grep -n -e studio_sitting_event -e studio_friction -- '*.rs'` shows
+    today.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -1011,6 +1050,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   recorded it, to the millisecond, and when it reached home. That timeline is
   what the record is for: it is how the owner's growth reads back. Deleting
   the account removes it; nothing else does.
+- **Studio's log and its times.** The events say when the owner sat down to
+  work on a video, which screens they had open and for how long, and when
+  they put the phone down, each to the millisecond; the friction reports say
+  how each sitting went, on which shot, and why, in a cause the owner may
+  have typed. Deleting the account removes both; nothing else does.
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
   record home (invariant 17): one row per change, as many as its person

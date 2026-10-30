@@ -1171,6 +1171,8 @@ mod tests {
 				"INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, 'e', 'now', '{}', 'now')",
 				"INSERT INTO korean_entry (subject_id, kind, entry_key, revision, body, sha256, written_at) VALUES (?1, 'set', 'k', 1, '{}', 's', 'now')",
 				"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
+				"INSERT INTO studio_sitting_event (subject_id, sitting_id, event_id, at, type, kind, body, written_at) VALUES (?1, 's', 'e', 'now', 'page_hidden', 'record', '{}', 'now')",
+				"INSERT INTO studio_friction (subject_id, report_id, sitting_id, at, how, body, written_at) VALUES (?1, 'f', 's', 'now', 'smooth', '{}', 'now')",
 				"INSERT INTO sharing_choice (subject_id, pairing_id, seq, scope, kept, at) VALUES (?1, 'p', 1, 'aph', 1, 'now')",
 				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",

@@ -21,6 +21,7 @@ pub mod routine;
 pub mod sharing;
 pub mod shelf;
 pub mod signals;
+pub mod studio_log;
 pub mod subjects;
 pub mod sync;
 pub mod tab_metadata;

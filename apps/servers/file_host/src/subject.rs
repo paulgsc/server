@@ -112,6 +112,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"what each paired phone's person chose to keep sending home, and when each choice began and ended: a time per change, none per item sent; see docs/identity.md",
 	),
 	(
+		"studio_friction",
+		"how each of the owner's Studio sittings went (paulgsc/some-ui ST9): smooth, some snags or rough, the cause chosen or said (at most 200 characters, possibly typed), the sitting and its kind, the shot it was on and a voice note's id, and when each was recorded and reached home; see docs/identity.md invariant 26",
+	),
+	(
+		"studio_sitting_event",
+		"the owner's Studio time log (paulgsc/some-ui ST9), every event of every sitting sent home: the sitting and its kind, each screen entered and left by name, the page hidden and shown, the sitting opened and closed, and when each was recorded and reached home; see docs/identity.md invariant 26",
+	),
+	(
 		"voice_note",
 		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites and Studio takes included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
 	),

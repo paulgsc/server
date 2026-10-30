@@ -130,6 +130,7 @@ notice_repo = { workspace = true }
 sharing_repo = { workspace = true }
 storage_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
+studio_log_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
 learner_shelf_repo = { workspace = true }
 # Only `src/bin/record_leetype_runs.rs` uses it; a test in
