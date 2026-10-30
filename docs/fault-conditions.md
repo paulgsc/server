@@ -42,7 +42,9 @@ migrations; DEPS renders it as `schema down`.
 
 `/ready` answers in three levels, not one bit: its `status` is `ready`,
 `degraded` (only a non-critical dependency is down; today that is `schema`
-alone) or `unavailable` (a critical one is). Each dependency says whether it
+alone, and only for a migrated database behind its build) or `unavailable`
+(a critical one is, a database never migrated or whose migrations can't be
+read included). Each dependency says whether it
 is `critical`. The status code stays 503 for anything short of `ready`, but
 the container healthcheck (`file_host --health-check`) reads `status` and
 fails only on `unavailable`, so a database behind its build leaves the

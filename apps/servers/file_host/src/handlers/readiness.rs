@@ -48,11 +48,16 @@ const DEPENDENCY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 /// Whether losing `dependency` leaves this process nothing to serve.
 ///
 /// Critical unless shown otherwise, so a dependency added later gates the
-/// healthcheck until someone argues it doesn't. `schema` is shown: a
-/// database behind this build fails only the queries that touch what the
-/// pending migrations add (`main.rs` starts and serves on it for the same
-/// reason), and on 2026-10-30 the Jobs flow worked with five pending. NATS
-/// and Redis stay critical, as they were before this split.
+/// healthcheck until someone argues it doesn't. `schema` is shown, for one
+/// state only: a database that was migrated and is behind this build fails
+/// just the queries that touch what the pending migrations add (`main.rs`
+/// starts and serves on it for the same reason), and on 2026-10-30 the Jobs
+/// flow worked with five pending. A database never migrated at all (an
+/// unmounted volume that `create_if_missing` filled with an empty file) has
+/// no `auth_session` to sign anyone in, and one whose migrations can't be
+/// read is unknown, so `check_schema` reports both as critical
+/// ([`DependencyStatus::down_critical`]). NATS and Redis stay critical, as
+/// they were before this split.
 fn critical(dependency: &str) -> bool {
 	dependency != "schema"
 }
@@ -83,6 +88,15 @@ impl DependencyStatus {
 			healthy: false,
 			critical: critical(name),
 			error: Some(error),
+		}
+	}
+
+	/// Down, and critical whatever [`critical`] says of `name`: a state of a
+	/// non-critical dependency that leaves nothing to serve.
+	fn down_critical(name: &'static str, error: String) -> Self {
+		Self {
+			critical: true,
+			..Self::down(name, error)
 		}
 	}
 }
@@ -190,13 +204,16 @@ async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
 /// the error names the pending ones and the command that applies them. A
 /// database that can't be read at all is reported here too rather than
 /// guessed about, though `sqlite` above is the check that owns that failure.
+/// Behind a migrated database is degraded; never migrated, or unreadable,
+/// is critical (see [`critical`]).
 async fn check_schema(pool: &SqlitePool) -> DependencyStatus {
 	let result = tokio::time::timeout(DEPENDENCY_CHECK_TIMEOUT, crate::schema::drift(pool, &crate::schema::MIGRATOR)).await;
 	match result {
 		Ok(Ok(drift)) if drift.is_current() => DependencyStatus::up("schema"),
+		Ok(Ok(drift)) if drift.never_migrated => DependencyStatus::down_critical("schema", drift.to_string()),
 		Ok(Ok(drift)) => DependencyStatus::down("schema", drift.to_string()),
-		Ok(Err(e)) => DependencyStatus::down("schema", "could not read _sqlx_migrations: ".to_string() + &e.to_string()),
-		Err(_) => DependencyStatus::down(
+		Ok(Err(e)) => DependencyStatus::down_critical("schema", "could not read _sqlx_migrations: ".to_string() + &e.to_string()),
+		Err(_) => DependencyStatus::down_critical(
 			"schema",
 			"check did not complete within ".to_string() + &DEPENDENCY_CHECK_TIMEOUT.as_secs().to_string() + "s",
 		),
@@ -271,6 +288,54 @@ mod tests {
 	fn a_dependency_is_critical_unless_shown_otherwise() {
 		assert!(critical("sqlite") && critical("nats") && critical("redis") && critical("a dependency added later"));
 		assert!(!critical("schema"));
+	}
+
+	async fn empty_database() -> SqlitePool {
+		sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap()
+	}
+
+	/// `_sqlx_migrations` as `sqlx migrate run` leaves it, every embedded
+	/// migration applied but the last `pending`.
+	async fn migrated_but(pool: &SqlitePool, pending: usize) {
+		sqlx::query("CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL)")
+			.execute(pool)
+			.await
+			.unwrap();
+		let up: Vec<_> = crate::schema::MIGRATOR.iter().filter(|m| !m.migration_type.is_down_migration()).collect();
+		for m in &up[..up.len() - pending] {
+			sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?1, ?2, 1, ?3, 0)")
+				.bind(m.version)
+				.bind(m.description.as_ref())
+				.bind(m.checksum.as_ref())
+				.execute(pool)
+				.await
+				.unwrap();
+		}
+	}
+
+	#[tokio::test]
+	async fn a_migrated_database_behind_this_build_is_not_critical() {
+		let pool = empty_database().await;
+		migrated_but(&pool, 5).await;
+		let schema = check_schema(&pool).await;
+		assert!(!schema.healthy && !schema.critical, "{:?}", schema.error);
+	}
+
+	#[tokio::test]
+	async fn a_database_never_migrated_is_critical() {
+		// What `create_if_missing` makes of an unmounted volume: an empty file
+		// `SELECT 1` answers, with no table to sign anyone in.
+		let pool = empty_database().await;
+		let schema = check_schema(&pool).await;
+		assert!(!schema.healthy && schema.critical, "{:?}", schema.error);
+		assert_eq!(Verdict::of(&[DependencyStatus::up("sqlite"), schema]), Verdict::Unavailable);
+	}
+
+	#[tokio::test]
+	async fn a_current_database_is_healthy() {
+		let pool = empty_database().await;
+		migrated_but(&pool, 0).await;
+		assert!(check_schema(&pool).await.healthy);
 	}
 
 	#[test]
