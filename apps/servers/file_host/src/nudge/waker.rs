@@ -142,14 +142,19 @@ pub(crate) fn classify_pass_error(err: &sqlx::Error) -> &'static str {
 /// What one pass got through — see [`run_once`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PassReport {
-	/// Subjects `consider` was run for, successfully or not.
+	/// Subjects `consider` was run for, successfully or not, and saw through
+	/// to its decision: whatever it decided, a subject it decided to notify
+	/// had at least one delivery begin. A subject the deadline reached
+	/// between its claim and its first delivery is not counted here but in
+	/// `deferred` (#575).
 	pub considered: usize,
 	/// Of those, how many ended with a notification accepted somewhere.
 	pub intervened: usize,
 	/// Due subjects this pass fetched and never considered, because
 	/// `NudgeContext::pass_deadline` ran out first. Still due — at most one was
-	/// caught up to the curriculum epoch before the deadline struck — so the
-	/// next pass picks them up.
+	/// caught up to the curriculum epoch before the deadline struck, and at
+	/// most one was claimed and handed its claim back because the deadline
+	/// came before its first delivery — so the next pass picks them up.
 	pub deferred: usize,
 	/// Whether the pass ran out of time — before a subject, or inside one's
 	/// deliveries. Exactly the passes `nudge_waker_pass_deadline_exceeded_total`
@@ -162,6 +167,69 @@ pub struct PassReport {
 	/// (#265, SLI4) and `activity_outcome` (#286) together — see
 	/// [`sweep_history`].
 	pub pruned: u64,
+}
+
+/// What a pass reads its deadline against (#575): the time since it began,
+/// and a bound on one piece of work. `TokioClock` in production; a test can
+/// step one forward only when a delivery's budget runs out, so where the
+/// deadline falls is exact, not a race with how fast the machine is.
+///
+/// Storage work takes none of a stepped clock's time. That is the point:
+/// what the deadline tests check is the pass's accounting at the boundary,
+/// and on a real clock the boundary lands wherever a slow runner puts it.
+/// (A paused tokio clock can't do this here: sqlx pings a `SQLite`
+/// connection on its own thread as it returns to the pool, and a paused
+/// runtime waiting on that skips ahead to the next pool timeout.)
+pub(crate) trait PassClock: Sync {
+	/// Time since the pass began.
+	fn elapsed(&self) -> Duration;
+
+	/// `work`, or `None` once `budget` has passed without it finishing.
+	fn timeout<F: std::future::Future + Send>(&self, budget: Duration, work: F) -> impl std::future::Future<Output = Option<F::Output>> + Send;
+}
+
+/// The wall clock, through tokio's timer.
+pub(crate) struct TokioClock {
+	started: tokio::time::Instant,
+}
+
+impl TokioClock {
+	pub(crate) fn start() -> Self {
+		Self {
+			started: tokio::time::Instant::now(),
+		}
+	}
+}
+
+impl PassClock for TokioClock {
+	fn elapsed(&self) -> Duration {
+		self.started.elapsed()
+	}
+
+	async fn timeout<F: std::future::Future + Send>(&self, budget: Duration, work: F) -> Option<F::Output> {
+		tokio::time::timeout(budget, work).await.ok()
+	}
+}
+
+/// A pass's deadline: `NudgeContext::pass_deadline` after its clock began.
+pub(crate) struct Deadline<C> {
+	clock: C,
+	after: Duration,
+}
+
+impl<C: PassClock> Deadline<C> {
+	pub(crate) const fn new(clock: C, after: Duration) -> Self {
+		Self { clock, after }
+	}
+
+	fn passed(&self) -> bool {
+		self.clock.elapsed() >= self.after
+	}
+
+	/// What the pass has left; zero once it has passed.
+	fn left(&self) -> Duration {
+		self.after.saturating_sub(self.clock.elapsed())
+	}
 }
 
 /// One pass. Public so a debug endpoint can force it without waiting.
@@ -192,6 +260,13 @@ pub struct PassReport {
 ///   enough stalled devices could hold a pass for `devices ×
 ///   delivery_timeout` — a real `chatgpt-codex-connector` finding on #357.
 ///
+/// A subject is therefore never cut in half (#575). If the deadline reaches
+/// one after its claim and before its first delivery, nothing was sent, so
+/// `consider` hands the claim back and the subject counts as `deferred`
+/// with the rest the pass didn't reach — never as `considered` with no
+/// attempt behind it. That is the same deadline check, read once more; not a
+/// second deadline (`docs/study-nudge.md`, "Scaling invariants", 4).
+///
 /// What remains past the deadline is storage work, which `SQLite`'s
 /// `busy_timeout` bounds. Subjects not reached are left exactly as `due`
 /// returned them and are still due next pass — the same property `BATCH`
@@ -201,7 +276,11 @@ pub struct PassReport {
 /// Any storage failure. Per-subject failures are logged and skipped rather than
 /// aborting the pass — one bad row must not stop everyone else's.
 pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassReport, sqlx::Error> {
-	let deadline = tokio::time::Instant::now() + nudge.pass_deadline;
+	run_pass(db, nudge, &Deadline::new(TokioClock::start(), nudge.pass_deadline)).await
+}
+
+/// [`run_once`] against `deadline`'s clock.
+pub(crate) async fn run_pass<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext, deadline: &Deadline<C>) -> Result<PassReport, sqlx::Error> {
 	let engagement = EngagementRepository::new(db.clone());
 	let now = Utc::now();
 	// New material first, so this pass's `due` already reads the epoch it
@@ -211,7 +290,7 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	// Detection is storage work before the first subject; a pass it ran out
 	// of time starts nothing more (a real `chatgpt-codex-connector` finding on
 	// #362). Nothing was read, so nothing is deferred: the next pass reads it.
-	if tokio::time::Instant::now() >= deadline {
+	if deadline.passed() {
 		warn!(deadline_ms = nudge.pass_deadline.as_millis(), "waker pass reached its deadline before reading due subjects");
 		report.deadline_exceeded = true;
 		crate::metrics::waker::record_deadline_exceeded();
@@ -224,8 +303,8 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	debug!(count = due.len(), epoch, "subjects the arithmetic marked eligible, or behind the curriculum epoch");
 
 	for (reached, gate) in due.iter().enumerate() {
-		if tokio::time::Instant::now() >= deadline {
-			report.deferred = due.len() - reached;
+		if deadline.passed() {
+			report.deferred += due.len() - reached;
 			warn!(
 				considered = report.considered,
 				deferred = report.deferred,
@@ -265,8 +344,8 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 			// of it and may provision a session. Neither is started past the
 			// deadline — the subject stays due and the next pass considers
 			// them (a real `chatgpt-codex-connector` finding on #362).
-			if tokio::time::Instant::now() >= deadline {
-				report.deferred = due.len() - reached;
+			if deadline.passed() {
+				report.deferred += due.len() - reached;
 				warn!(
 					considered = report.considered,
 					deferred = report.deferred,
@@ -277,11 +356,17 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 			}
 		}
 
-		report.considered += 1;
 		match consider(db, nudge, &engagement, &gate.subject_id, deadline).await {
-			Ok(true) => report.intervened += 1,
-			Ok(false) => {}
+			Ok(Considered::Sent) => {
+				report.considered += 1;
+				report.intervened += 1;
+			}
+			Ok(Considered::NotSent) => report.considered += 1,
+			// Handed back before anything was sent: as if never reached, and
+			// the loop's next check ends the pass.
+			Ok(Considered::Deferred) => report.deferred += 1,
 			Err(err) => {
+				report.considered += 1;
 				error!(subject = %gate.subject_id, error = %err, "could not consider a due subject");
 				crate::metrics::waker::record_verdict("storage_error", "n/a");
 			}
@@ -292,7 +377,7 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 	// that runs out inside the last (or only) subject's deliveries truncates
 	// the pass just as much, and would otherwise go uncounted — a real
 	// `chatgpt-codex-connector` finding on #357.
-	if report.deferred > 0 || tokio::time::Instant::now() >= deadline {
+	if report.deferred > 0 || deadline.passed() {
 		report.deadline_exceeded = true;
 		crate::metrics::waker::record_deadline_exceeded();
 	} else {
@@ -319,14 +404,14 @@ pub async fn run_once(db: &SqlitePool, nudge: &NudgeContext) -> Result<PassRepor
 /// due, and the new material waits for a pass that can. A detection that runs
 /// the pass out of time does not start the epoch read; `run_once` then ends
 /// the pass.
-async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio::time::Instant) -> Option<Publication> {
+async fn newest_publication<C: PassClock>(db: &SqlitePool, now: DateTime<Utc>, deadline: &Deadline<C>) -> Option<Publication> {
 	let publications = PublicationRepository::new(db.clone());
 	match publications.detect_activity_publications(&now.to_rfc3339()).await {
 		Ok(0) => {}
 		Ok(found) => info!(found, "new catalogue material detected"),
 		Err(err) => error!(error = %err, "could not detect catalogue publications"),
 	}
-	if tokio::time::Instant::now() >= deadline {
+	if deadline.passed() {
 		return None;
 	}
 	// #277 (CUR4): lessons append to the same log — a second producer, not a
@@ -336,7 +421,7 @@ async fn newest_publication(db: &SqlitePool, now: DateTime<Utc>, deadline: tokio
 		Ok(found) => info!(found, "new lesson material detected"),
 		Err(err) => error!(error = %err, "could not detect lesson publications"),
 	}
-	if tokio::time::Instant::now() >= deadline {
+	if deadline.passed() {
 		return None;
 	}
 	match publications.newest().await {
@@ -450,8 +535,29 @@ async fn sweep_history(engagement: &EngagementRepository, outcomes: &OutcomeRepo
 	total
 }
 
+/// How [`consider`] left a subject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Considered {
+	/// A notification was accepted somewhere.
+	Sent,
+	/// Decided and done for this pass, with nothing accepted: not eligible,
+	/// suppressed, the claim lost, or every delivery tried and refused or
+	/// timed out.
+	NotSent,
+	/// Claimed, then the pass deadline came before any device was tried
+	/// (#575): nothing was sent, the claim is handed back, and the subject is
+	/// due next pass exactly as if this one never reached it.
+	Deferred,
+}
+
 /// Evaluate one subject, and act if the engine says so.
-async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &EngagementRepository, subject_id: &str, deadline: tokio::time::Instant) -> Result<bool, sqlx::Error> {
+async fn consider<C: PassClock>(
+	db: &SqlitePool,
+	nudge: &NudgeContext,
+	engagement: &EngagementRepository,
+	subject_id: &str,
+	deadline: &Deadline<C>,
+) -> Result<Considered, sqlx::Error> {
 	let now = Utc::now();
 
 	let stored = engagement.charge(subject_id).await?;
@@ -487,7 +593,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		Err(err) => {
 			error!(subject = %subject_id, error = %err, "could not read sessions; skipping this subject rather than guessing whether one is prepared");
 			crate::metrics::waker::record_verdict("storage_error", "n/a");
-			return Ok(false);
+			return Ok(Considered::NotSent);
 		}
 	};
 	// #263 (SLI2): `first_prepared`'s `LIMIT 1` reads at most one row for
@@ -601,7 +707,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 						let (levels, as_of) = charge.to_storage();
 						save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
 					}
-					return Ok(false);
+					return Ok(Considered::NotSent);
 				}
 				// Otherwise the sessionless verdict computed above — plain
 				// absence's `GetStarted`, admitted or suppressed — still
@@ -623,14 +729,14 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			// Without it the waker would re-read the same row every pass.
 			let (levels, as_of) = charge.to_storage();
 			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, until).await?;
-			return Ok(false);
+			return Ok(Considered::NotSent);
 		}
 		Verdict::Suppressed { reason, retry_at } => {
 			info!(subject = %subject_id, reason = reason.as_str(), "warranted but not admissible");
 			crate::metrics::waker::record_verdict("suppressed", reason.as_str());
 			let (levels, as_of) = charge.to_storage();
 			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry_at).await?;
-			return Ok(false);
+			return Ok(Considered::NotSent);
 		}
 		Verdict::NothingToSay => {
 			// **Unreachable by construction as of #285 (RCM8)**, and kept
@@ -657,13 +763,55 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 			let retry = now + chrono::Duration::hours(6);
 			let (levels, as_of) = charge.to_storage();
 			save_unless_superseded(&nudge.deletion, engagement, subject_id, read_as_of.as_deref(), &levels, as_of, retry).await?;
-			return Ok(false);
+			return Ok(Considered::NotSent);
 		}
 	};
 
 	// Claim before sending. A crash between the two costs this intervention
 	// rather than duplicating it, which is the right way round.
 	let next_eligible = engine.intervened(&mut charge, now);
+	let (levels, as_of) = charge.to_storage();
+	let claim = Claim {
+		action,
+		now,
+		next_eligible,
+		read_as_of,
+		levels,
+		as_of,
+	};
+	send(db, nudge, engagement, subject_id, deadline, claim).await
+}
+
+/// What [`consider`] decided to send, and the recharged charge to claim it
+/// with.
+struct Claim {
+	action: StudyAction,
+	/// When the pass read the subject.
+	now: DateTime<Utc>,
+	next_eligible: DateTime<Utc>,
+	/// The charge's version as read; the claim is conditional on it.
+	read_as_of: Option<String>,
+	levels: Vec<(u16, f64)>,
+	as_of: DateTime<Utc>,
+}
+
+/// Claim the subject, then send: the second half of [`consider`].
+async fn send<C: PassClock>(
+	db: &SqlitePool,
+	nudge: &NudgeContext,
+	engagement: &EngagementRepository,
+	subject_id: &str,
+	deadline: &Deadline<C>,
+	claim: Claim,
+) -> Result<Considered, sqlx::Error> {
+	let Claim {
+		action,
+		now,
+		next_eligible,
+		read_as_of,
+		levels,
+		as_of,
+	} = claim;
 	// Disallowed for tracing; this is the stored history column.
 	#[allow(clippy::disallowed_methods)]
 	let serialized = serde_json::to_string(&action).unwrap_or_default();
@@ -671,7 +819,6 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// `read_as_of`: a signal folded in since this pass read the charge means
 	// `action` was chosen from deficits that no longer exist, so the claim is
 	// refused and nothing stale is sent — see `EngagementRepository::claim`.
-	let (levels, as_of) = charge.to_storage();
 	let Some(log_id) = engagement
 		.claim(
 			subject_id,
@@ -687,7 +834,7 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	else {
 		info!(subject = %subject_id, "another pass claimed this subject first, or a signal changed their charge while this pass was deciding");
 		crate::metrics::waker::record_verdict("claim_lost", "n/a");
-		return Ok(false);
+		return Ok(Considered::NotSent);
 	};
 
 	// #284 (RCM7): refresh only after winning the claim above, not merely on
@@ -706,10 +853,19 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 	// before the one send it corresponds to — not one per pass that merely
 	// evaluated to `Intervene`.
 	if let Some(session_id) = action.session_id() {
-		refresh_stale_proposal(db, nudge, &sessions, subject_id, session_id, now).await;
+		refresh_stale_proposal(db, nudge, &SessionRepository::new(db.clone()), subject_id, session_id, now).await;
 	}
 
-	let Delivery { accepted, timed_out } = actuate(db, nudge, &action, subject_id, deadline).await?;
+	let Delivery { accepted, timed_out, tried, cut } = actuate(db, nudge, &action, subject_id, deadline).await?;
+	if cut && tried == 0 {
+		// #575: the deadline came between the claim and the first delivery.
+		// Nothing went out, so handing the claim back cannot cause a
+		// duplicate, and it is not a verdict: the subject has reached no
+		// outcome this pass, like every other one the pass did not reach.
+		info!(subject = %subject_id, "waker pass deadline reached before this subject's first delivery; handing the claim back for the next pass");
+		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
+		return Ok(Considered::Deferred);
+	}
 	if accepted == 0 && timed_out > 0 {
 		// #264 (SLI3): a timeout is crash-shaped, and lands on the same side
 		// of the claim-before-send line a crash does. Unlike every other
@@ -722,19 +878,19 @@ async fn consider(db: &SqlitePool, nudge: &NudgeContext, engagement: &Engagement
 		// because nothing confirmed acceptance.
 		warn!(subject = %subject_id, timed_out, "no device confirmed the intervention and at least one delivery timed out; keeping the claim rather than risking a duplicate");
 		crate::metrics::waker::record_verdict("delivery_timed_out", "n/a");
-		return Ok(false);
+		return Ok(Considered::NotSent);
 	}
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
 		crate::metrics::waker::record_verdict("no_device_accepted", "n/a");
 		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
-		return Ok(false);
+		return Ok(Considered::NotSent);
 	}
 
 	engagement.mark_actuated(log_id, &Utc::now().to_rfc3339()).await?;
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	crate::metrics::waker::record_verdict("sent", "n/a");
-	Ok(true)
+	Ok(Considered::Sent)
 }
 
 /// Run `write` for `subject_id` only if the subject still has its gate row,
@@ -1328,7 +1484,7 @@ pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: 
 /// `consider`. A device reached after the deadline is not tried and not
 /// recorded against: nothing was sent to it, so there is nothing ambiguous to
 /// protect and nothing to count as its failure.
-async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, subject_id: &str, deadline: tokio::time::Instant) -> Result<Delivery, sqlx::Error> {
+async fn actuate<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, subject_id: &str, deadline: &Deadline<C>) -> Result<Delivery, sqlx::Error> {
 	let subscriptions_repo = PushSubscriptionRepository::new(db.clone());
 	let subscriptions = subscriptions_repo.for_subject(subject_id).await?;
 
@@ -1353,12 +1509,14 @@ async fn actuate(db: &SqlitePool, nudge: &NudgeContext, action: &StudyAction, su
 		// What a log line may name: a recognised push service or `other`, never
 		// the endpoint or its host, which a client chooses (docs/identity.md).
 		let service = stored.subscription.service();
-		let budget = nudge.delivery_timeout.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+		let budget = nudge.delivery_timeout.min(deadline.left());
 		if budget.is_zero() {
 			warn!(subject = %subject_id, "waker pass deadline reached; not trying this subject's remaining devices");
+			delivery.cut = true;
 			break;
 		}
-		let Ok(outcome) = tokio::time::timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
+		delivery.tried += 1;
+		let Some(outcome) = deadline.clock.timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
 			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
@@ -1396,6 +1554,11 @@ struct Delivery {
 	/// Push services that did not answer within their budget — the delivery
 	/// timeout, or what was left of the pass.
 	timed_out: usize,
+	/// Deliveries begun, whatever came of them.
+	tried: usize,
+	/// Whether the pass deadline stopped the devices before the last was
+	/// tried. With `tried` zero, it came before the first (#575).
+	cut: bool,
 }
 
 /// Fold a signal into a subject's charge and re-solve their eligibility.
@@ -1537,8 +1700,41 @@ mod tests {
 	use chrono::{Duration, TimeZone as _};
 
 	/// A deadline no test that calls `consider` directly will reach.
-	fn far_deadline() -> tokio::time::Instant {
-		tokio::time::Instant::now() + std::time::Duration::from_secs(3600)
+	fn far_deadline() -> Deadline<TokioClock> {
+		Deadline::new(TokioClock::start(), std::time::Duration::from_secs(3600))
+	}
+
+	/// A pass clock that moves only when a delivery's budget runs out, by
+	/// exactly that budget (#575): every push service in a test that uses it
+	/// is one that never answers, so where the pass deadline falls is decided
+	/// by arithmetic, not by how fast the runner is. The delivery is still
+	/// started, so it is polled once before its budget is spent.
+	#[derive(Default)]
+	struct SteppedClock {
+		elapsed_ms: std::sync::atomic::AtomicU64,
+	}
+
+	impl PassClock for SteppedClock {
+		fn elapsed(&self) -> std::time::Duration {
+			std::time::Duration::from_millis(self.elapsed_ms.load(std::sync::atomic::Ordering::SeqCst))
+		}
+
+		async fn timeout<F: std::future::Future + Send>(&self, budget: std::time::Duration, work: F) -> Option<F::Output> {
+			tokio::select! {
+				biased;
+				out = work => return Some(out),
+				() = std::future::ready(()) => {}
+			}
+			self.elapsed_ms.fetch_add(u64::try_from(budget.as_millis()).unwrap(), std::sync::atomic::Ordering::SeqCst);
+			None
+		}
+	}
+
+	/// A pass over `nudge` on a stepped clock; the report and the time it took.
+	async fn stepped_pass(pool: &SqlitePool, nudge: &NudgeContext) -> (PassReport, std::time::Duration) {
+		let deadline = Deadline::new(SteppedClock::default(), nudge.pass_deadline);
+		let report = run_pass(pool, nudge, &deadline).await.unwrap();
+		(report, deadline.clock.elapsed())
 	}
 
 	fn t0() -> chrono::DateTime<Utc> {
@@ -1814,11 +2010,10 @@ mod tests {
 					deletion: crate::auth::DeletionLock::default(),
 				};
 
-				let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline())
-					.await
-					.expect("a pass over a freshly-seeded subject should not error");
-				assert!(
-					!intervened,
+				let intervened = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+				assert_eq!(
+					intervened,
+					Considered::NotSent,
 					"no push subscription exists to consent to it, so this pass should be Suppressed rather than Sent"
 				);
 
@@ -1879,10 +2074,8 @@ mod tests {
 				// Idempotency: a second pass — standing in for "the first
 				// pass crashed between provisioning and claiming, and the
 				// waker tried again" — must not create a second session.
-				let second_pass = consider(&pool, &nudge, &engagement, subject_id, far_deadline())
-					.await
-					.expect("a second pass should not error");
-				assert!(!second_pass, "still nothing consented to receive it");
+				let second_pass = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+				assert_eq!(second_pass, Considered::NotSent, "still nothing consented to receive it");
 				let all_sessions = sessions.list(subject_id).await.expect("list this subject's sessions");
 				assert_eq!(all_sessions.len(), 1, "provisioning must not run twice for the same subject");
 				let still_the_same = sessions.first_prepared(subject_id).await.expect("read back again").expect("still findable");
@@ -1976,7 +2169,7 @@ mod tests {
 			};
 
 			// First pass: nothing prepared, provisions a real session.
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 			let sessions = SessionRepository::new(pool.clone());
 			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
 
@@ -1998,7 +2191,7 @@ mod tests {
 			// session (`active` isn't a "prepared" status), so this must
 			// reach `NothingToSay` again and provision independently rather
 			// than erroring or silently refreshing the started row.
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 
 			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
 			assert_eq!(all.len(), 2, "the started session and a fresh proposal must coexist, not collapse into one");
@@ -2105,7 +2298,7 @@ mod tests {
 			};
 
 			// First pass: nothing prepared, provisions a real proposal.
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 			let sessions = SessionRepository::new(pool.clone());
 			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
 			let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
@@ -2130,7 +2323,7 @@ mod tests {
 			// other real encryption failure would; what matters here is that
 			// the refresh already ran by that point regardless.
 			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 
 			let all = sessions.list(subject_id).await.unwrap();
 			assert_eq!(all.len(), 1, "an ordinary ignored-proposal pass must refresh in place, not add a second session");
@@ -2221,7 +2414,7 @@ mod tests {
 				};
 
 				// First pass: provisions the proposal.
-				consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+				consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 				let sessions = SessionRepository::new(pool.clone());
 				let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
 				let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
@@ -2237,8 +2430,8 @@ mod tests {
 				PresenceLeaseRepository::new(pool.clone()).observe(subject_id, &first_id, &now_str).await.unwrap();
 
 				engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
-				let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
-				assert!(!intervened, "a subject actively viewing the proposal must not be notified about it");
+				let intervened = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+				assert_eq!(intervened, Considered::NotSent, "a subject actively viewing the proposal must not be notified about it");
 
 				let all = sessions.list(subject_id).await.unwrap();
 				assert_eq!(all.len(), 1, "presence suppression must not itself cause a second session to appear");
@@ -2351,7 +2544,7 @@ mod tests {
 
 			// First pass: provisions a real proposal, exactly as the sibling
 			// tests do.
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 			let sessions = SessionRepository::new(pool.clone());
 			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
 			let first_record = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
@@ -2366,8 +2559,8 @@ mod tests {
 			let future = now + Duration::hours(1);
 			engagement.save(subject_id, &levels, &now_str, &future.to_rfc3339()).await.unwrap();
 
-			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
-			assert!(!intervened, "a pass that loses the claim must not report having intervened");
+			let intervened = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+			assert_eq!(intervened, Considered::NotSent, "a pass that loses the claim must not report having intervened");
 
 			let after = sessions.get(subject_id, &first_id).await.unwrap().unwrap();
 			assert_eq!(
@@ -2452,7 +2645,7 @@ mod tests {
 			};
 
 			// First pass: provisions the proposal.
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 			let sessions = SessionRepository::new(pool.clone());
 			let first_id = sessions.first_prepared(subject_id).await.unwrap().unwrap();
 
@@ -2477,7 +2670,7 @@ mod tests {
 			sqlx::query!("UPDATE activities SET min_duration_ms = min_duration_ms * 10").execute(&pool).await.unwrap();
 
 			engagement.save(subject_id, &levels, &now_str, &now_str).await.unwrap();
-			consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
+			consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
 
 			let all: Vec<SessionRecord> = sessions.list(subject_id).await.unwrap();
 			assert_eq!(all.len(), 1, "an edited-but-unpromoted proposal must not be duplicated either");
@@ -2547,8 +2740,8 @@ mod tests {
 				deletion: crate::auth::DeletionLock::default(),
 			};
 
-			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
-			assert!(!intervened, "nothing was provisioned, so there is nothing to send");
+			let intervened = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+			assert_eq!(intervened, Considered::NotSent, "nothing was provisioned, so there is nothing to send");
 
 			let sessions = SessionRepository::new(pool.clone());
 			assert_eq!(
@@ -2627,8 +2820,8 @@ mod tests {
 				deletion: crate::auth::DeletionLock::default(),
 			};
 
-			let intervened = consider(&pool, &nudge, &engagement, subject_id, far_deadline()).await.unwrap();
-			assert!(!intervened, "the catalogue is unreadable, so nothing can be provisioned or sent");
+			let intervened = consider(&pool, &nudge, &engagement, subject_id, &far_deadline()).await.unwrap();
+			assert_eq!(intervened, Considered::NotSent, "the catalogue is unreadable, so nothing can be provisioned or sent");
 
 			let sessions = SessionRepository::new(pool.clone());
 			assert_eq!(sessions.first_prepared(subject_id).await.unwrap(), None);
@@ -3123,33 +3316,39 @@ mod tests {
 		(total, actuated)
 	}
 
-	/// #264 (SLI3): a pass stops at its deadline, between subjects, and the
-	/// subjects it never reached are untouched and still due.
+	/// The failures recorded against each of `subject_id`'s devices.
+	async fn failures(pool: &SqlitePool, subject_id: &str) -> Vec<i64> {
+		PushSubscriptionRepository::new(pool.clone())
+			.for_subject(subject_id)
+			.await
+			.unwrap()
+			.iter()
+			.map(|device| device.failure_count)
+			.collect()
+	}
+
+	/// #264 (SLI3), #575: a pass stops at its deadline, between subjects; the
+	/// subjects it reached each had a whole delivery attempt and keep their
+	/// claim, and the subjects it never reached are untouched and still due.
 	///
 	/// Six due subjects, every one with a single device on a push service
 	/// that never answers. Each delivery is cut off at 200ms and the pass at
-	/// 300ms, so the pass reaches the second subject before the deadline and
-	/// the third after it — but the assertions below do not depend on that
-	/// arithmetic landing exactly: they hold for any split in which at least
-	/// one subject was reached and at least one was not, and they check each
-	/// subject against the side of the split it actually landed on.
-	///
-	/// The deadline can also strike inside the last subject the pass
-	/// considered, after `considered` counted it (#572, seen on a slow CI
-	/// runner). With no time left before its delivery, `actuate` tries no
-	/// device and `consider` hands the claim back: the subject is due again,
-	/// and no connection was made. With a sliver left, the delivery times out
-	/// before the provider has counted the connection. So only that one
-	/// subject may lack a claim or a counted connection; every subject before
-	/// it had a whole delivery budget, a claim and a connection.
+	/// 300ms, on a clock that moves only when a delivery's budget runs out
+	/// (`SteppedClock`), so the split is exact: the first subject's delivery
+	/// takes its whole 200ms, the second's takes the 100ms the pass has left,
+	/// and the third is reached at 300ms, which is the deadline. Before #575
+	/// this ran on the wall clock, and where 300ms fell depended on the
+	/// runner (#572); the assertions had to allow the last considered
+	/// subject to be cut before its delivery.
 	#[test]
 	fn a_pass_that_reaches_its_deadline_leaves_the_subjects_it_never_reached_untouched_and_still_due() {
 		use sqlx::sqlite::SqlitePoolOptions;
 
 		const SUBJECTS: usize = 6;
+		const REACHED: usize = 2;
 		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 
-		let (endpoint, connections) = stalling_push_service();
+		let (endpoint, _) = stalling_push_service();
 		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
 		rt.block_on(async {
@@ -3168,67 +3367,92 @@ mod tests {
 				first_contact(&pool, subject_id).await.unwrap();
 				rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
 			}
-			assert_eq!(engagement.due(&now_str, 0, BATCH).await.unwrap().len(), SUBJECTS, "every subject starts due");
+			let due: Vec<String> = engagement.due(&now_str, 0, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
+			assert_eq!(due.len(), SUBJECTS, "every subject starts due");
 
 			let nudge = NudgeContext {
 				delivery_timeout: std::time::Duration::from_millis(200),
 				pass_deadline: std::time::Duration::from_millis(300),
 				..nudge_context()
 			};
-			let started = std::time::Instant::now();
-			let report = run_once(&pool, &nudge).await.unwrap();
-			let elapsed = started.elapsed();
+			let (report, took) = stepped_pass(&pool, &nudge).await;
 
-			assert!(
-				report.considered >= 1,
-				"the deadline is checked between subjects, so the first is always reached: {report:?}"
-			);
-			assert!(report.deferred >= 1, "six subjects at 200ms each cannot all fit in a 300ms pass: {report:?}");
 			assert_eq!(
-				report.considered + report.deferred,
-				SUBJECTS,
-				"every due subject is either considered or deferred: {report:?}"
+				report,
+				PassReport {
+					considered: REACHED,
+					intervened: 0,
+					deferred: SUBJECTS - REACHED,
+					deadline_exceeded: true,
+					caught_up: 0,
+					pruned: 0,
+				},
+				"two whole deliveries fit the pass, the rest are deferred, and nothing was accepted"
 			);
-			assert_eq!(report.intervened, 0, "nothing was accepted, so nothing counts as an intervention: {report:?}");
-			assert!(report.deadline_exceeded, "{report:?}");
-			assert!(
-				elapsed < std::time::Duration::from_secs(5),
-				"a pass over a provider that never answers must still end — it took {elapsed:?}"
-			);
+			assert_eq!(took, std::time::Duration::from_millis(300), "the pass ran exactly to its deadline");
+
 			let still_due: Vec<String> = engagement.due(&now_str, 0, BATCH).await.unwrap().into_iter().map(|gate| gate.subject_id).collect();
 			let sessions = SessionRepository::new(pool.clone());
-			let mut reached = 0;
-			let mut handed_back = 0;
-			for subject_id in &subjects {
-				let (total, actuated) = intervention_rows(&pool, subject_id).await;
-				if total == 0 {
-					// Deferred, or the last considered subject handed back
-					// before its delivery began: either way not claimed, and
-					// still due.
-					assert!(still_due.contains(subject_id), "{subject_id} holds no claim, so the next pass must still find it");
-					if !sessions.list(subject_id).await.unwrap().is_empty() {
-						handed_back += 1;
-					}
-				} else {
-					// Reached: the timeout kept the claim (see the next test).
-					reached += 1;
-					assert_eq!((total, actuated), (1, 0), "{subject_id}: claimed once, never confirmed");
-					assert!(!still_due.contains(subject_id), "{subject_id}'s claim stands, so it is not retried into a duplicate");
-				}
+			let (reached, deferred) = due.split_at(REACHED);
+			for subject_id in reached {
+				// The timeout kept the claim (see the next test).
+				assert_eq!(intervention_rows(&pool, subject_id).await, (1, 0), "{subject_id}: claimed once, never confirmed");
+				assert_eq!(failures(&pool, subject_id).await, vec![1], "{subject_id}: its one delivery was tried, and timed out");
+				assert!(!still_due.contains(subject_id), "{subject_id}'s claim stands, so it is not retried into a duplicate");
 			}
-			assert!(
-				reached <= report.considered && report.considered - reached <= 1,
-				"every considered subject keeps its claim but the last, which the deadline may cut before its delivery: {reached} claimed of {report:?}"
-			);
-			assert!(
-				handed_back <= report.considered - reached,
-				"only a considered subject whose claim was handed back has been proposed to without a claim: {handed_back} of {report:?}"
-			);
-			let connected = connections.load(std::sync::atomic::Ordering::SeqCst);
-			assert!(
-				connected <= report.considered && connected + 1 >= report.considered,
-				"one delivery attempt per considered subject, none for the rest, and only the last may be cut before it connects: {connected} connections for {report:?}"
-			);
+			for subject_id in deferred {
+				assert_eq!(intervention_rows(&pool, subject_id).await, (0, 0), "{subject_id} was never reached, so never claimed");
+				assert_eq!(failures(&pool, subject_id).await, vec![0], "{subject_id}'s device was never tried");
+				assert!(sessions.list(subject_id).await.unwrap().is_empty(), "{subject_id} was never proposed to");
+				assert!(still_due.contains(subject_id), "{subject_id} holds no claim, so the next pass must still find it");
+			}
+		});
+	}
+
+	/// #575: a subject the deadline reaches after its claim and before its
+	/// first delivery is deferred, not considered: nothing was sent, so its
+	/// claim is handed back, no device is recorded as failing, and it is due
+	/// for the next pass.
+	///
+	/// On a pass this is the moment between the deadline check before a
+	/// subject and the first delivery, which only storage work fills; here
+	/// `consider` is given a deadline that has already passed.
+	#[test]
+	fn a_subject_the_deadline_reaches_before_its_first_delivery_is_handed_back_and_deferred() {
+		use sqlx::sqlite::SqlitePoolOptions;
+
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+		let subject_id = "subject-cut-before-delivery";
+		let (endpoint, _) = stalling_push_service();
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let now_str = now.to_rfc3339();
+			let engagement = EngagementRepository::new(pool.clone());
+			subscribe(&pool, subject_id, &endpoint, &now_str).await;
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+
+			let passed = Deadline::new(SteppedClock::default(), std::time::Duration::ZERO);
+			let considered = consider(&pool, &nudge_context(), &engagement, subject_id, &passed).await.unwrap();
+
+			assert_eq!(considered, Considered::Deferred);
+			assert_eq!(failures(&pool, subject_id).await, vec![0], "no device was tried, so none is recorded as failing");
+			assert_eq!(intervention_rows(&pool, subject_id).await, (0, 0), "the claim was handed back");
+			// Due from the moment the claim went back, which is after `now`.
+			let still_due: Vec<String> = engagement
+				.due(&Utc::now().to_rfc3339(), 0, BATCH)
+				.await
+				.unwrap()
+				.into_iter()
+				.map(|gate| gate.subject_id)
+				.collect();
+			assert_eq!(still_due, vec![subject_id.to_owned()], "so the next pass finds them");
 		});
 	}
 
@@ -3421,20 +3645,19 @@ mod tests {
 	/// between subjects let one subject with many stalled devices hold a pass
 	/// for `devices × delivery_timeout`. Here one subject has five devices on a
 	/// push service that never answers, a ten-second delivery timeout, and a
-	/// 300ms pass. The first delivery is cut off at what is left of the pass,
-	/// the other four are never tried, and the pass ends in well under one
-	/// delivery timeout — with the claim kept, because the one delivery that
-	/// was tried is ambiguous.
+	/// 300ms pass, on a clock that moves only when a delivery's budget runs out
+	/// (`SteppedClock`). The first delivery is cut off at what is left of the
+	/// pass, exactly 300ms, the other four are never tried, and the claim is
+	/// kept, because the one delivery that was tried is ambiguous.
 	#[test]
 	fn the_pass_deadline_cuts_short_one_subjects_deliveries_not_only_the_batch() {
 		use sqlx::sqlite::SqlitePoolOptions;
-		use std::sync::atomic::Ordering;
 
 		const DEVICES: usize = 5;
 		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 
 		let subject_id = "subject-many-stalled-devices";
-		let (endpoint, connections) = stalling_push_service();
+		let (endpoint, _) = stalling_push_service();
 		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
 		rt.block_on(async {
@@ -3455,26 +3678,19 @@ mod tests {
 				pass_deadline: std::time::Duration::from_millis(300),
 				..nudge_context()
 			};
-			let started = std::time::Instant::now();
-			let report = run_once(&pool, &nudge).await.unwrap();
-			let elapsed = started.elapsed();
+			let (report, took) = stepped_pass(&pool, &nudge).await;
 
-			assert!(
-				elapsed < std::time::Duration::from_secs(3),
-				"the pass must end near its deadline, not after 5 × 10s — it took {elapsed:?}"
-			);
+			assert_eq!(took, std::time::Duration::from_millis(300), "the pass ends at its deadline, not after 5 × 10s");
 			assert_eq!(report.considered, 1, "{report:?}");
 			assert!(report.deadline_exceeded, "a deadline reached inside the only subject still counts: {report:?}");
-			assert_eq!(connections.load(Ordering::SeqCst), 1, "only the first device was tried before the pass ran out");
 			assert_eq!(
 				intervention_rows(&pool, subject_id).await,
 				(1, 0),
 				"the one tried delivery is ambiguous, so the claim stands unconfirmed"
 			);
-
-			let devices = PushSubscriptionRepository::new(pool.clone()).for_subject(subject_id).await.unwrap();
-			let failures: i64 = devices.iter().map(|device| device.failure_count).sum();
-			assert_eq!(failures, 1, "a device that was never tried is not recorded as failing");
+			let mut failed = failures(&pool, subject_id).await;
+			failed.sort_unstable();
+			assert_eq!(failed, vec![0, 0, 0, 0, 1], "only the first device was tried; one never tried is not recorded as failing");
 		});
 	}
 
@@ -4024,7 +4240,7 @@ mod tests {
 			.unwrap();
 
 		publish(&pool, "new-thing", 1).await;
-		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
+		let newest = newest_publication(&pool, Utc::now(), &far_deadline()).await.unwrap();
 		let watermark = EngagementRepository::new(pool.clone()).gate(subject_id).await.unwrap().unwrap().curriculum_epoch;
 		assert!(
 			matches!(catch_up(&pool, subject_id, watermark, &newest).await.unwrap(), CatchUp::Drained(_)),
@@ -4307,7 +4523,7 @@ mod tests {
 		import_dir(&pool, dir.path(), "honeycomb", &Utc::now().to_rfc3339(), false).await.unwrap();
 		write_topiks(dir.path(), &[("beginner", "Beginner", b"{}"), ("second", "Second", b"{}")]);
 		import_dir(&pool, dir.path(), "honeycomb", &Utc::now().to_rfc3339(), false).await.unwrap();
-		let newest = newest_publication(&pool, Utc::now(), far_deadline()).await.unwrap();
+		let newest = newest_publication(&pool, Utc::now(), &far_deadline()).await.unwrap();
 
 		// A racing pass that read the watermark before pass one picks the
 		// activity publication again — and must not drain for it twice.
