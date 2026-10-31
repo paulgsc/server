@@ -1,9 +1,13 @@
-//! The `rust-runner` service's protocol: one request, one answer, one
-//! connection, over a Unix socket.
+//! The `rust-runner` service: one request, one answer, one connection, over
+//! a Unix socket.
+//!
+//! The protocol's types and its client ([`ask`],
+//! [`exchange`]) are `rust_rounds_wire`'s, which a client links without
+//! this crate; this module answers.
 //!
 //! The container has no network at all (`network_mode: none`), so the only
 //! way in is the socket, on a volume shared with whoever asks (the recording
-//! pass in `file_host`, RR3's next slice). A request is one JSON line:
+//! pass in `file_host`, `rust_rounds::pass`). A request is one JSON line:
 //!
 //! ```json
 //! {"ask":"toolchain"}
@@ -31,85 +35,17 @@
 //! computes [`crate::recording::key`] of that toolchain and the source it
 //! sent itself, and stores the recording under that (RX4).
 
-use crate::recording::{Recorder, Recording, RustcRun};
+use crate::recording::Recorder;
 use crate::SpawnError;
-use serde::{Deserialize, Serialize};
+/// The protocol itself, and its client: `rust_rounds_wire`'s, the half a
+/// client links.
+pub use rust_rounds_wire::protocol::{
+	ask, exchange, job_deadline, AskError, Refusal, Request, Response, ANSWER_CEILING, ASK_TIMEOUT, CLEAN_TIMEOUT, CLIENT_TIMEOUT, DEFAULT_JOB_DEADLINE, REQUEST_CEILING,
+	SWEEP_ALLOWANCE,
+};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::time::{Duration, Instant};
-
-/// The largest request read, in bytes. A round's program is about 25 lines.
-pub const REQUEST_CEILING: u64 = 64 * 1024;
-
-/// How long a client may take to send its whole request, and to read the
-/// whole answer, before the connection is dropped, so a stalled or trickling
-/// client cannot hold the one job slot.
-pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The largest answer [`ask`] reads, in bytes.
-///
-/// An answer holds at most the
-/// diagnostics read from 1 MiB of rustc's JSON ([`crate::DIAGNOSTICS_CEILING`])
-/// and a few kept streams of 4 KiB; past this the service is not answering
-/// as documented.
-pub const ANSWER_CEILING: u64 = 4 * 1024 * 1024;
-
-/// What a client asks.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "ask", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum Request {
-	/// The toolchain every recording is keyed to.
-	Toolchain {},
-	/// Record `source`, if `toolchain` is the runner's.
-	Record { toolchain: String, source: String },
-}
-
-/// Why a request was not answered with a recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Refusal {
-	/// Not one JSON request line.
-	Malformed,
-	/// Past [`REQUEST_CEILING`].
-	TooLarge,
-	/// The request's toolchain is not the runner's.
-	WrongToolchain,
-	/// The connection came from a uid that is not a client's (a program's,
-	/// say), or its peer could not be read.
-	Peer,
-}
-
-impl Refusal {
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Malformed => "malformed",
-			Self::TooLarge => "too-large",
-			Self::WrongToolchain => "wrong-toolchain",
-			Self::Peer => "peer",
-		}
-	}
-}
-
-/// What the service answers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "answer", rename_all = "kebab-case")]
-pub enum Response {
-	Toolchain {
-		toolchain: String,
-	},
-	/// The recording, and what the phone reads of it
-	/// ([`Recording::rustc_run`]).
-	Recorded {
-		recording: Box<Recording>,
-		rustc: RustcRun,
-	},
-	Refused {
-		reason: Refusal,
-		toolchain: String,
-	},
-}
 
 /// Answer the one request on `stream`.
 ///
@@ -122,8 +58,11 @@ pub enum Response {
 ///
 /// # Errors
 /// The machine's failures from [`Recorder::record`], which the service
-/// stops on. A client that sends nothing, too much, garbage or too slowly is
-/// answered with a refusal, and one that goes away is not an error.
+/// stops on. One before the program ran is first answered with
+/// [`Refusal::Unavailable`]; one after ([`SpawnError::Unsupervised`]) is
+/// answered with nothing. A client that sends nothing, too much, garbage or
+/// too slowly is answered with a refusal, and one that goes away is not an
+/// error.
 pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>) -> Result<Response, SpawnError> {
 	let refused = |reason| Response::Refused {
 		reason,
@@ -149,13 +88,22 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>)
 				toolchain: recorder.toolchain().to_owned(),
 			},
 			Some(Request::Record { toolchain, .. }) if toolchain != recorder.toolchain() => refused(Refusal::WrongToolchain),
-			Some(Request::Record { source, .. }) => {
-				let recording = recorder.record(&source)?;
-				Response::Recorded {
+			Some(Request::Record { source, .. }) => match recorder.record(&source) {
+				Ok(recording) => Response::Recorded {
 					rustc: recording.rustc_run(),
 					recording: Box::new(recording),
+				},
+				// The program ran, and could not be supervised to its end:
+				// no answer, so the client counts a drop against it (RP3).
+				Err(err @ SpawnError::Unsupervised(_)) => return Err(err),
+				// Before the program ran: the machine's alone. Said, so the
+				// client keeps nothing against the program, and then the
+				// service stops as for any machine failure.
+				Err(err) => {
+					send(stream, &refused(Refusal::Unavailable));
+					return Err(err);
 				}
-			}
+			},
 		}
 	};
 	send(stream, &response);
@@ -215,66 +163,5 @@ impl Write for Deadline<'_> {
 
 	fn flush(&mut self) -> std::io::Result<()> {
 		Ok(())
-	}
-}
-
-/// Ask the service on `socket` one thing, and wait up to `timeout` for the
-/// answer.
-///
-/// # Errors
-/// When the socket cannot be reached, or the answer is not one (or is longer
-/// than [`ANSWER_CEILING`]).
-pub fn ask(socket: &Path, request: &Request, timeout: Duration) -> std::io::Result<Response> {
-	let stream = UnixStream::connect(socket)?;
-	stream.set_read_timeout(Some(timeout))?;
-	stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
-	let mut body = Vec::new();
-	serde_json::to_writer(&mut body, request).map_err(std::io::Error::other)?;
-	body.push(b'\n');
-	(&stream).write_all(&body)?;
-	let mut line = Vec::new();
-	BufReader::new((&stream).take(ANSWER_CEILING + 1)).read_until(b'\n', &mut line)?;
-	if u64::try_from(line.len()).unwrap_or(u64::MAX) > ANSWER_CEILING {
-		return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the answer is longer than the ceiling"));
-	}
-	serde_json::from_slice(&line).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{Refusal, Request, Response};
-
-	#[test]
-	fn the_wire_reads_as_documented() {
-		assert_eq!(serde_json::from_str::<Request>(r#"{"ask":"toolchain"}"#).unwrap(), Request::Toolchain {});
-		assert_eq!(
-			serde_json::from_str::<Request>(r#"{"ask":"record","toolchain":"t","source":"fn main() {}"}"#).unwrap(),
-			Request::Record {
-				toolchain: String::from("t"),
-				source: String::from("fn main() {}"),
-			}
-		);
-		assert!(
-			serde_json::from_str::<Request>(r#"{"ask":"record","source":"fn main() {}"}"#).is_err(),
-			"a record names its toolchain"
-		);
-		assert!(serde_json::from_str::<Request>(r#"{"ask":"run","source":"x"}"#).is_err());
-		assert!(
-			serde_json::from_str::<Request>(r#"{"ask":"toolchain","trusted":true}"#).is_err(),
-			"no field changes how a program is treated"
-		);
-		let mut refused = Vec::new();
-		serde_json::to_writer(
-			&mut refused,
-			&Response::Refused {
-				reason: Refusal::WrongToolchain,
-				toolchain: String::from("t"),
-			},
-		)
-		.unwrap();
-		assert_eq!(String::from_utf8(refused).unwrap(), r#"{"answer":"refused","reason":"wrong-toolchain","toolchain":"t"}"#);
-		for reason in [Refusal::Malformed, Refusal::TooLarge, Refusal::WrongToolchain, Refusal::Peer] {
-			assert_eq!(serde_json::to_value(reason).unwrap(), reason.as_str());
-		}
 	}
 }

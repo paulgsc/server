@@ -28,6 +28,7 @@ pub mod rate_limiter;
 pub mod redacted;
 pub mod routes;
 pub mod routine_watch;
+pub mod rust_rounds;
 pub mod schema;
 pub mod storage;
 pub mod subject;
@@ -114,6 +115,9 @@ pub struct AppState {
 	/// `None` unless `TRANSCRIBE_ENABLED`: no voice note is heard, and home
 	/// keeps notes as they arrive.
 	pub transcribe: Option<transcribe::TranscribeContext>,
+	/// `None` unless `RUST_ROUNDS_ENABLED`: home keeps rounds, and records
+	/// none of their programs.
+	pub rust_rounds: Option<rust_rounds::RustRoundsContext>,
 	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
 	pub game_feed: Option<game_feed::GameFeedContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
@@ -180,6 +184,7 @@ impl AppState {
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock())?;
+		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config)?;
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 
 		Ok(Self {
@@ -188,6 +193,7 @@ impl AppState {
 			nudge,
 			mailbox,
 			transcribe,
+			rust_rounds,
 			game_feed,
 			auth,
 		})
@@ -264,11 +270,14 @@ impl AppState {
 /// - the Jobs mailbox (`mailbox`): home is LAN-only, so the mailbox cannot
 ///   tell it a digest arrived;
 /// - the voice-note transcriber (`transcribe`), over home's own database;
+/// - Rust Rounds' recorder (`rust_rounds`), which asks the rust-runner over
+///   its socket to record each stored program;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
 ///   which games are live.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
+	rust_rounds::start(state);
 	game_feed::start(state);
 }
 

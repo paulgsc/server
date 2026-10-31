@@ -112,11 +112,13 @@ pub struct Finished {
 /// # Errors
 /// If the child cannot be started or waited on, or a process of `sweep`'s
 /// uid survives every pass of the sweep; everything the child itself does is
-/// in [`Finished`].
+/// in [`Finished`]. An error starting the child (no pipes or descriptors
+/// left, no memory, a fork or exec the kernel refuses) keeps its kind and is
+/// marked as such ([`not_started`]): nothing of the child ran.
 pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usize, stderr_cap: usize, sweep: Option<Sweep>) -> std::io::Result<Finished> {
 	command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
 	let started = Instant::now();
-	let mut child = command.spawn()?;
+	let mut child = command.spawn().map_err(|err| std::io::Error::new(err.kind(), NotStarted(err)))?;
 	let stdout = child.stdout.take().map(|stream| drain(stream, stdout_cap));
 	let stderr = child.stderr.take().map(|stream| drain(stream, stderr_cap));
 	let ending = loop {
@@ -151,6 +153,30 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 		stdout: joined(stdout, deadline)?,
 		stderr: joined(stderr, deadline)?,
 	})
+}
+
+/// [`supervise`]'s error when the child could not be started: the spawn's
+/// own error, kept whole.
+#[derive(Debug)]
+struct NotStarted(std::io::Error);
+
+impl std::fmt::Display for NotStarted {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "could not be started: {}", self.0)
+	}
+}
+
+impl std::error::Error for NotStarted {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		Some(&self.0)
+	}
+}
+
+/// Whether `err` is [`supervise`]'s failure to start its child, before
+/// anything of it ran: the machine's alone, whatever the child would have
+/// been.
+pub(crate) fn not_started(err: &std::io::Error) -> bool {
+	err.get_ref().is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotStarted>)
 }
 
 /// How long the output readers get to see end-of-file once the child's
@@ -344,7 +370,22 @@ pub fn describe(status: ExitStatus) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::alive_and_owned_by;
+	use super::{alive_and_owned_by, not_started, supervise, Sweep};
+	use std::process::Command;
+	use std::time::Duration;
+
+	/// A child that cannot be started is marked as such, keeping its kind; a
+	/// failure once it ran (here, a sweep refused for root's uid) is not.
+	#[test]
+	fn a_spawn_failure_is_told_from_a_later_one() {
+		let missing = supervise(Command::new("/nonexistent/rust-runner-test"), Duration::from_secs(5), 64, 64, None).unwrap_err();
+		assert!(not_started(&missing), "{missing}");
+		assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+
+		let sweep = Some(Sweep { uid: 0, gid: 0 });
+		let later = supervise(Command::new("true"), Duration::from_secs(5), 64, 64, sweep).unwrap_err();
+		assert!(!not_started(&later), "{later}");
+	}
 
 	#[test]
 	fn the_sweep_reads_the_real_uid_and_passes_over_the_dead() {

@@ -1543,6 +1543,8 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "rust_round_repo",
+ "rust_rounds_wire",
  "rustix",
  "serde",
  "serde_json",
@@ -3969,15 +3971,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_round_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "rust_rounds_wire"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "rust_runner"
 version = "0.0.0"
 dependencies = [
  "clap",
- "hex",
+ "rust_rounds_wire",
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
 ]
 

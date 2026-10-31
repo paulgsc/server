@@ -110,6 +110,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"push_subscriptions",
 		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
 	),
+	(
+		"rust_round",
+		"each Rust Rounds round the owner's phone put (paulgsc/some-ui#2234), as the tutor wrote it: its cards and programs, and a refine card's voice-note id and the tutor's nudge, which can paraphrase what the owner said; and when it reached home. See docs/identity.md invariant 28",
+	),
 	("sessions", "study sessions"),
 	(
 		"sharing_choice",

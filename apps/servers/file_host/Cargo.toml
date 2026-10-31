@@ -144,6 +144,11 @@ publication_repo = { workspace = true }
 presence_repo = { workspace = true }
 session_repo = { workspace = true }
 voice_repo = { workspace = true }
+# Rust Rounds' store, and the half of the rust-runner a client links: its
+# protocol and what a recording holds. Not `rust_runner`, which compiles and
+# runs (EX1).
+rust_round_repo = { workspace = true }
+rust_rounds_wire = { workspace = true }
 whisper-rs = { workspace = true }
 # The transcriber's private scratch directory, and (in tests) a real on-disk
 # database for the waker's lock-classification test: two connections to
