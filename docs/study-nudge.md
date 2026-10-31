@@ -1621,13 +1621,12 @@ Three tiers, and every route above is in exactly one:
   `403`. Each acts only for the session's subject, so one person cannot read
   another's sessions or receive their reminders.
 - **Operator routes** (`/curriculum/operator/*`, `/leetype/operator/*`) change
-  what *everyone* is served. They need a session **whose subject is listed in
-  `OPERATOR_SUBJECTS`**, and answer `403` to every other subject
-  (`auth::operator`). Anyone who can reach the server can make an account, so a
-  session alone would gate nothing. With `OPERATOR_SUBJECTS` unset nobody is an
-  operator, the routes refuse everyone, and startup logs a warning saying so.
-  A refused subject is logged by id at `info`: that log line is how an operator
-  finds the id to list (see `example.env`).
+  what *everyone* is served. They need a session **whose subject is the
+  owner's account** (the only one; `docs/identity.md`, "The owner's account"),
+  or, with `OPERATOR_SUBJECTS` set, one listed there, and answer `403` to
+  every other subject (`auth::operator`). A refused subject is logged by id at
+  `info`: with `OPERATOR_SUBJECTS`, that log line is how an operator finds the
+  id to list (see `example.env`); the owner's box needs no id.
 - **Public routes** carry no authentication beyond the CORS origin allowlist.
   The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`,
   `/leetype/rounds`, `/leetype/rounds/:id`) and `GET /push/vapid-key` serve the
@@ -2115,9 +2114,9 @@ notice if it forgot.
 **Many subjects, recently.** Every table the study policy reads carries a
 `subject_id` column as of #259, and every repository that reads or writes one —
 including `SessionRepository`, as of #260 — filters and writes it. Until passkey
-auth landed, the *value* was always the singleton `subject-local`; the first
-account a deployment creates inherits that id and its rows (see
-`docs/identity.md`). The waker's per-subject logic is tested with several
+auth landed, the *value* was always the singleton `subject-local`; those rows
+stay under it, and no account holds it since the one-time claim was retired
+(#510; see `docs/identity.md`, "The owner's account"). The waker's per-subject logic is tested with several
 subjects, but has run in production with one.
 
 **The tag constant lives in three places.** `NUDGE_TAG` (`some-ui.study-nudge`)

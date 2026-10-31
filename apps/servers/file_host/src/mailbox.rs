@@ -23,8 +23,9 @@
 //! What this module promises, as docs/identity.md invariant 19 states:
 //!
 //! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`
-//!   and `run`), for the one subject `MAILBOX_SUBJECT` names, and writes only
-//!   `mailbox_item`, through [`pass::run_once`].
+//!   and `run`), for one subject, the owner's account unless `MAILBOX_SUBJECT`
+//!   names another ([`pass_subject`]), and writes only `mailbox_item`,
+//!   through [`pass::run_once`].
 //! - It puts only what is filed for the mailbox: the phone's decisions,
 //!   scouts and opened lessons, and each transcript home heard in a voice
 //!   note (`transcript`), text only, which it files itself.
@@ -51,12 +52,14 @@
 
 pub mod pass;
 
+use crate::auth::owner::{configured_or_owner, Owner};
 use crate::auth::DeletionLock;
 use crate::{AppState, Config};
 use mailbox_kit::{Mailbox, ReqwestTransport, Token};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// The shortest interval `MAILBOX_SECONDS` may set.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
@@ -78,8 +81,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct MailboxContext {
 	pub mailbox: Arc<Mailbox<ReqwestTransport>>,
-	/// The subject whose copy the files are kept as (`MAILBOX_SUBJECT`).
-	pub subject: String,
+	/// `MAILBOX_SUBJECT`: the subject whose copy the files are kept as, when
+	/// the deployment set one. `None` means the owner's account, read at each
+	/// pass ([`pass_subject`]).
+	pub subject: Option<String>,
 	pub interval: Duration,
 	/// Account deletion's lock, shared with `AppState::auth`.
 	pub deletion: DeletionLock,
@@ -105,8 +110,8 @@ impl MailboxContext {
 	/// names the variable, never its value.
 	///
 	/// # Errors
-	/// `MAILBOX_ENABLED` with `MAILBOX_URL`, `MAILBOX_TOKEN` or
-	/// `MAILBOX_SUBJECT` unset or empty, a URL that is not `https://` and a
+	/// `MAILBOX_ENABLED` with `MAILBOX_URL` or `MAILBOX_TOKEN` unset or
+	/// empty, a URL that is not `https://` and a
 	/// host, `MAILBOX_SECONDS` below 60, or a `MAILBOX_ARCHIVE_TOKEN` that is
 	/// `MAILBOX_TOKEN` again or comes with `MAILBOX_ARCHIVE_DAYS` below 30,
 	/// an `FCM_SERVICE_ACCOUNT_FILE` that is not a service account's key, or a
@@ -126,9 +131,10 @@ impl MailboxContext {
 		let Some(token) = set(config.mailbox_token.as_ref()) else {
 			anyhow::bail!("MAILBOX_ENABLED is set but MAILBOX_TOKEN is not");
 		};
-		let Some(subject) = set(config.mailbox_subject.as_ref()) else {
-			anyhow::bail!("MAILBOX_ENABLED is set but MAILBOX_SUBJECT is not");
-		};
+		let subject = set(config.mailbox_subject.as_ref());
+		if subject.is_none() {
+			info!("MAILBOX_SUBJECT is unset; the mailbox's files are kept as the owner's account's, the only one");
+		}
 		let schedules = crate::routine_watch::parse_schedules(&config.routine_schedule).map_err(|why| anyhow::anyhow!("ROUTINE_SCHEDULE: {why}"))?;
 		let interval = Duration::from_secs(config.mailbox_seconds);
 		if interval < MIN_INTERVAL {
@@ -168,6 +174,19 @@ impl MailboxContext {
 			schedules,
 		}))
 	}
+}
+
+/// Whose copy a pass keeps.
+///
+/// `MAILBOX_SUBJECT` when set, else the owner's account (`auth::owner`), read
+/// now so an account made after boot is found without a restart.
+/// `Owner::NoAccount` and `Owner::Several` mean a pass has no subject and
+/// keeps nothing (`no_account`).
+///
+/// # Errors
+/// A storage failure, when the owner had to be read.
+pub async fn pass_subject(db: &SqlitePool, configured: Option<&str>) -> Result<Owner, sqlx::Error> {
+	configured_or_owner(db, configured).await
 }
 
 /// Start the poller if the deployment configured one, and say which on
@@ -224,36 +243,70 @@ fn spawn(state: &AppState, context: MailboxContext) {
 					info!("Jobs mailbox poller cancelled");
 					return;
 				}
-				_ = ticker.tick() => {
-					crate::metrics::mailbox::record_pass_started();
-					let started = tokio::time::Instant::now();
-					let archiving = context.archive.as_deref().map(|mailbox| pass::Archiving {
-						mailbox,
-						after_days: context.archive_days,
-					});
-					let result = pass::run_once(&db, &context.mailbox, archiving.as_ref(), &context.subject, &context.deletion, &pass::now).await;
-					crate::metrics::mailbox::record_pass_duration(started.elapsed());
-					match &result {
-						Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, &[]),
-						Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
-					}
-					log_pass(&result);
-					crate::routine_watch::stamp(&db, &context.subject, &context.schedules, chrono::Utc::now()).await;
-					if let Some(sender) = context.notice.as_deref() {
-						match crate::jobs_notice::run_once(&db, &context.deletion, &context.subject, sender, chrono::Utc::now()).await {
-							Ok(outcome) if outcome.busy() => info!(
-								noticed = outcome.noticed,
-								skipped = outcome.skipped,
-								forgotten = outcome.forgotten,
-								unsent = outcome.unsent,
-								"Jobs arrival notice pass"
-							),
-							Ok(_) => {}
-							Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
-						}
-					}
-				}
+				_ = ticker.tick() => tick(&db, &context).await,
 			}
 		}
 	});
+}
+
+/// One tick of the poller: find whose copy to keep, run a pass for it, then
+/// stamp the routine watch and tell the phones.
+async fn tick(db: &SqlitePool, context: &MailboxContext) {
+	crate::metrics::mailbox::record_pass_started();
+	let started = tokio::time::Instant::now();
+	let subject = match pass_subject(db, context.subject.as_deref()).await {
+		Ok(Owner::Subject(subject)) => Some(subject),
+		Ok(owner @ (Owner::NoAccount | Owner::Several)) => {
+			// Said as a word, never an id, and as a warning only when the owner
+			// has something to set: a box waiting for its first passkey is not
+			// wrong, a box with several accounts and no `MAILBOX_SUBJECT` is.
+			if owner == Owner::Several {
+				warn!("the mailbox has no subject: several accounts and MAILBOX_SUBJECT is unset; set it to the owner's subject");
+			}
+			None
+		}
+		Err(err) => {
+			let outcome = pass::Outcome::default();
+			crate::metrics::mailbox::record_pass_duration(started.elapsed());
+			crate::metrics::mailbox::record_pass(&outcome, &["storage"]);
+			error!(error = %err, phase = "subject", class = "storage", "Jobs mailbox pass failed");
+			return;
+		}
+	};
+	let result = match &subject {
+		Some(subject) => {
+			let archiving = context.archive.as_deref().map(|mailbox| pass::Archiving {
+				mailbox,
+				after_days: context.archive_days,
+			});
+			pass::run_once(db, &context.mailbox, archiving.as_ref(), subject, &context.deletion, &pass::now).await
+		}
+		None => Ok(pass::Outcome {
+			no_account: true,
+			..pass::Outcome::default()
+		}),
+	};
+	crate::metrics::mailbox::record_pass_duration(started.elapsed());
+	match &result {
+		Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, &[]),
+		Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
+	}
+	log_pass(&result);
+	let Some(subject) = subject else {
+		return;
+	};
+	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
+	if let Some(sender) = context.notice.as_deref() {
+		match crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await {
+			Ok(outcome) if outcome.busy() => info!(
+				noticed = outcome.noticed,
+				skipped = outcome.skipped,
+				forgotten = outcome.forgotten,
+				unsent = outcome.unsent,
+				"Jobs arrival notice pass"
+			),
+			Ok(_) => {}
+			Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
+		}
+	}
 }

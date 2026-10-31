@@ -868,6 +868,52 @@ mod tests {
 		assert!(held(&pool).await.is_empty());
 	}
 
+	/// The owner's box (#510): `MAILBOX_SUBJECT` unset, and the poller keeps
+	/// the files as the only account's, found at the pass, so an account made
+	/// after the box booted is served without a restart; before it exists,
+	/// and once a second one does, a pass has no subject (`no_account`).
+	#[tokio::test]
+	async fn with_no_override_the_poller_runs_for_the_only_account() {
+		use crate::auth::owner::Owner;
+		use crate::mailbox::pass_subject;
+
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::NoAccount, "a fresh box");
+
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(OWNER)
+			.bind(OWNER.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::Subject(String::from(OWNER)));
+		assert_eq!(
+			pass_subject(&pool, Some("subject-configured")).await.unwrap(),
+			Owner::Subject(String::from("subject-configured"))
+		);
+
+		let fake = Fake::default();
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), &fake).unwrap();
+		let Owner::Subject(subject) = pass_subject(&pool, None).await.unwrap() else {
+			panic!("the only account is the owner's");
+		};
+		let outcome = run_once(&pool, &mailbox, None, &subject, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z"))
+			.await
+			.unwrap();
+		assert_eq!((outcome.kept, outcome.no_account), (1, false));
+		let whose: String = sqlx::query_scalar("SELECT subject_id FROM mailbox_item").fetch_one(&pool).await.unwrap();
+		assert_eq!(whose, OWNER, "kept as the owner's copy, with no subject id configured");
+
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('subject-second', x'02')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::Several, "two accounts: no owner without MAILBOX_SUBJECT");
+	}
+
 	/// A pass's write waits out a deletion that holds the lock, and then finds
 	/// the account gone.
 	#[tokio::test]
@@ -915,22 +961,26 @@ mod tests {
 		let url = ["--mailbox-url", BASE];
 		let token = ["--mailbox-token", "home-token"];
 		let subject = ["--mailbox-subject", OWNER];
-		for (missing, args) in [
-			("MAILBOX_URL", [&token[..], &subject[..]].concat()),
-			("MAILBOX_TOKEN", [&url[..], &subject[..]].concat()),
-			("MAILBOX_SUBJECT", [&url[..], &token[..]].concat()),
-		] {
-			let err = on(&args).err().unwrap().to_string();
+		for (missing, args) in [("MAILBOX_URL", &token[..]), ("MAILBOX_TOKEN", &url[..])] {
+			let err = on(args).err().unwrap().to_string();
 			assert!(err.contains(missing), "{err}");
 			assert!(!err.contains("home-token"), "the token is never in the error: {err}");
 		}
-		let all = [&url[..], &token[..], &subject[..]].concat();
-		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..], &subject[..]].concat();
+		let all = [&url[..], &token[..]].concat();
+		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..]].concat();
 		assert!(on(&insecure).is_err(), "only https");
 		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
-		assert_eq!((context.subject.as_str(), context.interval.as_secs()), (OWNER, 900));
+		assert_eq!(
+			(context.subject.as_deref(), context.interval.as_secs()),
+			(None, 900),
+			"no MAILBOX_SUBJECT: the owner's account, per pass"
+		);
 		assert!(context.archive.is_none(), "no archive token, nothing archived");
+		let context = on(&[&all[..], &subject[..]].concat()).unwrap().unwrap();
+		assert_eq!(context.subject.as_deref(), Some(OWNER), "MAILBOX_SUBJECT is the override");
+		let context = on(&[&all[..], &["--mailbox-subject", " "][..]].concat()).unwrap().unwrap();
+		assert_eq!(context.subject, None, "a blank MAILBOX_SUBJECT is unset");
 
 		let archive = ["--mailbox-archive-token", "archive-token"];
 		let context = on(&[&all[..], &archive[..]].concat()).unwrap().unwrap();

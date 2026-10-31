@@ -22,7 +22,7 @@ use crate::auth::{
 	pairing::{PairingCode, PAIRING_TTL_SECONDS},
 	passkey, AuthContext, PRODUCT_NAME,
 };
-use crate::subject::{legacy_subject, new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
+use crate::subject::{new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
 use auth_repo::{AddPasskey, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
@@ -54,10 +54,6 @@ pub struct CeremonyStarted {
 pub struct FinishRegistration {
 	pub ceremony: String,
 	pub credential: RegisterPublicKeyCredential,
-	/// The operator's `AUTH_LEGACY_CLAIM_TOKEN`, to take over the pre-auth
-	/// data. Absent for every ordinary account.
-	#[serde(default)]
-	pub legacy_claim: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,11 +100,15 @@ type WithCookie<T> = (AppendHeaders<[(HeaderName, HeaderValue); 1]>, Json<T>);
 /// `POST /auth/register/start`: begin creating a new account.
 ///
 /// # Errors
-/// 503 when passkey auth is not configured, or when today's new-account cap
-/// or the open-ceremony cap is reached.
+/// 403 (`signup_closed`) once the box has its owner's account, unless
+/// `AUTH_OPEN_SIGNUP`; 503 when passkey auth is not configured, or when
+/// today's new-account cap or the open-ceremony cap is reached.
 #[instrument(name = "auth_register_start", skip_all, fields(otel.kind = "server"))]
 pub async fn start_registration(State(auth): State<AuthContext>) -> Result<Json<CeremonyStarted>, FileHostError> {
 	let relying_party = auth.relying_party()?;
+	if !auth.signups_open().await? {
+		return Err(FileHostError::SignupClosed);
+	}
 	if !auth.signups_have_room(now()) {
 		return Err(FileHostError::ServiceOverloaded);
 	}
@@ -130,14 +130,16 @@ pub async fn start_registration(State(auth): State<AuthContext>) -> Result<Json<
 /// `POST /auth/register/finish`: verify the new passkey, create the account,
 /// and sign it in.
 ///
-/// A new account gets a random subject. With `legacyClaim` equal to the
-/// operator's `AUTH_LEGACY_CLAIM_TOKEN`, it takes the pre-auth subject and
-/// its rows instead, once.
+/// A new account gets a random subject, the owner's included: which account
+/// is the owner's is read from the `account` table (`auth::owner`), never
+/// from the id. Whether this one may be created is decided in the statement
+/// that creates it (`auth_repo::Admission`), so two first registrations
+/// racing cannot both land.
 ///
 /// # Errors
 /// 422 for an unknown or expired ceremony, or a passkey that does not
-/// verify; 403 for a claim that does not match the configured token; 409 for
-/// a passkey already registered, or pre-auth data already claimed; 503 as
+/// verify; 403 (`signup_closed`) once the box has its owner's account,
+/// unless `AUTH_OPEN_SIGNUP`; 409 for a passkey already registered; 503 as
 /// for `start`.
 #[instrument(name = "auth_register_finish", skip_all, fields(otel.kind = "server"))]
 pub async fn finish_registration(State(auth): State<AuthContext>, Json(request): Json<FinishRegistration>) -> Result<WithCookie<SessionView>, FileHostError> {
@@ -152,26 +154,19 @@ pub async fn finish_registration(State(auth): State<AuthContext>, Json(request):
 	};
 	let verified = relying_party.finish_passkey_registration(&request.credential, &state).map_err(|_| unverified())?;
 
-	let repository = auth.repository();
-	let subject = match request.legacy_claim.as_deref() {
-		None => new_account_subject(),
-		Some(claim) if auth.legacy_claim_matches(claim) => {
-			if repository.has_account(legacy_subject()).await? {
-				return Err(already_claimed());
-			}
-			legacy_subject().to_owned()
-		}
-		Some(_) => return Err(FileHostError::Forbidden),
-	};
-
+	let subject = new_account_subject();
 	let now = now();
 	if !auth.take_signup(now) {
 		return Err(FileHostError::ServiceOverloaded);
 	}
-	repository
-		.create_account(&subject, user_handle.as_bytes(), &passkey::for_storage(verified)?)
+	let created = auth
+		.repository()
+		.create_account(&subject, user_handle.as_bytes(), &passkey::for_storage(verified)?, auth.admission())
 		.await
-		.map_err(|err| if subject == legacy_subject() { claim_conflict(err) } else { already_registered(err) })?;
+		.map_err(already_registered)?;
+	if !created {
+		return Err(FileHostError::SignupClosed);
+	}
 	start_session(&auth, &subject, now).await
 }
 
@@ -513,18 +508,6 @@ const fn too_many_passkeys() -> FileHostError {
 	FileHostError::Conflict("this account already holds the most passkeys it may")
 }
 
-const fn already_claimed() -> FileHostError {
-	FileHostError::Conflict("the data saved before auth has already been claimed")
-}
-
-fn claim_conflict(err: sqlx::Error) -> FileHostError {
-	if err.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {
-		already_claimed()
-	} else {
-		FileHostError::Sqlite(err)
-	}
-}
-
 fn already_registered(err: sqlx::Error) -> FileHostError {
 	if err.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {
 		FileHostError::Conflict("this passkey is already registered")
@@ -733,45 +716,67 @@ mod tests {
 		assert_eq!(options["rp"]["id"], "app.test");
 	}
 
-	/// Registers with `legacyClaim` in the finish body.
-	async fn register_claiming(app: &Router, claim: &str) -> (StatusCode, Option<String>, Value) {
-		let (_, _, started) = call(app, Method::POST, "/auth/register/start", None, None).await;
-		let credential = authenticator().do_registration(origin(), for_soft_authenticator(started["options"].clone())).unwrap();
-		let body = json!({ "ceremony": started["ceremony"], "credential": serde_json::to_value(&credential).unwrap(), "legacyClaim": claim });
-		call(app, Method::POST, "/auth/register/finish", None, Some(body)).await
-	}
-
+	/// The owner's box: the first account is the only one, with a random
+	/// subject like any other (the pre-auth `subject-local` rows are nobody's
+	/// now that the claim is retired, #510), and once it exists sign-up is
+	/// closed: `start` refuses before a ceremony opens, and a `finish` whose
+	/// ceremony was opened before the first account landed refuses in the
+	/// statement that would create the second, so no half-made account and no
+	/// session is left. Sign-in stays open, and a `legacyClaim` an older app
+	/// still sends is ignored.
 	#[tokio::test]
-	async fn being_first_does_not_inherit_the_pre_auth_data() {
-		let app = app(AuthContext::for_tests_with_claim(pool().await, 100, Some("operator-secret")));
+	async fn the_first_account_closes_sign_up() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests_closed(pool.clone()));
+		let mut phone = authenticator();
 
-		let first = register(&app, &mut authenticator()).await;
-		let (status, subject) = whoami(&app, &first.cookie).await;
+		// A ceremony opened while the box was still unowned.
+		let (status, _, raced) = call(&app, Method::POST, "/auth/register/start", None, None).await;
+		assert_eq!(status, StatusCode::OK);
+		let raced_credential = authenticator().do_registration(origin(), for_soft_authenticator(raced["options"].clone())).unwrap();
+
+		let owner = register(&app, &mut phone).await;
+		let (status, subject) = whoami(&app, &owner.cookie).await;
 		assert_eq!(status, StatusCode::OK);
 		assert!(subject.as_str().unwrap().starts_with("subject-") && subject != "subject-local", "{subject}");
-	}
+		assert_eq!(
+			crate::auth::owner::owner(&pool).await.unwrap().subject(),
+			subject.as_str(),
+			"the only account is the owner's"
+		);
 
-	#[tokio::test]
-	async fn only_the_operators_claim_token_inherits_the_pre_auth_data_and_only_once() {
-		let app = app(AuthContext::for_tests_with_claim(pool().await, 100, Some("operator-secret")));
+		let (status, _, body) = call(&app, Method::POST, "/auth/register/start", None, None).await;
+		assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+		assert_eq!(body["error"]["code"], "signup_closed");
 
-		let (status, _, _) = register_claiming(&app, "a-guess").await;
-		assert_eq!(status, StatusCode::FORBIDDEN, "a wrong token claims nothing");
-
-		let (status, set_cookie, body) = register_claiming(&app, "operator-secret").await;
-		assert_eq!(status, StatusCode::OK, "{body}");
-		assert_eq!(whoami(&app, &cookie_pair(&set_cookie.unwrap())).await, (StatusCode::OK, json!("subject-local")));
-
-		let (status, set_cookie, _) = register_claiming(&app, "operator-secret").await;
-		assert_eq!(status, StatusCode::CONFLICT, "the token works once");
+		let body = json!({ "ceremony": raced["ceremony"], "credential": serde_json::to_value(&raced_credential).unwrap(), "legacyClaim": "ignored" });
+		let (status, set_cookie, body) = call(&app, Method::POST, "/auth/register/finish", None, Some(body)).await;
+		assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+		assert_eq!(body["error"]["code"], "signup_closed");
 		assert!(set_cookie.is_none());
+		let accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account").fetch_one(&pool).await.unwrap();
+		let passkeys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM passkey").fetch_one(&pool).await.unwrap();
+		assert_eq!((accounts, passkeys), (1, 1), "the refused registration wrote nothing");
+
+		let (status, _, _) = sign_in(&app, &mut phone, &owner.credential_id, &owner.user_handle).await;
+		assert_eq!(status, StatusCode::OK, "the owner's passkey still signs in");
+		let (status, _, _) = call(&app, Method::POST, "/auth/sign-in/start", None, None).await;
+		assert_eq!(status, StatusCode::OK);
 	}
 
+	/// Deleting the only account reopens sign-up: the next account is the
+	/// owner's.
 	#[tokio::test]
-	async fn with_no_claim_token_configured_nobody_can_claim() {
-		let app = app(AuthContext::for_tests(pool().await, 100));
-		let (status, _, _) = register_claiming(&app, "").await;
-		assert_eq!(status, StatusCode::FORBIDDEN);
+	async fn deleting_the_only_account_reopens_sign_up() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests_closed(pool.clone()));
+		let first = register(&app, &mut authenticator()).await;
+		assert_eq!(call(&app, Method::DELETE, "/auth/account", Some(&first.cookie), None).await.0, StatusCode::OK);
+		assert_eq!(crate::auth::owner::owner(&pool).await.unwrap(), crate::auth::owner::Owner::NoAccount);
+
+		let second = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &second.cookie).await;
+		assert_eq!(crate::auth::owner::owner(&pool).await.unwrap().subject(), subject.as_str());
 	}
 
 	#[tokio::test]

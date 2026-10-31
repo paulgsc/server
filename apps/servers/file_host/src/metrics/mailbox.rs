@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Every value `mailbox_poll_failing`'s `error` label can take.
 ///
 /// A `mailbox_kit::MailboxError::kind` that ends a pass, `storage` for the
-/// database, or `no_account` when `MAILBOX_SUBJECT` names no account. Fixed,
+/// database, or `no_account` when there is no account to keep the files
+/// for: `MAILBOX_SUBJECT` names none, or it is unset and the box has no
+/// account yet, or several (`mailbox::pass_subject`). Fixed,
 /// so every series exists from spawn onward and a class that never failed
 /// reads 0 rather than absent.
 pub const PASS_ERROR_CLASSES: [&str; 10] = [
@@ -110,8 +112,9 @@ pub fn record_pass(outcome: &Outcome, failed: &[&'static str]) {
 	for answer in &outcome.restored {
 		metrics::counter!("mailbox_poll_items_restored_total", "answer" => *answer).increment(1);
 	}
-	// A subject with no account keeps nothing, pass after pass: the
-	// configured `MAILBOX_SUBJECT` names nobody. Read as a failure.
+	// A pass with no account keeps nothing, pass after pass: `MAILBOX_SUBJECT`
+	// names nobody, or it is unset and the box has no account yet or several.
+	// Read as a failure.
 	let no_account: &[&'static str] = if outcome.no_account { &["no_account"] } else { &[] };
 	set_failing(&[failed, no_account].concat());
 }
