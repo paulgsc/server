@@ -75,10 +75,12 @@ fn the_worked_example_records_what_rustc_and_the_program_did() {
 	let split = recorder.record(&utf8_round("let c = &s[1..2]; println!(\"{c}\");")).unwrap();
 	assert_eq!(split.outcome, Outcome::Runtime, "{split:?}");
 	assert_eq!(run_of(&split).exit_code, Some(101));
+	// The wording after the location changes between releases (1.94's
+	// "byte index 2 … of `aéz`", 1.97's "end byte index 2 … of string"); the
+	// exact 1.97.0 text is the sandbox check's.
 	assert!(
-		run_of(&split)
-			.stderr
-			.starts_with("\nthread 'main' panicked at main.rs:4:15:\nend byte index 2 is not a char boundary; it is inside 'é' (bytes 1..3 of string)\n"),
+		run_of(&split).stderr.starts_with("\nthread 'main' panicked at main.rs:4:15:\n")
+			&& run_of(&split).stderr.contains("byte index 2 is not a char boundary; it is inside 'é' (bytes 1..3"),
 		"{:?}",
 		run_of(&split).stderr
 	);
