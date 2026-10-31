@@ -1,0 +1,28 @@
+[package]
+name = "rust_round_repo"
+description = "Rust Rounds on home: each round as the phone pasted it, its programs, and what the rust-runner recorded for each, append-only — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["rust-rounds", "rustc", "record", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+hex = "0.4.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10.9"
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

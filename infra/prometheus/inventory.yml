@@ -53,6 +53,12 @@ services:
     scrape:
       reason: 'unmeasured — the single largest declared consumer in the stack; [HM-COVER] C2 (#144) is the story that adds this job, not landed yet'
 
+  # Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234, RR3).
+  - service: rust-runner
+    container_name: rust-runner
+    hoist_set: false
+    scrape:
+      reason: 'unscrapable by design — network_mode: none (RX1), so nothing can reach a metrics port; it serves one Unix socket. Its work is seen from file_host: operation_errors_total{operation="rust_rounds"} counts every pass the runner is unreachable, dropped a job or answered wrongly (RP3), and cadvisor sees the container'
   # ── observability stack and exporters ───────────────────────────────────
   - service: redis-exporter
     container_name: redis-exporter
