@@ -90,11 +90,15 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_item",
-		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets, dramas and run records): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, the reflections routine's word sets, dramas and run records, or a LeetType session file): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+	),
+	(
+		"mailbox_leetype_log",
+		"which of the owner's finished LeetType sessions home filed for the mailbox: the session, the number its file's name carries, how many events that file held, and when; see docs/identity.md invariants 18 and 19",
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), and what home heard in their voice notes (text only), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",

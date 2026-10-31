@@ -1,11 +1,13 @@
 //! One pass of the mailbox poller.
 //!
-//! It reads what each folder home reads ([`READS`]: the Jobs digests, and the
-//! reflections routine's word sets, dramas and run records) holds after home's cursor for
-//! it and keeps each file that checks out, then files each transcript home
-//! heard and has not filed ([`TRANSCRIPT_SCHEMA`]), and hands the mailbox
-//! what is filed: the voice-free decisions and scouts the phone filed
-//! (`PUT /jobs/files/:name`), which lessons it opened, and those transcripts.
+//! It reads what each folder home reads ([`READS`]: the Jobs digests, the
+//! reflections routine's word sets, dramas and run records, and the `LeetType`
+//! session files) holds after home's cursor for it and keeps each file that
+//! checks out, then files each transcript home heard and has not filed
+//! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
+//! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
+//! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`),
+//! which lessons it opened, those transcripts and those logs.
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -22,6 +24,16 @@
 //! (`mailbox_repo::file_transcript`), so a better model's transcript goes
 //! under a new name.
 //!
+//! A `LeetType` session's log is what home holds of the session
+//! (`leetype_session_event`, docs/identity.md invariant 18), rebuilt from
+//! that table and never from a request: every event, in the order
+//! `GET /leetype/sessions/:session/events` serves them, and the session file
+//! it started. No soundbite: the table holds none. A session's log is due
+//! once the session is finished (it ended, or another started after it, as
+//! the phone decides) and home holds more of its events than the last log
+//! it filed did, so a session that gains events goes up again, under the
+//! next number its names have (`mailbox_repo::file_leetype_log`).
+//!
 //! Handing over is once per file: the mailbox's answer, whatever it is, is
 //! recorded and final (a `conflict` or a refusal is not retried), and only a
 //! failure to reach it leaves the file to be handed again.
@@ -36,6 +48,7 @@
 
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
+use leetype_log_repo::{Event, LogError, SessionEvents};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
 use mailbox_repo::{Answer, ArchiveIn, Change, Heard, ItemIn};
 use serde::de::IgnoredAny;
@@ -47,14 +60,20 @@ use std::fmt;
 /// the next pass.
 pub const ITEMS_PER_PASS: u32 = 20;
 
-/// The folders home reads and keeps in `mailbox_item`: the routine's digests
-/// (`GET /jobs/digests`), and its word sets, dramas and run records
-/// (`GET /routine/files`).
-pub const READS: [Folder; 4] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run];
+/// The folders home reads and keeps in `mailbox_item`.
+///
+/// The routine's digests (`GET /jobs/digests`), its word sets, dramas and run
+/// records (`GET /routine/files`), and its `LeetType` session files
+/// (`GET /leetype/session-files`).
+pub const READS: [Folder; 5] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run, Folder::Leetype];
 
 /// What a transcript put to the mailbox's `transcript` folder is
 /// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
 pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
+
+/// What a `LeetType` session's log put to the mailbox's `leetype-log` folder
+/// is (paulgsc/some-ui `apps/mailbox`, the `leetype-log` folder's rules).
+pub const LEETYPE_LOG_SCHEMA: &str = "some-ui.leetype-log/1";
 
 /// The most pages one pass lists per folder. Inbound passes over a file home
 /// already holds (one put back after archiving, under a new `seq`) without
@@ -72,7 +91,8 @@ pub struct Outcome {
 	/// Files refused this pass, each by why: `mismatch`, `bad_name`,
 	/// `not_json` or `rewritten` (`metrics::mailbox::REFUSALS`).
 	pub refused: Vec<&'static str>,
-	/// Transcripts filed for the mailbox this pass.
+	/// Files the poller filed for the mailbox itself this pass: transcripts
+	/// and `LeetType` session logs.
 	pub filed: usize,
 	/// Filed files handed to the mailbox this pass, each by its answer:
 	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
@@ -103,7 +123,7 @@ pub struct PassError {
 pub enum Phase {
 	/// Reading [`READS`] after the cursor.
 	Inbound,
-	/// Filing transcripts home heard.
+	/// Filing transcripts home heard and `LeetType` sessions' logs.
 	Filing,
 	/// Handing the mailbox what is filed.
 	Outbound,
@@ -234,7 +254,13 @@ pub async fn run_once<T: MailboxTransport>(
 	let filing = if outcome.no_account {
 		Ok(())
 	} else {
-		file_transcripts(db, subject, deletion, now, &mut outcome).await
+		let transcripts = file_transcripts(db, subject, deletion, now, &mut outcome).await;
+		let logs = if outcome.no_account {
+			Ok(())
+		} else {
+			file_leetype_logs(db, subject, deletion, now, &mut outcome).await
+		};
+		transcripts.and(logs)
 	};
 	let outbound = if outcome.no_account {
 		Ok(())
@@ -371,8 +397,9 @@ async fn hand_over<T: MailboxTransport>(
 			"scout" => Folder::Scout,
 			"opened" => Folder::Opened,
 			"transcript" => Folder::Transcript,
-			// `PUT /jobs/files/:name`, `PUT /routine/opened` and
-			// `file_transcripts` file only these.
+			"leetype-log" => Folder::LeetypeLog,
+			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
+			// `file_transcripts` and `file_leetype_logs` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -425,6 +452,46 @@ fn transcript_body(heard: &Heard) -> Vec<u8> {
 		"language": heard.language,
 		"model": heard.model,
 		"heardAt": heard.heard_at,
+	})
+	.to_string()
+	.into_bytes()
+}
+
+/// Files each finished `LeetType` session whose log is due, the session that
+/// started first first, at most [`ITEMS_PER_PASS`]; more are filed by the
+/// next pass.
+async fn file_leetype_logs(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync), outcome: &mut Outcome) -> Result<(), Failure> {
+	let due = {
+		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+		mailbox_repo::unfiled_leetype_logs(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
+	};
+	for finished in &due {
+		match file_leetype_log(db, deletion, subject, &finished.session, &now()).await? {
+			Change::NoAccount => {
+				outcome.no_account = true;
+				return Ok(());
+			}
+			Change::Added | Change::Unchanged => outcome.filed += 1,
+		}
+	}
+	Ok(())
+}
+
+/// A `LeetType` session's log as the mailbox takes it: the session, the
+/// session file it started (`null` while home holds no `started` event of
+/// it), and every event home holds of it, as
+/// `GET /leetype/sessions/:session/events` serves them. Nothing else: an
+/// event home holds carries no soundbite (`leetype_log_repo::SOUNDBITES`).
+fn leetype_log_body(held: &SessionEvents) -> Vec<u8> {
+	let file = held.events.iter().find_map(|event| match event {
+		Event::Started { file, .. } => Some(file.as_str()),
+		_ => None,
+	});
+	serde_json::json!({
+		"schema": LEETYPE_LOG_SCHEMA,
+		"session": held.session,
+		"file": file,
+		"events": held.events,
 	})
 	.to_string()
 	.into_bytes()
@@ -614,6 +681,27 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	Ok(change)
 }
 
+/// As [`keep`], for a `LeetType` session's log, built from the session's
+/// events as they stand and filed under its next number, both read in the
+/// same transaction, so the count it records is the count the file holds.
+async fn file_leetype_log(db: &SqlitePool, deletion: &DeletionLock, subject: &str, session: &str, now: &str) -> Result<Change, Failure> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
+	let held = leetype_log_repo::session_events(&mut tx, subject, session).await.map_err(|err| match err {
+		LogError::Storage(err) => Failure::Storage(err),
+		other => Failure::Storage(sqlx::Error::Protocol(other.to_string())),
+	})?;
+	let events = i64::try_from(held.events.len()).unwrap_or(i64::MAX);
+	let body = leetype_log_body(&held);
+	let sha256 = hex::encode(Sha256::digest(&body));
+	let n = mailbox_repo::next_leetype_log_number(&mut tx, subject, session).await.map_err(storage)?;
+	let change = mailbox_repo::file_leetype_log(&mut tx, subject, (session, n, events), (&sha256, &body), now)
+		.await
+		.map_err(storage)?;
+	tx.commit().await.map_err(Failure::Storage)?;
+	Ok(change)
+}
+
 /// As [`keep`], for the mailbox's answer to a handed file.
 async fn record(
 	db: &SqlitePool,
@@ -658,6 +746,8 @@ mod tests {
 		puts: Mutex<Vec<String>>,
 		/// The body of each transcript put.
 		transcripts: Mutex<Vec<String>>,
+		/// The body of each `LeetType` session log put.
+		logs: Mutex<Vec<String>>,
 	}
 
 	impl Fake {
@@ -682,20 +772,25 @@ mod tests {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.method == Method::Put {
 				assert!(
-					["/v1/decisions/items/", "/v1/scout/items/", "/v1/opened/items/", "/v1/transcript/items/"]
-						.iter()
-						.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened and transcripts: {path}"
+					[
+						"/v1/decisions/items/",
+						"/v1/scout/items/",
+						"/v1/opened/items/",
+						"/v1/transcript/items/",
+						"/v1/leetype-log/items/"
+					]
+					.iter()
+					.any(|put| path.starts_with(put)),
+					"puts only decisions, scouts, which lessons were opened, transcripts and LeetType session logs: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
 				}
+				let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
 				if path.starts_with("/v1/transcript/items/") {
-					self
-						.transcripts
-						.lock()
-						.unwrap()
-						.push(String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned());
+					self.transcripts.lock().unwrap().push(body);
+				} else if path.starts_with("/v1/leetype-log/items/") {
+					self.logs.lock().unwrap().push(body);
 				}
 				self.puts.lock().unwrap().push(path);
 				let mut answers = self.put_answers.lock().unwrap();
@@ -707,7 +802,10 @@ mod tests {
 				return Ok(answer(status, body));
 			}
 			assert_eq!(request.method, Method::Get, "and reads nothing but the folders home reads");
-			if ["/v1/scene/items?", "/v1/drama/items?", "/v1/run/items?"].iter().any(|read| path.starts_with(read)) {
+			if ["/v1/scene/items?", "/v1/drama/items?", "/v1/run/items?", "/v1/leetype/items?"]
+				.iter()
+				.any(|read| path.starts_with(read))
+			{
 				return Ok(answer(200, r#"{"items":[]}"#));
 			}
 			if let Some(query) = path.strip_prefix("/v1/brief/items?") {
@@ -1162,7 +1260,7 @@ mod tests {
 			if request.token.expose() == "home-token" {
 				assert!(
 					request.method == Method::Get
-						&& ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items", "/v1/run/items"]
+						&& ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items", "/v1/run/items", "/v1/leetype/items"]
 							.iter()
 							.any(|read| path.starts_with(read)),
 					"home's token: {path}"
@@ -1444,5 +1542,157 @@ mod tests {
 			err.to_string(),
 			"inbound: the mailbox could not be reached: connection refused; outbound: the mailbox could not be reached: connection refused"
 		);
+	}
+
+	/// A `LeetType` session file as the routine puts it.
+	fn session_file(title: &str) -> String {
+		serde_json::json!({
+			"schema": "some-ui.leetype-session/1",
+			"file": { "title": title, "oneLine": "One line.", "session": { "kind": "incident", "budgetMinutes": 25 }, "start": "a", "screens": {} },
+		})
+		.to_string()
+	}
+
+	/// paulgsc/some-ui#2026: a session file put into `leetype` is in
+	/// `mailbox_item` after one pass, under the same checks as a digest.
+	#[tokio::test]
+	async fn the_routines_session_files_are_kept_and_a_bad_one_refused_and_counted() {
+		let (pool, vault) = (pool().await, Vault::default());
+		sqlx::query(
+			"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'leetype', 't1-04-held.json', 1, 'other', 2, x'7b7d', 'now')",
+		)
+		.bind(OWNER)
+		.execute(&pool)
+		.await
+		.unwrap();
+		vault.add("leetype", 2, "t1-01-raft.json", &session_file("Raft"), YOUNG);
+		vault.add("leetype", 3, "t1-02-paxos.json", "not json", YOUNG);
+		vault.add("leetype", 4, "t1-04-held.json", &session_file("Other bytes"), YOUNG);
+		vault.add("leetype", 5, "t1-03-zab.json", &session_file("Zab"), YOUNG);
+		let outcome = archive_pass(&pool, &vault).await;
+		assert_eq!((outcome.kept, outcome.refused), (2, vec!["not_json", "rewritten"]));
+		let kept: Vec<(String, Vec<u8>)> = sqlx::query_as("SELECT name, body FROM mailbox_item WHERE folder = 'leetype' AND seq > 1 ORDER BY seq")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			kept,
+			[
+				(String::from("t1-01-raft.json"), session_file("Raft").into_bytes()),
+				(String::from("t1-03-zab.json"), session_file("Zab").into_bytes()),
+			],
+			"each verbatim, and a bad one never holds back the file after it"
+		);
+		assert_eq!(archive_pass(&pool, &vault).await.kept, 0, "kept once");
+	}
+
+	/// One event of the owner's `LeetType` session, through the log's own
+	/// checks, as `PUT /leetype/sessions/:session/events/:id` stores it.
+	async fn played(pool: &SqlitePool, event: &serde_json::Value) {
+		let (session, id) = (event["session"].as_str().unwrap(), event["id"].as_str().unwrap());
+		leetype_log_repo::put_event(
+			&mut pool.acquire().await.unwrap(),
+			OWNER,
+			session,
+			id,
+			event.to_string().as_bytes(),
+			"2026-10-28T10:00:00.000Z",
+		)
+		.await
+		.unwrap();
+	}
+
+	/// Every key in `value`, at any depth.
+	fn keys(value: &serde_json::Value, into: &mut Vec<String>) {
+		match value {
+			serde_json::Value::Object(map) => {
+				for (key, inner) in map {
+					into.push(key.clone());
+					keys(inner, into);
+				}
+			}
+			serde_json::Value::Array(items) => items.iter().for_each(|inner| keys(inner, into)),
+			_ => {}
+		}
+	}
+
+	/// paulgsc/some-ui#2027: a finished session's log goes up once, holding
+	/// exactly what `GET /leetype/sessions/:session/events` serves and no
+	/// soundbite; a session that gains events goes up again as `.r2`.
+	#[tokio::test]
+	async fn a_finished_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite() {
+		use serde_json::json;
+		let (pool, fake) = (pool().await, Fake::default());
+		let file = "t1-01-raft.json";
+		played(
+			&pool,
+			&json!({ "id": "e1", "at": "2026-10-28T09:00:00.000Z", "session": "s1", "type": "started", "file": file, "form": "full", "declaredMinutes": 25 }),
+		)
+		.await;
+		played(
+			&pool,
+			&json!({ "id": "e2", "at": "2026-10-28T09:05:00.000Z", "session": "s1", "type": "spoken", "file": file, "screen": "say-why",
+			"answer": { "as": "recorded", "seconds": 41, "strong": true } }),
+		)
+		.await;
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "a session still being played is not filed");
+		played(
+			&pool,
+			&json!({ "id": "e3", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": file, "screen": "end", "how": "declared" }),
+		)
+		.await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-s1.json"]);
+		let held = leetype_log_repo::session_events(&mut pool.acquire().await.unwrap(), OWNER, "s1").await.unwrap();
+		let body: serde_json::Value = serde_json::from_str(&fake.logs.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			body,
+			json!({ "schema": "some-ui.leetype-log/1", "session": "s1", "file": file, "events": serde_json::to_value(&held.events).unwrap() }),
+			"the events home serves, in its order, and nothing else"
+		);
+		assert_eq!(body["events"].as_array().unwrap().len(), 3);
+		let mut found = Vec::new();
+		keys(&body, &mut found);
+		for soundbite in leetype_log_repo::SOUNDBITES {
+			assert!(!found.iter().any(|key| key == soundbite), "a filed log holds no {soundbite}");
+		}
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "filed and handed once");
+
+		played(
+			&pool,
+			&json!({ "id": "e4", "at": "2026-10-28T09:21:00.000Z", "session": "s1", "type": "reading", "file": file, "reading": "r1", "action": "read" }),
+		)
+		.await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(fake.puts.lock().unwrap()[1], "/v1/leetype-log/items/log-s1.r2.json");
+		let again: serde_json::Value = serde_json::from_str(&fake.logs.lock().unwrap()[1]).unwrap();
+		assert_eq!(again["events"].as_array().unwrap().len(), 4, "with every event, the earlier ones included");
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default());
+	}
+
+	#[tokio::test]
+	async fn no_leetype_log_is_filed_for_a_deleted_subject() {
+		use serde_json::json;
+		let (pool, fake) = (pool().await, Fake::default());
+		played(
+			&pool,
+			&json!({ "id": "e1", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": "t1-01-raft.json", "screen": "end", "how": "left" }),
+		)
+		.await;
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
+		// The event a deletion took, written again by hand, as a race with
+		// the phone's send could leave it for a moment.
+		played(
+			&pool,
+			&json!({ "id": "e1", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": "t1-01-raft.json", "screen": "end", "how": "left" }),
+		)
+		.await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert!(outcome.no_account);
+		assert_eq!(outcome.filed, 0);
+		let filed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_outgoing").fetch_one(&pool).await.unwrap();
+		assert_eq!(filed, 0);
+		assert!(fake.puts.lock().unwrap().is_empty());
 	}
 }
