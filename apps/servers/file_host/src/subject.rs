@@ -77,6 +77,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's files home archived from the Jobs mailbox, from any folder: their bytes as the mailbox held them, hash, size, sequence number, when each was first put and when home stored it; see docs/identity.md invariants 19 and 21",
 	),
 	(
+		"mailbox_archive_answer",
+		"each answer the Jobs mailbox gave when home asked it to drop one of the owner's written reflections home had archived, and when; see docs/identity.md invariant 21",
+	),
+	(
 		"mailbox_handed",
 		"each answer the Jobs mailbox gave when home handed it one of the owner's files, and when; see docs/identity.md invariant 19",
 	),

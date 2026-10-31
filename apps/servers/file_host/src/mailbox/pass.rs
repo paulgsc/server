@@ -52,7 +52,11 @@
 //! A written reflection is archived the same way, but its folder is listed
 //! only once one home filed is due ([`mailbox_repo::reflection_due`], which
 //! reads home's own tables), and no ask for one is ever listed: the routine
-//! cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`). So
+//! cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`).
+//! Home records the mailbox's answer to each ask to archive one
+//! (`mailbox_archive_answer`), and asks again, by name, for one it stored
+//! whose ask heard none ([`mailbox_repo::unanswered_archives`]): a stored
+//! reflection is due no more, so the listing would never find it again. So
 //! a pass with nothing to do makes no request for the folder.
 
 use crate::auth::DeletionLock;
@@ -79,8 +83,10 @@ pub const ITEMS_PER_PASS: u32 = 20;
 /// every idle pass (MI6, paulgsc/some-ui `packages/assurance`).
 ///
 /// A written reflection's folder is listed only once one home filed is due
-/// (`mailbox_repo::reflection_due`, from home's own tables), so it adds no
-/// request to an idle pass either.
+/// (`mailbox_repo::reflection_due`, from home's own tables), and one home
+/// stored is asked for again only while its ask has no answer
+/// (`mailbox_repo::unanswered_archives`), so it adds no request to an idle
+/// pass either.
 pub const ARCHIVES: [Folder; 11] = [
 	Folder::Brief,
 	Folder::Decisions,
@@ -711,8 +717,31 @@ async fn archive_old<T: MailboxTransport>(
 	let mut budget = ITEMS_PER_PASS as usize;
 	for folder in ARCHIVES {
 		// Home knows which reflections it filed and when the mailbox took
-		// them, so it lists the folder only once one is old enough.
+		// them, so it lists the folder only once one is old enough. One it
+		// stored whose ask heard no answer is no longer due, so it is asked
+		// for again by name first.
 		if folder == Folder::Reflection {
+			let owed = {
+				let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+				let limit = i64::try_from(budget).unwrap_or(i64::MAX);
+				mailbox_repo::unanswered_archives(&mut conn, subject, folder.as_str(), limit).await.map_err(storage)?
+			};
+			for file in owed {
+				let item = mailbox_kit::ItemMeta {
+					seq: file.seq,
+					name: file.name,
+					size: u64::try_from(file.size).unwrap_or_default(),
+					sha256: file.sha256,
+					content_type: String::from("application/json"),
+					put_at: file.put_at,
+					live_since: None,
+				};
+				outcome.archived.push(ask_archive(db, archiving, subject, deletion, now, folder, &item).await?);
+				budget -= 1;
+			}
+			if budget == 0 {
+				return Ok(());
+			}
 			let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 			if !mailbox_repo::reflection_due(&mut conn, subject, &cutoff).await.map_err(storage)? {
 				continue;
@@ -797,6 +826,22 @@ async fn archive_one<T: MailboxTransport>(
 		Err(mailbox_repo::MailboxError::Rewritten) => return Ok(Some("rewritten")),
 		Err(mailbox_repo::MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
 	}
+	ask_archive(db, archiving, subject, deletion, now, folder, item).await.map(Some)
+}
+
+/// Asks the mailbox to drop `item`, whose bytes home holds in
+/// `mailbox_archive`, naming their SHA-256: what it answered. For a written
+/// reflection the answer is recorded (`mailbox_archive_answer`), so one
+/// whose ask never reached the mailbox is asked for again.
+async fn ask_archive<T: MailboxTransport>(
+	db: &SqlitePool,
+	archiving: &Archiving<'_, T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	folder: Folder,
+	item: &mailbox_kit::ItemMeta,
+) -> Result<&'static str, Failure> {
 	let answer = match archiving.mailbox.archive(folder, item).await {
 		Ok(Archive::Archived) => "archived",
 		Ok(Archive::Unchanged) => "unchanged",
@@ -805,7 +850,13 @@ async fn archive_one<T: MailboxTransport>(
 		Err(MailboxError::NotFound) => "gone",
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
-	Ok(Some(answer))
+	if folder == Folder::Reflection {
+		// No account: the deletion that took it took the archive too.
+		record_archive_answer(db, deletion, subject, folder.as_str(), &item.name, answer, &now())
+			.await
+			.map_err(storage)?;
+	}
+	Ok(answer)
 }
 
 pub(super) fn storage(err: mailbox_repo::MailboxError) -> Failure {
@@ -842,6 +893,21 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 	let change = mailbox_repo::keep_archived(&mut tx, subject, file, now).await?;
 	tx.commit().await?;
 	Ok(change)
+}
+
+/// As [`keep`], for the mailbox's answer to an ask to archive a file.
+async fn record_archive_answer(
+	db: &SqlitePool,
+	deletion: &DeletionLock,
+	subject: &str,
+	folder: &str,
+	name: &str,
+	answer: &str,
+	now: &str,
+) -> Result<Change, mailbox_repo::MailboxError> {
+	let _hold = deletion.hold().await;
+	let mut conn = db.acquire().await?;
+	mailbox_repo::record_archive_answer(&mut conn, subject, folder, name, answer, now).await
 }
 
 /// As [`keep`], for a transcript filed under its note's next number, which
@@ -1555,12 +1621,21 @@ mod tests {
 		wanted: Mutex<Vec<(String, String)>>,
 		/// (path, If-Match) of each archive asked for
 		deletes: Mutex<Vec<(String, Option<String>)>>,
+		/// An archive asked for fails to reach the mailbox (`Reach::Never`),
+		/// or is done and its answer lost (`Reach::AnswerLost`).
+		deletes_reach: Mutex<Option<Reach>>,
 		/// Every request, as `<METHOD> <path>`, either token's.
 		seen: Mutex<Vec<String>>,
 	}
 
 	fn sha(body: &str) -> String {
 		hex::encode(Sha256::digest(body.as_bytes()))
+	}
+
+	#[derive(Clone, Copy)]
+	enum Reach {
+		Never,
+		AnswerLost,
 	}
 
 	impl Vault {
@@ -1574,6 +1649,41 @@ mod tests {
 
 		fn names(&self) -> Vec<String> {
 			self.live.lock().unwrap().iter().map(|(_, _, name, ..)| name.clone()).collect()
+		}
+
+		/// An archive asked for, as the mailbox answers it: these bytes live
+		/// go, these bytes gone already are `unchanged`.
+		fn archive(&self, folder: String, name: String, path: String, if_match: Option<&str>) -> Result<Response, &'static str> {
+			self.deletes.lock().unwrap().push((path, if_match.map(str::to_owned)));
+			let reach = *self.deletes_reach.lock().unwrap();
+			if matches!(reach, Some(Reach::Never)) {
+				return Err("connection refused");
+			}
+			let tag = |held: &str| if_match == Some(&*(String::from("\"") + held + "\""));
+			let held = self
+				.live
+				.lock()
+				.unwrap()
+				.iter()
+				.find(|(f, _, n, ..)| *f == folder && *n == name)
+				.map(|(.., body, _)| sha(body));
+			let Some(held) = held else {
+				let archived = self.archived.lock().unwrap().iter().any(|(f, n, h)| *f == folder && *n == name && tag(h));
+				return Ok(if archived {
+					answer(200, r#"{"change":"unchanged"}"#)
+				} else {
+					answer(404, r#"{"error":"not_found"}"#)
+				});
+			};
+			if !tag(&held) {
+				return Ok(answer(412, r#"{"error":"mismatch"}"#));
+			}
+			self.live.lock().unwrap().retain(|(f, _, n, ..)| !(*f == folder && *n == name));
+			self.archived.lock().unwrap().push((folder, name, held));
+			if matches!(reach, Some(Reach::AnswerLost)) {
+				return Err("connection reset");
+			}
+			Ok(answer(200, r#"{"change":"archived"}"#))
 		}
 	}
 
@@ -1648,25 +1758,7 @@ mod tests {
 						.collect();
 					Ok(answer(200, &serde_json::json!({ "items": asks }).to_string()))
 				}
-				(Method::Delete, "items", Some(name)) => {
-					self.deletes.lock().unwrap().push((path.clone(), request.if_match.clone()));
-					let held = self
-						.live
-						.lock()
-						.unwrap()
-						.iter()
-						.find(|(f, _, n, ..)| *f == folder && *n == name)
-						.map(|(.., body, _)| sha(body));
-					let Some(held) = held else {
-						return Ok(answer(404, r#"{"error":"not_found"}"#));
-					};
-					if request.if_match != Some(String::from("\"") + &held + "\"") {
-						return Ok(answer(412, r#"{"error":"mismatch"}"#));
-					}
-					self.live.lock().unwrap().retain(|(f, _, n, ..)| !(*f == folder && *n == name));
-					self.archived.lock().unwrap().push((folder, name, held));
-					Ok(answer(200, r#"{"change":"archived"}"#))
-				}
+				(Method::Delete, "items", Some(name)) => self.archive(folder, name, path, request.if_match.as_deref()),
 				(Method::Put, "items", Some(name)) => {
 					let body = String::from_utf8(request.body.unwrap()).unwrap();
 					let archived = self.archived.lock().unwrap().iter().any(|(f, n, h)| *f == folder && *n == name && *h == sha(&body));
@@ -1686,6 +1778,10 @@ mod tests {
 	const YOUNG: &str = "2026-10-01T00:00:00.000Z";
 
 	async fn archive_pass(pool: &SqlitePool, vault: &Vault) -> Outcome {
+		archive_pass_ending(pool, vault).await.unwrap()
+	}
+
+	async fn archive_pass_ending(pool: &SqlitePool, vault: &Vault) -> Result<Outcome, super::PassError> {
 		let home = Mailbox::new(BASE, Token::new(String::from("home-token")), vault).unwrap();
 		let archive = Mailbox::new(BASE, Token::new(String::from("archive-token")), vault).unwrap();
 		let archiving = super::Archiving {
@@ -1696,7 +1792,6 @@ mod tests {
 			String::from("2026-10-23T15:00:00.000Z")
 		})
 		.await
-		.unwrap()
 	}
 
 	async fn archived_home(pool: &SqlitePool) -> Vec<(String, String, Vec<u8>)> {
@@ -1951,6 +2046,43 @@ mod tests {
 			!requests.iter().any(|path| path.contains(" /v1/reflection/")),
 			"an archived one is due no more: {requests:?}"
 		);
+	}
+
+	/// docs/identity.md invariant 21: a reflection home stored whose ask to
+	/// archive it never reached the mailbox, or whose answer was lost, is
+	/// asked for again by name on the next pass, though it is no longer due
+	/// and its folder is not listed, until the mailbox answers; then an idle
+	/// pass asks nothing of reflections again (MI6).
+	#[tokio::test]
+	async fn a_reflection_whose_archive_heard_no_answer_is_asked_for_again() {
+		for (reach, again) in [(Reach::Never, "archived"), (Reach::AnswerLost, "unchanged")] {
+			let (pool, vault) = (pool().await, Vault::default());
+			let (name, body) = reflection_handed(&pool, "r-old", OLD).await;
+			vault.add("reflection", 1, &name, &body, OLD);
+			*vault.deletes_reach.lock().unwrap() = Some(reach);
+			assert!(archive_pass_ending(&pool, &vault).await.is_err(), "the ask heard no answer");
+			assert_eq!(archived_home(&pool).await.len(), 1, "home stored it before it asked");
+			let answers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_archive_answer").fetch_one(&pool).await.unwrap();
+			assert_eq!(answers, 0);
+
+			*vault.deletes_reach.lock().unwrap() = None;
+			vault.seen.lock().unwrap().clear();
+			assert_eq!(archive_pass(&pool, &vault).await.archived, [again]);
+			let requests = vault.seen.lock().unwrap().clone();
+			let path = String::from("/v1/reflection/items/") + &name;
+			assert!(
+				requests.iter().filter(|seen| seen.contains(" /v1/reflection/")).eq([&(String::from("Delete ") + &path)]),
+				"asked again by name, with no listing: {requests:?}"
+			);
+			assert_eq!(vault.deletes.lock().unwrap().last(), Some(&(path, Some(String::from("\"") + &sha(&body) + "\""))));
+			assert!(vault.names().is_empty(), "the mailbox holds it no more");
+
+			vault.seen.lock().unwrap().clear();
+			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+			let idle = vault.seen.lock().unwrap().clone();
+			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "answered, it is owed no more: {idle:?}");
+		}
 	}
 
 	#[tokio::test]

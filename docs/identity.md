@@ -186,7 +186,7 @@ above the button that deletes (invariant 22):
 | aph | `aph_entry`, `aph_settings` |
 | The Jobs record | `jobs_event` |
 | Telling the phone a morning run is in | `jobs_notice_device`, `jobs_notice_sent` |
-| Mailbox files home holds | `mailbox_item`, `mailbox_archive` |
+| Mailbox files home holds | `mailbox_item`, `mailbox_archive`, `mailbox_archive_answer` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript`, `mailbox_leetype_log` |
 | LeetType sessions | `leetype_session_event` |
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
@@ -794,9 +794,15 @@ nowhere is marked as such and belongs to review.
       (invariant 21): each file it archived from any folder, its bytes as the
       mailbox held them (they must match the listing's SHA-256), its hash,
       size, sequence number, when it was first put and when home stored it.
-      Read only by the poller, to put a file back when the routine asks.
+      Read only by the poller, to put a file back when the routine asks, and
+      to ask again for a written reflection whose ask heard no answer.
+    - `mailbox_archive_answer`, written only by the poller with the archive
+      token (invariant 21): the mailbox's answer each time home asked it to
+      drop a written reflection home holds in `mailbox_archive` (`archived`,
+      `unchanged`, `mismatch`, `refused` or `gone`), and when. Any answer is
+      final, as a hand-off's is.
 
-    No row of the six is updated (each table's trigger aborts an
+    No row of the seven is updated (each table's trigger aborts an
     `UPDATE`), replaced (other bytes under a held or filed name are refused,
     and nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE`
     trigger for) or deleted but with the account, by the sweep and the
@@ -883,7 +889,15 @@ nowhere is marked as such and belongs to review.
     never lists the asks for one (`mailbox::pass::ASKS`), since the routine
     cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`);
     its words are
-    `written_reflection`'s in any case (invariant 29). When the routine asks for an archived file again, the poller puts
+    `written_reflection`'s in any case (invariant 29). Storing one makes it
+    due no more, so a listing would never find it again: the poller records
+    the mailbox's answer to each ask to archive one
+    (`mailbox_archive_answer`), and one it stored whose ask heard no answer
+    (it never reached the mailbox, its answer was lost, or home restarted
+    between the two) is asked for again by its name and the SHA-256 home
+    holds, without listing the folder
+    (`mailbox_repo::unanswered_archives`, home's own tables again), until
+    the mailbox answers; one it had already dropped answers `unchanged`. When the routine asks for an archived file again, the poller puts
     back the bytes `mailbox_archive` holds for it, and the mailbox takes only
     the bytes it archived. Nothing here deletes: an archived file's bytes
     are home's, and the mailbox keeps a row about it for good. Deleting the
@@ -909,7 +923,8 @@ nowhere is marked as such and belongs to review.
     `the_routines_word_sets_and_dramas_are_kept_like_digests`,
     `an_ask_is_answered_from_home_and_one_home_lacks_stays_open`,
     `a_pass_archives_at_most_twenty`,
-    `an_old_reflection_is_archived_once_and_its_asks_are_never_listed` and
+    `an_old_reflection_is_archived_once_and_its_asks_are_never_listed`,
+    `a_reflection_whose_archive_heard_no_answer_is_asked_for_again` and
     `an_idle_pass_asks_nothing_of_reflections`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
