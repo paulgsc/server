@@ -7,9 +7,9 @@
 //! `rustix`, so killing needs no new process: a program that used up its
 //! process ceiling cannot stop the kill) before the child is reaped. The group
 //! is killed again once the child has ended, however it ended, so nothing it
-//! spawned outlives the run. With [`Reap::Uid`], every other process of the
-//! runner's own uid goes too, which also takes a descendant that left the
-//! group (`setsid`). stdout and stderr are drained by a thread each, so a
+//! spawned outlives the run. Given the programs' own uid, every process of it
+//! goes too, which also takes a descendant that left the group (`setsid`).
+//! stdout and stderr are drained by a thread each, so a
 //! chatty child never blocks on a full pipe, but only the first `cap` bytes
 //! (and, for the error tail, the last `cap`) are kept.
 
@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 /// graded.
 const POLL: Duration = Duration::from_millis(1);
 
-/// How many times [`Reap::Uid`] looks for survivors before giving up. Each
+/// How many times the sweep of a uid looks for survivors before giving up. Each
 /// pass kills every process it finds, so only one forking faster than a pass
 /// can list `/proc` survives one, and nothing survives `SIGKILL`.
 const SWEEP_PASSES: usize = 200;
@@ -47,13 +47,6 @@ impl Captured {
 	#[must_use]
 	pub fn truncated(&self) -> bool {
 		u64::try_from(self.head.len()).map_or(true, |kept| kept < self.total)
-	}
-
-	/// The end of the stream: all of it when it fit, else its last `cap`
-	/// bytes.
-	#[must_use]
-	pub fn end(&self) -> &[u8] {
-		&self.tail
 	}
 }
 
@@ -77,27 +70,17 @@ pub struct Finished {
 	pub stderr: Captured,
 }
 
-/// What is killed once a child has ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reap {
-	/// The child's process group: everything it spawned that stayed in it.
-	Group,
-	/// The group, then every process of this process's real uid but this
-	/// one and pid 1. Only for a uid the runner has to itself (the
-	/// `rust-runner` container's), where nothing else of that uid can exist;
-	/// anywhere else it would kill the user's own processes.
-	Uid,
-}
-
 /// Run `command` to completion or to `ceiling`, whichever comes first, with
 /// stdin closed and stdout and stderr kept to `stdout_cap` and `stderr_cap`
-/// bytes.
+/// bytes. Once it has ended, its process group is killed, and with `sweep`,
+/// every process whose real uid is `sweep` (the programs' own, never this
+/// process's).
 ///
 /// # Errors
-/// If the child cannot be started or waited on, or (with [`Reap::Uid`]) a
-/// process of the uid survives every pass of the sweep; everything the child
-/// itself does is in [`Finished`].
-pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usize, stderr_cap: usize, reap: Reap) -> std::io::Result<Finished> {
+/// If the child cannot be started or waited on, or a process of `sweep`'s
+/// uid survives every pass of the sweep; everything the child itself does is
+/// in [`Finished`].
+pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usize, stderr_cap: usize, sweep: Option<u32>) -> std::io::Result<Finished> {
 	command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
 	let started = Instant::now();
 	let mut child = command.spawn()?;
@@ -125,8 +108,8 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 	// ended: a descendant still holding stdout would otherwise outlive the
 	// ceiling, and keep the readers below waiting for it (review, #399).
 	kill_group(&mut child);
-	if reap == Reap::Uid {
-		sweep_uid()?;
+	if let Some(uid) = sweep {
+		sweep_uid(uid)?;
 	}
 	let deadline = Instant::now() + READER_GRACE;
 	Ok(Finished {
@@ -151,11 +134,13 @@ fn kill_group(child: &mut Child) {
 	let _ = child.kill();
 }
 
-/// `SIGKILL` every process of this process's real uid but this one and pid
-/// 1, until a pass of `/proc` finds none left alive.
-fn sweep_uid() -> std::io::Result<()> {
+/// `SIGKILL` every process whose real uid is `uid` (but this one and pid 1,
+/// which never are), until a pass of `/proc` finds none left alive.
+fn sweep_uid(uid: u32) -> std::io::Result<()> {
 	let me = std::process::id();
-	let uid = getuid().as_raw();
+	if uid == 0 || uid == getuid().as_raw() {
+		return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the sweep is only for the programs' own uid"));
+	}
 	for _ in 0..SWEEP_PASSES {
 		let mut found = false;
 		for entry in std::fs::read_dir("/proc")? {
@@ -183,7 +168,7 @@ fn sweep_uid() -> std::io::Result<()> {
 		}
 		std::thread::sleep(POLL);
 	}
-	Err(std::io::Error::other("a process of the runner's uid survived every pass of the sweep"))
+	Err(std::io::Error::other("a process of the programs' uid survived every pass of the sweep"))
 }
 
 /// Whether a `/proc/<pid>/status` names a process whose real uid is `uid`

@@ -40,8 +40,10 @@ pub enum Outcome {
 	/// It ran and failed: a non-zero exit (a panic is 101) or a signal (an
 	/// allocation past the memory ceiling aborts).
 	Runtime,
-	/// rustc or the program was still running at its ceiling, and was
-	/// killed.
+	/// rustc or the program ran into a ceiling and was stopped: either was
+	/// still running at its wall-clock ceiling and was killed, or rustc was
+	/// ended by a signal (its memory or file-size ceiling; rustc refuses a
+	/// program by exiting, never by a signal).
 	BudgetExceeded,
 }
 
@@ -87,6 +89,13 @@ pub struct CompileRecord {
 	/// How many bytes of text rustc printed in all; more than `rendered`
 	/// holds when it was cut.
 	pub rendered_bytes: u64,
+	/// Whether rustc was still running at the compile timeout, and killed.
+	pub timed_out: bool,
+	/// rustc's exit status, when it exited.
+	pub exit_code: Option<i32>,
+	/// The signal that ended rustc, when one did (`9` for the timeout's
+	/// kill).
+	pub signal: Option<i32>,
 }
 
 /// What the program printed, and how it ended.
@@ -158,13 +167,31 @@ impl Recorder {
 
 	/// Compile `source` and, if it builds, run it once.
 	///
+	/// The program's directory is removed afterwards when it can be; what
+	/// cannot be (a directory the program made unreadable, under a uid of its
+	/// own) is left to the caller's tidy, and does not fail the recording.
+	///
 	/// # Errors
-	/// Only the machine's failures ([`SpawnError::is_toolchain`]); whatever
-	/// the program does is in the [`Recording`].
+	/// Only the machine's failures ([`SpawnError::Toolchain`],
+	/// [`SpawnError::Io`]); whatever the program does is in the
+	/// [`Recording`].
 	pub fn record(&self, source: &str) -> Result<Recording, SpawnError> {
-		let limits = self.compiler.limits();
 		let dir = tempfile::Builder::new().prefix("rust-run-").tempdir_in(&self.work).map_err(SpawnError::Io)?;
-		let compiled = self.compiler.compile(dir.path(), NAME, source, &PROFILE)?;
+		if self.compiler.limits().run_as.is_some() {
+			// The runner's own directory, which rustc (writing the binary)
+			// and the program run in as the programs' uid. Removing what
+			// they leave is the caller's tidy, as that uid.
+			use std::os::unix::fs::PermissionsExt;
+			std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).map_err(SpawnError::Io)?;
+		}
+		let recording = self.record_in(dir.path(), source);
+		let _ = dir.close();
+		recording
+	}
+
+	fn record_in(&self, dir: &std::path::Path, source: &str) -> Result<Recording, SpawnError> {
+		let limits = self.compiler.limits();
+		let compiled = self.compiler.compile(dir, NAME, source, &PROFILE)?;
 
 		let (rendered, _) = compiled.rendered_head(limits.logs_ceiling);
 		let mut start = 0;
@@ -178,10 +205,17 @@ impl Recorder {
 			})
 			.cloned()
 			.collect();
+		let (timed_out, exit_code, signal) = match compiled.ending {
+			Ending::TimedOut => (true, None, Some(9)),
+			Ending::Exited(status) => (false, status.code(), signal_of(status)),
+		};
 		let compile = CompileRecord {
 			diagnostics,
-			rendered,
+			rendered: rendered.to_owned(),
 			rendered_bytes: u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX),
+			timed_out,
+			exit_code,
+			signal,
 		};
 		let key = key(&self.toolchain, source);
 
@@ -191,12 +225,13 @@ impl Recorder {
 					Outcome::BudgetExceeded,
 					String::from("rustc did not finish within ") + &limits.compile_timeout.as_secs().to_string() + " s, and was killed",
 				),
-				Ending::Exited(status) => (Outcome::CompileError, String::from("rustc ") + &describe(status)),
+				Ending::Exited(status) if status.code().is_some() => (Outcome::CompileError, String::from("rustc ") + &describe(status)),
+				Ending::Exited(status) => (Outcome::BudgetExceeded, String::from("rustc ") + &describe(status)),
 			};
 			return Ok(self.recording(key, outcome, Some(note), compile, None));
 		};
 
-		let finished = match self.compiler.run(dir.path(), binary, &[]) {
+		let finished = match self.compiler.run(dir, binary, &[]) {
 			Ok(finished) => finished,
 			// The program's own doing: recorded as a runtime failure.
 			Err(SpawnError::Program(err)) => {
@@ -205,9 +240,7 @@ impl Recorder {
 			}
 			Err(err) => return Err(err),
 		};
-		dir.close().map_err(SpawnError::Io)?;
-
-		let stderr = without_thread_ids(&String::from_utf8_lossy(finished.stderr.end()));
+		let stderr = without_thread_ids(&String::from_utf8_lossy(&finished.stderr.tail));
 		let (outcome, note, exit_code, signal) = match finished.ending {
 			Ending::Exited(status) if status.success() => (Outcome::Ok, None, status.code(), None),
 			Ending::Exited(status) => (Outcome::Runtime, Some(String::from("the program ") + &describe(status)), status.code(), signal_of(status)),
@@ -261,11 +294,14 @@ pub struct RunSpan {
 pub enum Why {
 	/// A wall-clock ceiling: the run's, or (with nothing run) the compile's.
 	Time,
-	/// The memory ceiling: an allocation it refused aborted the program.
+	/// A memory ceiling: an allocation it refused aborted the program, or
+	/// (with nothing run) rustc.
 	Memory,
 	/// More output than the ceiling keeps, so what it printed is not whole.
 	Output,
-	/// Any other exit: a status but 0 or 101, or a signal.
+	/// Any other exit: a status but 0 or 101, or a signal; or (with nothing
+	/// run) rustc ended by a signal for another reason, or a binary that
+	/// could not be run to its end.
 	Exit,
 }
 
@@ -328,12 +364,20 @@ impl Recording {
 	pub fn rustc_run(&self) -> RustcRun {
 		let toolchain = self.release().to_owned();
 		let Some(run) = &self.run else {
-			if self.outcome == Outcome::BudgetExceeded {
-				// rustc ran out of time: nothing was run, so nothing printed.
+			// Nothing ran, so nothing printed but rustc. Only a compile rustc
+			// refused (it exited) is a compile error; rustc stopped at a
+			// ceiling, or a binary that could not be run, is stopped.
+			let why = match self.outcome {
+				Outcome::CompileError => None,
+				_ if self.compile.timed_out => Some(Why::Time),
+				_ if self.compile.signal.is_some() && ran_out_of_memory(&self.compile.rendered) => Some(Why::Memory),
+				_ => Some(Why::Exit),
+			};
+			if let Some(why) = why {
 				return RustcRun::Stopped {
 					toolchain,
 					compile_stderr: self.compile.rendered.clone(),
-					why: Why::Time,
+					why,
 					stdout: String::new(),
 					stderr: String::new(),
 				};
@@ -379,12 +423,19 @@ impl Recording {
 				stdout,
 				stderr,
 			},
-			// An allocation the address-space ceiling refused aborts with
-			// this line; anything else is some other exit.
-			Outcome::Runtime if run.stderr.contains("memory allocation of ") => stopped(Why::Memory),
+			// An allocation the address-space ceiling refused aborts with a
+			// line saying so; anything else is some other exit.
+			Outcome::Runtime if ran_out_of_memory(&run.stderr) => stopped(Why::Memory),
 			Outcome::Runtime | Outcome::CompileError => stopped(Why::Exit),
 		}
 	}
+}
+
+/// Whether `stderr` holds the line Rust's allocator (`memory allocation of N
+/// bytes failed`) or LLVM (`LLVM ERROR: out of memory`) prints when an
+/// allocation past the address-space ceiling is refused.
+fn ran_out_of_memory(stderr: &str) -> bool {
+	stderr.contains("memory allocation of ") || stderr.contains("out of memory")
 }
 
 /// `E` and four digits, the only codes the phone's format takes.

@@ -41,7 +41,7 @@ pub mod round;
 
 use crate::round::{programs, Constraint, ProgramError, RunnableRound};
 use leetype_round_repo::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RunResult};
-use rust_runner::{describe, without_thread_ids, Captured, Compiler, Ending, Finished, Profile, SpawnError};
+use rust_runner::{describe, without_thread_ids, Compiler, Ending, Finished, Profile, SpawnError};
 pub use rust_runner::{Limits, DEFAULT_COMPILE_TIMEOUT, DEFAULT_LOGS_CEILING, DEFAULT_MEMORY_CEILING, DEFAULT_OUTPUT_CEILING, DEFAULT_RUN_CEILING};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -224,15 +224,9 @@ impl Runner {
 				message.push_str(&describe(status));
 				message.push('\n');
 				let (head, cut) = compiled.rendered_head(limits.logs_ceiling);
-				message.push_str(&head);
+				message.push_str(head);
 				if cut {
-					let bytes = compiled.rendered.as_bytes();
-					let rendered = Captured {
-						head: bytes[..limits.logs_ceiling.min(bytes.len())].to_vec(),
-						tail: Vec::new(),
-						total: u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX),
-					};
-					note_truncation(&mut message, "rustc's output", &rendered);
+					note_truncation(&mut message, "rustc's output", head.len(), u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX));
 				}
 				Err(message)
 			}
@@ -268,7 +262,7 @@ impl Runner {
 				for (stream, captured) in [("stdout", &stdout), ("stderr", &stderr)] {
 					if captured.truncated() {
 						let mut note = String::new();
-						note_truncation(&mut note, stream, captured);
+						note_truncation(&mut note, stream, captured.head.len(), captured.total);
 						logs.push(note.trim_start().to_owned());
 					}
 				}
@@ -286,7 +280,7 @@ impl Runner {
 			Ending::Exited(status) => {
 				let mut message = String::from("the program ");
 				message.push_str(&describe(status));
-				let tail = without_thread_ids(&String::from_utf8_lossy(stderr.end()));
+				let tail = without_thread_ids(&String::from_utf8_lossy(&stderr.tail));
 				if !tail.trim().is_empty() {
 					message.push('\n');
 					if stderr.truncated() {
@@ -306,17 +300,15 @@ impl Runner {
 	}
 }
 
-/// `\n<stream> truncated: kept the first K of N bytes`, when it was.
-fn note_truncation(message: &mut String, stream: &str, captured: &Captured) {
-	if captured.truncated() {
-		message.push('\n');
-		message.push_str(stream);
-		message.push_str(" truncated: kept the first ");
-		message.push_str(&captured.head.len().to_string());
-		message.push_str(" of ");
-		message.push_str(&captured.total.to_string());
-		message.push_str(" bytes");
-	}
+/// `\n<stream> truncated: kept the first <kept> of <total> bytes`.
+fn note_truncation(message: &mut String, stream: &str, kept: usize, total: u64) {
+	message.push('\n');
+	message.push_str(stream);
+	message.push_str(" truncated: kept the first ");
+	message.push_str(&kept.to_string());
+	message.push_str(" of ");
+	message.push_str(&total.to_string());
+	message.push_str(" bytes");
 }
 
 /// The bound of the constraint set's first dimension: `RunResult.inputSize`.

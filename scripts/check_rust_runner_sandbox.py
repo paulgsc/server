@@ -7,18 +7,24 @@ hostile, so the hostile cases are tests, not review notes. This brings up
 name, and checks:
 
   * the container is the sandbox the compose file declares (RX1): no
-    network, a read-only root, uid 10001, no capabilities, no new
-    privileges, an init, and its pid, memory and CPU caps;
+    network, no shared IPC, a read-only root, root with only SETUID, SETGID
+    and KILL, no new privileges, an init, its pid, memory and CPU caps, and
+    an environment of known names only; and every program runs as uid
+    10001 with no group and no capability;
   * the toolchain is the pinned rustc 1.97.0, and the worked example
     (paulgsc/some-ui#2231) records the exact text it prints;
-  * a program that loops, allocates without bound, forks without bound,
-    escapes its process group, opens a socket, writes where it can, or
-    kills the runner itself ends as a recorded time, memory or runtime
-    outcome (or, for the last, a restart), and leaves no process and no
-    file behind (RX2, RX3).
+  * a program that loops, allocates without bound, forks or spawns threads
+    without bound, escapes its process group, opens a socket, writes where
+    it can (a directory it makes unreadable included), stops or kills the
+    runner, queues requests on the runner's socket, or leaves System V IPC
+    behind; and a source that makes rustc read /dev/zero, expand a macro
+    without end, build a huge static or print a flood of errors; and a
+    program that floods stdout: each ends as a recorded outcome, and leaves
+    no process, no file and no IPC object behind (RX2, RX3). Only IPC a
+    program leaves restarts the runner, into a fresh namespace.
 
-Requests go through `rust-runner ask` exec'd as uid 10002, so the runner's
-sweep of its own uid does not take the client with it.
+Requests go through `rust-runner ask` exec'd as uid 10002, neither the
+runner's (root) nor the programs' (10001), as file_host's will be.
 
 Usage:
   python3 scripts/check_rust_runner_sandbox.py           # build, check, tear down
@@ -41,6 +47,22 @@ COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
 CLIENT_UID = "10002"
+PROGRAM_IDS = "10001\t10001\t10001\t10001"
+# The image's own variables and the runner's settings; nothing else, and so
+# nothing secret, may be in its environment.
+ENV_ALLOWED = {
+	"PATH",
+	"RUSTUP_HOME",
+	"CARGO_HOME",
+	"RUST_VERSION",
+	"RUST_RUNNER_RUSTC",
+	"RUST_RUNNER_SOCKET",
+	"RUST_RUNNER_WORK",
+	"RUST_RUNNER_PROGRAM_UID",
+	"RUST_RUNNER_PROGRAM_GID",
+}
+# CAP_KILL (5), CAP_SETGID (6) and CAP_SETUID (7).
+RUNNER_CAPS = 0xE0
 TOOLCHAIN = "rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0"
 # The processes the container holds between jobs: tini and the runner.
 RESIDENTS = ("/sbin/docker-init -- /usr/local/bin/rust-runner serve", "/usr/local/bin/rust-runner serve")
@@ -95,12 +117,17 @@ def leftovers() -> list[str]:
 
 
 def files_left() -> list[str]:
-	"""Anything in the two writable places but the socket."""
-	# /work is the runner's own (0700), so list it as the runner's uid, which
-	# is safe between jobs: the sweep runs only during one.
+	"""Anything in the writable places but the socket, and any IPC object."""
 	work = compose("exec", "-T", CONTAINER, "ls", "-A", "/work").stdout.split()
 	run = compose("exec", "-T", CONTAINER, "ls", "-A", "/run/rust-runner").stdout.split()
-	return [f"/work/{name}" for name in work] + [f"/run/rust-runner/{name}" for name in run if name != "runner.sock"]
+	mqueue = compose("exec", "-T", CONTAINER, "ls", "-A", "/dev/mqueue").stdout.split()
+	shm = compose("exec", "-T", CONTAINER, "sh", "-c", "ls -A /dev/shm 2>/dev/null || true").stdout.split()
+	left = [f"/work/{name}" for name in work] + [f"/run/rust-runner/{name}" for name in run if name != "runner.sock"]
+	left += [f"/dev/mqueue/{name}" for name in mqueue] + [f"/dev/shm/{name}" for name in shm]
+	for table in ("shm", "sem", "msg"):
+		rows = compose("exec", "-T", CONTAINER, "cat", f"/proc/sysvipc/{table}").stdout.splitlines()[1:]
+		left += [f"/proc/sysvipc/{table}: {row.split()[1] if row.split() else row}" for row in rows]
+	return left
 
 
 def clean(after: str) -> None:
@@ -112,20 +139,47 @@ def clean(after: str) -> None:
 	expect(files_left() == [], f"{after} left files behind: {files_left()}")
 
 
+def restart_count() -> int:
+	return json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]["RestartCount"]
+
+
+def runner_status() -> str:
+	"""The runner's /proc status, read as root from outside the job."""
+	pid = compose("exec", "-T", CONTAINER, "sh", "-c", "for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline)\" = '/usr/local/bin/rust-runner serve ' ] && echo ${p#/proc/}; done").stdout.split()
+	expect(len(pid) == 1, f"the runner's pid: {pid}")
+	return compose("exec", "-T", CONTAINER, "cat", f"/proc/{pid[0]}/status").stdout
+
+
 def check_sandbox() -> None:
 	inspected = json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]
 	host = inspected["HostConfig"]
 	expect(host["NetworkMode"] == "none", f"network: {host['NetworkMode']}")
+	expect(host["IpcMode"] == "none", f"ipc: {host['IpcMode']}")
+	expect(host.get("Sysctls") == {"kernel.shm_rmid_forced": "1"}, f"sysctls: {host.get('Sysctls')}")
 	expect(host["ReadonlyRootfs"] is True, "the root is writable")
-	expect(inspected["Config"]["User"] == "10001:10001", f"user: {inspected['Config']['User']}")
-	expect(host["CapDrop"] == ["ALL"] and not host.get("CapAdd"), f"capabilities: drop {host['CapDrop']} add {host.get('CapAdd')}")
+	expect(inspected["Config"]["User"] == "0:0", f"user: {inspected['Config']['User']}")
+	added = {cap.removeprefix("CAP_") for cap in host.get("CapAdd") or []}
+	expect(host["CapDrop"] == ["ALL"] and added == {"SETUID", "SETGID", "KILL"}, f"capabilities: drop {host['CapDrop']} add {host.get('CapAdd')}")
+	names = {entry.split("=", 1)[0] for entry in inspected["Config"].get("Env") or []}
+	expect(names <= ENV_ALLOWED, f"variables beyond the allowlist: {sorted(names - ENV_ALLOWED)}")
+	expect(not host.get("Binds") or all("/run/rust-runner" in bind for bind in host["Binds"]), f"binds: {host.get('Binds')}")
+	status = runner_status()
+	fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+	expect(fields["Uid"].split()[0] == "0", f"the runner's uid: {fields['Uid']}")
+	expect(int(fields["CapEff"], 16) == RUNNER_CAPS, f"the runner's capabilities: {fields['CapEff']}")
 	expect("no-new-privileges:true" in (host.get("SecurityOpt") or []), f"security: {host.get('SecurityOpt')}")
 	expect(host["Init"] is True, "no init")
 	expect(host["PidsLimit"] == 128, f"pids: {host['PidsLimit']}")
 	expect(host["Memory"] == 1024**3, f"memory: {host['Memory']}")
 	expect(host["NanoCpus"] == 10**9, f"cpus: {host['NanoCpus']}")
 	expect(not inspected["Config"].get("ExposedPorts") and not host.get("PortBindings"), "a port is published")
-	print("ok: the container is the declared sandbox")
+	identity = record(IDENTITY)["rustc"]
+	expect(
+		identity["outcome"] == "prints" and identity["stdout"] == f"Uid:\t{PROGRAM_IDS}\nGid:\t{PROGRAM_IDS}\nGroups:\t\nCapEff:\t0000000000000000\n",
+		f"a program's identity: {identity}",
+	)
+	clean("a program's identity")
+	print("ok: the container is the declared sandbox, and a program is uid 10001 with no group or capability")
 
 
 def utf8_round(line: str) -> str:
@@ -181,6 +235,16 @@ def check_worked_example() -> None:
 	print("ok: the worked example records what rustc 1.97.0 prints")
 
 
+IDENTITY = """
+fn main() {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    for line in status.lines() {
+        if ["Uid:", "Gid:", "Groups:", "CapEff:"].iter().any(|key| line.starts_with(key)) {
+            println!("{}", line.trim_end_matches(' '));
+        }
+    }
+}
+"""
 LOOP = "fn main() { let mut i: u64 = 0; loop { i = i.wrapping_add(1); std::hint::black_box(i); } }"
 HOARD = "fn main() { let mut hoard: Vec<Vec<u8>> = Vec::new(); loop { hoard.push(vec![1_u8; 64 << 20]); std::hint::black_box(&hoard); } }"
 FORK_BOMB = """
@@ -220,23 +284,99 @@ fn main() {
 }
 """
 WRITES = """
+use std::os::unix::fs::PermissionsExt;
 fn main() {
-    std::fs::write("/work/left-behind", vec![0_u8; 1 << 20]).unwrap();
-    std::fs::create_dir_all("/work/deep/er").unwrap();
-    std::fs::write("/run/rust-runner/left-behind", b"x").unwrap();
-    println!("etc: {}", std::fs::write("/etc/left-behind", b"x").is_ok());
-    println!("tmp: {}", std::fs::write("/tmp/left-behind", b"x").is_ok());
+    // Its own directory: written, and one directory in it made unreadable,
+    // which the runner (root, without FOWNER) could not open; `clean`, as
+    // the program's uid, can.
+    std::fs::write("left-behind", vec![0_u8; 1 << 20]).unwrap();
+    std::fs::create_dir_all("deep/er").unwrap();
+    std::fs::write("deep/er/file", b"x").unwrap();
+    std::fs::set_permissions("deep/er", std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::set_permissions("deep", std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::os::unix::fs::symlink("/run/rust-runner", "link").unwrap();
+    for (name, path) in [
+        ("work", "/work/left-behind"),
+        ("socket", "/run/rust-runner/left-behind"),
+        ("etc", "/etc/left-behind"),
+        ("tmp", "/tmp/left-behind"),
+        ("shm", "/dev/shm/left-behind"),
+        ("mqueue", "/dev/mqueue/left-behind"),
+    ] {
+        println!("{name}: {}", std::fs::write(path, b"x").is_ok());
+    }
 }
 """
-KILL_RUNNER = """
+STOP_RUNNER = """
 fn main() {
-    for entry in std::fs::read_dir("/proc").unwrap() {
-        let path = entry.unwrap().path();
-        let cmdline = std::fs::read(path.join("cmdline")).unwrap_or_default();
-        if cmdline == b"/usr/local/bin/rust-runner\\0serve\\0" {
-            let pid = path.file_name().unwrap().to_string_lossy().into_owned();
-            std::process::Command::new("sh").args(["-c", &format!("kill -9 {pid}")]).status().unwrap();
-        }
+    // Its parent is the runner: stop it, so the ceiling never fires, or
+    // kill it, or read it. As another uid than root's, none of it works.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let parent = status.lines().find_map(|line| line.strip_prefix("PPid:")).unwrap().trim().to_owned();
+    let signal = |signal: &str| {
+        std::process::Command::new("sh").args(["-c", &(String::from("kill -") + signal + " " + &parent)]).status().unwrap().success()
+    };
+    println!("stop: {}", signal("STOP"));
+    println!("kill: {}", signal("KILL"));
+    println!("environ: {}", std::fs::read(String::from("/proc/") + &parent + "/environ").is_ok());
+    loop {
+        std::hint::black_box(());
+    }
+}
+"""
+QUEUES = """
+use std::io::Write;
+fn main() {
+    // The socket is reachable from here; a request queued on it would be
+    // answered after this program is killed, and could queue the next.
+    let mut socket = std::os::unix::net::UnixStream::connect("/run/rust-runner/runner.sock").unwrap();
+    socket.write_all(b"{\\"ask\\":\\"toolchain\\"}\\n").unwrap();
+    println!("queued");
+}
+"""
+SHARED_MEMORY = """
+unsafe extern "C" {
+    fn shmget(key: i32, size: usize, flags: i32) -> i32;
+}
+fn main() {
+    // 64 MiB parked in System V shared memory, never attached: with
+    // kernel.shm_rmid_forced it goes when this process does.
+    let id = unsafe { shmget(0, 64 << 20, 0o1000 | 0o600) };
+    println!("shm: {}", id >= 0);
+}
+"""
+SEMAPHORES = """
+unsafe extern "C" {
+    fn semget(key: i32, count: i32, flags: i32) -> i32;
+    fn msgget(key: i32, flags: i32) -> i32;
+}
+fn main() {
+    let sem = unsafe { semget(0, 1, 0o1000 | 0o600) };
+    let msg = unsafe { msgget(0, 0o1000 | 0o600) };
+    println!("sem: {}, msg: {}", sem >= 0, msg >= 0);
+}
+"""
+DEV_ZERO = """
+static ZERO: &[u8] = include_bytes!("/dev/zero");
+fn main() { println!("{}", ZERO.len()); }
+"""
+MACRO_BLOWUP = """
+#![recursion_limit = "100000"]
+macro_rules! blow { () => {}; ($t:tt $($rest:tt)*) => { blow!($($rest)*); blow!($($rest)*); }; }
+fn main() { blow!(a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a); }
+"""
+HUGE_STATIC = """
+static BIG: [u8; 1 << 27] = [1; 1 << 27];
+fn main() { println!("{}", BIG[12345]); }
+"""
+ERROR_FLOOD = "fn main() {\n" + "".join(f'    let x{i}: u8 = "no";\n' for i in range(1500)) + "}\n"
+STDOUT_FLOOD = """
+use std::io::Write;
+fn main() {
+    let line = [b'x'; 1 << 16];
+    let mut out = std::io::stdout().lock();
+    for _ in 0..1024 {
+        out.write_all(&line).unwrap();
     }
 }
 """
@@ -278,18 +418,68 @@ def check_hostile() -> None:
 	print("ok: a socket reaches nothing past loopback, and the connect fails as a panic")
 
 	wrote = record(WRITES)["rustc"]
-	expect(wrote == {"outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "etc: false\ntmp: false\n"}, f"writes: {wrote}")
+	expect(
+		wrote == {"outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "work: false\nsocket: false\netc: false\ntmp: false\nshm: false\nmqueue: false\n"},
+		f"writes: {wrote}",
+	)
 	clean("writes")
-	print("ok: only /work and the socket's directory are writable, and both are emptied")
+	print("ok: a program writes only in its own directory, which is removed, unreadable directories and all")
 
-	restarts = json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]["RestartCount"]
-	killed = compose("exec", "-T", "--user", CLIENT_UID, CONTAINER, "rust-runner", "ask", stdin=json.dumps({"ask": "record", "toolchain": TOOLCHAIN, "source": KILL_RUNNER}), check=False, timeout=180)
-	expect(killed.returncode != 0, f"the runner answered after being killed: {killed.stdout}")
+	restarts = restart_count()
+	stopped = record(STOP_RUNNER)["rustc"]
+	expect(stopped["outcome"] == "stopped" and stopped["why"] == "time", f"stopping the runner: {stopped}")
+	expect(stopped["stdout"] == "stop: false\nkill: false\nenviron: false\n", f"stopping the runner's stdout: {stopped['stdout']!r}")
+	expect(ask({"ask": "toolchain"})["answer"] == "toolchain", "the runner stopped answering")
+	expect(restart_count() == restarts, "the runner restarted")
+	state = next(line for line in runner_status().splitlines() if line.startswith("State:"))
+	expect(state.split()[1] in {"S", "R"}, f"the runner's {state}")
+	clean("stopping the runner")
+	print("ok: a program can neither stop, kill nor read the runner; it is stopped for time and the runner serves on")
+
+	queued = record(QUEUES)["rustc"]
+	expect(queued["outcome"] == "prints" and queued["stdout"] == "queued\n", f"queueing a request: {queued}")
+	expect(ask({"ask": "toolchain"})["answer"] == "toolchain", "the runner stopped answering")
+	logged = compose("logs", "--no-color", CONTAINER).stdout.splitlines()
+	tail = [line.split("rust-runner: ", 1)[-1] for line in logged[-3:]]
+	expect(tail[0].startswith("recorded ok in ") and tail[1:] == ["refused peer", "toolchain"], f"the runner's log: {tail}")
+	clean("queueing a request")
+	print("ok: a request a program queues on the socket is refused, unread")
+
+	shared = record(SHARED_MEMORY)["rustc"]
+	expect(shared["outcome"] == "prints" and shared["stdout"] == "shm: true\n", f"shared memory: {shared}")
+	expect(restart_count() == restarts, "the runner restarted for shared memory")
+	clean("shared memory")
+	print("ok: System V shared memory goes with the program that made it")
+
+	semaphores = record(SEMAPHORES)["rustc"]
+	expect(semaphores["outcome"] == "prints" and semaphores["stdout"] == "sem: true, msg: true\n", f"semaphores: {semaphores}")
 	wait_ready()
-	after = json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]["RestartCount"]
-	expect(after == restarts + 1, f"restart count {restarts} -> {after}")
-	clean("killing the runner")
-	print("ok: a program that kills the runner gets no answer, and the restart leaves nothing")
+	expect(restart_count() == restarts + 1, f"restart count {restarts} -> {restart_count()}")
+	clean("semaphores and queues")
+	print("ok: a System V semaphore or queue a program leaves restarts the runner into a fresh IPC namespace")
+
+
+def check_compiles() -> None:
+	zero = record(DEV_ZERO)["rustc"]
+	expect(zero["outcome"] == "compile-error", f"include_bytes!(/dev/zero): {zero}")
+	clean("include_bytes!(/dev/zero)")
+	print("ok: include_bytes!(\"/dev/zero\") is a compile error, and leaves nothing")
+
+	for name, source in (("a macro that expands without end", MACRO_BLOWUP), ("a 128 MiB static", HUGE_STATIC)):
+		stopped = record(source)["rustc"]
+		expect(stopped["outcome"] == "stopped" and stopped["why"] in {"memory", "time"}, f"{name}: {stopped}")
+		clean(name)
+		print(f"ok: {name} stops rustc for {stopped['why']}, and leaves nothing")
+
+	flood = record(ERROR_FLOOD)["rustc"]
+	expect(flood["outcome"] == "compile-error" and flood["code"] == "E0308" and len(flood["stderr"].encode()) <= 4096, f"an error flood: {flood['outcome']}, {len(flood['stderr'])}")
+	clean("an error flood")
+	print("ok: 1500 errors are a compile error kept to 4 KiB, and leave nothing")
+
+	output = record(STDOUT_FLOOD)["rustc"]
+	expect(output["outcome"] == "stopped" and output["why"] == "output" and output["stdout"] == "x" * 4096, f"a stdout flood: {output['outcome']} {output.get('why')}")
+	clean("a stdout flood")
+	print("ok: 64 MiB of stdout is stopped for output, kept to 4 KiB, and leaves nothing")
 
 
 def main() -> int:
@@ -306,6 +496,7 @@ def main() -> int:
 		check_sandbox()
 		check_worked_example()
 		check_hostile()
+		check_compiles()
 	except (Failed, subprocess.TimeoutExpired, json.JSONDecodeError) as err:
 		print(f"FAILED: {err}", file=sys.stderr)
 		print(compose("logs", "--no-color", check=False).stdout[-4000:], file=sys.stderr)

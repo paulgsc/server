@@ -9,9 +9,9 @@
 //! outcomes); the exact text rustc 1.97.0 prints is checked inside the pinned
 //! container by `scripts/check_rust_runner_sandbox.py`.
 
-use rust_runner::recording::{Outcome, Recorder, Recording, RunSpan, RustcRun, Why, PROFILE};
-use rust_runner::service::{answer, ask, Refusal, Request, Response, REQUEST_CEILING};
-use rust_runner::{Compiler, Limits};
+use rust_runner::recording::{CompileRecord, Outcome, Recorder, Recording, RunRecord, RunSpan, RustcRun, Why, PROFILE};
+use rust_runner::service::{answer, ask, Refusal, Request, Response, CLIENT_TIMEOUT, REQUEST_CEILING};
+use rust_runner::{Compiler, Limits, Profile};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -103,36 +103,50 @@ fn the_worked_example_records_what_rustc_and_the_program_did() {
 	assert!(warned.compile.diagnostics.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("unused_variables")));
 }
 
+/// The profile `leetype_runner` compiles with, for `record-leetype-runs`.
+const LEETYPE: Profile = Profile {
+	edition: "2021",
+	crate_name: "round",
+	warnings: false,
+};
+
 /// Asking for JSON loses nothing: the rendered text is what rustc prints
-/// without the flag, byte for byte, so the messages `record-leetype-runs`
-/// recorded did not change when its runner moved here.
+/// without the flag, byte for byte, under both profiles, so the messages
+/// `record-leetype-runs` recorded did not change when its runner moved here,
+/// and Rust Rounds' are what the owner's own rustc prints.
 #[test]
 fn the_rendered_text_is_what_rustc_prints_without_json() {
-	let work = tempfile::tempdir().unwrap();
-	let source = "fn main() {\n    let x: u8 = \"no\";\n    let s = \"aéz\";\n    let c = s[1];\n}\n";
-	let compiled = Compiler::new(Limits::default()).unwrap().compile(work.path(), "main", source, &PROFILE).unwrap();
-	assert!(compiled.binary.is_none());
-	assert!(compiled.diagnostics.len() >= 3, "two errors, the warnings, and the summary: {:?}", compiled.diagnostics);
+	let refused = "fn main() {\n    let x: u8 = \"no\";\n    let s = \"aéz\";\n    let c = s[1];\n}\n";
+	let warned = "fn main() {\n    let unused = 1;\n}\n";
+	for profile in [PROFILE, LEETYPE] {
+		for source in [refused, warned] {
+			let work = tempfile::tempdir().unwrap();
+			let compiled = Compiler::new(Limits::default()).unwrap().compile(work.path(), "main", source, &profile).unwrap();
+			assert_eq!(compiled.binary.is_none(), source == refused, "{profile:?}");
 
-	let plain = std::process::Command::new("rustc")
-		.args([
-			"--edition",
-			PROFILE.edition,
-			"-C",
-			"opt-level=0",
-			"--crate-type",
-			"bin",
-			"--crate-name",
-			PROFILE.crate_name,
-			"-o",
-			"plain",
-			"main.rs",
-		])
-		.current_dir(work.path())
-		.output()
-		.unwrap();
-	assert!(!plain.status.success());
-	assert_eq!(compiled.rendered, String::from_utf8(plain.stderr).unwrap());
+			let mut plain = std::process::Command::new("rustc");
+			plain.args(["--edition", profile.edition, "-C", "opt-level=0"]);
+			if !profile.warnings {
+				plain.args(["-A", "warnings"]);
+			}
+			let plain = plain
+				.args(["--crate-type", "bin", "--crate-name", profile.crate_name, "-o", "plain", "main.rs"])
+				.current_dir(work.path())
+				.output()
+				.unwrap();
+			assert_eq!(plain.status.success(), source == warned);
+			assert_eq!(compiled.rendered, String::from_utf8(plain.stderr).unwrap(), "{profile:?}");
+			if source == refused {
+				assert!(compiled.diagnostics.len() >= 3, "two errors and the summary: {:?}", compiled.diagnostics);
+			} else {
+				assert_eq!(
+					compiled.rendered.contains("warning: unused variable"),
+					profile.warnings,
+					"{profile:?} keeps warnings only when it says so"
+				);
+			}
+		}
+	}
 }
 
 #[test]
@@ -256,7 +270,10 @@ fn the_service_answers_one_request_per_connection() {
 	{
 		use std::io::{BufRead, Write};
 		let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-		stream.write_all(b"{\"ask\":\"record\",\"source\":\"fn main() {}\",\"trusted\":true}\n").unwrap();
+		// Everything a record needs, and one field more: refused for it.
+		let mut trusted = serde_json::json!({"ask": "record", "toolchain": toolchain, "source": "fn main() {}", "trusted": true}).to_string();
+		trusted.push('\n');
+		stream.write_all(trusted.as_bytes()).unwrap();
 		let mut line = String::new();
 		std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
 		assert!(line.contains("\"reason\":\"malformed\""), "{line}");
@@ -379,5 +396,90 @@ fn a_spans_columns_count_characters_and_its_end_is_exclusive() {
 			line_end: 2,
 			column_end: at + 1,
 		}
+	);
+}
+
+/// One deadline for the whole request, not one per read: a client that
+/// trickles a byte at a time loses the slot at the client timeout.
+#[test]
+fn a_trickling_client_is_refused_at_the_client_timeout() {
+	let work = tempfile::tempdir().unwrap();
+	let socket = work.path().join("runner.sock");
+	let programs = tempfile::tempdir().unwrap();
+	let recorder = recorder(Limits::default(), programs.path());
+	let listener = UnixListener::bind(&socket).unwrap();
+	let server = std::thread::spawn(move || {
+		let (stream, _) = listener.accept().unwrap();
+		let started = Instant::now();
+		(answer(&recorder, &stream).unwrap(), started.elapsed())
+	});
+	let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+	let trickle = std::thread::spawn(move || {
+		use std::io::Write;
+		for byte in b"{\"ask\":\"toolchain\"" {
+			if (&stream).write_all(&[*byte]).is_err() {
+				break;
+			}
+			std::thread::sleep(Duration::from_millis(500));
+		}
+	});
+	let (response, took) = server.join().unwrap();
+	assert!(matches!(response, Response::Refused { reason: Refusal::Malformed, .. }), "{response:?}");
+	assert!(took >= CLIENT_TIMEOUT && took < CLIENT_TIMEOUT + Duration::from_secs(2), "{took:?}");
+	trickle.join().unwrap();
+}
+
+/// What the phone reads when nothing ran: only a compile rustc refused is a
+/// compile error. rustc stopped at its time or memory ceiling, or a binary
+/// that could not be run, is `stopped`.
+#[test]
+fn nothing_run_is_a_compile_error_only_when_rustc_refused_it() {
+	let recording = |outcome, compile: CompileRecord, run: Option<RunRecord>| Recording {
+		key: String::from("k"),
+		toolchain: String::from("rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0"),
+		outcome,
+		note: None,
+		compile,
+		run,
+	};
+	let compile = |rendered: &str, timed_out, exit_code, signal| CompileRecord {
+		diagnostics: Vec::new(),
+		rendered: String::from(rendered),
+		rendered_bytes: 0,
+		timed_out,
+		exit_code,
+		signal,
+	};
+	let why = |recording: Recording| match recording.rustc_run() {
+		RustcRun::Stopped { why, stdout, stderr, .. } => {
+			assert!(stdout.is_empty() && stderr.is_empty());
+			Some(why)
+		}
+		RustcRun::CompileError { .. } => None,
+		other => panic!("{other:?}"),
+	};
+	assert_eq!(why(recording(Outcome::CompileError, compile("error[E0277]", false, Some(1), None), None)), None);
+	assert_eq!(why(recording(Outcome::BudgetExceeded, compile("", true, None, Some(9)), None)), Some(Why::Time));
+	assert_eq!(
+		why(recording(
+			Outcome::BudgetExceeded,
+			compile("memory allocation of 40 bytes failed\n", false, None, Some(6)),
+			None
+		)),
+		Some(Why::Memory)
+	);
+	assert_eq!(
+		why(recording(Outcome::BudgetExceeded, compile("rustc-LLVM ERROR: out of memory\n", false, None, Some(6)), None)),
+		Some(Why::Memory)
+	);
+	assert_eq!(
+		why(recording(Outcome::BudgetExceeded, compile("", false, None, Some(25)), None)),
+		Some(Why::Exit),
+		"SIGXFSZ"
+	);
+	assert_eq!(
+		why(recording(Outcome::Runtime, compile("", false, Some(0), None), None)),
+		Some(Why::Exit),
+		"built, but could not be run"
 	);
 }

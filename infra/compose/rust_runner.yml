@@ -14,8 +14,9 @@
 #   echo '{"ask":"toolchain"}' | docker compose -f infra/compose/rust_runner.yml \
 #     exec -T --user 10002 rust-runner rust-runner ask
 #
-# `ask` runs as another uid (10002) so the runner's sweep (RX2), which kills
-# every process of its own uid after each job, leaves the client alone.
+# `ask` runs as another uid (10002), as file_host will (its own non-root
+# uid): neither the runner's (root) nor the programs' (10001), whose
+# connections the runner refuses.
 # scripts/check_rust_runner_sandbox.py brings this file up as it is and runs
 # the hostile programs against it.
 services:
@@ -32,39 +33,59 @@ services:
     # tini as pid 1 reaps what the sweep kills; the runner is never pid 1, so
     # a program's orphans cannot pile up as zombies under it.
     init: true
-    # RX1: a read-only root, the image's own non-root uid, no capabilities,
-    # and no way to gain any (no setuid binary helps a program).
+    # RX1: two uids. The runner is root with three capabilities and no way
+    # to gain more: SETUID and SETGID to start every compile and run as
+    # 10001 (the image's RUST_RUNNER_PROGRAM_UID) with no supplementary
+    # groups, and KILL to kill that uid's processes. Under one uid a program
+    # could stop the runner (SIGSTOP), so its ceilings never fired, or swap
+    # its socket; under 10001 it can signal nothing of root's, and write
+    # nothing but its own directory. No DAC_OVERRIDE, FOWNER or CHOWN: what
+    # a program leaves is removed by the runner's `clean` as 10001, with no
+    # more right than the program had.
     read_only: true
-    user: '10001:10001'
+    user: '0:0'
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - KILL
     security_opt:
       - no-new-privileges:true
-    # The only writable places: /work and the socket's directory, both
-    # emptied by the runner after every job (RX2). No /tmp: rustc and its
-    # linker get TMPDIR set to the program's own directory.
+    # RX1, RX2: an IPC namespace of its own with no /dev/shm, and System V
+    # shared memory removed when its creator exits. A program could
+    # otherwise park memory there past its job, and every later recording
+    # would run short of it. POSIX queues are refused by prlimit
+    # (--msgqueue=0); a System V semaphore or queue a program leaves makes
+    # the runner exit, and the restart is a fresh namespace.
+    ipc: none
+    sysctls:
+      kernel.shm_rmid_forced: 1
+    # The only writable places, both root's: /work (each program's own
+    # directory inside it is open to 10001, and removed after every job) and
+    # the socket's directory, which only the runner writes. No /tmp: rustc
+    # and its linker get TMPDIR set to the program's own directory.
     tmpfs:
-      # Each program's directory, emptied after every job. `exec` because
-      # the compiled program runs from here; capped, so a program that fills
-      # it fails its own run and nothing else.
-      - /work:rw,exec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
+      # `exec` because the compiled program runs from here; capped, so a
+      # program that fills it fails its own run and nothing else.
+      - /work:rw,exec,nosuid,nodev,size=256m,mode=0755
     volumes:
       # The socket, shared with whoever asks (file_host, in the next slice).
       - rust_runner_socket:/run/rust-runner
     # RX3: one job at a time is the service's own loop; these bound what one
-    # job can take. pids counts threads too: the runner's own few, and the
-    # program's, which `RUST_RUNNER_PROCESS_CEILING` holds below this.
+    # job can take. pids counts threads too: the runner's own few, and
+    # rustc's or the program's, which the runner's process ceiling (64 for
+    # uid 10001) holds below this.
     mem_limit: 1G
     memswap_limit: 1G
     cpus: 1.0
     pids_limit: 128
     ulimits:
       core: 0
-    environment:
-      # No secret ever: a program can read the runner's environment from
-      # /proc, and rustc's include_str! can at compile time. Only the
-      # runner's own settings, which the image already sets.
-      - RUST_RUNNER_PROCESS_CEILING=64
+    # No `environment` and no `env_file`: the image sets the runner's few
+    # settings, and nothing secret may ever be here. rustc gets PATH and the
+    # rustup variables and a program none, but a compile's include_str! can
+    # read a file, so nothing secret is in the image either (RX1).
     restart: unless-stopped
     logging:
       driver: json-file
@@ -86,4 +107,4 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: 'size=1m,uid=10001,gid=10001,mode=0755'
+      o: 'size=1m,uid=0,gid=0,mode=0755'
