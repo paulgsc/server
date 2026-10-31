@@ -45,9 +45,10 @@ use message::spawn_process_incoming_messages;
 /// for both was a coincidence of implementation, not a real invariant.
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// `GET /ws`, the upgrade, and `GET /ws/game-week`, the paired phone's live
-/// game day ([`game_live`]). Unversioned: clients hold the socket across API
-/// versions, and the game day's messages carry their own version.
+/// `GET /ws`, the upgrade, and `GET /ws/game-week`, the phone's game day.
+///
+/// The second is [`game_live`]. Unversioned: clients hold the socket across
+/// API versions, and the game day's messages carry their own version.
 ///
 /// A free function rather than a method on [`WebSocketFsm`]: the
 /// handler reaches the FSM through `State<AppState>`, so building the route

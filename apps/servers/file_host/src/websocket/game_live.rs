@@ -1,10 +1,11 @@
-//! `GET /ws/game-week`: the paired phone's live game day (Game Week Bites,
-//! paulgsc/some-ui#2074, story GWB4). The recorder shows what can be
+//! `GET /ws/game-week`: the paired phone's live game day.
+//!
+//! Game Week Bites, paulgsc/some-ui#2074, story GWB4. The recorder shows what can be
 //! happening now in the game the owner is on; this socket is how home's
 //! offers reach it while home has them, and how the phone learns home's
 //! clock, so each bite keeps the offset between the two (GW5).
 //!
-//! **Which layer carries it.** file_host's own WebSocket module, on the
+//! **Which layer carries it.** `file_host`'s own WebSocket module, on the
 //! same axum upgrade and the same [`ws_conn_manager::ConnectionGuard`]
 //! admission as `/ws` ([`super::admit`]). Not `/ws`'s event bus: that bus is
 //! unauthenticated and broadcasts each event type to every subscriber over
@@ -276,7 +277,7 @@ where
 			frame = incoming.next() => {
 				quiet.as_mut().reset(tokio::time::Instant::now() + QUIET);
 				match frame {
-					None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return "the phone left",
+					None | Some(Err(_) | Ok(Message::Close(_))) => return "the phone left",
 					Some(Ok(Message::Text(text))) => match wire::read(&text) {
 						Ok(Inbound::Hello(said)) => {
 							hello = Some(said);
@@ -309,12 +310,9 @@ where
 			() = live.inner.cancel.cancelled() => break Close::GoingAway,
 		}
 		let (Some(force), Some(said)) = (make, hello.as_ref()) else { continue };
-		let state = match offer::state(&db, said, live.now(), live.inner.following).await {
-			Ok(state) => state,
-			Err(_) => {
-				error!(error = "storage", "game day offer failed");
-				continue;
-			}
+		let Ok(state) = offer::state(&db, said, live.now(), live.inner.following).await else {
+			error!(error = "storage", "game day offer failed");
+			continue;
 		};
 		if !force && last.as_ref().is_some_and(|sent| sent.same_as(&state)) {
 			continue;

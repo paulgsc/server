@@ -1,6 +1,8 @@
-//! What home has for the phone at one moment, read from the game feed's
-//! record (`game_feed_repo`) and put through the scenario engine. Reads
-//! only: nothing here writes, and nothing is kept of what was offered.
+//! What home has for the phone at one moment.
+//!
+//! Read from the game feed's record (`game_feed_repo`) and put through the
+//! scenario engine. Reads only: nothing here writes, and nothing is kept of
+//! what was offered.
 
 use super::wire::{self, Hello, State};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -27,30 +29,33 @@ pub async fn state(db: &SqlitePool, hello: &Hello, now: DateTime<Utc>, following
 	let mut conn = db.acquire().await?;
 	let week = game_feed_repo::week(&mut conn, &as_of).await?.unwrap_or_default();
 	let listed: Vec<(&scoreboard::Game, wire::Game)> = week.games.iter().filter_map(|game| Some((game, listing(game)?))).collect();
-	let mut offer = None;
-	if let Some((game, listed)) = hello.game_id.as_deref().and_then(|id| listed.iter().find(|(game, _)| game.id == id)) {
-		let summary = game_feed_repo::summary(&mut conn, &game.id, &as_of).await?;
-		let log = game_feed_repo::game_log(&mut conn, &game.id).await?;
-		let (status, situation, weather) = match summary {
-			Some(summary) => (summary.status, summary.situation, summary.weather.or_else(|| game.weather.clone())),
-			None => (game.status.clone(), game.situation.clone(), game.weather.clone()),
-		};
-		let engine_game = scenario_engine::Game {
-			id: game.id.clone(),
-			home: listed.home.clone(),
-			away: listed.away.clone(),
-			kickoff: game.kickoff.unwrap_or(now),
-			status,
-			situation: situation.as_ref().map(Situation::from),
-			weather,
-			reading: Reading {
-				team: TEAM.to_owned(),
-				want: listed.want.clone(),
-			},
-		};
-		let offered = scenario_engine::offer(&engine_game, &log, now.with_timezone(&hello.offset), hello.mode, hello.watching(&game.id));
-		offer = Some(wire::Offer::from_engine(offered, now));
-	}
+	let picked = hello.game_id.as_deref().and_then(|id| listed.iter().find(|(game, _)| game.id == id));
+	let offer = match picked {
+		None => None,
+		Some((game, listed)) => {
+			let summary = game_feed_repo::summary(&mut conn, &game.id, &as_of).await?;
+			let log = game_feed_repo::game_log(&mut conn, &game.id).await?;
+			let (status, situation, weather) = match summary {
+				Some(summary) => (summary.status, summary.situation, summary.weather.or_else(|| game.weather.clone())),
+				None => (game.status.clone(), game.situation.clone(), game.weather.clone()),
+			};
+			let engine_game = scenario_engine::Game {
+				id: game.id.clone(),
+				home: listed.home.clone(),
+				away: listed.away.clone(),
+				kickoff: game.kickoff.unwrap_or(now),
+				status,
+				situation: situation.as_ref().map(Situation::from),
+				weather,
+				reading: Reading {
+					team: TEAM.to_owned(),
+					want: listed.want.clone(),
+				},
+			};
+			let offered = scenario_engine::offer(&engine_game, &log, now.with_timezone(&hello.offset), hello.mode, hello.watching(&game.id));
+			Some(wire::Offer::from_engine(offered, now))
+		}
+	};
 	Ok(State {
 		following,
 		games: listed.into_iter().map(|(_, listed)| listed).collect(),
