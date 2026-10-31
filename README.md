@@ -164,11 +164,16 @@ whether `.env` sets it.
   - _Proof:_ each `Config`'s `the_checked_in_schema_is_this_config` compares
     the file with `app_config::schema` of the `Config` (`cargo test`), and
     `Lint`'s `Env schema` job runs `env_schema.py example --check`.
-  - _Tolerance:_ clap cannot see a requirement that depends on another
-    variable (`WEBAUTHN_RP_ID` while `AUTH_ENABLED` is on). The binary checks
-    it at start, and declares it beside its `Config` (file_host's
-    `REQUIRED_WHEN`) for the schema; that list agrees with the start-up checks
-    by review, not by a test.
+  - _Tolerance:_ none for what a binary declares. What clap cannot see, a
+    requirement that depends on another variable (`WEBAUTHN_RP_ID` while
+    `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_SECONDS` at least
+    60 while the mailbox is on), the binary declares beside its `Config` as
+    `RULES`. `app_config::schema::parse` refuses to start on any that does not
+    hold, naming all of them, and the same `RULES` are in the schema, so the
+    preflight checks what start-up checks (#580, each binary's
+    `tests/config.rs`). A relation between two values (the game feed's
+    backoff cap at least its cadences) and a value's shape (the mailbox URL)
+    stay the feature code's own check.
 
 ### Deploying the stack
 
