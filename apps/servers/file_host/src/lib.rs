@@ -16,6 +16,8 @@ pub mod game_feed;
 pub mod handlers;
 pub mod health;
 pub mod jobs_notice;
+#[cfg(test)]
+mod lifecycle;
 pub mod listen;
 pub mod mailbox;
 pub mod metrics;
