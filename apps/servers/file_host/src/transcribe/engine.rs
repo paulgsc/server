@@ -27,7 +27,8 @@
 //! Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
 //! noise.
 //!
-//! **Each word keeps its time** (paulgsc/some-ui#2085, GWB11). Whisper
+//! **Each word keeps its time, and how sure Whisper was of it**
+//! (paulgsc/some-ui#2085, GWB11; paulgsc/server#577, ST22). Whisper
 //! times each token it hears ([`FullParams::set_token_timestamps`]); its
 //! tokens are pieces of words, so [`words`] joins them into words on the
 //! space that opens each, leaving out whisper.cpp's special tokens (its
@@ -260,24 +261,9 @@ impl Whisper {
 				}
 				text.push_str(said);
 			}
-			let mut tokens = Vec::new();
-			for n in 0..segment.n_tokens() {
-				let Some(token) = segment.get_token(n) else {
-					return Ok(Outcome::Failed);
-				};
-				let Ok(bytes) = token.to_bytes() else {
-					return Ok(Outcome::Failed);
-				};
-				let data = token.token_data();
-				tokens.push(Token {
-					bytes: bytes.to_vec(),
-					// whisper.cpp's own test for what its text leaves out:
-					// every special token's id is at or past end-of-text.
-					special: token.token_id() >= special,
-					start_cs: data.t0,
-					end_cs: data.t1,
-				});
-			}
+			let Some(tokens) = tokens_of(&segment, special) else {
+				return Ok(Outcome::Failed);
+			};
 			heard.extend(words(&tokens));
 		}
 		if text.is_empty() {
@@ -293,6 +279,7 @@ impl Whisper {
 					text: said.text,
 					start_ms,
 					end_ms,
+					p: Some(said.p),
 				})
 			})
 			.collect();
@@ -339,9 +326,30 @@ impl Hear for Whisper {
 	}
 }
 
+/// A segment's tokens as whisper.cpp gives them, with `special` the first
+/// id it keeps out of its text; None when one of them does not read.
+fn tokens_of(segment: &whisper_rs::WhisperSegment<'_>, special: whisper_rs::WhisperTokenId) -> Option<Vec<Token>> {
+	let mut tokens = Vec::new();
+	for n in 0..segment.n_tokens() {
+		let token = segment.get_token(n)?;
+		let bytes = token.to_bytes().ok()?;
+		let data = token.token_data();
+		tokens.push(Token {
+			bytes: bytes.to_vec(),
+			// whisper.cpp's own test for what its text leaves out: every
+			// special token's id is at or past end-of-text.
+			special: token.token_id() >= special,
+			p: data.p,
+			start_cs: data.t0,
+			end_cs: data.t1,
+		});
+	}
+	Some(tokens)
+}
+
 /// One token Whisper heard, as whisper.cpp gives it: a piece of a word (or a
 /// special token), timed in centiseconds into the speech it heard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Token {
 	/// Its text's bytes. A piece of a Korean syllable can be a token of its
 	/// own, so these are joined before they are read as UTF-8.
@@ -349,44 +357,53 @@ struct Token {
 	/// One of whisper.cpp's own (`[_BEG_]`, a timestamp, end-of-text): never
 	/// part of what was said.
 	special: bool,
+	/// Whisper's probability for this token, 0 to 1.
+	p: f32,
 	start_cs: i64,
 	end_cs: i64,
 }
 
 /// A word Whisper heard, timed in milliseconds into the speech it heard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Spoken {
 	text: String,
 	start_ms: i64,
 	end_ms: i64,
+	/// How sure Whisper was of the word, as its tokens reported it
+	/// (`voice_repo::transcript::Word::p` says what is kept).
+	p: f64,
 }
 
 /// One segment's `tokens` as words: a token whose text opens with a space
 /// begins a word, and any other joins the word before it (`par` `ticle`,
 /// and the `,` after it). Special tokens are left out, and so is a word with
 /// no text once trimmed. A word runs from its first token's start to its last
-/// token's end, as Whisper timed them.
+/// token's end, as Whisper timed them, and is as sure as its least sure
+/// token (a token with no probability is left out of that).
 fn words(tokens: &[Token]) -> Vec<Spoken> {
 	let mut words = Vec::new();
-	let mut word: Option<(Vec<u8>, i64, i64)> = None;
-	let mut close = |word: Option<(Vec<u8>, i64, i64)>| {
-		let Some((bytes, from_cs, to_cs)) = word else { return };
+	let mut word: Option<(Vec<u8>, i64, i64, f32)> = None;
+	let mut close = |word: Option<(Vec<u8>, i64, i64, f32)>| {
+		let Some((bytes, from_cs, to_cs, p)) = word else { return };
 		let text = String::from_utf8_lossy(&bytes).trim().to_owned();
 		if !text.is_empty() {
 			words.push(Spoken {
 				text,
 				start_ms: from_cs.saturating_mul(10),
 				end_ms: to_cs.saturating_mul(10),
+				p: f64::from(p),
 			});
 		}
 	};
 	for token in tokens.iter().filter(|token| !token.special) {
 		match &mut word {
-			Some((bytes, _, end_cs)) if !token.bytes.starts_with(b" ") => {
+			Some((bytes, _, end_cs, surest)) if !token.bytes.starts_with(b" ") => {
 				bytes.extend_from_slice(&token.bytes);
 				*end_cs = token.end_cs;
+				// `min` passes over a NaN on either side.
+				*surest = surest.min(token.p);
 			}
-			_ => close(word.replace((token.bytes.clone(), token.start_cs, token.end_cs))),
+			_ => close(word.replace((token.bytes.clone(), token.start_cs, token.end_cs, token.p))),
 		}
 	}
 	close(word);
@@ -728,6 +745,7 @@ mod tests {
 		Token {
 			bytes: text.as_bytes().to_vec(),
 			special: false,
+			p: 0.9,
 			start_cs,
 			end_cs,
 		}
@@ -745,6 +763,7 @@ mod tests {
 			text: text.to_owned(),
 			start_ms,
 			end_ms,
+			p: f64::from(0.9_f32),
 		}
 	}
 
@@ -789,6 +808,16 @@ mod tests {
 			],
 			"pieces join, specials and a bare space are left out, and the syllable is whole"
 		);
+	}
+
+	/// A word is as sure as its least sure token (paulgsc/server#577); what
+	/// whisper.cpp reports passes through as it is, for `voice_repo` to hold.
+	#[test]
+	fn a_word_is_as_sure_as_its_least_sure_token() {
+		let sure = |text: &str, p: f32| Token { p, ..token(text, 0, 10) };
+		let tokens = [sure(" par", 0.95), sure("ticle", 0.4), sure(",", f32::NAN), sure(" sure", 0.8), sure(" over", 1.5)];
+		let p: Vec<f64> = words(&tokens).into_iter().map(|word| word.p).collect();
+		assert_eq!(p, [0.4_f32.into(), 0.8_f32.into(), 1.5]);
 	}
 
 	#[test]
