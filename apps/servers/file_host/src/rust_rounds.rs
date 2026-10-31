@@ -28,7 +28,6 @@ pub mod pass;
 
 use crate::{AppState, Config};
 use pass::Socket;
-use rust_rounds_wire::protocol::ASK_TIMEOUT;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,12 +37,13 @@ use tracing::{error, info, warn};
 pub const MIN_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The shortest pass deadline `RUST_ROUNDS_PASS_DEADLINE_SECONDS` may set:
-/// one ask's wait, `ASK_TIMEOUT` (137 s).
+/// the toolchain ask's wait and one program's (142 s).
 ///
-/// An ask waits past the runner's watchdog deadline for one job (its
-/// ceilings, clean-up, client deadlines and sweep allowance, 132 s), so a
-/// job the watchdog ends is seen as a dropped connection (RP3).
-pub const MIN_DEADLINE: Duration = ASK_TIMEOUT;
+/// A program's ask waits `ASK_TIMEOUT`, past the runner's watchdog deadline
+/// for one job (its ceilings, clean-up, client deadlines and sweep
+/// allowance, 132 s), so a job the watchdog ends is seen as lost (RP3); the
+/// toolchain ask, `CLIENT_TIMEOUT`, comes first.
+pub const MIN_DEADLINE: Duration = pass::Waits::SERVER.least_deadline();
 
 /// Everything the worker needs, or `None` when the deployment has not turned
 /// it on.
@@ -70,7 +70,10 @@ impl RustRoundsContext {
 		let interval = Duration::from_secs(config.rust_rounds_seconds);
 		anyhow::ensure!(interval >= MIN_INTERVAL, "RUST_ROUNDS_SECONDS must be at least 10");
 		let deadline = Duration::from_secs(config.rust_rounds_pass_deadline_seconds);
-		anyhow::ensure!(deadline >= MIN_DEADLINE, "RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least one ask's wait, 137");
+		anyhow::ensure!(
+			deadline >= MIN_DEADLINE,
+			"RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least 142: the toolchain's wait and one program's"
+		);
 		Ok(Some(Self {
 			runner: Arc::new(Socket(PathBuf::from(&config.rust_rounds_socket))),
 			interval,
@@ -102,7 +105,7 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 					return;
 				}
 				_ = ticker.tick() => {
-					let result = pass::run_once(&db, &context.runner, context.deadline, ASK_TIMEOUT, &cancel, &crate::mailbox::pass::now).await;
+					let result = pass::run_once(&db, &context.runner, context.deadline, pass::Waits::SERVER, &cancel, &crate::mailbox::pass::now).await;
 					log_pass(&result);
 				}
 			}
@@ -111,9 +114,12 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 }
 
 /// The pass's log line, when it did anything or stopped early: counts and
-/// the kind of stop. Never a source, a recording or a round. A runner that
-/// cannot be reached, went away or answered wrongly is an error, every pass
-/// it lasts, and counted on `operation_errors_total` (`rust_rounds`).
+/// the kind of stop. Never a source, a recording or a round.
+///
+/// Every stop is an error, logged and counted on `operation_errors_total`
+/// (`rust_rounds`, the stop's kind), every pass it lasts, but one: a
+/// deadline reached after at least one program was asked about, which is a
+/// warning ([`pass::Pass::failed`]).
 pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	let Ok(done) = result else {
 		crate::metrics::instruments::record_error("rust_rounds", "storage");
@@ -121,24 +127,26 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		return;
 	};
 	match done.stopped {
-		Some(stop @ (pass::Stop::Deadline | pass::Stop::TimedOut | pass::Stop::ToolchainChanged)) => {
-			warn!(
-				stop = stop.kind(),
-				recorded = done.recorded,
-				"Rust Rounds pass ended early; what is left waits for the next"
-			);
-		}
-		Some(stop) => {
+		Some(stop) if done.failed() => {
 			crate::metrics::instruments::record_error("rust_rounds", stop.kind());
 			error!(
 				stop = stop.kind(),
+				asked = done.asked,
 				recorded = done.recorded,
-				dropped = done.dropped,
-				restarted = done.restarted,
-				"Rust Rounds pass stopped: the runner is not recording; every program it has not recorded waits for the next pass"
+				refused = done.refused,
+				lost = done.lost,
+				gave_up = done.gave_up,
+				"Rust Rounds pass stopped: every program not yet recorded waits for the next pass"
 			);
 		}
-		None if done.recorded > 0 => info!(recorded = done.recorded, cancelled = done.cancelled, "Rust Rounds pass"),
+		Some(stop) => warn!(
+			stop = stop.kind(),
+			asked = done.asked,
+			recorded = done.recorded,
+			refused = done.refused,
+			"Rust Rounds pass ran out of time; what is left waits for the next"
+		),
+		None if done.asked > 0 => info!(recorded = done.recorded, refused = done.refused, cancelled = done.cancelled, "Rust Rounds pass"),
 		None => {}
 	}
 }

@@ -108,15 +108,18 @@ pub struct StoredRound {
 	pub received_at: String,
 }
 
-/// How one program's recording under one toolchain ended.
+/// How one program's recording under one toolchain ended. Not when: a run
+/// is shared by every round holding its program, so when it was kept would
+/// date another subject's round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredRun {
 	pub toolchain: String,
-	/// `recorded` or `runner-restarted`.
+	/// `recorded`, `refused` or `runner-lost`.
 	pub ended: String,
+	/// For `refused`: the runner's reason.
+	pub refusal: Option<String>,
 	/// What the phone reads (`RustcRun`), as JSON.
 	pub rustc: String,
-	pub recorded_at: String,
 }
 
 /// A program the pass has not recorded under its toolchain.
@@ -133,16 +136,40 @@ pub enum Ended {
 	/// The runner answered: its whole recording, and the `RustcRun` derived
 	/// from it, each as JSON.
 	Recorded { recording: String, rustc: String },
-	/// The runner went away while holding the program, as many times as the
-	/// pass allows: a `stopped` `RustcRun`, as JSON.
-	RunnerRestarted { rustc: String },
+	/// The runner refused the program's request, for `reason` (`malformed`,
+	/// `too-large`): a `stopped` `RustcRun`, as JSON.
+	Refused { reason: String, rustc: String },
+	/// The runner was lost while holding the program (it went away, or did
+	/// not answer in time), as many times as the pass allows: a `stopped`
+	/// `RustcRun`, as JSON.
+	RunnerLost { rustc: String },
 }
 
 impl Ended {
 	const fn kind(&self) -> &'static str {
 		match self {
 			Self::Recorded { .. } => "recorded",
-			Self::RunnerRestarted { .. } => "runner-restarted",
+			Self::Refused { .. } => "refused",
+			Self::RunnerLost { .. } => "runner-lost",
+		}
+	}
+}
+
+/// How the runner was lost while it held a program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+	/// The connection ended after the whole request was sent.
+	Dropped,
+	/// No answer came within the client's wait, which outlasts the runner's
+	/// watchdog.
+	TimedOut,
+}
+
+impl Lost {
+	const fn kind(self) -> &'static str {
+		match self {
+			Self::Dropped => "dropped",
+			Self::TimedOut => "timed-out",
 		}
 	}
 }
@@ -231,18 +258,19 @@ pub async fn round(conn: &mut SqliteConnection, subject: &str, id: &str) -> Resu
 }
 
 /// Every run kept for the program whose bytes hash to `source_hash`, under
-/// any toolchain, in the order kept.
+/// any toolchain, in the order kept: one indexed read of the program and
+/// one of its runs (`rust_round_run_by_source`).
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn runs(conn: &mut SqliteConnection, source_hash: &str) -> Result<Vec<StoredRun>, sqlx::Error> {
 	sqlx::query_as!(
 		StoredRun,
-		"SELECT run.toolchain, run.ended, run.rustc, run.recorded_at
+		"SELECT run.toolchain, run.ended, run.refusal, run.rustc
 		 FROM rust_round_source AS source
 		 JOIN rust_round_run AS run ON run.source_seq = source.seq
 		 WHERE source.source_hash = ?1
-		 ORDER BY run.recorded_at, run.rowid",
+		 ORDER BY run.rowid",
 		source_hash
 	)
 	.fetch_all(&mut *conn)
@@ -290,16 +318,18 @@ pub async fn keep_run(conn: &mut SqliteConnection, toolchain: &str, seq: i64, ke
 		return Ok(Kept::OutOfOrder);
 	}
 	let kind = ended.kind();
-	let (recording, rustc) = match ended {
-		Ended::Recorded { recording, rustc } => (Some(recording.as_str()), rustc.as_str()),
-		Ended::RunnerRestarted { rustc } => (None, rustc.as_str()),
+	let (refusal, recording, rustc) = match ended {
+		Ended::Recorded { recording, rustc } => (None, Some(recording.as_str()), rustc.as_str()),
+		Ended::Refused { reason, rustc } => (Some(reason.as_str()), None, rustc.as_str()),
+		Ended::RunnerLost { rustc } => (None, None, rustc.as_str()),
 	};
 	sqlx::query!(
-		"INSERT INTO rust_round_run (toolchain, source_seq, key, ended, recording, rustc, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+		"INSERT INTO rust_round_run (toolchain, source_seq, key, ended, refusal, recording, rustc, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
 		toolchain,
 		seq,
 		key,
 		kind,
+		refusal,
 		recording,
 		rustc,
 		now
@@ -309,16 +339,16 @@ pub async fn keep_run(conn: &mut SqliteConnection, toolchain: &str, seq: i64, ke
 	Ok(Kept::Added(1))
 }
 
-/// Keep that the runner went away while it held program `seq` under
+/// Keep that the runner was lost (`how`) while it held program `seq` under
 /// `toolchain`.
 ///
-/// Says which drop this is (1 for the first). Run it in a
+/// Says which this is (1 for the first). Run it in a
 /// `BEGIN IMMEDIATE` transaction, with the [`keep_run`] that the last
 /// allowed drop calls for.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn keep_drop(conn: &mut SqliteConnection, toolchain: &str, seq: i64, now: &str) -> Result<Kept, sqlx::Error> {
+pub async fn keep_drop(conn: &mut SqliteConnection, toolchain: &str, seq: i64, how: Lost, now: &str) -> Result<Kept, sqlx::Error> {
 	if !is_next(conn, toolchain, seq).await? {
 		return Ok(Kept::OutOfOrder);
 	}
@@ -329,11 +359,13 @@ pub async fn keep_drop(conn: &mut SqliteConnection, toolchain: &str, seq: i64, n
 	)
 	.fetch_one(&mut *conn)
 	.await?;
+	let kind = how.kind();
 	sqlx::query!(
-		"INSERT INTO rust_round_drop (toolchain, source_seq, attempt, dropped_at) VALUES (?1, ?2, ?3, ?4)",
+		"INSERT INTO rust_round_drop (toolchain, source_seq, attempt, kind, dropped_at) VALUES (?1, ?2, ?3, ?4, ?5)",
 		toolchain,
 		seq,
 		attempt,
+		kind,
 		now
 	)
 	.execute(&mut *conn)
@@ -344,7 +376,7 @@ pub async fn keep_drop(conn: &mut SqliteConnection, toolchain: &str, seq: i64, n
 #[cfg(test)]
 mod tests {
 	use super::round::read;
-	use super::{content_hash, keep_drop, keep_run, put_round, round, rounds, runs, waiting, Change, Ended, Kept, RoundError};
+	use super::{content_hash, keep_drop, keep_run, put_round, round, rounds, runs, waiting, Change, Ended, Kept, Lost, RoundError};
 	use serde_json::json;
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqlitePool;
@@ -414,7 +446,7 @@ mod tests {
 		let pool = pool().await;
 		put(&pool, A, &body("r-01", &["fn main() {}\n"])).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
-		keep_drop(&mut conn, T, 1, "now").await.unwrap();
+		keep_drop(&mut conn, T, 1, Lost::Dropped, "now").await.unwrap();
 		keep_run(&mut conn, T, 1, "k", &recorded(1), "now").await.unwrap();
 		for statement in [
 			"UPDATE rust_round SET body = '{}'",
@@ -445,25 +477,37 @@ mod tests {
 		assert_eq!(sources(waiting(&mut conn, T, 2).await.unwrap()), ["one", "two"], "a batch at most");
 
 		assert_eq!(keep_run(&mut conn, T, 2, "k2", &recorded(2), "now").await.unwrap(), Kept::OutOfOrder);
-		assert_eq!(keep_drop(&mut conn, T, 2, "now").await.unwrap(), Kept::OutOfOrder);
+		assert_eq!(keep_drop(&mut conn, T, 2, Lost::Dropped, "now").await.unwrap(), Kept::OutOfOrder);
 		assert_eq!(keep_run(&mut conn, T, 1, "k1", &recorded(1), "now").await.unwrap(), Kept::Added(1));
 		assert_eq!(keep_run(&mut conn, T, 1, "k1", &recorded(1), "now").await.unwrap(), Kept::OutOfOrder, "once");
 		assert_eq!(sources(waiting(&mut conn, T, 10).await.unwrap()), ["two", "three"]);
 		assert_eq!(sources(waiting(&mut conn, "rustc 1.98.0", 10).await.unwrap()), ["one", "two", "three"]);
 
-		assert_eq!(keep_drop(&mut conn, T, 2, "now").await.unwrap(), Kept::Added(1));
-		assert_eq!(keep_drop(&mut conn, T, 2, "now").await.unwrap(), Kept::Added(2));
-		let restarted = Ended::RunnerRestarted {
+		assert_eq!(keep_drop(&mut conn, T, 2, Lost::Dropped, "now").await.unwrap(), Kept::Added(1));
+		assert_eq!(keep_drop(&mut conn, T, 2, Lost::TimedOut, "now").await.unwrap(), Kept::Added(2));
+		let lost = Ended::RunnerLost {
 			rustc: String::from("{\"outcome\":\"stopped\"}"),
 		};
-		assert_eq!(keep_run(&mut conn, T, 2, "k2", &restarted, "now").await.unwrap(), Kept::Added(1));
+		assert_eq!(keep_run(&mut conn, T, 2, "k2", &lost, "now").await.unwrap(), Kept::Added(1));
 		assert_eq!(sources(waiting(&mut conn, T, 10).await.unwrap()), ["three"]);
 
 		let two = runs(&mut conn, &content_hash(b"two")).await.unwrap();
 		assert_eq!(two.len(), 1);
-		assert_eq!((two[0].ended.as_str(), two[0].rustc.as_str()), ("runner-restarted", "{\"outcome\":\"stopped\"}"));
+		assert_eq!((two[0].ended.as_str(), two[0].rustc.as_str()), ("runner-lost", "{\"outcome\":\"stopped\"}"));
 		assert_eq!(runs(&mut conn, &content_hash(b"one")).await.unwrap()[0].ended, "recorded");
 		assert!(runs(&mut conn, &content_hash(b"three")).await.unwrap().is_empty());
+
+		let refused = Ended::Refused {
+			reason: String::from("too-large"),
+			rustc: String::from("{\"outcome\":\"stopped\"}"),
+		};
+		// Its place in arrival order, which may skip numbers: a program another
+		// round already held takes none, but can use one up.
+		let seq = waiting(&mut conn, T, 1).await.unwrap()[0].seq;
+		assert_eq!(keep_run(&mut conn, T, seq, "k3", &refused, "now").await.unwrap(), Kept::Added(1));
+		let three = runs(&mut conn, &content_hash(b"three")).await.unwrap();
+		assert_eq!((three[0].ended.as_str(), three[0].refusal.as_deref()), ("refused", Some("too-large")));
+		assert!(waiting(&mut conn, T, 10).await.unwrap().is_empty(), "a refused program waits no more");
 	}
 
 	/// What waits is read by index, not by a scan of what is recorded.
@@ -484,6 +528,22 @@ mod tests {
 		assert!(!plan.contains("SCAN"), "{plan}");
 		assert!(plan.contains("SEARCH rust_round_source USING INTEGER PRIMARY KEY"), "{plan}");
 		assert!(plan.contains("SEARCH rust_round_run USING"), "{plan}");
+
+		// A round's runs, per program, on every GET.
+		let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+			"EXPLAIN QUERY PLAN SELECT run.toolchain, run.ended, run.refusal, run.rustc
+			 FROM rust_round_source AS source
+			 JOIN rust_round_run AS run ON run.source_seq = source.seq
+			 WHERE source.source_hash = ?1
+			 ORDER BY run.rowid",
+		)
+		.bind("h")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		let plan = rows.into_iter().map(|row| row.3).collect::<Vec<_>>().join("\n");
+		assert!(!plan.contains("SCAN"), "{plan}");
+		assert!(plan.contains("SEARCH run USING INDEX rust_round_run_by_source"), "{plan}");
 	}
 
 	/// A round is its putter's: the same id under another subject is that

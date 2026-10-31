@@ -89,17 +89,24 @@ pub struct ProgramRuns {
 }
 
 /// How one recording of a program ended.
+///
+/// Never when: a run is shared by every round that holds its program, whoever put it, so when it was kept
+/// would tell one subject when another first put that program
+/// (docs/identity.md invariant 28).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunKept {
 	/// The runner's toolchain, `rustc -V` and the profile.
 	pub toolchain: String,
-	/// `recorded`, or `runner-restarted` when the runner went away holding
-	/// it as many times as the pass allows.
+	/// `recorded`; `refused` when the runner refused the program's request;
+	/// `runner-lost` when the runner went away, or did not answer in time,
+	/// while holding it, as many times as the pass allows (RP3).
 	pub ended: String,
-	/// What rustc did, as some-ui's `RustcRunSchema` (RR1) reads it.
+	/// For `refused`: the runner's reason (`malformed`, `too-large`).
+	pub refusal: Option<String>,
+	/// What rustc did, as some-ui's `RustcRunSchema` (RR1) reads it: for
+	/// `refused` and `runner-lost`, a `stopped` run (`exit`).
 	pub rustc: Box<RawValue>,
-	pub recorded_at: String,
 }
 
 fn now() -> String {
@@ -147,8 +154,8 @@ pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: He
 				Ok(RunKept {
 					toolchain: run.toolchain,
 					ended: run.ended,
+					refusal: run.refusal,
 					rustc: RawValue::from_string(run.rustc).map_err(|_| unreadable())?,
-					recorded_at: run.recorded_at,
 				})
 			})
 			.collect::<Result<Vec<_>, FileHostError>>()?;
@@ -382,9 +389,12 @@ mod tests {
 		let (status, _, refused) = call(&app, Method::PUT, "/rust-rounds/indexing-03", Some(&phone), None, bad_hunk.as_bytes()).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(refused.to_string().contains("cards[1].hunk.line"), "{refused}");
-		let (status, _, refused) = call(&app, Method::PUT, "/rust-rounds/big", Some(&phone), None, &vec![b' '; 40 * 1024]).await;
-		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		let ceiling = rust_round_repo::round::ROUND_CEILING;
+		let (status, _, refused) = call(&app, Method::PUT, "/rust-rounds/big", Some(&phone), None, &vec![b' '; ceiling + 1]).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "one byte past the ceiling is read, and named");
 		assert!(refused.to_string().contains("larger than 32 KiB"), "{refused}");
+		let (status, _, _) = call(&app, Method::PUT, "/rust-rounds/big", Some(&phone), None, &vec![b' '; ceiling + 2]).await;
+		assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "past it, the body is refused before it is buffered");
 
 		let (_, _, listed) = call(&app, Method::GET, "/rust-rounds", Some(&phone), None, b"").await;
 		assert_eq!(listed["rounds"].as_array().unwrap().len(), 1, "only the stored round is listed");
@@ -457,8 +467,8 @@ mod tests {
 		let done = crate::rust_rounds::pass::run_once(
 			&pool,
 			&Arc::new(Prints),
-			Duration::from_secs(60),
-			Duration::from_secs(30),
+			Duration::from_secs(600),
+			crate::rust_rounds::pass::Waits::SERVER,
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)
@@ -470,7 +480,9 @@ mod tests {
 		assert_eq!(status, StatusCode::OK, "a kept run is a new tag");
 		assert_ne!(newer.unwrap(), etag);
 		let run = &got["programs"][1]["runs"][0];
-		assert_eq!(run["ended"], "recorded");
+		let keys: std::collections::BTreeSet<&str> = run.as_object().unwrap().keys().map(String::as_str).collect();
+		assert_eq!(keys, ["ended", "refusal", "rustc", "toolchain"].into(), "a shared run says no time");
+		assert_eq!((&run["ended"], &run["refusal"]), (&json!("recorded"), &json!(null)));
 		assert_eq!(run["rustc"], json!({ "outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "ok\n" }));
 		assert_eq!(call(&app, Method::GET, "/rust-rounds/nope", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
 	}
@@ -505,8 +517,8 @@ mod tests {
 		let done = crate::rust_rounds::pass::run_once(
 			&pool,
 			&Arc::new(Prints),
-			Duration::from_secs(60),
-			Duration::from_secs(30),
+			Duration::from_secs(600),
+			crate::rust_rounds::pass::Waits::SERVER,
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)

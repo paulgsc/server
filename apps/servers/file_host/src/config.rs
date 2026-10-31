@@ -491,7 +491,8 @@ pub struct Config {
 	pub rust_rounds_seconds: u64,
 
 	/// Seconds one pass may take, every program it records included. At
-	/// least 137, one ask's wait, which outlasts the runner's job deadline.
+	/// least 142: the toolchain ask's wait and one program's, which outlasts
+	/// the runner's job deadline.
 	#[arg(long, env = "RUST_ROUNDS_PASS_DEADLINE_SECONDS", default_value = "600", help_heading = "Rust Rounds recording")]
 	pub rust_rounds_pass_deadline_seconds: u64,
 

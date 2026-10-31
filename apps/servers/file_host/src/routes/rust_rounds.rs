@@ -5,10 +5,11 @@
 //! ```text
 //! GET /rust-rounds       → { rounds: [{ id, contentHash, receivedAt }] }: the caller's, newest first
 //! GET /rust-rounds/:id   → { id, contentHash, receivedAt, round, programs: [{ card, sourceHash,
-//!                            runs: [{ toolchain, ended, rustc: RustcRun, recordedAt }] }] },
+//!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }] },
 //!                          with an ETag, `304` on `If-None-Match`, or a JSON 404
 //! PUT /rust-rounds/:id   → { change, id, contentHash }: the body is the round's JSON;
-//!                          201 added, 200 the same bytes again, 409 another body, 422 why
+//!                          201 added, 200 the same bytes again, 409 another body, 422 why,
+//!                          413 past `ROUND_CEILING` + 1 bytes, refused before it is read whole
 //! ```
 //!
 //! **Trust model:** a paired phone's routes. Every handler takes a
@@ -16,7 +17,9 @@
 //! untrusted origin `403`, and a browser's cookie session `403` too. A round
 //! is its putter's: each route reads and writes only the caller's subject's
 //! rounds, and another subject's id is a `404` (docs/identity.md invariant
-//! 27). The runs are its programs', by their bytes, and nobody's.
+//! 28). The runs are its programs', by their bytes, and nobody's: a run
+//! carries no time, so one subject cannot learn when another first put a
+//! program.
 //!
 //! **Append-only, and kept until the account goes.** A `PUT` adds a round or
 //! changes nothing; a round's id is never reused, so another body under an id
@@ -32,12 +35,14 @@ use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::Config;
 use axum::{
-	extract::FromRef,
+	extract::{DefaultBodyLimit, FromRef},
+	handler::Handler,
 	http::{
 		header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
 		Method,
 	},
 };
+use rust_round_repo::round::ROUND_CEILING;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 
@@ -50,7 +55,11 @@ where
 	let table = RouteTable::new()
 		.get("/rust-rounds", handlers::list_rounds)
 		.get("/rust-rounds/:id", handlers::get_round)
-		.put("/rust-rounds/:id", handlers::put_round);
+		// A round is at most `ROUND_CEILING` bytes. The limit is one past it,
+		// so a body of exactly one byte too many still gets the 422 that
+		// names the ceiling, and anything longer a 413 before it is buffered,
+		// well inside the server-wide `RequestBodyLimitLayer`.
+		.put("/rust-rounds/:id", handlers::put_round.layer(DefaultBodyLimit::max(ROUND_CEILING + 1)));
 
 	Module::versioned("rust_rounds", table).with_cors(cors)
 }

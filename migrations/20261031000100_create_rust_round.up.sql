@@ -59,6 +59,9 @@ CREATE INDEX rust_round_by_subject ON rust_round (subject_id, seq);
 --   source_hash -- the hex SHA-256 of `source`.
 --   source      -- the program, as the runner is sent it (`main.rs`).
 --   queued_at   -- ISO-8601 UTC, when the first round holding it arrived.
+--                  It outlives that round's account, and so dates it
+--                  (docs/identity.md, "What stays of Rust Rounds"). Never
+--                  served.
 CREATE TABLE rust_round_source (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     source_hash TEXT    NOT NULL UNIQUE,
@@ -76,40 +79,57 @@ CREATE TABLE rust_round_source (
 --   key         -- `rust_rounds_wire::recording::key(toolchain, source)`,
 --                  computed by the pass from what it sent (RX4).
 --   ended       -- `recorded`: the runner answered with a recording.
---                  `runner-restarted`: the runner went away while holding
---                  this program, as many times as the pass allows
---                  (`rust_rounds::pass::DROPS`), so it is kept as that,
---                  never retried again under this toolchain (RP3).
+--                  `refused`: the runner refused this program's request
+--                  (`malformed` or `too-large`), so it is kept as that.
+--                  `runner-lost`: the runner went away (the connection
+--                  dropped) or stopped answering (no answer within
+--                  `ASK_TIMEOUT`, past its watchdog) while holding this
+--                  program, as many times as the pass allows
+--                  (`rust_rounds::pass::DROPS`), so it is kept as that.
+--                  Either way it is never asked again under this toolchain
+--                  (RP3).
+--   refusal     -- for `refused`: the runner's reason.
 --   recording   -- for `recorded`: the runner's whole recording, as JSON.
 --   rustc       -- what the phone reads (`RustcRun`, RR1's `RustcRunSchema`),
---                  as JSON; for `runner-restarted`, a `stopped` run (`exit`).
---   recorded_at -- ISO-8601 UTC, when it was kept.
+--                  as JSON: for `recorded`, derived from `recording`; for
+--                  `refused` and `runner-lost`, a `stopped` run (`exit`).
+--   recorded_at -- ISO-8601 UTC, when it was kept. Never served.
 CREATE TABLE rust_round_run (
     toolchain   TEXT    NOT NULL,
     source_seq  INTEGER NOT NULL REFERENCES rust_round_source (seq),
     key         TEXT    NOT NULL UNIQUE,
-    ended       TEXT    NOT NULL CHECK (ended IN ('recorded', 'runner-restarted')),
+    ended       TEXT    NOT NULL CHECK (ended IN ('recorded', 'refused', 'runner-lost')),
+    refusal     TEXT,
     recording   TEXT,
     rustc       TEXT    NOT NULL,
     recorded_at TEXT    NOT NULL,
     PRIMARY KEY (toolchain, source_seq),
-    CHECK ((ended = 'recorded') = (recording IS NOT NULL))
+    CHECK ((ended = 'recorded') = (recording IS NOT NULL)),
+    CHECK ((ended = 'refused') = (refusal IS NOT NULL))
 );
 
--- `rust_round_drop`, one row each time the runner went away while it held a
--- program (the connection ended after the whole request was sent): at most
--- `DROPS` per program and toolchain, since the last one is followed, in the
--- same transaction, by a `runner-restarted` run. A runner that could not be
--- reached at all is an outage and leaves no row here (RP3).
+-- A round's runs, read by program on every `GET /rust-rounds/:id`.
+CREATE INDEX rust_round_run_by_source ON rust_round_run (source_seq);
+
+-- `rust_round_drop`, one row each time the runner was lost while it held a
+-- program: the connection ended after the whole request was sent, or no
+-- answer came within `ASK_TIMEOUT`, which outlasts the runner's watchdog. At
+-- most `DROPS` per program and toolchain, since the last one is followed, in
+-- the same transaction, by a `runner-lost` run. A runner that could not be
+-- reached, said `unavailable`, or answered wrongly is an outage and leaves no
+-- row here (RP3).
 --
 --   toolchain  -- as in `rust_round_run`.
 --   source_seq -- the program.
---   attempt    -- 1 for the first drop, and one more for each after.
+--   attempt    -- 1 for the first, and one more for each after.
+--   kind       -- `dropped` (the connection ended) or `timed-out` (no answer
+--                 in time).
 --   dropped_at -- ISO-8601 UTC.
 CREATE TABLE rust_round_drop (
     toolchain  TEXT    NOT NULL,
     source_seq INTEGER NOT NULL REFERENCES rust_round_source (seq),
     attempt    INTEGER NOT NULL CHECK (attempt >= 1),
+    kind       TEXT    NOT NULL CHECK (kind IN ('dropped', 'timed-out')),
     dropped_at TEXT    NOT NULL,
     PRIMARY KEY (toolchain, source_seq, attempt)
 );
