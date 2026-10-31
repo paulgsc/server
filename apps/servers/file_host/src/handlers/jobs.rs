@@ -5,8 +5,10 @@
 //! why, and a different event under an id the record holds is a `409`. Both
 //! write nothing, so the phone can say which event home refused and keep it.
 //!
-//! **No audio.** An event names its voice notes by the phone's ids; the notes
-//! stay on the phone and in the owner's Drive, and no route here takes them.
+//! **No audio.** An event names its voice notes by the phone's ids, and so
+//! does a file for the mailbox. A note's audio reaches home by one route only,
+//! `PUT /voice-notes/:id` (`handlers::voice`, docs/identity.md invariant 23);
+//! nothing here takes it, and an id is text (invariant 16).
 //!
 //! **The deletion hold.** Each handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
@@ -22,10 +24,12 @@
 //! [`get_runs`] the jobs routine's run records from the same copy. Both read,
 //! and write nothing; `jobs_event` still has no writer but the two above.
 //!
-//! **Files for the mailbox carry no voice notes.** [`put_file`] files the
-//! phone's decisions or scouts file for the poller to hand to the mailbox,
-//! and refuses one that names a voice note: those go by the phone's share
-//! sheet, which carries the audio to Drive (invariant 16: no audio here).
+//! **Files for the mailbox are text.** [`put_file`] files the phone's
+//! decisions or scouts file for the poller to hand to the mailbox, voice
+//! notes named by id included: home transcribes each note and files the
+//! transcript (`mailbox::pass`, invariant 19), and the routine reads it by
+//! that id, so nothing in the file points at audio and no file is routed
+//! through Drive (paulgsc/some-ui#2174: home is the default).
 
 use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
@@ -342,7 +346,7 @@ fn folder_of(name: &str) -> Option<(&'static str, &'static str)> {
 /// Reads a body that holds each object's members once. A duplicate member is
 /// refused rather than read the way `serde_json::Value` does (the last one
 /// wins): the bytes stored and handed on are the body as sent, so what is
-/// checked has to be every member those bytes hold.
+/// checked (the `schema`) has to be every member those bytes hold.
 struct UniqueMembers;
 
 impl<'de> Deserialize<'de> for UniqueMembers {
@@ -399,28 +403,16 @@ impl<'de> serde::de::Visitor<'de> for UniqueMembers {
 	}
 }
 
-/// Whether `value` names a voice note anywhere: a `voice` key whose value is
-/// anything but an empty array. Read over the whole file rather than the
-/// schema's known places, so a new place a note can hang is refused too.
-fn names_voice(value: &Value) -> bool {
-	match value {
-		Value::Object(fields) => fields
-			.iter()
-			.any(|(key, field)| (key == "voice" && field.as_array().is_none_or(|notes| !notes.is_empty())) || names_voice(field)),
-		Value::Array(items) => items.iter().any(names_voice),
-		Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
-	}
-}
-
 /// `PUT /jobs/files/:name`, the body being the file itself.
 ///
-/// A voice-free decisions or scouts file, filed for the mailbox poller to
-/// hand on. `BEGIN IMMEDIATE`, so the read that decides and the write see one
+/// A decisions or scouts file, filed as sent for the mailbox poller to hand
+/// on; a voice note it names by id is text, and its transcript goes the same
+/// way. `BEGIN IMMEDIATE`, so the read that decides and the write see one
 /// snapshot.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming what is
-/// wrong (`name`, `body`, `schema` or `voice`), 409 for other bytes under a
+/// wrong (`name`, `body` or `schema`), 409 for other bytes under a
 /// filed name or from a paired phone that stopped sending the record home,
 /// and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
@@ -440,12 +432,6 @@ pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, headers:
 	}
 	if file.get("schema").and_then(Value::as_str) != Some(schema) {
 		return Err(FileHostError::unprocessable_entity([("schema", "not the schema this file's name calls for")]));
-	}
-	if names_voice(&file) {
-		return Err(FileHostError::unprocessable_entity([(
-			"voice",
-			"names a voice note: share it from the phone, which sends the audio to Drive",
-		)]));
 	}
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
@@ -916,7 +902,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn files_take_a_voice_free_file_once_and_never_replace_it() {
+	async fn files_take_a_file_once_and_never_replace_it() {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state.clone());
@@ -945,19 +931,23 @@ mod tests {
 		);
 	}
 
+	/// A voice note is named by id, and home holds its transcript for the
+	/// routine (invariant 19), so a file naming one is filed as any other,
+	/// its bytes as sent, for the pass to put in the mailbox's `decisions`
+	/// folder (`mailbox::pass`'s `a_filed_file_is_handed_over_as_filed`).
 	#[tokio::test]
-	async fn files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs() {
+	async fn files_take_a_file_that_names_a_voice_note() {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state.clone());
-		let mut not_a_list = decisions("2026-10-23", &[]);
-		not_a_list["picks"][0]["voice"] = json!("note.webm");
-		for file in [decisions("2026-10-23", &["debrief-1.webm"]), not_a_list] {
-			let (status, answer) = call(&app, Method::PUT, "/jobs/files/decisions-2026-10-23.json", Some(&phone), &file).await;
-			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
-			assert!(answer["error"]["details"]["voice"].is_array(), "{answer}");
-		}
-		assert!(filed(&state).await.is_empty());
+		let file = decisions("2026-10-23", &["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f"]);
+		assert_eq!(
+			call(&app, Method::PUT, "/jobs/files/decisions-2026-10-23.json", Some(&phone), &file).await,
+			(StatusCode::OK, json!({ "change": "added" }))
+		);
+		assert_eq!(filed(&state).await, [(String::from("decisions"), String::from("decisions-2026-10-23.json"))]);
+		let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM mailbox_outgoing").fetch_one(&state.pool).await.unwrap();
+		assert_eq!(body, file.to_string().into_bytes(), "filed as sent, the note's id with it");
 	}
 
 	#[tokio::test]
@@ -983,7 +973,7 @@ mod tests {
 		assert!(filed(&state).await.is_empty());
 	}
 
-	/// `Value` keeps the last of two members with one name, so a note named
+	/// `Value` keeps the last of two members with one name, so a schema named
 	/// by the first would pass a check of the parsed file and still be in
 	/// the bytes stored and handed on. A duplicate member is refused.
 	#[tokio::test]
@@ -991,7 +981,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state.clone());
-		let body = r#"{"schema":"some-ui.job-decisions/1","picks":[{"voice":["note.webm"],"voice":[]}]}"#;
+		let body = r#"{"schema":"some-ui.job-scouts/1","schema":"some-ui.job-decisions/1","picks":[]}"#;
 		let request = Request::builder()
 			.method(Method::PUT)
 			.uri("/jobs/files/decisions-2026-10-23.json")

@@ -641,10 +641,14 @@ nowhere is marked as such and belongs to review.
       `PUT /routine/opened` and the poller's `file_transcripts`: a decisions
       or scouts file the phone filed, which of the routine's lessons it
       opened, or a transcript, its bytes, hash and when.
-      The jobs route refuses a file that names a voice note anywhere (any
-      `voice` key that is not an empty list), so no file that points at
-      audio is handed on; those go by the phone's share sheet, which carries
-      the audio to Drive. The routine route builds its file itself, as
+      The jobs route files a decisions or scouts file as the phone sent it,
+      a voice note it names by the phone's id included (paulgsc/server#508;
+      until then it refused one, which only routed the owner through Drive):
+      an id is text, the note's audio is `voice_note_audio`'s (invariant
+      23), and what home heard in it reaches the routine as the transcript
+      below, under that id. Nothing in the file points at audio, and
+      sending to home is the default (paulgsc/some-ui#2174). The routine
+      route builds its file itself, as
       `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
       `drama` and a mailbox name), at most 100, and home's time, nothing
       else (owner, 2026-10-24: the routine keeps three lessons not opened).
@@ -688,6 +692,7 @@ nowhere is marked as such and belongs to review.
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
+    `a_filed_file_is_handed_over_as_filed`,
     `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
     `no_transcript_is_filed_for_a_deleted_subject` and
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`, and its fake
@@ -696,7 +701,7 @@ nowhere is marked as such and belongs to review.
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
-    `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
+    `files_take_a_file_that_names_a_voice_note`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript' -- '*.rs'`
     shows today and review keeps; and what a digest says, which is the

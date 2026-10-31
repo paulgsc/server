@@ -13,8 +13,8 @@
 //! PUT /jobs/notice       → { change }: tell this phone, through FCM, when a
 //!                          morning run's record arrives; `{ token }`
 //! DELETE /jobs/notice    → { change }: stop telling it; `{ token }`
-//! PUT /jobs/files/:name  → { change }: a voice-free decisions or scouts file,
-//!                          for the mailbox poller to hand on
+//! PUT /jobs/files/:name  → { change }: a decisions or scouts file, for the
+//!                          mailbox poller to hand on
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::aph`. Every handler takes a
@@ -28,8 +28,8 @@
 //!
 //! **Digests** and **runs** are read only: the `mailbox` poller is their one
 //! writer.
-//! **Files** are filed once per name, never replaced, and never with a voice
-//! note.
+//! **Files** are filed once per name and never replaced. They are text: a
+//! voice note is named by its id, never carried.
 
 use crate::auth::AuthContext;
 use crate::handlers::jobs as handlers;
