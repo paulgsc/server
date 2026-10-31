@@ -94,7 +94,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_leetype_log",
-		"which of the owner's finished LeetType sessions home filed for the mailbox: the session, the number its file's name carries, how many events that file held, and when; see docs/identity.md invariants 18 and 19",
+		"each decision home made on the owner's finished LeetType sessions for the mailbox: the session, the highest of its events the decision covered, and either the number its filed file's name carries or why it could not be filed (unreadable, no_file, too_big), and when; see docs/identity.md invariants 18 and 19",
 	),
 	(
 		"mailbox_outgoing",

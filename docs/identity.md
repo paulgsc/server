@@ -624,9 +624,12 @@ nowhere is marked as such and belongs to review.
     it cannot file is recorded as refused, and is decided again the same way;
     its events stay here, whatever the mailbox copy came to. Which
     events arrived after is read by rowid against `mailbox_leetype_log`'s
-    high-water mark, so this table's rowids must only grow: nothing runs
-    `VACUUM` on home's database (it may renumber a table with no INTEGER
-    PRIMARY KEY), and a `VACUUM` would need the mark rebuilt first. A phone
+    high-water mark, which relies on one property of this table: a new
+    event's rowid is above every rowid its subject already holds. Account
+    deletion keeps it, because it takes the subject's log rows too; only
+    `VACUUM` breaks it (it may renumber a table with no INTEGER PRIMARY KEY),
+    so nothing runs `VACUUM` on home's database, and one would need the mark
+    rebuilt first. A phone
     that sent a session before it was finished would break the first
     assumption; a change to `logGoing` is checked against this line.
     The corpus-wide `GET /leetype/rounds*` and

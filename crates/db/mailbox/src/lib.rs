@@ -706,6 +706,9 @@ pub struct Due {
 ///
 /// Two index probes and the new events alone: an idle pass reads no history
 /// (`leetype_session_event_arrival`, `mailbox_leetype_log`'s primary key).
+/// The arrival index is named in the query (`INDEXED BY`): after an
+/// `ANALYZE` the planner would otherwise read the whole history through
+/// `leetype_session_event_order`.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -713,7 +716,7 @@ pub async fn unfiled_leetype_logs(conn: &mut SqliteConnection, subject: &str, li
 	let due = sqlx::query_as!(
 		Due,
 		r#"SELECT session_id AS "session!: String", MAX(rowid) AS "top!: i64", MAX(written_at) AS "last_written!: String"
-		   FROM leetype_session_event
+		   FROM leetype_session_event INDEXED BY leetype_session_event_arrival
 		   WHERE subject_id = ?1
 		     AND rowid > (SELECT COALESCE(MAX(through), 0) FROM mailbox_leetype_log WHERE subject_id = ?1)
 		   GROUP BY session_id
@@ -1396,8 +1399,15 @@ mod tests {
 	#[tokio::test]
 	async fn the_due_query_reads_only_what_arrived_after_the_mark() {
 		let pool = pool().await;
+		// With statistics, as a long-running home has them, the planner
+		// prefers `leetype_session_event_order` unless the query names
+		// the arrival index.
+		for n in 0..50 {
+			event(&pool, A, ("s1", &(String::from("e") + &n.to_string())), "2026-10-28T10:00:00.000Z").await;
+		}
+		sqlx::query("ANALYZE").execute(&pool).await.unwrap();
 		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-			"EXPLAIN QUERY PLAN SELECT session_id, MAX(rowid), MAX(written_at) FROM leetype_session_event
+			"EXPLAIN QUERY PLAN SELECT session_id, MAX(rowid), MAX(written_at) FROM leetype_session_event INDEXED BY leetype_session_event_arrival
 			 WHERE subject_id = 'a' AND rowid > (SELECT COALESCE(MAX(through), 0) FROM mailbox_leetype_log WHERE subject_id = 'a')
 			 GROUP BY session_id ORDER BY MAX(rowid) LIMIT 20",
 		)

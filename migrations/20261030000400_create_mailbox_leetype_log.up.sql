@@ -25,11 +25,12 @@
 -- events above the largest `through` it holds (`leetype_session_event_arrival`,
 -- below, and this table's primary key), so an idle pass reads two index
 -- probes and no history, and no number of refused sessions holds back the
--- ones after them. That relies on `leetype_session_event`'s rowids only ever
--- growing: the table is append-only, nothing here runs `VACUUM` (which may
--- renumber the rowids of a table with no INTEGER PRIMARY KEY), and
--- `auto_vacuum` is off (docs/storage.md). A `VACUUM` of home's database would
--- break this mark; docs/identity.md invariant 18 says so.
+-- ones after them. That relies on one property of `leetype_session_event`: a
+-- new event's rowid is above every rowid its subject already holds. Appends
+-- keep it, and account deletion keeps it because it takes the subject's log
+-- rows too; only `VACUUM` breaks it (it may renumber the rowids of a table
+-- with no INTEGER PRIMARY KEY), and nothing here runs one, with `auto_vacuum`
+-- off (docs/storage.md). docs/identity.md invariant 18 says so.
 --
 -- APPEND-ONLY, like the outgoing file it names: no row is updated (the
 -- trigger below aborts an `UPDATE`) or deleted but with the account.
