@@ -176,7 +176,7 @@ impl std::error::Error for NotStarted {
 /// anything of it ran: the machine's alone, whatever the child would have
 /// been.
 pub(crate) fn not_started(err: &std::io::Error) -> bool {
-	err.get_ref().is_some_and(|inner| inner.is::<NotStarted>())
+	err.get_ref().is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotStarted>)
 }
 
 /// How long the output readers get to see end-of-file once the child's
