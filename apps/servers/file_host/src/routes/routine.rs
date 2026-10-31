@@ -9,13 +9,16 @@
 //!                       names only, filed for the mailbox
 //! PUT /routine/reflections/:id → { change, reflection }: a written
 //!                       reflection, kept on home and filed for the mailbox
+//! PUT /routine/prompts/:stamp → { change, prompt }: the next scene's
+//!                       prompt, kept on home and filed for the mailbox
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::jobs`: a request without a
 //! session is `401`, and a write from an untrusted origin `403`. The
 //! `mailbox` poller is the files' one writer. The writes here are a filing
 //! for home's outbox (docs/identity.md invariant 19) and the owner's written
-//! reflections, append-only (invariant 29), each filed for the outbox too.
+//! reflections, append-only (invariant 29), and drama prompts, append-only
+//! (invariant 31), each filed for the outbox too.
 
 use crate::auth::AuthContext;
 use crate::handlers::routine as handlers;
@@ -41,7 +44,8 @@ where
 	let table = RouteTable::new()
 		.get("/routine/files", handlers::get_files)
 		.put("/routine/opened", handlers::put_opened)
-		.put("/routine/reflections/:id", handlers::put_reflection);
+		.put("/routine/reflections/:id", handlers::put_reflection)
+		.put("/routine/prompts/:stamp", handlers::put_prompt);
 	Module::versioned("routine", table).with_cors(cors)
 }
 

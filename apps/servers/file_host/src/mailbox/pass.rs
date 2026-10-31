@@ -8,7 +8,8 @@
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
 //! names a voice note by id at most), which lessons it opened, each written
-//! reflection it sent home (`PUT /routine/reflections/:id`, text only), those
+//! reflection it sent home (`PUT /routine/reflections/:id`, text only), each
+//! drama prompt it asked for (`PUT /routine/prompts/:stamp`, text only), those
 //! transcripts and those logs. Last of the handing, it puts the Jobs
 //! routine's index when what it counts has moved ([`super::index`]), so the
 //! index counts what this pass handed. The index is a view home recomputes,
@@ -49,15 +50,16 @@
 //! only then does the mailbox drop its bytes, and only if they are still the
 //! ones home stored. A file home could not store stays live.
 //!
-//! A written reflection is archived the same way, but its folder is listed
-//! only once one home filed is due ([`mailbox_repo::reflection_due`], which
-//! reads home's own tables), and no ask for one is ever listed: the routine
-//! cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`).
-//! Home records the mailbox's answer to each ask to archive one
-//! (`mailbox_archive_answer`), and asks again, by name, for one it stored
-//! whose ask heard none ([`mailbox_repo::unanswered_archives`]): a stored
-//! reflection is due no more, so the listing would never find it again. So
-//! a pass with nothing to do makes no request for the folder.
+//! A written reflection or a drama prompt is archived the same way, but its
+//! folder is listed only once one home filed there is due
+//! ([`mailbox_repo::filed_due`], which reads home's own tables), and no ask
+//! for one is ever listed: the routine cannot ask either back
+//! (paulgsc/some-ui `apps/mailbox`, `ASKED`). Home records the mailbox's
+//! answer to each ask to archive one (`mailbox_archive_answer`), and asks
+//! again, by name, for one it stored whose ask heard none
+//! ([`mailbox_repo::unanswered_archives`]): a stored file is due no more, so
+//! the listing would never find it again. So a pass with nothing to do
+//! makes no request for either folder.
 
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -82,12 +84,12 @@ pub const ITEMS_PER_PASS: u32 = 20;
 /// nothing to archive or put back, and listing it would add two requests to
 /// every idle pass (MI6, paulgsc/some-ui `packages/assurance`).
 ///
-/// A written reflection's folder is listed only once one home filed is due
-/// (`mailbox_repo::reflection_due`, from home's own tables), and one home
-/// stored is asked for again only while its ask has no answer
-/// (`mailbox_repo::unanswered_archives`), so it adds no request to an idle
-/// pass either.
-pub const ARCHIVES: [Folder; 11] = [
+/// A written reflection's folder, and a drama prompt's, is listed only once
+/// one home filed there is due (`mailbox_repo::filed_due`, from home's own
+/// tables), and one home stored is asked for again only while its ask has
+/// no answer (`mailbox_repo::unanswered_archives`), so neither adds a
+/// request to an idle pass.
+pub const ARCHIVES: [Folder; 12] = [
 	Folder::Brief,
 	Folder::Decisions,
 	Folder::Scout,
@@ -99,13 +101,15 @@ pub const ARCHIVES: [Folder; 11] = [
 	Folder::Leetype,
 	Folder::LeetypeLog,
 	Folder::Reflection,
+	Folder::Prompt,
 ];
 
-/// The folders whose asks a pass answers: every one it archives but `reflection`.
+/// The folders whose asks a pass answers: every one it archives but
+/// `reflection` and `prompt`.
 ///
-/// The routine cannot ask a written reflection back (paulgsc/some-ui
-/// `apps/mailbox`, `ASKED`), so listing its asks would only add a request to
-/// every pass (MI6).
+/// The routine cannot ask a written reflection or a drama prompt back
+/// (paulgsc/some-ui `apps/mailbox`, `ASKED`), so listing their asks would
+/// only add requests to every pass (MI6).
 pub const ASKS: [Folder; 10] = [
 	Folder::Brief,
 	Folder::Decisions,
@@ -152,6 +156,26 @@ pub fn reflection_file(reflection: &reflection_repo::Reflection) -> (String, Vec
 		"session": reflection.session_id,
 		"at": reflection.created_at,
 		"text": reflection.body.text,
+	});
+	(name, body.to_string().into_bytes())
+}
+
+/// What a drama prompt put to the mailbox's `prompt` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const PROMPT_SCHEMA: &str = "some-ui.drama-prompt/1";
+
+/// A drama prompt as the mailbox takes it, and its name there.
+///
+/// The routine's minimum (paulgsc/some-ui#2174, decision D2): its stamp and
+/// its markdown, which names its scene notes by id. Nothing of their audio:
+/// what home heard in each goes as its transcript.
+#[must_use]
+pub fn prompt_file(prompt: &drama_prompt_repo::Prompt) -> (String, Vec<u8>) {
+	let name = prompt.stamp.clone() + ".prompt.json";
+	let body = serde_json::json!({
+		"schema": PROMPT_SCHEMA,
+		"prompt": prompt.stamp,
+		"text": prompt.text,
 	});
 	(name, body.to_string().into_bytes())
 }
@@ -514,9 +538,10 @@ async fn hand_over<T: MailboxTransport>(
 			"transcript" => Folder::Transcript,
 			"leetype-log" => Folder::LeetypeLog,
 			"reflection" => Folder::Reflection,
+			"prompt" => Folder::Prompt,
 			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
-			// `PUT /routine/reflections/:id`, `file_transcripts` and
-			// `file_leetype_logs` file only these.
+			// `PUT /routine/reflections/:id`, `PUT /routine/prompts/:stamp`,
+			// `file_transcripts` and `file_leetype_logs` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -716,11 +741,11 @@ async fn archive_old<T: MailboxTransport>(
 	};
 	let mut budget = ITEMS_PER_PASS as usize;
 	for folder in ARCHIVES {
-		// Home knows which reflections it filed and when the mailbox took
-		// them, so it lists the folder only once one is old enough. One it
-		// stored whose ask heard no answer is no longer due, so it is asked
-		// for again by name first.
-		if folder == Folder::Reflection {
+		// Home knows which reflections and prompts it filed and when the
+		// mailbox took them, so it lists each folder only once one is old
+		// enough. One it stored whose ask heard no answer is no longer due, so
+		// it is asked for again by name first.
+		if answers_recorded(folder) {
 			let owed = {
 				let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 				let limit = i64::try_from(budget).unwrap_or(i64::MAX);
@@ -743,7 +768,7 @@ async fn archive_old<T: MailboxTransport>(
 				return Ok(());
 			}
 			let mut conn = db.acquire().await.map_err(Failure::Storage)?;
-			if !mailbox_repo::reflection_due(&mut conn, subject, &cutoff).await.map_err(storage)? {
+			if !mailbox_repo::filed_due(&mut conn, subject, folder.as_str(), &cutoff).await.map_err(storage)? {
 				continue;
 			}
 		}
@@ -829,10 +854,19 @@ async fn archive_one<T: MailboxTransport>(
 	ask_archive(db, archiving, subject, deletion, now, folder, item).await.map(Some)
 }
 
+/// The folders whose archive answers home records (`mailbox_archive_answer`):
+/// a written reflection's and a drama prompt's, which home lists only while
+/// one is due, so a stored one whose ask heard no answer would never be
+/// listed again.
+const fn answers_recorded(folder: Folder) -> bool {
+	matches!(folder, Folder::Reflection | Folder::Prompt)
+}
+
 /// Asks the mailbox to drop `item`, whose bytes home holds in
 /// `mailbox_archive`, naming their SHA-256: what it answered. For a written
-/// reflection the answer is recorded (`mailbox_archive_answer`), so one
-/// whose ask never reached the mailbox is asked for again.
+/// reflection or a drama prompt the answer is recorded
+/// (`mailbox_archive_answer`), so one whose ask never reached the mailbox is
+/// asked for again.
 async fn ask_archive<T: MailboxTransport>(
 	db: &SqlitePool,
 	archiving: &Archiving<'_, T>,
@@ -850,7 +884,7 @@ async fn ask_archive<T: MailboxTransport>(
 		Err(MailboxError::NotFound) => "gone",
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
-	if folder == Folder::Reflection {
+	if answers_recorded(folder) {
 		// No account: the deletion that took it took the archive too.
 		record_archive_answer(db, deletion, subject, folder.as_str(), &item.name, answer, &now())
 			.await
@@ -1059,11 +1093,12 @@ mod tests {
 						"/v1/opened/items/",
 						"/v1/transcript/items/",
 						"/v1/leetype-log/items/",
-						"/v1/reflection/items/"
+						"/v1/reflection/items/",
+						"/v1/prompt/items/"
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes and written reflections: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections and drama prompts: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -2085,6 +2120,36 @@ mod tests {
 		}
 	}
 
+	/// The same for a drama prompt: invariant 21, MI6.
+	#[tokio::test]
+	async fn a_prompt_whose_archive_heard_no_answer_is_asked_for_again() {
+		for (reach, again) in [(Reach::Never, "archived"), (Reach::AnswerLost, "unchanged")] {
+			let (pool, vault) = (pool().await, Vault::default());
+			let (name, body) = prompt_handed(&pool, "drama-20260701T000000000Z", OLD).await;
+			vault.add("prompt", 1, &name, &body, OLD);
+			*vault.deletes_reach.lock().unwrap() = Some(reach);
+			assert!(archive_pass_ending(&pool, &vault).await.is_err(), "the ask heard no answer");
+			assert_eq!(archived_home(&pool).await.len(), 1, "home stored it before it asked");
+
+			*vault.deletes_reach.lock().unwrap() = None;
+			vault.seen.lock().unwrap().clear();
+			assert_eq!(archive_pass(&pool, &vault).await.archived, [again]);
+			let requests = vault.seen.lock().unwrap().clone();
+			let path = String::from("/v1/prompt/items/") + &name;
+			assert!(
+				requests.iter().filter(|seen| seen.contains(" /v1/prompt/")).eq([&(String::from("Delete ") + &path)]),
+				"asked again by name, with no listing: {requests:?}"
+			);
+			assert!(vault.names().is_empty(), "the mailbox holds it no more");
+
+			vault.seen.lock().unwrap().clear();
+			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+			let idle = vault.seen.lock().unwrap().clone();
+			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert!(!idle.iter().any(|path| path.contains(" /v1/prompt/")), "answered, it is owed no more: {idle:?}");
+		}
+	}
+
 	#[tokio::test]
 	async fn a_filed_reflection_is_handed_to_its_folder_as_text() {
 		let (pool, fake) = (pool().await, Fake::default());
@@ -2116,6 +2181,86 @@ mod tests {
 				"text": "More level two, please.",
 			}),
 			"the routine's minimum: no answers, no time into the session, no audio"
+		);
+	}
+
+	/// A drama prompt filed with home for the mailbox, as
+	/// `PUT /routine/prompts/:stamp` files it, and the mailbox's answer to it
+	/// recorded at `handed_at`.
+	async fn prompt_handed(pool: &SqlitePool, stamp: &str, handed_at: &str) -> (String, String) {
+		let prompt = drama_prompt_repo::Prompt {
+			stamp: stamp.to_owned(),
+			text: String::from("Write the next scene."),
+		};
+		let (name, body) = super::prompt_file(&prompt);
+		let mut conn = pool.acquire().await.unwrap();
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut conn, OWNER, "prompt", &name, &sha, &body, handed_at).await.unwrap();
+		mailbox_repo::record_handed(&mut conn, OWNER, "prompt", &name, mailbox_repo::Answer::Added, handed_at)
+			.await
+			.unwrap();
+		(name, String::from_utf8(body).unwrap())
+	}
+
+	/// The ledger's MI6 (paulgsc/some-ui `packages/assurance`): a drama
+	/// prompt too young to archive costs an idle pass no request, so it stays
+	/// 25, none of them for prompts.
+	#[tokio::test]
+	async fn an_idle_pass_asks_nothing_of_prompts() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (name, body) = prompt_handed(&pool, "drama-20261031T071503120Z", YOUNG).await;
+		vault.add("prompt", 1, &name, &body, YOUNG);
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+		let requests = vault.seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 25, "a prompt too young to archive costs no request: {requests:?}");
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/")), "{requests:?}");
+	}
+
+	/// docs/identity.md invariant 21: an old drama prompt is stored home
+	/// before the mailbox drops it, as any file is, and the folder is listed
+	/// only while one is due; its asks are never listed.
+	#[tokio::test]
+	async fn an_old_prompt_is_archived_once_and_its_asks_are_never_listed() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (old, old_body) = prompt_handed(&pool, "drama-20260701T000000000Z", OLD).await;
+		let (young, young_body) = prompt_handed(&pool, "drama-20261031T071503120Z", YOUNG).await;
+		vault.add("prompt", 1, &old, &old_body, OLD);
+		vault.add("prompt", 2, &young, &young_body, YOUNG);
+		assert_eq!(archive_pass(&pool, &vault).await.archived, ["archived"]);
+		assert_eq!(vault.names(), [young]);
+		assert_eq!(archived_home(&pool).await, [(String::from("prompt"), old, old_body.into_bytes())]);
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/wanted")), "{requests:?}");
+
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/")), "an archived one is due no more: {requests:?}");
+	}
+
+	#[tokio::test]
+	async fn a_filed_prompt_is_handed_to_its_folder_as_text() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let prompt = drama_prompt_repo::Prompt {
+			stamp: String::from("drama-20261023T140000000Z"),
+			text: String::from("> **For an agent:** follow the prompt below.\n\nWrite the next scene."),
+		};
+		let (name, body) = super::prompt_file(&prompt);
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, "prompt", &name, &sha, &body, "2026-10-23T14:00:01.000Z")
+			.await
+			.unwrap();
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/prompt/items/drama-20261023T140000000Z.prompt.json"]);
+		let sent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			sent,
+			serde_json::json!({
+				"schema": "some-ui.drama-prompt/1",
+				"prompt": "drama-20261023T140000000Z",
+				"text": "> **For an agent:** follow the prompt below.\n\nWrite the next scene.",
+			}),
+			"the routine's minimum: the stamp and the markdown, no audio"
 		);
 	}
 
