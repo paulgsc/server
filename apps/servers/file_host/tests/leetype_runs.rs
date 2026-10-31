@@ -1,10 +1,9 @@
-//! What still holds the `LeetType` runs to `docs/leetype-execution.md`'s nevers
-//! once no route serves them (paulgsc/some-ui#2032 retired
-//! `GET /leetype/rounds*`). The recordings stay in `leetype_round_run`, written
-//! by `record-leetype-runs` and read by `dump-leetype-snapshot`, so never #3
-//! (no complexity claim in a `RoundRuns`), never #5 (no `StudySignal`) and EX1
-//! (nothing the server serves compiles or runs a program) still have a
-//! surface to hold. These tests moved here from the retired route's handler.
+//! What holds the `LeetType` runs to `docs/leetype-execution.md`'s nevers. No
+//! route serves them: the recordings are in `leetype_round_run`, written by
+//! `record-leetype-runs` and read by `dump-leetype-snapshot`. These tests hold
+//! never #3 (no complexity claim in a `RoundRuns`), never #5 (no
+//! `StudySignal`) and EX1 (nothing the server serves compiles or runs a
+//! program) over that surface.
 
 use leetype_round_repo::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RoundRuns, RunResult, Variant};
 use serde_json::Value;

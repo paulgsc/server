@@ -6,13 +6,12 @@
 //! `20260929000100_create_leetype_round.up.sql` for why it is a blob *and* an
 //! edge table. [`parse_round`] is the only reading of a body this server does,
 //! and [`content_hash`] (shared with `curriculum_repo`) the one definition of
-//! "did this round change" the importer, the operator's write route and the
-//! `ETag` share.
+//! "did this round change" the importer and the snapshot share.
 //!
 //! [`runs`] holds each round's recorded runs (#381): `RunResult`s that
-//! `leetype_runner` produced offline, stored per round version (no route
-//! serves them since paulgsc/some-ui#2032). [`snapshot`] writes the listed rounds and
-//! their runs as files for the static build (#328).
+//! `leetype_runner` produced offline, stored per round version. [`snapshot`]
+//! writes the listed rounds and their runs as files for the static build
+//! (#328).
 
 pub mod importer;
 pub mod model;
@@ -25,7 +24,7 @@ pub use model::{
 	content_hash, is_plain_key, is_proposition_id, parse_round, validate_round, ParsedRound, Problem, RoundEntry, Witness, MAX_DIFF_OPTIONS, MIN_DIFF_OPTIONS,
 	ROUND_BYTES_CEILING,
 };
-pub use repository::{Change, RoundRepository, WitnessingRound, WriteError, MANIFEST_CEILING, OPERATOR_LISTING_CEILING};
+pub use repository::{Change, RoundRepository, WriteError, MANIFEST_CEILING};
 pub use runs::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RoundRuns, RunResult, Variant};
 pub use snapshot::{dump_snapshot, SnapshotError, SnapshotMode, SnapshotReport};
 
@@ -65,6 +64,16 @@ mod tests {
 		RoundRepository::upsert(&mut pool.acquire().await.unwrap(), id, &round(id, options), T0, false)
 			.await
 			.unwrap()
+	}
+
+	/// Retires `id` by hand: nothing in the crate retires a round.
+	async fn retire(pool: &SqlitePool, id: &str) {
+		sqlx::query("UPDATE leetype_round SET retired_at = ?1 WHERE id = ?2")
+			.bind(T0)
+			.bind(id)
+			.execute(pool)
+			.await
+			.unwrap();
 	}
 
 	#[tokio::test]
@@ -141,30 +150,6 @@ mod tests {
 		}
 	}
 
-	/// The edge query answers from the witness rows, listed rounds only, and
-	/// says whether the proposition is a round's answer or a distractor.
-	#[tokio::test]
-	async fn rounds_witnessing_reads_mu_for_listed_rounds() {
-		let pool = pool().await;
-		assert_eq!(put(&pool, "b", &[("CW-P5", false), ("CW-P6", true)]).await, Change::Inserted);
-		put(&pool, "a", &[("CW-P5", true), ("CW-P8", false)]).await;
-		put(&pool, "c", &[("CW-P5", true), ("CW-P9", false)]).await;
-		let repository = RoundRepository::new(pool.clone());
-		let witnessing = |rounds: Vec<crate::WitnessingRound>| rounds.into_iter().map(|round| (round.id, round.admissible)).collect::<Vec<_>>();
-		assert_eq!(
-			witnessing(repository.rounds_witnessing("CW-P5", 10).await.unwrap()),
-			[("a".to_owned(), true), ("b".to_owned(), false), ("c".to_owned(), true)]
-		);
-		assert_eq!(repository.rounds_witnessing("CW-P5", 2).await.unwrap().len(), 2, "bounded");
-
-		RoundRepository::retire(&mut pool.acquire().await.unwrap(), "c", T0).await.unwrap();
-		assert_eq!(
-			witnessing(repository.rounds_witnessing("CW-P5", 10).await.unwrap()).len(),
-			2,
-			"retired rounds are not sampled"
-		);
-	}
-
 	/// Entries carry their witnesses in option order, loaded for the whole
 	/// set at once; the manifest's are the listed rounds only.
 	#[tokio::test]
@@ -172,7 +157,7 @@ mod tests {
 		let pool = pool().await;
 		put(&pool, "a", &[("CW-P8", false), ("CW-P6", true)]).await;
 		put(&pool, "b", &[("CW-P7", true), ("CW-P9", false)]).await;
-		RoundRepository::retire(&mut pool.acquire().await.unwrap(), "b", T0).await.unwrap();
+		retire(&pool, "b").await;
 		let repository = RoundRepository::new(pool.clone());
 
 		let listed = repository.entries(10).await.unwrap();
@@ -180,12 +165,9 @@ mod tests {
 		let witnesses: Vec<(&str, bool)> = listed[0].witnesses.iter().map(|w| (w.proposition_id.as_str(), w.admissible)).collect();
 		assert_eq!(witnesses, [("CW-P8", false), ("CW-P6", true)]);
 
-		let all = repository.all_entries(10).await.unwrap();
-		assert_eq!(
-			all.iter().map(|entry| (entry.id.as_str(), entry.retired_at.is_some())).collect::<Vec<_>>(),
-			[("a", false), ("b", true)]
-		);
-		assert_eq!(all[1].witnesses.len(), 2);
+		let retired = RoundRepository::entry(&mut pool.acquire().await.unwrap(), "b").await.unwrap().unwrap();
+		assert!(retired.retired_at.is_some());
+		assert_eq!(retired.witnesses.len(), 2);
 		let witnesses = RoundRepository::witnesses_for(&mut pool.acquire().await.unwrap(), &["a", "b", "missing"]).await.unwrap();
 		assert_eq!(witnesses.keys().collect::<Vec<_>>(), ["a", "b"]);
 	}

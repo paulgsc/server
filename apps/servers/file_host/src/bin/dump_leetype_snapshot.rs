@@ -8,8 +8,9 @@
 //!
 //! Writes `<out-dir>/rounds/manifest.json` and `<out-dir>/rounds/<id>.json`
 //! (the listed rounds, in `@some-ui/leetype`'s export layout, each body byte
-//! for byte) and `<out-dir>/runs/<id>.json` (the round's `RoundRuns`). Deterministic: regenerating from an unchanged database changes no
-//! byte. See `leetype_round_repo::snapshot` and
+//! for byte) and `<out-dir>/runs/<id>.json` (the round's `RoundRuns`).
+//! Deterministic: regenerating from an unchanged database changes no byte.
+//! See `leetype_round_repo::snapshot` and
 //! `apps/servers/file_host/docs/leetype-execution.md`.
 //!
 //! With `--check`, writes nothing and exits 1 if `<out-dir>` is not exactly

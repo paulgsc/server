@@ -54,9 +54,9 @@ The wire shape is `leetype_round_repo::RoundRuns`:
 dimension. `sizes` carries every dimension, since a two-dimension round
 (`n`, `q`) is not described by one number. Runs are ordered `A` first, then
 `d0`, `d1`, …, and each variant's `before` run comes before its `after` run.
-A round the table does not hold is a JSON `404`. A known round with nothing
-recorded for its current version answers `runs: []`. The `ETag` is the hash of
-the serialised body, and `If-None-Match` gets a `304`.
+No route serves it. `dump-leetype-snapshot` writes one `runs/<id>.json` per
+listed round, read for the round's current hash; a round with nothing recorded
+for its current version gets `runs: []` and is named in the dump's report.
 
 ## Reinterpreting "the route executes a round"
 
@@ -220,12 +220,12 @@ recorded them, and nothing grades them.
 
 | # | Never | How it holds here | Checked by |
 | --- | --- | --- | --- |
-| 1 | executes caller-supplied source | The route's extractors are `State`, `HeaderMap` (read for `If-None-Match` only) and `Path<String>`. It has no `Json`, `Form`, `Query` or body, and is registered for `GET` alone. The runner only ever reads a stored body, which came in through the reviewed import path or the operator's route. The route executes nothing anyway. | No route serves runs since some-ui#2032, so there is no request to put source in. While it was served, `the_runs_route_takes_no_input_but_the_round_id` held it |
-| 2 | selects a round | The route answers for the id it is asked about. The recorder records every listed round (or `--round <id>`), and neither decides what a learner sees next. | By construction: nothing reads the runs table but the dump (and the recorder's `has_runs`) |
+| 1 | executes caller-supplied source | No route serves rounds or runs, and no file the server serves names the runner, so no request reaches it. The runner only ever reads a stored body, which came in through `import-leetype-rounds`, the reviewed import path. | `the_runs_surface_reaches_neither_a_study_signal_nor_the_runner` (`tests/leetype_runs.rs`): no file under `src/` but `record-leetype-runs` names the runner |
+| 2 | selects a round | The recorder records every listed round (or `--round <id>`), and the dump writes every listed round. Neither decides what a learner sees next. | By construction: nothing reads the runs table but the dump (and the recorder's `has_runs`) |
 | 3 | returns a complexity claim | `RoundRuns` holds the round's id and hash, and per run the variant, bounds, sizes and `RunResult`. There is no class, no Θ, no "admissible" and no verdict field. The messages state what happened ("did not finish within the 2000 ms wall-clock ceiling"), never why. | `a_runs_transcript_carries_no_complexity_claim` (`tests/leetype_runs.rs`): every key of a sample `RoundRuns` covering both branches is on an explicit allowlist |
-| 4 | becomes required | A round with nothing recorded answers `runs: []`, and an unknown one a `404`. The static build gets recordings (`dump-leetype-snapshot`) and needs no server. The client stays playable when every run is missing or failed (paulgsc/some-ui#1226's own criterion). | The client's side |
+| 4 | becomes required | Nothing refuses a round for lacking runs: the dump writes a listed round with nothing recorded as `runs: []` and names it in its report. The static build gets recordings (`dump-leetype-snapshot`) and needs no server. The client stays playable when every run is missing or failed (paulgsc/some-ui#1226's own criterion). | `a_dump_is_the_export_byte_for_byte_and_regenerating_it_is_a_no_op` (`leetype_round_repo::snapshot`) for the dump; the client's side for the rest |
 | 5 | produces a `StudySignal` | `leetype_runner`'s dependency closure contains none of `study_domain`, `intervention`, `outcome_repo`, `session_repo` or `engagement_repo`, so it cannot even name the type. Both commands name none of them either. | `crates/leetype_runner/tests/nevers.rs` (walks `cargo metadata`'s resolved graph) and `the_runs_surface_reaches_neither_a_study_signal_nor_the_runner` (`tests/leetype_runs.rs`, scans the sources) |
-| 6 | breaks `docs/identity.md`'s privacy invariants | `leetype_round_run` holds nothing about who asked. Runs are recorded offline, not per request. It is classified `NOT_SUBJECT_SCOPED` in `privacy.rs`. Rate limiting is the global middleware on every versioned route, keyed by `net.rs`'s `PeerKey`, not a second mechanism. | `privacy.rs`'s schema test |
+| 6 | breaks `docs/identity.md`'s privacy invariants | `leetype_round_run` holds nothing about who asked. Runs are recorded offline, not per request. It is classified `NOT_SUBJECT_SCOPED` in `privacy.rs`. No route reads it. | `privacy.rs`'s schema test |
 | — | **no execution in the request path** (this design's own) | `leetype_runner` is a dependency of `file_host` only for the `record-leetype-runs` binary. No other file under `src/` names it, so the server binary never links it. | `the_runs_surface_reaches_neither_a_study_signal_nor_the_runner` (`tests/leetype_runs.rs`) |
 | — | **a stale run is never served** (this design's own) | Each row carries the `content_hash` it was recorded for. The dump reads only rows matching the round's current hash, in one query. `replace_runs` refuses (writes nothing) if the hash moved while recording. | `stale_runs_are_never_served_or_written` |
 
