@@ -432,11 +432,6 @@
     }
   },
   "apps/servers/file_host/src/main.rs": {
-    "clippy::await_holding_lock": {
-      "fn main": {
-        "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
-      }
-    },
     "clippy::ignored_unit_patterns": {
       "fn main": {
         "Ok(_) => tracing::info!(\"Graceful shutdown completed\"),": 1
@@ -477,19 +472,9 @@
     }
   },
   "apps/servers/file_host/src/metrics/observability.rs": {
-    "clippy::missing_errors_doc": {
-      "fn shutdown": {
-        "pub async fn shutdown(self) -> Result<(), ObservabilityError> {": 1
-      }
-    },
     "clippy::too_long_first_doc_paragraph": {
       "enum ObservabilityError": {
         "/// Tracing-only. Per #139 (P1), application measurements go through the /// `metrics` facade and a Prometheus scrape (see `metrics::instruments` /// and the `some-metrics` seam crate), not OTLP \u2014 this guard no longer /// carries a meter provider.": 1
-      }
-    },
-    "clippy::unused_async": {
-      "fn shutdown": {
-        "pub async fn shutdown(self) -> Result<(), ObservabilityError> { self.tracer_provider.shutdown().map_err(|e| ObservabilityError::OpenTelemetry(e.to_string()))?; Ok(()) }": 1
       }
     }
   },

@@ -1353,7 +1353,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   when.
 - **Logs and traces carry the subject id.** The waker logs subject ids, a
   refused operator is logged by id, and the OpenTelemetry layer exports span
-  fields to whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names. Ids are random and
+  fields to whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names (unset, as on home,
+  there is no such layer and nothing is exported: #545). Ids are random and
   name nobody on their own; they are the join key above. Request bodies, query
   strings and push endpoints are not logged (invariants 6, 13 and 14).
 - **Unauthenticated surfaces.** `tabs`, `mood_events`, `POST /now-playing`,

@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
 
 		// Take ownership of OtelGuard for shutdown
 		if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {
-			if let Err(e) = guard.shutdown().await {
+			if let Err(e) = guard.shutdown() {
 				tracing::error!("Failed to shutdown OpenTelemetry: {}", e);
 			}
 			tracing::info!("OpenTelemetry shutdown");
