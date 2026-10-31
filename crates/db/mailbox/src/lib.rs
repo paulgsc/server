@@ -470,6 +470,30 @@ pub async fn pending_outgoing(conn: &mut SqliteConnection, subject: &str, limit:
 	Ok(pending)
 }
 
+/// When `subject`'s oldest file the mailbox has not answered was filed.
+///
+/// `None` when the mailbox has answered every one. The same read as
+/// [`pending_outgoing`], for its first row's `filed_at` only.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn oldest_unhanded(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, MailboxError> {
+	let oldest = sqlx::query_scalar!(
+		"SELECT filed_at FROM mailbox_outgoing AS filed
+		 WHERE subject_id = ?1
+		   AND NOT EXISTS (
+		     SELECT 1 FROM mailbox_handed AS handed
+		     WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		   )
+		 ORDER BY filed_at, rowid
+		 LIMIT 1",
+		subject
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(oldest)
+}
+
 /// Records the mailbox's `answer` to `subject`'s file (`folder`, `name`), as
 /// of `now`. Its caller holds the deletion hold, as for [`keep_item`].
 ///
@@ -976,6 +1000,7 @@ pub async fn jobs_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Op
 
 #[cfg(test)]
 mod tests {
+	use super::oldest_unhanded;
 	use super::{
 		archived_body, cursor, digests_after, file_leetype_log, file_outgoing, file_transcript, keep_archived, keep_item, leetype_files, leetype_log_name,
 		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
@@ -1298,6 +1323,29 @@ mod tests {
 			record_handed(&mut conn, "subject-gone", "decisions", "x", Answer::Refused, NOW).await.unwrap(),
 			Change::NoAccount
 		);
+	}
+
+	#[tokio::test]
+	async fn the_oldest_unhanded_file_is_the_oldest_the_mailbox_has_not_answered() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(oldest_unhanded(&mut conn, A).await.unwrap(), None, "nothing filed");
+		for (name, at) in [
+			("decisions-2026-10-21.json", "2026-10-21T08:00:00.000Z"),
+			("decisions-2026-10-22.json", "2026-10-22T08:00:00.000Z"),
+		] {
+			file_outgoing(&mut conn, A, "decisions", name, "sha", name.as_bytes(), at).await.unwrap();
+		}
+		assert_eq!(oldest_unhanded(&mut conn, A).await.unwrap().as_deref(), Some("2026-10-21T08:00:00.000Z"));
+		record_handed(&mut conn, A, "decisions", "decisions-2026-10-21.json", Answer::Refused, NOW).await.unwrap();
+		assert_eq!(
+			oldest_unhanded(&mut conn, A).await.unwrap().as_deref(),
+			Some("2026-10-22T08:00:00.000Z"),
+			"any answer is final"
+		);
+		record_handed(&mut conn, A, "decisions", "decisions-2026-10-22.json", Answer::Added, NOW).await.unwrap();
+		assert_eq!(oldest_unhanded(&mut conn, A).await.unwrap(), None, "every file answered");
+		assert_eq!(oldest_unhanded(&mut conn, B).await.unwrap(), None, "per subject");
 	}
 
 	/// A voice note `note` of `subject`'s, and one attempt by `model` to hear it.

@@ -138,6 +138,11 @@ pub struct Outcome {
 	pub restored: Vec<&'static str>,
 	/// The subject has no account: the pass stopped and wrote nothing more.
 	pub no_account: bool,
+	/// When the oldest ask this pass listed and left open was made (the
+	/// mailbox's `askedAt`), or `None` when it left none open. An ask closes
+	/// once its file is live again (`restored` or `unchanged`); one home
+	/// holds nothing for, or the mailbox turned down, stays open.
+	pub oldest_open_ask: Option<String>,
 }
 
 /// Why a pass ended early, and what it had done by then.
@@ -624,6 +629,7 @@ async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving
 			};
 			let Some(body) = body else {
 				outcome.restored.push("missing");
+				left_open(outcome, &ask.asked_at);
 				continue;
 			};
 			let answer = match archiving.mailbox.restore(folder, &ask.name, body).await {
@@ -633,10 +639,22 @@ async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving
 				Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName | MailboxError::NotFound) => "refused",
 				Err(err) => return Err(Failure::Mailbox(err)),
 			};
+			if !matches!(answer, "restored" | "unchanged") {
+				left_open(outcome, &ask.asked_at);
+			}
 			outcome.restored.push(answer);
 		}
 	}
 	Ok(())
+}
+
+/// Keeps `asked_at` as the oldest open ask if it is older than the one kept.
+/// The mailbox writes every `askedAt` as RFC 3339 UTC to the millisecond,
+/// so the text compares as the time does.
+fn left_open(outcome: &mut Outcome, asked_at: &str) {
+	if outcome.oldest_open_ask.as_deref().is_none_or(|oldest| asked_at < oldest) {
+		outcome.oldest_open_ask = Some(asked_at.to_owned());
+	}
 }
 
 /// Archives the files live in the mailbox for `archiving.after_days`, oldest
@@ -1710,7 +1728,19 @@ mod tests {
 		assert_eq!(vault.names(), std::slice::from_ref(&kept), "the same bytes are live again");
 		assert_eq!(vault.live.lock().unwrap()[0].3, body);
 		assert_eq!(vault.wanted.lock().unwrap().len(), 1, "the one home lacks stays asked");
+		assert_eq!(outcome.oldest_open_ask.as_deref(), Some("2026-10-23T14:00:00.000Z"), "and is the oldest open ask");
 		assert!(outcome.archived.is_empty(), "a file just put back is not old");
+		*vault.wanted.lock().unwrap() = vec![(String::from("brief"), kept.clone())];
+		assert_eq!(archive_pass(&pool, &vault).await.oldest_open_ask, None, "an ask whose file is live is closed");
+	}
+
+	#[test]
+	fn the_oldest_open_ask_is_the_earliest_asked_whatever_the_order_listed() {
+		let mut outcome = Outcome::default();
+		for asked_at in ["2026-10-23T14:00:00.000Z", "2026-10-22T09:30:00.000Z", "2026-10-23T08:00:00.000Z"] {
+			super::left_open(&mut outcome, asked_at);
+		}
+		assert_eq!(outcome.oldest_open_ask.as_deref(), Some("2026-10-22T09:30:00.000Z"));
 	}
 
 	#[tokio::test]

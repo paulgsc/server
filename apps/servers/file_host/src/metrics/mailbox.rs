@@ -8,8 +8,15 @@
 //! reason it did: one series at 1 per failure class, so a second failing
 //! phase is not hidden behind the first.
 //! Both are read by the MAILBOX dashboard (`infra/grafana/dashboards/mailbox.jsonnet`).
+//!
+//! `mailbox_oldest_unanswered_timestamp_seconds{kind}` says since when the
+//! oldest item still waiting on an answer has waited, as a time rather than
+//! an age, so Prometheus's `time()` ages it between passes: an alert reads
+//! the deadline to the second, not to the next pass (AS7, #525;
+//! `infra/prometheus/rules/home.yml`).
 
 use crate::mailbox::pass::Outcome;
+use chrono::DateTime;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Every value `mailbox_poll_failing`'s `error` label can take.
@@ -57,6 +64,12 @@ pub const ARCHIVE_ANSWERS: [&str; 8] = ["archived", "unchanged", "mismatch", "ba
 /// ask (`missing`).
 pub const RESTORE_ANSWERS: [&str; 5] = ["restored", "unchanged", "conflict", "refused", "missing"];
 
+/// Every value `mailbox_oldest_unanswered_timestamp_seconds`'s `kind` label.
+///
+/// An ask the routine made that home has left open (`ask`), and a file home
+/// filed for the mailbox that the mailbox has not answered (`filed`).
+pub const UNANSWERED: [&str; 2] = ["ask", "filed"];
+
 /// Whether this deployment runs the poller, and whether it archives: 1 or 0
 /// each, set once at boot on both branches of `main.rs`'s mailbox gate, so
 /// "switched off" and "task missing" read apart.
@@ -83,6 +96,20 @@ pub fn record_interval(interval: Duration) {
 	for answer in RESTORE_ANSWERS {
 		metrics::counter!("mailbox_poll_items_restored_total", "answer" => answer).increment(0);
 	}
+	for kind in UNANSWERED {
+		record_unanswered(kind, None);
+	}
+}
+
+/// Since when the oldest item of `kind` (one of [`UNANSWERED`]) has waited.
+///
+/// `since` is RFC 3339, or `None` when none waits, which reads 0. A time
+/// that does not read reads 1, so an item still waits loudly rather than
+/// reading as none.
+pub fn record_unanswered(kind: &'static str, since: Option<&str>) {
+	#[allow(clippy::cast_precision_loss)] // whole seconds since 1970 fit an f64's 53 bits
+	let seconds = since.map_or(0.0, |at| DateTime::parse_from_rfc3339(at).map_or(1.0, |at| at.timestamp() as f64));
+	metrics::gauge!("mailbox_oldest_unanswered_timestamp_seconds", "kind" => kind).set(seconds);
 }
 
 /// Mark the start of a pass.

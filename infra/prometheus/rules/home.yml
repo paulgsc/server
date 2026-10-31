@@ -47,6 +47,35 @@ groups:
           objective: MI3
           says: "The Jobs mailbox poller is on, but home reports no pass at all."
 
+      - alert: MailboxAskUnanswered
+        # MI8: an ask the routine made has waited 30 minutes for home to put
+        # its file back (the owner's deadline, #525). The gauge is the oldest
+        # open ask's `askedAt`, 0 when none is open, so `time()` ages it
+        # between passes. Home sees an ask on its next pass, 15 minutes at
+        # most at today's interval, and answers it then unless it holds
+        # nothing for it or the mailbox turns it down: either stays open, and
+        # this keeps firing until the routine's ask is closed. Only while
+        # file_host answers, as for MI3 and RR2: a series that went stale
+        # reads nothing, and FileHostDown reports the server instead.
+        expr: |
+          (time() - mailbox_oldest_unanswered_timestamp_seconds{kind="ask"} > 1800)
+          and mailbox_oldest_unanswered_timestamp_seconds{kind="ask"} > 0
+        labels:
+          objective: MI8
+          says: "The routine asked for an archived file more than 30 minutes ago, and home has not put it back."
+
+      - alert: MailboxFiledUnanswered
+        # MI8: a file home filed for the mailbox (a decision, scout, opened
+        # lesson, transcript or LeetType log) has waited 30 minutes for the
+        # mailbox's answer, the same deadline. Any answer is final, so this
+        # is a mailbox home cannot reach, or a backlog past what a pass hands.
+        expr: |
+          (time() - mailbox_oldest_unanswered_timestamp_seconds{kind="filed"} > 1800)
+          and mailbox_oldest_unanswered_timestamp_seconds{kind="filed"} > 0
+        labels:
+          objective: MI8
+          says: "Home filed a file for the mailbox more than 30 minutes ago, and the mailbox has not answered it."
+
       - alert: NudgeWakerStale
         # NW2: no pass started within the waker's interval, its pass deadline
         # and 60 s.

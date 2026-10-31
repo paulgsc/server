@@ -109,6 +109,57 @@ tests:
               objective: NW2
               says: "The study nudge waker is on, but home reports no pass at all."
 
+  - name: an ask left open 30 minutes is unanswered, and is quiet once it closes
+    # Asked at 6000 s and left open until the pass at 136 min closes it; no
+    # filed file waits (0).
+    interval: 1m
+    input_series:
+      - series: 'mailbox_oldest_unanswered_timestamp_seconds{job="file_host",kind="ask"}'
+        values: '6000x135 0x10'
+      - series: 'mailbox_oldest_unanswered_timestamp_seconds{job="file_host",kind="filed"}'
+        values: '0x145'
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: MailboxAskUnanswered
+        exp_alerts: []
+      - eval_time: 131m
+        alertname: MailboxAskUnanswered
+        exp_alerts:
+          - exp_labels:
+              job: file_host
+              kind: ask
+              objective: MI8
+              says: "The routine asked for an archived file more than 30 minutes ago, and home has not put it back."
+      - eval_time: 131m
+        alertname: MailboxFiledUnanswered
+        exp_alerts: []
+      - eval_time: 137m
+        alertname: MailboxAskUnanswered
+        exp_alerts: []
+
+  - name: a filed file the mailbox has not answered in 30 minutes is unanswered
+    interval: 1m
+    input_series:
+      - series: 'mailbox_oldest_unanswered_timestamp_seconds{job="file_host",kind="ask"}'
+        values: '0x140'
+      - series: 'mailbox_oldest_unanswered_timestamp_seconds{job="file_host",kind="filed"}'
+        values: '6000x140'
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: MailboxFiledUnanswered
+        exp_alerts: []
+      - eval_time: 131m
+        alertname: MailboxFiledUnanswered
+        exp_alerts:
+          - exp_labels:
+              job: file_host
+              kind: filed
+              objective: MI8
+              says: "Home filed a file for the mailbox more than 30 minutes ago, and the mailbox has not answered it."
+      - eval_time: 131m
+        alertname: MailboxAskUnanswered
+        exp_alerts: []
+
   - name: a nudge waker that stopped is stale past interval + deadline + 60 s
     interval: 1m
     input_series:

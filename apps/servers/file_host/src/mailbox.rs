@@ -51,6 +51,11 @@
 //! routine in `ROUTINE_SCHEDULE` was last due and when its newest run started,
 //! so an alert can tell a run that never came from a quiet morning.
 //!
+//! **Unanswered** (AS7, paulgsc/server#525). After each pass, home says since
+//! when the oldest ask it left open and the oldest file it filed that the
+//! mailbox has not answered have waited (`stamp_unanswered`), so an alert can
+//! tell either from a box that is merely busy.
+//!
 //! **The arrival notice** (`jobs_notice`). With `FCM_SERVICE_ACCOUNT_FILE`,
 //! each pass is followed by one of [`crate::jobs_notice::run_once`], which
 //! tells the phones that asked when a morning run's record has arrived.
@@ -243,6 +248,30 @@ pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>) {
 	}
 }
 
+/// Say since when the oldest ask and the oldest filed file have waited on an
+/// answer. The asks are what this pass listed and left open, so a pass whose
+/// asks failed leaves that gauge as it was; the filed files are read from
+/// home's own tables, whatever the pass did. A read that fails leaves its
+/// gauge as it was and says so in the log.
+async fn stamp_unanswered(db: &SqlitePool, subject: &str, result: &Result<pass::Outcome, pass::PassError>) {
+	let asks = match result {
+		Ok(outcome) => Some(outcome),
+		Err(err) if !err.failures.iter().any(|(phase, _)| *phase == pass::Phase::Asks) => Some(&err.outcome),
+		Err(_) => None,
+	};
+	if let Some(outcome) = asks {
+		crate::metrics::mailbox::record_unanswered("ask", outcome.oldest_open_ask.as_deref());
+	}
+	let filed = match db.acquire().await {
+		Ok(mut conn) => mailbox_repo::oldest_unhanded(&mut conn, subject).await.map_err(|err| err.to_string()),
+		Err(err) => Err(err.to_string()),
+	};
+	match filed {
+		Ok(since) => crate::metrics::mailbox::record_unanswered("filed", since.as_deref()),
+		Err(err) => error!(error = %err, "could not read the oldest file the mailbox has not answered"),
+	}
+}
+
 /// Spawn the poller, cancelled through the shared token. Its first pass runs
 /// at once, so a restart catches up without waiting an interval.
 fn spawn(state: &AppState, context: MailboxContext) {
@@ -323,6 +352,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext) {
 		return;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
+	stamp_unanswered(db, &subject, &result).await;
 	if let Some(sender) = context.notice.as_deref() {
 		match crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await {
 			Ok(outcome) if outcome.busy() => info!(
