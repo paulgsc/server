@@ -12,10 +12,15 @@
 //! and why; another body under an id home holds is a `409`. Both write
 //! nothing.
 //!
-//! **Nobody's record.** The handlers take a [`Paired`] phone, for who may
-//! ask, and store nothing about it: a round and its runs are not
-//! subject-scoped (docs/identity.md, "What is still exposed"). Neither a
-//! round nor a program reaches a log line: the spans skip every argument.
+//! **A round is its putter's; the code is nobody's** (docs/identity.md
+//! invariant 27). Every handler takes a [`Paired`] phone, and reads and
+//! writes rounds only under its subject: another subject's round under the
+//! same id is a `404` to read and a round of its own to put. A round's runs
+//! are found by its programs' bytes, so two subjects whose rounds share a
+//! program share its run, which holds only what rustc printed. The
+//! [`Paired`] extractor holds off account deletion while a handler runs, as
+//! every subject-scoped write does (invariant 9). Neither a round nor a
+//! program reaches a log line: the spans skip every argument.
 
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
 use crate::subject::Paired;
@@ -40,7 +45,7 @@ use tracing::instrument;
 /// `GET /rust-rounds`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoundList {
-	/// The newest rounds home holds, newest first, at most
+	/// The caller's newest rounds, newest first, at most
 	/// [`LIST_LIMIT`].
 	pub rounds: Vec<RoundEntry>,
 }
@@ -112,9 +117,9 @@ fn unreadable() -> FileHostError {
 /// 401 without a session, 403 for a browser's, 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_rounds", skip_all, fields(otel.kind = "server"))]
-pub async fn list_rounds(_paired: Paired, State(db): State<SqlitePool>) -> Result<Json<RoundList>, FileHostError> {
+pub async fn list_rounds(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<RoundList>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let rounds = rust_round_repo::rounds(&mut conn, LIST_LIMIT).await?;
+	let rounds = rust_round_repo::rounds(&mut conn, paired.subject.as_str(), LIST_LIMIT).await?;
 	Ok(Json(RoundList { rounds }))
 }
 
@@ -123,13 +128,14 @@ pub async fn list_rounds(_paired: Paired, State(db): State<SqlitePool>) -> Resul
 /// changes when a run is kept; `If-None-Match` answers `304`.
 ///
 /// # Errors
-/// 401 without a session, 403 for a browser's, 404 for an id home does not
-/// hold, 500 for a storage failure.
+/// 401 without a session, 403 for a browser's, 404 for an id the caller's
+/// subject does not hold (another subject's included), 500 for a storage
+/// failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_round", skip_all, fields(otel.kind = "server"))]
-pub async fn get_round(_paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
+pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let stored = rust_round_repo::round(&mut conn, &id).await?.ok_or(FileHostError::NotFound)?;
+	let stored = rust_round_repo::round(&mut conn, paired.subject.as_str(), &id).await?.ok_or(FileHostError::NotFound)?;
 	let read = rust_round_repo::round::read(stored.text.as_bytes()).map_err(|_| unreadable())?;
 	let mut programs = Vec::with_capacity(read.programs.len());
 	for program in read.programs {
@@ -181,19 +187,21 @@ pub async fn get_round(_paired: Paired, State(db): State<SqlitePool>, headers: H
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 422 naming each refused field (`body`, `schema`, `id`, `cards`, a card's
 /// field, and `id` when the path's id is not the round's), 409 for another
-/// body under an id home holds, 500 for a storage failure.
+/// body under an id the caller's subject holds, 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_round_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_round(_paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+pub async fn put_round(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
 	let round = rust_round_repo::round::read(&body).map_err(FileHostError::unprocessable_entity)?;
 	if round.id != id {
 		return Err(FileHostError::unprocessable_entity([("id", "must be the id in the path")]));
 	}
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let change = rust_round_repo::put_round(&mut tx, &round, &now()).await.map_err(|err| match err {
-		RoundError::Rewritten => FileHostError::Conflict(REWRITTEN),
-		RoundError::Storage(err) => FileHostError::Sqlite(err),
-	})?;
+	let change = rust_round_repo::put_round(&mut tx, paired.subject.as_str(), &round, &now())
+		.await
+		.map_err(|err| match err {
+			RoundError::Rewritten => FileHostError::Conflict(REWRITTEN),
+			RoundError::Storage(err) => FileHostError::Sqlite(err),
+		})?;
 	tx.commit().await?;
 	let (status, change) = match change {
 		Change::Added => (StatusCode::CREATED, "added"),
@@ -234,6 +242,7 @@ mod tests {
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const A: &str = "subject-a";
+	const B: &str = "subject-b";
 	const ROUND: &str = "/rust-rounds/indexing-01";
 
 	#[derive(Clone)]
@@ -267,16 +276,16 @@ mod tests {
 		}
 	}
 
-	async fn session(state: &TestState, carrier: Carrier) -> (HeaderName, String) {
+	async fn session(state: &TestState, subject: &str, carrier: Carrier) -> (HeaderName, String) {
 		sqlx::query("INSERT OR IGNORE INTO account (subject_id, user_handle) VALUES (?1, ?2)")
-			.bind(A)
-			.bind(A.as_bytes())
+			.bind(subject)
+			.bind(subject.as_bytes())
 			.execute(&state.pool)
 			.await
 			.unwrap();
 		let token = SessionToken::mint();
 		let now = now();
-		assert!(state.auth.repository().create_session(&token.hash(carrier), A, now + 3_600, now).await.unwrap());
+		assert!(state.auth.repository().create_session(&token.hash(carrier), subject, now + 3_600, now).await.unwrap());
 		match carrier {
 			Carrier::Bearer => (AUTHORIZATION, String::from("Bearer ") + &token.encoded()),
 			Carrier::Cookie => (COOKIE, token.set_cookie(3_600).to_str().unwrap().split(';').next().unwrap().to_owned()),
@@ -327,7 +336,7 @@ mod tests {
 	#[tokio::test]
 	async fn every_route_answers_a_paired_phone_only() {
 		let state = state().await;
-		let browser = session(&state, Carrier::Cookie).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
 		let app = module().into_table_router().with_state(state);
 		assert_eq!(module().descriptors().count(), 3);
 		let body = round("indexing-01", "fn main() {}\n");
@@ -347,7 +356,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_put_answers_new_identical_rewritten_and_refused() {
 		let state = state().await;
-		let phone = session(&state, Carrier::Bearer).await;
+		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = module().into_table_router().with_state(state);
 		let first = round("indexing-01", "fn main() {}\n");
 
@@ -429,7 +438,7 @@ mod tests {
 	async fn a_round_reads_back_with_its_runs_under_an_etag() {
 		let state = state().await;
 		let pool = state.pool.clone();
-		let phone = session(&state, Carrier::Bearer).await;
+		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = module().into_table_router().with_state(state);
 		let body = round("indexing-01", "fn main() {}\n");
 		call(&app, Method::PUT, ROUND, Some(&phone), None, &body).await;
@@ -457,5 +466,46 @@ mod tests {
 		assert_eq!(run["ended"], "recorded");
 		assert_eq!(run["rustc"], json!({ "outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "ok\n" }));
 		assert_eq!(call(&app, Method::GET, "/rust-rounds/nope", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
+	}
+
+	/// A round is its putter's: another subject lists none of it, reads its
+	/// id as a `404`, and puts its own round under the same id; deleting an
+	/// account takes its rounds and leaves the other's, with the run they
+	/// share.
+	#[tokio::test]
+	async fn each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let auth = state.auth.clone();
+		let mine = session(&state, A, Carrier::Bearer).await;
+		let theirs = session(&state, B, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		let my_round = round("indexing-01", "fn main() {}\n");
+		let their_round = round("indexing-01", "fn main() { let _ = 1; }\n");
+
+		assert_eq!(call(&app, Method::PUT, ROUND, Some(&mine), None, &my_round).await.0, StatusCode::CREATED);
+		let (_, _, listed) = call(&app, Method::GET, "/rust-rounds", Some(&theirs), None, b"").await;
+		assert_eq!(listed["rounds"], json!([]), "another subject lists none of it");
+		let (status, _, _) = call(&app, Method::GET, ROUND, Some(&theirs), None, b"").await;
+		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's id is not there");
+		let (status, _, put) = call(&app, Method::PUT, ROUND, Some(&theirs), None, &their_round).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::CREATED, Some("added")), "its own round, not a 409");
+		let (_, _, got) = call(&app, Method::GET, ROUND, Some(&theirs), None, b"").await;
+		assert_eq!(got["round"], serde_json::from_slice::<Value>(&their_round).unwrap());
+		let (_, _, got) = call(&app, Method::GET, ROUND, Some(&mine), None, b"").await;
+		assert_eq!(got["round"], serde_json::from_slice::<Value>(&my_round).unwrap());
+
+		let done = crate::rust_rounds::pass::run_once(&pool, &Arc::new(Prints), Duration::from_secs(60), &CancellationToken::new(), &|| String::from("now"))
+			.await
+			.unwrap();
+		assert_eq!(done.recorded, 3, "card b's program is one program for both");
+
+		crate::handlers::auth::delete_subject(&auth, A).await.unwrap();
+		let rounds: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM rust_round").fetch_all(&pool).await.unwrap();
+		assert_eq!(rounds, [B], "the account took its rounds, and only its own");
+		let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_round_run").fetch_one(&pool).await.unwrap();
+		assert_eq!(runs, 3, "the runs, which are nobody's, stay");
+		let (_, _, got) = call(&app, Method::GET, ROUND, Some(&theirs), None, b"").await;
+		assert_eq!(got["programs"][1]["runs"][0]["ended"], "recorded", "the shared run still reads for the other subject");
 	}
 }

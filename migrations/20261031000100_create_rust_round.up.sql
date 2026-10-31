@@ -6,21 +6,30 @@
 -- background pass in `rust_rounds` (EX1, RX1-RX4 and RP1-RP4 in
 -- apps/servers/file_host/docs/leetype-execution.md).
 --
--- None of these tables names a subject: a round is a tutor's cards and code,
--- and a run is what rustc did with a program (docs/identity.md, and
--- `privacy.rs`'s NOT_SUBJECT_SCOPED, says why, and what a round can still
--- say about the owner).
+-- A round belongs to the person who put it (paulgsc/some-ui#2234, the
+-- decision of 2026-10-31): a refine card names one of their voice notes and
+-- carries the tutor's nudge, which can paraphrase what they said. So
+-- `rust_round` is subject-scoped, read only by its subject, and leaves with
+-- the account (docs/identity.md invariant 27). The code it runs belongs to
+-- nobody: `rust_round_source`, `rust_round_run` and `rust_round_drop` hold a
+-- program's bytes and what rustc did with it, name no subject, and are shared
+-- by every round that holds the same program, as LeetType's runs are (EX2).
 --
--- ALL FOUR ARE APPEND-ONLY. No row is ever updated or deleted (the triggers
--- below abort both). A round's id is never reused (the format's own rule),
--- so another body under a held id is refused (`409`), never stored as a
--- revision and never written over: the record keeps the round the phone
--- played.
+-- ALL FOUR ARE APPEND-ONLY. No row is ever updated (the triggers below
+-- abort it). A program, a run and a drop are never deleted either; a round
+-- is deleted only with its account: the trigger on `account` deletes them,
+-- and a delete while the account stands is aborted. A round's id is never
+-- reused (the format's own rule), so another body under an id its subject
+-- holds is refused (`409`), never stored as a revision and never written
+-- over: the record keeps the round the phone played. Ids are unique per
+-- subject: another subject's round under the same id is its own round.
 --
 -- `rust_round`, one row per round:
 --
 --   seq          -- the order home received rounds in.
---   id           -- the round's own id (`indexing-01`), unique for good.
+--   subject_id   -- who put it.
+--   id           -- the round's own id (`indexing-01`), unique for good
+--                   within its subject.
 --   body         -- the round's JSON, byte for byte as the phone sent it
 --                   (JSON whitespace around it trimmed). Read, never
 --                   re-serialised.
@@ -29,11 +38,16 @@
 --   received_at  -- ISO-8601 UTC, when it reached home.
 CREATE TABLE rust_round (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    id           TEXT    NOT NULL UNIQUE,
+    subject_id   TEXT    NOT NULL,
+    id           TEXT    NOT NULL,
     body         TEXT    NOT NULL,
     content_hash TEXT    NOT NULL,
-    received_at  TEXT    NOT NULL
+    received_at  TEXT    NOT NULL,
+    UNIQUE (subject_id, id)
 );
+
+-- A subject's rounds, newest first.
+CREATE INDEX rust_round_by_subject ON rust_round (subject_id, seq);
 
 -- `rust_round_source`, one row per distinct program any round holds: a read
 -- card's program, or a variant card's (the program of `of` with its hunk's
@@ -106,10 +120,23 @@ BEGIN
     SELECT RAISE(ABORT, 'rust_round is append-only: a round is never rewritten');
 END;
 
+-- A round goes only with its account: while the subject's account stands,
+-- a delete is aborted. The trigger below runs after the account row is
+-- gone, and so does the sweep of `SUBJECT_SCOPED_TABLES`, which deletes
+-- `account` first.
 CREATE TRIGGER rust_round_is_kept
 BEFORE DELETE ON rust_round
+WHEN EXISTS (SELECT 1 FROM account WHERE subject_id = OLD.subject_id)
 BEGIN
-    SELECT RAISE(ABORT, 'rust_round is append-only: a round is kept for good');
+    SELECT RAISE(ABORT, 'rust_round is append-only: a round goes only with its account');
+END;
+
+-- Account deletion on every binary that can run against this schema
+-- (docs/identity.md invariant 12).
+CREATE TRIGGER rust_round_leaves_with_account
+AFTER DELETE ON account
+BEGIN
+    DELETE FROM rust_round WHERE subject_id = OLD.subject_id;
 END;
 
 CREATE TRIGGER rust_round_source_is_append_only

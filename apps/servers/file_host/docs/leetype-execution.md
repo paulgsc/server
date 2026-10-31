@@ -317,11 +317,11 @@ but the `rust-runner` container.
 **Recording on arrival** (RR3's second slice; "Rust Rounds: recording on
 arrival", below): the phone puts a round, home keeps it as an append-only
 row and queues each distinct program, and a background pass in file_host
-hands each to the runner over its socket and keeps how it ended. Not yet
-done: the runner in `docker-compose.yml`'s stack, with its socket's volume
-mounted into file-host and an inventory entry, and the round, run and task
-placements in some-ui's assurance ledger. Until the stack carries the
-runner, `RUST_ROUNDS_ENABLED` stays off and file_host asks it nothing.
+hands each to the runner over its socket and keeps how it ended. The runner
+is in `docker-compose.yml`'s stack, its socket's volume mounted read-only
+into file-host (`infra/compose/file_host.yml`); `RUST_ROUNDS_ENABLED` stays
+off until home turns it on, and until then file_host asks it nothing. Not
+yet done: the rounds, runs and task placed in some-ui's assurance ledger.
 
 ### Why a socket and no network, not "an internal network"
 
@@ -470,16 +470,18 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
 
 | Piece | What it is |
 | --- | --- |
-| `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under the id, `422` naming each field. |
-| `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The newest rounds; one round, byte for byte, with each read and variant card's program and every run kept for it (`ended`, and `rustc`, some-ui's `RustcRunSchema`). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. |
-| `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain; and each time the runner went away holding a program. All four append-only, no row updated or deleted. No subject: docs/identity.md says why, and what a round can still say. |
+| `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under an id the subject holds, `422` naming each field. |
+| `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The caller's subject's newest rounds; one of its rounds, byte for byte, with each read and variant card's program and every run kept for it (`ended`, and `rustc`, some-ui's `RustcRunSchema`). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. Another subject's id is a `404`. |
+| `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain; and each time the runner went away holding a program. None is ever updated. `rust_round` is subject-scoped, read only by its subject and deleted only with its account; the other three name no subject, are never deleted, and are shared by every round holding the program (docs/identity.md invariant 27). |
 | `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `RUST_ROUNDS_SECONDS`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
 
 **A round's id is never reused, so another body under it is refused.** The
 format says ids are "unique across rounds, never reused", so a second body
 under a held id is a tutor's mistake, not a new version: home answers `409`
 and keeps the first. Never a revision and never an overwrite, so what the
-phone played is what home keeps.
+phone played is what home keeps. Ids are unique per subject, since a round
+is its putter's: another subject's round under the same id is its own
+round, and neither can see the other's.
 
 **The pass's invariants.** Declared per this repo's `CLAUDE.md` ("Drift is
 loud, not silent"), in the shape of EX1, EX2 and RX1–RX4; they are the

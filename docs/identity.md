@@ -171,6 +171,7 @@ above the button that deletes (invariant 22):
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
 | Korean's word sets and reading records | `korean_entry` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
+| Rust Rounds' rounds | `rust_round` |
 | What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -990,6 +991,35 @@ nowhere is marked as such and belongs to review.
     `git grep -n -e studio_sitting_event -e studio_friction -- '*.rs'` shows
     today.
 
+27. **A Rust Rounds round is its putter's; the code it runs and what rustc
+    printed are nobody's.** `rust_round` keeps each round a paired phone puts
+    (`PUT /rust-rounds/:id`, paulgsc/some-ui#2234, RR3) under that phone's
+    subject: the tutor's JSON byte for byte, its hash and when it reached
+    home. A round is more than code: a refine card names one of the owner's
+    voice notes by its id and carries the tutor's nudge, which can paraphrase
+    what the owner said (decided 2026-10-31 on #2234). It is listed and read
+    only by its own subject (`GET /rust-rounds` and `GET /rust-rounds/:id`;
+    another subject's id is a `404`), ids are unique per subject, and it is
+    never updated (a trigger aborts an `UPDATE`) or replaced (another body
+    under a held id is a `409`). It is deleted only with the account: a
+    trigger aborts a `DELETE` while the subject's account stands, and the
+    migration's trigger on `account`, then the sweep, delete it (invariant
+    12). `rust_round_source`, `rust_round_run` and `rust_round_drop` hold a
+    program's bytes, what rustc did with it under a toolchain, and when the
+    runner went away holding it: no subject, nothing about a person, never
+    updated or deleted, and shared by every round that holds the same
+    program, as LeetType's runs are (EX2). So a round's `GET` returns the
+    runs of its programs by their bytes, and two subjects whose rounds share
+    a program read the same run, which carries only that code's own output.
+    *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
+    `an_account_takes_its_rounds_and_leaves_the_runs` and
+    `every_table_refuses_an_update_and_a_delete`, `handlers::rust_rounds`'s
+    `each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own`, and
+    the account-deletion and trigger tests above (invariants 12 and 22).
+    *Not enforced:* that every read of `rust_round` filters on its subject,
+    which the repository's three readers do today
+    (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`).
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -1078,17 +1108,13 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   they put the phone down, each to the millisecond; the friction reports say
   how each sitting went, on which shot, and why, in a cause the owner may
   have typed. Deleting the account removes both; nothing else does.
-- **Rust Rounds' rounds.** `rust_round`, `rust_round_source`,
-  `rust_round_run` and `rust_round_drop` name no subject and are classified
-  not subject-scoped (`privacy.rs`): a round is a tutor's cards and toy
-  programs, and a run is what rustc did with a program, keyed to its bytes
-  and toolchain. Code is not personal. A round is not only code, though: a
-  refine card names one of the owner's voice notes by its id and carries the
-  tutor's nudge, which may paraphrase what the owner said in it, and the
-  round says when it reached home. Every round is readable by any paired
-  phone (`GET /rust-rounds*`, not by subject), is kept for good, and is not
-  reached by deleting an account. Whether rounds should be subject-scoped
-  instead waits on the owner (paulgsc/some-ui#2234).
+- **Rust Rounds' programs and runs.** A round goes with its account
+  (invariant 27), but the programs it held (`rust_round_source`), what rustc
+  did with each (`rust_round_run`) and when the runner went away holding one
+  (`rust_round_drop`) stay: they are a tutor's code and its output, kept by
+  their bytes for every round that holds them, and name no one. A program
+  can still say what a tutor thought the owner should work on; nothing
+  links it to a subject once the rounds that held it are gone.
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
   record home (invariant 17): one row per change, as many as its person

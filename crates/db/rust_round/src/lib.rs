@@ -3,12 +3,18 @@
 //! ended. `migrations/20261031000100_create_rust_round.up.sql` records the
 //! design; in short:
 //!
-//! - **Append-only, and kept for good.** [`put_round`] stores a round under
-//!   its id, or nothing when that id already holds the same bytes; another
-//!   body under a held id is refused ([`RoundError::Rewritten`]), never
-//!   stored as a revision and never written over, since a round's id is
-//!   never reused. No row of any table here is updated or deleted (the
-//!   migration's triggers abort both).
+//! - **A round is its putter's** (docs/identity.md invariant 27).
+//!   `rust_round` names the subject that put each round, and every read and
+//!   write of it takes that subject and filters on it: another subject's
+//!   round is not there. Ids are unique per subject.
+//! - **Append-only, and kept until the account goes.** [`put_round`] stores
+//!   a round under its subject and id, or nothing when that id already holds
+//!   the same bytes; another body under a held id is refused
+//!   ([`RoundError::Rewritten`]), never stored as a revision and never
+//!   written over, since a round's id is never reused. No row of any table
+//!   here is updated (the migration's triggers abort it). A round is deleted
+//!   only with its account (a delete while the account stands is aborted);
+//!   nothing else here is ever deleted.
 //! - **Checked for what home needs, not more** ([`round::read`]): its size,
 //!   its tag, its id, and every program to run.
 //! - **One row per distinct program** (`rust_round_source`), stored with the
@@ -25,8 +31,10 @@
 //!   which [`waiting`] reads with two indexed reads, however many programs
 //!   are already recorded (RP2 in
 //!   `apps/servers/file_host/docs/leetype-execution.md`).
-//! - **Nobody's record.** Nothing here names a subject (docs/identity.md,
-//!   `privacy.rs`'s `NOT_SUBJECT_SCOPED`).
+//! - **The code is nobody's.** `rust_round_source`, `rust_round_run` and
+//!   `rust_round_drop` hold a program's bytes and what rustc did with it, no
+//!   subject (`privacy.rs`'s `NOT_SUBJECT_SCOPED`), and are shared by every
+//!   round that holds the same program, whoever put it.
 
 pub mod round;
 
@@ -149,16 +157,17 @@ pub enum Kept {
 	OutOfOrder,
 }
 
-/// Store `round`, received `now`, and each of its programs home does not
-/// hold yet. Run it in a `BEGIN IMMEDIATE` transaction, so the read that
+/// Store `round` for `subject`, received `now`, and each of its programs
+/// home does not hold yet. Run it in a `BEGIN IMMEDIATE` transaction, so the read that
 /// decides and the writes see one snapshot.
 ///
 /// # Errors
-/// [`RoundError::Rewritten`] for another body under a held id, with nothing
+/// [`RoundError::Rewritten`] for another body under an id `subject` holds,
+/// with nothing
 /// written; [`RoundError::Storage`] for any `sqlx` failure.
-pub async fn put_round(conn: &mut SqliteConnection, round: &Round, now: &str) -> Result<Change, RoundError> {
+pub async fn put_round(conn: &mut SqliteConnection, subject: &str, round: &Round, now: &str) -> Result<Change, RoundError> {
 	let hash = content_hash(round.text.as_bytes());
-	let held = sqlx::query_scalar!("SELECT content_hash FROM rust_round WHERE id = ?1", round.id)
+	let held = sqlx::query_scalar!("SELECT content_hash FROM rust_round WHERE subject_id = ?1 AND id = ?2", subject, round.id)
 		.fetch_optional(&mut *conn)
 		.await?;
 	match held {
@@ -167,7 +176,8 @@ pub async fn put_round(conn: &mut SqliteConnection, round: &Round, now: &str) ->
 		None => {}
 	}
 	sqlx::query!(
-		"INSERT INTO rust_round (id, body, content_hash, received_at) VALUES (?1, ?2, ?3, ?4)",
+		"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+		subject,
 		round.id,
 		round.text,
 		hash,
@@ -189,24 +199,35 @@ pub async fn put_round(conn: &mut SqliteConnection, round: &Round, now: &str) ->
 	Ok(Change::Added)
 }
 
-/// The newest `limit` rounds, newest first.
+/// `subject`'s newest `limit` rounds, newest first.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn rounds(conn: &mut SqliteConnection, limit: i64) -> Result<Vec<RoundEntry>, sqlx::Error> {
-	sqlx::query_as!(RoundEntry, "SELECT id, content_hash, received_at FROM rust_round ORDER BY seq DESC LIMIT ?1", limit)
-		.fetch_all(&mut *conn)
-		.await
+pub async fn rounds(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<RoundEntry>, sqlx::Error> {
+	sqlx::query_as!(
+		RoundEntry,
+		"SELECT id, content_hash, received_at FROM rust_round WHERE subject_id = ?1 ORDER BY seq DESC LIMIT ?2",
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await
 }
 
-/// The round stored under `id`, if any.
+/// The round `subject` stored under `id`, if any. Another subject's round
+/// under the same id is not there.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn round(conn: &mut SqliteConnection, id: &str) -> Result<Option<StoredRound>, sqlx::Error> {
-	sqlx::query_as!(StoredRound, r#"SELECT id, body AS "text", content_hash, received_at FROM rust_round WHERE id = ?1"#, id)
-		.fetch_optional(&mut *conn)
-		.await
+pub async fn round(conn: &mut SqliteConnection, subject: &str, id: &str) -> Result<Option<StoredRound>, sqlx::Error> {
+	sqlx::query_as!(
+		StoredRound,
+		r#"SELECT id, body AS "text", content_hash, received_at FROM rust_round WHERE subject_id = ?1 AND id = ?2"#,
+		subject,
+		id
+	)
+	.fetch_optional(&mut *conn)
+	.await
 }
 
 /// Every run kept for the program whose bytes hash to `source_hash`, under
@@ -330,6 +351,8 @@ mod tests {
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const T: &str = "rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0";
+	const A: &str = "subject-a";
+	const B: &str = "subject-b";
 
 	async fn pool() -> SqlitePool {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
@@ -346,9 +369,15 @@ mod tests {
 		json!({ "schema": "some-ui.rust-round/1", "id": id, "cards": cards }).to_string().into_bytes()
 	}
 
-	async fn put(pool: &SqlitePool, body: &[u8]) -> Result<Change, RoundError> {
+	/// Put `body` for `subject`, whose account stands.
+	async fn put(pool: &SqlitePool, subject: &str, body: &[u8]) -> Result<Change, RoundError> {
 		let mut tx = pool.begin().await.unwrap();
-		let change = put_round(&mut tx, &read(body).unwrap(), "2026-10-31T00:00:00.000Z").await;
+		sqlx::query("INSERT OR IGNORE INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+			.bind(subject)
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		let change = put_round(&mut tx, subject, &read(body).unwrap(), "2026-10-31T00:00:00.000Z").await;
 		tx.commit().await.unwrap();
 		change
 	}
@@ -366,29 +395,31 @@ mod tests {
 	async fn a_round_is_stored_once_and_never_replaced() {
 		let pool = pool().await;
 		let first = body("r-01", &["fn main() {}\n"]);
-		assert_eq!(put(&pool, &first).await.unwrap(), Change::Added);
-		assert_eq!(put(&pool, &first).await.unwrap(), Change::Unchanged);
-		assert!(matches!(put(&pool, &body("r-01", &["fn main() { }\n"])).await, Err(RoundError::Rewritten)));
+		assert_eq!(put(&pool, A, &first).await.unwrap(), Change::Added);
+		assert_eq!(put(&pool, A, &first).await.unwrap(), Change::Unchanged);
+		assert!(matches!(put(&pool, A, &body("r-01", &["fn main() { }\n"])).await, Err(RoundError::Rewritten)));
 		let mut conn = pool.acquire().await.unwrap();
-		let stored = round(&mut conn, "r-01").await.unwrap().unwrap();
+		let stored = round(&mut conn, A, "r-01").await.unwrap().unwrap();
 		assert_eq!(stored.text.as_bytes(), first.as_slice());
 		assert_eq!(stored.content_hash, content_hash(&first));
-		assert_eq!(rounds(&mut conn, 10).await.unwrap().len(), 1);
+		assert_eq!(rounds(&mut conn, A, 10).await.unwrap().len(), 1);
 		let sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_round_source").fetch_one(&mut *conn).await.unwrap();
 		assert_eq!(sources, 1, "the refused round's program was not queued");
 	}
 
-	/// No row of any table is ever updated or deleted.
+	/// No row of any table is ever updated, and none deleted while its
+	/// account stands (a program, a run and a drop never are).
 	#[tokio::test]
 	async fn every_table_refuses_an_update_and_a_delete() {
 		let pool = pool().await;
-		put(&pool, &body("r-01", &["fn main() {}\n"])).await.unwrap();
+		put(&pool, A, &body("r-01", &["fn main() {}\n"])).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		keep_drop(&mut conn, T, 1, "now").await.unwrap();
 		keep_run(&mut conn, T, 1, "k", &recorded(1), "now").await.unwrap();
 		for statement in [
 			"UPDATE rust_round SET body = '{}'",
 			"DELETE FROM rust_round",
+			"DELETE FROM rust_round WHERE subject_id = 'subject-a'",
 			"UPDATE rust_round_source SET source = 'x'",
 			"DELETE FROM rust_round_source",
 			"UPDATE rust_round_run SET rustc = 'x'",
@@ -406,8 +437,8 @@ mod tests {
 	#[tokio::test]
 	async fn programs_wait_in_arrival_order_until_recorded_under_the_toolchain() {
 		let pool = pool().await;
-		put(&pool, &body("r-01", &["one", "two"])).await.unwrap();
-		put(&pool, &body("r-02", &["two", "three"])).await.unwrap();
+		put(&pool, A, &body("r-01", &["one", "two"])).await.unwrap();
+		put(&pool, A, &body("r-02", &["two", "three"])).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		let sources = |waiting: Vec<super::Waiting>| waiting.into_iter().map(|each| each.source).collect::<Vec<_>>();
 		assert_eq!(sources(waiting(&mut conn, T, 10).await.unwrap()), ["one", "two", "three"]);
@@ -453,5 +484,51 @@ mod tests {
 		assert!(!plan.contains("SCAN"), "{plan}");
 		assert!(plan.contains("SEARCH rust_round_source USING INTEGER PRIMARY KEY"), "{plan}");
 		assert!(plan.contains("SEARCH rust_round_run USING"), "{plan}");
+	}
+
+	/// A round is its putter's: the same id under another subject is that
+	/// subject's own round, each reads only its own, and a program both hold
+	/// is one program, recorded once.
+	#[tokio::test]
+	async fn each_subject_reads_only_its_own_rounds() {
+		let pool = pool().await;
+		let mine = body("r-01", &["shared", "mine"]);
+		let theirs = body("r-01", &["shared", "theirs"]);
+		assert_eq!(put(&pool, A, &mine).await.unwrap(), Change::Added);
+		assert_eq!(put(&pool, B, &theirs).await.unwrap(), Change::Added, "ids are unique per subject");
+		assert_eq!(put(&pool, B, &theirs).await.unwrap(), Change::Unchanged);
+		assert!(matches!(put(&pool, B, &mine).await, Err(RoundError::Rewritten)));
+
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(round(&mut conn, A, "r-01").await.unwrap().unwrap().text.as_bytes(), mine.as_slice());
+		assert_eq!(round(&mut conn, B, "r-01").await.unwrap().unwrap().text.as_bytes(), theirs.as_slice());
+		assert!(round(&mut conn, "subject-c", "r-01").await.unwrap().is_none());
+		assert_eq!(rounds(&mut conn, A, 10).await.unwrap()[0].content_hash, content_hash(&mine));
+		assert_eq!(rounds(&mut conn, B, 10).await.unwrap()[0].content_hash, content_hash(&theirs));
+		assert!(rounds(&mut conn, "subject-c", 10).await.unwrap().is_empty());
+		let sources: Vec<String> = sqlx::query_scalar("SELECT source FROM rust_round_source ORDER BY seq").fetch_all(&mut *conn).await.unwrap();
+		assert_eq!(sources, ["shared", "mine", "theirs"]);
+	}
+
+	/// Deleting an account takes its rounds, and nothing of anyone else's;
+	/// the programs and their runs, which are nobody's, stay.
+	#[tokio::test]
+	async fn an_account_takes_its_rounds_and_leaves_the_runs() {
+		let pool = pool().await;
+		put(&pool, A, &body("r-01", &["shared"])).await.unwrap();
+		put(&pool, B, &body("r-01", &["shared"])).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		keep_run(&mut conn, T, 1, "k", &recorded(1), "now").await.unwrap();
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
+		assert!(round(&mut conn, A, "r-01").await.unwrap().is_none());
+		assert!(round(&mut conn, B, "r-01").await.unwrap().is_some());
+		assert_eq!(runs(&mut conn, &content_hash(b"shared")).await.unwrap().len(), 1, "the run stays");
+
+		// The sweep of the subject-scoped tables, after the account is gone,
+		// finds nothing left and is not refused.
+		sqlx::query("DELETE FROM rust_round WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
+		let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_round").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(left, 1);
 	}
 }

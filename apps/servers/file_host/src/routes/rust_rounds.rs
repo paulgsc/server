@@ -3,7 +3,7 @@
 //! RR3).
 //!
 //! ```text
-//! GET /rust-rounds       → { rounds: [{ id, contentHash, receivedAt }] }, newest first
+//! GET /rust-rounds       → { rounds: [{ id, contentHash, receivedAt }] }: the caller's, newest first
 //! GET /rust-rounds/:id   → { id, contentHash, receivedAt, round, programs: [{ card, sourceHash,
 //!                            runs: [{ toolchain, ended, rustc: RustcRun, recordedAt }] }] },
 //!                          with an ETag, `304` on `If-None-Match`, or a JSON 404
@@ -14,12 +14,14 @@
 //! **Trust model:** a paired phone's routes. Every handler takes a
 //! `Paired`, so a request without a session is `401`, a write from an
 //! untrusted origin `403`, and a browser's cookie session `403` too. A round
-//! is no subject's: any paired phone reads every round (docs/identity.md,
-//! "What is still exposed").
+//! is its putter's: each route reads and writes only the caller's subject's
+//! rounds, and another subject's id is a `404` (docs/identity.md invariant
+//! 27). The runs are its programs', by their bytes, and nobody's.
 //!
-//! **Append-only, and kept for good.** A `PUT` adds a round or changes
-//! nothing; a round's id is never reused, so another body under it is a
-//! `409`, never a revision; there is no `DELETE`. **Nothing here compiles or
+//! **Append-only, and kept until the account goes.** A `PUT` adds a round or
+//! changes nothing; a round's id is never reused, so another body under an id
+//! the subject holds is a `409`, never a revision; there is no `DELETE`, and
+//! a round goes only with its account. **Nothing here compiles or
 //! runs a program** (EX1): a `PUT` queues the round's programs and answers,
 //! and `rust_rounds`' background pass asks the runner. See
 //! `handlers::rust_rounds` and `rust_round_repo`.

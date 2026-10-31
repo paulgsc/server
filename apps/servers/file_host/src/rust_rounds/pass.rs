@@ -368,7 +368,7 @@ mod tests {
 			.collect();
 		let body = json!({ "schema": "some-ui.rust-round/1", "id": id, "cards": cards }).to_string();
 		let mut tx = pool.begin().await.unwrap();
-		rust_round_repo::put_round(&mut tx, &read(body.as_bytes()).unwrap(), "2026-10-31T00:00:00.000Z")
+		rust_round_repo::put_round(&mut tx, "subject-a", &read(body.as_bytes()).unwrap(), "2026-10-31T00:00:00.000Z")
 			.await
 			.unwrap();
 		tx.commit().await.unwrap();
