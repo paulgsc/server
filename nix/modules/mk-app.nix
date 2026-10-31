@@ -28,12 +28,18 @@
   cfg = config.services.${name};
   schema = import generated {inherit lib;};
 
+  # A float through `toJSON`, not `toString`, which keeps six decimals and
+  # would hand the binary 0.000000 for 0.0000001; Rust reads `1e-07` back.
+  scalar = value:
+    if builtins.isFloat value
+    then builtins.toJSON value
+    else toString value;
   render = value:
     if builtins.isBool value
     then lib.boolToString value
     else if builtins.isList value
-    then lib.concatMapStringsSep "," toString value
-    else toString value;
+    then lib.concatMapStringsSep "," scalar value
+    else scalar value;
 
   given = lib.filterAttrs (_: value: value != null) cfg.settings;
   environment = lib.mapAttrs (_: render) given // cfg.extraEnvironment;
