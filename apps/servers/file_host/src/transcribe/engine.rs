@@ -23,13 +23,14 @@
 //! **A deadline is kept to within one encoder pass.** ffmpeg is killed at
 //! the deadline; whisper.cpp checks its abort callback between passes, not
 //! inside one, so a run ends up to one pass late (about 9 seconds on two
-//! threads), and language detection, one pass, is not interruptible at all.
-//! Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
+//! threads). Language detection, one pass per cut, is not interruptible
+//! inside a pass, so the deadline and the shutdown are checked before each
+//! detection as they are before each run is heard. Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
 //! noise.
 //!
 //! **Each piece of speech is heard in its own language** (paulgsc/server#578,
 //! ST23): the language is detected at each cut the VAD found that is a
-//! second or longer, and consecutive cuts in one language are heard as one
+//! second or longer, from that cut's own audio alone, and consecutive cuts in one language are heard as one
 //! run, so a Korean phrase inside an English take comes back in Hangul. Each
 //! word keeps the language it was heard in, and the note's language is the
 //! one heard for longest.
@@ -195,15 +196,7 @@ impl Whisper {
 	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
 	/// `deadline`.
 	fn transcribe(&self, speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
-		let failed = |cancel: &CancellationToken| {
-			if cancel.is_cancelled() {
-				Err(Cancelled)
-			} else if Instant::now() >= deadline {
-				Ok(Outcome::Deadline)
-			} else {
-				Ok(Outcome::Failed)
-			}
-		};
+		let failed = |cancel: &CancellationToken| stopped(deadline, cancel).unwrap_or(Ok(Outcome::Failed));
 		let Ok(threads) = i32::try_from(self.threads) else {
 			return Ok(Outcome::Failed);
 		};
@@ -211,33 +204,38 @@ impl Whisper {
 			return failed(cancel);
 		};
 		// The language per piece of speech the VAD found (ST23): detected at
-		// each cut a second or longer, from the mel of the whole speech, with
-		// its probability, which `full` does not report; a shorter cut joins
-		// the run before it. Each detection costs an encoder pass, about 40%
-		// of a 20-second note's time on two threads, so a note of many short
-		// cuts pays for the long ones only.
-		if state.pcm_to_mel(speech, self.threads).is_err() {
-			return failed(cancel);
-		}
-		let detect = |offset_ms: usize| -> Option<(String, f64)> {
-			let (id, probabilities) = state.lang_detect(offset_ms, self.threads).ok()?;
+		// each cut a second or longer, from a mel of that cut alone, with its
+		// probability, which `full` does not report; a shorter cut joins the
+		// run before it. Each detection costs an encoder pass, about 40% of a
+		// 20-second note's time on two threads, so a note of many short cuts
+		// pays for the long ones only.
+		//
+		// The mel is the cut's own, not the whole speech's: the encoder reads
+		// the 30 seconds of mel from the offset it is given, and whisper.cpp
+		// clamps a mel against its loudest frame, so a mel of the whole speech
+		// would let the cuts after this one decide its language. `full` makes
+		// the whole speech's mel again before it hears a run.
+		let detect = |cut: &[f32]| -> Option<(String, f64)> {
+			let mut pcm = cut[..cut.len().min(DETECT_WINDOW)].to_vec();
+			pcm.resize(pcm.len().max(DETECT_PAD), 0.0);
+			state.pcm_to_mel(&pcm, self.threads).ok()?;
+			let (id, probabilities) = state.lang_detect(0, self.threads).ok()?;
 			let language = whisper_rs::get_lang_str(id)?;
 			let probability = usize::try_from(id).ok().and_then(|id| probabilities.get(id).copied())?;
 			Some((language.to_owned(), f64::from(probability)))
 		};
-		let Some(runs) = plan_runs(cuts, detect) else {
-			return failed(cancel);
+		let runs = match plan_runs(speech, cuts, deadline, cancel, detect) {
+			Planned::Runs(runs) => runs,
+			Planned::Undetected => return failed(cancel),
+			Planned::Stopped(stopped) => return stopped,
 		};
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
 		// Each run of one language is heard on its own, in that language.
 		for run in &runs {
-			if cancel.is_cancelled() {
-				return Err(Cancelled);
-			}
-			if Instant::now() >= deadline {
-				return Ok(Outcome::Deadline);
+			if let Some(stopped) = stopped(deadline, cancel) {
+				return stopped;
 			}
 			let (Ok(offset_ms), Ok(duration_ms)) = (i32::try_from(run.offset_ms), i32::try_from(run.duration_ms)) else {
 				return Ok(Outcome::Failed);
@@ -447,20 +445,60 @@ struct Run {
 /// the run before it.
 const DETECT_MIN_MS: usize = 1_000;
 
-/// Which language each cut is heard in: `detect(offset_ms)` says the
-/// language of the speech from that offset and how sure, asked for the first
-/// cut and every cut at least [`DETECT_MIN_MS`] long; a shorter cut, or one
-/// whose detection fails, joins the run before it, and consecutive cuts in
-/// one language are one run. None when the first cut's detection fails, or
-/// with no cuts.
-fn plan_runs(cuts: &[Cut], mut detect: impl FnMut(usize) -> Option<(String, f64)>) -> Option<Vec<Run>> {
+/// The most of a cut a detection hears: the 30 seconds whisper.cpp's encoder
+/// reads in one pass.
+const DETECT_WINDOW: usize = 30 * SAMPLE_RATE;
+
+/// The least a detection is handed: a shorter cut is padded with silence to
+/// one second, as whisper.cpp pads all audio after its end. whisper.cpp's mel
+/// reflects the 200 samples after the first, so it must be handed more.
+const DETECT_PAD: usize = SAMPLE_RATE;
+
+/// Whether an attempt stops before its next pass, and what it then says: the
+/// server is shutting down, or the attempt's deadline has passed.
+fn stopped(deadline: Instant, cancel: &CancellationToken) -> Option<Result<Outcome, Cancelled>> {
+	if cancel.is_cancelled() {
+		Some(Err(Cancelled))
+	} else if Instant::now() >= deadline {
+		Some(Ok(Outcome::Deadline))
+	} else {
+		None
+	}
+}
+
+/// What [`plan_runs`] made of a note's cuts.
+#[derive(Debug, Clone, PartialEq)]
+enum Planned {
+	/// The runs to hear, never empty.
+	Runs(Vec<Run>),
+	/// No cuts, or the first cut's language could not be told.
+	Undetected,
+	/// The attempt stopped between detections, as [`stopped`] says.
+	Stopped(Result<Outcome, Cancelled>),
+}
+
+/// Which language each cut of `speech` is heard in: `detect(samples)` says
+/// the language of one cut's own samples, and nothing past its end, and how
+/// sure, asked for the first cut and every cut at least [`DETECT_MIN_MS`]
+/// long; a shorter cut, or one whose detection fails, joins the run before
+/// it, and consecutive cuts in one language are one run. Each detection is an
+/// encoder pass, so the deadline and `cancel` are checked before each, as
+/// the runs are before each is heard.
+fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken, mut detect: impl FnMut(&[f32]) -> Option<(String, f64)>) -> Planned {
 	let ms = |samples: usize| samples * 1000 / SAMPLE_RATE;
 	let mut runs: Vec<Run> = Vec::new();
 	for cut in cuts {
 		let (offset_ms, duration_ms) = (ms(cut.speech_at), ms(cut.len));
-		let detected = if runs.is_empty() || duration_ms >= DETECT_MIN_MS { detect(offset_ms) } else { None };
+		let detected = if runs.is_empty() || duration_ms >= DETECT_MIN_MS {
+			if let Some(stopped) = stopped(deadline, cancel) {
+				return Planned::Stopped(stopped);
+			}
+			speech.get(cut.speech_at..cut.speech_at + cut.len).and_then(&mut detect)
+		} else {
+			None
+		};
 		match (runs.last_mut(), detected) {
-			(None, None) => return None,
+			(None, None) => return Planned::Undetected,
 			(Some(last), Some((language, p))) if last.language == language => {
 				last.p = last.p.max(p);
 				last.duration_ms = offset_ms + duration_ms - last.offset_ms;
@@ -474,7 +512,11 @@ fn plan_runs(cuts: &[Cut], mut detect: impl FnMut(usize) -> Option<(String, f64)
 			}),
 		}
 	}
-	(!runs.is_empty()).then_some(runs)
+	if runs.is_empty() {
+		Planned::Undetected
+	} else {
+		Planned::Runs(runs)
+	}
 }
 
 /// The note's language: the one heard for longest, with the surest of its
@@ -674,11 +716,12 @@ mod tests {
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
 	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
-	use super::{decode, main_language, plan_runs, sample_at, words, Cut, Decoded, Run, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use super::{decode, main_language, plan_runs, sample_at, words, Cut, Decoded, Planned, Run, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
 	use std::path::Path;
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
+	use voice_repo::transcript::Outcome;
 
 	fn have_ffmpeg() -> bool {
 		Command::new("ffmpeg")
@@ -912,25 +955,17 @@ mod tests {
 	/// note's language is the one heard for longest.
 	#[test]
 	fn each_cut_is_heard_in_its_own_language_and_short_ones_join_the_run_before() {
-		let samples = |ms: usize| ms * SAMPLE_RATE / 1000;
-		let cut = |speech_at: usize, len: usize| Cut {
-			speech_at: samples(speech_at),
-			note_at: samples(speech_at) * 2,
-			len: samples(len),
-		};
-		let cuts = [cut(0, 2_000), cut(2_000, 500), cut(2_500, 3_000), cut(5_500, 1_500), cut(7_000, 1_200)];
+		let (speech, cuts) = speech_of(&[2_000, 500, 3_000, 1_500, 1_200]);
 		let mut asked = Vec::new();
-		let runs = plan_runs(&cuts, |offset_ms| {
-			asked.push(offset_ms);
-			match offset_ms {
-				0 => Some((String::from("en"), 0.9)),
-				2_500 => Some((String::from("ko"), 0.8)),
-				5_500 => Some((String::from("en"), 0.95)),
-				_ => None,
-			}
-		})
-		.unwrap();
-		assert_eq!(asked, [0, 2_500, 5_500, 7_000], "the half-second cut is not asked about");
+		let languages = [Some(("en", 0.9)), None, Some(("ko", 0.8)), Some(("en", 0.95)), None];
+		let Planned::Runs(runs) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+			let n = which_cut(samples);
+			asked.push(n);
+			languages[n].map(|(language, p)| (String::from(language), p))
+		}) else {
+			panic!("no runs");
+		};
+		assert_eq!(asked, [0, 2, 3, 4], "the half-second cut is not asked about");
 		let run = |language: &str, p: f64, offset_ms: usize, duration_ms: usize| Run {
 			language: String::from(language),
 			p,
@@ -939,8 +974,93 @@ mod tests {
 		};
 		assert_eq!(runs, [run("en", 0.9, 0, 2_500), run("ko", 0.8, 2_500, 3_000), run("en", 0.95, 5_500, 2_700)]);
 		assert_eq!(main_language(&runs), (String::from("en"), 0.95));
-		assert_eq!(plan_runs(&cuts, |_| None), None, "nothing to hear in a language nobody could tell");
-		assert_eq!(plan_runs(&[], |_| Some((String::from("en"), 1.0))), None);
+		let never = |_: &[f32]| None;
+		assert_eq!(
+			plan_runs(&speech, &cuts, later(), &CancellationToken::new(), never),
+			Planned::Undetected,
+			"nothing to hear in a language nobody could tell"
+		);
+		let english = |_: &[f32]| Some((String::from("en"), 1.0));
+		assert_eq!(plan_runs(&[], &[], later(), &CancellationToken::new(), english), Planned::Undetected);
+	}
+
+	/// Speech of cuts `lens_ms` long, run end to end, each cut's samples its
+	/// own index (cut 2 is all `2.0`), and where each was cut from.
+	fn speech_of(lens_ms: &[usize]) -> (Vec<f32>, Vec<Cut>) {
+		let mut speech = Vec::new();
+		let mut cuts = Vec::new();
+		for (n, len_ms) in lens_ms.iter().enumerate() {
+			let len = len_ms * SAMPLE_RATE / 1000;
+			cuts.push(Cut {
+				speech_at: speech.len(),
+				note_at: speech.len() * 2,
+				len,
+			});
+			speech.resize(speech.len() + len, f32::from(u8::try_from(n).unwrap()));
+		}
+		(speech, cuts)
+	}
+
+	/// Which of [`speech_of`]'s cuts `samples` are; a slice that runs into
+	/// another cut's samples fails the test.
+	fn which_cut(samples: &[f32]) -> usize {
+		let n = samples[0].to_bits();
+		assert!(samples.iter().all(|sample| sample.to_bits() == n), "a detection was handed more than one cut");
+		(0..=u8::MAX).position(|i| f32::from(i).to_bits() == n).unwrap()
+	}
+
+	/// paulgsc/server#594: a cut's language is detected from that cut alone,
+	/// so a short Korean cut before long English speech is not told from the
+	/// English after it. The detector is handed exactly each cut's samples.
+	#[test]
+	fn a_detection_is_handed_only_its_own_cut() {
+		let (speech, cuts) = speech_of(&[1_500, 1_000, 20_000, 300, 2_000]);
+		let mut handed: Vec<Vec<f32>> = Vec::new();
+		let planned = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+			handed.push(samples.to_vec());
+			Some((String::from(if which_cut(samples) == 1 { "ko" } else { "en" }), 0.9))
+		});
+		assert!(matches!(planned, Planned::Runs(_)));
+		let expected: Vec<Vec<f32>> = [0, 1, 2, 4].iter().map(|&n| speech[cuts[n].speech_at..cuts[n].speech_at + cuts[n].len].to_vec()).collect();
+		assert_eq!(handed, expected, "each cut's own samples, from its start to its end, and nothing after");
+	}
+
+	/// paulgsc/server#594: each detection is an encoder pass, so the shutdown
+	/// and the deadline stop the planning between detections, and the attempt
+	/// ends as it does between runs.
+	#[test]
+	fn cancellation_and_the_deadline_stop_planning_between_detections() {
+		let (speech, cuts) = speech_of(&[2_000, 2_000, 2_000, 2_000]);
+		let cancel = CancellationToken::new();
+		let mut asked = 0;
+		let planned = plan_runs(&speech, &cuts, later(), &cancel, |_| {
+			asked += 1;
+			if asked == 2 {
+				cancel.cancel();
+			}
+			Some((String::from("en"), 0.9))
+		});
+		assert_eq!(planned, Planned::Stopped(Err(super::Cancelled)));
+		assert_eq!(asked, 2, "no detection runs once the server is shutting down");
+
+		let deadline = Instant::now() + Duration::from_millis(500);
+		let mut asked = 0;
+		let planned = plan_runs(&speech, &cuts, deadline, &CancellationToken::new(), |_| {
+			asked += 1;
+			if asked == 2 {
+				std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+			}
+			Some((String::from("en"), 0.9))
+		});
+		assert_eq!(planned, Planned::Stopped(Ok(Outcome::Deadline)));
+		assert_eq!(asked, 2, "no detection runs past the deadline");
+
+		let mut asked = 0;
+		let planned = plan_runs(&speech, &cuts, Instant::now(), &CancellationToken::new(), |_| {
+			asked += 1;
+			None
+		});
+		assert_eq!((planned, asked), (Planned::Stopped(Ok(Outcome::Deadline)), 0), "a passed deadline runs none");
 	}
 
 	#[test]
