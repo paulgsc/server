@@ -194,6 +194,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
+| What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -624,9 +625,12 @@ nowhere is marked as such and belongs to review.
     by name only), and how the session ended), its type, when the phone
     recorded it and when it reached home.
     What was said or typed in a spoken answer, and what it was marked against
-    (`ticks`, `prompt`, `rubric`, `typed`), goes to the owner's Drive and
-    never here: an event carrying any of them is a `422` naming the field, and
-    nothing of it is stored. An event is never updated (a trigger aborts an
+    (`ticks`, `prompt`, `rubric`, `typed`), is never here: an event carrying
+    any of them is a `422` naming the field, and nothing of it is stored.
+    Since paulgsc/some-ui#2180 (HF5) the answer goes home on its own, as a
+    note in `study_note` and its take as a voice note (invariants 23 and 30),
+    so this table, and the file the mailbox carries from it, still hold none
+    of it. An event is never updated (a trigger aborts an
     `UPDATE`) or replaced (a different body under an id its session holds is
     a `409`), and never deleted but with the account. It is written only by
     `PUT /leetype/sessions/:session/events/:id`, readable only by its own
@@ -741,7 +745,10 @@ nowhere is marked as such and belongs to review.
       what home heard in each goes as its transcript. A prompt sent again
       files nothing.
       The poller files each `voice_transcript` row that heard something
-      (never a failure or a silence) as `transcript-<note>-<n>.json` in
+      (never a failure or a silence) of a note said for `reflection`, `jobs`,
+      `scene` or `studio`, the kinds a routine reads and the mailbox's
+      `transcript` folder takes (never a game bite, a soundbite, a
+      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180), as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
@@ -972,7 +979,7 @@ nowhere is marked as such and belongs to review.
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
-    `scene`, `game` or `studio`) and which one, when the phone recorded it and when it reached
+    `scene`, `game`, `studio`, `soundbite`, `lens` or `leetype`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -1010,7 +1017,18 @@ nowhere is marked as such and belongs to review.
     (`20261030000100_add_studio_to_voice_note`). A redo is a new take under a
     new id, never an update of the one it redoes. A take is sent home like
     every note, heard by the transcriber like every note, and its transcript filed for the mailbox like every
-    note's but a game bite's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
+    note's but a game bite's (invariant 19). **A soundbite, a grammar-lens
+    take and a LeetType spoken answer are voice notes** too
+    (paulgsc/some-ui#2180, HF5; owner's decision D1 on paulgsc/some-ui#2174:
+    home is the record, and the phone lets go only what home has read back):
+    said for `soundbite`, its `ref` how it came to be recorded (`direct`,
+    `sessions`, `reminder`, or the retired `capture` and `wrap`); for `lens`,
+    its `ref` the line read aloud; for `leetype`, its `ref` the session file
+    and screen (`<file>:<screen>`). Each carries nothing beside it in these
+    tables (`20261101000500_add_takes_to_voice_note`); what the phone wrote
+    beside a soundbite or an answer is `study_note`'s (invariant 30). Each is
+    heard by the transcriber like every note, and none has its transcript
+    filed for the mailbox: no routine reads them (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -1083,7 +1101,9 @@ nowhere is marked as such and belongs to review.
     `a_game_note_missing_or_misstating_its_bite_is_refused`,
     `a_note_said_for_anything_else_carries_no_bite`,
     `the_schema_refuses_a_bite_that_breaks_its_rules` and
-    `the_rebuilt_notes_keep_what_was_held_before`; `voice_repo::transcript`'s
+    `the_rebuilt_notes_keep_what_was_held_before`, and for HF5's kinds
+    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` and
+    `the_notes_rebuilt_for_takes_keep_what_was_held_before`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
@@ -1298,6 +1318,47 @@ nowhere is marked as such and belongs to review.
     `a_spoken_reflection_or_the_answers_are_refused_and_nothing_is_filed`.
     *Not enforced:* that nothing else writes the table, which
     `git grep -n written_reflection -- '*.rs'` shows today.
+
+30. **The owner's study notes are append-only, one per id, never parsed,
+    and never leave home.** `study_note` keeps the text the phone writes
+    beside a soundbite or a LeetType spoken answer, once the phone is paired
+    (paulgsc/some-ui#2180, HF5; owner's decision D1 on
+    paulgsc/some-ui#2174, and #1934's "never home" lane folded in): one kind
+    per store the phone keeps (`study_note_repo::Kind`, a closed list).
+    `soundbite` is a soundbite's record, keyed by the soundbite's id: when it
+    was recorded, how long it ran, its container and size, and what the
+    phone noted around it (how it came to be recorded, the most recent
+    session it knew of, how many were open, its time zone). `leetype` is a
+    spoken answer's note, keyed by its own id: the session file and screen,
+    the one-sentence prompt, the rubric shown after answering, the points the
+    owner ticked, the answer typed where they could not speak, and the take
+    it notes by the voice note's id only (its audio is `voice_note_audio`'s,
+    invariant 23). A note is the subject, the kind, the phone's id, the body
+    byte for byte (the JSON value's own text: the whitespace around it is
+    trimmed, nothing within it changed) with its SHA-256, and when it reached
+    home. Home checks only that a body is one JSON object within
+    `study_note_repo::BODY_CEILING`, as the Korean record does (invariant
+    25), so what a note says stays the phone's to judge. A note is never
+    updated (a trigger aborts an `UPDATE`) or replaced (other bytes under a
+    held id are a `409`; the same bytes are `unchanged`), and never deleted
+    but with the account. It is written only by `PUT /study-notes/:kind/:id`,
+    whose span skips its arguments and whose refusals name fields in fixed
+    words, so nothing a note says (an answer can carry what the owner typed)
+    reaches a log line; it is readable by no route yet, and no file the
+    poller files reads it, so it never leaves home; and it is deleted with
+    the account by both the sweep and the migration's trigger (invariant
+    12). Rolling back the migration that creates it fails once it holds a
+    row, rather than dropping the record.
+    *Enforced by* `study_note_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_note_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_body_kept_is_the_bytes_sent_verbatim`,
+    `a_refused_write_names_each_field_and_writes_nothing`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::study_note`'s
+    `refusals_name_their_fields_and_notes_stay_apart` (a refusal never quotes
+    the note) and `a_paired_phone_sends_a_note_home_once`.
+    *Not enforced:* that nothing else writes or reads the table, which
+    `git grep -n study_note -- '*.rs'` shows today and review keeps.
 
 31. **The owner's drama prompts are append-only, one per stamp, and only
     their stamp and markdown reach the mailbox.** `drama_prompt` keeps each

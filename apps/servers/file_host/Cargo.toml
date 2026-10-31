@@ -123,6 +123,7 @@ curriculum_repo = { workspace = true }
 game_feed_repo = { workspace = true }
 jobs_repo = { workspace = true }
 korean_repo = { workspace = true }
+study_note_repo = { workspace = true }
 mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
 mailbox_repo = { workspace = true }
 nfl_feed = { workspace = true }

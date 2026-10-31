@@ -22,6 +22,7 @@ members = [
   "crates/db/jobs",
   "crates/db/game_feed",
   "crates/db/korean",
+  "crates/db/study_note",
   "crates/db/mailbox",
   "crates/db/notice",
   "crates/db/storage",
@@ -159,6 +160,7 @@ curriculum_repo = { path = "crates/db/curriculum" }
 game_feed_repo = { path = "crates/db/game_feed" }
 jobs_repo = { path = "crates/db/jobs" }
 korean_repo = { path = "crates/db/korean" }
+study_note_repo = { path = "crates/db/study_note" }
 mailbox_kit = { path = "crates/mailbox_kit" }
 notice_repo = { path = "crates/db/notice" }
 fcm_kit = { path = "crates/fcm_kit" }

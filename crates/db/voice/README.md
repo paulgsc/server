@@ -16,7 +16,11 @@ first may keep the scenario picked after it since
 `migrations/20261028000300_let_a_said_first_bite_keep_its_scenario.up.sql`). A
 Studio take is a voice note said for `studio`, its `ref` the take
 (`<project>:<shot>:<take>`), with nothing beside it; a redo is a new note
-(`migrations/20261030000100_add_studio_to_voice_note.up.sql`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
+(`migrations/20261030000100_add_studio_to_voice_note.up.sql`). A soundbite, a
+grammar-lens take and a LeetType spoken answer are voice notes said for
+`soundbite`, `lens` and `leetype`, with nothing beside them; what the phone
+wrote beside a soundbite or an answer is `study_note_repo`'s
+(`migrations/20261101000500_add_takes_to_voice_note.up.sql`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
 `migrations/20261025000100_create_voice_note.up.sql` and
 `migrations/20261025000200_create_voice_transcript.up.sql` (and the word
 table's migration above), and in

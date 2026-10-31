@@ -1572,6 +1572,7 @@ dependencies = [
  "storage_repo",
  "studio_log_repo",
  "study_domain",
+ "study_note_repo",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -4922,6 +4923,17 @@ dependencies = [
  "chrono",
  "intervention",
  "serde",
+]
+
+[[package]]
+name = "study_note_repo"
+version = "0.0.0"
+dependencies = [
+ "curriculum_repo",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
