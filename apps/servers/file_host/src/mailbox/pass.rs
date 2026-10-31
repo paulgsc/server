@@ -6,8 +6,9 @@
 //! checks out, then files each transcript home heard and has not filed
 //! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
-//! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`),
-//! which lessons it opened, those transcripts and those logs.
+//! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
+//! names a voice note by id at most), which lessons it opened, those
+//! transcripts and those logs.
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -453,9 +454,35 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	Ok(())
 }
 
-/// A transcript as the mailbox takes it: text, and nothing that points at
-/// audio.
-fn transcript_body(heard: &Heard) -> Vec<u8> {
+/// One heard word as the mailbox takes it (paulgsc/server#577, ST22): its
+/// text, when it was said in milliseconds from the note's start, and how
+/// sure the model was of it, left out where the model did not say.
+#[derive(serde::Serialize)]
+struct FiledWord<'a> {
+	text: &'a str,
+	#[serde(rename = "startMs")]
+	start_ms: i64,
+	#[serde(rename = "endMs")]
+	end_ms: i64,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	p: Option<f64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	language: Option<&'a str>,
+}
+
+/// A transcript as the mailbox takes it: text, its words with their times
+/// and how sure the model was of each, and nothing that points at audio.
+fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec<u8> {
+	let words: Vec<FiledWord<'_>> = words
+		.iter()
+		.map(|word| FiledWord {
+			text: &word.text,
+			start_ms: word.start_ms,
+			end_ms: word.end_ms,
+			p: word.p,
+			language: word.language.as_deref(),
+		})
+		.collect();
 	serde_json::json!({
 		"schema": TRANSCRIPT_SCHEMA,
 		"note": heard.note_id,
@@ -466,6 +493,7 @@ fn transcript_body(heard: &Heard) -> Vec<u8> {
 		"language": heard.language,
 		"model": heard.model,
 		"heardAt": heard.heard_at,
+		"words": words,
 	})
 	.to_string()
 	.into_bytes()
@@ -715,10 +743,13 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 /// As [`keep`], for a transcript filed under its note's next number, which
 /// is read in the same transaction.
 async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
-	let body = transcript_body(heard);
-	let sha256 = hex::encode(Sha256::digest(&body));
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
+		.await
+		.map_err(mailbox_repo::MailboxError::Storage)?;
+	let body = transcript_body(heard, &words);
+	let sha256 = hex::encode(Sha256::digest(&body));
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
 	tx.commit().await?;
@@ -806,8 +837,8 @@ mod tests {
 		put_answers: Mutex<Vec<(u16, &'static str)>>,
 		puts_fail: Mutex<bool>,
 		puts: Mutex<Vec<String>>,
-		/// The body of each transcript put.
-		transcripts: Mutex<Vec<String>>,
+		/// The body of each put, in `puts` order.
+		put_bodies: Mutex<Vec<String>>,
 		/// The body of each `LeetType` session log put.
 		logs: Mutex<Vec<String>>,
 	}
@@ -849,11 +880,10 @@ mod tests {
 					return Err("connection refused");
 				}
 				let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
-				if path.starts_with("/v1/transcript/items/") {
-					self.transcripts.lock().unwrap().push(body);
-				} else if path.starts_with("/v1/leetype-log/items/") {
-					self.logs.lock().unwrap().push(body);
+				if path.starts_with("/v1/leetype-log/items/") {
+					self.logs.lock().unwrap().push(body.clone());
 				}
+				self.put_bodies.lock().unwrap().push(body);
 				self.puts.lock().unwrap().push(path);
 				let mut answers = self.put_answers.lock().unwrap();
 				let (status, body) = if answers.is_empty() {
@@ -1032,6 +1062,54 @@ mod tests {
 		assert!(held(&pool).await.is_empty());
 	}
 
+	/// The owner's box (#510): `MAILBOX_SUBJECT` unset, and the poller keeps
+	/// the files as the only account's, found at the pass, so an account made
+	/// after the box booted is served without a restart; before it exists,
+	/// and once a second one does, a pass has no subject (`no_account`).
+	#[tokio::test]
+	async fn with_no_override_the_poller_runs_for_the_only_account() {
+		use crate::auth::owner::Owner;
+		use crate::mailbox::pass_subject;
+
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::NoAccount, "a fresh box");
+
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(OWNER)
+			.bind(OWNER.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::Subject(String::from(OWNER)));
+		assert_eq!(
+			pass_subject(&pool, Some("subject-configured")).await.unwrap(),
+			Owner::Subject(String::from("subject-configured"))
+		);
+
+		let fake = Fake::default();
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), &fake).unwrap();
+		let Owner::Subject(subject) = pass_subject(&pool, None).await.unwrap() else {
+			panic!("the only account is the owner's");
+		};
+		let outcome = run_once(&pool, &mailbox, None, &subject, &DeletionLock::default(), SETTLE, &|| {
+			String::from("2026-10-23T15:00:00.000Z")
+		})
+		.await
+		.unwrap();
+		assert_eq!((outcome.kept, outcome.no_account), (1, false));
+		let whose: String = sqlx::query_scalar("SELECT subject_id FROM mailbox_item").fetch_one(&pool).await.unwrap();
+		assert_eq!(whose, OWNER, "kept as the owner's copy, with no subject id configured");
+
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('subject-second', x'02')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(pass_subject(&pool, None).await.unwrap(), Owner::Several, "two accounts: no owner without MAILBOX_SUBJECT");
+	}
+
 	/// A pass's write waits out a deletion that holds the lock, and then finds
 	/// the account gone.
 	#[tokio::test]
@@ -1079,22 +1157,26 @@ mod tests {
 		let url = ["--mailbox-url", BASE];
 		let token = ["--mailbox-token", "home-token"];
 		let subject = ["--mailbox-subject", OWNER];
-		for (missing, args) in [
-			("MAILBOX_URL", [&token[..], &subject[..]].concat()),
-			("MAILBOX_TOKEN", [&url[..], &subject[..]].concat()),
-			("MAILBOX_SUBJECT", [&url[..], &token[..]].concat()),
-		] {
-			let err = on(&args).err().unwrap().to_string();
+		for (missing, args) in [("MAILBOX_URL", &token[..]), ("MAILBOX_TOKEN", &url[..])] {
+			let err = on(args).err().unwrap().to_string();
 			assert!(err.contains(missing), "{err}");
 			assert!(!err.contains("home-token"), "the token is never in the error: {err}");
 		}
-		let all = [&url[..], &token[..], &subject[..]].concat();
-		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..], &subject[..]].concat();
+		let all = [&url[..], &token[..]].concat();
+		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..]].concat();
 		assert!(on(&insecure).is_err(), "only https");
 		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
-		assert_eq!((context.subject.as_str(), context.interval.as_secs()), (OWNER, 900));
+		assert_eq!(
+			(context.subject.as_deref(), context.interval.as_secs()),
+			(None, 900),
+			"no MAILBOX_SUBJECT: the owner's account, per pass"
+		);
 		assert!(context.archive.is_none(), "no archive token, nothing archived");
+		let context = on(&[&all[..], &subject[..]].concat()).unwrap().unwrap();
+		assert_eq!(context.subject.as_deref(), Some(OWNER), "MAILBOX_SUBJECT is the override");
+		let context = on(&[&all[..], &["--mailbox-subject", " "][..]].concat()).unwrap().unwrap();
+		assert_eq!(context.subject, None, "a blank MAILBOX_SUBJECT is unset");
 
 		let archive = ["--mailbox-archive-token", "archive-token"];
 		let context = on(&[&all[..], &archive[..]].concat()).unwrap().unwrap();
@@ -1109,6 +1191,10 @@ mod tests {
 
 	/// A file as the phone files it (`PUT /jobs/files/:name`, `PUT /routine/opened`).
 	async fn filed(pool: &SqlitePool, name: &str) {
+		filed_as(pool, name, b"{}").await;
+	}
+
+	async fn filed_as(pool: &SqlitePool, name: &str, body: &[u8]) {
 		let folder = if name.starts_with("scouts-") {
 			"scout"
 		} else if name.starts_with("opened-") {
@@ -1116,7 +1202,7 @@ mod tests {
 		} else {
 			"decisions"
 		};
-		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", b"{}", "2026-10-23T15:00:00.000Z")
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", body, "2026-10-23T15:00:00.000Z")
 			.await
 			.unwrap();
 	}
@@ -1142,6 +1228,20 @@ mod tests {
 		);
 		assert!(pass(&pool, &fake).await.unwrap().handed.is_empty(), "an answered file is not handed again");
 		assert_eq!(fake.puts.lock().unwrap().len(), 3);
+	}
+
+	/// A decisions file that names a voice note by id is text, and goes to
+	/// the mailbox's `decisions` folder as the phone filed it (the pass
+	/// reads nothing in it, `handlers::jobs` the schema only); the note's
+	/// transcript goes to `transcript` by the same id.
+	#[tokio::test]
+	async fn a_filed_file_is_handed_over_as_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let body = r#"{"schema":"some-ui.job-decisions/1","picks":[{"id":"e1","voice":["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f"]}]}"#;
+		filed_as(&pool, "decisions-2026-10-23.json", body.as_bytes()).await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/decisions/items/decisions-2026-10-23.json"]);
+		assert_eq!(*fake.put_bodies.lock().unwrap(), [body]);
 	}
 
 	#[tokio::test]
@@ -1196,6 +1296,29 @@ mod tests {
 		.execute(pool)
 		.await
 		.unwrap();
+		// Each word half a second long, as sure as its place in the text,
+		// except the last, heard before confidence was kept.
+		let words: Vec<&str> = text.split_whitespace().collect();
+		for (at, word) in words.iter().enumerate() {
+			let index = i64::try_from(at).unwrap();
+			let p: Option<f64> = (at + 1 < words.len()).then_some(0.1_f64.mul_add(f64::from(u8::try_from(at).unwrap()), 0.5));
+			let language = (at == 0).then_some("ko");
+			sqlx::query(
+				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p, language) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(model)
+			.bind(index)
+			.bind(word)
+			.bind(500 * index)
+			.bind(500 * index + 400)
+			.bind(p)
+			.bind(language)
+			.execute(pool)
+			.await
+			.unwrap();
+		}
 	}
 
 	async fn outgoing_transcripts(pool: &SqlitePool) -> Vec<String> {
@@ -1212,7 +1335,7 @@ mod tests {
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-n1-1.json"]);
-		let body: serde_json::Value = serde_json::from_str(&fake.transcripts.lock().unwrap()[0]).unwrap();
+		let body: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
 		assert_eq!(
 			body,
 			serde_json::json!({
@@ -1225,8 +1348,13 @@ mod tests {
 				"language": "ko",
 				"model": "ggml-small-q5_1.bin",
 				"heardAt": "2026-10-25T03:12:00.000Z",
+				"words": [
+					{ "text": "다음", "startMs": 0, "endMs": 400, "p": 0.5, "language": "ko" },
+					{ "text": "장면은", "startMs": 500, "endMs": 900, "p": 0.6 },
+					{ "text": "시장에서", "startMs": 1000, "endMs": 1400 },
+				],
 			}),
-			"text only, in the mailbox's shape: nothing that points at audio"
+			"text only, in the mailbox's shape, each word with its time and how sure the model was: nothing that points at audio"
 		);
 		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "filed and handed once");
 

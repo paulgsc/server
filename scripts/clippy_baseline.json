@@ -88,13 +88,6 @@
       }
     }
   },
-  "apps/servers/file_host/src/error.rs": {
-    "clippy::match_same_arms": {
-      "fn status_code": {
-        "Self::Forbidden => StatusCode::FORBIDDEN,": 1
-      }
-    }
-  },
   "apps/servers/file_host/src/handlers/db/activities.rs": {
     "clippy::expect_used": {
       "fn headers_with_if_none_match": {

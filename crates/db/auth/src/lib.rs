@@ -22,7 +22,7 @@
 
 pub mod repository;
 
-pub use repository::{AddPasskey, AuthRepository, SessionRow, StoredPasskey};
+pub use repository::{Accounts, AddPasskey, Admission, AuthRepository, SessionRow, StoredPasskey};
 
 /// How many passkeys one account may hold. A person with a phone, a laptop
 /// and a hardware key in two ecosystems needs a handful; this is generous

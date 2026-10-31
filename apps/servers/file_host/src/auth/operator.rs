@@ -2,32 +2,35 @@
 //!
 //! The operator routes rewrite, retire and restore corpus-wide content: the
 //! lessons (`routes::db::curriculum_operator`). Before passkey auth they had
-//! no gate but the CORS allowlist. A passkey session alone is not a gate either: anyone
-//! who can reach the server can make an account (docs/identity.md, "Who can
-//! make an account"). So an operator is a signed-in subject **listed in
-//! `OPERATOR_SUBJECTS`**, and nothing else makes one.
+//! no gate but the CORS allowlist. Now the operator is **the owner's
+//! account**: the only account, which is what a box with sign-up closed after
+//! its first account has (`auth::owner`, docs/identity.md "Who is an
+//! operator"). Nothing in the environment names it. With `OPERATOR_SUBJECTS`
+//! set (a deployment with `AUTH_OPEN_SIGNUP` on, where no account is the
+//! owner's by itself), an operator is a signed-in subject listed there, and
+//! nothing else makes one.
 //!
 //! [`Operator`]'s extractor takes a [`BrowserSubject`] first (a paired
 //! phone's token is never an operator), so a request without
 //! a live session is `401`, a state-changing one from an untrusted origin is
 //! `403` (`auth::csrf`), and the request holds off an account deletion, all
-//! exactly as on every subject-scoped route. Then a subject not on the list is
-//! `403`. With the list unset or empty, nobody is an operator: every operator
-//! route answers `403`, and startup says so once (`AuthContext::from_config`).
+//! exactly as on every subject-scoped route. Then a subject that is neither
+//! the owner nor listed is `403` (`AuthContext::operator_verdict`), and the
+//! refusal is logged at `info` with why: the box has several accounts and
+//! `OPERATOR_SUBJECTS` is unset, or the subject is not on the list.
 //!
-//! **Finding your subject id.** A refused subject is logged at `info`, by id
-//! (`"a subject not in OPERATOR_SUBJECTS called an operator route"`): sign in
-//! on the device you operate from, call any operator route (open the CRM),
-//! and copy the `subject` from the server's log into `OPERATOR_SUBJECTS`. The
-//! id is not returned to the browser: `GET /auth/session` answers only when
-//! the session ends, and giving page script a stable, cross-device id it has
-//! never needed would be a new exposure for the sake of a one-time setup step
-//! the operator, who reads the log anyway, can do without it. The log already
-//! carries subject ids (the nudge waker's decisions), which are random and
-//! name nobody. An operator who claimed the pre-auth data with
-//! `AUTH_LEGACY_CLAIM_TOKEN` is `subject-local`.
+//! **With `OPERATOR_SUBJECTS`, finding a subject id.** The refusal log line
+//! carries the subject id: sign in on the device you operate from, call any
+//! operator route (open the CRM), and copy the `subject` from the server's
+//! log into `OPERATOR_SUBJECTS`. The id is not returned to the browser:
+//! `GET /auth/session` answers only when the session ends, and giving page
+//! script a stable, cross-device id it has never needed would be a new
+//! exposure for the sake of a one-time setup step the operator, who reads the
+//! log anyway, can do without it. The log already carries subject ids (the
+//! nudge waker's decisions), which are random and name nobody. The owner's
+//! box needs none of this: its one account is the operator.
 
-use super::AuthContext;
+use super::{AuthContext, OperatorVerdict};
 use crate::{
 	subject::{BrowserSubject, SubjectId},
 	FileHostError,
@@ -35,8 +38,8 @@ use crate::{
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 
-/// A request from a subject listed in `OPERATOR_SUBJECTS`. Every operator
-/// handler takes one; see the module docs.
+/// A request from the owner's account, or from a subject listed in
+/// `OPERATOR_SUBJECTS`. Every operator handler takes one; see the module docs.
 #[derive(Debug, Clone)]
 pub struct Operator {
 	/// Held, not read: it carries the request's hold against the account
@@ -61,12 +64,21 @@ where
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
 		let BrowserSubject(subject) = BrowserSubject::from_request_parts(parts, state).await?;
-		if AuthContext::from_ref(state).is_operator(subject.as_str()) {
-			Ok(Self { _subject: subject })
-		} else {
-			// How an operator finds the id to configure; see the module docs.
-			tracing::info!(subject = %subject.as_str(), "a subject not in OPERATOR_SUBJECTS called an operator route");
-			Err(FileHostError::Forbidden)
+		let verdict = AuthContext::from_ref(state).operator_verdict(subject.as_str()).await?;
+		match verdict {
+			OperatorVerdict::Operator => Ok(Self { _subject: subject }),
+			OperatorVerdict::NotListed => {
+				// How an operator finds the id to configure; see the module docs.
+				tracing::info!(subject = %subject.as_str(), "a subject not in OPERATOR_SUBJECTS called an operator route");
+				Err(FileHostError::Forbidden)
+			}
+			OperatorVerdict::NotTheOwner => {
+				tracing::info!(
+					subject = %subject.as_str(),
+					"a subject called an operator route, but it is not the only account and OPERATOR_SUBJECTS is unset, so nobody is an operator: set OPERATOR_SUBJECTS"
+				);
+				Err(FileHostError::Forbidden)
+			}
 		}
 	}
 }
@@ -75,8 +87,9 @@ where
 mod tests {
 	//! Every route of every operator module, through its real router, with
 	//! real sessions: no cookie is `401`, a signed-in subject that is not an
-	//! operator is `403`, and an operator gets through. A handler that forgot
-	//! to take [`Operator`] fails here.
+	//! operator is `403`, and an operator gets through, whether named by
+	//! `OPERATOR_SUBJECTS` or as the owner's account with nothing in the
+	//! environment. A handler that forgot to take [`Operator`] fails here.
 
 	use super::parse_subjects;
 	use crate::auth::{cookie::SessionToken, now, AuthContext};
@@ -222,14 +235,56 @@ mod tests {
 		assert_eq!(status(&app, Method::GET, "/curriculum/operator/lessons", Some(&operator), None).await, StatusCode::OK);
 	}
 
-	/// Unset, nobody is an operator — not even a subject that is signed in.
+	/// The owner's box: `OPERATOR_SUBJECTS` unset, one account, and every
+	/// operator route runs for it with no subject id anywhere in the
+	/// environment (#510). The account is created after the context is
+	/// built, as the owner registers after the box boots.
 	#[tokio::test]
-	async fn with_no_operators_configured_every_operator_route_is_refused() {
+	async fn with_no_operators_configured_the_only_account_is_the_operator() {
 		let state = state(&[]).await;
-		let signed_in = signed_in(&state, OPERATOR).await;
+		let owner = signed_in(&state, OPERATOR).await;
+		let app = app(state);
+		let requests = requests();
+		assert!(requests.len() >= 4, "{requests:?}");
+		for (method, path) in requests {
+			assert_eq!(
+				status(&app, method.clone(), &path, None, None).await,
+				StatusCode::UNAUTHORIZED,
+				"{method} {path} without a session"
+			);
+			let passed = status(&app, method.clone(), &path, Some(&owner), None).await;
+			assert!(
+				passed != StatusCode::UNAUTHORIZED && passed != StatusCode::FORBIDDEN,
+				"{method} {path} for the owner answered {passed}"
+			);
+		}
+	}
+
+	/// With `OPERATOR_SUBJECTS` unset and several accounts (`AUTH_OPEN_SIGNUP`
+	/// on, say), no account is the owner's by itself, so nobody is an
+	/// operator: not even the one that was alone a moment ago.
+	#[tokio::test]
+	async fn with_several_accounts_and_no_list_nobody_is_an_operator() {
+		let state = state(&[]).await;
+		let first = signed_in(&state, OPERATOR).await;
+		let second = signed_in(&state, LEARNER).await;
 		let app = app(state);
 		for (method, path) in requests() {
-			assert_eq!(status(&app, method.clone(), &path, Some(&signed_in), None).await, StatusCode::FORBIDDEN, "{method} {path}");
+			for cookie in [&first, &second] {
+				assert_eq!(status(&app, method.clone(), &path, Some(cookie), None).await, StatusCode::FORBIDDEN, "{method} {path}");
+			}
+		}
+	}
+
+	/// The list is an override: set, the only account is not an operator
+	/// unless listed.
+	#[tokio::test]
+	async fn a_configured_list_overrides_the_owner() {
+		let state = state(&["subject-elsewhere"]).await;
+		let only = signed_in(&state, OPERATOR).await;
+		let app = app(state);
+		for (method, path) in requests() {
+			assert_eq!(status(&app, method.clone(), &path, Some(&only), None).await, StatusCode::FORBIDDEN, "{method} {path}");
 		}
 	}
 

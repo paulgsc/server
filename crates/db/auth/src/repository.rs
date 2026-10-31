@@ -35,6 +35,28 @@ pub enum AddPasskey {
 	NoAccount,
 }
 
+/// When a new account may be created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+	/// Whenever asked.
+	Open,
+	/// Only while no account exists. The box is one person's
+	/// (docs/identity.md, "Who can make an account"), and the check and the
+	/// insert are one statement under an immediate transaction, so two first
+	/// registrations racing cannot both land.
+	FirstOnly,
+}
+
+/// How many accounts there are, up to two, and the one's subject when there
+/// is exactly one. `file_host` reads the owner's account off this
+/// (docs/identity.md, "The owner's account").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Accounts {
+	None,
+	One(String),
+	Several,
+}
+
 pub struct AuthRepository {
 	pool: SqlitePool,
 }
@@ -45,21 +67,34 @@ impl AuthRepository {
 		Self { pool }
 	}
 
-	/// Create an account with its first passkey.
+	/// Create an account with its first passkey, if `admission` allows one.
 	///
-	/// Which subject id it gets is the caller's decision. A subject id that
-	/// already has an account is a unique violation, which is what refuses a
-	/// second claim on the same one.
+	/// Which subject id it gets is the caller's decision. Returns `false`,
+	/// having written nothing, when `admission` is [`Admission::FirstOnly`]
+	/// and an account already exists.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure, including a unique violation if the
 	/// subject id, user handle or credential id is already stored.
-	pub async fn create_account(&self, subject_id: &str, user_handle: &[u8], passkey: &StoredPasskey) -> Result<(), sqlx::Error> {
-		let mut tx = self.pool.begin().await?;
+	pub async fn create_account(&self, subject_id: &str, user_handle: &[u8], passkey: &StoredPasskey, admission: Admission) -> Result<bool, sqlx::Error> {
+		// Immediate, so the existence check below and this insert are one
+		// writer's view: a second first registration waits, then finds the
+		// first.
+		let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
-		sqlx::query!("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)", subject_id, user_handle)
-			.execute(&mut *tx)
-			.await?;
+		let first_only = admission == Admission::FirstOnly;
+		let created = sqlx::query!(
+			"INSERT INTO account (subject_id, user_handle) SELECT ?1, ?2 WHERE NOT (?3 AND EXISTS (SELECT 1 FROM account))",
+			subject_id,
+			user_handle,
+			first_only
+		)
+		.execute(&mut *tx)
+		.await?
+		.rows_affected();
+		if created == 0 {
+			return Ok(false);
+		}
 
 		sqlx::query!(
 			"INSERT INTO passkey (credential_id, subject_id, passkey) VALUES (?1, ?2, ?3)",
@@ -70,7 +105,21 @@ impl AuthRepository {
 		.execute(&mut *tx)
 		.await?;
 
-		tx.commit().await
+		tx.commit().await?;
+		Ok(true)
+	}
+
+	/// How many accounts there are, up to two, and the only one's subject.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn accounts(&self) -> Result<Accounts, sqlx::Error> {
+		let mut subjects = sqlx::query_scalar!("SELECT subject_id FROM account LIMIT 2").fetch_all(&self.pool).await?;
+		Ok(match subjects.len() {
+			0 => Accounts::None,
+			1 => Accounts::One(subjects.remove(0)),
+			_ => Accounts::Several,
+		})
 	}
 
 	/// Whether a subject id has an account.
@@ -270,7 +319,7 @@ impl AuthRepository {
 
 #[cfg(test)]
 mod tests {
-	use super::{AddPasskey, AuthRepository, StoredPasskey};
+	use super::{Accounts, AddPasskey, Admission, AuthRepository, StoredPasskey};
 	use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
 	use sqlx::sqlite::SqlitePoolOptions;
 
@@ -293,8 +342,8 @@ mod tests {
 	async fn an_account_is_found_by_its_user_handle_and_a_subject_holds_one() {
 		let repo = repo().await;
 
-		repo.create_account("subject-a", &[1; 16], &passkey(1)).await.unwrap();
-		repo.create_account("subject-b", &[2; 16], &passkey(2)).await.unwrap();
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
 
 		assert_eq!(repo.subject_for_user_handle(&[2; 16]).await.unwrap().as_deref(), Some("subject-b"));
 		assert_eq!(repo.user_handle("subject-a").await.unwrap(), Some(vec![1; 16]));
@@ -302,15 +351,38 @@ mod tests {
 		assert!(repo.has_account("subject-a").await.unwrap());
 		assert!(!repo.has_account("subject-c").await.unwrap());
 
-		let taken = repo.create_account("subject-a", &[3; 16], &passkey(3)).await.unwrap_err();
+		let taken = repo.create_account("subject-a", &[3; 16], &passkey(3), Admission::Open).await.unwrap_err();
 		assert!(taken.as_database_error().unwrap().is_unique_violation(), "a subject id holds one account");
 		assert!(repo.subject_for_user_handle(&[3; 16]).await.unwrap().is_none(), "and the refused one left nothing behind");
+	}
+
+	/// The box is one person's: once an account exists, a registration that
+	/// may only be the first lands nothing, and the only account is what
+	/// `file_host` reads as the owner's.
+	#[tokio::test]
+	async fn the_first_account_closes_sign_up_and_is_the_only_one() {
+		let repo = repo().await;
+		assert_eq!(repo.accounts().await.unwrap(), Accounts::None);
+
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::FirstOnly).await.unwrap());
+		assert_eq!(repo.accounts().await.unwrap(), Accounts::One(String::from("subject-a")));
+
+		assert!(!repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::FirstOnly).await.unwrap());
+		assert!(!repo.has_account("subject-b").await.unwrap(), "nothing of the refused account was written");
+		assert!(repo.subject_for_user_handle(&[2; 16]).await.unwrap().is_none());
+		assert!(repo.passkeys("subject-b").await.unwrap().is_empty());
+
+		assert!(
+			repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap(),
+			"open sign-up admits a second"
+		);
+		assert_eq!(repo.accounts().await.unwrap(), Accounts::Several, "and then no account is the only one");
 	}
 
 	#[tokio::test]
 	async fn a_passkey_past_the_cap_is_refused_not_evicted() {
 		let repo = repo().await;
-		repo.create_account("subject-local", &[1; 16], &passkey(0)).await.unwrap();
+		assert!(repo.create_account("subject-local", &[1; 16], &passkey(0), Admission::Open).await.unwrap());
 
 		for id in 1..MAX_PASSKEYS_PER_SUBJECT {
 			let id = u8::try_from(id).unwrap();
@@ -324,7 +396,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_update_cannot_reach_another_subjects_passkey() {
 		let repo = repo().await;
-		repo.create_account("subject-local", &[1; 16], &passkey(1)).await.unwrap();
+		assert!(repo.create_account("subject-local", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
 
 		let rewritten = StoredPasskey {
 			credential_id: vec![1; 16],
@@ -340,8 +412,8 @@ mod tests {
 	#[tokio::test]
 	async fn sessions_expire_and_a_subject_holds_a_bounded_number() {
 		let repo = repo().await;
-		repo.create_account("subject-a", &[1; 16], &passkey(1)).await.unwrap();
-		repo.create_account("subject-b", &[2; 16], &passkey(2)).await.unwrap();
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
 
 		assert!(!repo.create_session(b"orphan", "subject-gone", 100, 50).await.unwrap(), "no account, no session");
 		assert!(repo.live_session(b"orphan", 60).await.unwrap().is_none());

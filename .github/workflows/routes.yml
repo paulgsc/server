@@ -235,8 +235,11 @@ jobs:
       # A throwaway database, so every contract runs, mutating ones included,
       # and one signed-in session for the per-person routes. A session is
       # stored as the SHA-256 of the cookie's 32 bytes (`auth/cookie.rs`), so
-      # writing that row is signing in; the subject is also an operator, for
-      # the operator routes. RATE_LIMIT is per client per minute, and the
+      # writing that row is signing in; that account is the only one, so it
+      # is the owner's and runs the operator routes with no OPERATOR_SUBJECTS
+      # (#510). AUTH_OPEN_SIGNUP is on because sign-up closes once an account
+      # exists, and the `auth.register_start` contract expects an open
+      # server's options. RATE_LIMIT is per client per minute, and the
       # harness is one client making about sixty requests in a few seconds.
       - name: Start this PR's file_host
         env:
@@ -264,7 +267,7 @@ jobs:
           chmod +x contract-run/file_host
           env DATABASE_URL="sqlite://$db" NATS_URL=nats://127.0.0.1:4222 REDIS_URL=redis://127.0.0.1:6379 \
             FILE_HOST_BIND=127.0.0.1 FILE_HOST_PORT=3000 RATE_LIMIT=6000 \
-            WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=https://localhost OPERATOR_SUBJECTS="$SUBJECT" \
+            WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=https://localhost AUTH_OPEN_SIGNUP=true \
             ALLOWED_ORIGINS=https://localhost APP_BASE_URL=https://localhost/ \
             OBS_WEBSOCKET_IP=127.0.0.1 OBS_WEBSOCKET_PWD=unused RUST_LOG=info \
             nohup contract-run/file_host > "$RUNNER_TEMP/file_host.log" 2>&1 &

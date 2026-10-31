@@ -19,13 +19,13 @@
 //!   session of its own, and sends that as `Authorization: Bearer`
 //!   ([`pairing`]). It is an ordinary session row: it expires, slides, and
 //!   ends with sign-out, sign-out everywhere, or the account.
-//! - The pre-auth subject goes to a new account only with the operator's
-//!   one-time `AUTH_LEGACY_CLAIM_TOKEN`, never to whoever registers first.
+//! - Account creation closes once an account exists, unless `AUTH_OPEN_SIGNUP`
+//!   opens it for a product: the box is one person's, and that person's
+//!   account is the only one ([`owner`]).
 //! - [`crate::subject::SubjectId`]'s extractor is the one place a request's
 //!   session becomes a subject. Everything downstream is unchanged by auth.
-//! - An operator is a subject listed in `OPERATOR_SUBJECTS`, nothing more
-//!   ([`operator::Operator`]). Signing in makes nobody an operator: anyone can
-//!   make an account.
+//! - An operator is the owner's account, or, with `OPERATOR_SUBJECTS` set, a
+//!   subject listed there and nothing else ([`operator::Operator`]).
 //!
 //! [`AuthContext`] is its own state, bounded on `AuthContext: FromRef<S>` only,
 //! per the convention docs/identity.md records: the auth routes and their tests
@@ -35,16 +35,16 @@ pub mod ceremony;
 pub mod cookie;
 pub mod csrf;
 pub mod operator;
+pub mod owner;
 pub mod pairing;
 pub mod passkey;
 
-use crate::{redacted::Redacted, Config, FileHostError};
-use auth_repo::AuthRepository;
+use crate::{Config, FileHostError};
+use auth_repo::{Accounts, Admission, AuthRepository};
 use axum::http::{HeaderMap, Method};
 use ceremony::CeremonyStore;
 use cookie::SessionToken;
 use pairing::PairingStore;
-use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -115,20 +115,32 @@ struct Settings {
 	/// Origins a state-changing, cookie-authenticated request may come from:
 	/// `ALLOWED_ORIGINS` and `WEBAUTHN_ORIGINS` together. See [`csrf`].
 	trusted_origins: Vec<String>,
-	/// `AUTH_LEGACY_CLAIM_TOKEN`: the one-time secret that lets a new account
-	/// take the pre-auth subject. `None` means nobody can.
-	legacy_claim: Option<Redacted<String>>,
-	/// `OPERATOR_SUBJECTS`, trimmed, empties dropped. Empty means nobody is an
-	/// operator. See [`operator`].
+	/// `AUTH_OPEN_SIGNUP`: whether an account may be created while one
+	/// exists. Off, the first account closes sign-up.
+	open_signup: bool,
+	/// `OPERATOR_SUBJECTS`, trimmed, empties dropped. Empty means the owner's
+	/// account is the operator. See [`operator`].
 	operators: Vec<String>,
+}
+
+/// Whether a signed-in subject may use the operator routes, and if not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperatorVerdict {
+	Operator,
+	/// `OPERATOR_SUBJECTS` is set and does not list the subject.
+	NotListed,
+	/// `OPERATOR_SUBJECTS` is unset and the subject is not the only account.
+	NotTheOwner,
 }
 
 /// A ceiling on accounts created per UTC day, across the whole server.
 ///
-/// Anyone who can reach the server may make an account, and the per-client
-/// rate limiter on `/api/v1` already bounds how fast one client can. This is
-/// the backstop for many clients (or a forged `X-Forwarded-For`, which buys a
-/// new rate-limit bucket): a flood of empty accounts stops at this many a day.
+/// It matters with `AUTH_OPEN_SIGNUP` on, when anyone who can reach the
+/// server may make an account; the per-client rate limiter on `/api/v1`
+/// already bounds how fast one client can. This is the backstop for many
+/// clients (or a forged `X-Forwarded-For`, which buys a new rate-limit
+/// bucket): a flood of empty accounts stops at this many a day. Closed
+/// sign-up stops at one.
 /// Held in memory on purpose, so no column records when an account was made;
 /// a restart resets the count, which only matters to someone already under
 /// the cap.
@@ -202,9 +214,15 @@ impl AuthContext {
 		}
 		let operators = operator::parse_subjects(&config.operator_subjects);
 		if operators.is_empty() {
-			tracing::warn!("OPERATOR_SUBJECTS is unset; the operator routes (lesson and LeetType round writes) are disabled and answer 403 to everyone");
+			tracing::info!("OPERATOR_SUBJECTS is unset; the owner's account (the only one) runs the operator routes");
 		} else {
-			tracing::info!(operators = operators.len(), "operator routes are enabled for the subjects in OPERATOR_SUBJECTS");
+			tracing::info!(
+				operators = operators.len(),
+				"operator routes are enabled for the subjects in OPERATOR_SUBJECTS, and for nobody else"
+			);
+		}
+		if config.auth_open_signup {
+			tracing::warn!("AUTH_OPEN_SIGNUP is on: anyone who can reach the server can make an account, and no account is the owner's by itself");
 		}
 		let trusted_origins = config
 			.allowed_origins
@@ -219,7 +237,7 @@ impl AuthContext {
 				session_ttl_seconds: i64::from(config.auth_session_days) * 86_400,
 				new_accounts_per_day: config.auth_new_accounts_per_day,
 				trusted_origins,
-				legacy_claim: config.auth_legacy_claim_token.clone().filter(|token| !token.is_empty()).map(Redacted::new),
+				open_signup: config.auth_open_signup,
 				operators,
 			},
 		))
@@ -240,34 +258,38 @@ impl AuthContext {
 	}
 
 	#[cfg(test)]
-	fn test_settings(new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Settings {
+	fn test_settings(new_accounts_per_day: u32, open_signup: bool) -> Settings {
 		Settings {
 			session_ttl_seconds: 30 * 86_400,
 			new_accounts_per_day,
 			trusted_origins: vec![String::from("https://app.test")],
-			legacy_claim: legacy_claim.map(|token| Redacted::new(token.to_owned())),
+			open_signup,
 			operators: Vec::new(),
 		}
 	}
 
-	/// A context for tests, configured for `https://app.test`.
+	/// A context for tests, configured for `https://app.test`, with sign-up
+	/// open (`AUTH_OPEN_SIGNUP=true`): most tests want several accounts.
+	/// The default, closed after the first, is [`Self::for_tests_closed`].
 	#[cfg(test)]
 	pub(crate) fn for_tests(pool: SqlitePool, new_accounts_per_day: u32) -> Self {
-		Self::for_tests_with_claim(pool, new_accounts_per_day, None)
+		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
+		Self::new(pool, Some(relying_party), Self::test_settings(new_accounts_per_day, true))
 	}
 
-	/// A context for tests whose `AUTH_LEGACY_CLAIM_TOKEN` is `legacy_claim`.
+	/// A context for tests as a deployment's default: sign-up closes once an
+	/// account exists.
 	#[cfg(test)]
-	pub(crate) fn for_tests_with_claim(pool: SqlitePool, new_accounts_per_day: u32, legacy_claim: Option<&str>) -> Self {
+	pub(crate) fn for_tests_closed(pool: SqlitePool) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
-		Self::new(pool, Some(relying_party), Self::test_settings(new_accounts_per_day, legacy_claim))
+		Self::new(pool, Some(relying_party), Self::test_settings(100, false))
 	}
 
 	/// A context for tests whose `OPERATOR_SUBJECTS` is `operators`.
 	#[cfg(test)]
 	pub(crate) fn for_tests_with_operators(pool: SqlitePool, operators: &[&str]) -> Self {
 		let relying_party = relying_party("app.test", &[String::from("https://app.test")]).unwrap();
-		let mut settings = Self::test_settings(100, None);
+		let mut settings = Self::test_settings(100, true);
 		settings.operators = operators.iter().map(|&subject| subject.to_owned()).collect();
 		Self::new(pool, Some(relying_party), settings)
 	}
@@ -275,7 +297,7 @@ impl AuthContext {
 	/// A context for tests, with `WEBAUTHN_RP_ID` unset.
 	#[cfg(test)]
 	pub(crate) fn unconfigured_for_tests(pool: SqlitePool) -> Self {
-		Self::new(pool, None, Self::test_settings(100, None))
+		Self::new(pool, None, Self::test_settings(100, true))
 	}
 
 	pub(crate) fn repository(&self) -> AuthRepository {
@@ -349,20 +371,56 @@ impl AuthContext {
 		}
 	}
 
-	/// Whether `offered` is this deployment's legacy claim token. Always false
-	/// when none is configured.
-	pub(crate) fn legacy_claim_matches(&self, offered: &str) -> bool {
-		self.inner.settings.legacy_claim.as_ref().is_some_and(|token| {
-			// Compared as digests, so the comparison's timing says nothing
-			// about how much of the token a guess got right.
-			Sha256::digest(token.expose().as_bytes()) == Sha256::digest(offered.as_bytes())
+	/// The owner's account, read now (`owner`).
+	///
+	/// # Errors
+	/// A storage failure.
+	pub(crate) async fn owner(&self) -> Result<owner::Owner, FileHostError> {
+		Ok(owner::owner(&self.inner.pool).await?)
+	}
+
+	/// Whether `subject` may use the operator routes: listed in
+	/// `OPERATOR_SUBJECTS` when that is set, else the owner's account.
+	///
+	/// # Errors
+	/// A storage failure, when the owner had to be read.
+	pub(crate) async fn operator_verdict(&self, subject: &str) -> Result<OperatorVerdict, FileHostError> {
+		let listed = &self.inner.settings.operators;
+		if !listed.is_empty() {
+			return Ok(if listed.iter().any(|operator| operator == subject) {
+				OperatorVerdict::Operator
+			} else {
+				OperatorVerdict::NotListed
+			});
+		}
+		Ok(if self.owner().await?.subject() == Some(subject) {
+			OperatorVerdict::Operator
+		} else {
+			OperatorVerdict::NotTheOwner
 		})
 	}
 
-	/// Whether `subject` is listed in `OPERATOR_SUBJECTS`. Always false when
-	/// none is configured.
-	pub(crate) fn is_operator(&self, subject: &str) -> bool {
-		self.inner.settings.operators.iter().any(|operator| operator == subject)
+	/// How a new account is admitted: whenever asked with `AUTH_OPEN_SIGNUP`,
+	/// else only as the first.
+	pub(crate) fn admission(&self) -> Admission {
+		if self.inner.settings.open_signup {
+			Admission::Open
+		} else {
+			Admission::FirstOnly
+		}
+	}
+
+	/// Whether an account could be created now: sign-up is open, or no
+	/// account exists yet. A cheap read for `register/start`; `finish`
+	/// decides for real, in the statement that creates the account.
+	///
+	/// # Errors
+	/// A storage failure.
+	pub(crate) async fn signups_open(&self) -> Result<bool, FileHostError> {
+		if self.inner.settings.open_signup {
+			return Ok(true);
+		}
+		Ok(matches!(self.repository().accounts().await?, Accounts::None))
 	}
 
 	pub(crate) fn signups_have_room(&self, now: i64) -> bool {

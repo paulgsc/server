@@ -25,8 +25,8 @@
 use crate::VoiceError;
 use sqlx::SqliteConnection;
 
-/// One word heard, and when it was said.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One word heard, when it was said, and how sure the model was of it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Word {
 	/// The word as heard, with any punctuation that clings to it. Never
 	/// logged.
@@ -35,6 +35,15 @@ pub struct Word {
 	pub start_ms: i64,
 	/// When it ended, the same way; never before it began.
 	pub end_ms: i64,
+	/// How sure the model was of the word, 0 to 1: the lowest of its tokens'
+	/// probabilities, so one unsure piece makes the word unsure
+	/// (paulgsc/server#577, ST22). None for a word heard before it was kept
+	/// (`20261031000200`), or one the model gave no number for.
+	pub p: Option<f64>,
+	/// Whisper's code for the language it was heard in (`en`, `ko`): home
+	/// hears each piece of speech in its own (paulgsc/server#578, ST23). None
+	/// for a word heard before it was kept (`20261031000300`).
+	pub language: Option<String>,
 }
 
 /// How an attempt to hear a note ended.
@@ -227,23 +236,32 @@ pub async fn keep_attempt(conn: &mut SqliteConnection, subject: &str, note_id: &
 /// transaction [`keep_attempt`] writes the transcript in.
 ///
 /// A time the schema would refuse is held to it here (never negative, never
-/// ending before it began) rather than refused: a refused write fails the
-/// whole attempt, and the note would wait to be heard again, failing the same
-/// way, every pass.
+/// ending before it began) rather than refused, and so is how sure the model
+/// was (not a number: none; past 0 or 1: held to it): a refused write fails
+/// the whole attempt, and the note would wait to be heard again, failing the
+/// same way, every pass.
 async fn keep_words(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str, words: &[Word]) -> Result<(), VoiceError> {
 	for (index, word) in (0_i64..).zip(words) {
 		let start_ms = word.start_ms.max(0);
 		let end_ms = word.end_ms.max(start_ms);
+		let p = word.p.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, 1.0));
+		// A language the schema would refuse is held to none, as the times are.
+		let language = word
+			.language
+			.as_deref()
+			.filter(|code| (2..=3).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase()));
 		sqlx::query!(
-			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p, language)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
 			subject,
 			note_id,
 			model,
 			index,
 			word.text,
 			start_ms,
-			end_ms
+			end_ms,
+			p,
+			language
 		)
 		.execute(&mut *conn)
 		.await?;
@@ -265,7 +283,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	Ok(
 		sqlx::query_as!(
 			Word,
-			r#"SELECT w.text, w.start_ms, w.end_ms FROM voice_transcript_word w
+			r#"SELECT w.text, w.start_ms, w.end_ms, w.p, w.language FROM voice_transcript_word w
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
@@ -279,9 +297,31 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	)
 }
 
+/// The words `model` heard in `subject`'s note `note_id`, in the order said.
+///
+/// Each with its time and how sure the model was: what a transcript filed
+/// under that model carries (paulgsc/server#577). Empty for a transcript
+/// heard before words were kept.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str) -> Result<Vec<Word>, sqlx::Error> {
+	sqlx::query_as!(
+		Word,
+		r#"SELECT text, start_ms, end_ms, p, language FROM voice_transcript_word
+		 WHERE subject_id = ?1 AND note_id = ?2 AND model = ?3
+		 ORDER BY word_index"#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, words, Attempt, Kept, Outcome, Waiting, Word};
+	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Outcome, Waiting, Word};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -329,6 +369,8 @@ mod tests {
 				text: word.to_owned(),
 				start_ms: 500 * n,
 				end_ms: 500 * n + 400,
+				p: Some(0.9),
+				language: Some(String::from("en")),
 			})
 			.collect()
 	}
@@ -564,7 +606,7 @@ mod tests {
 			.fetch_all(&pool)
 			.await
 			.unwrap();
-		assert_eq!(columns, ["subject_id", "note_id", "model", "word_index", "text", "start_ms", "end_ms"]);
+		assert_eq!(columns, ["subject_id", "note_id", "model", "word_index", "text", "start_ms", "end_ms", "p", "language"]);
 	}
 
 	/// A heard attempt keeps its words with it; a failure, silence or a replay
@@ -651,17 +693,63 @@ mod tests {
 					text: String::from("early"),
 					start_ms: -20,
 					end_ms: 300,
+					p: Some(1.5),
+					language: Some(String::from("Korean")),
 				},
 				Word {
 					text: String::from("late"),
 					start_ms: 900,
 					end_ms: 800,
+					p: Some(f64::NAN),
+					language: Some(String::from("ko")),
 				},
 			],
 		};
 		assert_eq!(keep(&pool, A, "n1", &attempt(SMALL, odd)).await, Kept::Added(1));
-		let times: Vec<(i64, i64)> = words_of(&pool, A, "n1").await.iter().map(|word| (word.start_ms, word.end_ms)).collect();
-		assert_eq!(times, [(0, 300), (900, 900)]);
+		let held: Vec<(i64, i64, Option<f64>, Option<String>)> = words_of(&pool, A, "n1")
+			.await
+			.into_iter()
+			.map(|word| (word.start_ms, word.end_ms, word.p, word.language))
+			.collect();
+		assert_eq!(
+			held,
+			[(0, 300, Some(1.0), None), (900, 900, None, Some(String::from("ko")))],
+			"a probability out of range is held to it, one that is not a number is none, and a language that is not a code is none"
+		);
+	}
+
+	/// A transcript filed under a model carries that model's words with how
+	/// sure it was of each (paulgsc/server#577), none where it gave no number.
+	#[tokio::test]
+	async fn a_models_words_read_back_with_how_sure_it_was() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"audio").await;
+		keep(&pool, A, "n1", &attempt(SMALL, heard("hello there"))).await;
+		let unsure = Outcome::Heard {
+			language: String::from("en"),
+			language_p: 0.99,
+			text: String::from("hello there"),
+			words: vec![
+				Word {
+					text: String::from("hello"),
+					start_ms: 0,
+					end_ms: 400,
+					p: Some(0.3),
+					language: Some(String::from("en")),
+				},
+				Word {
+					text: String::from("there"),
+					start_ms: 500,
+					end_ms: 900,
+					p: None,
+					language: None,
+				},
+			],
+		};
+		keep(&pool, A, "n1", &attempt(MEDIUM, unsure.clone())).await;
+		let mut conn = pool.acquire().await.unwrap();
+		let Outcome::Heard { words, .. } = unsure else { unreachable!() };
+		assert_eq!(words_heard_by(&mut conn, A, "n1", MEDIUM).await.unwrap(), words);
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.
@@ -674,13 +762,19 @@ mod tests {
 		assert!(refused.unwrap_err().to_string().contains("append-only"), "no word is ever updated");
 		for insert in [
 			// A second word under a held index.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'ggml-small-q5_1.bin', 1, 'again', 2000, 2400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'ggml-small-q5_1.bin', 1, 'again', 2000, 2400, 0.9, 'en')",
 			// Ending before it began.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 500, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 500, 400, 0.9, 'en')",
 			// Before the note began.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', -1, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', -1, 400, 0.9, 'en')",
 			// A place before the first.
-			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', -1, 'x', 0, 400)",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', -1, 'x', 0, 400, 0.9, 'en')",
+			// Surer than sure, or less than not at all.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, 1.5, 'en')",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, -0.1, 'en')",
+			// A language that is not Whisper's code.
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, 0.9, 'Korean')",
+			"INSERT INTO voice_transcript_word VALUES ('subject-a', 'n1', 'm', 0, 'x', 0, 400, 0.9, 'k')",
 		] {
 			assert!(sqlx::query(insert).execute(&pool).await.is_err(), "{insert}");
 		}

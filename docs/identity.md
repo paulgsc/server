@@ -18,9 +18,13 @@ The owner's deployment: on their home network, the owner is the only person
 who signs in, and this server is their own store, as private as their phone
 (paulgsc/some-ui#2174). Nothing below is relaxed for it, since anything on that
 network can reach the box, and what "What is still exposed" lists is unchanged.
-#510 and paulgsc/some-ui#2182 track removing what serves strangers rather than
-the owner: open sign-up, the operator and mailbox ids copied from a log line,
-and invariant 17's sharing choice.
+What served strangers rather than the owner is being removed. #510 closed
+sign-up once the owner's account exists and made that account the operator and
+the mailbox's subject with no id copied from a log line ("The owner's account");
+paulgsc/some-ui#2182 tracks invariant 17's sharing choice. What #510 left to the
+owner's decision is said where it applies: the unauthenticated surfaces
+(`tabs`, `mood_events`, `/utter`; "What is still exposed"), and whether an
+account deletion should first make a durable copy (invariants 9 and 22).
 
 That is a statement about what the code asks for. It is not a promise about
 what people choose to send it (a kept shelf item or a captured page can say
@@ -113,15 +117,31 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 Nothing records when an account or a passkey was made or last used. The
 per-day cap on new accounts is counted in memory for the same reason.
 
-Every new account gets a random subject id, the first one included. The rows
-written before auth existed carry the placeholder subject `subject-local`, and
-an account takes them over only with the operator's one-time
-`AUTH_LEGACY_CLAIM_TOKEN`: set it on the server, open the app at
-`/auth#claim=<token>`, create a passkey there, then unset it. The token travels
-in the registration body (a URL fragment never reaches a server, so no access
-log sees it), is compared as a digest, and works once. "Whoever registers
-first" is not an owner: on a reachable server, first is whoever gets there.
-Deleting that account deletes those rows like any other account's.
+Every new account gets a random subject id, the owner's included.
+
+### The owner's account
+
+**The owner's account is the only account, when exactly one exists**
+(`auth::owner`). It is not in the id, not in the environment and not in a log
+line. It is the operator ("Who is an operator") and whose copy the Jobs mailbox
+poller keeps (invariant 19), read from the `account` table at each use: the
+owner registers after the box boots and is served without a restart, and
+deleting the account un-owns the box the same moment. "The only account"
+rather than "the first" because the auth tables keep no timeline (invariant
+10): nothing records which account came first, SQLite's rowid is no order to
+lean on, and defining the owner this way adds no column and no state outside
+`account`, so it reads the same after a restart, a restored backup or a
+`VACUUM`. It holds because sign-up closes once an account exists ("Who can make
+an account"). A deployment that opens sign-up (`AUTH_OPEN_SIGNUP`) has no owner
+by itself, and names its operator and mailbox subject in `OPERATOR_SUBJECTS`
+and `MAILBOX_SUBJECT`, which override the owner's account whenever set.
+
+The rows written before auth existed carry the placeholder subject
+`subject-local`. The one-time claim that let a new account take them over
+(`AUTH_LEGACY_CLAIM_TOKEN`, `/auth#claim=<token>`) was retired with #510, as
+nothing still needed it: no account holds that subject, and those rows stay as
+they are, under a subject nobody can sign in as, until the owner decides about
+them.
 
 ### The ceremonies
 
@@ -271,27 +291,36 @@ content security policy), not this route's.
 
 ### Who can make an account
 
-Anyone who can reach the server. The per-client rate limiter on `/api/v1`
-bounds one client, and `AUTH_NEW_ACCOUNTS_PER_DAY` (100) bounds the server,
-which also covers a client forging `X-Forwarded-For` to get fresh rate-limit
-buckets. An account with nothing in it costs a few hundred bytes.
+The owner, once. Account creation is open while the box has no account and
+closes once it has one: `POST /auth/register/start` and `…/finish` answer `403`
+with code `signup_closed`, and the check and the insert are one statement under
+an immediate transaction (`auth_repo::Admission`), so two first registrations
+racing cannot both land. Sign-in stays open. `AUTH_OPEN_SIGNUP` opens creation
+for a product; then anyone who can reach the server can make an account, the
+per-client rate limiter on `/api/v1` bounds one client, and
+`AUTH_NEW_ACCOUNTS_PER_DAY` (100) bounds the server, which also covers a client
+forging `X-Forwarded-For` to get fresh rate-limit buckets. An account with
+nothing in it costs a few hundred bytes.
 
 ### Who is an operator
 
-A subject listed in `OPERATOR_SUBJECTS`, and nobody else. The operator routes
-(`/curriculum/operator/*`) rewrite what everyone is
-served, and since anyone can make an account, a session alone cannot be what
-gates them. `auth::operator::Operator` extracts a `SubjectId` first, so
-the `401`, the origin check and the hold against deletion are the same as on any
-subject-scoped route, then answers `403` unless the subject is on the list.
-Unset, nobody is an operator.
+The owner's account ("The owner's account"), or, with `OPERATOR_SUBJECTS` set,
+a subject listed there and nobody else. The operator routes
+(`/curriculum/operator/*`) rewrite what everyone is served.
+`auth::operator::Operator` extracts a `SubjectId` first, so the `401`, the
+origin check and the hold against deletion are the same as on any
+subject-scoped route, then answers `403` unless the subject is the only account
+(the list unset) or on the list (the list set). With the list unset and several
+accounts, nobody is an operator, and the refusal's log line says so.
 
 The subject id is never returned to the browser. `GET /auth/session` answers
 only `{ expiresAt }`: page script has never needed a stable id that follows the
 account across devices, and handing it one for a one-time setup step would be a
-new exposure. Instead a refused subject is logged by id at `info`, and the
-operator, who configures the server and reads its log, copies it from there.
-Subject ids are random and name nobody; the nudge waker logs them already.
+new exposure. The owner's box needs no id anywhere: its one account is the
+operator. A deployment that sets `OPERATOR_SUBJECTS` finds an id as before: a
+refused subject is logged by id at `info`, and the operator, who configures the
+server and reads its log, copies it from there. Subject ids are random and name
+nobody; the nudge waker logs them already.
 
 ### Conventions
 
@@ -431,10 +460,21 @@ nowhere is marked as such and belongs to review.
    or its rows can outlive a deleted account. Every hold is short, so a
    deletion stays well inside the HTTP timeout.
 
+   In the owner's deployment the only account is the owner's ("The owner's
+   account"), so this deletion is of the owner's whole record, and home keeps
+   no copy. Whether it should first make a durable copy, or stay as it is on
+   the owner's explicit call, waits on the owner (#510; paulgsc/some-ui's
+   "Never lose the record"). Until then the claim stands as written, and the
+   code does what it says.
+
 10. **The auth tables keep no timeline.** `account`, `passkey` and
     `auth_session` hold exactly the columns listed under "What an account is":
     no creation, last-seen or last-used time. A session's expiry is the one
-    instant stored.
+    instant stored. That absence is why the owner's account is defined as the
+    only account and not the first ("The owner's account"): nothing says
+    which came first. Whether a last-used time per passkey and session would
+    serve one admin as a security feature (#510 raised it) is the owner's
+    call; until made, no such column exists.
     *Enforced by* `file_host::privacy`'s
     `the_auth_tables_hold_exactly_their_listed_columns`. A new column there
     fails it until someone decides what it tells the server and says why.
@@ -620,8 +660,9 @@ nowhere is marked as such and belongs to review.
     a `409`), and never deleted but with the account. It is written only by
     `PUT /leetype/sessions/:session/events/:id`, readable only by its own
     subject (`GET /leetype/sessions` and `GET /leetype/sessions/:session/events`)
-    and by the `mailbox` poller for the subject `MAILBOX_SUBJECT` names, and
-    deleted with the account by both the sweep and the migration's
+    and by the `mailbox` poller for its subject (the owner's account unless
+    `MAILBOX_SUBJECT` names another, `mailbox::pass_subject`), and deleted
+    with the account by both the sweep and the migration's
     trigger (invariant 12). Its events also leave home in one file per
     session, for the mailbox's `leetype-log` folder, where the owner's weekly
     review reads it (invariant 19; paulgsc/some-ui#2027): every event home
@@ -664,8 +705,9 @@ nowhere is marked as such and belongs to review.
 19. **Home's copy of the Jobs mailbox is append-only, each table has one
     writer, and it holds JSON files, never audio.** The mailbox (paulgsc/some-ui
     `apps/mailbox`) is a Cloudflare Worker where the owner's cloud routine
-    and home leave each other files. For the one subject `MAILBOX_SUBJECT`
-    names, `file_host`'s `mailbox` poller reads only its `brief` folder (the
+    and home leave each other files. For one subject, the owner's account
+    unless `MAILBOX_SUBJECT` names another (`mailbox::pass_subject`),
+    `file_host`'s `mailbox` poller reads only its `brief` folder (the
     routine's daily job digests), its `scene` and `drama` folders (the
     reflections routine's word sets and dramas) and its `run` folder (a
     record of what each routine's runs found and added, which the phone
@@ -693,10 +735,14 @@ nowhere is marked as such and belongs to review.
       `file_leetype_logs`: a decisions or scouts file the phone filed, which
       of the routine's lessons it opened, a transcript, or a LeetType
       session's log, its bytes, hash and when.
-      The jobs route refuses a file that names a voice note anywhere (any
-      `voice` key that is not an empty list), so no file that points at
-      audio is handed on; those go by the phone's share sheet, which carries
-      the audio to Drive. The routine route builds its file itself, as
+      The jobs route files a decisions or scouts file as the phone sent it,
+      a voice note it names by the phone's id included (paulgsc/server#508;
+      until then it refused one, which only routed the owner through Drive):
+      an id is text, the note's audio is `voice_note_audio`'s (invariant
+      23), and what home heard in it reaches the routine as the transcript
+      below, under that id. Nothing in the file points at audio, and
+      sending to home is the default (paulgsc/some-ui#2174). The routine
+      route builds its file itself, as
       `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
       `drama` and a mailbox name), at most 100, and home's time, nothing
       else (owner, 2026-10-24: the routine keeps three lessons not opened).
@@ -762,6 +808,7 @@ nowhere is marked as such and belongs to review.
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
+    `a_filed_file_is_handed_over_as_filed`,
     `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
     `no_transcript_is_filed_for_a_deleted_subject`,
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
@@ -776,7 +823,7 @@ nowhere is marked as such and belongs to review.
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
-    `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
+    `files_take_a_file_that_names_a_voice_note`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,
@@ -832,7 +879,8 @@ nowhere is marked as such and belongs to review.
     *Enforced by* `file_host::privacy`'s
     `every_subject_scoped_table_is_named_in_what_deleting_erases`, which fails
     on a subject-scoped table the list omits, a name it lists that is not one,
-    and a table listed twice.
+    and a table listed twice. Whether the owner's deletion should first make
+    a durable copy, and the screen say so, waits with invariant 9 (#510).
     *Not enforced:* that the screen says each kind. The words live in another
     repository (paulgsc/some-ui, `apps/www/src/lib/auth/account-erases.ts`),
     and nothing there can read this list; a kind added here is added there by
@@ -911,7 +959,14 @@ nowhere is marked as such and belongs to review.
     heard something. A heard attempt also keeps each word it heard, with
     when the word began and ended in milliseconds from the note's start
     (whisper.cpp's per-word times, joined from its tokens and moved from the
-    speech the VAD cut out back to the note), as new rows in
+    speech the VAD cut out back to the note), and how sure the model was of
+    it (`p`, 0 to 1: the lowest of its tokens' probabilities, so one unsure
+    piece makes the word unsure; null for a word heard before it was kept,
+    paulgsc/server#577, ST22), and the language it was heard in (`language`,
+    Whisper's code; home hears each piece of speech the VAD found in its own
+    language, so a Korean phrase inside an English take comes back in
+    Hangul, and the note's language is the one heard for longest;
+    paulgsc/server#578, ST23), as new rows in
     `voice_transcript_word`, one per word, keyed by the note, the model and
     the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
     follow the voice word by word; approved by the owner, paulgsc/some-ui#2074
@@ -932,8 +987,11 @@ nowhere is marked as such and belongs to review.
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
     it kept. The text leaves home only as a transcript filed for the Jobs
-    mailbox (invariant 19), for the routines to read; the words are readable
-    by no route yet, and the audio never leaves.
+    mailbox (invariant 19), for the routines to read, and since
+    paulgsc/server#577 that file carries that model's words too, each with
+    its time, how sure the model was and its language (`words`); the words are readable by
+    no route yet, and the audio never leaves. A probability is not text, so
+    it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
@@ -1256,8 +1314,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **Passkey sync providers.** A synced passkey lives in the person's Apple,
   Google or password-manager account. That provider knows the person holds a
   passkey for this site, which is the provider's knowledge, not this server's.
-- **Anyone can make an account.** An open server can be filled with empty
-  accounts up to the daily cap. They hold nothing and single nobody out.
+- **The first account is whoever gets there.** Until the box has an account,
+  anyone who can reach it can make one and be its owner; after that, sign-up
+  is closed (`signup_closed`). With `AUTH_OPEN_SIGNUP` on, an open server can
+  be filled with empty accounts up to the daily cap. They hold nothing and
+  single nobody out.
 - **Request URIs, outside the span.** `file_host`'s own HTTP span records a route
   template and no URI (invariant 13), but a query string is still part of the URI
   that every proxy in front of it sees, so identifying data must never travel in
@@ -1288,7 +1349,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   belongs to no subject (page URLs and titles, the video playing, text a
   browser extension sends), so no account deletion reaches it and nothing here
   ties it to a person except what it says. `tabs` is the one that stores
-  something identifying, and it is under review for removal.
+  something identifying, and it is under review for removal. What to do with
+  `tabs`, `mood_events` and `/utter` on the owner's box is the owner's call
+  (#510).
 - **What deleting an account does not reach.** The subject's rows in the
   subject-scoped tables are deleted in one transaction. Not reached: copies in
   Redis, log lines and exported spans that carry the id, ceremonies held in

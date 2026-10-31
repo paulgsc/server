@@ -44,6 +44,13 @@ pub enum FileHostError {
 	#[error("user may not perform that action")]
 	Forbidden,
 
+	// Account creation is closed: the box already has its owner's account
+	// and `AUTH_OPEN_SIGNUP` is off (docs/identity.md, "Who can make an
+	// account"). A 403 of its own code, so the client can say "sign in"
+	// rather than "something went wrong".
+	#[error("this server already has its owner's account")]
+	SignupClosed,
+
 	#[error("request path not found")]
 	NotFound,
 
@@ -192,10 +199,9 @@ impl FileHostError {
 		match self {
 			Self::UnprocessableEntity { .. } => StatusCode::UNPROCESSABLE_ENTITY,
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
-			Self::Forbidden => StatusCode::FORBIDDEN,
+			Self::Forbidden | Self::SignupClosed | Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
 			Self::Conflict(_) | Self::Stopped => StatusCode::CONFLICT,
-			Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -220,6 +226,7 @@ impl FileHostError {
 		match self {
 			Self::Unauthorized => "unauthorized",
 			Self::Forbidden => "forbidden",
+			Self::SignupClosed => "signup_closed",
 			Self::NotFound => "not_found",
 			Self::InvalidData => "invalid_data",
 			Self::InvalidMimeType(_) => "invalid_mime_type",
@@ -253,6 +260,7 @@ impl FileHostError {
 		match self {
 			Self::Unauthorized => "authentication required",
 			Self::Forbidden => "user may not perform that action",
+			Self::SignupClosed => "this server already has its owner's account; sign in with its passkey",
 			Self::NotFound => "request path not found",
 			Self::InvalidData => "invalid data schema",
 			Self::InvalidMimeType(_) => "invalid mime type",

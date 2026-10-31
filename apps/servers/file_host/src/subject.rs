@@ -24,14 +24,6 @@ use rand::RngCore;
 use std::sync::Arc;
 use tokio::sync::OwnedRwLockReadGuard;
 
-/// The subject every request acted for before auth existed.
-///
-/// Rows written then carry it. A new account takes it over only with the
-/// operator's one-time `AUTH_LEGACY_CLAIM_TOKEN` ([`legacy_subject`]), never
-/// by being first: on a reachable server, first is whoever gets there. It is
-/// otherwise an ordinary subject id, and no request is assigned it by default.
-pub const SINGLETON_SUBJECT: &str = "subject-local";
-
 /// Tables whose rows belong to one subject, and what they hold.
 ///
 /// Each is keyed by a `subject_id` column. Deleting an account deletes the subject's rows
@@ -98,7 +90,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",
@@ -212,19 +204,20 @@ impl PartialEq for SubjectId {
 impl Eq for SubjectId {}
 
 /// The subject id for a new account: `subject-` and 32 random hex digits.
-/// Nothing about the person, the request, or the time goes into it.
+///
+/// Nothing about the person, the request, or the time goes into it. The
+/// owner's is no different: which account is the owner's is read from the
+/// `account` table (`auth::owner`), never from the id.
+///
+/// Rows written before auth existed carry `subject-local`, a placeholder no
+/// account holds now that the one-time claim that could take them over is
+/// retired (#510); they are ordinary rows under a subject nobody can sign in
+/// as.
 #[must_use]
 pub fn new_account_subject() -> String {
 	let mut bytes = [0_u8; 16];
 	rand::rng().fill_bytes(&mut bytes);
 	String::from("subject-") + &hex::encode(bytes)
-}
-
-/// The subject a new account takes when it presents the operator's
-/// `AUTH_LEGACY_CLAIM_TOKEN`: the one the pre-auth rows were written under.
-#[must_use]
-pub const fn legacy_subject() -> &'static str {
-	SINGLETON_SUBJECT
 }
 
 // `axum-core` 0.4 still defines this trait through `async_trait`, so the impl
@@ -330,13 +323,12 @@ where
 
 #[cfg(test)]
 mod tests {
-	use super::{legacy_subject, new_account_subject};
+	use super::new_account_subject;
 
 	#[test]
 	fn a_new_subject_is_random_and_names_nothing() {
 		let a = new_account_subject();
 		let b = new_account_subject();
-		assert_eq!(legacy_subject(), "subject-local");
 		assert_ne!(a, b);
 		assert_eq!(a.len(), "subject-".len() + 32);
 		assert!(a.strip_prefix("subject-").unwrap().bytes().all(|byte| byte.is_ascii_hexdigit()));
