@@ -26,6 +26,7 @@ on:
       - main
     paths:
       - 'crates/rust_runner/**'
+      - 'crates/rust_rounds_wire/**'
       - 'infra/docker/Dockerfile.rust-runner'
       - 'infra/compose/rust_runner.yml'
       - 'scripts/check_rust_runner_sandbox.py'
@@ -39,6 +40,7 @@ on:
       - main
     paths:
       - 'crates/rust_runner/**'
+      - 'crates/rust_rounds_wire/**'
       - 'infra/docker/Dockerfile.rust-runner'
       - 'infra/compose/rust_runner.yml'
       - 'scripts/check_rust_runner_sandbox.py'

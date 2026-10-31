@@ -39,6 +39,7 @@ members = [
   "crates/intervention",
   "crates/leetype_runner",
   "crates/rust_runner",
+  "crates/rust_rounds_wire",
   "crates/mailbox_kit",
   "crates/fcm_kit",
   "crates/game_scenarios",
@@ -168,6 +169,7 @@ leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }
 rust_runner = { path = "crates/rust_runner" }
+rust_rounds_wire = { path = "crates/rust_rounds_wire" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }
 outcome_repo = { path = "crates/db/outcome" }
