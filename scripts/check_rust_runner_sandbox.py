@@ -6,16 +6,22 @@ hostile, so the hostile cases are tests, not review notes. This brings up
 `infra/compose/rust_runner.yml` exactly as written, under its own project
 name, and checks:
 
-  * the container is the sandbox the compose file declares (RX1): no
-    network, no shared IPC, a read-only root, root with only SETUID, SETGID
-    and KILL, no new privileges, an init, its pid, memory and CPU caps, and
-    an environment of known names only; and every program runs as uid
-    10001 with no group and no capability;
+  * the programs' id pair, 10101:10101, is named by no other Dockerfile or
+    compose file in the stack;
+  * the container is the sandbox the compose file declares (RX1): not
+    privileged, no network, no shared IPC, pid or user namespace, no device,
+    no unconfined seccomp or AppArmor, the declared mounts only, a read-only
+    root, root with only SETUID and SETGID and no new privileges, an init,
+    its pid, memory and CPU caps, an environment of known names only, no
+    setuid binary and a toolchain only root can write; every program runs
+    as 10101 with no group and no capability; and only the client uid
+    (10000) and root are served on the socket;
   * the toolchain is the pinned rustc 1.97.0, and the worked example
     (paulgsc/some-ui#2231) records the exact text it prints;
   * a program that loops, allocates without bound, forks or spawns threads
     without bound, escapes its process group, opens a socket, writes where
-    it can (a directory it makes unreadable included), stops or kills the
+    it can (a directory it makes unreadable included, and one 20000 levels
+    deep), stops or kills the
     runner, queues requests on the runner's socket, or leaves System V IPC
     behind; and a source that makes rustc read /dev/zero, expand a macro
     without end, build a huge static or print a flood of errors; and a
@@ -23,8 +29,8 @@ name, and checks:
     no process, no file and no IPC object behind (RX2, RX3). Only IPC a
     program leaves restarts the runner, into a fresh namespace.
 
-Requests go through `rust-runner ask` exec'd as uid 10002, neither the
-runner's (root) nor the programs' (10001), as file_host's will be.
+Requests go through `rust-runner ask` exec'd as uid 10000, file_host's, the
+one client uid the runner serves besides root.
 
 Usage:
   python3 scripts/check_rust_runner_sandbox.py           # build, check, tear down
@@ -37,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -46,8 +53,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
-CLIENT_UID = "10002"
-PROGRAM_IDS = "10001\t10001\t10001\t10001"
+CLIENT_UID = "10000"
+OTHER_UID = "10002"
+PROGRAM_ID = "10101"
+PROGRAM_IDS = "\t".join([PROGRAM_ID] * 4)
 # The image's own variables and the runner's settings; nothing else, and so
 # nothing secret, may be in its environment.
 ENV_ALLOWED = {
@@ -60,9 +69,10 @@ ENV_ALLOWED = {
 	"RUST_RUNNER_WORK",
 	"RUST_RUNNER_PROGRAM_UID",
 	"RUST_RUNNER_PROGRAM_GID",
+	"RUST_RUNNER_CLIENT_UID",
 }
-# CAP_KILL (5), CAP_SETGID (6) and CAP_SETUID (7).
-RUNNER_CAPS = 0xE0
+# CAP_SETGID (6) and CAP_SETUID (7).
+RUNNER_CAPS = 0xC0
 TOOLCHAIN = "rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0"
 # The processes the container holds between jobs: tini and the runner.
 RESIDENTS = ("/sbin/docker-init -- /usr/local/bin/rust-runner serve", "/usr/local/bin/rust-runner serve")
@@ -150,6 +160,17 @@ def runner_status() -> str:
 	return compose("exec", "-T", CONTAINER, "cat", f"/proc/{pid[0]}/status").stdout
 
 
+def check_ids() -> None:
+	"""No other image or compose file names the programs' uid or gid."""
+	others = [path for path in (REPO_ROOT / "infra" / "docker").glob("Dockerfile.*") if path.name != "Dockerfile.rust-runner"]
+	others += [path for path in (REPO_ROOT / "infra" / "compose").glob("*.yml") if path.name != "rust_runner.yml"]
+	others += [REPO_ROOT / "docker-compose.yml"]
+	named = [str(path.relative_to(REPO_ROOT)) for path in others if path.exists() and re.search(rf"\b{PROGRAM_ID}\b", path.read_text())]
+	expect(len(others) > 3, f"the stack's files were read: {others}")
+	expect(named == [], f"the programs' id {PROGRAM_ID} is named by {named}")
+	print(f"ok: no other image or compose file names {PROGRAM_ID}")
+
+
 def check_sandbox() -> None:
 	inspected = json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]
 	host = inspected["HostConfig"]
@@ -159,14 +180,39 @@ def check_sandbox() -> None:
 	expect(host["ReadonlyRootfs"] is True, "the root is writable")
 	expect(inspected["Config"]["User"] == "0:0", f"user: {inspected['Config']['User']}")
 	added = {cap.removeprefix("CAP_") for cap in host.get("CapAdd") or []}
-	expect(host["CapDrop"] == ["ALL"] and added == {"SETUID", "SETGID", "KILL"}, f"capabilities: drop {host['CapDrop']} add {host.get('CapAdd')}")
+	expect(host["CapDrop"] == ["ALL"] and added == {"SETUID", "SETGID"}, f"capabilities: drop {host['CapDrop']} add {host.get('CapAdd')}")
+	expect(host["Privileged"] is False, "privileged")
+	expect(host["PidMode"] in ("", "private"), f"pid namespace: {host['PidMode']}")
+	expect(host["UsernsMode"] == "", f"user namespace: {host['UsernsMode']}")
+	expect(not host.get("Devices") and not host.get("DeviceRequests"), f"devices: {host.get('Devices')} {host.get('DeviceRequests')}")
+	security = host.get("SecurityOpt") or []
+	expect(
+		"no-new-privileges:true" in security and not any(re.match(r"(seccomp|apparmor)[=:]unconfined", option) for option in security),
+		f"security: {security}",
+	)
+	expect(set(host.get("Tmpfs") or {}) == {"/work"}, f"tmpfs: {host.get('Tmpfs')}")
+	# Compose may declare the socket's volume either way; together they hold
+	# that one volume and nothing else (no host path).
+	declared = [(bind.split(":")[0], bind.split(":")[1]) for bind in host.get("Binds") or []]
+	declared += [(mount.get("Source"), mount.get("Target")) for mount in host.get("Mounts") or []]
+	expect(declared == [(f"{PROJECT}_rust_runner_socket", "/run/rust-runner")], f"mounts declared: {declared}")
+	mounted = [(mount.get("Type"), mount.get("Destination")) for mount in inspected.get("Mounts") or []]
+	expect(mounted == [("volume", "/run/rust-runner")], f"mounts: {mounted}")
 	names = {entry.split("=", 1)[0] for entry in inspected["Config"].get("Env") or []}
 	expect(names <= ENV_ALLOWED, f"variables beyond the allowlist: {sorted(names - ENV_ALLOWED)}")
-	expect(not host.get("Binds") or all("/run/rust-runner" in bind for bind in host["Binds"]), f"binds: {host.get('Binds')}")
 	status = runner_status()
 	fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
 	expect(fields["Uid"].split()[0] == "0", f"the runner's uid: {fields['Uid']}")
 	expect(int(fields["CapEff"], 16) == RUNNER_CAPS, f"the runner's capabilities: {fields['CapEff']}")
+	expect(fields["NoNewPrivs"].strip() == "1", f"the runner's no-new-privileges: {fields['NoNewPrivs']}")
+	# Inspected with every capability (`--privileged`, this exec only), so a
+	# directory the runner's root cannot read (apt's, 0700) hides nothing.
+	setuid = compose("exec", "-T", "--privileged", CONTAINER, "find", "/", "-xdev", "-perm", "/6000", "-type", "f").stdout.split()
+	expect(setuid == [], f"setuid or setgid binaries: {setuid}")
+	writable = compose("exec", "-T", "--privileged", CONTAINER, "find", "/usr/local/rustup", "/usr/local/cargo", "-perm", "/022", "!", "-type", "l").stdout.split()
+	expect(writable == [], f"the toolchain is writable by others: {writable[:5]}")
+	other = compose("exec", "-T", "--user", OTHER_UID, CONTAINER, "rust-runner", "ask", stdin='{"ask":"toolchain"}', timeout=30)
+	expect(json.loads(other.stdout).get("reason") == "peer", f"uid {OTHER_UID} was served: {other.stdout}")
 	expect("no-new-privileges:true" in (host.get("SecurityOpt") or []), f"security: {host.get('SecurityOpt')}")
 	expect(host["Init"] is True, "no init")
 	expect(host["PidsLimit"] == 128, f"pids: {host['PidsLimit']}")
@@ -179,7 +225,7 @@ def check_sandbox() -> None:
 		f"a program's identity: {identity}",
 	)
 	clean("a program's identity")
-	print("ok: the container is the declared sandbox, and a program is uid 10001 with no group or capability")
+	print("ok: the container is the declared sandbox, a program is 10101 with no group or capability, and only the client uid is served")
 
 
 def utf8_round(line: str) -> str:
@@ -307,6 +353,20 @@ fn main() {
     }
 }
 """
+DEEP = """
+use std::os::unix::fs::PermissionsExt;
+fn main() {
+    // Far past PATH_MAX, by name relative to where it is; the bottom made
+    // unreadable.
+    for _ in 0..20_000 {
+        std::fs::create_dir("d").unwrap();
+        std::env::set_current_dir("d").unwrap();
+    }
+    std::fs::write("bottom", b"x").unwrap();
+    std::fs::set_permissions(".", std::fs::Permissions::from_mode(0o000)).unwrap();
+    println!("deep");
+}
+"""
 STOP_RUNNER = """
 fn main() {
     // Its parent is the runner: stop it, so the ceiling never fires, or
@@ -426,6 +486,12 @@ def check_hostile() -> None:
 	print("ok: a program writes only in its own directory, which is removed, unreadable directories and all")
 
 	restarts = restart_count()
+	deep = record(DEEP)["rustc"]
+	expect(deep == {"outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "deep\n"}, f"a deep tree: {deep}")
+	clean("a deep tree")
+	expect(restart_count() == restarts, "the runner restarted for a deep tree")
+	print("ok: a directory 20000 levels deep is removed, with no restart")
+
 	stopped = record(STOP_RUNNER)["rustc"]
 	expect(stopped["outcome"] == "stopped" and stopped["why"] == "time", f"stopping the runner: {stopped}")
 	expect(stopped["stdout"] == "stop: false\nkill: false\nenviron: false\n", f"stopping the runner's stdout: {stopped['stdout']!r}")
@@ -493,6 +559,7 @@ def main() -> int:
 			compose("build", timeout=3600)
 		compose("up", "-d", "--no-build", "--pull", "never", "--force-recreate")
 		wait_ready()
+		check_ids()
 		check_sandbox()
 		check_worked_example()
 		check_hostile()

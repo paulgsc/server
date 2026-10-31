@@ -244,7 +244,7 @@ fn the_service_answers_one_request_per_connection() {
 		let mut answered = Vec::new();
 		for _ in 0..5 {
 			let (stream, _) = listener.accept().unwrap();
-			answered.push(answer(&recorder, &stream).unwrap());
+			answered.push(answer(&recorder, &stream, None).unwrap());
 		}
 		answered
 	});
@@ -411,7 +411,7 @@ fn a_trickling_client_is_refused_at_the_client_timeout() {
 	let server = std::thread::spawn(move || {
 		let (stream, _) = listener.accept().unwrap();
 		let started = Instant::now();
-		(answer(&recorder, &stream).unwrap(), started.elapsed())
+		(answer(&recorder, &stream, None).unwrap(), started.elapsed())
 	});
 	let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
 	let trickle = std::thread::spawn(move || {
@@ -482,4 +482,31 @@ fn nothing_run_is_a_compile_error_only_when_rustc_refused_it() {
 		Some(Why::Exit),
 		"built, but could not be run"
 	);
+}
+
+/// Only a client's uid is served: any other connection is refused before
+/// anything is read.
+#[test]
+fn only_a_clients_uid_is_served() {
+	let work = tempfile::tempdir().unwrap();
+	let socket = work.path().join("runner.sock");
+	let programs = tempfile::tempdir().unwrap();
+	let recorder = recorder(Limits::default(), programs.path());
+	let me = rustix::process::getuid().as_raw();
+	let listener = UnixListener::bind(&socket).unwrap();
+	let server = std::thread::spawn(move || {
+		let mut answered = Vec::new();
+		for clients in [vec![me.wrapping_add(1)], vec![0, me]] {
+			let (stream, _) = listener.accept().unwrap();
+			answered.push(answer(&recorder, &stream, Some(&clients)).unwrap());
+		}
+		answered
+	});
+	let timeout = Duration::from_secs(60);
+	assert!(matches!(
+		ask(&socket, &Request::Toolchain {}, timeout).unwrap(),
+		Response::Refused { reason: Refusal::Peer, .. }
+	));
+	assert!(matches!(ask(&socket, &Request::Toolchain {}, timeout).unwrap(), Response::Toolchain { .. }));
+	server.join().unwrap();
 }

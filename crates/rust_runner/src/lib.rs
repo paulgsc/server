@@ -100,12 +100,15 @@ pub struct Limits {
 /// container) runs as.
 ///
 /// Setting one needs the runner to be root (with `CAP_SETUID` and
-/// `CAP_SETGID`), and it must not be the runner's own: a program under the
+/// `CAP_SETGID`), and it must be one nothing else in the stack runs as (not
+/// root, the runner's, or a service's uid or group): a program under the
 /// runner's uid could stop it (`SIGSTOP`), swap its socket or read its
 /// memory. Children get no supplementary groups (`std` clears them when root
-/// sets a uid). After every compile and run, every process of the uid is
-/// killed: nothing else can be of it, so whatever is left is the program's,
-/// including a descendant that left its process group (`setsid`).
+/// sets a uid). After every compile and run, and at a ceiling, every
+/// process of the uid is killed, by a helper running as the uid itself, so
+/// the runner needs no `CAP_KILL`: nothing else is of the uid, so whatever is
+/// left is the program's, including a descendant that left its process group
+/// (`setsid`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunAs {
 	pub uid: u32,
@@ -346,7 +349,8 @@ impl Compiler {
 		if let Some(run_as) = self.limits.run_as {
 			command.uid(run_as.uid).gid(run_as.gid);
 		}
-		process::supervise(command, ceiling, stdout_cap, stderr_cap, self.limits.run_as.map(|run_as| run_as.uid))
+		let sweep = self.limits.run_as.map(|run_as| process::Sweep { uid: run_as.uid, gid: run_as.gid });
+		process::supervise(command, ceiling, stdout_cap, stderr_cap, sweep)
 	}
 }
 

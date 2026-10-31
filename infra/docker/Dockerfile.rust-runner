@@ -33,13 +33,23 @@ RUN cargo build --release --locked -p rust_runner --bin rust-runner \
 # essential in Debian, so they are here too.
 FROM rust:1.97.0-slim-bookworm@sha256:6d220bf85c74e842a79da63997af8d2e74455c0b8847d8bb3a5888572334991d
 
-# The programs' uid: every compile and run starts as it, and every process
-# of it is killed after each, which is only safe because nothing else in the
-# container runs as it. The runner itself is root (with three capabilities,
-# infra/compose/rust_runner.yml), so a program can signal nothing of its.
-RUN groupadd --system --gid 10001 runner \
-    && useradd --system --uid 10001 --gid runner --no-create-home --shell /usr/sbin/nologin runner \
-    && ln -s "$(rustc --print sysroot)/bin/rustc" /usr/local/bin/rustc-pinned
+# The programs' uid and gid, 10101:10101: every compile and run starts as
+# it, and every process of it is killed after each, which is only safe
+# because nothing else runs as it, here or in the stack (file_host is
+# 10000:10001; scripts/check_rust_runner_sandbox.py checks no other
+# Dockerfile names 10101). The runner itself is root, with two capabilities
+# (infra/compose/rust_runner.yml), so a program can signal nothing of its.
+#
+# Defence in depth, under the read-only root and no-new-privileges: no
+# setuid or setgid binary is left (the base ships su, mount, passwd and
+# eight more), and the toolchain, which the base leaves writable by anyone
+# (/usr/local/rustup and /usr/local/cargo, 186 entries), is writable by
+# root alone.
+RUN groupadd --system --gid 10101 runner \
+    && useradd --system --uid 10101 --gid runner --no-create-home --shell /usr/sbin/nologin runner \
+    && ln -s "$(rustc --print sysroot)/bin/rustc" /usr/local/bin/rustc-pinned \
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+    && chmod -R go-w /usr/local/rustup /usr/local/cargo
 
 COPY --from=builder /app/target/release/rust-runner /usr/local/bin/rust-runner
 
@@ -49,8 +59,9 @@ COPY --from=builder /app/target/release/rust-runner /usr/local/bin/rust-runner
 ENV RUST_RUNNER_RUSTC=/usr/local/bin/rustc-pinned \
     RUST_RUNNER_SOCKET=/run/rust-runner/runner.sock \
     RUST_RUNNER_WORK=/work \
-    RUST_RUNNER_PROGRAM_UID=10001 \
-    RUST_RUNNER_PROGRAM_GID=10001
+    RUST_RUNNER_PROGRAM_UID=10101 \
+    RUST_RUNNER_PROGRAM_GID=10101 \
+    RUST_RUNNER_CLIENT_UID=10000
 
 ENTRYPOINT ["/usr/local/bin/rust-runner"]
 CMD ["serve"]

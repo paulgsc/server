@@ -12,11 +12,11 @@
 #
 #   docker compose -f infra/compose/rust_runner.yml up -d
 #   echo '{"ask":"toolchain"}' | docker compose -f infra/compose/rust_runner.yml \
-#     exec -T --user 10002 rust-runner rust-runner ask
+#     exec -T --user 10000 rust-runner rust-runner ask
 #
-# `ask` runs as another uid (10002), as file_host will (its own non-root
-# uid): neither the runner's (root) nor the programs' (10001), whose
-# connections the runner refuses.
+# `ask` runs as file_host's uid (10000, infra/docker/Dockerfile.server), the
+# one client uid the runner serves besides root's (the image's
+# RUST_RUNNER_CLIENT_UID); any other uid's connection is refused unread.
 # scripts/check_rust_runner_sandbox.py brings this file up as it is and runs
 # the hostile programs against it.
 services:
@@ -33,15 +33,16 @@ services:
     # tini as pid 1 reaps what the sweep kills; the runner is never pid 1, so
     # a program's orphans cannot pile up as zombies under it.
     init: true
-    # RX1: two uids. The runner is root with three capabilities and no way
-    # to gain more: SETUID and SETGID to start every compile and run as
-    # 10001 (the image's RUST_RUNNER_PROGRAM_UID) with no supplementary
-    # groups, and KILL to kill that uid's processes. Under one uid a program
-    # could stop the runner (SIGSTOP), so its ceilings never fired, or swap
-    # its socket; under 10001 it can signal nothing of root's, and write
-    # nothing but its own directory. No DAC_OVERRIDE, FOWNER or CHOWN: what
-    # a program leaves is removed by the runner's `clean` as 10001, with no
-    # more right than the program had.
+    # RX1: two uids. The runner is root with two capabilities and no way to
+    # gain more: SETUID and SETGID, to start every compile and run as
+    # 10101:10101 (the image's RUST_RUNNER_PROGRAM_*, an id pair no other
+    # service in the stack uses) with no supplementary groups. Under one uid
+    # a program could stop the runner (SIGSTOP), so its ceilings never fired,
+    # or swap its socket; under 10101 it can signal nothing of root's, and
+    # write nothing but its own directory. No KILL: the uid's processes are
+    # killed by a helper running as 10101 itself. No DAC_OVERRIDE, FOWNER or
+    # CHOWN: what a program leaves is removed by the runner's `clean` as
+    # 10101, with no more right than the program had.
     read_only: true
     user: '0:0'
     cap_drop:
@@ -49,7 +50,6 @@ services:
     cap_add:
       - SETUID
       - SETGID
-      - KILL
     security_opt:
       - no-new-privileges:true
     # RX1, RX2: an IPC namespace of its own with no /dev/shm, and System V
@@ -62,7 +62,7 @@ services:
     sysctls:
       kernel.shm_rmid_forced: 1
     # The only writable places, both root's: /work (each program's own
-    # directory inside it is open to 10001, and removed after every job) and
+    # directory inside it is open to 10101, and removed after every job) and
     # the socket's directory, which only the runner writes. No /tmp: rustc
     # and its linker get TMPDIR set to the program's own directory.
     tmpfs:
@@ -75,7 +75,7 @@ services:
     # RX3: one job at a time is the service's own loop; these bound what one
     # job can take. pids counts threads too: the runner's own few, and
     # rustc's or the program's, which the runner's process ceiling (64 for
-    # uid 10001) holds below this.
+    # uid 10101) holds below this.
     mem_limit: 1G
     memswap_limit: 1G
     cpus: 1.0

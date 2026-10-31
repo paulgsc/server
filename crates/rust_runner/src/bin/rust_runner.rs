@@ -2,7 +2,8 @@
 //! RR3).
 //!
 //! ```sh
-//! rust-runner serve --socket /run/rust-runner/runner.sock --work /work --program-uid 10001 --program-gid 10001
+//! rust-runner serve --socket /run/rust-runner/runner.sock --work /work \
+//!   --program-uid 10101 --program-gid 10101 --client-uid 10000
 //! echo '{"ask":"toolchain"}' | rust-runner ask --socket /run/rust-runner/runner.sock
 //! ```
 //!
@@ -13,19 +14,20 @@
 //! no network, no shared IPC, a read-only root, process, memory and CPU
 //! caps. It treats every program as hostile.
 //!
-//! **Two uids.** `serve` is root, with only `CAP_SETUID`, `CAP_SETGID` and
-//! `CAP_KILL`, and not dumpable. Every compile and run is started as
-//! `--program-uid`, with no supplementary groups, so a program can neither
-//! signal the runner (stop it, say, so its ceilings never fire) nor touch
-//! its memory, its socket or its directories: the socket's directory and
-//! `--work` are root's and writable by nobody else, and each program gets a
-//! directory of its own inside `--work`. A connection from the programs' uid
-//! is refused (`rust_runner::service`).
+//! **Two uids.** `serve` is root with only `CAP_SETUID` and `CAP_SETGID`,
+//! not dumpable and with no new privileges. Every compile and run is started
+//! as `--program-uid`, with no supplementary groups, so a program can
+//! neither signal the runner (stop it, say, so its ceilings never fire) nor
+//! touch its memory, its socket or its directories: the socket's directory
+//! and `--work` are root's and writable by nobody else, and each program gets
+//! a directory of its own inside `--work`. Only `--client-uid` and root are
+//! served on the socket (`rust_runner::service`).
 //!
-//! **After every job** (RX2) the runner kills every process of the programs'
-//! uid, has `clean` (this binary, as that uid, so with no more right than
-//! the program had) remove everything in each program's directory, removes
-//! the directories, and checks that no System V IPC object or POSIX message
+//! **After every job** (RX2) every process of the programs' uid is killed
+//! (by a helper running as that uid: the runner signals nothing), `clean`
+//! (this binary, as that uid, so with no more right than the program had)
+//! removes everything in each program's directory, the runner removes the
+//! now empty directories, and checks that no System V IPC object or POSIX message
 //! queue is left and that the socket's directory holds only the socket it
 //! bound. If any of that fails it exits, and the container's restart starts
 //! it clean: fresh tmpfs, fresh IPC namespace.
@@ -115,9 +117,14 @@ struct Serve {
 	/// the container runs as. Neither root nor the runner's.
 	#[arg(long, env = "RUST_RUNNER_PROGRAM_UID")]
 	program_uid: u32,
-	/// The programs' gid; they get no supplementary groups.
+	/// The programs' gid; they get no supplementary groups. Like the uid,
+	/// one no service in the stack runs as.
 	#[arg(long, env = "RUST_RUNNER_PROGRAM_GID")]
 	program_gid: u32,
+	/// The uid whose connections are served (`file_host`'s), besides root's;
+	/// every other connection is refused unread.
+	#[arg(long, env = "RUST_RUNNER_CLIENT_UID")]
+	client_uid: u32,
 }
 
 fn main() -> ExitCode {
@@ -166,9 +173,14 @@ fn run(serve: &Serve) -> Result<(), String> {
 	if serve.program_uid == 0 || serve.program_gid == 0 {
 		return Err(String::from("--program-uid and --program-gid must not be root's"));
 	}
-	// No core of the runner, and its /proc files stay root's alone (RX1).
+	if serve.client_uid == serve.program_uid {
+		return Err(String::from("--client-uid must not be the programs' uid"));
+	}
+	// No core of the runner, its /proc files root's alone, and nothing it
+	// execs gains a privilege (RX1).
 	rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
 		.map_err(|err| String::from("could not make the runner not dumpable: ") + &err.to_string())?;
+	rustix::thread::set_no_new_privs(true).map_err(|err| String::from("could not set no-new-privileges: ") + &err.to_string())?;
 	let socket_dir = serve
 		.socket
 		.parent()
@@ -210,15 +222,16 @@ fn run(serve: &Serve) -> Result<(), String> {
 		std::fs::remove_file(&path).map_err(|err| failed("could not remove the old", &path, &err))?;
 	}
 	let listener = UnixListener::bind(&serve.socket).map_err(|err| failed("could not bind", &serve.socket, &err))?;
-	// Whoever shares the socket's volume may ask (file_host, as its own
-	// non-root uid); a program, which can reach it too, is refused by uid.
+	// Anything that shares the socket's volume can connect, a program
+	// included; only the clients' uids are served (the primary defence).
 	std::fs::set_permissions(&serve.socket, std::fs::Permissions::from_mode(0o666)).map_err(|err| failed("could not open to its clients", &serve.socket, &err))?;
 	let bound = std::fs::metadata(&serve.socket).map_err(|err| failed("could not read", &serve.socket, &err))?.ino();
+	let clients = [0, serve.client_uid];
 	let _ = writeln!(io::stderr(), "rust-runner: {} listening on {}", recorder.toolchain(), serve.socket.display());
 
 	for stream in listener.incoming() {
 		let Ok(stream) = stream else { continue };
-		let response = answer(&recorder, &stream).map_err(|err| err.to_string())?;
+		let response = answer(&recorder, &stream, Some(&clients)).map_err(|err| err.to_string())?;
 		drop(stream);
 		// What was answered, never the program or what it printed.
 		let line = match &response {
@@ -269,9 +282,11 @@ fn tidy(serve: &Serve, recorder: &Recorder, socket_dir: &Path, bound: u64) -> Re
 }
 
 /// Remove every program's directory in `work`. Each is the runner's own, open
-/// to the programs' uid; what a program made inside it is removed by `clean`
-/// as that uid, so the runner never needs a right over a program's files
-/// (a directory it made mode 000, say) that the program did not have.
+/// to the programs' uid. The runner reads only `work` itself, never inside a
+/// program's directory: everything in one is removed by `clean` as the
+/// programs' uid, so the runner never walks a tree a program made, nor needs
+/// a right over it (a directory made mode 000, say) the program lacked. Then
+/// the runner removes the directories, empty.
 fn tidy_work(recorder: &Recorder, work: &Path) -> Result<(), String> {
 	own(work)?;
 	let mut jobs = Vec::new();
@@ -311,28 +326,56 @@ fn clean(work: &Path) -> Result<(), String> {
 	if getuid().is_root() {
 		return Err(String::from("clean runs as the programs' uid, with no more right than theirs, never as root"));
 	}
-	for job in std::fs::read_dir(work).map_err(|err| failed("could not read", work, &err))? {
-		let job = job.map_err(|err| err.to_string())?.path();
-		for entry in std::fs::read_dir(&job).map_err(|err| failed("could not read", &job, &err))? {
-			let path = entry.map_err(|err| err.to_string())?.path();
-			remove_tree(&path).map_err(|err| failed("could not remove", &path, &err))?;
-		}
+	let jobs: Vec<PathBuf> = std::fs::read_dir(work)
+		.map_err(|err| failed("could not read", work, &err))?
+		.map(|entry| entry.map(|entry| entry.path()))
+		.collect::<io::Result<_>>()
+		.map_err(|err| failed("could not read", work, &err))?;
+	for job in jobs {
+		empty_tree(&job).map_err(|err| failed("could not empty", &job, &err))?;
 	}
 	Ok(())
 }
 
-fn remove_tree(path: &Path) -> io::Result<()> {
-	let metadata = std::fs::symlink_metadata(path)?;
-	if !metadata.is_dir() {
-		return std::fs::remove_file(path);
+/// Remove everything under `dir`, however deep: by name relative to the
+/// working directory, moving down and back up with `chdir`, so no path
+/// grows past `PATH_MAX`, nothing recurses, and at most one listing per
+/// level is held. Only real directories (by `lstat`) are entered.
+fn empty_tree(dir: &Path) -> io::Result<()> {
+	std::env::set_current_dir(dir)?;
+	// For each level entered: its name, and the directories in it still to
+	// empty.
+	let mut levels: Vec<(Option<std::ffi::OsString>, Vec<std::ffi::OsString>)> = vec![(None, unlink_here()?)];
+	while let Some((_, pending)) = levels.last_mut() {
+		if let Some(next) = pending.pop() {
+			std::env::set_current_dir(&next)?;
+			levels.push((Some(next), unlink_here()?));
+		} else if let Some((Some(name), _)) = levels.pop() {
+			std::env::set_current_dir("..")?;
+			std::fs::remove_dir(&name)?;
+		}
 	}
-	if metadata.uid() == getuid().as_raw() {
-		std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+	std::env::set_current_dir("/")
+}
+
+/// Unlink everything in the working directory that is not a directory, and
+/// return the directories, each opened to its owner (when it is this uid)
+/// so it can be entered and listed.
+fn unlink_here() -> io::Result<Vec<std::ffi::OsString>> {
+	let mut dirs = Vec::new();
+	for entry in std::fs::read_dir(".")? {
+		let name = entry?.file_name();
+		let metadata = std::fs::symlink_metadata(&name)?;
+		if metadata.is_dir() {
+			if metadata.uid() == getuid().as_raw() {
+				std::fs::set_permissions(&name, std::fs::Permissions::from_mode(0o700))?;
+			}
+			dirs.push(name);
+		} else {
+			std::fs::remove_file(&name)?;
+		}
 	}
-	for entry in std::fs::read_dir(path)? {
-		remove_tree(&entry?.path())?;
-	}
-	std::fs::remove_dir(path)
+	Ok(dirs)
 }
 
 /// Whether `dir` is a directory of the runner's own: not a link, its uid's,

@@ -167,9 +167,10 @@ impl Recorder {
 
 	/// Compile `source` and, if it builds, run it once.
 	///
-	/// The program's directory is removed afterwards when it can be; what
-	/// cannot be (a directory the program made unreadable, under a uid of its
-	/// own) is left to the caller's tidy, and does not fail the recording.
+	/// Without a uid of the programs' own, the program's directory is removed
+	/// afterwards (an error doing so does not fail the recording). With one,
+	/// it is left for the caller's tidy, which removes it as that uid: the
+	/// runner never walks a tree the program made.
 	///
 	/// # Errors
 	/// Only the machine's failures ([`SpawnError::Toolchain`],
@@ -177,16 +178,17 @@ impl Recorder {
 	/// [`Recording`].
 	pub fn record(&self, source: &str) -> Result<Recording, SpawnError> {
 		let dir = tempfile::Builder::new().prefix("rust-run-").tempdir_in(&self.work).map_err(SpawnError::Io)?;
-		if self.compiler.limits().run_as.is_some() {
-			// The runner's own directory, which rustc (writing the binary)
-			// and the program run in as the programs' uid. Removing what
-			// they leave is the caller's tidy, as that uid.
-			use std::os::unix::fs::PermissionsExt;
-			std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).map_err(SpawnError::Io)?;
+		if self.compiler.limits().run_as.is_none() {
+			let recording = self.record_in(dir.path(), source);
+			let _ = dir.close();
+			return recording;
 		}
-		let recording = self.record_in(dir.path(), source);
-		let _ = dir.close();
-		recording
+		// The runner's own directory, which rustc (writing the binary) and
+		// the program run in as the programs' uid. Kept: removing what they
+		// leave is the caller's tidy, as that uid.
+		let dir = dir.keep();
+		std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o777)).map_err(SpawnError::Io)?;
+		self.record_in(&dir, source)
 	}
 
 	fn record_in(&self, dir: &std::path::Path, source: &str) -> Result<Recording, SpawnError> {

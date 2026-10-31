@@ -16,10 +16,15 @@
 //! runner's is refused. One job at a time: the service answers a connection
 //! before it accepts the next.
 //!
-//! A connection from the programs' own uid is refused before anything is
-//! read (`SO_PEERCRED`, which the kernel records at `connect`): a program
-//! can reach the socket, and a request it queued there would otherwise be
-//! recorded after it was killed, and could queue the next, without end.
+//! **Who may ask is the peer's uid, and that check is the primary defence.**
+//! The socket is mode 0666 in a 0755 directory, on a volume shared with the
+//! client's container, so anything in either container can connect to it,
+//! a program the runner is recording included. Each connection's uid
+//! (`SO_PEERCRED`, which the kernel records at `connect` and the peer cannot
+//! change) is checked before anything is read, and only the configured
+//! clients are served: the uid of `file_host`, and root. Any other connection is
+//! refused unread. A program's would otherwise be recorded after the program
+//! was killed, and could queue the next, without end.
 //!
 //! The answer is not to be trusted for its key: the client (the recording
 //! pass in `file_host`) checks the answer's toolchain is the one it asked for and
@@ -37,9 +42,9 @@ use std::time::{Duration, Instant};
 /// The largest request read, in bytes. A round's program is about 25 lines.
 pub const REQUEST_CEILING: u64 = 64 * 1024;
 
-/// How long a client may take to send its whole request, and each write of
-/// the answer may take, before the connection is dropped, so a stalled or
-/// trickling client cannot hold the one job slot.
+/// How long a client may take to send its whole request, and to read the
+/// whole answer, before the connection is dropped, so a stalled or trickling
+/// client cannot hold the one job slot.
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The largest answer [`ask`] reads, in bytes.
@@ -70,8 +75,8 @@ pub enum Refusal {
 	TooLarge,
 	/// The request's toolchain is not the runner's.
 	WrongToolchain,
-	/// The connection came from the programs' uid (or its peer could not be
-	/// read): a program, not a client.
+	/// The connection came from a uid that is not a client's (a program's,
+	/// say), or its peer could not be read.
 	Peer,
 }
 
@@ -111,29 +116,29 @@ pub enum Response {
 /// Returns the answer sent (or that would have been, when the client went
 /// away first).
 ///
+/// With `clients`, only a peer whose uid is among them is served; any other
+/// is refused before anything is read. `None` serves any peer, for a
+/// service whose socket only its own uid can reach (the tests').
+///
 /// # Errors
 /// The machine's failures from [`Recorder::record`], which the service
 /// stops on. A client that sends nothing, too much, garbage or too slowly is
 /// answered with a refusal, and one that goes away is not an error.
-pub fn answer(recorder: &Recorder, stream: &UnixStream) -> Result<Response, SpawnError> {
-	let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
+pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>) -> Result<Response, SpawnError> {
 	let refused = |reason| Response::Refused {
 		reason,
 		toolchain: recorder.toolchain().to_owned(),
 	};
-	if let Some(run_as) = recorder.compiler().limits().run_as {
+	if let Some(clients) = clients {
 		let peer = rustix::net::sockopt::socket_peercred(stream);
-		if peer.map_or(true, |peer| peer.uid.as_raw() == run_as.uid) {
+		if !peer.is_ok_and(|peer| clients.contains(&peer.uid.as_raw())) {
 			let response = refused(Refusal::Peer);
 			send(stream, &response);
 			return Ok(response);
 		}
 	}
 	let mut line = Vec::new();
-	let deadline = Deadline {
-		stream,
-		until: Instant::now() + CLIENT_TIMEOUT,
-	};
+	let deadline = Deadline::new(stream);
 	let read = BufReader::new(deadline.take(REQUEST_CEILING + 1)).read_until(b'\n', &mut line);
 	let response = if u64::try_from(line.len()).unwrap_or(u64::MAX) > REQUEST_CEILING {
 		refused(Refusal::TooLarge)
@@ -157,31 +162,59 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream) -> Result<Response, Spaw
 	Ok(response)
 }
 
-/// Write `response` as one line; a client that went away is not an error.
+/// Write `response` as one line, within one [`CLIENT_TIMEOUT`] for the
+/// whole of it; a client that went away or reads too slowly is not an
+/// error.
 fn send(stream: &UnixStream, response: &Response) {
 	let mut body = Vec::new();
 	if serde_json::to_writer(&mut body, response).is_ok() {
 		body.push(b'\n');
-		let _ = (&*stream).write_all(&body);
+		let _ = Deadline::new(stream).write_all(&body);
 	}
 }
 
-/// `stream`, read against one deadline for the whole request rather than a
-/// timeout per read: each read waits only what is left, so a client that
-/// trickles a byte at a time still loses the slot at [`CLIENT_TIMEOUT`].
+/// `stream`, read or written against one deadline for the whole request or
+/// answer rather than a timeout per call: each waits only what is left, so a
+/// client that trickles a byte at a time, or reads the answer that way,
+/// still loses the slot at [`CLIENT_TIMEOUT`].
 struct Deadline<'a> {
 	stream: &'a UnixStream,
 	until: Instant,
 }
 
-impl Read for Deadline<'_> {
-	fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+impl<'a> Deadline<'a> {
+	fn new(stream: &'a UnixStream) -> Self {
+		Self {
+			stream,
+			until: Instant::now() + CLIENT_TIMEOUT,
+		}
+	}
+
+	/// What is left, or `TimedOut` when nothing is.
+	fn left(&self) -> std::io::Result<Duration> {
 		let left = self.until.saturating_duration_since(Instant::now());
 		if left.is_zero() {
-			return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the request took longer than the client timeout"));
+			return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the client took longer than the client timeout"));
 		}
-		self.stream.set_read_timeout(Some(left))?;
+		Ok(left)
+	}
+}
+
+impl Read for Deadline<'_> {
+	fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+		self.stream.set_read_timeout(Some(self.left()?))?;
 		(&*self.stream).read(buffer)
+	}
+}
+
+impl Write for Deadline<'_> {
+	fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+		self.stream.set_write_timeout(Some(self.left()?))?;
+		(&*self.stream).write(buffer)
+	}
+
+	fn flush(&mut self) -> std::io::Result<()> {
+		Ok(())
 	}
 }
 

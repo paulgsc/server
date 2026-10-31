@@ -3,17 +3,23 @@
 //!
 //! `std::process` and `rustix` only, no `unsafe`: the child is put in a
 //! process group of its own (`process_group(0)`), polled with `try_wait`, and
-//! on the ceiling the whole group is sent `SIGKILL` (`kill(-pgid)`, through
-//! `rustix`, so killing needs no new process: a program that used up its
-//! process ceiling cannot stop the kill) before the child is reaped. The group
-//! is killed again once the child has ended, however it ended, so nothing it
-//! spawned outlives the run. Given the programs' own uid, every process of it
-//! goes too, which also takes a descendant that left the group (`setsid`).
-//! stdout and stderr are drained by a thread each, so a
+//! on the ceiling it is killed before it is reaped, and killed again once it
+//! has ended, however it ended, so nothing it spawned outlives the run.
+//!
+//! **Who kills.** Without a uid of the programs' own, the whole group is sent
+//! `SIGKILL` (`kill(-pgid)`, through `rustix`, so killing needs no new
+//! process: a program that used up its process ceiling cannot stop the kill).
+//! With one, the runner (root) signals nothing itself and needs no
+//! `CAP_KILL`: it starts a helper *as that uid*, `sh -c 'kill -KILL -1'`,
+//! which kills every process the uid may signal, which is every process of
+//! it and nothing else, a descendant that left the group (`setsid`)
+//! included. Nothing is signalled by pid, so there is no window in which a
+//! pid read from `/proc` is reused by another process. `/proc` is only read,
+//! to see whether a pass left anything alive. stdout and stderr are drained by a thread each, so a
 //! chatty child never blocks on a full pipe, but only the first `cap` bytes
 //! (and, for the error tail, the last `cap`) are kept.
 
-use rustix::process::{getuid, kill_process, kill_process_group, Pid, Signal};
+use rustix::process::{getuid, kill_process_group, Pid, Signal};
 use std::io::Read;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -26,10 +32,22 @@ use std::time::{Duration, Instant};
 /// graded.
 const POLL: Duration = Duration::from_millis(1);
 
-/// How many times the sweep of a uid looks for survivors before giving up. Each
-/// pass kills every process it finds, so only one forking faster than a pass
-/// can list `/proc` survives one, and nothing survives `SIGKILL`.
+/// How many times the sweep of a uid kills before giving up. `kill(-1)` walks
+/// the process list with forks held off, and a process with `SIGKILL`
+/// pending cannot fork, so one pass is enough but for a process caught
+/// mid-exec.
 const SWEEP_PASSES: usize = 200;
+
+/// The helper that kills every process of the uid it runs as. `dash`'s
+/// builtin, so the kill needs no binary of its own.
+const SWEEPER: [&str; 3] = ["/bin/sh", "-c", "kill -KILL -1"];
+
+/// A uid of the programs' own, and its gid: run as by the sweep's helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Sweep {
+	pub uid: u32,
+	pub gid: u32,
+}
 
 /// One stream's bytes, kept to a ceiling.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -72,15 +90,15 @@ pub struct Finished {
 
 /// Run `command` to completion or to `ceiling`, whichever comes first, with
 /// stdin closed and stdout and stderr kept to `stdout_cap` and `stderr_cap`
-/// bytes. Once it has ended, its process group is killed, and with `sweep`,
-/// every process whose real uid is `sweep` (the programs' own, never this
-/// process's).
+/// bytes. On the ceiling, and once it has ended, its process group is
+/// killed, or with `sweep` (the child runs as that uid), every process of
+/// the uid.
 ///
 /// # Errors
 /// If the child cannot be started or waited on, or a process of `sweep`'s
 /// uid survives every pass of the sweep; everything the child itself does is
 /// in [`Finished`].
-pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usize, stderr_cap: usize, sweep: Option<u32>) -> std::io::Result<Finished> {
+pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usize, stderr_cap: usize, sweep: Option<Sweep>) -> std::io::Result<Finished> {
 	command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
 	let started = Instant::now();
 	let mut child = command.spawn()?;
@@ -91,13 +109,13 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 			Ok(Some(status)) => break Ending::Exited(status),
 			Ok(None) => {}
 			Err(err) => {
-				kill_group(&mut child);
+				let _ = stop(&mut child, sweep);
 				let _ = child.wait();
 				return Err(err);
 			}
 		}
 		if started.elapsed() >= ceiling {
-			kill_group(&mut child);
+			stop(&mut child, sweep)?;
 			child.wait()?;
 			break Ending::TimedOut;
 		}
@@ -107,10 +125,7 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 	// Whatever the child left behind in its group goes too, however it
 	// ended: a descendant still holding stdout would otherwise outlive the
 	// ceiling, and keep the readers below waiting for it (review, #399).
-	kill_group(&mut child);
-	if let Some(uid) = sweep {
-		sweep_uid(uid)?;
-	}
+	stop(&mut child, sweep)?;
 	let deadline = Instant::now() + READER_GRACE;
 	Ok(Finished {
 		ending,
@@ -125,6 +140,16 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 /// hold a pipe then; past this the run is an error rather than a hang.
 const READER_GRACE: Duration = Duration::from_secs(1);
 
+/// Kill the child and everything it started: its group, or with `sweep`,
+/// every process of the uid.
+fn stop(child: &mut Child, sweep: Option<Sweep>) -> std::io::Result<()> {
+	if let Some(sweep) = sweep {
+		return sweep_uid(sweep);
+	}
+	kill_group(child);
+	Ok(())
+}
+
 /// `SIGKILL` the child's whole process group (a compile's linker, say, as
 /// well as `rustc`), and the child itself in case the group is already
 /// gone. A system call, not a `kill` process: under a process ceiling a
@@ -134,41 +159,45 @@ fn kill_group(child: &mut Child) {
 	let _ = child.kill();
 }
 
-/// `SIGKILL` every process whose real uid is `uid` (but this one and pid 1,
-/// which never are), until a pass of `/proc` finds none left alive.
-fn sweep_uid(uid: u32) -> std::io::Result<()> {
-	let me = std::process::id();
-	if uid == 0 || uid == getuid().as_raw() {
+/// Kill every process of `sweep.uid` with the helper, as that uid, until a
+/// read of `/proc` finds none alive.
+fn sweep_uid(sweep: Sweep) -> std::io::Result<()> {
+	if sweep.uid == 0 || sweep.uid == getuid().as_raw() {
 		return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the sweep is only for the programs' own uid"));
 	}
 	for _ in 0..SWEEP_PASSES {
-		let mut found = false;
-		for entry in std::fs::read_dir("/proc")? {
-			let Ok(entry) = entry else { continue };
-			let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
-				continue;
-			};
-			if pid == me || pid == 1 {
-				continue;
-			}
-			// Gone between the listing and the read: nothing to kill.
-			let Ok(status) = std::fs::read_to_string(entry.path().join("status")) else {
-				continue;
-			};
-			if !alive_and_owned_by(&status, uid) {
-				continue;
-			}
-			found = true;
-			if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
-				let _ = kill_process(pid, Signal::KILL);
-			}
-		}
-		if !found {
+		if !any_alive(sweep.uid)? {
 			return Ok(());
 		}
-		std::thread::sleep(POLL);
+		// Its exit status is `kill`'s: 1 when it found nothing to signal,
+		// which the next look at /proc settles either way.
+		Command::new(SWEEPER[0])
+			.args(&SWEEPER[1..])
+			.uid(sweep.uid)
+			.gid(sweep.gid)
+			.env_clear()
+			.current_dir("/")
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.status()?;
 	}
 	Err(std::io::Error::other("a process of the programs' uid survived every pass of the sweep"))
+}
+
+/// Whether `/proc` lists a live process (not a zombie) of `uid`.
+fn any_alive(uid: u32) -> std::io::Result<bool> {
+	for entry in std::fs::read_dir("/proc")? {
+		let Ok(entry) = entry else { continue };
+		if !entry.file_name().to_str().is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit())) {
+			continue;
+		}
+		// Gone between the listing and the read: not alive.
+		if std::fs::read_to_string(entry.path().join("status")).is_ok_and(|status| alive_and_owned_by(&status, uid)) {
+			return Ok(true);
+		}
+	}
+	Ok(false)
 }
 
 /// Whether a `/proc/<pid>/status` names a process whose real uid is `uid`
