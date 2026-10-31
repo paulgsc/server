@@ -350,13 +350,31 @@ pub fn assert_groups_hold_only_their_own(cmd: &Command) {
 /// itself (ENV1, #580).
 #[must_use]
 pub fn parse<C: Parser>(rules: &Rules) -> C {
+	let (config, held) = parse_then_hold(rules);
+	held.unwrap_or_else(|err| err.exit());
+	config
+}
+
+/// [`parse`], with holding `C` to `rules` left to the caller.
+///
+/// A mode that does not start the service (`file_host --health-check`, a
+/// separate process that inherits no flags) acts before it, and everything
+/// else exits on its error.
+///
+/// # Errors
+///
+/// The second half is the error naming every rule `C` breaks.
+pub fn parse_then_hold<C: Parser>(rules: &Rules) -> (C, Result<(), clap::Error>) {
 	let mut cmd = C::command();
 	let matches = cmd.clone().get_matches();
+	let config = C::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut cmd).exit());
 	let unmet = unmet(&cmd, &matches, rules);
-	if !unmet.is_empty() {
-		cmd.error(ErrorKind::MissingRequiredArgument, unmet.join("\n       ")).exit();
-	}
-	C::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut cmd).exit())
+	let held = if unmet.is_empty() {
+		Ok(())
+	} else {
+		Err(cmd.error(ErrorKind::MissingRequiredArgument, unmet.join("\n       ")))
+	};
+	(config, held)
 }
 
 /// Every one of `rules` that `matches` breaks, as a line naming the variable.

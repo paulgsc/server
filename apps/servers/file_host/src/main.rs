@@ -55,12 +55,14 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 #[tokio::main]
 async fn main() -> Result<()> {
 	dotenvy::dotenv().ok();
-	let config: Config = app_config::schema::parse(&file_host::RULES);
+	let (config, held): (Config, _) = app_config::schema::parse_then_hold(&file_host::RULES);
 
-	// Handle health check flag
+	// Before the rules: a health check is a separate process, run by the
+	// container's healthcheck, that inherits no flags the server got.
 	if config.health_check {
 		return perform_health_check(&config).await;
 	}
+	held.unwrap_or_else(|err| err.exit());
 
 	// Installs the global `metrics` recorder — see #139 (P1). Every
 	// `counter!`/`histogram!` call anywhere in this process, direct or via

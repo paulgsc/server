@@ -398,6 +398,10 @@ class Gap:
     problem: str = "missing"
     # Whether writing it to the env file reaches its reader.
     fillable: bool = True
+    # Why a value typed for it would still be refused, under the conditions
+    # the preflight found (its bounds while their feature is on); None, no
+    # check but that a value is given.
+    check: object = None
 
 
 @dataclass
@@ -521,22 +525,26 @@ def preflight(schemas: list[dict], compose: dict[str, ComposeVariable], env_text
             value = environment.get(variable["name"])
             reader = f"{binary} (service {name})"
             fillable = reaches(service, variable["name"])
-            condition = variable.get("required_when")
-            if condition and environment.get(condition["variable"], defaults.get(condition["variable"])) == condition["value"] and not (value or "").strip():
-                why = f"required while {condition['variable']} is {condition['value']}. "
-                report.missing.append(Gap(variable["name"], reader, why + variable["help"], variable["secret"], fillable=fillable))
-                continue
-            if value is None:
-                if variable["required"]:
-                    report.missing.append(Gap(variable["name"], reader, variable["help"], variable["secret"], fillable=fillable))
-                continue
-            def holds(when: dict) -> bool:
+
+            def holds(when: dict, environment=environment, defaults=defaults) -> bool:
                 current = environment.get(when["variable"], defaults.get(when["variable"]))
                 return bool((current or "").strip()) if when["value"] == SET else current == when["value"]
 
+            def check(typed: str, variable=variable, holds=holds) -> str | None:
+                return refusal(variable, typed) or bound_refusal(variable, typed, holds)
+
+            condition = variable.get("required_when")
+            if condition and environment.get(condition["variable"], defaults.get(condition["variable"])) == condition["value"] and not (value or "").strip():
+                why = f"required while {condition['variable']} is {condition['value']}. "
+                report.missing.append(Gap(variable["name"], reader, why + variable["help"], variable["secret"], fillable=fillable, check=check))
+                continue
+            if value is None:
+                if variable["required"]:
+                    report.missing.append(Gap(variable["name"], reader, variable["help"], variable["secret"], fillable=fillable, check=check))
+                continue
             problem = refusal(variable, value) or bound_refusal(variable, value, holds)
             if problem:
-                report.invalid.append(Gap(variable["name"], reader, variable["help"], variable["secret"], problem, fillable))
+                report.invalid.append(Gap(variable["name"], reader, variable["help"], variable["secret"], problem, fillable, check))
     read = {variable["name"] for schema in schemas for variable in schema["variables"]} | set(compose) | referenced_inside(env_text)
     report.unread = sorted(name for name in env if name not in read and not DEPENDENCY_VARIABLES.match(name))
     return report
@@ -582,7 +590,12 @@ def fill(report: Report, env_file: Path, schemas: list[dict], ask=input, ask_sec
         while True:
             value = (ask_secret if gap.secret else ask)(f"{gap.name}=")
             known = variables.get(gap.name)
-            problem = (refusal(known, value) or bound_refusal(known, value, lambda _: True)) if known and value else None
+            if not value:
+                problem = None
+            elif gap.check:
+                problem = gap.check(value)
+            else:
+                problem = refusal(known, value) if known else None
             if value and not problem and env_line(gap.name, value):
                 break
             say(f"  {problem or ('a value is required' if not value else 'a value with a single quote: write it to the file yourself')}")
@@ -748,6 +761,20 @@ def self_test() -> None:
     both = preflight([bounded], {}, "ON=true\nTOKEN=t\nDAYS=101\n", {}, service)
     assert [(gap.name, gap.problem) for gap in both.invalid] == [("DAYS", "must be from 30 to 100")], both.invalid
     assert "At least 60 while ON is true." in " ".join(describe(gated)) and "From 30 to 100 while ON is true and TOKEN is set." in " ".join(describe(days))
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = Path(directory) / ".env"
+        for text, answers, written in [
+            # Off, the bound does not apply to the repair either (Codex on #600).
+            ("SECONDS=soon\n", ["30"], "SECONDS='30'\n"),
+            # On, it does: 30 is refused and asked again.
+            ("ON=true\nSECONDS=soon\n", ["30", "60"], "ON=true\nSECONDS='60'\n"),
+        ]:
+            env_file.write_text(text)
+            found = preflight([bounded], {}, text, {}, service)
+            typed = iter(answers)
+            fill(found, env_file, [bounded], ask=lambda _: next(typed), ask_secret=lambda _: next(typed), say=lambda _: None)
+            assert env_file.read_text() == written, env_file.read_text()
+            assert next(typed, None) is None, "every answer was used"
     assert other_env_file(REPO_ROOT / ".env", None) is None and other_env_file(Path("/elsewhere/.env"), None)
     assert other_env_file(Path("/srv/box/.env"), "/srv/box") is None, "$REPO_ROOT/.env is the one compose reads"
 
