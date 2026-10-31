@@ -475,7 +475,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     times, then record that as the outcome (`rust_rounds::pass`, RP3); the
     protocol has no answer for it. **A fault that is the machine's alone is
     said:** when `record` fails before the program ran (rustc missing or
-    failing to run, no directory or file for the program: `SpawnError`'s
+    failing to run, no directory or file for the program, or the program's
+    own process not started: no pipes, descriptors or memory, a fork or
+    exec the kernel refuses, `process::not_started`; `SpawnError`'s
     `Toolchain` and `Io`), the service first answers `refused`, reason
     `unavailable`, then exits as before; the client keeps nothing against
     the program (RP3). A fault once the program ran (a run or a sweep it
@@ -499,7 +501,7 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     a handler, and `ask` reads at most 4 MiB of answer.
   - _Falsified by_ a machine fault before the program ran answered with
     anything but `unavailable`, or one after it (`Unsupervised`) answered
-    `unavailable`, a client wait (the pass's `per_ask`, `ask`'s default)
+    `unavailable`, a client wait (the pass's `Waits::record`, `ask`'s default)
     that is a literal or shorter than the job deadline, a job deadline summed
     from anything but `rust_rounds_wire`'s constants and the runner's
     ceilings, a thread or task per connection, a removed ceiling or
@@ -628,10 +630,21 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     The one stop that is a WARN and not counted is `pass_deadline` after at
     least one program was asked about: what is left waits for the next
     pass. So one hostile program can lose the runner at most `DROPS` times
-    per toolchain, holding it at most one job deadline each time (RX3),
-    and an innocent program is never kept as anything but `recorded`.
-    State per program and toolchain is at most `DROPS` loss rows and one
-    run.
+    per toolchain, and each loss costs a pass at most `ASK_TIMEOUT`
+    (137 s; one more `CLIENT_TIMEOUT` if the request's write was slow,
+    RP4): a dropped connection comes by the watchdog's job deadline (132 s,
+    RX3), and a timed-out one at the wait's end. A program is kept as
+    `refused` only for its own request, and never for an outage. State per
+    program and toolchain is at most `DROPS` loss rows and one run.
+    **Tolerance:** a loss is the program's most likely cause, not a proven
+    one. A `TimedOut` can be the machine's (a host frozen or starved past
+    137 s), and a `Dropped` a runner ended from outside while it held the
+    program (the kernel's OOM killer, the container stopped or restarted).
+    A program that meets `DROPS` such faults under one toolchain is kept as
+    `runner-lost` though it did nothing; the record says only that the
+    runner was lost while holding it, and the next toolchain asks again.
+    A machine fault the runner can see before the program ran, its start
+    included, is `unavailable`, never a loss (RX3).
   - _Falsified by_ a loss kept for anything but `Dropped` or `TimedOut` on a
     program's ask, anything kept for an outage, `unavailable`, `peer` or
     `wrong-toolchain`, a `refused` kept for any reason but `malformed` or
@@ -656,7 +669,12 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     the runner about each in turn. It asks the toolchain (waiting
     `CLIENT_TIMEOUT`, 5 s) only if that wait and one program's fit in its
     deadline, and each program (waiting `ASK_TIMEOUT`, 137 s) only while
-    that wait is left before it, so every ask ends by the deadline.
+    that wait is left before it. The wait is for the answer; before it, the
+    request's write has its own `CLIENT_TIMEOUT`, so an ask ends at most
+    `CLIENT_TIMEOUT` (5 s) past the deadline, and a pass at most that past
+    `RUST_ROUNDS_PASS_DEADLINE_SECONDS`. (A request is at most 64 KiB to a
+    socket on the same host, so the write is short unless the runner is
+    wedged; the text says what holds rather than widening every wait.)
     `RUST_ROUNDS_PASS_DEADLINE_SECONDS` is at least both waits together
     (142 s, `rust_rounds::MIN_DEADLINE`, `Waits::least_deadline`), so a
     pass at the minimum asks at least one program. A recorded or refused
@@ -667,8 +685,8 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
   - _Falsified by_ a per-pass cap, cursor or deadline of the mechanism's
     own, a pass that reads past `BATCH`, a toolchain ask that spends a
     program's wait, an ask started with less than its wait left before the
-    deadline, a minimum deadline below both waits, or a pass that goes on
-    after a loss or an outage.
+    deadline, a request write without `CLIENT_TIMEOUT`, a minimum deadline
+    below both waits, or a pass that goes on after a loss or an outage.
   - _Why not enforced mechanically:_ the pass is short enough to read.
     `a_pass_is_bounded_by_its_batch_and_its_deadline` checks both bounds,
     and that a pass at exactly the minimum deadline records a program;

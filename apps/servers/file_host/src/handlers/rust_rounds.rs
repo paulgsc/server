@@ -194,7 +194,9 @@ pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: He
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 422 naming each refused field (`body`, `schema`, `id`, `cards`, a card's
 /// field, and `id` when the path's id is not the round's), 409 for another
-/// body under an id the caller's subject holds, 500 for a storage failure.
+/// body under an id the caller's subject holds, 413 for a body longer than
+/// one byte past `ROUND_CEILING` (refused before it is read whole, by the
+/// route's `DefaultBodyLimit`), 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_round_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_round(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
