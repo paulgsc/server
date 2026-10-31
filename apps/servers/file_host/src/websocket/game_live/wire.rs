@@ -1,5 +1,6 @@
-//! The game day socket's messages, version 1: JSON text frames, each an
-//! object with a `type` and a `v`. paulgsc/some-ui keeps a copy of
+//! The game day socket's messages, version 1.
+//!
+//! JSON text frames, each an object with a `type` and a `v`. paulgsc/some-ui keeps a copy of
 //! [`examples`] (`game-live-messages.snapshot.json`, written by
 //! `dump-game-live-messages`) and reads every example with the phone's own
 //! decoder, so a change here that the phone cannot read fails there.
@@ -379,6 +380,21 @@ pub fn examples() -> Value {
 		}),
 		json!({ "type": "ping", "v": VERSION, "phoneAt": 1_761_178_500_000_u64 }),
 	];
+	let home = home_examples();
+	let closes = [Close::Unreadable, Close::Version, Close::Unpaired, Close::Quiet, Close::GoingAway].map(|close| json!({ "code": close.code(), "reason": close.reason() }));
+	json!({
+		"v": VERSION,
+		"protocol": super::PROTOCOL,
+		"path": "/ws/game-week",
+		"phone": phone,
+		"home": home.iter().map(Outbound::to_json).collect::<Vec<_>>(),
+		"closes": closes,
+	})
+}
+
+/// Home's half of [`examples`]: a live offer, one before kickoff, one from a
+/// home that follows no games, and a pong.
+fn home_examples() -> [Outbound; 4] {
 	let games = vec![
 		Game {
 			id: "401873010".to_owned(),
@@ -431,7 +447,7 @@ pub fn examples() -> Value {
 		scenarios: Vec::new(),
 		just_happened: Vec::new(),
 	};
-	let home = [
+	[
 		Outbound::Offer {
 			seq: 1_761_178_000_042,
 			state: State {
@@ -460,16 +476,7 @@ pub fn examples() -> Value {
 			phone_at: 1_761_178_500_000,
 			home_at: 1_761_178_500_012,
 		},
-	];
-	let closes = [Close::Unreadable, Close::Version, Close::Unpaired, Close::Quiet, Close::GoingAway].map(|close| json!({ "code": close.code(), "reason": close.reason() }));
-	json!({
-		"v": VERSION,
-		"protocol": super::PROTOCOL,
-		"path": "/ws/game-week",
-		"phone": phone,
-		"home": home.iter().map(Outbound::to_json).collect::<Vec<_>>(),
-		"closes": closes,
-	})
+	]
 }
 
 #[cfg(test)]

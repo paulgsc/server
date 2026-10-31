@@ -738,11 +738,6 @@
         "/// Creates a new WebSocketFsm instance - only responsible for initialization": 1
       }
     },
-    "clippy::enum_glob_use": {
-      "fn websocket_handler": {
-        "use AcquireErrorKind::*;": 1
-      }
-    },
     "clippy::expect_used": {
       "fn opening_and_closing_a_connection_moves_the_lifecycle_counters": {
         "find(&snapshot, \"ws_connection_duration_seconds\", &[(\"end_reason\", \"client_disconnect\")]).expect(\"duration recorded under a real end_reason\")": 1,

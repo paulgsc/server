@@ -57,6 +57,10 @@ pub struct Response<'a> {
 }
 
 /// What a response said, by [`read`]'s rule.
+// Made once per fetch and read at once, never held in bulk, so the summary's
+// size is not worth a box at every match (it grew with the live situation,
+// paulgsc/server#570).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Read {
 	/// A status other than 200: kept, not read.
@@ -274,10 +278,12 @@ pub async fn holds_final(conn: &mut SqliteConnection, game: &str) -> Result<bool
 	Ok(newest_summary(conn, game, ANY_TIME).await?.is_some_and(|summary| summary.status.is_final()))
 }
 
-/// The snap to come in `game` as of `as_of` (ISO-8601 UTC, in `fetched_at`'s
-/// spelling: `2026-10-23T00:36:50.000Z`): the situation of the newest summary
-/// kept for it with a 200 and fetched by then (paulgsc/server#570). `None`
-/// when the game was not live in it, or nothing readable was kept.
+/// The snap to come in `game` as of `as_of`.
+///
+/// `as_of` is ISO-8601 UTC, in `fetched_at`'s spelling
+/// (`2026-10-23T00:36:50.000Z`). The answer is the situation of the newest
+/// summary kept for it with a 200 and fetched by then (paulgsc/server#570);
+/// `None` when the game was not live in it, or nothing readable was kept.
 ///
 /// GWB4 passes `now`; a replay at a bite's time (GWB7) passes that time and
 /// gets what the phone could have been shown then.
@@ -288,9 +294,11 @@ pub async fn situation(conn: &mut SqliteConnection, game: &str, as_of: &str) -> 
 	Ok(newest_summary(conn, game, as_of).await?.and_then(|summary| summary.situation))
 }
 
-/// The newest summary kept for `game` with a 200 and fetched by `as_of`, as
-/// read: its status, plays and the snap to come (GWB4 reads the status, which
-/// moves every live fetch, where the scoreboard's moves every ten minutes).
+/// The newest summary kept for `game` with a 200 and fetched by `as_of`.
+///
+/// It is read: its status, plays and the snap to come (GWB4 reads the status,
+/// which moves every live fetch, where the scoreboard's moves every ten
+/// minutes).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -298,10 +306,11 @@ pub async fn summary(conn: &mut SqliteConnection, game: &str, as_of: &str) -> Re
 	newest_summary(conn, game, as_of).await
 }
 
-/// The week as the newest scoreboard kept with a 200 and fetched by `as_of`
-/// says (`fetched_at`'s spelling), read by [`read`]'s rule: the games home
-/// follows, which GWB4 offers the phone. `None` when none was kept, or its
-/// body does not read.
+/// The week, as the newest scoreboard kept with a 200 and fetched by `as_of` says.
+///
+/// `as_of` is in `fetched_at`'s spelling; the body is read by [`read`]'s
+/// rule: the games home follows, which GWB4 offers the phone. `None` when none
+/// was kept, or its body does not read.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -320,9 +329,11 @@ pub async fn week(conn: &mut SqliteConnection, as_of: &str) -> Result<Option<Sco
 	}))
 }
 
-/// One game's play log as stored, oldest row first, `supersedes` as a
-/// position in it: [`log`] for `game` alone, read by `game_feed_play_by_game`.
-/// A revision supersedes a row of its own game, so every position is in it.
+/// One game's play log as stored: [`log`] for `game` alone.
+///
+/// Oldest row first, `supersedes` as a position in it, read by
+/// `game_feed_play_by_game`. A revision supersedes a row of its own game, so
+/// every position is in it.
 ///
 /// # Errors
 /// Any `sqlx` failure.

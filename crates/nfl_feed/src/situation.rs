@@ -116,7 +116,7 @@ impl Situation {
 		Self {
 			possession: with_ball.and_then(|team| team.team.clone()),
 			down,
-			distance: down.and(int(&spot["distance"]).filter(|yards| *yards > 0)),
+			distance: down.and_then(|_| int(&spot["distance"]).filter(|yards| *yards > 0)),
 			yard_line,
 			yards_to_endzone,
 			home_timeouts,
