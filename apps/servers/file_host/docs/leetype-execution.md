@@ -304,8 +304,8 @@ but the `rust-runner` container.
 | --- | --- |
 | `crates/rust_runner` (`recording`) | One program, `main.rs`, in a directory of its own, compiled with `--edition 2024 -C opt-level=0 --error-format=json` (warnings kept, as the owner's own code builds) and, if it builds, run once with no arguments, stdin or environment. A `Recording` keeps the outcome, rustc's diagnostics (codes and spans) and text, the program's stdout (first 4 KiB) and stderr (last 4 KiB, where a panic is), and how it ended. |
 | `RustcRun` (`Recording::rustc_run`) | What the phone reads: some-ui's `RustcRunSchema` (RR1, `packages/ui/rust-rounds`) field for field: `compile-error` (`code`, `stderr`, `span`), `prints`, `panics` (exit 101), `stopped` (`why`: `time`, `memory`, `output`, `exit`), each with the release (`1.97.0`) and, past a compile, `compileStderr`. Derived, never stored alone, so a change to it needs no re-recording. |
-| `rust-runner serve` (`src/bin/rust_runner.rs`, `service`) | The service: one JSON request line, one JSON answer line, one connection, over a Unix socket. `{"ask":"toolchain"}`, or `{"ask":"record","toolchain":…,"source":…}`, answered with the recording and its `RustcRun`. A `record` naming another toolchain is refused, and so is any connection from the programs' uid. It runs as root with three capabilities and starts every compile and run as uid 10001; after each job, its hidden `clean` mode removes what the program left, as 10001. |
-| `infra/docker/Dockerfile.rust-runner` | `rust:1.97.0-slim-bookworm`, pinned by digest (rustc 1.97.0 (2d8144b78 2026-07-07), the owner's), plus the binary, and the programs' uid 10001. |
+| `rust-runner serve` (`src/bin/rust_runner.rs`, `service`) | The service: one JSON request line, one JSON answer line, one connection, over a Unix socket. `{"ask":"toolchain"}`, or `{"ask":"record","toolchain":…,"source":…}`, answered with the recording and its `RustcRun`. A `record` naming another toolchain is refused, and only the client's uid (file_host's, 10000) and root are served. It runs as root with two capabilities and starts every compile and run as 10101:10101; after each job, a helper kills that uid's processes and its hidden `clean` mode removes what the program left, both as 10101. |
+| `infra/docker/Dockerfile.rust-runner` | `rust:1.97.0-slim-bookworm`, pinned by digest (rustc 1.97.0 (2d8144b78 2026-07-07), the owner's), plus the binary, and the programs' uid 10101; no setuid or setgid binary, and a toolchain only root can write. |
 | `infra/compose/rust_runner.yml` | The sandbox (RX1). Not in `docker-compose.yml`'s stack until file_host asks it anything. |
 | `scripts/check_rust_runner_sandbox.py` (`rust-runner.yml`) | Brings the compose file up as written and runs the worked example and the hostile programs against it. |
 
@@ -332,34 +332,45 @@ stricter than the proposal, and simpler: no port, no HTTP.
 Declared per this repo's `CLAUDE.md` ("Drift is loud, not silent"), in the
 same shape as EX1 and EX2. Each holds of the code and configuration as they
 are; "the runner" is `rust-runner serve`, "a program" is any source it is
-asked to record, and "the programs' uid" is 10001.
+asked to record, and "the programs' uid" is 10101 (and gid 10101).
 
 - **RX1: every program runs only in the sandbox, as a uid that can touch
   nothing of the runner's, and nothing relaxes it.**
   - _Claim:_ Rust Rounds' programs are compiled and run only by
     `rust-runner serve` in the container `infra/compose/rust_runner.yml`
     declares: `network_mode: none`; `ipc: none` (no `/dev/shm`) with
-    `kernel.shm_rmid_forced=1`; a read-only root; the runner as root with
-    only `SETUID`, `SETGID` and `KILL` (`cap_drop: ALL`), not dumpable;
-    `no-new-privileges`; an init; `pids_limit: 128`; 1 GiB of memory and
-    swap; one CPU; no core dumps. rustc and the program run as uid and gid
-    10001 with no supplementary groups and no capabilities, so they cannot
-    signal, trace or read the runner, and under `prlimit`: 768 MiB of
+    `kernel.shm_rmid_forced=1`; not privileged, no device, the pid and user
+    namespaces Docker gives by default, no unconfined seccomp or AppArmor;
+    one mount, the socket's volume; a read-only root with no setuid or
+    setgid binary and a toolchain only root can write; the runner as root
+    with only `SETUID` and `SETGID` (`cap_drop: ALL`), not dumpable and with
+    no new privileges (its own `PR_SET_NO_NEW_PRIVS` and the container's);
+    an init; `pids_limit: 128`; 1 GiB of memory and swap; one CPU; no core
+    dumps. rustc and the program run as uid and gid 10101, a pair nothing
+    else in the stack runs as (file_host is 10000:10001), with no
+    supplementary groups and no capabilities, so they cannot signal, trace
+    or read the runner, and under `prlimit`: 768 MiB of
     address space for rustc and 512 MiB for the program, 64 MiB per file,
     64 processes and threads for the uid, no core, no POSIX message queue.
     They can write only in the program's own directory under `/work`
     (root's, mode 0755); the socket's directory is root's, 0755, and the
     runner refuses a `--work` or socket directory that is not its own
-    (root's, writable by nobody else). No source is exempt and no request
+    (root's, writable by nobody else). The socket (0666 in a 0755
+    directory, on a volume file_host shares) can be reached by anything in
+    either container, a program included, so **the peer's uid is the
+    primary defence**: each connection's `SO_PEERCRED` uid is checked before
+    anything is read, and only file_host's (10000) and root's are served.
+    No source is exempt and no request
     field changes how a program is treated (the request type denies unknown
     fields). The container's environment holds only the names
     `check_sandbox` allows, so nothing secret, since a compile's
     `include_str!` can read what the image holds and a program its own
     environment (empty).
   - _Falsified by_ a hunk that loosens any of those settings, adds a
-    capability (`DAC_OVERRIDE`, `FOWNER` and `CHOWN` included: what a
-    program leaves is removed by `clean` as 10001, which needs none),
-    starts a compile or run as the runner's uid, publishes a port, joins a
+    capability (`KILL`, `DAC_OVERRIDE`, `FOWNER` and `CHOWN` included: the
+    sweep and `clean` run as 10101 and need none), gives 10101 to anything
+    else in the stack, serves another uid on the socket, starts a compile
+    or run as the runner's uid, publishes a port, joins a
     network or an IPC namespace, passes an `env_file`, a secret or another
     variable, adds a request field or branch that skips a limit for some
     source ("trusted" tutors, say), or runs a Rust Rounds program anywhere
@@ -370,16 +381,23 @@ asked to record, and "the programs' uid" is 10001.
   - _Why not enforced mechanically:_ settings in a compose file are not
     linted. `check_sandbox` in `scripts/check_rust_runner_sandbox.py` (the
     `Rust runner` workflow) checks them against the container compose
-    starts, and the hostile programs check their effect (a program's
-    identity, a stop, kill and `/proc` read of the runner that fail);
+    starts, that no other Dockerfile or compose file names 10101, and that
+    another uid is refused on the socket; the hostile programs check their
+    effect (a program's identity, a stop, kill and `/proc` read of the
+    runner that fail, a request a program queues that is refused);
     `the_wire_reads_as_documented` checks the request type. Neither sees a
     setting the check does not name.
 - **RX2: nothing a program does outlives its job.**
-  - _Claim:_ after every compile and every run, the runner kills the
-    process group and then every process of the programs' uid. After
-    every job it has `clean` (as that uid) remove everything in each
-    program's directory, opening directories the uid owns before reading
-    them, then removes the directories, and checks that `/proc/sysvipc`
+  - _Claim:_ at a ceiling and after every compile and every run, every
+    process of the programs' uid is killed, by a helper running as that uid
+    (`sh -c 'kill -KILL -1'`, repeated until `/proc` lists no live process
+    of it): the runner signals nothing and needs no `CAP_KILL`, and nothing
+    is signalled by a pid that could have been reused. The runner never
+    walks a tree a program made: after every job `clean`, as the programs'
+    uid, removes everything in each program's directory, however deep (by
+    relative name, one level at a time) and opening directories the uid
+    owns before reading them; the runner then removes the empty
+    directories, and checks that `/proc/sysvipc`
     lists no System V object and `/dev/shm` and `/dev/mqueue` are empty,
     and that the socket's directory holds only the socket it bound. If any
     of that fails, the runner exits, and the container's restart starts it
@@ -395,7 +413,8 @@ asked to record, and "the programs' uid" is 10001.
   - _Why not enforced mechanically:_ the runner's loop is short enough to
     read. The hostile programs check it: a loop, unbounded allocation, a
     fork bomb, a thread bomb, processes that leave the group (`setsid`), a
-    socket, writes everywhere and a directory made mode 000, System V
+    socket, writes everywhere, a directory made mode 000 and one 20000
+    levels deep, System V
     shared memory, semaphores and queues, and compiles that blow up rustc.
     Each ends as a recorded outcome, with no process, file or IPC object
     left; only the semaphore and queue restart the runner.
@@ -403,20 +422,22 @@ asked to record, and "the programs' uid" is 10001.
   - _Claim:_ the service answers a connection before it accepts the next,
     and every job is bounded: the compile timeout (60 s), the run ceiling
     (2 s), a 64 KiB request read within one 5 s deadline for the whole of
-    it, each write of the answer within 5 s, and `clean` within 30 s. A
-    connection from the programs' uid is refused before anything is read
-    (`SO_PEERCRED`), so a program cannot queue jobs that outlive it.
+    it, the answer written within one 5 s deadline for the whole of it, and
+    `clean` within 30 s. A connection from any uid but the client's and
+    root's is refused before anything is read (`SO_PEERCRED`), so a program
+    cannot queue jobs that outlive it.
     file_host asks the runner only from a background pass (EX1), never from
     a handler, and `ask` reads at most 4 MiB of answer.
-  - _Falsified by_ a thread or task per connection, a removed or per-read
-    ceiling, a peer check removed or moved after the read, or a handler
-    that asks the runner.
+  - _Falsified by_ a thread or task per connection, a removed ceiling or
+    one per read or write, a peer check removed or moved after the read,
+    or a handler that asks the runner.
   - _Scope:_ the service loop and its client. The next slice's pass decides
     how often it asks, and caps attempts per program.
   - _Why not enforced mechanically:_ the loop is short enough to read.
-    `a_trickling_client_is_refused_at_the_client_timeout` checks the
-    deadline, the hostile programs check the peer refusal, and EX1's tests
-    the request path.
+    `a_trickling_client_is_refused_at_the_client_timeout` checks the read's
+    deadline (the write's is the same type), `only_a_clients_uid_is_served`
+    and the hostile programs check the peer refusal, and EX1's tests the
+    request path.
 - **RX4: a recording is keyed to the bytes and the toolchain that made it.**
   - _Claim:_ `key` is SHA-256 of the toolchain (`rustc -V` and the profile,
     `rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0`),
