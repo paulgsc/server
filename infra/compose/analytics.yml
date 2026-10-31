@@ -13,10 +13,12 @@ services:
       - MB_SITE_URL=${METABASE_SITE_URL:-https://metabase.home.maishatu.com}
       - JAVA_OPTS=-Xmx1500m -Xms512m
     volumes:
-      # HOST-SPECIFIC: the nixos.local dev host's storage mount (#406). Any
-      # other host must change both paths.
-      - /mnt/storage/users/dev/metabase-data:/metabase-data
-      - /mnt/storage/users/dev/databases:/data:rw
+      # METABASE_DATA_DIR: where Metabase keeps its own database, and
+      # DATABASES_DIR: the directory of SQLite databases it reads, at /data.
+      # HOST-SPECIFIC defaults: the nixos.local dev host's storage mount
+      # (#406); another host sets both.
+      - ${METABASE_DATA_DIR:-/mnt/storage/users/dev/metabase-data}:/metabase-data
+      - ${DATABASES_DIR:-/mnt/storage/users/dev/databases}:/data:rw
     networks:
       - monitoring-network
     mem_limit: 2G
