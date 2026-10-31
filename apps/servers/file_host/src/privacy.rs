@@ -77,6 +77,22 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("leetype_round_witness", "each round's μ into the canon register, derived from its body — corpus-wide"),
 	("mood_events", "editorial content, not per-person"),
 	(
+		"rust_round",
+		"Rust Rounds' rounds (paulgsc/some-ui#2234), each as the phone pasted it: a tutor's cards and toy programs, nobody's record (a refine card names a voice note by id and carries the tutor's nudge; see docs/identity.md, \"What is still exposed\")",
+	),
+	(
+		"rust_round_drop",
+		"each time the rust-runner went away while it held a Rust Rounds program — about code and the runner, never about who asked",
+	),
+	(
+		"rust_round_run",
+		"what rustc did with each Rust Rounds program, per toolchain, keyed to the source's bytes — code is not personal, recorded in the background, never about who asked",
+	),
+	(
+		"rust_round_source",
+		"each distinct program a Rust Rounds round holds, once, by its SHA-256 — a tutor's code, nobody's record",
+	),
+	(
 		"storage_sample",
 		"bytes per table, index and file, sampled daily (docs/storage.md) — the database's own size, nobody's record",
 	),

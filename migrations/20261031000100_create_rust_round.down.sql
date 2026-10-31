@@ -1,0 +1,12 @@
+DROP TRIGGER rust_round_drop_is_kept;
+DROP TRIGGER rust_round_drop_is_append_only;
+DROP TRIGGER rust_round_run_is_kept;
+DROP TRIGGER rust_round_run_is_append_only;
+DROP TRIGGER rust_round_source_is_kept;
+DROP TRIGGER rust_round_source_is_append_only;
+DROP TRIGGER rust_round_is_kept;
+DROP TRIGGER rust_round_is_append_only;
+DROP TABLE rust_round_drop;
+DROP TABLE rust_round_run;
+DROP TABLE rust_round_source;
+DROP TABLE rust_round;

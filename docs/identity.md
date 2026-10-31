@@ -1078,6 +1078,17 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   they put the phone down, each to the millisecond; the friction reports say
   how each sitting went, on which shot, and why, in a cause the owner may
   have typed. Deleting the account removes both; nothing else does.
+- **Rust Rounds' rounds.** `rust_round`, `rust_round_source`,
+  `rust_round_run` and `rust_round_drop` name no subject and are classified
+  not subject-scoped (`privacy.rs`): a round is a tutor's cards and toy
+  programs, and a run is what rustc did with a program, keyed to its bytes
+  and toolchain. Code is not personal. A round is not only code, though: a
+  refine card names one of the owner's voice notes by its id and carries the
+  tutor's nudge, which may paraphrase what the owner said in it, and the
+  round says when it reached home. Every round is readable by any paired
+  phone (`GET /rust-rounds*`, not by subject), is kept for good, and is not
+  reached by deleting an account. Whether rounds should be subject-scoped
+  instead waits on the owner (paulgsc/some-ui#2234).
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
   record home (invariant 17): one row per change, as many as its person
