@@ -98,7 +98,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",

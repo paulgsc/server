@@ -6,8 +6,9 @@
 //! checks out, then files each transcript home heard and has not filed
 //! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
-//! voice-free decisions and scouts the phone filed (`PUT /jobs/files/:name`),
-//! which lessons it opened, those transcripts and those logs.
+//! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
+//! names a voice note by id at most), which lessons it opened, those
+//! transcripts and those logs.
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -833,8 +834,8 @@ mod tests {
 		put_answers: Mutex<Vec<(u16, &'static str)>>,
 		puts_fail: Mutex<bool>,
 		puts: Mutex<Vec<String>>,
-		/// The body of each transcript put.
-		transcripts: Mutex<Vec<String>>,
+		/// The body of each put, in `puts` order.
+		put_bodies: Mutex<Vec<String>>,
 		/// The body of each `LeetType` session log put.
 		logs: Mutex<Vec<String>>,
 	}
@@ -876,11 +877,10 @@ mod tests {
 					return Err("connection refused");
 				}
 				let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
-				if path.starts_with("/v1/transcript/items/") {
-					self.transcripts.lock().unwrap().push(body);
-				} else if path.starts_with("/v1/leetype-log/items/") {
-					self.logs.lock().unwrap().push(body);
+				if path.starts_with("/v1/leetype-log/items/") {
+					self.logs.lock().unwrap().push(body.clone());
 				}
+				self.put_bodies.lock().unwrap().push(body);
 				self.puts.lock().unwrap().push(path);
 				let mut answers = self.put_answers.lock().unwrap();
 				let (status, body) = if answers.is_empty() {
@@ -1136,6 +1136,10 @@ mod tests {
 
 	/// A file as the phone files it (`PUT /jobs/files/:name`, `PUT /routine/opened`).
 	async fn filed(pool: &SqlitePool, name: &str) {
+		filed_as(pool, name, b"{}").await;
+	}
+
+	async fn filed_as(pool: &SqlitePool, name: &str, body: &[u8]) {
 		let folder = if name.starts_with("scouts-") {
 			"scout"
 		} else if name.starts_with("opened-") {
@@ -1143,7 +1147,7 @@ mod tests {
 		} else {
 			"decisions"
 		};
-		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", b"{}", "2026-10-23T15:00:00.000Z")
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, folder, name, "sha", body, "2026-10-23T15:00:00.000Z")
 			.await
 			.unwrap();
 	}
@@ -1169,6 +1173,20 @@ mod tests {
 		);
 		assert!(pass(&pool, &fake).await.unwrap().handed.is_empty(), "an answered file is not handed again");
 		assert_eq!(fake.puts.lock().unwrap().len(), 3);
+	}
+
+	/// A decisions file that names a voice note by id is text, and goes to
+	/// the mailbox's `decisions` folder as the phone filed it (the pass
+	/// reads nothing in it, `handlers::jobs` the schema only); the note's
+	/// transcript goes to `transcript` by the same id.
+	#[tokio::test]
+	async fn a_filed_file_is_handed_over_as_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let body = r#"{"schema":"some-ui.job-decisions/1","picks":[{"id":"e1","voice":["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f"]}]}"#;
+		filed_as(&pool, "decisions-2026-10-23.json", body.as_bytes()).await;
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/decisions/items/decisions-2026-10-23.json"]);
+		assert_eq!(*fake.put_bodies.lock().unwrap(), [body]);
 	}
 
 	#[tokio::test]
@@ -1258,7 +1276,7 @@ mod tests {
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-n1-1.json"]);
-		let body: serde_json::Value = serde_json::from_str(&fake.transcripts.lock().unwrap()[0]).unwrap();
+		let body: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
 		assert_eq!(
 			body,
 			serde_json::json!({
