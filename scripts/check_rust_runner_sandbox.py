@@ -27,7 +27,12 @@ name, and checks:
     without end, build a huge static or print a flood of errors; and a
     program that floods stdout: each ends as a recorded outcome, and leaves
     no process, no file and no IPC object behind (RX2, RX3). Only IPC a
-    program leaves restarts the runner, into a fresh namespace.
+    program leaves restarts the runner, into a fresh namespace;
+  * a survivor looping kill(-1, SIGSTOP) or kill(-1, SIGKILL), which can
+    stop or kill the sweep's helper: the job ends (an answer or a dropped
+    connection), the runner (PID 1, so its exit ends every process) is back
+    within its watchdog's deadline, restarted at most once, and nothing of
+    the programs' uid is left.
 
 Requests go through `rust-runner ask` exec'd as uid 10000, file_host's, the
 one client uid the runner serves besides root.
@@ -74,8 +79,12 @@ ENV_ALLOWED = {
 # CAP_SETGID (6) and CAP_SETUID (7).
 RUNNER_CAPS = 0xC0
 TOOLCHAIN = "rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0"
-# The processes the container holds between jobs: tini and the runner.
-RESIDENTS = ("/sbin/docker-init -- /usr/local/bin/rust-runner serve", "/usr/local/bin/rust-runner serve")
+# The one process the container holds between jobs: the runner, its PID 1.
+RESIDENTS = ("/usr/local/bin/rust-runner serve",)
+# The runner's watchdog deadline for one job with the default limits
+# (`serve_job_deadline`): 60 s compile, 2 s run, 30 s clean, 2 x 5 s client,
+# 30 s sweep allowance.
+JOB_DEADLINE = 132
 
 
 class Failed(Exception):
@@ -120,7 +129,7 @@ def wait_ready(deadline_seconds: float = 120) -> None:
 
 
 def leftovers() -> list[str]:
-	"""Every process in the container but tini and the runner."""
+	"""Every process in the container but the runner."""
 	result = subprocess.run(["docker", "top", CONTAINER, "-eo", "pid,args"], capture_output=True, text=True, check=True)
 	processes = [line.split(None, 1)[1] for line in result.stdout.splitlines()[1:] if len(line.split(None, 1)) == 2]
 	return [args for args in processes if args not in RESIDENTS]
@@ -155,8 +164,8 @@ def restart_count() -> int:
 
 def runner_status() -> str:
 	"""The runner's /proc status, read as root from outside the job."""
-	pid = compose("exec", "-T", CONTAINER, "sh", "-c", "for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline)\" = '/usr/local/bin/rust-runner serve ' ] && echo ${p#/proc/}; done").stdout.split()
-	expect(len(pid) == 1, f"the runner's pid: {pid}")
+	pid = compose("exec", "-T", CONTAINER, "sh", "-c", "for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline)\" = '/usr/local/bin/rust-runner serve ' ] && echo ${p#/proc/}; done; true").stdout.split()
+	expect(pid == ["1"], f"the runner is not the container's PID 1: {pid}")
 	return compose("exec", "-T", CONTAINER, "cat", f"/proc/{pid[0]}/status").stdout
 
 
@@ -214,7 +223,8 @@ def check_sandbox() -> None:
 	other = compose("exec", "-T", "--user", OTHER_UID, CONTAINER, "rust-runner", "ask", stdin='{"ask":"toolchain"}', timeout=30)
 	expect(json.loads(other.stdout).get("reason") == "peer", f"uid {OTHER_UID} was served: {other.stdout}")
 	expect("no-new-privileges:true" in (host.get("SecurityOpt") or []), f"security: {host.get('SecurityOpt')}")
-	expect(host["Init"] is True, "no init")
+	expect(not host.get("Init"), "an init: the runner must be PID 1, so its exit ends every process with it")
+	expect(host["RestartPolicy"]["Name"] == "unless-stopped", f"restart policy: {host['RestartPolicy']}")
 	expect(host["PidsLimit"] == 128, f"pids: {host['PidsLimit']}")
 	expect(host["Memory"] == 1024**3, f"memory: {host['Memory']}")
 	expect(host["NanoCpus"] == 10**9, f"cpus: {host['NanoCpus']}")
@@ -355,27 +365,66 @@ fn main() {
 """
 DEEP = """
 use std::os::unix::fs::PermissionsExt;
+fn too_long(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(36)
+}
 fn main() {
     // Far past PATH_MAX, by name relative to where it is; the bottom made
     // unreadable. A host whose LSM mediates by full path (AppArmor on
-    // GitHub's runners) refuses a name past its buffer: stop there.
+    // GitHub's runners) refuses a step past its buffer with ENAMETOOLONG:
+    // stop there, whichever step it was.
     let mut depth = 0;
     while depth < 20_000 {
-        match std::fs::create_dir("d") {
-            Ok(()) => {}
-            Err(error) if error.raw_os_error() == Some(36) => break,
+        match std::fs::create_dir("d").and_then(|()| std::env::set_current_dir("d")) {
+            Ok(()) => depth += 1,
+            Err(error) if too_long(&error) => break,
             Err(error) => panic!("{error}"),
         }
-        std::env::set_current_dir("d").unwrap();
-        depth += 1;
     }
-    std::fs::write("bottom", b"x").unwrap();
-    std::fs::set_permissions(".", std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Where the host allows it: up a level at a time, a bounded number of
+    // times.
+    for _ in 0..64 {
+        let bottom = std::fs::write("bottom", b"x").and_then(|()| std::fs::set_permissions(".", std::fs::Permissions::from_mode(0o000)));
+        match bottom {
+            Ok(()) => break,
+            Err(error) if too_long(&error) => {
+                if std::env::set_current_dir("..").is_err() {
+                    break;
+                }
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
     if depth == 20_000 {
         println!("deep");
     } else {
         println!("deep: the host stopped it at {depth}");
     }
+}
+"""
+LOOPER = """
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+    fn setsid() -> i32;
+}
+fn main() {
+    // A survivor out of the program's session that sends SIGNAL to every
+    // process of its uid it can, without end: the sweep's helper included.
+    if std::env::args().nth(1).as_deref() == Some("loop") {
+        unsafe { setsid() };
+        for _ in 0..3 {
+            std::thread::spawn(|| loop { unsafe { kill(-1, SIGNAL) }; });
+        }
+        loop { unsafe { kill(-1, SIGNAL) }; }
+    }
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("loop")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    println!("left a looper");
 }
 """
 STOP_RUNNER = """
@@ -512,6 +561,10 @@ def check_hostile() -> None:
 	depth = "20000" if host_stopped is None else host_stopped[1]
 	print(f"ok: a directory {depth} levels deep is removed, with no restart")
 
+	for name, signal in (("a survivor looping kill(-1, SIGSTOP)", 19), ("a survivor looping kill(-1, SIGKILL)", 9)):
+		survive(name, LOOPER.replace("SIGNAL", str(signal)))
+
+	restarts = restart_count()
 	stopped = record(STOP_RUNNER)["rustc"]
 	expect(stopped["outcome"] == "stopped" and stopped["why"] == "time", f"stopping the runner: {stopped}")
 	expect(stopped["stdout"] == "stop: false\nkill: false\nenviron: false\n", f"stopping the runner's stdout: {stopped['stdout']!r}")
@@ -543,6 +596,27 @@ def check_hostile() -> None:
 	expect(restart_count() == restarts + 1, f"restart count {restarts} -> {restart_count()}")
 	clean("semaphores and queues")
 	print("ok: a System V semaphore or queue a program leaves restarts the runner into a fresh IPC namespace")
+
+
+def survive(name: str, source: str) -> None:
+	"""A program whose survivor fights the sweep: the job ends, as an answer or
+	a dropped connection, and the runner is back, clean, within the
+	watchdog's deadline, having restarted at most once."""
+	restarts = restart_count()
+	started = time.monotonic()
+	asked = compose(
+		"exec", "-T", "--user", CLIENT_UID, CONTAINER, "rust-runner", "ask",
+		stdin=json.dumps({"ask": "record", "toolchain": TOOLCHAIN, "source": source}),
+		check=False, timeout=JOB_DEADLINE + 120,
+	)
+	ended = "answered" if asked.returncode == 0 else "dropped"
+	wait_ready()
+	took = time.monotonic() - started
+	expect(took < JOB_DEADLINE + 60, f"{name}: the runner was back only after {took:.0f} s")
+	expect(restart_count() - restarts <= 1, f"{name}: restarted {restart_count() - restarts} times")
+	expect(ask({"ask": "toolchain"})["answer"] == "toolchain", f"{name}: the runner does not answer")
+	clean(name)
+	print(f"ok: {name}: the job was {ended}, the runner restarted {restart_count() - restarts} time(s) and was back in {took:.0f} s, nothing left")
 
 
 def check_compiles() -> None:

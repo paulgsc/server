@@ -30,7 +30,10 @@
 //! now empty directories, and checks that no System V IPC object or POSIX message
 //! queue is left and that the socket's directory holds only the socket it
 //! bound. If any of that fails it exits, and the container's restart starts
-//! it clean: fresh tmpfs, fresh IPC namespace.
+//! it clean: fresh tmpfs, fresh IPC namespace, and (the runner is the
+//! container's PID 1) no process left. A watchdog thread bounds every job's
+//! whole life the same way, for the one wait nothing else can bound: a
+//! helper of the programs' uid that a survivor stopped before its `exec`.
 //!
 //! `ask` sends one request read from stdin and prints the answer: the
 //! client the recording pass in `file_host` is, for an operator and the
@@ -49,10 +52,70 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// How long `clean` may take over what one job left.
 const CLEAN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a job may take beyond its own ceilings (the compile timeout, the run
+/// ceiling, [`CLEAN_TIMEOUT`] and the client's two deadlines) before the
+/// watchdog ends the runner: its sweeps, each a few milliseconds and each
+/// helper bounded by `HELPER_TIMEOUT`, and the tidy's checks.
+const SWEEP_ALLOWANCE: Duration = Duration::from_secs(30);
+
+/// How often the watchdog looks at the clock.
+const WATCH_POLL: Duration = Duration::from_millis(100);
+
+/// The backstop that bounds every job, whatever its processes do (RX3).
+///
+/// A thread of the runner's own, which no process of the programs' uid can
+/// signal or stop. A job's whole life, from accepting its connection to the
+/// end of its tidy, is armed with a deadline; if the job is still running
+/// past it (a helper stopped before its `exec` leaves `spawn` blocked, which
+/// nothing on the job's own thread can bound), the watchdog exits the
+/// runner. In the container the runner is PID 1, so its exit kills every
+/// process in the container's PID namespace, and `restart: unless-stopped`
+/// brings it back clean. The client sees its connection dropped.
+struct Watchdog {
+	origin: Instant,
+	/// Milliseconds since `origin` at which the armed job is overdue; 0 when
+	/// no job is armed.
+	until: AtomicU64,
+}
+
+impl Watchdog {
+	fn start() -> Arc<Self> {
+		let dog = Arc::new(Self {
+			origin: Instant::now(),
+			until: AtomicU64::new(0),
+		});
+		let watching = Arc::clone(&dog);
+		std::thread::spawn(move || loop {
+			std::thread::sleep(WATCH_POLL);
+			let until = watching.until.load(Ordering::SeqCst);
+			if until != 0 && watching.now() >= until {
+				let _ = writeln!(io::stderr(), "rust-runner: a job outlived its deadline; exiting, so the restart clears it");
+				std::process::exit(3);
+			}
+		});
+		dog
+	}
+
+	fn now(&self) -> u64 {
+		u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+	}
+
+	fn arm(&self, budget: Duration) {
+		let budget = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX);
+		self.until.store(self.now().saturating_add(budget).max(1), Ordering::SeqCst);
+	}
+
+	fn disarm(&self) {
+		self.until.store(0, Ordering::SeqCst);
+	}
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Records what rustc and a Rust program print, one sandboxed program at a time")]
@@ -210,7 +273,11 @@ fn run(serve: &Serve) -> Result<(), String> {
 	if !recorder.compiler().memory_ceiling_applied() {
 		return Err(String::from("prlimit is not installed, so runs would have no memory or process ceiling"));
 	}
+	let watchdog = Watchdog::start();
+	let job_deadline = serve_job_deadline(recorder.compiler().limits());
+	watchdog.arm(CLEAN_TIMEOUT + SWEEP_ALLOWANCE);
 	tidy_work(&recorder, &serve.work)?;
+	watchdog.disarm();
 
 	// The socket's directory holds the socket and nothing else: an old one is
 	// removed, and anything more means the directory is not the runner's own.
@@ -231,6 +298,7 @@ fn run(serve: &Serve) -> Result<(), String> {
 
 	for stream in listener.incoming() {
 		let Ok(stream) = stream else { continue };
+		watchdog.arm(job_deadline);
 		let response = answer(&recorder, &stream, Some(&clients)).map_err(|err| err.to_string())?;
 		drop(stream);
 		// What was answered, never the program or what it printed.
@@ -243,8 +311,15 @@ fn run(serve: &Serve) -> Result<(), String> {
 		};
 		let _ = writeln!(io::stderr(), "rust-runner: {line}");
 		tidy(serve, &recorder, socket_dir, bound)?;
+		watchdog.disarm();
 	}
 	Ok(())
+}
+
+/// The watchdog's deadline for one job: every ceiling it can spend, plus
+/// [`SWEEP_ALLOWANCE`]. 132 s with the defaults.
+fn serve_job_deadline(limits: &Limits) -> Duration {
+	limits.compile_timeout + limits.run_ceiling + CLEAN_TIMEOUT + rust_runner::service::CLIENT_TIMEOUT * 2 + SWEEP_ALLOWANCE
 }
 
 /// Undo whatever a program did (RX2): remove every program's directory, check
@@ -348,7 +423,15 @@ fn empty_tree(dir: &Path) -> io::Result<()> {
 	let mut levels: Vec<(Option<std::ffi::OsString>, Vec<std::ffi::OsString>)> = vec![(None, unlink_here()?)];
 	while let Some((_, pending)) = levels.last_mut() {
 		if let Some(next) = pending.pop() {
-			std::env::set_current_dir(&next)?;
+			if let Err(err) = std::env::set_current_dir(&next) {
+				// A host that mediates by full path (AppArmor) refuses to
+				// enter a directory past its buffer; the program could not
+				// enter it either, so it is empty, and goes as it is.
+				if too_long(&err) && std::fs::remove_dir(&next).is_ok() {
+					continue;
+				}
+				return Err(err);
+			}
 			levels.push((Some(next), unlink_here()?));
 		} else if let Some((Some(name), _)) = levels.pop() {
 			std::env::set_current_dir("..")?;
@@ -368,7 +451,12 @@ fn unlink_here() -> io::Result<Vec<std::ffi::OsString>> {
 		let metadata = std::fs::symlink_metadata(&name)?;
 		if metadata.is_dir() {
 			if metadata.uid() == getuid().as_raw() {
-				std::fs::set_permissions(&name, std::fs::Permissions::from_mode(0o700))?;
+				// Past a full-path host's buffer the chmod is refused too;
+				// entering it then decides (above).
+				match std::fs::set_permissions(&name, std::fs::Permissions::from_mode(0o700)) {
+					Err(err) if !too_long(&err) => return Err(err),
+					_ => {}
+				}
 			}
 			dirs.push(name);
 		} else {
@@ -376,6 +464,12 @@ fn unlink_here() -> io::Result<Vec<std::ffi::OsString>> {
 		}
 	}
 	Ok(dirs)
+}
+
+/// `ENAMETOOLONG`, which a host whose LSM mediates by full path returns for
+/// a relative name once the whole path is past its buffer.
+fn too_long(err: &io::Error) -> bool {
+	err.raw_os_error() == Some(36)
 }
 
 /// Whether `dir` is a directory of the runner's own: not a link, its uid's,
