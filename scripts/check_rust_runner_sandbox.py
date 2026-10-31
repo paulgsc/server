@@ -357,14 +357,25 @@ DEEP = """
 use std::os::unix::fs::PermissionsExt;
 fn main() {
     // Far past PATH_MAX, by name relative to where it is; the bottom made
-    // unreadable.
-    for _ in 0..20_000 {
-        std::fs::create_dir("d").unwrap();
+    // unreadable. A host whose LSM mediates by full path (AppArmor on
+    // GitHub's runners) refuses a name past its buffer: stop there.
+    let mut depth = 0;
+    while depth < 20_000 {
+        match std::fs::create_dir("d") {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(36) => break,
+            Err(error) => panic!("{error}"),
+        }
         std::env::set_current_dir("d").unwrap();
+        depth += 1;
     }
     std::fs::write("bottom", b"x").unwrap();
     std::fs::set_permissions(".", std::fs::Permissions::from_mode(0o000)).unwrap();
-    println!("deep");
+    if depth == 20_000 {
+        println!("deep");
+    } else {
+        println!("deep: the host stopped it at {depth}");
+    }
 }
 """
 STOP_RUNNER = """
@@ -487,10 +498,19 @@ def check_hostile() -> None:
 
 	restarts = restart_count()
 	deep = record(DEEP)["rustc"]
-	expect(deep == {"outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "deep\n"}, f"a deep tree: {deep}")
+	stdout = deep.get("stdout", "")
+	# 20000 levels where nothing mediates by full path; on an AppArmor host
+	# (GitHub's runners) as deep as it allows, about PATH_MAX bytes of path.
+	host_stopped = re.fullmatch(r"deep: the host stopped it at (\d+)\n", stdout)
+	expect(
+		{k: v for k, v in deep.items() if k != "stdout"} == {"outcome": "prints", "toolchain": "1.97.0", "compileStderr": ""}
+		and (stdout == "deep\n" or (host_stopped is not None and int(host_stopped[1]) > 1000)),
+		f"a deep tree: {deep}",
+	)
 	clean("a deep tree")
 	expect(restart_count() == restarts, "the runner restarted for a deep tree")
-	print("ok: a directory 20000 levels deep is removed, with no restart")
+	depth = "20000" if host_stopped is None else host_stopped[1]
+	print(f"ok: a directory {depth} levels deep is removed, with no restart")
 
 	stopped = record(STOP_RUNNER)["rustc"]
 	expect(stopped["outcome"] == "stopped" and stopped["why"] == "time", f"stopping the runner: {stopped}")
