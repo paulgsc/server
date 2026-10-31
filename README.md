@@ -217,6 +217,24 @@ preflight names those too.
     say. A container without the label (the third-party ones) is checked
     only for the compose variables it interpolates.
 
+### NixOS modules
+
+The flake exports each binary as a NixOS service, `nixosModules.file-host` and
+`nixosModules.orchestrator` (#408), run as an OCI container. Their options are
+generated from the same schema (`scripts/nixos_options.py` writes
+`nix/modules/generated/`, and `Lint`'s `Env schema` job holds it in step), so
+`nixos-option services.file-host.settings` lists every variable with its help,
+and `nixos-rebuild` refuses a configuration with a required setting missing,
+one required while another is on, or a number out of its limits, naming every
+gap in one evaluation (`nix/modules/test.nix`, the `NixOS modules` job). A
+secret has no option: it reaches the container only through
+`environmentFiles`, a sops-nix template on the host.
+
+Nothing uses them yet: the box still runs the compose stack (`make up`), and
+each module is off unless `enable`. Moving the box onto them is its own step,
+in its own configuration (`paulgsc/dotfiles`), and gives up what compose
+gives, such as waiting on a dependency's healthcheck (#408).
+
 ### Host-specific values
 
 This server runs on one machine today: the NixOS dev host `nixos.local`, with
