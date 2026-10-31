@@ -279,6 +279,49 @@ mod tests {
 		);
 	}
 
+	/// The phone's `rubric-shown` (a take's rubric shown for a round) is
+	/// stored and served back exactly as sent; one with a field the phone
+	/// does not send is still refused, and nothing of it written.
+	#[tokio::test]
+	async fn a_shown_rubric_is_kept_and_read_back_as_sent() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		let sent =
+			String::from(r#"{"type":"rubric-shown","id":"e1","at":"2026-10-20T09:14:00.000Z","session":""#) + S + r#"","file":"raft-1.json","screen":"r2","take":"say-why"}"#;
+		let request = Request::builder()
+			.method(Method::PUT)
+			.uri(event_path(S, "e1"))
+			.header(&phone.0, &phone.1)
+			.body(Body::from(sent.clone()))
+			.unwrap();
+		let response = app.clone().oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let written = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		assert_eq!(String::from_utf8(written.to_vec()).unwrap(), String::from(r#"{"change":"added","event":"#) + &sent + "}");
+
+		let request = Request::builder().uri(events(S)).header(&phone.0, &phone.1).body(Body::empty()).unwrap();
+		let response = app.clone().oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let held = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		assert_eq!(
+			String::from_utf8(held.to_vec()).unwrap(),
+			String::from(r#"{"session":""#) + S + r#"","events":["# + &sent + "]}",
+			"byte for byte"
+		);
+
+		let mut extra: Value = serde_json::from_str(&sent).unwrap();
+		extra["id"] = json!("e2");
+		extra["covers"] = json!(["r2"]);
+		let (status, answer) = call(&app, Method::PUT, &event_path(S, "e2"), Some(&phone), &extra).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+		assert_eq!(answer["error"]["details"].as_object().unwrap().keys().collect::<Vec<_>>(), ["body"]);
+		assert_eq!(
+			call(&app, Method::GET, &events(S), Some(&phone), &Value::Null).await.1["events"].as_array().unwrap().len(),
+			1
+		);
+	}
+
 	/// A write that breaks a rule is a 422 naming each field, a soundbite
 	/// included, a different event under a held id is a 409, and one
 	/// subject's record is never another's.
