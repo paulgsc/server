@@ -349,8 +349,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     one mount, the socket's volume; a read-only root with no setuid or
     setgid binary and a toolchain only root can write; the runner as root
     with only `SETUID` and `SETGID` (`cap_drop: ALL`), not dumpable and with
-    no new privileges (its own `PR_SET_NO_NEW_PRIVS` and the container's);
-    an init; `pids_limit: 128`; 1 GiB of memory and swap; one CPU; no core
+    no new privileges (its own `PR_SET_NO_NEW_PRIVS` and the container's),
+    and the container's PID 1 (no init; `restart: unless-stopped`);
+    `pids_limit: 128`; 1 GiB of memory and swap; one CPU; no core
     dumps. rustc and the program run as uid and gid 10101, a pair nothing
     else in the stack runs as (file_host is 10000:10001), with no
     supplementary groups and no capabilities, so they cannot signal, trace
@@ -380,9 +381,21 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     variable, adds a request field or branch that skips a limit for some
     source ("trusted" tutors, say), or runs a Rust Rounds program anywhere
     else.
+    **Who can signal whom.** A program cannot signal the runner: it is
+    another uid, and as PID 1 it receives no signal it has no handler for.
+    The sweep's helper (RX2) is a process of the programs' uid from its
+    fork on, so a program's survivor *can* stop or kill it; that is why the
+    helper is bounded and RX3's watchdog, a thread of the root runner that
+    nothing of the programs' uid can reach, is the backstop.
   - _Scope:_ the `rust-runner` container and the crate's `serve` path.
     `record-leetype-runs` uses the same `Compiler` without a uid of its own
     or a container (the reviewed corpus, LeetType's known gaps above).
+    **Known limit:** the container has no user namespace, so uid 10101 is
+    the host's uid 10101, and `RLIMIT_NPROC` (64) counts every process of
+    it on the host. `check_ids` holds the stack's own files to 10101 being
+    the runner's alone; another tenant of the host running as 10101 would
+    share the count (and could exhaust it, failing a job's runs, never
+    widening what a program may do).
   - _Why not enforced mechanically:_ settings in a compose file are not
     linted. `check_sandbox` in `scripts/check_rust_runner_sandbox.py` (the
     `Rust runner` workflow) checks them against the container compose
@@ -401,17 +414,27 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     walks a tree a program made: after every job `clean`, as the programs'
     uid, removes everything in each program's directory, however deep (by
     relative name, one level at a time) and opening directories the uid
-    owns before reading them; the runner then removes the empty
+    owns before reading them (a directory a full-path host such as
+    AppArmor will not let it enter is one the program could not fill
+    either, and is removed as it is); the runner then removes the empty
     directories, and checks that `/proc/sysvipc`
     lists no System V object and `/dev/shm` and `/dev/mqueue` are empty,
     and that the socket's directory holds only the socket it bound. If any
     of that fails, the runner exits, and the container's restart starts it
-    clean: fresh tmpfs, fresh IPC namespace. System V shared memory goes
-    with the process that made it (`shm_rmid_forced`); POSIX queues are
-    refused (`--msgqueue=0`); a System V semaphore or queue a program
-    leaves costs a restart.
+    clean: fresh tmpfs, fresh IPC namespace, and, since the runner is PID 1,
+    every process in the container killed with it. **The restart is the
+    cleanup of last resort**, and these cases take it: a System V semaphore
+    or queue a program leaves (shared memory goes with the process that
+    made it, `shm_rmid_forced`; POSIX queues are refused, `--msgqueue=0`);
+    something left in `/dev/shm` or `/dev/mqueue`, `/work` or the socket's
+    directory that cannot be removed; a sweep that cannot finish (a
+    survivor that stops the helper past its 5 s, or kills it every pass);
+    and a job past the watchdog's deadline (RX3). The client of a job that
+    ends this way sees its connection dropped, with no answer.
   - _Falsified by_ a hunk that skips the sweep, the clean or any of those
-    checks for any request, or catches their failure and goes on serving.
+    checks for any request, catches their failure and goes on serving,
+    makes a sweep failure read as the program's (`TimedOut`,
+    `InvalidInput`), or puts an init back in front of the runner.
   - _Scope:_ processes, files under `/work` and the socket's directory, and
     IPC objects of the container's namespace. Time a program spent and the
     CPU's caches are not undone; nothing reads them.
@@ -419,31 +442,47 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     read. The hostile programs check it: a loop, unbounded allocation, a
     fork bomb, a thread bomb, processes that leave the group (`setsid`), a
     socket, writes everywhere, a directory made mode 000 and one 20000
-    levels deep, System V
-    shared memory, semaphores and queues, and compiles that blow up rustc.
-    Each ends as a recorded outcome, with no process, file or IPC object
-    left; only the semaphore and queue restart the runner.
+    levels deep (as deep as the host allows), System V shared memory,
+    semaphores and queues, survivors looping `kill(-1, SIGSTOP)` and
+    `kill(-1, SIGKILL)`, and compiles that blow up rustc. Each ends as a
+    recorded outcome or a dropped connection, with no process, file or IPC
+    object left; only the semaphore and queue and the two loopers restart
+    the runner, once each at most.
 - **RX3: one job at a time, never on a request's path.**
   - _Claim:_ the service answers a connection before it accepts the next,
     and every job is bounded: the compile timeout (60 s), the run ceiling
     (2 s), a 64 KiB request read within one 5 s deadline for the whole of
-    it, the answer written within one 5 s deadline for the whole of it, and
-    `clean` within 30 s. A connection from any uid but the client's and
+    it, the answer written within one 5 s deadline for the whole of it,
+    `clean` within 30 s, and each sweep helper within 5 s. **The backstop
+    is the watchdog:** a thread of the runner arms each job's whole life,
+    from accepting its connection to the end of its tidy, with the sum of
+    those ceilings plus a 30 s sweep allowance (132 s with the defaults,
+    `serve_job_deadline`), and exits the runner if the job is still going
+    past it. That bounds the one wait nothing on the job's thread can: a
+    helper a survivor stopped before its `exec`, which blocks `spawn`. The
+    exit is RX2's restart; the client sees its connection dropped. **What a
+    client does with a dropped connection:** treat it as "the runner
+    restarted while running this job" and retry it, a bounded number of
+    times, then record that as the outcome (`rust_rounds::pass`, RP3); the
+    protocol has no answer for it. A connection from any uid but the client's and
     root's is refused before anything is read (`SO_PEERCRED`), so a program
     cannot queue jobs that outlive it.
     file_host asks the runner only from a background pass (EX1), never from
     a handler, and `ask` reads at most 4 MiB of answer.
   - _Falsified by_ a thread or task per connection, a removed ceiling or
-    one per read or write, a peer check removed or moved after the read,
-    or a handler that asks the runner.
+    one per read or write, a helper waited without a deadline, a watchdog
+    removed, disarmed before the tidy ends or depending on any process of
+    the programs' uid, a peer check removed or moved after the read, or a
+    handler that asks the runner.
   - _Scope:_ the service loop and its client. How often the pass asks, and
     what it does when the runner goes away holding a program, is RP3 and RP4
     (below).
   - _Why not enforced mechanically:_ the loop is short enough to read.
     `a_trickling_client_is_refused_at_the_client_timeout` checks the read's
     deadline (the write's is the same type), `only_a_clients_uid_is_served`
-    and the hostile programs check the peer refusal, and EX1's tests the
-    request path.
+    and the hostile programs check the peer refusal, the two looper cases
+    check that a job always ends and the runner comes back (by the helper's
+    deadline or the watchdog's), and EX1's tests the request path.
 - **RX4: a recording is keyed to the bytes and the toolchain that made it.**
   - _Claim:_ `key` is SHA-256 of the toolchain (`rustc -V` and the profile,
     `rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0`),

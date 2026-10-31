@@ -15,11 +15,22 @@
 //! it and nothing else, a descendant that left the group (`setsid`)
 //! included. Nothing is signalled by pid, so there is no window in which a
 //! pid read from `/proc` is reused by another process. `/proc` is only read,
-//! to see whether a pass left anything alive. stdout and stderr are drained by a thread each, so a
-//! chatty child never blocks on a full pipe, but only the first `cap` bytes
-//! (and, for the error tail, the last `cap`) are kept.
+//! to see whether a pass left anything alive.
+//!
+//! **The helper can be signalled, so the sweep is not the last resort.**
+//! From its fork on, the helper is a process of the programs' uid, and a
+//! survivor can stop it (`SIGSTOP`) or kill it. Each helper is waited for
+//! [`HELPER_TIMEOUT`] at most, and a sweep that cannot finish is the
+//! machine's failure: the runner stops, and the container's restart clears
+//! everything. A helper stopped before its `exec` blocks `spawn` itself,
+//! which no deadline here can bound; the runner's watchdog (`rust-runner
+//! serve`) does, by exiting.
+//!
+//! stdout and stderr are drained by a thread each, so a chatty child never
+//! blocks on a full pipe, but only the first `cap` bytes (and, for the error
+//! tail, the last `cap`) are kept.
 
-use rustix::process::{getuid, kill_process_group, Pid, Signal};
+use rustix::process::{getuid, kill_process_group, wait, Pid, Signal, WaitOptions};
 use std::io::Read;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -37,6 +48,10 @@ const POLL: Duration = Duration::from_millis(1);
 /// pending cannot fork, so one pass is enough but for a process caught
 /// mid-exec.
 const SWEEP_PASSES: usize = 200;
+
+/// How long one helper may take, from its `exec` to its exit. It takes a
+/// few milliseconds unless something of the uid has stopped it.
+pub(crate) const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The helper that kills every process of the uid it runs as. `dash`'s
 /// builtin, so the kill needs no binary of its own.
@@ -126,6 +141,9 @@ pub(crate) fn supervise(mut command: Command, ceiling: Duration, stdout_cap: usi
 	// ended: a descendant still holding stdout would otherwise outlive the
 	// ceiling, and keep the readers below waiting for it (review, #399).
 	stop(&mut child, sweep)?;
+	if sweep.is_some() {
+		reap_orphans();
+	}
 	let deadline = Instant::now() + READER_GRACE;
 	Ok(Finished {
 		ending,
@@ -159,19 +177,34 @@ fn kill_group(child: &mut Child) {
 	let _ = child.kill();
 }
 
+/// Reap every child that has exited: in the container the runner is PID 1,
+/// so a program's orphans become its children, and a zombie of the
+/// programs' uid would count against their process ceiling. Only once the
+/// supervised child has been waited for, so its status is never taken here.
+fn reap_orphans() {
+	while let Ok(Some(_)) = wait(WaitOptions::NOHANG) {}
+}
+
 /// Kill every process of `sweep.uid` with the helper, as that uid, until a
 /// read of `/proc` finds none alive.
+///
+/// # Errors
+/// Never `TimedOut` or `InvalidInput`, which a run reads as the program's
+/// doing: a sweep that cannot finish (a helper stopped past
+/// [`HELPER_TIMEOUT`], or killed every pass) is the machine's, and stops the
+/// runner.
 fn sweep_uid(sweep: Sweep) -> std::io::Result<()> {
 	if sweep.uid == 0 || sweep.uid == getuid().as_raw() {
-		return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the sweep is only for the programs' own uid"));
+		return Err(std::io::Error::other("the sweep is only for the programs' own uid"));
 	}
 	for _ in 0..SWEEP_PASSES {
 		if !any_alive(sweep.uid)? {
 			return Ok(());
 		}
-		// Its exit status is `kill`'s: 1 when it found nothing to signal,
-		// which the next look at /proc settles either way.
-		Command::new(SWEEPER[0])
+		// Its exit status is `kill`'s (1 when it found nothing to signal),
+		// or a signal a survivor sent it: the next look at /proc settles
+		// either way.
+		let mut helper = Command::new(SWEEPER[0])
 			.args(&SWEEPER[1..])
 			.uid(sweep.uid)
 			.gid(sweep.gid)
@@ -180,7 +213,18 @@ fn sweep_uid(sweep: Sweep) -> std::io::Result<()> {
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())
 			.stderr(Stdio::null())
-			.status()?;
+			.spawn()
+			.map_err(|err| std::io::Error::other(String::from("could not start the sweep's helper: ") + &err.to_string()))?;
+		let started = Instant::now();
+		loop {
+			match helper.try_wait() {
+				Ok(Some(_)) => break,
+				Ok(None) if started.elapsed() < HELPER_TIMEOUT => std::thread::sleep(POLL),
+				// Stopped by a survivor, or lost: the restart clears it.
+				Ok(None) => return Err(std::io::Error::other("the sweep's helper did not finish; something of the programs' uid stopped it")),
+				Err(err) => return Err(std::io::Error::other(String::from("could not wait for the sweep's helper: ") + &err.to_string())),
+			}
+		}
 	}
 	Err(std::io::Error::other("a process of the programs' uid survived every pass of the sweep"))
 }

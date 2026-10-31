@@ -31,9 +31,13 @@ services:
     # runner's network namespace, so on any network it could reach whatever
     # else is on it (file_host included). The only way in is the socket.
     network_mode: none
-    # tini as pid 1 reaps what the sweep kills; the runner is never pid 1, so
-    # a program's orphans cannot pile up as zombies under it.
-    init: true
+    # RX2, RX3: no init. The runner is the container's PID 1, so when it
+    # exits (a tidy it cannot finish, or its watchdog ending a job past its
+    # deadline) the kernel kills every process in the container's PID
+    # namespace, a program's survivors included, and the restart below
+    # starts it clean. As PID 1 it reaps a program's orphans itself, and no
+    # process in the container can signal it (the kernel drops a signal to
+    # PID 1 it has no handler for).
     # RX1: two uids. The runner is root with two capabilities and no way to
     # gain more: SETUID and SETGID, to start every compile and run as
     # 10101:10101 (the image's RUST_RUNNER_PROGRAM_*, an id pair no other
@@ -87,7 +91,11 @@ services:
     # settings, and nothing secret may ever be here. rustc gets PATH and the
     # rustup variables and a program none, but a compile's include_str! can
     # read a file, so nothing secret is in the image either (RX1).
+    # The cleanup of last resort: whenever the runner exits, it comes back
+    # with fresh tmpfs, IPC and PID namespaces.
     restart: unless-stopped
+    # PID 1 ignores SIGTERM (no handler), and holds nothing to flush.
+    stop_signal: SIGKILL
     logging:
       driver: json-file
       options:
