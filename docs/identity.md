@@ -717,8 +717,9 @@ nowhere is marked as such and belongs to review.
     paulgsc/some-ui#2026), `mailbox::pass::READS`, and puts only to
     `decisions`, `scout`, `opened`, `transcript` (what home heard in a voice
     note, as text, for the routines to read instead of transcribing;
-    paulgsc/server#463) and `leetype-log` (how each finished LeetType session
-    went, invariant 18; paulgsc/some-ui#2027).
+    paulgsc/server#463), `leetype-log` (how each finished LeetType session
+    went, invariant 18; paulgsc/some-ui#2027) and `index` (home's bookkeeping
+    for the Jobs routine, computed from these tables; paulgsc/server#509).
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -731,10 +732,11 @@ nowhere is marked as such and belongs to review.
       the arrival notice's pass (`jobs_notice`), which reads the same
       `run-jobs-*` records for the poller's subject (invariant 24).
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
-      `PUT /routine/opened` and the poller's `file_transcripts` and
-      `file_leetype_logs`: a decisions or scouts file the phone filed, which
-      of the routine's lessons it opened, a transcript, or a LeetType
-      session's log, its bytes, hash and when.
+      `PUT /routine/opened` and the poller's `file_transcripts`,
+      `file_leetype_logs` and `mailbox::index::file_jobs_index`: a decisions
+      or scouts file the phone filed, which of the routine's lessons it
+      opened, a transcript, a LeetType session's log, or an index, its
+      bytes, hash and when.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -758,6 +760,23 @@ nowhere is marked as such and belongs to review.
       and every event `leetype_session_event` holds of it (invariant 18),
       which holds no soundbite (`ticks`, `prompt`, `rubric`, `typed`) and no
       audio.
+      The poller files the Jobs index as `index-jobs-<stamp>.json` in
+      `some-ui.routine-index/1` (paulgsc/server#509, HF7), computed from this
+      invariant's own tables and nothing else: the digests in `mailbox_item`,
+      and the decisions and scouts files and Jobs notes' transcripts in
+      `mailbox_outgoing` that the mailbox took. It carries only what the
+      routine needs to know what to read: the day, when home last took in
+      what it counts, the names of the files it counted and of those that did
+      not read, the open and lapsed picks (each one's digest day, id, track,
+      fingerprint, title, company and, while open, its posting's link) and
+      each track's free slots, the files no digest has read with the event
+      and scout ids in them already taken in, each voice note still waited
+      on by its file name, the phone's id for it and its newest transcript's
+      name and hash, and the fingerprints already picked or named. No file's
+      body beyond those fields, no note's words, and nothing that is or
+      points at audio; the mailbox refuses a body that carries audio or a
+      Drive link. It is filed only when what it counts or the day has moved
+      since the last one, so an idle pass files none.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -803,8 +822,13 @@ nowhere is marked as such and belongs to review.
     `only_heard_transcripts_wait_to_be_filed_oldest_first`,
     `each_transcript_of_a_note_takes_the_next_number_once`,
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
-    `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`
-    and `the_due_query_reads_only_what_arrived_after_the_mark`; `mailbox::pass`'s
+    `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
+    `the_due_query_reads_only_what_arrived_after_the_mark`,
+    `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
+    and `the_last_index_is_the_newest_of_its_routines_by_name`; `mailbox::index`'s
+    `the_same_rows_give_the_same_bytes_in_a_fixed_order` and
+    `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`;
+    `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
@@ -815,11 +839,13 @@ nowhere is marked as such and belongs to review.
     `the_routines_session_files_are_kept_and_a_bad_one_refused_and_counted`,
     `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`,
     `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`,
-    `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`
-    and `no_leetype_log_is_filed_for_a_deleted_subject`, and its fake
+    `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`,
+    `no_leetype_log_is_filed_for_a_deleted_subject`,
+    `the_jobs_index_is_filed_when_what_it_counts_moves_and_only_then` and
+    `a_file_the_mailbox_turned_down_is_not_counted`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
-    a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript` or
-    `leetype-log`; `mailbox_kit`'s
+    a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript`,
+    `leetype-log` or `index`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and

@@ -30,7 +30,9 @@
 //! - It puts only what is filed for the mailbox: the phone's decisions,
 //!   scouts and opened lessons, each transcript home heard in a voice note
 //!   (`transcript`), text only, and each finished `LeetType` session's log
-//!   (`leetype-log`), with no soundbite, both of which it files itself.
+//!   (`leetype-log`), with no soundbite, both of which it files itself, and
+//!   the Jobs routine's index (`index`), its bookkeeping computed from those
+//!   same tables ([`index`]).
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is
@@ -52,6 +54,7 @@
 //! each pass is followed by one of [`crate::jobs_notice::run_once`], which
 //! tells the phones that asked when a morning run's record has arrived.
 
+pub mod index;
 pub mod pass;
 
 use crate::auth::owner::{configured_or_owner, Owner};
@@ -205,14 +208,20 @@ pub fn start(state: &AppState) {
 pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>) {
 	match result {
 		Ok(outcome) => {
-			let busy =
-				outcome.kept > 0 || !outcome.refused.is_empty() || outcome.filed > 0 || !outcome.handed.is_empty() || !outcome.archived.is_empty() || !outcome.restored.is_empty();
+			let busy = outcome.kept > 0
+				|| !outcome.refused.is_empty()
+				|| outcome.filed > 0
+				|| !outcome.handed.is_empty()
+				|| !outcome.indexed.is_empty()
+				|| !outcome.archived.is_empty()
+				|| !outcome.restored.is_empty();
 			if busy || outcome.no_account {
 				info!(
 					kept = outcome.kept,
 					refused = ?outcome.refused,
 					filed = outcome.filed,
 					handed = ?outcome.handed,
+					indexed = ?outcome.indexed,
 					archived = ?outcome.archived,
 					restored = ?outcome.restored,
 					no_account = outcome.no_account,

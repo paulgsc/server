@@ -30,11 +30,13 @@ pub enum Folder {
 	/// How each finished `LeetType` session went, as home holds it,
 	/// `log-<session>.json`, then `log-<session>.r<n>.json`.
 	LeetypeLog,
+	/// Home's bookkeeping for one routine, `index-<routine>-<stamp>.json`.
+	Index,
 }
 
 impl Folder {
 	/// Every folder, in the order a pass visits them.
-	pub const ALL: [Self; 10] = [
+	pub const ALL: [Self; 11] = [
 		Self::Brief,
 		Self::Decisions,
 		Self::Scout,
@@ -45,6 +47,7 @@ impl Folder {
 		Self::Transcript,
 		Self::Leetype,
 		Self::LeetypeLog,
+		Self::Index,
 	];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
@@ -61,6 +64,7 @@ impl Folder {
 			Self::Transcript => "transcript",
 			Self::Leetype => "leetype",
 			Self::LeetypeLog => "leetype-log",
+			Self::Index => "index",
 		}
 	}
 }

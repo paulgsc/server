@@ -103,7 +103,7 @@ pub fn record_pass(outcome: &Outcome, failed: &[&'static str]) {
 	for why in &outcome.refused {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => *why).increment(1);
 	}
-	for answer in &outcome.handed {
+	for answer in outcome.handed.iter().chain(&outcome.indexed) {
 		metrics::counter!("mailbox_poll_items_handed_total", "answer" => *answer).increment(1);
 	}
 	for answer in &outcome.archived {
