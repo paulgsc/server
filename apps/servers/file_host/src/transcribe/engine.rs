@@ -27,6 +27,13 @@
 //! Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
 //! noise.
 //!
+//! **Each piece of speech is heard in its own language** (paulgsc/server#578,
+//! ST23): the language is detected at each cut the VAD found that is a
+//! second or longer, and consecutive cuts in one language are heard as one
+//! run, so a Korean phrase inside an English take comes back in Hangul. Each
+//! word keeps the language it was heard in, and the note's language is the
+//! one heard for longest.
+//!
 //! **Each word keeps its time, and how sure Whisper was of it**
 //! (paulgsc/some-ui#2085, GWB11; paulgsc/server#577, ST22). Whisper
 //! times each token it hears ([`FullParams::set_token_timestamps`]); its
@@ -203,68 +210,81 @@ impl Whisper {
 		let Ok(mut state) = self.context.create_state() else {
 			return failed(cancel);
 		};
-		// The language once, from the first 30 seconds of speech, with its
-		// probability, which `full` does not report; then Whisper hears the
-		// whole note in it. The probability costs an encoder pass of its own,
-		// about 40% of a 20-second note's time on two threads.
+		// The language per piece of speech the VAD found (ST23): detected at
+		// each cut a second or longer, from the mel of the whole speech, with
+		// its probability, which `full` does not report; a shorter cut joins
+		// the run before it. Each detection costs an encoder pass, about 40%
+		// of a 20-second note's time on two threads, so a note of many short
+		// cuts pays for the long ones only.
 		if state.pcm_to_mel(speech, self.threads).is_err() {
 			return failed(cancel);
 		}
-		let Ok((id, probabilities)) = state.lang_detect(0, self.threads) else {
+		let detect = |offset_ms: usize| -> Option<(String, f64)> {
+			let (id, probabilities) = state.lang_detect(offset_ms, self.threads).ok()?;
+			let language = whisper_rs::get_lang_str(id)?;
+			let probability = usize::try_from(id).ok().and_then(|id| probabilities.get(id).copied())?;
+			Some((language.to_owned(), f64::from(probability)))
+		};
+		let Some(runs) = plan_runs(cuts, detect) else {
 			return failed(cancel);
 		};
-		let (Some(language), Some(probability)) = (whisper_rs::get_lang_str(id), usize::try_from(id).ok().and_then(|id| probabilities.get(id))) else {
-			return Ok(Outcome::Failed);
-		};
-		if cancel.is_cancelled() {
-			return Err(Cancelled);
-		}
-		if Instant::now() >= deadline {
-			return Ok(Outcome::Deadline);
-		}
-		let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
-		params.set_n_threads(threads);
-		params.set_language(Some(language));
-		params.set_print_special(false);
-		params.set_print_progress(false);
-		params.set_print_realtime(false);
-		params.set_print_timestamps(false);
-		// Non-speech tokens (music notes, bracketed sounds) are never text, as
-		// faster-whisper's defaults have it; without this, a note's last words
-		// drift into stock phrases.
-		params.set_suppress_nst(true);
-		// A time for each token, which [`words`] gathers into words. It times
-		// what was decoded and changes none of it.
-		params.set_token_timestamps(true);
-		let watch = Watch { deadline, cancel };
-		// SAFETY: `should_abort` reads its data as a `Watch`, and `watch` lives
-		// on this stack, unmoved, until `full` below returns; `full` is the one
-		// call that runs the callback, and it consumes `params`.
-		unsafe {
-			params.set_abort_callback(Some(should_abort));
-			params.set_abort_callback_user_data(std::ptr::from_ref(&watch).cast_mut().cast());
-		}
-		if state.full(params, speech).is_err() {
-			return failed(cancel);
-		}
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
-		for segment in state.as_iter() {
-			let Ok(said) = segment.to_str_lossy() else {
-				return Ok(Outcome::Failed);
-			};
-			let said = said.trim();
-			if !said.is_empty() {
-				if !text.is_empty() {
-					text.push(' ');
-				}
-				text.push_str(said);
+		// Each run of one language is heard on its own, in that language.
+		for run in &runs {
+			if cancel.is_cancelled() {
+				return Err(Cancelled);
 			}
-			let Some(tokens) = tokens_of(&segment, special) else {
+			if Instant::now() >= deadline {
+				return Ok(Outcome::Deadline);
+			}
+			let (Ok(offset_ms), Ok(duration_ms)) = (i32::try_from(run.offset_ms), i32::try_from(run.duration_ms)) else {
 				return Ok(Outcome::Failed);
 			};
-			heard.extend(words(&tokens));
+			let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+			params.set_n_threads(threads);
+			params.set_language(Some(&run.language));
+			params.set_offset_ms(offset_ms);
+			params.set_duration_ms(duration_ms);
+			params.set_print_special(false);
+			params.set_print_progress(false);
+			params.set_print_realtime(false);
+			params.set_print_timestamps(false);
+			// Non-speech tokens (music notes, bracketed sounds) are never text, as
+			// faster-whisper's defaults have it; without this, a note's last words
+			// drift into stock phrases.
+			params.set_suppress_nst(true);
+			// A time for each token, which [`words`] gathers into words. It times
+			// what was decoded and changes none of it.
+			params.set_token_timestamps(true);
+			let watch = Watch { deadline, cancel };
+			// SAFETY: `should_abort` reads its data as a `Watch`, and `watch` lives
+			// on this stack, unmoved, until `full` below returns; `full` is the one
+			// call that runs the callback, and it consumes `params`.
+			unsafe {
+				params.set_abort_callback(Some(should_abort));
+				params.set_abort_callback_user_data(std::ptr::from_ref(&watch).cast_mut().cast());
+			}
+			if state.full(params, speech).is_err() {
+				return failed(cancel);
+			}
+			for segment in state.as_iter() {
+				let Ok(said) = segment.to_str_lossy() else {
+					return Ok(Outcome::Failed);
+				};
+				let said = said.trim();
+				if !said.is_empty() {
+					if !text.is_empty() {
+						text.push(' ');
+					}
+					text.push_str(said);
+				}
+				let Some(tokens) = tokens_of(&segment, special) else {
+					return Ok(Outcome::Failed);
+				};
+				heard.extend(words(&tokens).into_iter().map(|said| (said, run.language.clone())));
+			}
 		}
 		if text.is_empty() {
 			return Ok(Outcome::Silent);
@@ -273,19 +293,21 @@ impl Whisper {
 		// Whisper runs (`hear`), so no word is dropped here.
 		let words = heard
 			.into_iter()
-			.filter_map(|said| {
+			.filter_map(|(said, language)| {
 				let (start_ms, end_ms) = Cut::in_note(cuts, said.start_ms, said.end_ms)?;
 				Some(Word {
 					text: said.text,
 					start_ms,
 					end_ms,
 					p: Some(said.p),
+					language: Some(language),
 				})
 			})
 			.collect();
+		let (language, language_p) = main_language(&runs);
 		Ok(Outcome::Heard {
-			language: language.to_owned(),
-			language_p: f64::from(*probability),
+			language,
+			language_p,
 			text,
 			words,
 		})
@@ -408,6 +430,70 @@ fn words(tokens: &[Token]) -> Vec<Spoken> {
 	}
 	close(word);
 	words
+}
+
+/// A run of the speech heard in one language (ST23): consecutive cuts
+/// detected as, or joining, `language`, as `full` takes a window.
+#[derive(Debug, Clone, PartialEq)]
+struct Run {
+	language: String,
+	/// The surest detection among its cuts, 0 to 1.
+	p: f64,
+	offset_ms: usize,
+	duration_ms: usize,
+}
+
+/// A cut shorter than this is too short to tell a language from: it joins
+/// the run before it.
+const DETECT_MIN_MS: usize = 1_000;
+
+/// Which language each cut is heard in: `detect(offset_ms)` says the
+/// language of the speech from that offset and how sure, asked for the first
+/// cut and every cut at least [`DETECT_MIN_MS`] long; a shorter cut, or one
+/// whose detection fails, joins the run before it, and consecutive cuts in
+/// one language are one run. None when the first cut's detection fails, or
+/// with no cuts.
+fn plan_runs(cuts: &[Cut], mut detect: impl FnMut(usize) -> Option<(String, f64)>) -> Option<Vec<Run>> {
+	let ms = |samples: usize| samples * 1000 / SAMPLE_RATE;
+	let mut runs: Vec<Run> = Vec::new();
+	for cut in cuts {
+		let (offset_ms, duration_ms) = (ms(cut.speech_at), ms(cut.len));
+		let detected = if runs.is_empty() || duration_ms >= DETECT_MIN_MS { detect(offset_ms) } else { None };
+		match (runs.last_mut(), detected) {
+			(None, None) => return None,
+			(Some(last), Some((language, p))) if last.language == language => {
+				last.p = last.p.max(p);
+				last.duration_ms = offset_ms + duration_ms - last.offset_ms;
+			}
+			(Some(last), None) => last.duration_ms = offset_ms + duration_ms - last.offset_ms,
+			(_, Some((language, p))) => runs.push(Run {
+				language,
+				p,
+				offset_ms,
+				duration_ms,
+			}),
+		}
+	}
+	(!runs.is_empty()).then_some(runs)
+}
+
+/// The note's language: the one heard for longest, with the surest of its
+/// detections. `runs` is never empty.
+fn main_language(runs: &[Run]) -> (String, f64) {
+	let mut heard: Vec<(String, usize, f64)> = Vec::new();
+	for run in runs {
+		match heard.iter_mut().find(|(language, _, _)| *language == run.language) {
+			Some((_, duration, p)) => {
+				*duration += run.duration_ms;
+				*p = p.max(run.p);
+			}
+			None => heard.push((run.language.clone(), run.duration_ms, run.p)),
+		}
+	}
+	heard
+		.into_iter()
+		.max_by_key(|(_, duration, _)| *duration)
+		.map_or_else(|| (String::from("en"), 0.0), |(language, _, p)| (language, p))
 }
 
 /// A piece of speech the VAD found: `len` samples from `note_at` in the
@@ -588,7 +674,7 @@ mod tests {
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
 	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
-	use super::{decode, sample_at, words, Cut, Decoded, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
+	use super::{decode, main_language, plan_runs, sample_at, words, Cut, Decoded, Run, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
 	use std::path::Path;
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
@@ -818,6 +904,43 @@ mod tests {
 		let tokens = [sure(" par", 0.95), sure("ticle", 0.4), sure(",", f32::NAN), sure(" sure", 0.8), sure(" over", 1.5)];
 		let p: Vec<f64> = words(&tokens).into_iter().map(|word| word.p).collect();
 		assert_eq!(p, [0.4_f32.into(), 0.8_f32.into(), 1.5]);
+	}
+
+	/// Each cut a second or longer is heard in its own language (ST23): a
+	/// Korean phrase inside an English take is heard as Korean. A short cut
+	/// joins the run before it, and so does one whose detection fails; the
+	/// note's language is the one heard for longest.
+	#[test]
+	fn each_cut_is_heard_in_its_own_language_and_short_ones_join_the_run_before() {
+		let samples = |ms: usize| ms * SAMPLE_RATE / 1000;
+		let cut = |speech_at: usize, len: usize| Cut {
+			speech_at: samples(speech_at),
+			note_at: samples(speech_at) * 2,
+			len: samples(len),
+		};
+		let cuts = [cut(0, 2_000), cut(2_000, 500), cut(2_500, 3_000), cut(5_500, 1_500), cut(7_000, 1_200)];
+		let mut asked = Vec::new();
+		let runs = plan_runs(&cuts, |offset_ms| {
+			asked.push(offset_ms);
+			match offset_ms {
+				0 => Some((String::from("en"), 0.9)),
+				2_500 => Some((String::from("ko"), 0.8)),
+				5_500 => Some((String::from("en"), 0.95)),
+				_ => None,
+			}
+		})
+		.unwrap();
+		assert_eq!(asked, [0, 2_500, 5_500, 7_000], "the half-second cut is not asked about");
+		let run = |language: &str, p: f64, offset_ms: usize, duration_ms: usize| Run {
+			language: String::from(language),
+			p,
+			offset_ms,
+			duration_ms,
+		};
+		assert_eq!(runs, [run("en", 0.9, 0, 2_500), run("ko", 0.8, 2_500, 3_000), run("en", 0.95, 5_500, 2_700)]);
+		assert_eq!(main_language(&runs), (String::from("en"), 0.95));
+		assert_eq!(plan_runs(&cuts, |_| None), None, "nothing to hear in a language nobody could tell");
+		assert_eq!(plan_runs(&[], |_| Some((String::from("en"), 1.0))), None);
 	}
 
 	#[test]
