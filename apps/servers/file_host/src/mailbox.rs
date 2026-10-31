@@ -32,7 +32,8 @@
 //!   (`transcript`), text only, and each finished `LeetType` session's log
 //!   (`leetype-log`), with no soundbite, both of which it files itself, and
 //!   the Jobs routine's index (`index`), its bookkeeping computed from those
-//!   same tables ([`index`]).
+//!   same tables ([`index`]): a view, not a record, which home keeps no copy
+//!   of and never archives.
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is
@@ -104,6 +105,10 @@ pub struct MailboxContext {
 	/// When each routine is due (`ROUTINE_SCHEDULE`), for
 	/// [`crate::routine_watch::stamp`] after each pass.
 	pub schedules: Vec<crate::routine_watch::Schedule>,
+	/// What the last Jobs index the mailbox answered was computed from, so a
+	/// pass puts one only when that moves ([`index::LastIndex`]). Memory only:
+	/// home keeps no copy of an index.
+	pub last_index: Arc<index::LastIndex>,
 }
 
 impl MailboxContext {
@@ -177,6 +182,7 @@ impl MailboxContext {
 			archive_days: config.mailbox_archive_days,
 			notice,
 			schedules,
+			last_index: Arc::default(),
 		}))
 	}
 }
@@ -290,7 +296,17 @@ async fn tick(db: &SqlitePool, context: &MailboxContext) {
 				mailbox,
 				after_days: context.archive_days,
 			});
-			pass::run_once(db, &context.mailbox, archiving.as_ref(), subject, &context.deletion, context.interval, &pass::now).await
+			pass::run_once(
+				db,
+				&context.mailbox,
+				archiving.as_ref(),
+				subject,
+				&context.deletion,
+				context.interval,
+				&context.last_index,
+				&pass::now,
+			)
+			.await
 		}
 		None => Ok(pass::Outcome {
 			no_account: true,

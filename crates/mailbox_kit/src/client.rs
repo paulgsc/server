@@ -30,12 +30,15 @@ pub enum Folder {
 	/// How each finished `LeetType` session went, as home holds it,
 	/// `log-<session>.json`, then `log-<session>.r<n>.json`.
 	LeetypeLog,
-	/// Home's bookkeeping for one routine, `index-<routine>-<stamp>.json`.
+	/// Home's bookkeeping for one routine, `index-<routine>-<stamp>.json`:
+	/// the latest only, never archived or asked for.
 	Index,
 }
 
 impl Folder {
-	/// Every folder, in the order a pass visits them.
+	/// Every folder. A pass's archiving walks all of them but [`Self::Index`],
+	/// home's index, a view the mailbox keeps only the latest of
+	/// (`file_host`'s `mailbox::pass::ARCHIVES`).
 	pub const ALL: [Self; 11] = [
 		Self::Brief,
 		Self::Decisions,

@@ -1,4 +1,4 @@
-//! Home's bookkeeping for the Jobs routine, filed to the mailbox's `index`
+//! Home's bookkeeping for the Jobs routine, put in the mailbox's `index`
 //! folder after each pass (paulgsc/server#509, HF7).
 //!
 //! The morning routine used to rebuild this itself, from a scratch folder of
@@ -10,26 +10,46 @@
 //! model fills values; it does not do the bookkeeping (paulgsc/some-ui#2162).
 //!
 //! **What it is computed from** ([`mailbox_repo::jobs_inputs`]): every
-//! digest home kept from `brief`, and every decisions file, scouts file and
-//! Jobs note's transcript the mailbox took from home as home filed it. No new
-//! table: those are home's own rows, and the index is a file it files in
-//! `mailbox_outgoing` and hands over like any other.
+//! digest home kept from `brief`, every decisions file, scouts file and Jobs
+//! note's transcript the mailbox took from home as home filed it, and every
+//! pre-mailbox decisions or scouts file the routine put back in `brief` once
+//! (the backfill, below). No new table: those are home's own rows.
+//!
+//! **A view, not a record** (owner, 2026-10-31, paulgsc/server#509). Home
+//! recomputes the index from records it keeps, so it keeps no copy of it:
+//! nothing in `mailbox_outgoing`, `mailbox_handed` or `mailbox_archive`. The
+//! mailbox holds only the latest per routine and drops the one before in
+//! the same write, archiving never walks the folder
+//! ([`super::pass::ARCHIVES`]), and the routine cannot ask for an old one.
+//! What home remembers is in memory, [`LastIndex`]: what the last index the
+//! mailbox answered was computed from, so a restart costs one put.
+//!
+//! **The backfill** (MB2's amendment, the same decision). Drive holds Jobs
+//! decisions and scouts files from before the mailbox (before 2026-10-23)
+//! that home never saw. The routine puts each once in `brief`, under its
+//! Drive name, which the mailbox takes only for a name dated before that
+//! day, so the set is closed. Home keeps it as any `brief` file, and the
+//! index counts it with the phone's files and names it in `from.backfill`.
+//! It adds no listing: `brief` is read every pass anyway.
 //!
 //! **Deterministic.** [`jobs_index`] is a pure function of those rows, the
 //! day and `asOf`: the same rows give the same bytes. Every list is in a
 //! fixed order (by name, or by digest day as the queue is), and the body is
 //! written from structs whose fields serialise in declaration order.
 //!
-//! **Filed only when it changes.** A pass first reads when home last took in
+//! **Put only when it moves.** A pass first reads when home last took in
 //! anything the index counts ([`mailbox_repo::jobs_as_of`]) and the day in
-//! [`JOBS_ZONE`]. When both match the newest index filed, nothing is
-//! computed or filed: the inputs are append-only and a name holds one body,
-//! so nothing it counts can have changed. Otherwise it computes, and files a
-//! new name, `index-jobs-<stamp>.json`, only if the bytes differ from the
-//! last. So the mailbox gets one a day at least (the day moves at midnight
-//! in [`JOBS_ZONE`], and lapses with it), plus one each time a digest, a file
-//! or a Jobs transcript arrives. A body over the mailbox's ceiling is not
-//! filed, and counted as refused (`too_big`).
+//! [`JOBS_ZONE`]. When both match what the last index the mailbox answered
+//! was computed from ([`LastIndex`]), nothing is computed or put: the inputs
+//! are append-only and a name holds one body, so nothing it counts can have
+//! changed, and since the body carries `day` and `asOf`, a new pair always
+//! means new bytes. Otherwise it computes and puts a new name,
+//! `index-jobs-<stamp>.json`. So the mailbox gets one a day at least (the day
+//! moves at midnight in [`JOBS_ZONE`], and lapses with it), plus one each
+//! time a digest, a file or a Jobs transcript arrives. Every answer is final
+//! (a refusal is not put again until what it counts moves); only a failure
+//! to reach the mailbox leaves the next pass to try. A body over the
+//! mailbox's ceiling is not put, and counted as refused (`too_big`).
 //!
 //! **What it carries, and what it never does.** File names, pick ids,
 //! fingerprints, postings' titles, companies and links, event and scout ids,
@@ -44,16 +64,15 @@
 //! [`LAPSE_DAYS`] and [`MAX_OPEN_PICKS`] its policy; a change to either there
 //! is a change here. The tests port `queue.test.ts`'s cases.
 
-use crate::auth::DeletionLock;
 use chrono::{DateTime, NaiveDate, Utc};
-use mailbox_kit::{Mailbox, MailboxTransport};
-use mailbox_repo::{Change, HeldFile, HeldTranscript, JobsInputs, MailboxError};
+use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
+use mailbox_repo::{HeldFile, HeldTranscript, JobsInputs};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, PoisonError};
 
-use super::pass::{Failure, Handed, Outcome, MAILBOX_BODY_CEILING};
+use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
 
 /// What an index put to the mailbox's `index` folder is (paulgsc/some-ui
 /// `apps/mailbox/README.md`, "What a put must satisfy").
@@ -295,8 +314,13 @@ pub struct Queue {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct From {
 	digests: Vec<String>,
+	/// Every decisions file counted, the phone's and the backfill's.
 	decisions: Vec<String>,
+	/// Every scouts file counted, likewise.
 	scout: Vec<String>,
+	/// Those of `decisions` and `scout` that came from the routine's one-time
+	/// backfill of pre-mailbox files (`brief`), not from the phone.
+	backfill: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -590,11 +614,34 @@ fn picked_of(read: &Read<'_>) -> Vec<String> {
 	sorted(digests.chain(decisions))
 }
 
+/// `phone`'s files and those of `backfill` it lacks a name of, by name, and
+/// the names taken from `backfill`. The phone's copy of a name wins: it is
+/// the one the mailbox's own folder holds.
+fn with_backfill(phone: &[HeldFile], backfill: &[HeldFile]) -> (Vec<HeldFile>, Vec<String>) {
+	let held: HashSet<&str> = phone.iter().map(|file| file.name.as_str()).collect();
+	let added: Vec<&HeldFile> = backfill.iter().filter(|file| !held.contains(file.name.as_str())).collect();
+	let names = added.iter().map(|file| file.name.clone()).collect();
+	let mut all: Vec<HeldFile> = phone.iter().chain(added).cloned().collect();
+	all.sort_by(|a, b| a.name.cmp(&b.name));
+	(all, names)
+}
+
 /// The Jobs index for `day`, from `inputs`, stamped `as_of`: its bytes.
 ///
 /// Pure: the same inputs give the same bytes (the module doc).
 #[must_use]
 pub fn jobs_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> Vec<u8> {
+	let (decisions, mut backfill) = with_backfill(&inputs.decisions, &inputs.backfill_decisions);
+	let (scouts, backfill_scouts) = with_backfill(&inputs.scouts, &inputs.backfill_scouts);
+	backfill.extend(backfill_scouts);
+	backfill.sort();
+	let inputs = &JobsInputs {
+		digests: inputs.digests.clone(),
+		decisions,
+		scouts,
+		transcripts: inputs.transcripts.clone(),
+		..JobsInputs::default()
+	};
 	let read = read_all(inputs);
 	let digests: Vec<&DigestFile> = read.digests.iter().map(|(_, digest)| digest).collect();
 	let decisions: Vec<&DecisionsFile> = read.decisions.iter().map(|(_, file)| file).collect();
@@ -610,6 +657,7 @@ pub fn jobs_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> Vec<u8
 			digests: names(&inputs.digests),
 			decisions: names(&inputs.decisions),
 			scout: names(&inputs.scouts),
+			backfill,
 		},
 		skipped: read.skipped.clone(),
 		queue: Queue { open, lapsed, free },
@@ -638,25 +686,51 @@ fn stamp_of(now: &str) -> Option<String> {
 	shape.then_some(stamp)
 }
 
-/// The `day` and `asOf` an index body was computed for.
-#[derive(Deserialize, PartialEq, Eq)]
-struct Stamped {
+/// What an index was computed from: whose, the day, and `asOf`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Computed {
+	subject: String,
 	day: String,
-	#[serde(rename = "asOf")]
 	as_of: Option<String>,
 }
 
-/// Computes `subject`'s Jobs index and files and hands it, when what it
-/// counts has moved since the last one (the module doc).
+/// What the last Jobs index the mailbox answered was computed from.
+///
+/// It is kept in memory for as long as the poller runs, never in the
+/// database: the index is a view, and home keeps no copy of it (the module
+/// doc). After a restart it is empty, so the first pass puts one again, and
+/// the mailbox drops the one before it.
+#[derive(Debug, Default)]
+pub struct LastIndex(Mutex<Option<Computed>>);
+
+impl LastIndex {
+	fn is(&self, computed: &Computed) -> bool {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref() == Some(computed)
+	}
+
+	fn remember(&self, computed: Computed) {
+		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);
+	}
+}
+
+/// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
+/// goes under in the mailbox.
+fn index_name(routine: &str, stamp: &str) -> String {
+	String::from("index-") + routine + "-" + stamp + ".json"
+}
+
+/// Computes `subject`'s Jobs index and puts it, when what it counts has moved
+/// since the last one the mailbox answered (the module doc). It writes
+/// nothing to the database, so it takes no deletion hold.
 ///
 /// # Errors
 /// A [`Failure`] when the database fails or the mailbox cannot be reached;
-/// an index filed and not handed is handed by the next pass's outbound.
-pub(super) async fn file_jobs_index<T: MailboxTransport>(
+/// the next pass computes and puts it again.
+pub(super) async fn put_jobs_index<T: MailboxTransport>(
 	db: &SqlitePool,
 	mailbox: &Mailbox<T>,
 	subject: &str,
-	deletion: &DeletionLock,
+	last: &LastIndex,
 	now: &(impl Fn() -> String + Sync),
 	outcome: &mut Outcome,
 ) -> Result<(), Failure> {
@@ -664,61 +738,40 @@ pub(super) async fn file_jobs_index<T: MailboxTransport>(
 	let (Some(day), Some(stamp)) = (jobs_day(&at), stamp_of(&at)) else {
 		return Ok(());
 	};
-	let (inputs, as_of, last) = {
+	let (computed, inputs) = {
 		let mut tx = db.begin().await.map_err(Failure::Storage)?;
 		let as_of = mailbox_repo::jobs_as_of(&mut tx, subject).await.map_err(super::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads Drive.
 		if as_of.is_none() {
 			return Ok(());
 		}
-		let last = mailbox_repo::last_index(&mut tx, subject, JOBS).await.map_err(super::pass::storage)?;
-		let stamped = last.as_ref().and_then(|last| serde_json::from_slice::<Stamped>(&last.body).ok());
-		if stamped.is_some_and(|stamped| stamped.day == day && stamped.as_of == as_of) {
+		let computed = Computed {
+			subject: subject.to_owned(),
+			day,
+			as_of,
+		};
+		if last.is(&computed) {
 			return Ok(());
 		}
 		let inputs = mailbox_repo::jobs_inputs(&mut tx, subject).await.map_err(super::pass::storage)?;
 		tx.commit().await.map_err(Failure::Storage)?;
-		(inputs, as_of, last)
+		(computed, inputs)
 	};
-	let body = jobs_index(&inputs, &day, as_of.as_deref());
-	if last.is_some_and(|last| last.body == body) {
-		return Ok(());
-	}
+	let body = jobs_index(&inputs, &computed.day, computed.as_of.as_deref());
 	if body.len() > MAILBOX_BODY_CEILING {
 		outcome.refused.push("too_big");
+		last.remember(computed);
 		return Ok(());
 	}
-	let name = mailbox_repo::index_name(JOBS, &stamp);
-	let sha256 = hex::encode(Sha256::digest(&body));
-	let filed = {
-		let _hold = deletion.hold().await;
-		let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
-		let change = mailbox_repo::file_outgoing(&mut tx, subject, mailbox_repo::INDEX, &name, &sha256, &body, &now()).await;
-		tx.commit().await.map_err(Failure::Storage)?;
-		change
+	let answer = match mailbox.put(Folder::Index, &index_name(JOBS, &stamp), body).await {
+		Ok(Put::Added { .. }) => "added",
+		Ok(Put::Unchanged { .. }) => "unchanged",
+		Ok(Put::Conflict) => "conflict",
+		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => "refused",
+		Err(err) => return Err(Failure::Mailbox(err)),
 	};
-	match filed {
-		Ok(Change::Added | Change::Unchanged) => {}
-		Ok(Change::NoAccount) => {
-			outcome.no_account = true;
-			return Ok(());
-		}
-		Err(MailboxError::Rewritten) => {
-			outcome.refused.push("rewritten");
-			return Ok(());
-		}
-		Err(MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
-	}
-	let file = mailbox_repo::Outgoing {
-		folder: String::from(mailbox_repo::INDEX),
-		name,
-		body,
-	};
-	match super::pass::hand_one(db, mailbox, subject, deletion, now, file).await? {
-		Handed::Answered(answer) => outcome.indexed.push(answer.as_str()),
-		Handed::NotOurs => {}
-		Handed::NoAccount => outcome.no_account = true,
-	}
+	outcome.indexed.push(answer);
+	last.remember(computed);
 	Ok(())
 }
 
@@ -727,7 +780,7 @@ mod tests {
 	//! The computation from fixture rows, and its cases ported from
 	//! paulgsc/some-ui `packages/job-desk/src/__tests__/queue.test.ts`.
 
-	use super::{jobs_day, jobs_index, stamp_of};
+	use super::{index_name, jobs_day, jobs_index, stamp_of};
 	use mailbox_repo::{HeldFile, HeldTranscript, JobsInputs};
 	use serde_json::{json, Value};
 
@@ -866,7 +919,7 @@ mod tests {
 		assert_eq!(value["routine"], "jobs");
 		assert_eq!(
 			value["from"],
-			json!({ "digests": ["digest-2026-10-18.json"], "decisions": ["decisions-2026-10-18.json"], "scout": [] })
+			json!({ "digests": ["digest-2026-10-18.json"], "decisions": ["decisions-2026-10-18.json"], "scout": [], "backfill": [] })
 		);
 		assert_eq!(ids(&value["queue"]["open"]), ["sw-0002", "sw-0003", "ad-0001", "ad-0002"]);
 		assert_eq!(value["queue"]["free"], json!({ "software": 1, "adjacent": 0 }));
@@ -1091,7 +1144,7 @@ mod tests {
 			value,
 			json!({
 				"schema": "some-ui.routine-index/1", "routine": "jobs", "day": "2026-10-31", "asOf": null,
-				"from": { "digests": [], "decisions": [], "scout": [] }, "skipped": [],
+				"from": { "digests": [], "decisions": [], "scout": [], "backfill": [] }, "skipped": [],
 				"queue": { "open": [], "lapsed": [], "free": { "software": 3, "adjacent": 2 } },
 				"new": { "decisions": [], "scout": [] }, "notes": [], "picked": []
 			})
@@ -1105,5 +1158,36 @@ mod tests {
 		assert_eq!(jobs_day("2026-12-01T07:59:00.000Z").as_deref(), Some("2026-11-30"), "PST after the clocks change");
 		assert_eq!(stamp_of("2026-10-31T15:00:00.123Z").as_deref(), Some("20261031T150000123Z"));
 		assert_eq!(stamp_of("2026-10-31T15:00:00Z"), None);
+		assert_eq!(index_name("jobs", "20261031T150000123Z"), "index-jobs-20261031T150000123Z.json");
+	}
+
+	/// MB2's backfill (owner, #509): a pre-mailbox file the routine put back is
+	/// counted as the phone's would be, named in `from.backfill`, and loses to
+	/// the phone's copy of the same name.
+	#[test]
+	fn a_backfilled_file_counts_as_the_phones_and_says_where_it_came_from() {
+		let decided = |name: &str| {
+			held(
+				name,
+				&json!({ "schema": "some-ui.job-decisions/1", "sharedAt": "2026-10-20T14:00:00Z", "picks": [], "notes": {}, "disagreements": [], "outcomes": [] }),
+			)
+		};
+		let scouts = held("scouts-20261021T101500.json", &json!({ "schema": "some-ui.job-scouts/1", "scouts": [] }));
+		let mut held_inputs = inputs(&[], &[]);
+		held_inputs.decisions.push(decided("decisions-2026-10-21.json"));
+		held_inputs.backfill_decisions = vec![decided("decisions-2026-10-20.json"), decided("decisions-2026-10-21.json")];
+		held_inputs.backfill_scouts = vec![scouts];
+		let value = index(&held_inputs, "2026-10-31");
+		assert_eq!(value["from"]["decisions"], json!(["decisions-2026-10-20.json", "decisions-2026-10-21.json"]));
+		assert_eq!(value["from"]["scout"], json!(["scouts-20261021T101500.json"]));
+		assert_eq!(
+			value["from"]["backfill"],
+			json!(["decisions-2026-10-20.json", "scouts-20261021T101500.json"]),
+			"the phone's copy of a name is not the backfill's"
+		);
+		assert_eq!(
+			value["new"]["decisions"],
+			json!([{ "name": "decisions-2026-10-20.json", "repeats": [] }, { "name": "decisions-2026-10-21.json", "repeats": [] }])
+		);
 	}
 }
