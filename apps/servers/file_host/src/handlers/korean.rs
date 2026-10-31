@@ -15,19 +15,16 @@
 //! items (`handlers::sync`), are the only callers of `korean_repo::put` and
 //! `::remove`; nothing writes the record in the background.
 
-use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
 	extract::{Path, State},
-	http::HeaderMap,
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
 use korean_repo::{Entry, Kind, KoreanError};
 use serde::Serialize;
-use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -65,10 +62,9 @@ pub(crate) fn refusal(err: KoreanError) -> FileHostError {
 
 /// Writes `body` as the next revision of `kind`'s `key`, or, with no body,
 /// removes it. `BEGIN IMMEDIATE`, so the read that decides and the write see
-/// one snapshot, and the choice it is checked against is that snapshot's.
-async fn write(db: &SqlitePool, subject: &str, headers: &HeaderMap, kind: &str, key: &str, body: Option<&[u8]>) -> Result<Written, FileHostError> {
+/// one snapshot.
+async fn write(db: &SqlitePool, subject: &str, kind: &str, key: &str, body: Option<&[u8]>) -> Result<Written, FileHostError> {
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject, headers, Scope::Korean).await?;
 	let now = now();
 	let (change, entry) = match body {
 		Some(body) => korean_repo::put(&mut tx, subject, kind, key, body, &now).await.map(|(change, entry)| (change, Some(entry))),
@@ -97,18 +93,11 @@ pub async fn get_entries(subject: SubjectId, State(db): State<SqlitePool>, Path(
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, 409 from a paired phone that stopped sending Korean home
-/// (`handlers::sharing::refusing`), and 500 for a storage failure.
+/// refused field, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "korean_entry_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_entry(
-	subject: SubjectId,
-	State(db): State<SqlitePool>,
-	headers: HeaderMap,
-	Path((kind, key)): Path<(String, String)>,
-	body: Bytes,
-) -> Result<Json<Written>, FileHostError> {
-	write(&db, subject.as_str(), &headers, &kind, &key, Some(&body)).await.map(Json)
+pub async fn put_entry(subject: SubjectId, State(db): State<SqlitePool>, Path((kind, key)): Path<(String, String)>, body: Bytes) -> Result<Json<Written>, FileHostError> {
+	write(&db, subject.as_str(), &kind, &key, Some(&body)).await.map(Json)
 }
 
 /// `DELETE /korean/:kind/:key`: a revision that removes it, the earlier ones
@@ -118,19 +107,14 @@ pub async fn put_entry(
 /// As [`put_entry`]'s, with `body` never refused.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "korean_entry_delete", skip_all, fields(otel.kind = "server"))]
-pub async fn delete_entry(
-	subject: SubjectId,
-	State(db): State<SqlitePool>,
-	headers: HeaderMap,
-	Path((kind, key)): Path<(String, String)>,
-) -> Result<Json<Written>, FileHostError> {
-	write(&db, subject.as_str(), &headers, &kind, &key, None).await.map(Json)
+pub async fn delete_entry(subject: SubjectId, State(db): State<SqlitePool>, Path((kind, key)): Path<(String, String)>) -> Result<Json<Written>, FileHostError> {
+	write(&db, subject.as_str(), &kind, &key, None).await.map(Json)
 }
 
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with a real phone session (a bearer token, as
-	//! a paired phone sends), a browser's, and the phone's sharing choice.
+	//! a paired phone sends) and a browser's.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
@@ -204,7 +188,7 @@ mod tests {
 	}
 
 	fn app(state: TestState) -> Router {
-		module().into_table_router().merge(crate::routes::sharing::sharing().into_table_router()).with_state(state)
+		module().into_table_router().with_state(state)
 	}
 
 	async fn call(app: &Router, method: Method, path: &str, auth: Option<&(HeaderName, String)>, body: &str) -> (StatusCode, Value) {
@@ -337,48 +321,5 @@ mod tests {
 		);
 		let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM korean_entry").fetch_one(&pool).await.unwrap();
 		assert_eq!(rows, 1, "nothing refused was written");
-	}
-
-	/// A phone's write is refused once its person stopped sending Korean
-	/// home, and taken again once kept again; a phone that told home nothing,
-	/// another pairing and a browser are refused nothing.
-	#[tokio::test]
-	async fn home_refuses_a_write_once_its_phone_stopped_sending_korean() {
-		let state = state().await;
-		let pool = state.pool.clone();
-		let phone = session(&state, A, Carrier::Bearer).await;
-		let other_phone = session(&state, A, Carrier::Bearer).await;
-		let browser = session(&state, A, Carrier::Cookie).await;
-		let app = app(state);
-		let choose = |kept: bool| {
-			let app = app.clone();
-			let phone = phone.clone();
-			async move { call(&app, Method::PUT, "/sharing/korean", Some(&phone), &json!({ "kept": kept }).to_string()).await.0 }
-		};
-
-		assert_eq!(
-			call(&app, Method::PUT, "/korean/set/a", Some(&phone), "{}").await.0,
-			StatusCode::OK,
-			"told home nothing yet"
-		);
-		assert_eq!(choose(false).await, StatusCode::OK);
-		let (status, refused) = call(&app, Method::PUT, "/korean/set/b", Some(&phone), "{}").await;
-		assert_eq!((status, &refused["error"]["code"]), (StatusCode::CONFLICT, &json!("sharing_stopped")), "{refused}");
-		assert_eq!(call(&app, Method::DELETE, "/korean/set/a", Some(&phone), "").await.0, StatusCode::CONFLICT, "a removal too");
-		assert_eq!(
-			call(&app, Method::PUT, "/korean/set/c", Some(&other_phone), "{}").await.0,
-			StatusCode::OK,
-			"another pairing's choices are its own"
-		);
-		assert_eq!(
-			call(&app, Method::PUT, "/korean/set/d", Some(&browser), "{}").await.0,
-			StatusCode::OK,
-			"a browser makes no choice and is refused none"
-		);
-		assert_eq!(choose(true).await, StatusCode::OK);
-		assert_eq!(call(&app, Method::PUT, "/korean/set/b", Some(&phone), "{}").await.0, StatusCode::OK, "kept again");
-
-		let held: Vec<String> = sqlx::query_scalar("SELECT entry_key FROM korean_entry ORDER BY entry_key").fetch_all(&pool).await.unwrap();
-		assert_eq!(held, ["a", "b", "c", "d"], "nothing refused was written, and what home took before the stop stays");
 	}
 }

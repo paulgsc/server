@@ -31,13 +31,11 @@
 //! that id, so nothing in the file points at audio and no file is routed
 //! through Drive (paulgsc/some-ui#2174: home is the default).
 
-use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
 	extract::{Path, Query, State},
-	http::HeaderMap,
 	Json,
 };
 use chrono::{NaiveDate, SecondsFormat, Utc};
@@ -45,7 +43,6 @@ use jobs_repo::{Event, JobsError, Record, REWRITTEN};
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
 use sha2::{Digest as _, Sha256};
-use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
@@ -90,20 +87,12 @@ pub async fn get_record(subject: SubjectId, State(db): State<SqlitePool>) -> Res
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, 409 for a different event under a held id or from a paired
-/// phone that stopped sending the record home (`handlers::sharing::refusing`),
-/// and 500 for a storage failure.
+/// refused field, 409 for a different event under a held id, and 500 for a
+/// storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "jobs_event_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_event(
-	subject: SubjectId,
-	State(db): State<SqlitePool>,
-	headers: HeaderMap,
-	Path(id): Path<String>,
-	body: Bytes,
-) -> Result<Json<EventWritten>, FileHostError> {
+pub async fn put_event(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<EventWritten>, FileHostError> {
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
 	let (change, event) = jobs_repo::put_event(&mut tx, subject.as_str(), &id, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(EventWritten { change: change.as_str(), event }))
@@ -266,14 +255,12 @@ fn notice_token(body: &[u8]) -> Result<String, FileHostError> {
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 for a token that
-/// is not one, 409 from a paired phone that stopped sending Jobs home
-/// (`handlers::sharing::refusing`), and 500 for a storage failure.
+/// is not one, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "jobs_notice_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_notice(subject: SubjectId, State(db): State<SqlitePool>, headers: HeaderMap, body: Bytes) -> Result<Json<NoticeChanged>, FileHostError> {
+pub async fn put_notice(subject: SubjectId, State(db): State<SqlitePool>, body: Bytes) -> Result<Json<NoticeChanged>, FileHostError> {
 	let token = notice_token(&body)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
 	let change = match notice_repo::register(&mut tx, subject.as_str(), &token, &now()).await? {
 		notice_repo::Change::Added => "added",
 		notice_repo::Change::Unchanged => "unchanged",
@@ -285,8 +272,7 @@ pub async fn put_notice(subject: SubjectId, State(db): State<SqlitePool>, header
 	Ok(Json(NoticeChanged { change }))
 }
 
-/// `DELETE /jobs/notice`: stop telling this phone. Never refused for sharing:
-/// a phone that stopped sending Jobs home can always stop being told.
+/// `DELETE /jobs/notice`: stop telling this phone.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 for a token that
@@ -405,11 +391,10 @@ impl<'de> serde::de::Visitor<'de> for UniqueMembers {
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming what is
 /// wrong (`name`, `body` or `schema`), 409 for other bytes under a
-/// filed name or from a paired phone that stopped sending the record home,
-/// and 500 for a storage failure.
+/// filed name, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "jobs_file_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, headers: HeaderMap, Path(name): Path<String>, body: Bytes) -> Result<Json<FileFiled>, FileHostError> {
+pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, Path(name): Path<String>, body: Bytes) -> Result<Json<FileFiled>, FileHostError> {
 	let Some((folder, schema)) = folder_of(&name) else {
 		return Err(FileHostError::unprocessable_entity([("name", "not a decisions or scouts file name")]));
 	};
@@ -427,7 +412,6 @@ pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, headers:
 	}
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject.as_str(), &headers, Scope::Jobs).await?;
 	let change = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), folder, &name, &sha256, &body, &now())
 		.await
 		.map_err(|err| match err {

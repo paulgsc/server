@@ -23,7 +23,7 @@
 //! - **No background writer.** The callers are `file_host`'s
 //!   `handlers::korean` (`PUT` and `DELETE /api/v1/korean/:kind/:key`) and
 //!   `handlers::sync` (`POST /api/v1/sync/korean/batch`, each item as one of
-//!   those routes), which the phone sends once its person has opted in. A
+//!   those routes), which the phone sends once paired. A
 //!   `git grep -n korean_entry -- '*.rs'` shows no other writer.
 
 use curriculum_repo::{content_hash, is_plain_key};

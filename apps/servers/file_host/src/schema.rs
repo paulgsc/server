@@ -31,8 +31,12 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("../../../migrations");
 ///
 /// A database *ahead* of the binary — versions applied that this build
 /// doesn't know about, the ordinary state during an image rollback — is
-/// deliberately not drift: every migration in this repo so far is additive,
+/// deliberately not drift: almost every migration in this repo is additive,
 /// and refusing readiness on it would turn every rollback into an outage.
+/// The one that is not, `20261031000400_drop_sharing_choice`, drops a table
+/// only older binaries read: one rolled back past it answers the phone's aph,
+/// Jobs, voice-note and Korean writes `500` until that migration's down
+/// recreates the table (empty, so it refuses nothing).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Drift {
 	/// Expected but not applied, oldest first — what `sqlx migrate run`

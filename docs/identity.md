@@ -20,11 +20,12 @@ who signs in, and this server is their own store, as private as their phone
 network can reach the box, and what "What is still exposed" lists is unchanged.
 What served strangers rather than the owner is being removed. #510 closed
 sign-up once the owner's account exists and made that account the operator and
-the mailbox's subject with no id copied from a log line ("The owner's account");
-paulgsc/some-ui#2182 tracks invariant 17's sharing choice. What #510 left to the
-owner's decision is said where it applies: the unauthenticated surfaces
-(`tabs`, `mood_events`, `/utter`; "What is still exposed"), and whether an
-account deletion should first make a durable copy (invariants 9 and 22).
+the mailbox's subject with no id copied from a log line ("The owner's account").
+Invariant 17's sharing choice is gone (paulgsc/some-ui#2182, HF8): a paired
+phone sends everything it keeps, and home refuses nothing as stopped. What #510
+left to the owner's decision is said where it applies: the unauthenticated
+surfaces (`tabs`, `mood_events`, `/utter`; "What is still exposed"), and whether
+an account deletion should first make a durable copy (invariants 9 and 22).
 
 That is a statement about what the code asks for. It is not a promise about
 what people choose to send it (a kept shelf item or a captured page can say
@@ -192,7 +193,6 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
 | Rust Rounds' rounds | `rust_round` |
-| What a phone shares | `sharing_choice` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
 A file home archived out of the mailbox goes with the account, and the person
@@ -261,9 +261,7 @@ with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
 account. No column says a session is a phone's; its digest is taken over a
 fixed prefix and the token (`SessionToken::hash`), so a phone's token sent as
 a cookie, or a browser's sent as a bearer, finds no session. How a session
-arrives is therefore what kind it is. What the phone's person chose to keep
-sending home names the pairing by a digest of that session's digest, in
-`sharing_choice` (invariant 17), not in `auth_session`.
+arrives is therefore what kind it is.
 
 A phone's token acts on the account's study data and nothing that would
 outlive or widen it: adding a passkey, pairing another phone, deleting the
@@ -565,7 +563,7 @@ nowhere is marked as such and belongs to review.
 
 15. **The aph record is append-only, and holds what the owner logged.**
     `aph_entry` and `aph_settings` keep the owner's aph log once the phone is
-    opted in to keeping it on home (paulgsc/some-ui `packages/ui/aph`): every
+    paired (paulgsc/some-ui `packages/ui/aph`): every
     revision of every entry and of the settings, never updated (a trigger
     aborts an `UPDATE`) and never deleted but with the account. A revision is
     the entry as the phone wrote it, checked and re-serialised (the figures,
@@ -581,8 +579,8 @@ nowhere is marked as such and belongs to review.
     `handlers::aph`'s `refusals_name_their_fields_and_records_stay_apart`.
 
 16. **The Jobs record is append-only, and holds what the owner recorded.**
-    `jobs_event` keeps the owner's Jobs log once the phone is opted in to
-    keeping it on home (paulgsc/some-ui `apps/www/src/lib/jobs`): every event,
+    `jobs_event` keeps the owner's Jobs log once the phone is paired
+    (paulgsc/some-ui `apps/www/src/lib/jobs`): every event,
     as the phone recorded it, checked and re-serialised (picks taken, passed
     or archived and why, postings read, why the owner fits one taken, how
     applying went, outcomes, postings found by hand), when the phone recorded
@@ -600,45 +598,16 @@ nowhere is marked as such and belongs to review.
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s
     `refusals_name_their_fields_and_records_stay_apart`.
 
-17. **What a phone shares is a choice home keeps a time for at each change,
-    never one per item.** `sharing_choice` keeps what each paired phone's
-    person chose to keep sending home (paulgsc/some-ui
-    `apps/www/src/lib/home-link`, its consent log): one row each time sharing
-    a kind of record (`sessions`, `shelf`, `aph`, `jobs`, `voice`, `korean`) began or
-    ended under a pairing, with when home heard it, and nothing about when
-    anything was sent under it. Those times are kept so home can refuse the
-    aph, Jobs, voice-note and Korean writes a phone sends after its person
-    stopped them (`PUT /aph/*`, `PUT /jobs/events/:id`,
-    `POST /sync/:collection/batch`, `PUT /voice-notes/:id` and `PUT` and
-    `DELETE /korean/:kind/:key` answer `409`, code `sharing_stopped`; sessions, the shelf and the LeetType session log
-    also go home on a tap no choice covers, and are not refused, and no
-    choice covers Studio's log yet either: whether it gets a scope of its own
-    is the owner's call, #553),
-    and say when each choice started and stopped; a timestamp on each synced
-    row stays out. A choice is made only by a paired phone
-    (`PUT /sharing/:scope`, a bearer session: a browser's is `403`), counts
-    for that pairing alone, and is never updated (a trigger aborts an
-    `UPDATE`) or deleted but with the account. The pairing is named by
-    `pairing_id`, a digest of its session's stored digest
-    (`auth::cookie::pairing_of`): it opens nothing, is never sent by the
-    phone (invariant 4), and is no identity, since it is only ever read under
-    the subject it came with.
-    *Enforced by* `sharing_repo`'s `the_table_holds_exactly_its_described_columns`,
-    `a_change_is_one_row_and_no_row_changes` and
-    `the_choices_leave_with_the_account`, and `handlers::sharing`'s
-    `only_a_paired_phone_makes_or_reads_a_choice` and
-    `home_refuses_only_what_a_phone_stopped`, `handlers::sync`'s
-    `a_batch_is_refused_whole_once_its_phone_stopped_sending_it`, and
-    `handlers::voice`'s `home_refuses_a_note_once_its_phone_stopped_sending_them`,
-    and `handlers::korean`'s `home_refuses_a_write_once_its_phone_stopped_sending_korean`.
-    A new scope widens the table's CHECK by rebuilding it with every row
-    copied (`20261025000300_add_voice_to_sharing_choice` and
-    `20261026000300_add_korean_to_sharing_choice`, held by
-    `sharing_repo`'s `adding_voice_keeps_every_change_and_both_triggers`), and
-    rolling that back once a pairing has chosen the scope fails rather than
-    discarding the choice
-    (`rolling_back_past_voice_refuses_rather_than_discards`,
-    `korean_is_chosen_like_the_rest_and_a_rollback_refuses_to_discard_it`).
+17. *Retired (2026-10-31).* It held home's record of what each paired phone
+    chose to keep sending (`sharing_choice`, one row per change of a choice,
+    none per item) and home's `409 sharing_stopped` refusal of the aph, Jobs,
+    voice-note and Korean writes a phone sent after its person stopped them.
+    The owner retired the choice itself (paulgsc/some-ui#2182, HF8; decision
+    D3 on paulgsc/some-ui#2174: no per-domain switch, and no consent log told
+    to home or enforced by home): home is the owner's own store, as private
+    as the phone, so a paired phone sends everything it keeps once paired.
+    `/sharing` and its handlers, `sharing_repo` and every check went, and
+    `20261031000400_drop_sharing_choice` drops the table, its rows with it.
 
 18. **The LeetType session log is append-only, holds what the owner played,
     and holds no soundbite.** `leetype_session_event` keeps the phone's
@@ -925,9 +894,8 @@ nowhere is marked as such and belongs to review.
     `studio`, its `ref` the take as `<project>:<shot>:<take>` within the
     rule every `ref` meets, and nothing beside it, so no table of its own
     (`20261030000100_add_studio_to_voice_note`). A redo is a new take under a
-    new id, never an update of the one it redoes. A take is sent under the
-    `voice` scope (invariant 17) like every note, heard by the transcriber
-    like every note, and its transcript filed for the mailbox like every
+    new id, never an update of the one it redoes. A take is sent home like
+    every note, heard by the transcriber like every note, and its transcript filed for the mailbox like every
     note's but a game bite's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
@@ -937,9 +905,7 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line, and which refuses a
-    paired phone whose person stopped sending voice notes (invariant 17,
-    scope `voice`); it is readable by
+    so neither the audio nor its hash reaches a log line; it is readable by
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
@@ -1022,8 +988,7 @@ nowhere is marked as such and belongs to review.
     `a_note_decodes_in_a_directory_only_its_owner_can_enter`,
     `tokens_join_into_words_on_the_space_that_opens_each` and
     `a_word_is_timed_in_the_note_not_in_the_speech_cut_from_it`; and `handlers::voice`'s
-    `refusals_name_their_fields_and_notes_stay_apart`,
-    `home_refuses_a_note_once_its_phone_stopped_sending_them` and
+    `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
     which `git grep -n 'voice_note\|voice_transcript\|game_bite' -- '*.rs'` shows today
@@ -1062,8 +1027,7 @@ nowhere is marked as such and belongs to review.
 
 25. **The Korean record is append-only, holds what the owner read as the
     phone sent it, and is never parsed.** `korean_entry` keeps Korean's
-    record once the phone is opted in to keeping it on home
-    (paulgsc/some-ui#2100): the word sets the owner studies on and what the
+    record once the phone is paired (paulgsc/some-ui#2100): the word sets the owner studies on and what the
     phone records as they are read, one kind per store the phone keeps
     (`korean_repo::Kind`: `set`, `pace`, `tally`, `lens`, `record`,
     `progress`, `feedback`, a closed list). Every write is a revision and
@@ -1078,8 +1042,7 @@ nowhere is marked as such and belongs to review.
     `korean_repo::BODY_CEILING`, as the learner shelf does (invariant 11),
     so what a word set or a pace *is* stays the phone's to judge. It is
     written only by `PUT` and `DELETE /korean/:kind/:key` and
-    `POST /sync/korean/batch`, each refused for a pairing that stopped
-    sending Korean (invariant 17), readable only by its own subject, and
+    `POST /sync/korean/batch`, readable only by its own subject, and
     deleted with the account by both the sweep and the migration's trigger
     (invariant 12). Rolling back the migration that creates it fails once it
     holds a row, rather than dropping the record.
@@ -1115,8 +1078,7 @@ nowhere is marked as such and belongs to review.
     `GET /studio/sittings/:sitting/events` and `GET /studio/friction`), and
     deleted with the account by both the sweep and the migration's triggers
     (invariant 12). Rolling back the migration that creates them fails once
-    either holds a row, rather than dropping the record. No sharing choice
-    covers them yet (invariant 17).
+    either holds a row, rather than dropping the record.
     *Enforced by* `studio_log_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `an_event_is_stored_once_and_never_replaced`,
     `a_report_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
@@ -1288,16 +1250,6 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   the owner should work on, and its `queued_at` when the first round
   holding it arrived ("What stays of Rust Rounds", above); nothing links it
   to a subject once the rounds that held it are gone.
-- **When a phone began and stopped sharing.** `sharing_choice` says, to the
-  millisecond, when each pairing began and stopped sending each kind of
-  record home (invariant 17): one row per change, as many as its person
-  flips a choice, with no cap. While the pairing's session lives, anyone
-  holding the database can recompute `pairing_id` from that session's
-  `auth_session` row and join the two, so the first time dates roughly when
-  the phone was paired and later ones when it was used, which the auth
-  tables alone do not say (invariant 10). It outlives the pairing it names,
-  as what home received does. Deleting the account removes it; nothing else
-  does.
 - **Session expiry moves when the app is used.** A session renewed at
   `GET /auth/session` gets a new expiry of now plus 30 days, so the stored
   expiry says, to the day, when this browser last opened the app past its
@@ -1371,5 +1323,5 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   hold only while `NUDGE_ENABLED` is on. `tabs` has a 30-day prune behind
   `POST /tabs/prune`, which nothing calls. Expired `auth_session` rows are
   deleted when someone next signs in, not on a timer. `engagement_*`,
-  `sessions`, the shelf, the aph and Jobs records, the LeetType session log,
-  `sharing_choice` and the mailbox copy have no horizon.
+  `sessions`, the shelf, the aph and Jobs records, the LeetType session log
+  and the mailbox copy have no horizon.

@@ -11,9 +11,7 @@
 //!
 //! **Trust model:** a subject route, as `routes::jobs`, `routes::aph` and
 //! `routes::korean`:
-//! the handler takes a `SubjectId`, and a paired phone's batch is refused
-//! once its person stopped sending that record (`handlers::sharing`). See
-//! `handlers::sync`.
+//! the handler takes a `SubjectId`. See `handlers::sync`.
 
 use crate::auth::AuthContext;
 use crate::handlers::sync as handlers;
