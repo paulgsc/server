@@ -499,6 +499,14 @@ mod tests {
 		assert_eq!(kinds.len(), 2, "both branches walked");
 	}
 
+	/// Every file under `src/` that starts a process, and why it may. EX1
+	/// (`docs/leetype-execution.md`) is the claim; this list is its
+	/// falsifier, so adding to it amends EX1 and says so there.
+	const SPAWNS: [(&str, &str); 1] = [(
+		"transcribe/engine.rs",
+		"ffmpeg, a fixed decoder of a stored voice note's audio, on the transcriber's blocking thread; never a program, never in a request",
+	)];
+
 	/// The code lines of `source` (comments dropped), and of the handler's
 	/// own file only what precedes its tests, so this test's list is not
 	/// found in itself.
@@ -507,16 +515,21 @@ mod tests {
 		source.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
 	}
 
-	/// Never #5, and "no execution in the request path", as checks over the
-	/// source:
+	/// Never #5, and EX1 ("nothing `file_host` serves compiles or runs a
+	/// program in a request, and `file_host` spawns no compiler"), as checks
+	/// over the source:
 	///
 	/// - the runs surface — this handler, its route module, and both
 	///   commands — names nothing that produces or carries a `StudySignal`
 	///   (`study_domain`, `handlers::signals`, the nudge, outcomes, sessions,
 	///   engagement). `leetype_runner`'s own closure is checked by its
 	///   `tests/nevers.rs`;
-	/// - no file of the server but `record-leetype-runs` names the runner, so
-	///   nothing the server serves can compile or execute a program.
+	/// - no file of the server but `record-leetype-runs` names
+	///   `leetype_runner`, and none names `rust_runner`, the crate that
+	///   compiles and runs (the `rust-runner` container does that, over its
+	///   socket);
+	/// - no file but those in [`SPAWNS`] starts a process at all, and each
+	///   of those says why it may.
 	#[test]
 	fn the_runs_surface_reaches_neither_a_study_signal_nor_the_runner() {
 		let surface = [
@@ -544,6 +557,9 @@ mod tests {
 		}
 
 		let runner = ["leetype", "_runner"].concat();
+		let spawner = ["rust", "_runner"].concat();
+		let spawn_markers = [["Command", "::new"].concat(), ["process::", "Command"].concat(), ["tokio::", "process"].concat()];
+		let spawns_in_a_list = regex::Regex::new(&["process::\\{[^}]*\\b", "Command", "\\b"].concat()).unwrap();
 		let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
 		let mut stack = vec![root.clone()];
 		let mut scanned = 0;
@@ -555,11 +571,84 @@ mod tests {
 				} else if path.extension().is_some_and(|extension| extension == "rs") {
 					scanned += 1;
 					let relative = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
-					let names_runner = code(&std::fs::read_to_string(&path).unwrap()).contains(runner.as_str());
-					assert_eq!(names_runner, relative == "bin/record_leetype_runs.rs", "{relative}");
+					let code = code(&std::fs::read_to_string(&path).unwrap());
+					assert_eq!(code.contains(runner.as_str()), relative == "bin/record_leetype_runs.rs", "{relative}");
+					assert!(!code.contains(spawner.as_str()), "{relative} names the crate that compiles and runs programs");
+					let spawns = spawn_markers.iter().any(|marker| code.contains(marker.as_str())) || spawns_in_a_list.is_match(&code);
+					assert_eq!(
+						spawns,
+						SPAWNS.iter().any(|(file, _)| *file == relative),
+						"{relative} starts a process: EX1 lists every file that may"
+					);
 				}
 			}
 		}
 		assert!(scanned > 50, "the tree was walked: {scanned} files");
+
+		// EX1 names every file that may start a process, so adding one to
+		// `SPAWNS` without amending the claim fails here.
+		let doc = include_str!("../../../docs/leetype-execution.md");
+		for (file, _) in SPAWNS {
+			assert!(doc.contains(&(String::from("`") + file + "`")), "EX1 does not name {file}");
+		}
+	}
+
+	/// EX1's other half, from `cargo metadata`'s resolved graph (normal and
+	/// build edges; dev edges are tests'): `rust_runner`, the crate that
+	/// compiles and runs, reaches `file_host` only through `leetype_runner`.
+	/// The source scan above then holds `leetype_runner` to
+	/// `record-leetype-runs`: Cargo's graph is per package, not per binary,
+	/// so that half is the scan's.
+	#[test]
+	fn the_runner_reaches_file_host_only_through_leetype_runner() {
+		// Set by cargo for the test it runs: the toolchain's own `cargo`.
+		#[allow(clippy::disallowed_methods)]
+		let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+		let metadata = std::process::Command::new(cargo)
+			.args(["metadata", "--format-version", "1", "--offline", "--manifest-path"])
+			.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+			.output()
+			.unwrap();
+		assert!(metadata.status.success(), "{}", String::from_utf8_lossy(&metadata.stderr));
+		let metadata: Value = serde_json::from_slice(&metadata.stdout).unwrap();
+		let names: std::collections::BTreeMap<&str, &str> = metadata["packages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|package| (package["id"].as_str().unwrap(), package["name"].as_str().unwrap()))
+			.collect();
+		let nodes: std::collections::BTreeMap<&str, &Value> = metadata["resolve"]["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|node| (node["id"].as_str().unwrap(), node))
+			.collect();
+		let id = |name: &str| names.iter().find(|(_, package)| **package == name).map(|(id, _)| *id).unwrap();
+		// What file_host reaches by normal and build edges, never passing
+		// through `skip`.
+		let reached = |skip: Option<&str>| {
+			let mut closure = std::collections::BTreeSet::new();
+			let mut stack = vec![id("file_host")];
+			while let Some(at) = stack.pop() {
+				if Some(at) == skip || !closure.insert(at) {
+					continue;
+				}
+				for dep in nodes[at]["deps"].as_array().unwrap() {
+					if dep["dep_kinds"].as_array().unwrap().iter().any(|kind| kind["kind"].as_str() != Some("dev")) {
+						stack.push(dep["pkg"].as_str().unwrap());
+					}
+				}
+			}
+			closure.into_iter().map(|at| names[at]).collect::<std::collections::BTreeSet<_>>()
+		};
+		let runner = ["rust", "_runner"].concat();
+		assert!(
+			reached(None).contains(runner.as_str()),
+			"the graph was walked: file_host reaches it through leetype_runner today"
+		);
+		assert!(
+			!reached(Some(id("leetype_runner"))).contains(runner.as_str()),
+			"file_host reaches {runner} other than through leetype_runner"
+		);
 	}
 }

@@ -14,7 +14,8 @@ request is being answered.
 
 | Piece | What it is |
 | --- | --- |
-| `crates/leetype_runner` | The runner. Builds `A` and every `A + d` from a stored round body, appends the round's `harness`, compiles each with `rustc`, runs each binary at the bounds of `constraintDiff.before` and of `constraintDiff.after`, and returns one `RunResult` per run. |
+| `crates/leetype_runner` | The runner. Builds `A` and every `A + d` from a stored round body, appends the round's `harness`, compiles each with `rustc`, runs each binary at the bounds of `constraintDiff.before` and of `constraintDiff.after`, and returns one `RunResult` per run. The compile and the run themselves are `rust_runner`'s (below). |
+| `crates/rust_runner` | The neutral runner both recorders call (paulgsc/some-ui#2234): compiles one program (`rustc -C opt-level=0 --error-format=json`, keeping each diagnostic's code and spans) and runs it under the limits below, killing its whole process group. Also Rust Rounds' `rust-runner` service ("Rust Rounds: the rust-runner", below). |
 | `record-leetype-runs` (`src/bin/record_leetype_runs.rs`) | The only caller of the runner. An offline operator command, run after `import-leetype-rounds` on a machine with `rustc` (a developer's, or CI). Stores each round's transcript for the round version it ran. |
 | `leetype_round_run` (`migrations/20260929000300_create_leetype_round_run.up.sql`) | One row per `(round, variant, bounds)`: the sizes and the `RunResult`, tagged with the round's `content_hash` at recording time. |
 | `GET /api/v1/leetype/rounds/:id/runs` | The route. Reads the rows recorded for the round's **current** hash. |
@@ -81,8 +82,8 @@ error, which is how #381 wants it treated.
 ## Technology: `rustc` in a subprocess, offline
 
 The runner shells out to the machine's `rustc` through `std::process`. It
-adds no third-party dependency (`tempfile` was already in the lockfile) and
-uses no `unsafe`. Rust is the only language (decided 2026-09-26 on #381,
+adds no third-party dependency (`tempfile` was already in the lockfile;
+`rustix`, for the process-group kill, already was too) and uses no `unsafe`. Rust is the only language (decided 2026-09-26 on #381,
 enforced by `RoundSchema`), so one toolchain covers the whole corpus.
 
 ### Rejected options
@@ -125,8 +126,12 @@ For a round body with a `harness`:
    harness. That is the same text the client's
    `check-round-programs-compile.ts` compiles in CI.
 2. **Compile.** Each program is compiled once, with
-   `rustc --edition 2021 -C opt-level=0 -A warnings --crate-type bin -o <bin> <file>`,
-   in a fresh temporary directory per round (removed afterwards).
+   `rustc --edition 2021 -C opt-level=0 -A warnings --error-format=json --crate-type bin -o <bin> <file>`,
+   in a fresh temporary directory per round (removed afterwards). A failed
+   compile's message is the diagnostics' `rendered` text, which is byte for
+   byte what rustc prints without `--error-format=json`
+   (`the_rendered_text_is_what_rustc_prints_without_json`), so moving the
+   compile into `rust_runner` changed no recorded message.
 3. **Run.** Each binary runs twice, with one `dimension=bound` argument per
    constraint: first for `constraintDiff.before`, then for
    `constraintDiff.after`. The bound is the argument because admissibility is
@@ -165,8 +170,9 @@ ceiling hits.
 
 ### Limits
 
-All are in `leetype_runner::Limits`, with defaults, and each is a flag on
-`record-leetype-runs`.
+All are in `leetype_runner::Limits` (`rust_runner`'s), with defaults. Each
+is a flag on `record-leetype-runs` but the compile's address space and the
+file size, which keep their defaults.
 
 | Limit | Default | At the limit |
 | --- | --- | --- |
@@ -175,6 +181,8 @@ All are in `leetype_runner::Limits`, with defaults, and each is a flag on
 | stdout | 4 KiB | kept to the ceiling, the rest drained and dropped, never streamed; `logs` gets "stdout truncated: kept the first 4096 of N bytes" |
 | stderr | 4 KiB | the same, in `logs`. A `runtime` error's message is its exit status plus stderr's **tail**. A `compile` error's message is rustc's stderr **head**, where the first error is. |
 | Address space | 512 MiB | applied through `prlimit --as` when `prlimit` is installed. An allocation past it aborts, which is `runtime`. |
+| Compile address space | 768 MiB | rustc under `prlimit --as`, likewise. A source that makes rustc need more aborts it, which is `compile`, "rustc was killed by signal 6". |
+| File size | 64 MiB | `prlimit --fsize` for the compile and the run; neither gets a POSIX message queue (`--msgqueue=0`) or a core. |
 | Environment | cleared | a run gets no environment at all. The compile gets only `PATH`, `HOME`, `RUSTUP_HOME`, `RUSTUP_TOOLCHAIN` and `CARGO_HOME` (what rustup's proxy and the linker need), plus `TMPDIR` set to the round's directory. |
 | Working directory | fresh per round | a `tempfile` directory, removed when the round is done |
 
@@ -184,7 +192,9 @@ stderr. `rustc` missing or unstartable is **not** a result: the recorder stops
 with exit code 2, since no round would do better.
 
 The child runs in its own process group (`CommandExt::process_group(0)`), so
-the kill takes a compile's linker along with `rustc`. It is polled with
+the kill takes a compile's linker along with `rustc`. The kill is a system
+call (`kill(-pgid)`, through `rustix`), not a `kill` process, so a program
+that has used up its process ceiling cannot stop it. It is polled with
 `try_wait` every millisecond, so `elapsed` is good to about a millisecond.
 Timings are illustrative only (Ax. 3.1). They come from the machine that
 recorded them, and nothing grades them.
@@ -199,8 +209,12 @@ recorded them, and nothing grades them.
   It runs as whoever runs the recorder, in an empty directory, with an empty
   environment. That is acceptable only because the programs are reviewed
   corpus artifacts and the recorder is an operator's choice. Learner-authored
-  code stays out of scope (#381, paulgsc/some-ui#1201). If it ever came in
-  scope, this whole design would need revisiting, starting with this bullet.
+  code stays out of scope (#381, paulgsc/some-ui#1201).
+  **Code nobody reviewed came in scope with Rust Rounds** (the owner's D1,
+  paulgsc/some-ui#2234): programs a tutor wrote. They never run here. They
+  run only in the `rust-runner` container, which closes these gaps for them
+  (RX1, below). `record-leetype-runs` keeps these gaps, because what it runs
+  is still the reviewed corpus.
 - **Timing noise.** `elapsed` varies between recordings. That is harmless:
   the snapshot is a function of the database, not of a new recording (see
   below), and the budget verdicts sit two orders of magnitude from the
@@ -224,17 +238,46 @@ recorded them, and nothing grades them.
 Declared per this repo's `CLAUDE.md` ("Drift is loud, not silent"). A reviewer
 settles each one with a single check against a hunk.
 
-- **EX1: nothing the server serves compiles or runs a program.**
+- **EX1: nothing file_host serves compiles or runs a program in a request,
+  and the server spawns no compiler; only the offline `record-leetype-runs`
+  command does, and Rust Rounds' runner does, sandboxed.**
+  (Amended for Rust Rounds, paulgsc/some-ui#2234, with the owner's D1. It
+  read "nothing the server serves compiles or runs a program".)
   - _Claim:_ under `apps/servers/file_host/src/`, only
-    `bin/record_leetype_runs.rs` names `leetype_runner`, and no handler spawns
-    a process.
-  - _Falsified by_ a hunk that adds a `leetype_runner` path, a
-    `std::process::Command`, or a `tokio::process` call to any other file
-    under `src/`, or that deletes or weakens the source-scan test.
-  - _Why not enforced mechanically:_ the `leetype_runner` half is enforced
-    (the test above). The `Command` half is "mechanical; not yet a rule":
-    other binaries in `src/bin/` could legitimately spawn processes, and no
-    handler does today.
+    `bin/record_leetype_runs.rs` names `leetype_runner`; no file names
+    `rust_runner`, the crate that compiles and runs; `rust_runner` reaches
+    file_host's dependency graph only through `leetype_runner`; and only the
+    files listed in the test's `SPAWNS` start a process at all, each with
+    its reason. Today that is `transcribe/engine.rs`, which runs `ffmpeg` (a
+    fixed decoder of a stored note's audio, on the transcriber's blocking
+    thread, never a program and never in a request). `record-leetype-runs`
+    compiles the reviewed LeetType corpus through `leetype_runner`, on an
+    operator's command, never in the server. Rust Rounds' programs are
+    compiled and run by the `rust-runner` container, and file_host only
+    asks it over its socket, off any request's path.
+  - _Falsified by_ a hunk that adds a `leetype_runner` path to any other
+    file under `src/`, a `rust_runner` path to any file under `src/`, a
+    dependency through which file_host reaches `rust_runner` other than
+    `leetype_runner`, or a process start (`Command::new`,
+    `std::process::Command`, `tokio::process`) to a file not in `SPAWNS`; by
+    an entry added to `SPAWNS` that this claim does not name; or by a hunk
+    that deletes or weakens either test.
+  - _Enforced mechanically_ by
+    `the_runs_surface_reaches_neither_a_study_signal_nor_the_runner` (the
+    source scan, and that this claim names every `SPAWNS` file) and
+    `the_runner_reaches_file_host_only_through_leetype_runner` (`cargo
+    metadata`'s resolved graph). Cargo's graph is per package, not per
+    binary, so which binary links `leetype_runner` is the scan's to hold.
+    The scan is lexical: it skips comments and everything after a file's
+    first `#[cfg(test)]` (tests may start processes), and a process started
+    through an alias the markers miss is not seen. The markers include an
+    aliased `use` line (`use std::process::{Command as Run}` fails it).
+  - _The drift this amendment fixed:_ the falsifier used to forbid any
+    `std::process::Command` under `src/`, while `transcribe/engine.rs`
+    already ran `ffmpeg` that way. The claim ("no handler spawns a
+    process") held; the falsifier was wider than it, and was "not yet a
+    rule" for that reason. It now matches the claim, within what a lexical
+    scan sees, and is enforced.
 - **EX2: runs are keyed to the bytes they ran.**
   - _Claim:_ every read of `leetype_round_run` that serves runs filters on
     the round's current `content_hash`, and every write goes through
@@ -247,6 +290,213 @@ settles each one with a single check against a hunk.
     inserts into it outside `RoundRepository::replace_runs`.
   - _Why not enforced mechanically:_ SQL text is not linted. The tests cover
     the two readers that exist, not ones added later.
+
+## Rust Rounds: the rust-runner (paulgsc/some-ui#2234, RR3)
+
+Rust Rounds' cards show what `rustc` really did with a toy program a tutor
+wrote. **Every program is hostile**, whichever tutor wrote it (the Claude
+routine, ChatGPT by paste, the API later) and however it arrived (the owner,
+D1: "we always treat that code as unsanitized"). Nobody reviewed it, so none
+of LeetType's known gaps is acceptable for it, and it never runs anywhere
+but the `rust-runner` container.
+
+| Piece | What it is |
+| --- | --- |
+| `crates/rust_runner` (`recording`) | One program, `main.rs`, in a directory of its own, compiled with `--edition 2024 -C opt-level=0 --error-format=json` (warnings kept, as the owner's own code builds) and, if it builds, run once with no arguments, stdin or environment. A `Recording` keeps the outcome, rustc's diagnostics (codes and spans) and text, the program's stdout (first 4 KiB) and stderr (last 4 KiB, where a panic is), and how it ended. |
+| `RustcRun` (`Recording::rustc_run`) | What the phone reads: some-ui's `RustcRunSchema` (RR1, `packages/ui/rust-rounds`) field for field: `compile-error` (`code`, `stderr`, `span`), `prints`, `panics` (exit 101), `stopped` (`why`: `time`, `memory`, `output`, `exit`), each with the release (`1.97.0`) and, past a compile, `compileStderr`. Derived, never stored alone, so a change to it needs no re-recording. |
+| `rust-runner serve` (`src/bin/rust_runner.rs`, `service`) | The service: one JSON request line, one JSON answer line, one connection, over a Unix socket. `{"ask":"toolchain"}`, or `{"ask":"record","toolchain":…,"source":…}`, answered with the recording and its `RustcRun`. A `record` naming another toolchain is refused, and only the client's uid (file_host's, 10000) and root are served. It runs as root with two capabilities and starts every compile and run as 10101:10101; after each job, a helper kills that uid's processes and its hidden `clean` mode removes what the program left, both as 10101. |
+| `infra/docker/Dockerfile.rust-runner` | `rust:1.97.0-slim-bookworm`, pinned by digest (rustc 1.97.0 (2d8144b78 2026-07-07), the owner's), plus the binary, and the programs' uid 10101; no setuid or setgid binary, and a toolchain only root can write. |
+| `infra/compose/rust_runner.yml` | The sandbox (RX1). Not in `docker-compose.yml`'s stack until file_host asks it anything. |
+| `scripts/check_rust_runner_sandbox.py` (`rust-runner.yml`) | Brings the compose file up as written and runs the worked example and the hostile programs against it. |
+
+**What is not built yet** (RR3's next slice): the round stored on home as an
+append-only row, the background pass that hands each program and variant to
+the runner and stores the recording keyed as RX4 says, the `Paired` routes
+(list rounds; one round with its runs, with an ETag; `PUT` a pasted round),
+the round and run tables in `docs/identity.md` (`NOT_SUBJECT_SCOPED`: code
+is not personal) and in some-ui's assurance ledger, and the runner in the
+stack. Until then nothing in file_host asks the runner anything, which is
+why EX1's claim already holds with it.
+
+### Why a socket and no network, not "an internal network"
+
+The design proposed an internal-only network. A program shares the
+runner's network namespace, so on any network, internal or not, it could
+reach everything else on it: file_host's routes, Redis, NATS. With
+`network_mode: none` there is nothing to reach but loopback, and the only
+way in is a Unix socket on a volume shared with whoever asks. It is
+stricter than the proposal, and simpler: no port, no HTTP.
+
+### The runner's invariants
+
+Declared per this repo's `CLAUDE.md` ("Drift is loud, not silent"), in the
+same shape as EX1 and EX2. Each holds of the code and configuration as they
+are; "the runner" is `rust-runner serve`, "a program" is any source it is
+asked to record, and "the programs' uid" is 10101 (and gid 10101).
+
+- **RX1: every program runs only in the sandbox, as a uid that can touch
+  nothing of the runner's, and nothing relaxes it.**
+  - _Claim:_ Rust Rounds' programs are compiled and run only by
+    `rust-runner serve` in the container `infra/compose/rust_runner.yml`
+    declares: `network_mode: none`; `ipc: none` (no `/dev/shm`) with
+    `kernel.shm_rmid_forced=1`; not privileged, no device, the pid and user
+    namespaces Docker gives by default, no unconfined seccomp or AppArmor;
+    one mount, the socket's volume; a read-only root with no setuid or
+    setgid binary and a toolchain only root can write; the runner as root
+    with only `SETUID` and `SETGID` (`cap_drop: ALL`), not dumpable and with
+    no new privileges (its own `PR_SET_NO_NEW_PRIVS` and the container's),
+    and the container's PID 1 (no init; `restart: unless-stopped`);
+    `pids_limit: 128`; 1 GiB of memory and swap; one CPU; no core
+    dumps. rustc and the program run as uid and gid 10101, a pair nothing
+    else in the stack runs as (file_host is 10000:10001), with no
+    supplementary groups and no capabilities, so they cannot signal, trace
+    or read the runner, and under `prlimit`: 768 MiB of
+    address space for rustc and 512 MiB for the program, 64 MiB per file,
+    64 processes and threads for the uid, no core, no POSIX message queue.
+    They can write only in the program's own directory under `/work`
+    (root's, mode 0755); the socket's directory is root's, 0755, and the
+    runner refuses a `--work` or socket directory that is not its own
+    (root's, writable by nobody else). The socket (0666 in a 0755
+    directory, on a volume file_host shares) can be reached by anything in
+    either container, a program included, so **the peer's uid is the
+    primary defence**: each connection's `SO_PEERCRED` uid is checked before
+    anything is read, and only file_host's (10000) and root's are served.
+    No source is exempt and no request
+    field changes how a program is treated (the request type denies unknown
+    fields). The container's environment holds only the names
+    `check_sandbox` allows, so nothing secret, since a compile's
+    `include_str!` can read what the image holds and a program its own
+    environment (empty).
+  - _Falsified by_ a hunk that loosens any of those settings, adds a
+    capability (`KILL`, `DAC_OVERRIDE`, `FOWNER` and `CHOWN` included: the
+    sweep and `clean` run as 10101 and need none), gives 10101 to anything
+    else in the stack, serves another uid on the socket, starts a compile
+    or run as the runner's uid, publishes a port, joins a
+    network or an IPC namespace, passes an `env_file`, a secret or another
+    variable, adds a request field or branch that skips a limit for some
+    source ("trusted" tutors, say), or runs a Rust Rounds program anywhere
+    else.
+    **Who can signal whom.** A program cannot signal the runner: it is
+    another uid, and as PID 1 it receives no signal it has no handler for.
+    The sweep's helper (RX2) is a process of the programs' uid from its
+    fork on, so a program's survivor *can* stop or kill it; that is why the
+    helper is bounded and RX3's watchdog, a thread of the root runner that
+    nothing of the programs' uid can reach, is the backstop.
+  - _Scope:_ the `rust-runner` container and the crate's `serve` path.
+    `record-leetype-runs` uses the same `Compiler` without a uid of its own
+    or a container (the reviewed corpus, LeetType's known gaps above).
+    **Known limit:** the container has no user namespace, so uid 10101 is
+    the host's uid 10101, and `RLIMIT_NPROC` (64) counts every process of
+    it on the host. `check_ids` holds the stack's own files to 10101 being
+    the runner's alone; another tenant of the host running as 10101 would
+    share the count (and could exhaust it, failing a job's runs, never
+    widening what a program may do).
+  - _Why not enforced mechanically:_ settings in a compose file are not
+    linted. `check_sandbox` in `scripts/check_rust_runner_sandbox.py` (the
+    `Rust runner` workflow) checks them against the container compose
+    starts, that no other Dockerfile or compose file names 10101, and that
+    another uid is refused on the socket; the hostile programs check their
+    effect (a program's identity, a stop, kill and `/proc` read of the
+    runner that fail, a request a program queues that is refused);
+    `the_wire_reads_as_documented` checks the request type. Neither sees a
+    setting the check does not name.
+- **RX2: nothing a program does outlives its job.**
+  - _Claim:_ at a ceiling and after every compile and every run, every
+    process of the programs' uid is killed, by a helper running as that uid
+    (`sh -c 'kill -KILL -1'`, repeated until `/proc` lists no live process
+    of it): the runner signals nothing and needs no `CAP_KILL`, and nothing
+    is signalled by a pid that could have been reused. The runner never
+    walks a tree a program made: after every job `clean`, as the programs'
+    uid, removes everything in each program's directory, however deep (by
+    relative name, one level at a time) and opening directories the uid
+    owns before reading them (a directory a full-path host such as
+    AppArmor will not let it enter is one the program could not fill
+    either, and is removed as it is); the runner then removes the empty
+    directories, and checks that `/proc/sysvipc`
+    lists no System V object and `/dev/shm` and `/dev/mqueue` are empty,
+    and that the socket's directory holds only the socket it bound. If any
+    of that fails, the runner exits, and the container's restart starts it
+    clean: fresh tmpfs, fresh IPC namespace, and, since the runner is PID 1,
+    every process in the container killed with it. **The restart is the
+    cleanup of last resort**, and these cases take it: a System V semaphore
+    or queue a program leaves (shared memory goes with the process that
+    made it, `shm_rmid_forced`; POSIX queues are refused, `--msgqueue=0`);
+    something left in `/dev/shm` or `/dev/mqueue`, `/work` or the socket's
+    directory that cannot be removed; a sweep that cannot finish (a
+    survivor that stops the helper past its 5 s, or kills it every pass);
+    and a job past the watchdog's deadline (RX3). The client of a job that
+    ends this way sees its connection dropped, with no answer.
+  - _Falsified by_ a hunk that skips the sweep, the clean or any of those
+    checks for any request, catches their failure and goes on serving,
+    makes a sweep failure read as the program's (`TimedOut`,
+    `InvalidInput`), or puts an init back in front of the runner.
+  - _Scope:_ processes, files under `/work` and the socket's directory, and
+    IPC objects of the container's namespace. Time a program spent and the
+    CPU's caches are not undone; nothing reads them.
+  - _Why not enforced mechanically:_ the runner's loop is short enough to
+    read. The hostile programs check it: a loop, unbounded allocation, a
+    fork bomb, a thread bomb, processes that leave the group (`setsid`), a
+    socket, writes everywhere, a directory made mode 000 and one 20000
+    levels deep (as deep as the host allows), System V shared memory,
+    semaphores and queues, survivors looping `kill(-1, SIGSTOP)` and
+    `kill(-1, SIGKILL)`, and compiles that blow up rustc. Each ends as a
+    recorded outcome or a dropped connection, with no process, file or IPC
+    object left; only the semaphore and queue and the two loopers restart
+    the runner, once each at most.
+- **RX3: one job at a time, never on a request's path.**
+  - _Claim:_ the service answers a connection before it accepts the next,
+    and every job is bounded: the compile timeout (60 s), the run ceiling
+    (2 s), a 64 KiB request read within one 5 s deadline for the whole of
+    it, the answer written within one 5 s deadline for the whole of it,
+    `clean` within 30 s, and each sweep helper within 5 s. **The backstop
+    is the watchdog:** a thread of the runner arms each job's whole life,
+    from accepting its connection to the end of its tidy, with the sum of
+    those ceilings plus a 30 s sweep allowance (132 s with the defaults,
+    `serve_job_deadline`), and exits the runner if the job is still going
+    past it. That bounds the one wait nothing on the job's thread can: a
+    helper a survivor stopped before its `exec`, which blocks `spawn`. The
+    exit is RX2's restart; the client sees its connection dropped. **What a
+    client does with a dropped connection:** treat it as "the runner
+    restarted while running this job" and retry it, a bounded number of
+    times, then record that as the outcome (the next slice's pass); the
+    protocol has no answer for it. A connection from any uid but the client's and
+    root's is refused before anything is read (`SO_PEERCRED`), so a program
+    cannot queue jobs that outlive it.
+    file_host asks the runner only from a background pass (EX1), never from
+    a handler, and `ask` reads at most 4 MiB of answer.
+  - _Falsified by_ a thread or task per connection, a removed ceiling or
+    one per read or write, a helper waited without a deadline, a watchdog
+    removed, disarmed before the tidy ends or depending on any process of
+    the programs' uid, a peer check removed or moved after the read, or a
+    handler that asks the runner.
+  - _Scope:_ the service loop and its client. The next slice's pass decides
+    how often it asks, and caps attempts per program.
+  - _Why not enforced mechanically:_ the loop is short enough to read.
+    `a_trickling_client_is_refused_at_the_client_timeout` checks the read's
+    deadline (the write's is the same type), `only_a_clients_uid_is_served`
+    and the hostile programs check the peer refusal, the two looper cases
+    check that a job always ends and the runner comes back (by the helper's
+    deadline or the watchdog's), and EX1's tests the request path.
+- **RX4: a recording is keyed to the bytes and the toolchain that made it.**
+  - _Claim:_ `key` is SHA-256 of the toolchain (`rustc -V` and the profile,
+    `rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0`),
+    a NUL, and the source. The runner refuses a `record` naming a toolchain
+    other than its own. The client does not take the answer's word for the
+    key: file_host's pass checks the answer's toolchain is the one it sent
+    and stores the recording under `key` of that toolchain and the source
+    it sent, computed itself. A toolchain bump is a new key for every
+    program. One normalisation is applied: a panic header's thread id is
+    dropped, so the same failure records the same bytes.
+  - _Falsified by_ a key over anything else (a round, a card, a tutor), or
+    a recording stored under a key or toolchain the client did not compute
+    and send itself.
+  - _Scope:_ the runner's half today; the client's half is the next slice's
+    pass, which must hold it.
+  - _Why not enforced mechanically:_ the store is not built yet. The
+    runner's half is checked by
+    `the_key_is_the_toolchain_and_the_source_and_nothing_else`,
+    `the_same_program_records_the_same_bytes_but_its_time` and
+    `the_service_answers_one_request_per_connection`.
 
 ## #328: the static snapshot
 

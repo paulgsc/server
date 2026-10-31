@@ -54,6 +54,16 @@ const IMAGES: &[ImageSpec] = &[
 		needs_migrations: false,
 		manifest: "apps/orchestrator/Cargo.toml",
 	},
+	// Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234): the pinned
+	// toolchain plus one binary. No database.
+	ImageSpec {
+		name: "rust-runner",
+		dockerfile: "./infra/docker/Dockerfile.rust-runner",
+		repo_suffix: "rust-runner",
+		needs_sqlx: false,
+		needs_migrations: false,
+		manifest: "crates/rust_runner/Cargo.toml",
+	},
 ];
 
 /* ------------------------- METADATA TYPES ------------------------- */

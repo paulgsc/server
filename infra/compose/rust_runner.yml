@@ -1,0 +1,118 @@
+# The rust-runner: Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234,
+# RR3). It compiles and runs programs a tutor wrote, and treats every one as
+# hostile, whoever wrote it and however it arrived: there is no trusted
+# source and no relaxed path. Its invariants (RX1-RX4) are in
+# apps/servers/file_host/docs/leetype-execution.md; each line below that
+# holds one says which.
+#
+# Not in docker-compose.yml's `include` yet: nothing asks it anything until
+# file_host's recording pass (RR3's second slice) lands, and that change adds
+# it to the stack, mounts the socket's volume into file-host, and gives it an
+# inventory entry. Until then, run it on its own:
+#
+#   docker compose -f infra/compose/rust_runner.yml up -d
+#   echo '{"ask":"toolchain"}' | docker compose -f infra/compose/rust_runner.yml \
+#     exec -T --user 10000 rust-runner rust-runner ask
+#
+# `ask` runs as file_host's uid (10000, infra/docker/Dockerfile.server), the
+# one client uid the runner serves besides root's (the image's
+# RUST_RUNNER_CLIENT_UID); any other uid's connection is refused unread.
+# scripts/check_rust_runner_sandbox.py brings this file up as it is and runs
+# the hostile programs against it.
+services:
+  rust-runner:
+    image: pgathondu/rust-runner:latest
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.rust-runner
+    container_name: rust-runner
+    # RX1: no network at all, not an internal one. A program shares the
+    # runner's network namespace, so on any network it could reach whatever
+    # else is on it (file_host included). The only way in is the socket.
+    network_mode: none
+    # RX2, RX3: no init. The runner is the container's PID 1, so when it
+    # exits (a tidy it cannot finish, or its watchdog ending a job past its
+    # deadline) the kernel kills every process in the container's PID
+    # namespace, a program's survivors included, and the restart below
+    # starts it clean. As PID 1 it reaps a program's orphans itself, and no
+    # process in the container can signal it (the kernel drops a signal to
+    # PID 1 it has no handler for).
+    # RX1: two uids. The runner is root with two capabilities and no way to
+    # gain more: SETUID and SETGID, to start every compile and run as
+    # 10101:10101 (the image's RUST_RUNNER_PROGRAM_*, an id pair no other
+    # service in the stack uses) with no supplementary groups. Under one uid
+    # a program could stop the runner (SIGSTOP), so its ceilings never fired,
+    # or swap its socket; under 10101 it can signal nothing of root's, and
+    # write nothing but its own directory. No KILL: the uid's processes are
+    # killed by a helper running as 10101 itself. No DAC_OVERRIDE, FOWNER or
+    # CHOWN: what a program leaves is removed by the runner's `clean` as
+    # 10101, with no more right than the program had.
+    read_only: true
+    user: '0:0'
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    # RX1, RX2: an IPC namespace of its own with no /dev/shm, and System V
+    # shared memory removed when its creator exits. A program could
+    # otherwise park memory there past its job, and every later recording
+    # would run short of it. POSIX queues are refused by prlimit
+    # (--msgqueue=0); a System V semaphore or queue a program leaves makes
+    # the runner exit, and the restart is a fresh namespace.
+    ipc: none
+    sysctls:
+      kernel.shm_rmid_forced: 1
+    # The only writable places, both root's: /work (each program's own
+    # directory inside it is open to 10101, and removed after every job) and
+    # the socket's directory, which only the runner writes. No /tmp: rustc
+    # and its linker get TMPDIR set to the program's own directory.
+    tmpfs:
+      # `exec` because the compiled program runs from here; capped, so a
+      # program that fills it fails its own run and nothing else.
+      - /work:rw,exec,nosuid,nodev,size=256m,mode=0755
+    volumes:
+      # The socket, shared with whoever asks (file_host, in the next slice).
+      - rust_runner_socket:/run/rust-runner
+    # RX3: one job at a time is the service's own loop; these bound what one
+    # job can take. pids counts threads too: the runner's own few, and
+    # rustc's or the program's, which the runner's process ceiling (64 for
+    # uid 10101) holds below this.
+    mem_limit: 1G
+    memswap_limit: 1G
+    cpus: 1.0
+    pids_limit: 128
+    ulimits:
+      core: 0
+    # No `environment` and no `env_file`: the image sets the runner's few
+    # settings, and nothing secret may ever be here. rustc gets PATH and the
+    # rustup variables and a program none, but a compile's include_str! can
+    # read a file, so nothing secret is in the image either (RX1).
+    # The cleanup of last resort: whenever the runner exits, it comes back
+    # with fresh tmpfs, IPC and PID namespaces.
+    restart: unless-stopped
+    # PID 1 ignores SIGTERM (no handler), and holds nothing to flush.
+    stop_signal: SIGKILL
+    logging:
+      driver: json-file
+      options:
+        max-size: '1m'
+        max-file: '2'
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 128
+
+volumes:
+  # tmpfs, so a stale socket or anything a program wrote beside it goes with
+  # the host's restart, and it is capped.
+  rust_runner_socket:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: 'size=1m,uid=0,gid=0,mode=0755'

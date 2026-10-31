@@ -1,0 +1,67 @@
+# The rust-runner: Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234,
+# RR3). It compiles and runs programs a tutor wrote, which nobody reviewed,
+# so every program is treated as hostile. The image is the toolchain plus one
+# small binary; the sandbox is the container (infra/compose/rust_runner.yml):
+# no network, no shared IPC, a read-only root, programs under a uid of
+# their own, process, memory and CPU caps. The design and its invariants (EX1, RX1-RX4) are in
+# apps/servers/file_host/docs/leetype-execution.md.
+#
+# Pinned to rustc 1.97.0 (2d8144b78 2026-07-07), the owner's own toolchain:
+# rustc's messages change between versions, and every recording is keyed to
+# the toolchain that made it (`rustc -V`), so a bump here re-keys every
+# program and the next pass records them again. Not a floating `1.97`, which
+# moved to 1.97.1 on 2026-07-14. Pinned by digest too (the multi-arch index
+# of `rust:1.97.0-slim-bookworm` on 2026-10-31), so a re-pushed tag changes
+# nothing here. scripts/check_rust_runner_sandbox.py checks the exact text
+# this toolchain prints for the worked example.
+FROM rust:1.97.0-slim-bookworm@sha256:6d220bf85c74e842a79da63997af8d2e74455c0b8847d8bb3a5888572334991d AS builder
+
+WORKDIR /app
+
+# Only what `cargo build -p rust_runner` needs to resolve the workspace:
+# every manifest is read, but only this crate and its dependencies compile.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY apps/ apps/
+
+RUN cargo build --release --locked -p rust_runner --bin rust-runner \
+    && strip target/release/rust-runner
+
+
+# The same image as the builder: the runtime needs rustc and a linker (cc),
+# which is what this image is. prlimit and setsid are util-linux, which is
+# essential in Debian, so they are here too.
+FROM rust:1.97.0-slim-bookworm@sha256:6d220bf85c74e842a79da63997af8d2e74455c0b8847d8bb3a5888572334991d
+
+# The programs' uid and gid, 10101:10101: every compile and run starts as
+# it, and every process of it is killed after each, which is only safe
+# because nothing else runs as it, here or in the stack (file_host is
+# 10000:10001; scripts/check_rust_runner_sandbox.py checks no other
+# Dockerfile names 10101). The runner itself is root, with two capabilities
+# (infra/compose/rust_runner.yml), so a program can signal nothing of its.
+#
+# Defence in depth, under the read-only root and no-new-privileges: no
+# setuid or setgid binary is left (the base ships su, mount, passwd and
+# eight more), and the toolchain, which the base leaves writable by anyone
+# (/usr/local/rustup and /usr/local/cargo, 186 entries), is writable by
+# root alone.
+RUN groupadd --system --gid 10101 runner \
+    && useradd --system --uid 10101 --gid runner --no-create-home --shell /usr/sbin/nologin runner \
+    && ln -s "$(rustc --print sysroot)/bin/rustc" /usr/local/bin/rustc-pinned \
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+    && chmod -R go-w /usr/local/rustup /usr/local/cargo
+
+COPY --from=builder /app/target/release/rust-runner /usr/local/bin/rust-runner
+
+# rustc itself, not rustup's proxy, so a run never consults rustup's state.
+# The runner forwards PATH and the rustup variables to rustc only, for the
+# linker; a program's run gets no environment at all.
+ENV RUST_RUNNER_RUSTC=/usr/local/bin/rustc-pinned \
+    RUST_RUNNER_SOCKET=/run/rust-runner/runner.sock \
+    RUST_RUNNER_WORK=/work \
+    RUST_RUNNER_PROGRAM_UID=10101 \
+    RUST_RUNNER_PROGRAM_GID=10101 \
+    RUST_RUNNER_CLIENT_UID=10000
+
+ENTRYPOINT ["/usr/local/bin/rust-runner"]
+CMD ["serve"]
