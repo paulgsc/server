@@ -91,6 +91,23 @@ jobs:
       - uses: actions/checkout@v5
       - name: example.env is what its declarations generate
         run: python3 scripts/env_schema.py --self-test example --check
+      - name: The NixOS options are what infra/env generates (#408)
+        run: python3 scripts/nixos_options.py --self-test --check
+
+  # The NixOS modules (#408) evaluated against the flake's own nixpkgs, no
+  # build: nix/modules/test.nix throws unless a bare module names every gap,
+  # an off one does nothing, and a complete one renders the container. No
+  # path gate: it is a few seconds of evaluation once nixpkgs is fetched.
+  nixos_modules:
+    name: NixOS modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: The modules assert and render what they should
+        run: >-
+          nix eval --impure --expr
+          'import ./nix/modules/test.nix { nixpkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs; }'
 
   rust_lint:
     name: Rust lint
