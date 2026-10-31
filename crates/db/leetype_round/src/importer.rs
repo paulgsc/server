@@ -1,7 +1,6 @@
 //! The importer for a round corpus in the layout of `@some-ui/leetype`'s export.
 //!
-//! #326, LTY-SRV2. some-ui retired that export (#1941); rounds are now written
-//! through the operator routes, and this still imports a directory.
+//! #326, LTY-SRV2. It is the one way a round is written.
 //!
 //! The same discipline as `curriculum_repo::importer`, and for the same
 //! reasons: an **offline operator command**, never a startup hook or a request
@@ -93,7 +92,7 @@ pub async fn import_dir(pool: &SqlitePool, dir: &Path, now: &str, dry_run: bool)
 	let manifest: ManifestFile = serde_json::from_slice(&manifest_bytes).map_err(ImportError::ManifestShape)?;
 
 	// One transaction: a run commits whole or not at all, and `BEGIN
-	// IMMEDIATE` holds off the operator's write route for its length, so the
+	// IMMEDIATE` holds off any other writer for its length, so the
 	// ceiling count below cannot move under it. Local file reads and at most
 	// `MANIFEST_CEILING`-ish small writes; this is an offline command.
 	let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -118,7 +117,7 @@ pub async fn import_dir(pool: &SqlitePool, dir: &Path, now: &str, dry_run: bool)
 			}
 		};
 		// Adding a round past the ceiling would make the manifest refuse;
-		// refuse the round instead, as the write route does.
+		// refuse the round instead.
 		if listed >= MANIFEST_CEILING && RoundRepository::entry(&mut tx, &key).await?.is_none() {
 			report.failed.push((key, "would list more rounds than the manifest ceiling".to_owned()));
 			continue;
@@ -246,9 +245,10 @@ mod tests {
 		assert_eq!(third.unchanged, ["b"]);
 		let (published_at, version, body) = stored(&pool, "a").await;
 		assert_eq!((published_at.as_str(), version, body), ("2026-10-01T00:00:00+00:00", 2, round("a", "CW-P5")));
-		let witnessing = RoundRepository::new(pool.clone()).rounds_witnessing("CW-P6", 10).await.unwrap();
-		assert!(witnessing.is_empty(), "the old witness rows went with the old bytes: {witnessing:?}");
-		assert_eq!(RoundRepository::new(pool.clone()).rounds_witnessing("CW-P5", 10).await.unwrap().len(), 1);
+		let witnesses = RoundRepository::witnesses_for(&mut pool.acquire().await.unwrap(), &["a", "b"]).await.unwrap();
+		let witnessing = |proposition: &str| witnesses.values().filter(|round| round.iter().any(|w| w.proposition_id == proposition)).count();
+		assert_eq!(witnessing("CW-P6"), 0, "the old witness rows went with the old bytes: {witnesses:?}");
+		assert_eq!(witnessing("CW-P5"), 1);
 	}
 
 	/// One bad round fails alone and is named; the rest import.

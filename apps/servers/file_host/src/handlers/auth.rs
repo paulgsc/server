@@ -1179,6 +1179,7 @@ mod tests {
 				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
 				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
 				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
+				"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
 				 VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
 				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
@@ -1189,6 +1190,7 @@ mod tests {
 				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
+				"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}
