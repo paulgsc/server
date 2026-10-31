@@ -583,7 +583,9 @@ nowhere is marked as such and belongs to review.
     (paulgsc/some-ui `apps/www/src/lib/jobs`): every event,
     as the phone recorded it, checked and re-serialised (picks taken, passed
     or archived and why, postings read, why the owner fits one taken, how
-    applying went, outcomes, postings found by hand), when the phone recorded
+    applying went, outcomes, postings found by hand and, when the owner gives
+    them, where each is and the day its page says it went up, or that the page
+    shows none), when the phone recorded
     it and when it reached home. An event is never updated
     (a trigger aborts an `UPDATE`) or replaced (a different body under a held
     id is a `409`), and never deleted but with the account. It names voice
@@ -1255,7 +1257,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **The Jobs record and its times.** The events say which jobs the owner
   looked at, passed on and applied to, why, how applying went and what came
   of it, in the owner's own words, each with when the phone recorded it and
-  when it reached home. Companies and job titles are in it, by design. Voice
+  when it reached home. Companies and job titles are in it, by design, and
+  for a posting found by hand, where it is and when it went up as its page
+  shows. Voice
   notes are not: an event names them by id, and their audio is the next
   item's. Deleting the account removes it; nothing else does.
 - **Voice notes.** The audio of each note the phone sends home, kept for

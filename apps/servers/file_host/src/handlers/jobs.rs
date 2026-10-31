@@ -624,6 +624,40 @@ mod tests {
 		);
 	}
 
+	/// A scout carrying the place and posted day its page shows (paulgsc/some-ui#2058)
+	/// is taken and read back as sent; a bad one is refused by field, never
+	/// repeating what it held.
+	#[tokio::test]
+	async fn a_scout_keeps_its_place_and_posted_day() {
+		let state = state().await;
+		let a = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		let scout = |id: &str, location: &str, posted_on: Value| {
+			json!({ "id": id, "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
+				"id": "sc-a1b2c3d4", "url": "https://www.indeed.com/viewjob?jk=0123", "title": "SDET",
+				"why": "", "postingText": null, "track": "software", "family": null,
+				"location": location, "postedOn": posted_on
+			} })
+		};
+		let undated = scout("e1", "Remote", Value::Null);
+		assert_eq!(call(&app, Method::PUT, "/jobs/events/e1", Some(&a), &undated).await.0, StatusCode::OK);
+
+		let place = "Lisbon".repeat(40);
+		let (status, answer) = call(&app, Method::PUT, "/jobs/events/e2", Some(&a), &scout("e2", &place, json!("2026-02-30"))).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+		let mut fields: Vec<&String> = answer["error"]["details"].as_object().unwrap().keys().collect();
+		fields.sort();
+		assert_eq!(fields, ["scout.location", "scout.postedOn"]);
+		let said = answer.to_string();
+		assert!(!said.contains("Lisbon") && !said.contains("2026-02-30"), "{said}");
+
+		assert_eq!(
+			call(&app, Method::GET, "/jobs", Some(&a), &Value::Null).await.1,
+			json!({ "events": [undated] }),
+			"kept as sent, null and all; nothing refused was written"
+		);
+	}
+
 	/// A digest home read from the mailbox for `subject`, as the poller keeps
 	/// one (`mailbox_repo::keep_item`).
 	async fn hold(state: &TestState, subject: &str, day: &str) -> Value {

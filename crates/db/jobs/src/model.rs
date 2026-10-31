@@ -8,17 +8,17 @@
 //! never comes here.
 
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// `(field, why)`: one reason a write was refused.
 pub type Problem = (&'static str, &'static str);
 
 /// The most bytes one event's body may hold.
 ///
-/// A scout is the largest: its posting text, title, link and note come to at
-/// most 24,348 characters, and JSON spends at most 6 bytes on one (a control
-/// character as `\u001f`; a character outside the BMP is 4 bytes of UTF-8), so
-/// about 146 KB. Every other event is a few hundred bytes.
+/// A scout is the largest: its posting text, title, link, note and location
+/// come to at most 24,548 characters, and JSON spends at most 6 bytes on one (a
+/// control character as `\u001f`; a character outside the BMP is 4 bytes of
+/// UTF-8), so about 147 KB. Every other event is a few hundred bytes.
 pub const EVENT_BODY_CEILING: usize = 256 * 1024;
 
 const MAX_ID_CHARS: usize = 64;
@@ -30,6 +30,8 @@ const MAX_FILE_CHARS: usize = 128;
 const MAX_URL_CHARS: usize = 2_048;
 const MAX_TITLE_CHARS: usize = 300;
 const MAX_POSTING_CHARS: usize = 20_000;
+/// `MAX_SCOUT_LOCATION` in `@some-ui/job-desk`.
+const MAX_LOCATION_CHARS: usize = 200;
 
 /// Why a pick was passed (`PASS_REASONS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +107,55 @@ pub enum Family {
 	Solutions,
 }
 
+/// When a scout's page says its posting went up (`ScoutPostedOnSchema` in
+/// `@some-ui/job-desk`, an optional member). Three states, each kept as the
+/// phone sent it: the member left out, `null`, or a day.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PostedOn {
+	/// Left out: the owner didn't say. A scout from before the member reads
+	/// back as this.
+	#[default]
+	Unsaid,
+	/// `null`: the page shows no posted date, and the scout is undated (SC3,
+	/// owner, 2026-10-31: it can still become a pick).
+	Undated,
+	/// The day the page shows, as sent; [`parse_event`] holds it to
+	/// `YYYY-MM-DD`.
+	On(String),
+}
+
+impl PostedOn {
+	/// Whether the member is left out, so it is left out when written back.
+	#[must_use]
+	pub const fn is_unsaid(&self) -> bool {
+		matches!(self, Self::Unsaid)
+	}
+}
+
+impl Serialize for PostedOn {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			// Skipped by the field's `skip_serializing_if`; `null` if ever asked.
+			Self::Unsaid | Self::Undated => serializer.serialize_none(),
+			Self::On(day) => serializer.serialize_str(day),
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for PostedOn {
+	/// Reached only for a member that is there (`#[serde(default)]` makes a
+	/// missing one [`PostedOn::Unsaid`]), so `null` is [`PostedOn::Undated`].
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		Ok(Option::<String>::deserialize(deserializer)?.map_or(Self::Undated, Self::On))
+	}
+}
+
+/// An optional member that, when there, is a string: `null` is not one of its
+/// values (`ScoutLocationSchema.optional()` in `@some-ui/job-desk`).
+fn present_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+	String::deserialize(deserializer).map(Some)
+}
+
 /// A posting found by hand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -117,6 +168,13 @@ pub struct Scout {
 	pub track: Track,
 	/// The adjacent family, or `None` on the software track.
 	pub family: Option<Family>,
+	/// Where the posting is, as its page says; left out when the owner gave
+	/// none.
+	#[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present_string")]
+	pub location: Option<String>,
+	/// When its page says it went up.
+	#[serde(default, skip_serializing_if = "PostedOn::is_unsaid")]
+	pub posted_on: PostedOn,
 }
 
 /// One line of the phone's Jobs log.
@@ -385,6 +443,16 @@ fn scout_ok(problems: &mut Vec<Problem>, scout: &Scout) {
 	if scout.posting_text.as_deref().is_some_and(|text| too_long(text, MAX_POSTING_CHARS)) {
 		problems.push(("scout.postingText", "is at most 20000 characters"));
 	}
+	if scout
+		.location
+		.as_deref()
+		.is_some_and(|place| place.trim().is_empty() || too_long(place, MAX_LOCATION_CHARS))
+	{
+		problems.push(("scout.location", "is 1 to 200 characters, or left out"));
+	}
+	if matches!(&scout.posted_on, PostedOn::On(day) if !is_day(day)) {
+		problems.push(("scout.postedOn", "must be a calendar day, YYYY-MM-DD, null when the page shows none, or left out"));
+	}
 	if (scout.track == Track::Adjacent) != scout.family.is_some() {
 		problems.push(("scout.family", "an adjacent scout names its family; a software scout has none"));
 	}
@@ -532,7 +600,7 @@ pub fn parse_event(id: &str, body: &[u8]) -> Result<Event, Vec<Problem>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{instant, parse_event, Event};
+	use super::{instant, parse_event, Event, PostedOn};
 	use serde_json::{json, Value};
 
 	fn fields(id: &str, value: &Value) -> Vec<&'static str> {
@@ -617,7 +685,7 @@ mod tests {
 		let worst = |chars: usize| "\u{1f}".repeat(chars);
 		let scout = json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
 			"id": "sc-a1b2c3", "url": "https://".to_owned() + &worst(2_040), "title": worst(300), "why": worst(2_000),
-			"postingText": worst(20_000), "track": "adjacent", "family": "qa"
+			"postingText": worst(20_000), "track": "adjacent", "family": "qa", "location": worst(200), "postedOn": "2026-10-15"
 		} });
 		let body = scout.to_string();
 		assert!(body.len() > 140_000, "{} bytes: every text is escaped", body.len());
@@ -667,6 +735,70 @@ mod tests {
 		assert_eq!(fields("e1", &shared), ["file", "through"]);
 		let withdrawn = json!({ "id": "e1", "at": "2026-10-18T22:10:00Z", "type": "outcome-withdrawn", "outcomeId": "../e0" });
 		assert_eq!(fields("e1", &withdrawn), ["outcomeId"], "it names an outcome by the phone's id for it");
+	}
+
+	fn scout(extra: &Value) -> Value {
+		let mut event = json!({ "id": "e1", "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
+			"id": "sc-a1b2c3d4", "url": "https://www.indeed.com/viewjob?jk=0123", "title": "SDET · Second Dinner",
+			"why": "Game testing", "postingText": null, "track": "software", "family": null
+		} });
+		for (key, value) in extra.as_object().unwrap() {
+			event["scout"][key] = value.clone();
+		}
+		event
+	}
+
+	fn scout_of(value: &Value) -> super::Scout {
+		match parse_event("e1", value.to_string().as_bytes()).unwrap_or_else(|problems| panic!("{value}: {problems:?}")) {
+			Event::Scout { scout, .. } => scout,
+			other => panic!("not a scout: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn a_scouts_place_and_posted_day_are_kept_as_the_phone_sent_them() {
+		let cases = [
+			(json!({}), None, PostedOn::Unsaid),
+			(json!({ "postedOn": null }), None, PostedOn::Undated),
+			(
+				json!({ "location": "Remote (US)", "postedOn": "2026-10-15" }),
+				Some("Remote (US)".to_owned()),
+				PostedOn::On("2026-10-15".into()),
+			),
+			(json!({ "location": "x".repeat(200) }), Some("x".repeat(200)), PostedOn::Unsaid),
+		];
+		for (extra, location, posted_on) in cases {
+			let event = scout(&extra);
+			let held = scout_of(&event);
+			assert_eq!((held.location, held.posted_on), (location, posted_on), "{event}");
+			let parsed = parse_event("e1", event.to_string().as_bytes()).unwrap();
+			assert_eq!(serde_json::to_value(&parsed).unwrap(), event, "written back as it came, a member left out still left out");
+		}
+		assert_ne!(
+			scout_of(&scout(&json!({}))),
+			scout_of(&scout(&json!({ "postedOn": null }))),
+			"unsaid and undated are not the same scout"
+		);
+	}
+
+	#[test]
+	fn a_scouts_place_and_posted_day_are_held_to_the_phones_rules() {
+		let place = "Somewhere the refusal never repeats";
+		for (extra, field) in [
+			(json!({ "postedOn": "2026-02-30" }), "scout.postedOn"),
+			(json!({ "postedOn": "Oct 15" }), "scout.postedOn"),
+			(json!({ "postedOn": "2026-10-15T00:00:00Z" }), "scout.postedOn"),
+			(json!({ "location": place.repeat(6) }), "scout.location"),
+			(json!({ "location": "  " }), "scout.location"),
+		] {
+			let event = scout(&extra);
+			let problems = parse_event("e1", event.to_string().as_bytes()).unwrap_err();
+			assert_eq!(problems.iter().map(|(field, _)| *field).collect::<Vec<_>>(), [field], "{event}");
+			assert!(problems.iter().all(|(_, why)| !why.contains(place)), "a refusal names the field, never the value");
+		}
+		for extra in [json!({ "location": null }), json!({ "postedOn": 20_261_015 }), json!({ "location": ["Remote"] })] {
+			assert_eq!(fields("e1", &scout(&extra)), ["body"], "{extra}: not a value the phone sends");
+		}
 	}
 
 	#[test]

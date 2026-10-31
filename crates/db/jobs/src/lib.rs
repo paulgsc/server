@@ -24,7 +24,7 @@
 
 mod model;
 
-pub use model::{instant, parse_event, DebriefResult, Event, Family, Friction, Outcome, PassReason, Problem, Scout, ShareKind, Track, EVENT_BODY_CEILING};
+pub use model::{instant, parse_event, DebriefResult, Event, Family, Friction, Outcome, PassReason, PostedOn, Problem, Scout, ShareKind, Track, EVENT_BODY_CEILING};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -252,6 +252,36 @@ mod tests {
 			record(&mut pool.acquire().await.unwrap(), B).await.unwrap().events.is_empty(),
 			"another subject's record is empty"
 		);
+	}
+
+	/// A scout's posted day left out and `null` are different events: each
+	/// is stored and read back as sent, and one never stands in for the other.
+	#[tokio::test]
+	async fn a_scouts_unsaid_and_undated_posted_day_stay_apart() {
+		let pool = pool().await;
+		let scout = |id: &str, extra: Value| {
+			let mut event = json!({ "id": id, "at": "2026-10-18T22:10:00.000Z", "type": "scout", "voice": [], "scout": {
+				"id": "sc-a1b2c3d4", "url": "https://www.indeed.com/viewjob?jk=0123", "title": "SDET",
+				"why": "", "postingText": null, "track": "software", "family": null
+			} });
+			for (key, value) in extra.as_object().unwrap() {
+				event["scout"][key] = value.clone();
+			}
+			event
+		};
+		let unsaid = scout("e1", json!({}));
+		let undated = scout("e2", json!({ "location": "Remote", "postedOn": null }));
+		let dated = scout("e3", json!({ "postedOn": "2026-10-15" }));
+		for event in [&unsaid, &undated, &dated] {
+			assert_eq!(put(&pool, A, event).await.unwrap(), Change::Added);
+			assert_eq!(put(&pool, A, event).await.unwrap(), Change::Unchanged, "a resend writes nothing");
+		}
+		let mut now_undated = unsaid.clone();
+		now_undated["scout"]["postedOn"] = Value::Null;
+		assert!(matches!(put(&pool, A, &now_undated).await, Err(JobsError::Rewritten)), "unsaid is not later made undated");
+		let held = record(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+		let bodies: Vec<Value> = held.events.iter().map(|event| serde_json::to_value(event).unwrap()).collect();
+		assert_eq!(bodies, [unsaid, undated, dated], "each as the phone sent it");
 	}
 
 	#[tokio::test]
