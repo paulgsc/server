@@ -9,10 +9,7 @@
 //!
 //! **Trust model:** a subject route, as `routes::routine`: a request without
 //! a session is `401`. Read only: the `mailbox` poller is the files' one
-//! writer (docs/identity.md invariant 19), and the phone never uploads one.
-//! Apart from `routes::leetype_log` (the session log the phone sends home)
-//! and `routes::routine` (the reflections routine's files), so neither's
-//! reader decides what the other shows.
+//! writer, and the phone never uploads one (docs/identity.md invariant 27).
 
 use crate::auth::AuthContext;
 use crate::handlers::leetype_files as handlers;

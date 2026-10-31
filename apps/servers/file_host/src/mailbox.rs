@@ -233,7 +233,7 @@ fn spawn(state: &AppState, context: MailboxContext) {
 						mailbox,
 						after_days: context.archive_days,
 					});
-					let result = pass::run_once(&db, &context.mailbox, archiving.as_ref(), &context.subject, &context.deletion, &pass::now).await;
+					let result = pass::run_once(&db, &context.mailbox, archiving.as_ref(), &context.subject, &context.deletion, context.interval, &pass::now).await;
 					crate::metrics::mailbox::record_pass_duration(started.elapsed());
 					match &result {
 						Ok(outcome) => crate::metrics::mailbox::record_pass(outcome, &[]),

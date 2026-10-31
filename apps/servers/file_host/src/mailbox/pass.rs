@@ -25,14 +25,11 @@
 //! under a new name.
 //!
 //! A `LeetType` session's log is what home holds of the session
-//! (`leetype_session_event`, docs/identity.md invariant 18), rebuilt from
-//! that table and never from a request: every event, in the order
-//! `GET /leetype/sessions/:session/events` serves them, and the session file
-//! it started. No soundbite: the table holds none. A session's log is due
-//! once the session is finished (it ended, or another started after it, as
-//! the phone decides) and home holds more of its events than the last log
-//! it filed did, so a session that gains events goes up again, under the
-//! next number its names have (`mailbox_repo::file_leetype_log`).
+//! (`leetype_session_event`), rebuilt from that table and never from a
+//! request: every event, in the order `GET /leetype/sessions/:session/events`
+//! serves them, and the session file it started. When a session is due, and
+//! why every session home holds is finished, is docs/identity.md invariant
+//! 18's; [`file_leetype_logs`] files them.
 //!
 //! Handing over is once per file: the mailbox's answer, whatever it is, is
 //! recorded and final (a `conflict` or a refusal is not retried), and only a
@@ -75,6 +72,10 @@ pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
 /// is (paulgsc/some-ui `apps/mailbox`, the `leetype-log` folder's rules).
 pub const LEETYPE_LOG_SCHEMA: &str = "some-ui.leetype-log/1";
 
+/// The largest body the mailbox takes (paulgsc/some-ui `apps/mailbox`,
+/// `MAX_BODY_BYTES`): a log over it is refused at filing, never handed.
+pub const MAILBOX_BODY_CEILING: usize = 1_048_576;
+
 /// The most pages one pass lists per folder. Inbound passes over a file home
 /// already holds (one put back after archiving, under a new `seq`) without
 /// fetching or counting it, so a page of them never stops the pass short of
@@ -89,7 +90,9 @@ pub struct Outcome {
 	/// Files kept this pass.
 	pub kept: usize,
 	/// Files refused this pass, each by why: `mismatch`, `bad_name`,
-	/// `not_json` or `rewritten` (`metrics::mailbox::REFUSALS`).
+	/// `not_json` or `rewritten` for a file read, and `unreadable`, `no_file`
+	/// or `too_big` for a `LeetType` session's log not filed
+	/// (`metrics::mailbox::REFUSALS`).
 	pub refused: Vec<&'static str>,
 	/// Files the poller filed for the mailbox itself this pass: transcripts
 	/// and `LeetType` session logs.
@@ -222,6 +225,14 @@ fn days_before(now: &str, days: u64) -> Option<String> {
 	Some((now - back).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
+/// `back` before `now`, in the mailbox's own format, so the two compare as
+/// text; `None` when `now` does not read.
+fn before(now: &str, back: std::time::Duration) -> Option<String> {
+	let now = DateTime::parse_from_rfc3339(now).ok()?.with_timezone(&Utc);
+	let back = chrono::Duration::from_std(back).ok()?;
+	Some((now - back).to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
 /// One pass of the poller.
 ///
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
@@ -229,7 +240,9 @@ fn days_before(now: &str, days: u64) -> Option<String> {
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
-/// reports every phase that failed.
+/// reports every phase that failed. `settle` is how long a `LeetType`
+/// session's newest event must have been home before its log is filed: the
+/// poll interval, so a send still in flight is never filed in part.
 ///
 /// # Errors
 /// A [`PassError`] when the mailbox cannot be reached or read (anything but
@@ -241,6 +254,7 @@ pub async fn run_once<T: MailboxTransport>(
 	archiving: Option<&Archiving<'_, T>>,
 	subject: &str,
 	deletion: &DeletionLock,
+	settle: std::time::Duration,
 	now: &(impl Fn() -> String + Sync),
 ) -> Result<Outcome, PassError> {
 	let mut outcome = Outcome::default();
@@ -258,7 +272,7 @@ pub async fn run_once<T: MailboxTransport>(
 		let logs = if outcome.no_account {
 			Ok(())
 		} else {
-			file_leetype_logs(db, subject, deletion, now, &mut outcome).await
+			file_leetype_logs(db, subject, deletion, settle, now, &mut outcome).await
 		};
 		transcripts.and(logs)
 	};
@@ -457,44 +471,72 @@ fn transcript_body(heard: &Heard) -> Vec<u8> {
 	.into_bytes()
 }
 
-/// Files each finished `LeetType` session whose log is due, the session that
-/// started first first, at most [`ITEMS_PER_PASS`]; more are filed by the
-/// next pass.
-async fn file_leetype_logs(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync), outcome: &mut Outcome) -> Result<(), Failure> {
+/// Files the log of each `LeetType` session with events that arrived after
+/// the last log filed, in the order they arrived, at most [`ITEMS_PER_PASS`];
+/// more are filed by the next pass.
+///
+/// It stops at the first session whose newest event reached home less than
+/// `settle` ago: the phone may still be sending it, and the mark is the
+/// subject's, so filing a later session would pass over the rest of it. A
+/// session that cannot be filed (an event that does not read back, no
+/// `started` event, a body over the mailbox's ceiling) is counted as refused
+/// and passed over; one that is the newest is looked at again each pass until
+/// a later one is filed, as a refused file at the head of a folder is.
+async fn file_leetype_logs(
+	db: &SqlitePool,
+	subject: &str,
+	deletion: &DeletionLock,
+	settle: std::time::Duration,
+	now: &(impl Fn() -> String + Sync),
+	outcome: &mut Outcome,
+) -> Result<(), Failure> {
+	let Some(settled) = before(&now(), settle) else {
+		return Ok(());
+	};
 	let due = {
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 		mailbox_repo::unfiled_leetype_logs(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
 	};
-	for finished in &due {
-		match file_leetype_log(db, deletion, subject, &finished.session, &now()).await? {
-			Change::NoAccount => {
+	for due in &due {
+		if due.last_written >= settled {
+			break;
+		}
+		match file_leetype_log(db, deletion, subject, due, &now()).await? {
+			Logged::Filed(Change::NoAccount) => {
 				outcome.no_account = true;
 				return Ok(());
 			}
-			Change::Added | Change::Unchanged => outcome.filed += 1,
+			Logged::Filed(Change::Added | Change::Unchanged) => outcome.filed += 1,
+			Logged::Refused(why) => outcome.refused.push(why),
 		}
 	}
 	Ok(())
 }
 
+/// What filing one session's log came to.
+enum Logged {
+	Filed(Change),
+	/// Not filed, and why (`metrics::mailbox::REFUSALS`).
+	Refused(&'static str),
+}
+
 /// A `LeetType` session's log as the mailbox takes it: the session, the
-/// session file it started (`null` while home holds no `started` event of
-/// it), and every event home holds of it, as
+/// session file it started, and every event home holds of it, as
 /// `GET /leetype/sessions/:session/events` serves them. Nothing else: an
 /// event home holds carries no soundbite (`leetype_log_repo::SOUNDBITES`).
-fn leetype_log_body(held: &SessionEvents) -> Vec<u8> {
+/// `None` for a session home holds no `started` event of.
+fn leetype_log_body(held: &SessionEvents) -> Option<Vec<u8>> {
 	let file = held.events.iter().find_map(|event| match event {
 		Event::Started { file, .. } => Some(file.as_str()),
 		_ => None,
-	});
-	serde_json::json!({
+	})?;
+	let body = serde_json::json!({
 		"schema": LEETYPE_LOG_SCHEMA,
 		"session": held.session,
 		"file": file,
 		"events": held.events,
-	})
-	.to_string()
-	.into_bytes()
+	});
+	Some(body.to_string().into_bytes())
 }
 
 /// Puts back each archived file the routine asked for, from home's archive.
@@ -682,24 +724,29 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 }
 
 /// As [`keep`], for a `LeetType` session's log, built from the session's
-/// events as they stand and filed under its next number, both read in the
-/// same transaction, so the count it records is the count the file holds.
-async fn file_leetype_log(db: &SqlitePool, deletion: &DeletionLock, subject: &str, session: &str, now: &str) -> Result<Change, Failure> {
+/// events as they stand and filed under its next number with `due.top` as
+/// its mark, all in one transaction. A session it cannot file writes nothing.
+async fn file_leetype_log(db: &SqlitePool, deletion: &DeletionLock, subject: &str, due: &mailbox_repo::Due, now: &str) -> Result<Logged, Failure> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
-	let held = leetype_log_repo::session_events(&mut tx, subject, session).await.map_err(|err| match err {
-		LogError::Storage(err) => Failure::Storage(err),
-		other => Failure::Storage(sqlx::Error::Protocol(other.to_string())),
-	})?;
-	let events = i64::try_from(held.events.len()).unwrap_or(i64::MAX);
-	let body = leetype_log_body(&held);
+	let held = match leetype_log_repo::session_events(&mut tx, subject, &due.session).await {
+		Ok(held) => held,
+		Err(LogError::Storage(err)) => return Err(Failure::Storage(err)),
+		Err(LogError::Unreadable | LogError::Invalid(_) | LogError::Rewritten) => return Ok(Logged::Refused("unreadable")),
+	};
+	let Some(body) = leetype_log_body(&held) else {
+		return Ok(Logged::Refused("no_file"));
+	};
+	if body.len() > MAILBOX_BODY_CEILING {
+		return Ok(Logged::Refused("too_big"));
+	}
 	let sha256 = hex::encode(Sha256::digest(&body));
-	let n = mailbox_repo::next_leetype_log_number(&mut tx, subject, session).await.map_err(storage)?;
-	let change = mailbox_repo::file_leetype_log(&mut tx, subject, (session, n, events), (&sha256, &body), now)
+	let n = mailbox_repo::next_leetype_log_number(&mut tx, subject, &due.session).await.map_err(storage)?;
+	let change = mailbox_repo::file_leetype_log(&mut tx, subject, (&due.session, n, due.top), (&sha256, &body), now)
 		.await
 		.map_err(storage)?;
 	tx.commit().await.map_err(Failure::Storage)?;
-	Ok(change)
+	Ok(Logged::Filed(change))
 }
 
 /// As [`keep`], for the mailbox's answer to a handed file.
@@ -731,6 +778,8 @@ mod tests {
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const OWNER: &str = "subject-owner";
 	const BASE: &str = "https://mailbox.example.test";
+	/// The poll interval a `LeetType` session's newest event must be older than.
+	const SETTLE: std::time::Duration = std::time::Duration::from_secs(900);
 
 	/// A mailbox in memory: `brief`'s items in `seq` order, the listed SHA-256
 	/// of each (which a test may make lie), and a switch that fails listings.
@@ -856,8 +905,12 @@ mod tests {
 	}
 
 	async fn pass(pool: &SqlitePool, fake: &Fake) -> Result<Outcome, super::PassError> {
+		pass_at(pool, fake, "2026-10-23T15:00:00.000Z").await
+	}
+
+	async fn pass_at(pool: &SqlitePool, fake: &Fake, now: &str) -> Result<Outcome, super::PassError> {
 		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), fake).unwrap();
-		run_once(pool, &mailbox, None, OWNER, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z")).await
+		run_once(pool, &mailbox, None, OWNER, &DeletionLock::default(), SETTLE, &|| String::from(now)).await
 	}
 
 	async fn held(pool: &SqlitePool) -> Vec<String> {
@@ -976,7 +1029,7 @@ mod tests {
 		let deletion = DeletionLock::default();
 		let exclusive = deletion.exclude().await;
 		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), &fake).unwrap();
-		let running = run_once(&pool, &mailbox, None, OWNER, &deletion, &|| String::from("2026-10-23T15:00:00.000Z"));
+		let running = run_once(&pool, &mailbox, None, OWNER, &deletion, SETTLE, &|| String::from("2026-10-23T15:00:00.000Z"));
 		let delete = async {
 			tokio::task::yield_now().await;
 			sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
@@ -1356,9 +1409,11 @@ mod tests {
 			mailbox: &archive,
 			after_days: 90,
 		};
-		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), &|| String::from("2026-10-23T15:00:00.000Z"))
-			.await
-			.unwrap()
+		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), SETTLE, &|| {
+			String::from("2026-10-23T15:00:00.000Z")
+		})
+		.await
+		.unwrap()
 	}
 
 	async fn archived_home(pool: &SqlitePool) -> Vec<(String, String, Vec<u8>)> {
@@ -1587,19 +1642,26 @@ mod tests {
 	}
 
 	/// One event of the owner's `LeetType` session, through the log's own
-	/// checks, as `PUT /leetype/sessions/:session/events/:id` stores it.
-	async fn played(pool: &SqlitePool, event: &serde_json::Value) {
+	/// checks, as `PUT /leetype/sessions/:session/events/:id` stores it,
+	/// reaching home at `written`.
+	async fn played_at(pool: &SqlitePool, event: &serde_json::Value, written: &str) {
 		let (session, id) = (event["session"].as_str().unwrap(), event["id"].as_str().unwrap());
-		leetype_log_repo::put_event(
-			&mut pool.acquire().await.unwrap(),
-			OWNER,
-			session,
-			id,
-			event.to_string().as_bytes(),
-			"2026-10-28T10:00:00.000Z",
-		)
-		.await
-		.unwrap();
+		leetype_log_repo::put_event(&mut pool.acquire().await.unwrap(), OWNER, session, id, event.to_string().as_bytes(), written)
+			.await
+			.unwrap();
+	}
+
+	/// As [`played_at`], well before the test's passes.
+	async fn played(pool: &SqlitePool, event: &serde_json::Value) {
+		played_at(pool, event, "2026-10-23T14:00:00.000Z").await;
+	}
+
+	fn started(session: &str, id: &str) -> serde_json::Value {
+		serde_json::json!({ "id": id, "at": "2026-10-23T13:00:00.000Z", "session": session, "type": "started", "file": "t1-01-raft.json", "form": "full", "declaredMinutes": 25 })
+	}
+
+	fn ended(session: &str, id: &str) -> serde_json::Value {
+		serde_json::json!({ "id": id, "at": "2026-10-23T13:20:00.000Z", "session": session, "type": "ended", "file": "t1-01-raft.json", "screen": "end", "how": "declared" })
 	}
 
 	/// Every key in `value`, at any depth.
@@ -1616,31 +1678,22 @@ mod tests {
 		}
 	}
 
-	/// paulgsc/some-ui#2027: a finished session's log goes up once, holding
-	/// exactly what `GET /leetype/sessions/:session/events` serves and no
-	/// soundbite; a session that gains events goes up again as `.r2`.
+	/// paulgsc/some-ui#2027: a session's log goes up once, holding exactly
+	/// what `GET /leetype/sessions/:session/events` serves and no soundbite;
+	/// an event of it that arrives later sends it up again as `.r2`.
 	#[tokio::test]
-	async fn a_finished_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite() {
+	async fn a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite() {
 		use serde_json::json;
 		let (pool, fake) = (pool().await, Fake::default());
 		let file = "t1-01-raft.json";
+		played(&pool, &started("s1", "e1")).await;
 		played(
 			&pool,
-			&json!({ "id": "e1", "at": "2026-10-28T09:00:00.000Z", "session": "s1", "type": "started", "file": file, "form": "full", "declaredMinutes": 25 }),
-		)
-		.await;
-		played(
-			&pool,
-			&json!({ "id": "e2", "at": "2026-10-28T09:05:00.000Z", "session": "s1", "type": "spoken", "file": file, "screen": "say-why",
+			&json!({ "id": "e2", "at": "2026-10-23T13:05:00.000Z", "session": "s1", "type": "spoken", "file": file, "screen": "say-why",
 			"answer": { "as": "recorded", "seconds": 41, "strong": true } }),
 		)
 		.await;
-		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "a session still being played is not filed");
-		played(
-			&pool,
-			&json!({ "id": "e3", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": file, "screen": "end", "how": "declared" }),
-		)
-		.await;
+		played(&pool, &ended("s1", "e3")).await;
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-s1.json"]);
@@ -1661,7 +1714,7 @@ mod tests {
 
 		played(
 			&pool,
-			&json!({ "id": "e4", "at": "2026-10-28T09:21:00.000Z", "session": "s1", "type": "reading", "file": file, "reading": "r1", "action": "read" }),
+			&json!({ "id": "e4", "at": "2026-10-23T13:21:00.000Z", "session": "s1", "type": "reading", "file": file, "reading": "r1", "action": "read" }),
 		)
 		.await;
 		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
@@ -1671,23 +1724,76 @@ mod tests {
 		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default());
 	}
 
+	/// Every session home holds is finished, whether or not it ended (the
+	/// phone sends only finished ones), but one still arriving waits a poll
+	/// interval, and so does every session after it, so a send in flight is
+	/// never filed in part.
+	#[tokio::test]
+	async fn a_session_still_arriving_waits_a_poll_interval_and_holds_back_the_ones_after_it() {
+		let (pool, fake) = (pool().await, Fake::default());
+		played(&pool, &started("s1", "e1")).await;
+		played_at(&pool, &started("s2", "e1"), "2026-10-23T14:50:00.000Z").await;
+		played_at(&pool, &started("s3", "e1"), "2026-10-23T14:51:00.000Z").await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!(outcome.filed, 1, "s1, which never ended, is filed; s2 arrived ten minutes ago");
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-s1.json"]);
+		played_at(&pool, &ended("s2", "e2"), "2026-10-23T14:55:00.000Z").await;
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:20:00.000Z").await.unwrap().filed, 2, "both, once quiet");
+		let names = fake.puts.lock().unwrap()[1..].to_vec();
+		assert_eq!(
+			names,
+			["/v1/leetype-log/items/log-s3.json", "/v1/leetype-log/items/log-s2.json"],
+			"in the order they arrived"
+		);
+		let s2: serde_json::Value = serde_json::from_str(&fake.logs.lock().unwrap()[2]).unwrap();
+		assert_eq!(s2["events"].as_array().unwrap().len(), 2, "whole");
+	}
+
+	/// A session that cannot be filed is counted and passed over, and never
+	/// holds back the sessions after it.
+	#[tokio::test]
+	async fn a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let raw = |session: &'static str, id: &'static str, body: String| {
+			let pool = pool.clone();
+			async move {
+				sqlx::query("INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, ?2, ?3, '2026-10-23T13:00:00.000Z', 'parked', ?4, '2026-10-23T14:00:00.000Z')")
+					.bind(OWNER)
+					.bind(session)
+					.bind(id)
+					.bind(body)
+					.execute(&pool)
+					.await
+					.unwrap();
+			}
+		};
+		raw("bad", "e1", String::from("not an event")).await;
+		played(&pool, &ended("nofile", "e1")).await;
+		played(&pool, &started("big", "e1")).await;
+		let screen = "x".repeat(super::MAILBOX_BODY_CEILING);
+		raw(
+			"big",
+			"e2",
+			serde_json::json!({ "id": "e2", "at": "2026-10-23T13:00:00.000Z", "session": "big", "type": "parked", "file": "t1-01-raft.json", "screen": screen }).to_string(),
+		)
+		.await;
+		played(&pool, &started("good", "e1")).await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!(outcome.refused, ["unreadable", "no_file", "too_big"]);
+		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-good.json"]);
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "passed over for good, once a later one is filed");
+	}
+
 	#[tokio::test]
 	async fn no_leetype_log_is_filed_for_a_deleted_subject() {
-		use serde_json::json;
 		let (pool, fake) = (pool().await, Fake::default());
-		played(
-			&pool,
-			&json!({ "id": "e1", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": "t1-01-raft.json", "screen": "end", "how": "left" }),
-		)
-		.await;
+		played(&pool, &ended("s1", "e1")).await;
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
-		// The event a deletion took, written again by hand, as a race with
-		// the phone's send could leave it for a moment.
-		played(
-			&pool,
-			&json!({ "id": "e1", "at": "2026-10-28T09:20:00.000Z", "session": "s1", "type": "ended", "file": "t1-01-raft.json", "screen": "end", "how": "left" }),
-		)
-		.await;
+		// The events a deletion took, written again by hand, as a race with
+		// the phone's send could leave them for a moment.
+		played(&pool, &started("s1", "e0")).await;
+		played(&pool, &ended("s1", "e1")).await;
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert!(outcome.no_account);
 		assert_eq!(outcome.filed, 0);

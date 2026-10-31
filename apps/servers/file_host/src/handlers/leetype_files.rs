@@ -1,17 +1,16 @@
-//! Handlers for `routes::leetype_files`: the `LeetType` session files the
-//! routine left for the phone through the Jobs mailbox (paulgsc/some-ui#2026).
+//! Handlers for `routes::leetype_files`: the `LeetType` session files.
 //!
-//! The files home keeps from the mailbox's `leetype` folder (`mailbox_item`,
-//! docs/identity.md invariant 19), each `some-ui.leetype-session/1`: the
-//! session file the phone plays, wrapped with its schema.
-//!
-//! **Read only.** The `mailbox` poller is the files' one writer; nothing here
-//! writes. The phone never uploads a session file: they come down from the
-//! routine.
+//! The routine leaves them for the phone through the Jobs mailbox
+//! (paulgsc/some-ui#2026), and home keeps them from the `leetype` folder
+//! (`mailbox_item`), each `some-ui.leetype-session/1`: the session file the
+//! phone plays, wrapped with its schema. The trust model is the route module's.
 //!
 //! **One file at a time.** The list names each file with its title, one line
-//! and hash; the phone fetches the file it plays by name, with the hash as
-//! its `ETag`, so a file it already holds costs a `304`.
+//! and version; the phone fetches the file it plays by name, with that
+//! version as its `ETag`, so a file it already holds costs a `304`. The
+//! version is the mailbox item's SHA-256, as the mailbox listed it: an opaque
+//! version of the held item, not a hash of the bytes served, which are the
+//! session file inside it.
 
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
 use crate::subject::SubjectId;
@@ -52,8 +51,8 @@ pub struct Listed {
 	/// The session file's own `title` and `oneLine`.
 	pub title: String,
 	pub one_line: String,
-	/// Lowercase hex SHA-256 of the file as the mailbox held it: the `ETag`
-	/// `GET /leetype/session-files/:name` answers with.
+	/// The held item's version: the `ETag` `GET /leetype/session-files/:name`
+	/// answers with (the module doc says what it is).
 	pub sha256: String,
 	/// When home read it from the mailbox.
 	pub kept_at: String,
@@ -75,26 +74,24 @@ struct Summary {
 	one_line: String,
 }
 
-/// The session file inside `body` and its summary, or why it is not one, by
-/// kind: never by body.
-fn session_file(body: &[u8]) -> Result<(&RawValue, Summary), &'static str> {
-	let text = std::str::from_utf8(body).map_err(|_| "utf8")?;
-	let envelope: Envelope<'_> = serde_json::from_str(text).map_err(|_| "json")?;
-	if envelope.schema != SESSION_SCHEMA {
-		return Err("schema");
-	}
-	let summary: Summary = serde_json::from_str(envelope.file.get()).map_err(|_| "summary")?;
-	if summary.title.trim().is_empty() || summary.one_line.trim().is_empty() {
-		return Err("summary");
-	}
-	Ok((envelope.file, summary))
+/// Whether a title or one line is one the list can show.
+fn shown(text: &str) -> bool {
+	!text.trim().is_empty()
 }
 
-fn storage(err: mailbox_repo::MailboxError) -> FileHostError {
-	match err {
-		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
-		mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
+/// The session file inside `body`, or why it is not one, by kind: never by
+/// body. The same rule the list applies in SQL (`mailbox_repo::leetype_files`).
+fn session_file(body: &[u8]) -> Result<&RawValue, &'static str> {
+	let text = std::str::from_utf8(body).map_err(|_| "json")?;
+	let envelope: Envelope<'_> = serde_json::from_str(text).map_err(|_| "json")?;
+	if envelope.schema != SESSION_SCHEMA {
+		return Err("summary");
 	}
+	let summary: Summary = serde_json::from_str(envelope.file.get()).map_err(|_| "summary")?;
+	if !shown(&summary.title) || !shown(&summary.one_line) {
+		return Err("summary");
+	}
+	Ok(envelope.file)
 }
 
 /// `GET /leetype/session-files`: the session files home holds for the
@@ -110,20 +107,21 @@ fn storage(err: mailbox_repo::MailboxError) -> FileHostError {
 #[instrument(name = "leetype_session_files", skip_all, fields(otel.kind = "server"))]
 pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<SessionFiles>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::leetype_files(&mut conn, subject.as_str(), FILES_LISTED).await.map_err(storage)?;
+	let held = mailbox_repo::leetype_files(&mut conn, subject.as_str(), FILES_LISTED).await?;
 	let files = held
 		.into_iter()
-		.filter_map(|held| match session_file(&held.body) {
-			Ok((_, summary)) => Some(Listed {
+		.filter_map(|held| match (held.json, held.title, held.one_line) {
+			(true, Some(title), Some(one_line)) if shown(&title) && shown(&one_line) => Some(Listed {
 				name: held.name,
-				title: summary.title,
-				one_line: summary.one_line,
+				title,
+				one_line,
 				sha256: held.sha256,
 				kept_at: held.pulled_at,
 			}),
-			Err(kind) => {
-				// The poller kept only JSON (invariant 19); what the routine
-				// put inside is the routine's. Said by kind, never by body.
+			(json, ..) => {
+				// What the routine put inside is the routine's. Said by kind,
+				// never by body.
+				let kind = if json { "summary" } else { "json" };
 				tracing::error!(folder = mailbox_repo::LEETYPE, kind, "a held LeetType session file does not read back; left out");
 				None
 			}
@@ -133,32 +131,29 @@ pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 }
 
 /// `GET /leetype/session-files/:name`: the session file itself, as the
-/// routine wrote it, with the held file's SHA-256 as its `ETag`; `304` when
+/// routine wrote it, with the held item's version as its `ETag`; `304` when
 /// `If-None-Match` names it.
 ///
 /// # Errors
 /// 401 without a session, 404 for a name home holds no session file under
-/// (or one that does not read back as one, which is logged), and 500 for a
-/// storage failure.
+/// (or one that does not read back as one, which is logged, and never
+/// answered `304`), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "leetype_session_file", skip_all, fields(otel.kind = "server"))]
 pub async fn get_file(subject: SubjectId, State(db): State<SqlitePool>, Path(name): Path<String>, headers: HeaderMap) -> Result<Response, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::leetype_file(&mut conn, subject.as_str(), &name)
-		.await
-		.map_err(storage)?
-		.ok_or(FileHostError::NotFound)?;
-	let etag = etag_value(&held.sha256)?;
-	if if_none_match_hits(&headers, &etag) {
-		return Ok(not_modified(etag));
-	}
+	let held = mailbox_repo::leetype_file(&mut conn, subject.as_str(), &name).await?.ok_or(FileHostError::NotFound)?;
 	let file = match session_file(&held.body) {
-		Ok((file, _)) => file.get().to_owned(),
+		Ok(file) => file.get().to_owned(),
 		Err(kind) => {
 			tracing::error!(folder = mailbox_repo::LEETYPE, kind, "a held LeetType session file does not read back; not served");
 			return Err(FileHostError::NotFound);
 		}
 	};
+	let etag = etag_value(&held.sha256)?;
+	if if_none_match_hits(&headers, &etag) {
+		return Ok(not_modified(etag));
+	}
 	let mut response = file.into_response();
 	response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 	response.headers_mut().insert(ETAG, etag);
@@ -339,9 +334,20 @@ mod tests {
 		}
 		hold(&state, A, "leetype", (5, "t1-03-broken.json"), b"{\"schema\":\"some-ui.leetype-session/1\"}").await;
 		assert_eq!(
-			get(state, "/leetype/session-files/t1-03-broken.json", &[(AUTHORIZATION, &phone)]).await.0,
+			get(state.clone(), "/leetype/session-files/t1-03-broken.json", &[(AUTHORIZATION, &phone)]).await.0,
 			StatusCode::NOT_FOUND,
 			"a held file that is not a session file is not served"
+		);
+		assert_eq!(
+			get(
+				state,
+				"/leetype/session-files/t1-03-broken.json",
+				&[(AUTHORIZATION, &phone), (IF_NONE_MATCH, "\"sha-t1-03-broken.json\"")]
+			)
+			.await
+			.0,
+			StatusCode::NOT_FOUND,
+			"nor answered 304 when the phone names its version"
 		);
 	}
 }

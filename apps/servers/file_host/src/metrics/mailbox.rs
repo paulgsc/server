@@ -33,7 +33,7 @@ pub const PASS_ERROR_CLASSES: [&str; 10] = [
 
 /// Every value `mailbox_poll_items_refused_total`'s `why` label can take: see
 /// `mailbox::pass::Outcome::refused`.
-pub const REFUSALS: [&str; 4] = ["mismatch", "bad_name", "not_json", "rewritten"];
+pub const REFUSALS: [&str; 7] = ["mismatch", "bad_name", "not_json", "rewritten", "unreadable", "no_file", "too_big"];
 
 /// Every value `mailbox_poll_items_handed_total`'s `answer` label can take:
 /// `mailbox_repo::Answer`.

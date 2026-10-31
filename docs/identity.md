@@ -608,14 +608,26 @@ nowhere is marked as such and belongs to review.
     subject (`GET /leetype/sessions` and `GET /leetype/sessions/:session/events`)
     and by the `mailbox` poller for the subject `MAILBOX_SUBJECT` names, and
     deleted with the account by both the sweep and the migration's
-    trigger (invariant 12). Its events also leave home in one file: once a
-    session is finished (it ended, or another session started after its last
-    event, as the phone decides), the poller files every event home holds of
-    it, as `GET /leetype/sessions/:session/events` serves them, with the
-    session file it started, for the mailbox's `leetype-log` folder, where the
-    owner's weekly review reads it (invariant 19; paulgsc/some-ui#2027). That
-    file is rebuilt from this table, never from a request, so it carries no
-    soundbite either. The corpus-wide `GET /leetype/rounds*` and
+    trigger (invariant 12). Its events also leave home in one file per
+    session, for the mailbox's `leetype-log` folder, where the owner's weekly
+    review reads it (invariant 19; paulgsc/some-ui#2027): every event home
+    holds of the session, as `GET /leetype/sessions/:session/events` serves
+    them, with the session file it started. That file is rebuilt from this
+    table, never from a request, so it carries no soundbite either.
+    **Every session home holds is finished:** the phone sends a session only
+    once it ended or another session started after it (paulgsc/some-ui
+    `apps/www/src/lib/home-link/send.ts`, `logGoing`, which sends only
+    `finishedSessions`), so home applies no rule of its own beyond waiting
+    out a send in flight. The poller files a session's log once its newest
+    event has been home for a poll interval (`MAILBOX_SECONDS`), and again,
+    as `.r<n>`, only once an event of it arrives after that copy. Which
+    events arrived after is read by rowid against `mailbox_leetype_log`'s
+    high-water mark, so this table's rowids must only grow: nothing runs
+    `VACUUM` on home's database (it may renumber a table with no INTEGER
+    PRIMARY KEY), and a `VACUUM` would need the mark rebuilt first. A phone
+    that sent a session before it was finished would break the first
+    assumption; a change to `logGoing` is checked against this line.
+    The corpus-wide `GET /leetype/rounds*` and
     `leetype_round` hold nothing of it.
     *Enforced by* `leetype_log_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced`,
@@ -623,7 +635,11 @@ nowhere is marked as such and belongs to review.
     `a_soundbite_is_refused_by_name` and `a_refused_event_writes_nothing`, and
     `handlers::leetype_log`'s `refusals_name_their_fields_and_records_stay_apart`;
     for the file that leaves, `mailbox::pass`'s
-    `a_finished_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`.
+    `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`
+    and `a_session_still_arriving_waits_a_poll_interval_and_holds_back_the_ones_after_it`.
+    *Not enforced:* that the phone sends only finished sessions, which is
+    some-ui's `finishedSessions` and its tests; and that nothing runs
+    `VACUUM`, which review keeps.
 
 19. **Home's copy of the Jobs mailbox is append-only, each table has one
     writer, and it holds JSON files, never audio.** The mailbox (paulgsc/some-ui
@@ -684,8 +700,11 @@ nowhere is marked as such and belongs to review.
     - `mailbox_leetype_log`, written only by the poller, in the transaction
       that reads the session's events and files its log: which session, the
       number `n` its name carries, decided once as the session's next, and
-      how many events that file held, so a session is filed again only once
-      home holds more of it.
+      `through`, the largest `leetype_session_event` rowid the file covered:
+      the high-water mark a pass reads above, so an idle pass reads two index
+      probes and no history (invariant 18). A session the poller cannot file
+      (an event that does not read back, no `started` event, a body over the
+      mailbox's 1 MiB) is counted as refused and written nowhere.
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
       each filed file it handed over, once, final.
     - `mailbox_archive`, written only by the poller with the archive token
@@ -712,8 +731,8 @@ nowhere is marked as such and belongs to review.
     `the_copy_leaves_with_the_account`,
     `only_heard_transcripts_wait_to_be_filed_oldest_first`,
     `each_transcript_of_a_note_takes_the_next_number_once`,
-    `a_session_is_due_once_it_ended_or_another_started_after_it` and
-    `a_filed_log_waits_again_only_once_its_session_holds_more`; `mailbox::pass`'s
+    `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log` and
+    `the_due_query_reads_only_what_arrived_after_the_mark`; `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
@@ -721,7 +740,8 @@ nowhere is marked as such and belongs to review.
     `no_transcript_is_filed_for_a_deleted_subject`,
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
     `the_routines_session_files_are_kept_and_a_bad_one_refused_and_counted`,
-    `a_finished_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`
+    `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`,
+    `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`
     and `no_leetype_log_is_filed_for_a_deleted_subject`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
     a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript` or
@@ -1028,22 +1048,25 @@ nowhere is marked as such and belongs to review.
     session files home kept from the mailbox's `leetype` folder
     (`mailbox_item`, invariant 19) for the caller's own subject, newest
     first, at most `handlers::leetype_files::FILES_LISTED`: each by its name,
-    the session file's own title and one line, its SHA-256 and when home read
+    the session file's own title and one line, its version and when home read
     it. `GET /leetype/session-files/:name` answers the session file inside,
-    byte for byte as the routine wrote it, with that SHA-256 as its `ETag`
-    and `304` when `If-None-Match` names it (paulgsc/some-ui#2026). Neither
+    byte for byte as the routine wrote it, with that version as its `ETag`
+    and `304` when `If-None-Match` names it (paulgsc/some-ui#2026). The
+    version (`sha256` in the list) is the mailbox item's SHA-256 as the
+    mailbox listed it: an opaque version of the held item, not a hash of the
+    bytes served, which are the session file inside it. Neither
     writes anything: the files come down from the routine, the phone never
     uploads one, and the `mailbox` poller is the only writer of the rows they
     read. A held file that is not a session file (not
     `some-ui.leetype-session/1`, or no title or one line) is left out of the
-    list and not served, and logged by kind, never by its body. Both take a
+    list and not served, never answered `304` either, and logged by kind,
+    never by its body. Both take a
     `SubjectId`, so a request without a session is `401`, and another
     subject's file is a `404`.
     *Enforced by* `handlers::leetype_files`'s `both_need_a_session`,
     `the_list_names_the_callers_own_session_files_newest_first` and
     `one_file_is_served_verbatim_with_its_hash_as_etag_and_304_when_held`, and
-    `mailbox_repo`'s
-    `session_files_answer_the_subjects_own_newest_first_and_one_by_name`.
+    `mailbox_repo`'s `session_files_list_at_most_the_limit`.
     *Not enforced:* what a session file says, which is the routine's.
 
 Whether separately harmless fields combine into a fingerprint, and whether
