@@ -187,15 +187,19 @@ pub enum RustcRun {
 	},
 }
 
+/// The release a toolchain names, `1.97.0` of `rustc 1.97.0 (2d8144b78
+/// 2026-07-07); --edition 2024 -C opt-level=0`, or the whole of it when it
+/// names none: what [`RustcRun`]'s `toolchain` holds.
+#[must_use]
+pub fn release(toolchain: &str) -> &str {
+	toolchain.strip_prefix("rustc ").and_then(|rest| rest.split([' ', ';']).next()).unwrap_or(toolchain)
+}
+
 impl Recording {
 	/// The release rustc reported, `1.97.0`, from [`Self::toolchain`].
 	#[must_use]
 	pub fn release(&self) -> &str {
-		self
-			.toolchain
-			.strip_prefix("rustc ")
-			.and_then(|rest| rest.split([' ', ';']).next())
-			.unwrap_or(&self.toolchain)
+		release(&self.toolchain)
 	}
 
 	/// This recording as the phone reads it ([`RustcRun`]).

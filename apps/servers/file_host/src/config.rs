@@ -469,6 +469,32 @@ pub struct Config {
 	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60", help_heading = "Voice-note transcription")]
 	pub transcribe_seconds: u64,
 
+	// ── Rust Rounds recording ─────────────────────────────────────────────────
+	//
+	// See `rust_rounds`. Home hands each program of each round the phone puts
+	// to the rust-runner, a sandboxed container that compiles and runs it, over
+	// a Unix socket on a volume both mount, and keeps how each ended. Off
+	// unless `RUST_ROUNDS_ENABLED`.
+	/// Whether home records Rust Rounds' programs. On, the rust-runner's
+	/// socket must be mounted at `RUST_ROUNDS_SOCKET`; a runner that is not
+	/// there is reported each pass, and nothing is recorded until it is.
+	#[arg(long, env = "RUST_ROUNDS_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Rust Rounds recording")]
+	pub rust_rounds_enabled: bool,
+
+	/// The rust-runner's socket, as a path inside the container: where
+	/// `infra/compose/rust_runner.yml`'s socket volume is mounted.
+	#[arg(long, env = "RUST_ROUNDS_SOCKET", default_value = "/run/rust-runner/runner.sock", help_heading = "Rust Rounds recording")]
+	pub rust_rounds_socket: String,
+
+	/// Seconds between looks for programs to record. At least 10.
+	#[arg(long, env = "RUST_ROUNDS_SECONDS", default_value = "60", help_heading = "Rust Rounds recording")]
+	pub rust_rounds_seconds: u64,
+
+	/// Seconds one pass may take, every program it records included. At
+	/// least 120, so one program's worst case fits.
+	#[arg(long, env = "RUST_ROUNDS_PASS_DEADLINE_SECONDS", default_value = "600", help_heading = "Rust Rounds recording")]
+	pub rust_rounds_pass_deadline_seconds: u64,
+
 	// ── The NFL game feed ─────────────────────────────────────────────────────
 	//
 	// See `game_feed`. Home follows the games of the week through ESPN's public
@@ -598,7 +624,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 38] = [
+	const REFUSED: [(&str, &str); 41] = [
 		("RUST_LOG", "info,=[bad"),
 		("CONNECTION_TIMEOUT", "soon"),
 		("MAX_IN_FLIGHT", "-1"),
@@ -630,6 +656,9 @@ mod tests {
 		("TRANSCRIBE_THREADS", "all"),
 		("TRANSCRIBE_DEADLINE_SECONDS", "10m"),
 		("TRANSCRIBE_SECONDS", "1m"),
+		("RUST_ROUNDS_ENABLED", "on"),
+		("RUST_ROUNDS_SECONDS", "1m"),
+		("RUST_ROUNDS_PASS_DEADLINE_SECONDS", "10m"),
 		("GAME_FEED_ENABLED", "on"),
 		("GAME_FEED_SCOREBOARD_SECONDS", "10m"),
 		("GAME_FEED_LIVE_SECONDS", "15s"),
@@ -643,7 +672,7 @@ mod tests {
 	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
 	// checked by what uses them, which refuses to start on a bad one, as the
 	// mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 28] = [
+	const FREE_TEXT: [&str; 29] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
 		"ALLOWED_ORIGINS",
@@ -669,6 +698,7 @@ mod tests {
 		"FCM_SERVICE_ACCOUNT_FILE",
 		"TRANSCRIBE_MODEL",
 		"TRANSCRIBE_VAD_MODEL",
+		"RUST_ROUNDS_SOCKET",
 		"OTEL_SERVICE_NAME",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"ENVIRONMENT",

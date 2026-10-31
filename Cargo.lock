@@ -1543,6 +1543,8 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "rust_round_repo",
+ "rust_rounds_wire",
  "rustix",
  "serde",
  "serde_json",
