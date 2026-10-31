@@ -542,9 +542,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
 
 | Piece | What it is |
 | --- | --- |
-| `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under an id the subject holds, `422` naming each field. |
-| `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The caller's subject's newest rounds; one of its rounds, byte for byte, with each read and variant card's program and every run kept for it (`ended`, and `rustc`, some-ui's `RustcRunSchema`). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. Another subject's id is a `404`. |
-| `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain; and each time the runner went away holding a program. None is ever updated. `rust_round` is subject-scoped, read only by its subject and deleted only with its account; the other three name no subject, are never deleted, and are shared by every round holding the program (docs/identity.md invariant 28). |
+| `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under an id the subject holds, `422` naming each field, `413` for a body past one byte over the ceiling, before it is buffered. |
+| `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The caller's subject's newest rounds; one of its rounds, byte for byte, with each read and variant card's program and every run kept for it (`toolchain`, `ended`, `refusal`, and `rustc`, some-ui's `RustcRunSchema`; never when it was kept, since a run is shared across subjects). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. Another subject's id is a `404`. |
+| `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain (`recorded`, `refused` or `runner-lost`, RP3); and each time the runner was lost holding a program. None is ever updated. `rust_round` is subject-scoped, read only by its subject and deleted only with its account; the other three name no subject, are never deleted, and are shared by every round holding the program (docs/identity.md invariant 28). |
 | `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `RUST_ROUNDS_SECONDS`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
 
 **A round's id is never reused, so another body under it is refused.** The
@@ -593,54 +593,86 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     `programs_wait_in_arrival_order_until_recorded_under_the_toolchain`
     checks the order and the refusal, and `what_waits_is_an_indexed_range_read`
     the query plan.
-- **RP3: an outage records nothing; a program that takes the runner down is
-  recorded as that, after `DROPS` tries.**
-  - _Claim:_ an exchange that fails before the runner holds the job (no
-    socket, nothing listening, the request not written whole), that times
-    out on the pass's own deadline, or that answers a refusal or nonsense
-    keeps nothing about the program: it waits, and the next pass asks again.
-    The pass logs each such stop as an error or a warning and counts it on
-    `operation_errors_total{operation="rust_rounds"}`, every pass it lasts.
-    An exchange where the whole request was sent and the connection ended
-    before a whole answer (the runner went away holding the job: its
-    watchdog, or the program) keeps one `rust_round_drop` row; the `DROPS`th
-    (2) drop of one program under one toolchain also keeps its run, in the
-    same transaction, as `runner-restarted`, with a `stopped` `RustcRun`
-    whose `why` is `exit`. So one hostile program can take the runner down
-    at most `DROPS` times per toolchain, and the programs behind it are then
-    recorded. State per program and toolchain is at most `DROPS` rows. Each
-    ask waits `ASK_TIMEOUT`, which outlasts the runner's job deadline
-    (RX3), so a job the watchdog ends is always seen as a drop, never as
-    the pass's own timeout: a program that wedges the runner holds it for
-    at most one job deadline per attempt, and at most `DROPS` (2) job
-    deadlines per toolchain in all.
-  - _Falsified by_ a drop kept for anything but a connection that ended
-    after the whole request was sent, a program kept failed for an outage,
-    a timeout or a refusal, a drop limit that grows with anything, a second
-    `runner-restarted` path, or an ask that waits less than `ASK_TIMEOUT`.
-  - _Why not enforced mechanically:_ which failure is the runner's and which
-    the program's is a reading of `exchange`'s phases.
+- **RP3: a program is blamed only for what it did.** Every answer to a
+  program's ask keeps one of three things, or nothing, and every stop is
+  said.
+  - _Claim:_ for each program asked about, under the toolchain the pass
+    asked the runner first (`rust_rounds::pass::run_once`'s table):
+    - **recorded** (a recording under that toolchain): kept as `recorded`,
+      with the recording and the `RustcRun` the pass derives from it; the
+      pass goes on.
+    - **refused for the request** (`malformed`, `too-large`): kept as
+      `refused`, with the reason and a `stopped` `RustcRun` (`exit`); the
+      pass goes on, so the queue moves.
+    - **lost** (the runner went away after the whole request was sent,
+      `Dropped`; or no answer within `ASK_TIMEOUT`, `TimedOut`, which
+      outlasts the runner's watchdog, so a hang is the watchdog failing on
+      this program): one `rust_round_drop` row (`dropped` or `timed-out`);
+      at the `DROPS`th (2) of either kind for one program under one
+      toolchain, its run is kept in the same transaction as `runner-lost`,
+      with a `stopped` `RustcRun` (`exit`). The pass stops.
+    - **an outage** (nothing listening, no socket, the request not written
+      whole; `unavailable`, the runner's own machine failing before the
+      program ran, RX3; `peer`; an answer that is no answer, or a recording
+      under another toolchain): nothing kept; the pass stops, and the next
+      asks again.
+    - **`wrong-toolchain`** (the runner was replaced mid-pass): nothing
+      kept; the pass stops, and the next asks the new toolchain.
+    The toolchain ask keeps nothing whatever happens: any failure of it is
+    an outage. Every stop is an ERROR on the log and one count on
+    `operation_errors_total{operation="rust_rounds", error_type=<the
+    stop's kind>}`, every pass it lasts: `runner_unreachable`,
+    `runner_unavailable`, `runner_refused`, `runner_invalid`,
+    `toolchain_changed`, `runner_dropped`, `runner_timed_out`, and
+    `pass_deadline` when the deadline left no room to ask a single program.
+    The one stop that is a WARN and not counted is `pass_deadline` after at
+    least one program was asked about: what is left waits for the next
+    pass. So one hostile program can lose the runner at most `DROPS` times
+    per toolchain, holding it at most one job deadline each time (RX3),
+    and an innocent program is never kept as anything but `recorded`.
+    State per program and toolchain is at most `DROPS` loss rows and one
+    run.
+  - _Falsified by_ a loss kept for anything but `Dropped` or `TimedOut` on a
+    program's ask, anything kept for an outage, `unavailable`, `peer` or
+    `wrong-toolchain`, a `refused` kept for any reason but `malformed` or
+    `too-large`, a `RustcRun` taken from the runner's answer rather than
+    derived from the recording, a loss limit that grows with anything, a
+    second `runner-lost` path, a stop that is not logged as an error and
+    counted (but `pass_deadline` after an ask), or a program ask that waits
+    less than `ASK_TIMEOUT`.
+  - _Why not enforced mechanically:_ which failure is whose is a reading of
+    `exchange`'s phases and the runner's refusals.
     `an_exchange_says_how_far_it_got` checks the phases,
-    `a_runner_that_is_down_leaves_every_program_waiting` the outage and
-    `a_program_that_takes_the_runner_down_is_kept_as_that` the drops.
+    `a_machine_fault_before_the_program_runs_is_answered_unavailable` the
+    runner's side, and the pass's tests each row:
+    `a_stored_rounds_programs_are_recorded_by_the_runner_in_one_pass`,
+    `a_refused_program_is_kept_as_that_and_the_queue_moves_on`,
+    `an_outage_keeps_nothing_and_every_program_waits`,
+    `a_program_that_loses_the_runner_is_kept_as_that` and
+    `a_toolchain_changed_mid_pass_keeps_nothing`.
 - **RP4: every pass is bounded by `BATCH` and the pass deadline, and
   nothing else.**
   - _Claim:_ a pass reads at most `BATCH` (20) waiting programs and asks
-    the runner about each in turn; it starts an ask (the toolchain's
-    included) only while one ask's wait, `ASK_TIMEOUT`, is left before its
-    deadline (`RUST_ROUNDS_PASS_DEADLINE_SECONDS`, at least `ASK_TIMEOUT`,
-    137 s, so one ask fits), so every ask ends by the deadline. Any outcome
-    but a kept run ends the pass, and the next starts again from the first
-    program waiting. There is no other cap, cursor or deadline: the queue
-    is the arrival order and the toolchain's last run, and `DROPS` bounds
-    state per program, not work per pass.
+    the runner about each in turn. It asks the toolchain (waiting
+    `CLIENT_TIMEOUT`, 5 s) only if that wait and one program's fit in its
+    deadline, and each program (waiting `ASK_TIMEOUT`, 137 s) only while
+    that wait is left before it, so every ask ends by the deadline.
+    `RUST_ROUNDS_PASS_DEADLINE_SECONDS` is at least both waits together
+    (142 s, `rust_rounds::MIN_DEADLINE`, `Waits::least_deadline`), so a
+    pass at the minimum asks at least one program. A recorded or refused
+    program lets the pass go on; anything else ends it, and the next starts
+    from the first program waiting. There is no other cap, cursor or
+    deadline: the queue is the arrival order and the toolchain's last run,
+    and `DROPS` bounds state per program, not work per pass.
   - _Falsified by_ a per-pass cap, cursor or deadline of the mechanism's
-    own, a pass that reads past `BATCH`, an ask started with less than its
-    wait left before the deadline, or a pass that goes on after a failed
-    ask.
+    own, a pass that reads past `BATCH`, a toolchain ask that spends a
+    program's wait, an ask started with less than its wait left before the
+    deadline, a minimum deadline below both waits, or a pass that goes on
+    after a loss or an outage.
   - _Why not enforced mechanically:_ the pass is short enough to read.
-    `a_pass_is_bounded_by_its_batch_and_its_deadline` checks both bounds.
-
+    `a_pass_is_bounded_by_its_batch_and_its_deadline` checks both bounds,
+    and that a pass at exactly the minimum deadline records a program;
+    `a_deadline_reached_after_work_is_no_error` the warning.
 
 ## #328: the static snapshot
 

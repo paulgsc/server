@@ -180,6 +180,17 @@ is told so: once the mailbox has let a file go, `mailbox_archive` holds the
 only copy of its bytes (invariant 21). What deleting does not reach is under
 "What is still exposed", in "What deleting an account does not reach".
 
+**What stays of Rust Rounds.** A round goes with the account, but each
+program it held stays (`rust_round_source`), with what rustc did with it
+(`rust_round_run`) and each time the runner was lost holding it
+(`rust_round_drop`): a tutor's code and its output, shared by every round
+that holds the same bytes, naming no one (invariant 28). Their times stay
+too. `rust_round_source.queued_at` is when the first round holding the
+program reached home, so it still dates the deleted account's first such
+round, to the millisecond, for whoever holds the database; `recorded_at` and
+`dropped_at` date the pass that recorded it, a minute or so later. None is
+served. The Account screen says the programs and what rustc printed stay.
+
 ### The session
 
 A session is 32 random bytes, base64url in a `__Host-session` cookie:
@@ -1100,16 +1111,23 @@ nowhere is marked as such and belongs to review.
     trigger aborts a `DELETE` while the subject's account stands, and the
     migration's trigger on `account`, then the sweep, delete it (invariant
     12). `rust_round_source`, `rust_round_run` and `rust_round_drop` hold a
-    program's bytes, what rustc did with it under a toolchain, and when the
-    runner went away holding it: no subject, nothing about a person, never
-    updated or deleted, and shared by every round that holds the same
-    program, as LeetType's runs are (EX2). So a round's `GET` returns the
-    runs of its programs by their bytes, and two subjects whose rounds share
-    a program read the same run, which carries only that code's own output.
+    program's bytes, how its recording under a toolchain ended (what rustc
+    did with it, or that the runner refused or was lost holding it), and
+    each time the runner was lost holding it: no subject, never updated or
+    deleted, and shared by every round that holds the same program, as
+    LeetType's runs are (EX2). So a round's `GET` returns the runs of its
+    programs by their bytes, and two subjects whose rounds share a program
+    read the same run, which carries only that code's own output and
+    **never a time**: when a run was kept would tell one subject when
+    another first put that program. What those three tables keep past an
+    account's deletion, their times included, is under "What deleting an
+    account erases", "What stays of Rust Rounds".
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
     `an_account_takes_its_rounds_and_leaves_the_runs` and
     `every_table_refuses_an_update_and_a_delete`, `handlers::rust_rounds`'s
-    `each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own`, and
+    `each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own`
+    and `a_round_reads_back_with_its_runs_under_an_etag` (a run's keys are
+    exactly `toolchain`, `ended`, `refusal` and `rustc`), and
     the account-deletion and trigger tests above (invariants 12 and 22).
     *Not enforced:* that every read of `rust_round` filters on its subject,
     which the repository's three readers do today
@@ -1205,12 +1223,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   how each sitting went, on which shot, and why, in a cause the owner may
   have typed. Deleting the account removes both; nothing else does.
 - **Rust Rounds' programs and runs.** A round goes with its account
-  (invariant 28), but the programs it held (`rust_round_source`), what rustc
-  did with each (`rust_round_run`) and when the runner went away holding one
-  (`rust_round_drop`) stay: they are a tutor's code and its output, kept by
-  their bytes for every round that holds them, and name no one. A program
-  can still say what a tutor thought the owner should work on; nothing
-  links it to a subject once the rounds that held it are gone.
+  (invariant 28), but the programs it held (`rust_round_source`), how each
+  one's recording ended (`rust_round_run`) and each time the runner was
+  lost holding one (`rust_round_drop`) stay, with their times: they are a
+  tutor's code and its output, kept by their bytes for every round that
+  holds them, and name no one. A program can still say what a tutor thought
+  the owner should work on, and its `queued_at` when the first round
+  holding it arrived ("What stays of Rust Rounds", above); nothing links it
+  to a subject once the rounds that held it are gone.
 - **When a phone began and stopped sharing.** `sharing_choice` says, to the
   millisecond, when each pairing began and stopped sending each kind of
   record home (invariant 17): one row per change, as many as its person
