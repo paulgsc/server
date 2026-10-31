@@ -466,6 +466,8 @@ struct FiledWord<'a> {
 	end_ms: i64,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	p: Option<f64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	language: Option<&'a str>,
 }
 
 /// A transcript as the mailbox takes it: text, its words with their times
@@ -478,6 +480,7 @@ fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec
 			start_ms: word.start_ms,
 			end_ms: word.end_ms,
 			p: word.p,
+			language: word.language.as_deref(),
 		})
 		.collect();
 	serde_json::json!({
@@ -1247,18 +1250,22 @@ mod tests {
 		for (at, word) in words.iter().enumerate() {
 			let index = i64::try_from(at).unwrap();
 			let p: Option<f64> = (at + 1 < words.len()).then_some(0.1_f64.mul_add(f64::from(u8::try_from(at).unwrap()), 0.5));
-			sqlx::query("INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
-				.bind(OWNER)
-				.bind(note)
-				.bind(model)
-				.bind(index)
-				.bind(word)
-				.bind(500 * index)
-				.bind(500 * index + 400)
-				.bind(p)
-				.execute(pool)
-				.await
-				.unwrap();
+			let language = (at == 0).then_some("ko");
+			sqlx::query(
+				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms, p, language) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(model)
+			.bind(index)
+			.bind(word)
+			.bind(500 * index)
+			.bind(500 * index + 400)
+			.bind(p)
+			.bind(language)
+			.execute(pool)
+			.await
+			.unwrap();
 		}
 	}
 
@@ -1290,7 +1297,7 @@ mod tests {
 				"model": "ggml-small-q5_1.bin",
 				"heardAt": "2026-10-25T03:12:00.000Z",
 				"words": [
-					{ "text": "다음", "startMs": 0, "endMs": 400, "p": 0.5 },
+					{ "text": "다음", "startMs": 0, "endMs": 400, "p": 0.5, "language": "ko" },
 					{ "text": "장면은", "startMs": 500, "endMs": 900, "p": 0.6 },
 					{ "text": "시장에서", "startMs": 1000, "endMs": 1400 },
 				],

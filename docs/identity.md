@@ -919,7 +919,11 @@ nowhere is marked as such and belongs to review.
     speech the VAD cut out back to the note), and how sure the model was of
     it (`p`, 0 to 1: the lowest of its tokens' probabilities, so one unsure
     piece makes the word unsure; null for a word heard before it was kept,
-    paulgsc/server#577, ST22), as new rows in
+    paulgsc/server#577, ST22), and the language it was heard in (`language`,
+    Whisper's code; home hears each piece of speech the VAD found in its own
+    language, so a Korean phrase inside an English take comes back in
+    Hangul, and the note's language is the one heard for longest;
+    paulgsc/server#578, ST23), as new rows in
     `voice_transcript_word`, one per word, keyed by the note, the model and
     the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
     follow the voice word by word; approved by the owner, paulgsc/some-ui#2074
@@ -942,7 +946,7 @@ nowhere is marked as such and belongs to review.
     it kept. The text leaves home only as a transcript filed for the Jobs
     mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
-    its time and how sure the model was (`words`); the words are readable by
+    its time, how sure the model was and its language (`words`); the words are readable by
     no route yet, and the audio never leaves. A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
