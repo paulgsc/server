@@ -36,9 +36,12 @@
 //!
 //! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
 //! each heard word with its time in `voice_transcript_word`, both written
-//! only by `file_host`'s `transcribe` worker, which reads a note's audio and
-//! never writes it.
+//! by `file_host`'s `transcribe` worker, which reads a note's audio and
+//! never writes it, and by the owner's saves of their own words for a
+//! Studio take ([`owner`], `PUT /voice-notes/:id/transcripts/owner/:n`),
+//! which add a transcript beside the engines' and rewrite none.
 
+pub mod owner;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};

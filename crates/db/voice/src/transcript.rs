@@ -5,8 +5,9 @@
 //!
 //! - **One row per attempt.** An attempt to hear one note with one model ends
 //!   [`Outcome::Heard`] (with text), [`Outcome::Silent`] (no speech found), or
-//!   as a failure naming its kind. [`keep_attempt`] writes it; nothing else
-//!   writes this table.
+//!   as a failure naming its kind. [`keep_attempt`] writes it, for the
+//!   transcriber and for the owner's saves (`crate::owner::keep_save`);
+//!   nothing else writes this table.
 //! - **Append-only.** No row is updated (the trigger aborts an `UPDATE`) or
 //!   deleted but with the account. A model that has heard a note, or found
 //!   it silent, never hears it again (a partial unique index holds that), and
@@ -21,6 +22,11 @@
 //!   [`Word`]s go to `voice_transcript_word` in the transaction that writes
 //!   its row, append-only too, and [`words`] reads back those of the newest
 //!   transcript that heard something, for the captions burned into a short.
+//! - **The owner's words are one more transcript** (paulgsc/some-ui#2322,
+//!   ST24; `crate::owner`). A save of the owner's fix of a Studio take is a
+//!   row [`keep_attempt`] writes under the model `owner:<n>` and the engine
+//!   `owner`, so the rules above hold for it too, and [`words`] takes the
+//!   owner's newest before any engine's.
 
 use crate::VoiceError;
 use sqlx::SqliteConnection;
@@ -272,10 +278,12 @@ async fn keep_words(conn: &mut SqliteConnection, subject: &str, note_id: &str, m
 /// The words of `subject`'s note `note_id`, each with its time, in the order
 /// said.
 ///
-/// They are those of the newest transcript that heard something, as a reader
-/// of the text takes it, so the words always match that text. Empty when no
-/// transcript heard the note, or when the newest was heard before words were
-/// kept (`20261030000300`).
+/// They are those of the owner's newest transcript of a Studio take where
+/// there is one (`crate::owner`: the owner's words are the truth,
+/// paulgsc/some-ui#2322), else of the newest transcript that heard
+/// something, as a reader of the text takes it, so the words always match
+/// that text. Empty when no transcript heard the note, or when the one taken
+/// was heard before words were kept (`20261030000300`).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -287,7 +295,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
-			                  ORDER BY t.heard_at DESC, t.model DESC LIMIT 1)
+			                  ORDER BY t.engine = 'owner' DESC, t.heard_at DESC, t.model DESC LIMIT 1)
 			 ORDER BY w.word_index"#,
 			subject,
 			note_id

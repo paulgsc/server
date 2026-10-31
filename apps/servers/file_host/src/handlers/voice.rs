@@ -14,9 +14,16 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
-//! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
+//! **The deletion hold.** Each handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
+//!
+//! **A Studio take's words** (paulgsc/some-ui#2322, ST24): [`get_hearings`]
+//! reads what home heard in a take, and [`put_owner_words`] keeps the owner's
+//! fix as one more transcript (`voice_repo::owner`), the one writer of
+//! `voice_transcript` besides the transcriber. Neither the words nor the
+//! text reaches a log line: both spans skip every argument, and a refusal
+//! names fields with fixed words.
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
@@ -30,6 +37,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
+use voice_repo::owner::{Hearing, Hearings, Refused, NOT_HEARD};
 use voice_repo::{Note, Said, SaidBite, VoiceError, REWRITTEN};
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
@@ -61,6 +69,16 @@ pub struct NoteWritten {
 	/// The note as home holds it, its SHA-256 included, which the phone
 	/// compares with what it sent before it counts the note as home's.
 	pub note: Note,
+}
+
+/// `PUT /voice-notes/:id/transcripts/owner/:n`
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WordsWritten {
+	/// `added` or `unchanged` — `voice_repo::Change`.
+	pub change: &'static str,
+	/// The owner's save as home holds it, which the phone compares with what
+	/// it sent before it counts the save as home's.
+	pub hearing: Hearing,
 }
 
 fn now() -> String {
@@ -127,6 +145,69 @@ pub async fn put_note(
 	let change = voice_repo::put_note(&mut tx, subject.as_str(), &note, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
+}
+
+/// `GET /voice-notes/:id/transcripts`: every hearing of a Studio take that
+/// ended, the owner's saves included, newest first, and which one a reader
+/// of its words takes (`voice_repo::owner::Hearings`).
+///
+/// # Errors
+/// 401 without a session, 404 when the subject holds no Studio take under
+/// that id (a note said for anything else included: its words are read by
+/// no route), and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_take_hearings", skip_all, fields(otel.kind = "server"))]
+pub async fn get_hearings(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<Hearings>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	voice_repo::owner::hearings(&mut conn, subject.as_str(), &id)
+		.await?
+		.map(Json)
+		.ok_or(FileHostError::NotFound)
+}
+
+/// `PUT /voice-notes/:id/transcripts/owner/:n`, the body being the owner's
+/// words for the take (`{ basedOn, words: [{ text, startMs, endMs,
+/// language? }] }`): the owner's `n`th save, kept beside home's hearings.
+///
+/// `BEGIN IMMEDIATE`, so the reads that decide and the writes see one
+/// snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 404 for no such
+/// Studio take, 422 naming each refused field (`n`, `body`, `basedOn`,
+/// `words`), 409 for other words under a held save, and 500 for a storage
+/// failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_take_owner_words_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_owner_words(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	Path((id, n)): Path<(String, String)>,
+	body: Bytes,
+) -> Result<Json<WordsWritten>, FileHostError> {
+	let n = voice_repo::owner::save_number(&n);
+	let words = voice_repo::owner::read_words(&body);
+	let (n, words) = match (n, words) {
+		(Some(n), Ok(words)) => (n, words),
+		(n, words) => {
+			let mut problems = words.err().unwrap_or_default();
+			if n.is_none() {
+				problems.insert(0, ("n", "not a save of the take: 1 to 9999"));
+			}
+			return Err(FileHostError::unprocessable_entity(problems));
+		}
+	};
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let (change, hearing) = voice_repo::owner::keep_save(&mut tx, subject.as_str(), &id, n, &words, &now())
+		.await
+		.map_err(|refused| match refused {
+			Refused::NoTake => FileHostError::NotFound,
+			Refused::NotHeard => FileHostError::unprocessable_entity([("basedOn", NOT_HEARD)]),
+			Refused::Rewritten => FileHostError::Conflict(voice_repo::owner::REWRITTEN),
+			Refused::Storage(err) => refusal(err),
+		})?;
+	tx.commit().await?;
+	Ok(Json(WordsWritten { change: change.as_str(), hearing }))
 }
 
 #[cfg(test)]
@@ -239,7 +320,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 1);
+		assert_eq!(module().descriptors().count(), 3);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -354,6 +435,175 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(held, (String::from("studio"), String::from("build-journal-ep04:s3:2")));
+	}
+
+	async fn get(app: &Router, path: &str, auth: Option<&(HeaderName, String)>) -> (StatusCode, Value) {
+		let mut request = Request::builder().method(Method::GET).uri(path);
+		if let Some((name, value)) = auth {
+			request = request.header(name, value);
+		}
+		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	/// What home's transcriber heard in `subject`'s note `id`: `text`, each
+	/// word half a second long.
+	async fn heard(pool: &SqlitePool, subject: &str, id: &str, text: &str) {
+		use voice_repo::transcript::{keep_attempt, Attempt, Outcome, Word};
+		let words = (0_i64..)
+			.zip(text.split_whitespace())
+			.map(|(n, word)| Word {
+				text: word.to_owned(),
+				start_ms: 500 * n,
+				end_ms: 500 * n + 400,
+				p: Some(if word == "their" { 0.3 } else { 0.9 }),
+				language: Some(String::from("en")),
+			})
+			.collect();
+		let attempt = Attempt {
+			model: "ggml-small-q5_1.bin",
+			engine: "whisper.cpp 1.8.3",
+			outcome: Outcome::Heard {
+				language: String::from("en"),
+				language_p: 0.97,
+				text: text.to_owned(),
+				words,
+			},
+			duration_ms: Some(1_200),
+			took_ms: 800,
+		};
+		let mut tx = pool.begin().await.unwrap();
+		keep_attempt(&mut tx, subject, id, &attempt, "2026-10-30T18:30:00.000Z").await.unwrap();
+		tx.commit().await.unwrap();
+	}
+
+	/// The take review's round (paulgsc/some-ui#2322, ST24): the phone reads
+	/// what home heard in a take, saves the owner's fix, a replay changes
+	/// nothing, other words under that save are a 409, and the words read
+	/// next are the owner's, home's kept beside them as heard.
+	#[tokio::test]
+	async fn a_takes_words_are_read_and_the_owners_fix_kept_beside_them() {
+		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=build-journal-ep04:s3:2&at=2026-10-30T18:20:00Z";
+		const WORDS: &str = "/voice-notes/t1/transcripts";
+		const SAVE: &str = "/voice-notes/t1/transcripts/owner/1";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(put(&app, TAKE_PATH, Some(&phone), "audio/mp4", TAKE).await.0, StatusCode::OK);
+
+		assert_eq!(get(&app, WORDS, None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(
+			get(&app, WORDS, Some(&phone)).await,
+			(StatusCode::OK, json!({ "note": "t1", "chosen": null, "hearings": [] }))
+		);
+		heard(&pool, A, "t1", "over their").await;
+		let (status, read) = get(&app, WORDS, Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{read}");
+		assert_eq!(
+			read,
+			json!({
+				"note": "t1",
+				"chosen": "ggml-small-q5_1.bin",
+				"hearings": [{
+					"model": "ggml-small-q5_1.bin", "by": "home", "outcome": "heard", "language": "en",
+					"heardAt": "2026-10-30T18:30:00.000Z", "text": "over their",
+					"words": [
+						{ "text": "over", "startMs": 0, "endMs": 400, "p": 0.9, "language": "en" },
+						{ "text": "their", "startMs": 500, "endMs": 900, "p": 0.3, "language": "en" }
+					]
+				}]
+			})
+		);
+		assert_eq!(get(&app, WORDS, Some(&other)).await.0, StatusCode::NOT_FOUND, "A's take is not B's");
+
+		let fixed = json!({
+			"basedOn": "ggml-small-q5_1.bin",
+			"words": [
+				{ "text": "over", "startMs": 0, "endMs": 400, "language": "en" },
+				{ "text": "there", "startMs": 500, "endMs": 900, "language": "en" }
+			]
+		})
+		.to_string();
+		let (status, saved) = put(&app, SAVE, Some(&phone), "application/json", fixed.as_bytes()).await;
+		assert_eq!(status, StatusCode::OK, "{saved}");
+		assert_eq!(saved["change"], "added");
+		assert_eq!(saved["hearing"]["model"], "owner:1");
+		assert_eq!(saved["hearing"]["by"], "owner");
+		assert_eq!(saved["hearing"]["text"], "over there");
+		let (status, again) = put(&app, SAVE, Some(&phone), "application/json", fixed.as_bytes()).await;
+		assert_eq!((status, &again["change"]), (StatusCode::OK, &json!("unchanged")));
+		assert_eq!(again["hearing"], saved["hearing"], "a replay answers the save as home holds it");
+
+		let rewritten = fixed.replace("there", "where");
+		let (status, answer) = put(&app, SAVE, Some(&phone), "application/json", rewritten.as_bytes()).await;
+		assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+		assert_eq!(
+			put(&app, "/voice-notes/t1/transcripts/owner/0", Some(&phone), "application/json", fixed.as_bytes()).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY
+		);
+		assert_eq!(
+			put(&app, "/voice-notes/t9/transcripts/owner/1", Some(&phone), "application/json", fixed.as_bytes()).await.0,
+			StatusCode::NOT_FOUND
+		);
+		assert_eq!(put(&app, SAVE, Some(&other), "application/json", fixed.as_bytes()).await.0, StatusCode::NOT_FOUND);
+
+		let read = get(&app, WORDS, Some(&phone)).await.1;
+		assert_eq!(read["chosen"], "owner:1", "the owner's words are the ones read");
+		assert_eq!(read["hearings"][1]["text"], "over their", "home's hearing is kept as heard");
+		assert_eq!(read["hearings"][0]["words"][1], json!({ "text": "there", "startMs": 500, "endMs": 900, "language": "en" }));
+	}
+
+	/// A save that breaks a rule is a 422 naming each field in fixed words,
+	/// and writes nothing; a note said for anything but `studio` has no
+	/// words to read or fix here.
+	#[tokio::test]
+	async fn a_refused_save_names_its_fields_and_only_a_take_has_words_here() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		heard(&pool, A, "n1", "a reflection").await;
+		assert_eq!(get(&app, "/voice-notes/n1/transcripts", Some(&phone)).await.0, StatusCode::NOT_FOUND);
+
+		let named = |answer: (StatusCode, Value)| {
+			assert_eq!(answer.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", answer.1);
+			let mut fields: Vec<String> = answer.1["error"]["details"].as_object().unwrap().keys().cloned().collect();
+			fields.sort();
+			fields
+		};
+		assert_eq!(
+			named(put(&app, "/voice-notes/n1/transcripts/owner/x", Some(&phone), "application/json", b"{}").await),
+			["body", "n"]
+		);
+		assert_eq!(
+			named(
+				put(
+					&app,
+					"/voice-notes/n1/transcripts/owner/1",
+					Some(&phone),
+					"application/json",
+					br#"{"basedOn":"","words":[]}"#
+				)
+				.await
+			),
+			["basedOn", "words"]
+		);
+		let one = br#"{"basedOn":"ggml-small-q5_1.bin","words":[{"text":"hi","startMs":0,"endMs":400}]}"#;
+		assert_eq!(
+			put(&app, "/voice-notes/n1/transcripts/owner/1", Some(&phone), "application/json", one).await.0,
+			StatusCode::NOT_FOUND,
+			"a reflection is no take"
+		);
+		let owners: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_transcript WHERE engine = 'owner'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(owners, 0, "nothing refused was written");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding
