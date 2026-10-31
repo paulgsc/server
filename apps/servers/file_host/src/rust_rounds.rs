@@ -28,6 +28,7 @@ pub mod pass;
 
 use crate::{AppState, Config};
 use pass::Socket;
+use rust_rounds_wire::protocol::ASK_TIMEOUT;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,11 +37,13 @@ use tracing::{error, info, warn};
 /// The shortest interval `RUST_ROUNDS_SECONDS` may set.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// The shortest pass deadline `RUST_ROUNDS_PASS_DEADLINE_SECONDS` may set.
+/// The shortest pass deadline `RUST_ROUNDS_PASS_DEADLINE_SECONDS` may set:
+/// one ask's wait, `ASK_TIMEOUT` (137 s).
 ///
-/// One job's worst case, the runner's compile timeout (60 s), run ceiling
-/// (2 s), clean-up (30 s) and its client deadlines (5 s each way), fits.
-pub const MIN_DEADLINE: Duration = Duration::from_secs(120);
+/// An ask waits past the runner's watchdog deadline for one job (its
+/// ceilings, clean-up, client deadlines and sweep allowance, 132 s), so a
+/// job the watchdog ends is seen as a dropped connection (RP3).
+pub const MIN_DEADLINE: Duration = ASK_TIMEOUT;
 
 /// Everything the worker needs, or `None` when the deployment has not turned
 /// it on.
@@ -58,7 +61,7 @@ impl RustRoundsContext {
 	///
 	/// # Errors
 	/// `RUST_ROUNDS_ENABLED` with `RUST_ROUNDS_SECONDS` below 10 or
-	/// `RUST_ROUNDS_PASS_DEADLINE_SECONDS` below 120.
+	/// `RUST_ROUNDS_PASS_DEADLINE_SECONDS` below [`MIN_DEADLINE`].
 	pub fn from_config(config: &Config) -> anyhow::Result<Option<Self>> {
 		if !config.rust_rounds_enabled {
 			info!("Rust Rounds recording is not enabled; home keeps rounds without recording their programs");
@@ -67,7 +70,11 @@ impl RustRoundsContext {
 		let interval = Duration::from_secs(config.rust_rounds_seconds);
 		anyhow::ensure!(interval >= MIN_INTERVAL, "RUST_ROUNDS_SECONDS must be at least 10");
 		let deadline = Duration::from_secs(config.rust_rounds_pass_deadline_seconds);
-		anyhow::ensure!(deadline >= MIN_DEADLINE, "RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least 120");
+		anyhow::ensure!(
+			deadline >= MIN_DEADLINE,
+			"RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least {}, one ask's wait",
+			MIN_DEADLINE.as_secs()
+		);
 		Ok(Some(Self {
 			runner: Arc::new(Socket(PathBuf::from(&config.rust_rounds_socket))),
 			interval,
@@ -99,7 +106,7 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 					return;
 				}
 				_ = ticker.tick() => {
-					let result = pass::run_once(&db, &context.runner, context.deadline, &cancel, &crate::mailbox::pass::now).await;
+					let result = pass::run_once(&db, &context.runner, context.deadline, ASK_TIMEOUT, &cancel, &crate::mailbox::pass::now).await;
 					log_pass(&result);
 				}
 			}

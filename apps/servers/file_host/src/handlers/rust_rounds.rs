@@ -454,9 +454,16 @@ mod tests {
 		let (status, again, _) = call(&app, Method::GET, ROUND, Some(&phone), Some((IF_NONE_MATCH, &etag)), b"").await;
 		assert_eq!((status, again.as_deref()), (StatusCode::NOT_MODIFIED, Some(etag.as_str())));
 
-		let done = crate::rust_rounds::pass::run_once(&pool, &Arc::new(Prints), Duration::from_secs(60), &CancellationToken::new(), &|| String::from("now"))
-			.await
-			.unwrap();
+		let done = crate::rust_rounds::pass::run_once(
+			&pool,
+			&Arc::new(Prints),
+			Duration::from_secs(60),
+			Duration::from_secs(30),
+			&CancellationToken::new(),
+			&|| String::from("now"),
+		)
+		.await
+		.unwrap();
 		assert_eq!(done.recorded, 2);
 
 		let (status, newer, got) = call(&app, Method::GET, ROUND, Some(&phone), Some((IF_NONE_MATCH, &etag)), b"").await;
@@ -495,9 +502,16 @@ mod tests {
 		let (_, _, got) = call(&app, Method::GET, ROUND, Some(&mine), None, b"").await;
 		assert_eq!(got["round"], serde_json::from_slice::<Value>(&my_round).unwrap());
 
-		let done = crate::rust_rounds::pass::run_once(&pool, &Arc::new(Prints), Duration::from_secs(60), &CancellationToken::new(), &|| String::from("now"))
-			.await
-			.unwrap();
+		let done = crate::rust_rounds::pass::run_once(
+			&pool,
+			&Arc::new(Prints),
+			Duration::from_secs(60),
+			Duration::from_secs(30),
+			&CancellationToken::new(),
+			&|| String::from("now"),
+		)
+		.await
+		.unwrap();
 		assert_eq!(done.recorded, 3, "card b's program is one program for both");
 
 		crate::handlers::auth::delete_subject(&auth, A).await.unwrap();

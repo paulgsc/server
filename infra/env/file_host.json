@@ -716,7 +716,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "Seconds one pass may take, every program it records included. At least 120, so one program's worst case fits",
+      "help": "Seconds one pass may take, every program it records included. At least 137, one ask's wait, which outlasts the runner's job deadline",
       "required_when": null
     },
     {

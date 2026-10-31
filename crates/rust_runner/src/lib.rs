@@ -40,15 +40,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// How long `rustc` may take over one program before the compile counts as
-/// failed.
-pub const DEFAULT_COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
-/// The wall-clock ceiling on one run.
-///
-/// See `leetype-execution.md` for why 2 s at `opt-level=0`: every
-/// inadmissible variant in the round corpus exceeds it at `C′` and every
-/// admissible one finishes in tens of milliseconds.
-pub const DEFAULT_RUN_CEILING: Duration = Duration::from_millis(2_000);
+/// The compile timeout and the run ceiling: `rust_rounds_wire`'s, so a
+/// client derives how long a job may take (`job_deadline`) from the same
+/// numbers the runner uses.
+pub use rust_rounds_wire::protocol::{DEFAULT_COMPILE_TIMEOUT, DEFAULT_RUN_CEILING};
 /// The most stdout a run keeps.
 pub const DEFAULT_OUTPUT_CEILING: usize = 4 * 1024;
 /// The most stderr a run keeps, and the most of rustc's text a failed

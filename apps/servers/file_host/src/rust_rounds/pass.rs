@@ -20,10 +20,15 @@
 //!   at the [`DROPS`]th drop of one program the program is kept as
 //!   `runner-restarted`, so one hostile program cannot take the runner down
 //!   pass after pass, and the programs behind it are not held up for good.
+//!   Each ask waits `ASK_TIMEOUT`, past the runner's watchdog deadline
+//!   (`rust_rounds_wire::protocol::DEFAULT_JOB_DEADLINE`), so a job the
+//!   watchdog ends is seen as a drop, never as this pass's own timeout: a
+//!   program that wedges the runner costs at most `DROPS` job deadlines per
+//!   toolchain.
 //! - **RP4: bounded by [`BATCH`] and the pass deadline alone.** A pass takes
-//!   at most `BATCH` programs, asks nothing once its deadline has passed,
-//!   and gives each ask what is left of it. Any failure but a recording ends
-//!   the pass: the next starts from the same program.
+//!   at most `BATCH` programs, and starts an ask only while a whole ask's
+//!   wait is left before its deadline. Any failure but a recording ends the
+//!   pass: the next starts from the same program.
 
 use rust_round_repo::{Ended, Kept, Waiting};
 use rust_rounds_wire::protocol::{exchange, AskError, Refusal, Request, Response};
@@ -68,9 +73,9 @@ pub enum Stop {
 	Unreachable,
 	/// The runner went away while it held a program; kept as a drop.
 	Dropped,
-	/// The runner did not answer within what was left of the pass.
+	/// The runner did not answer within an ask's wait.
 	TimedOut,
-	/// The pass's deadline passed between programs.
+	/// Less than one ask's wait was left before the pass's deadline.
 	Deadline,
 	/// The runner's toolchain is not the one this pass asked for: it was
 	/// replaced mid-pass. The next pass asks again.
@@ -130,8 +135,11 @@ const fn stop_of(err: &AskError) -> Stop {
 	}
 }
 
-/// Records up to [`BATCH`] waiting programs with `runner`, within `deadline`.
+/// Records up to [`BATCH`] waiting programs with `runner`, within `deadline`,
+/// each ask waiting `per_ask` (`ASK_TIMEOUT` in the server).
 ///
+/// An ask starts only while `per_ask` is left before the deadline, so every
+/// ask ends by it.
 /// # Errors
 /// A storage failure, which ends the pass; what was kept before it stays
 /// kept, and the next pass carries on from it.
@@ -139,12 +147,18 @@ pub async fn run_once<R: Runner>(
 	db: &SqlitePool,
 	runner: &Arc<R>,
 	deadline: Duration,
+	per_ask: Duration,
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, sqlx::Error> {
 	let until = Instant::now() + deadline;
 	let mut pass = Pass::default();
-	let toolchain = match ask(runner, Request::Toolchain {}, deadline).await {
+	let room = || until.saturating_duration_since(Instant::now()) >= per_ask;
+	if !room() {
+		pass.stopped = Some(Stop::Deadline);
+		return Ok(pass);
+	}
+	let toolchain = match ask(runner, Request::Toolchain {}, per_ask).await {
 		Ok(Response::Toolchain { toolchain }) => toolchain,
 		Ok(_) => {
 			pass.stopped = Some(Stop::Invalid);
@@ -164,8 +178,7 @@ pub async fn run_once<R: Runner>(
 			pass.cancelled = true;
 			break;
 		}
-		let left = until.saturating_duration_since(Instant::now());
-		if left.is_zero() {
+		if !room() {
 			pass.stopped = Some(Stop::Deadline);
 			break;
 		}
@@ -173,7 +186,7 @@ pub async fn run_once<R: Runner>(
 			toolchain: toolchain.clone(),
 			source: program.source.clone(),
 		};
-		let stop = match ask(runner, request, left).await {
+		let stop = match ask(runner, request, per_ask).await {
 			Ok(Response::Recorded { recording, rustc }) if recording.toolchain == toolchain => {
 				// Disallowed for tracing; this is the record itself, stored.
 				#[allow(clippy::disallowed_methods)]
@@ -374,10 +387,13 @@ mod tests {
 		tx.commit().await.unwrap();
 	}
 
+	/// A pass within `deadline`, each ask waiting half of it.
 	async fn pass<R: Runner>(pool: &SqlitePool, runner: &Arc<R>, deadline: Duration) -> Pass {
-		run_once(pool, runner, deadline, &CancellationToken::new(), &|| String::from("2026-10-31T01:00:00.000Z"))
-			.await
-			.unwrap()
+		run_once(pool, runner, deadline, deadline / 2, &CancellationToken::new(), &|| {
+			String::from("2026-10-31T01:00:00.000Z")
+		})
+		.await
+		.unwrap()
 	}
 
 	/// `(source, ended, key, rustc)` of every run, in arrival order.
@@ -476,9 +492,10 @@ mod tests {
 		);
 	}
 
-	/// A pass records at most `BATCH` programs, and asks nothing past its
-	/// deadline: a runner that does not answer ends the pass at it, and the
-	/// program is asked again first next pass.
+	/// A pass records at most `BATCH` programs, and starts no ask it could
+	/// not wait out before its deadline: a runner that does not answer ends
+	/// the pass at its ask's wait, and the program is asked again first next
+	/// pass.
 	#[tokio::test]
 	async fn a_pass_is_bounded_by_its_batch_and_its_deadline() {
 		let pool = pool().await;
@@ -491,10 +508,18 @@ mod tests {
 		round(&pool, "r-02", &["slow", "behind"]).await;
 		let hangs = Fake::new(|source| if source == "slow" { Act::Hang } else { Act::Record });
 		let started = Instant::now();
-		let done = pass(&pool, &hangs, Duration::from_millis(100)).await;
+		let done = pass(&pool, &hangs, Duration::from_millis(200)).await;
 		assert!(started.elapsed() < Duration::from_secs(5));
 		assert_eq!((done.recorded, done.stopped), (0, Some(Stop::TimedOut)));
 		assert_eq!(hangs.asked(), ["slow"], "nothing is asked past the deadline");
+
+		let short = run_once(&pool, &hangs, Duration::from_millis(50), Duration::from_millis(100), &CancellationToken::new(), &|| {
+			String::from("now")
+		})
+		.await
+		.unwrap();
+		assert_eq!(short.stopped, Some(Stop::Deadline), "an ask that could outlast the pass is not started");
+		assert_eq!(hangs.asked(), ["slow"]);
 		let drops: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_round_drop").fetch_one(&pool).await.unwrap();
 		assert_eq!(drops, 0, "our own deadline is not the runner's drop");
 	}

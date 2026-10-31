@@ -39,7 +39,10 @@ use crate::recording::Recorder;
 use crate::SpawnError;
 /// The protocol itself, and its client: `rust_rounds_wire`'s, the half a
 /// client links.
-pub use rust_rounds_wire::protocol::{ask, exchange, AskError, Refusal, Request, Response, ANSWER_CEILING, CLIENT_TIMEOUT, REQUEST_CEILING};
+pub use rust_rounds_wire::protocol::{
+	ask, exchange, job_deadline, AskError, Refusal, Request, Response, ANSWER_CEILING, ASK_TIMEOUT, CLEAN_TIMEOUT, CLIENT_TIMEOUT, DEFAULT_JOB_DEADLINE, REQUEST_CEILING,
+	SWEEP_ALLOWANCE,
+};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};

@@ -56,14 +56,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// How long `clean` may take over what one job left.
-const CLEAN_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// What a job may take beyond its own ceilings (the compile timeout, the run
-/// ceiling, [`CLEAN_TIMEOUT`] and the client's two deadlines) before the
-/// watchdog ends the runner: its sweeps, each a few milliseconds and each
-/// helper bounded by `HELPER_TIMEOUT`, and the tidy's checks.
-const SWEEP_ALLOWANCE: Duration = Duration::from_secs(30);
+// `clean`'s timeout, the watchdog's sweep allowance and the job deadline
+// they sum to are `rust_rounds_wire`'s, so the client's wait (`ASK_TIMEOUT`)
+// is derived from the same numbers and outlasts the watchdog.
+use rust_runner::service::{job_deadline, ASK_TIMEOUT, CLEAN_TIMEOUT, SWEEP_ALLOWANCE};
 
 /// How often the watchdog looks at the clock.
 const WATCH_POLL: Duration = Duration::from_millis(100);
@@ -132,8 +128,9 @@ enum Mode {
 	Ask {
 		#[arg(long, env = "RUST_RUNNER_SOCKET")]
 		socket: PathBuf,
-		/// How long to wait for the answer, in seconds.
-		#[arg(long, default_value_t = 120)]
+		/// How long to wait for the answer, in seconds. The default outlasts
+		/// the watchdog's job deadline (`ASK_TIMEOUT`).
+		#[arg(long, default_value_t = ASK_TIMEOUT.as_secs())]
 		timeout_secs: u64,
 	},
 	/// Remove everything in each program's directory under `work`. Run by
@@ -319,7 +316,7 @@ fn run(serve: &Serve) -> Result<(), String> {
 /// The watchdog's deadline for one job: every ceiling it can spend, plus
 /// [`SWEEP_ALLOWANCE`]. 132 s with the defaults.
 fn serve_job_deadline(limits: &Limits) -> Duration {
-	limits.compile_timeout + limits.run_ceiling + CLEAN_TIMEOUT + rust_runner::service::CLIENT_TIMEOUT * 2 + SWEEP_ALLOWANCE
+	job_deadline(limits.compile_timeout, limits.run_ceiling)
 }
 
 /// Undo whatever a program did (RX2): remove every program's directory, check

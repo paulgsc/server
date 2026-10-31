@@ -32,6 +32,49 @@ pub const REQUEST_CEILING: u64 = 64 * 1024;
 /// client cannot hold the one job slot.
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `rustc` may take over one program before the compile counts as
+/// failed.
+pub const DEFAULT_COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The wall-clock ceiling on one run.
+///
+/// See `leetype-execution.md` for why 2 s at `opt-level=0`: every
+/// inadmissible variant in the round corpus exceeds it at `C′` and every
+/// admissible one finishes in tens of milliseconds.
+pub const DEFAULT_RUN_CEILING: Duration = Duration::from_millis(2_000);
+
+/// How long the runner's `clean` may take over what one job left.
+pub const CLEAN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a job may take beyond its own ceilings (the compile timeout, the run
+/// ceiling, [`CLEAN_TIMEOUT`] and the client's two deadlines) before the
+/// runner's watchdog ends the runner: its sweeps, each a few milliseconds and
+/// each helper bounded by its own timeout, and the tidy's checks.
+pub const SWEEP_ALLOWANCE: Duration = Duration::from_secs(30);
+
+/// The watchdog's deadline for one job under these ceilings: every ceiling
+/// it can spend, plus [`SWEEP_ALLOWANCE`] (RX3). Past it, the runner exits
+/// and the client sees its connection dropped.
+#[must_use]
+pub const fn job_deadline(compile_timeout: Duration, run_ceiling: Duration) -> Duration {
+	compile_timeout
+		.saturating_add(run_ceiling)
+		.saturating_add(CLEAN_TIMEOUT)
+		.saturating_add(CLIENT_TIMEOUT.saturating_mul(2))
+		.saturating_add(SWEEP_ALLOWANCE)
+}
+
+/// [`job_deadline`] with the default ceilings, which the runner's image
+/// runs with (it sets none, and compose passes no environment, RX1): 132 s.
+pub const DEFAULT_JOB_DEADLINE: Duration = job_deadline(DEFAULT_COMPILE_TIMEOUT, DEFAULT_RUN_CEILING);
+
+/// How long a client waits for an answer: past [`DEFAULT_JOB_DEADLINE`] by
+/// one [`CLIENT_TIMEOUT`] (137 s), so a job the runner's watchdog ends is
+/// seen as a dropped connection, never as the client's own timeout. A client
+/// that gave up first would ask again while the runner was still wedged and
+/// queue behind it, and one hostile program would cost two attempts.
+pub const ASK_TIMEOUT: Duration = DEFAULT_JOB_DEADLINE.saturating_add(CLIENT_TIMEOUT);
+
 /// The largest answer [`ask`] reads, in bytes.
 ///
 /// An answer holds at most the
@@ -180,7 +223,7 @@ pub fn exchange(socket: &Path, request: &Request, timeout: Duration) -> Result<R
 
 #[cfg(test)]
 mod tests {
-	use super::{exchange, AskError, Refusal, Request, Response};
+	use super::{exchange, AskError, Refusal, Request, Response, ASK_TIMEOUT, DEFAULT_JOB_DEADLINE};
 	use std::io::{BufRead, BufReader, Write};
 	use std::os::unix::net::UnixListener;
 	use std::time::Duration;
@@ -217,6 +260,12 @@ mod tests {
 		for reason in [Refusal::Malformed, Refusal::TooLarge, Refusal::WrongToolchain, Refusal::Peer] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), reason.as_str());
 		}
+	}
+
+	#[test]
+	fn a_client_waits_past_the_watchdog() {
+		assert_eq!(DEFAULT_JOB_DEADLINE, Duration::from_secs(132));
+		assert!(ASK_TIMEOUT > DEFAULT_JOB_DEADLINE, "a wedged job is seen dropped, not timed out");
 	}
 
 	/// A service that reads the request whole and then does `then` with the

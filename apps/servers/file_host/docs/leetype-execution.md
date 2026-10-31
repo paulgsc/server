@@ -457,19 +457,29 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     is the watchdog:** a thread of the runner arms each job's whole life,
     from accepting its connection to the end of its tidy, with the sum of
     those ceilings plus a 30 s sweep allowance (132 s with the defaults,
-    `serve_job_deadline`), and exits the runner if the job is still going
+    `serve_job_deadline`, which is `rust_rounds_wire::protocol::job_deadline`
+    of the runner's ceilings), and exits the runner if the job is still going
     past it. That bounds the one wait nothing on the job's thread can: a
     helper a survivor stopped before its `exec`, which blocks `spawn`. The
     exit is RX2's restart; the client sees its connection dropped. **What a
     client does with a dropped connection:** treat it as "the runner
     restarted while running this job" and retry it, a bounded number of
     times, then record that as the outcome (`rust_rounds::pass`, RP3); the
-    protocol has no answer for it. A connection from any uid but the client's and
+    protocol has no answer for it. **A client waits past the watchdog:**
+    `ASK_TIMEOUT` (137 s) is `DEFAULT_JOB_DEADLINE`, the job deadline of the
+    default ceilings the image runs with, plus one client timeout, all
+    `rust_rounds_wire` constants the runner's own deadline is summed from,
+    and `ask`'s default wait. A client that gave up before the watchdog
+    would ask again while the runner was still wedged, queue behind it, and
+    spend a second attempt on one hostile program. A connection from any uid but the client's and
     root's is refused before anything is read (`SO_PEERCRED`), so a program
     cannot queue jobs that outlive it.
     file_host asks the runner only from a background pass (EX1), never from
     a handler, and `ask` reads at most 4 MiB of answer.
-  - _Falsified by_ a thread or task per connection, a removed ceiling or
+  - _Falsified by_ a client wait (the pass's `per_ask`, `ask`'s default)
+    that is a literal or shorter than the job deadline, a job deadline summed
+    from anything but `rust_rounds_wire`'s constants and the runner's
+    ceilings, a thread or task per connection, a removed ceiling or
     one per read or write, a helper waited without a deadline, a watchdog
     removed, disarmed before the tidy ends or depending on any process of
     the programs' uid, a peer check removed or moved after the read, or a
@@ -575,11 +585,16 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     same transaction, as `runner-restarted`, with a `stopped` `RustcRun`
     whose `why` is `exit`. So one hostile program can take the runner down
     at most `DROPS` times per toolchain, and the programs behind it are then
-    recorded. State per program and toolchain is at most `DROPS` rows.
+    recorded. State per program and toolchain is at most `DROPS` rows. Each
+    ask waits `ASK_TIMEOUT`, which outlasts the runner's job deadline
+    (RX3), so a job the watchdog ends is always seen as a drop, never as
+    the pass's own timeout: a program that wedges the runner holds it for
+    at most one job deadline per attempt, and at most `DROPS` (2) job
+    deadlines per toolchain in all.
   - _Falsified by_ a drop kept for anything but a connection that ended
     after the whole request was sent, a program kept failed for an outage,
-    a timeout or a refusal, a drop limit that grows with anything, or a
-    second `runner-restarted` path.
+    a timeout or a refusal, a drop limit that grows with anything, a second
+    `runner-restarted` path, or an ask that waits less than `ASK_TIMEOUT`.
   - _Why not enforced mechanically:_ which failure is the runner's and which
     the program's is a reading of `exchange`'s phases.
     `an_exchange_says_how_far_it_got` checks the phases,
@@ -588,16 +603,18 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
 - **RP4: every pass is bounded by `BATCH` and the pass deadline, and
   nothing else.**
   - _Claim:_ a pass reads at most `BATCH` (20) waiting programs and asks
-    the runner about each in turn; it asks nothing once its deadline
-    (`RUST_ROUNDS_PASS_DEADLINE_SECONDS`, at least 120 s, so one program's
-    worst case fits) has passed, and each ask waits at most what is left of
-    it. Any outcome but a kept run ends the pass, and the next starts again
-    from the first program waiting. There is no other cap, cursor or
-    deadline: the queue is the arrival order and the toolchain's last run,
-    and `DROPS` bounds state per program, not work per pass.
+    the runner about each in turn; it starts an ask (the toolchain's
+    included) only while one ask's wait, `ASK_TIMEOUT`, is left before its
+    deadline (`RUST_ROUNDS_PASS_DEADLINE_SECONDS`, at least `ASK_TIMEOUT`,
+    137 s, so one ask fits), so every ask ends by the deadline. Any outcome
+    but a kept run ends the pass, and the next starts again from the first
+    program waiting. There is no other cap, cursor or deadline: the queue
+    is the arrival order and the toolchain's last run, and `DROPS` bounds
+    state per program, not work per pass.
   - _Falsified by_ a per-pass cap, cursor or deadline of the mechanism's
-    own, a pass that reads past `BATCH`, an ask with a timeout longer than
-    what is left of the pass, or a pass that goes on after a failed ask.
+    own, a pass that reads past `BATCH`, an ask started with less than its
+    wait left before the deadline, or a pass that goes on after a failed
+    ask.
   - _Why not enforced mechanically:_ the pass is short enough to read.
     `a_pass_is_bounded_by_its_batch_and_its_deadline` checks both bounds.
 
