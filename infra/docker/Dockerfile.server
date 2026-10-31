@@ -88,7 +88,8 @@ COPY crates/ crates/
 COPY apps/ apps/
 COPY .sqlx/ .sqlx/
 # Embedded by `schema::MIGRATOR` (sqlx::migrate!) so /ready can name
-# migrations the runtime database hasn't applied yet.
+# migrations the runtime database hasn't applied yet, and `migrate` can
+# apply them.
 COPY migrations/ migrations/
 
 # Build configuration. Codegen flags live in the workspace's
@@ -122,10 +123,12 @@ ENV BUILD_DATE=${BUILD_DATE}
 # features for that closure alone, and without `-p` the two disagree:
 # file_host's build recompiled 42 crates cook had built or skipped (obws and
 # everything some-obs's `obs-websocket/websocket` feature touches).
-RUN cargo build --release -p file_host --bin file_host
+# `migrate` is the same package's one-shot deploy step (compose's `migrate`
+# service, AS16 #563): it links only what file_host already links.
+RUN cargo build --release -p file_host --bin file_host --bin migrate
 
 # Strip debug symbols to reduce binary size
-RUN strip target/release/file_host
+RUN strip target/release/file_host target/release/migrate
 
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────
@@ -161,10 +164,15 @@ RUN mkdir -p /app/data /app/config \
 # Copy only the final binary from builder stage
 COPY --from=builder --chown=nonroot:nonroot \
     /app/target/release/file_host /usr/local/bin/file_host
+# The deploy's migration step: compose runs it as the `migrate` service,
+# with this image's entrypoint replaced.
+COPY --from=builder --chown=nonroot:nonroot \
+    /app/target/release/migrate /usr/local/bin/migrate
 
 # Ensure executable
-RUN chmod +x /usr/local/bin/file_host \
-    && /usr/local/bin/file_host --version
+RUN chmod +x /usr/local/bin/file_host /usr/local/bin/migrate \
+    && /usr/local/bin/file_host --version \
+    && /usr/local/bin/migrate --version
 
 USER nonroot:nonroot
 

@@ -59,6 +59,12 @@ services:
     hoist_set: false
     scrape:
       reason: 'unscrapable by design — network_mode: none (RX1), so nothing can reach a metrics port; it serves one Unix socket. Its work is seen from file_host: operation_errors_total{operation="rust_rounds"} counts every pass the runner is unreachable, dropped a job or answered wrongly (RP3), and cadvisor sees the container'
+  # The deploy's one-shot migration step (AS16, #563).
+  - service: migrate
+    container_name: file-host-migrate
+    hoist_set: false
+    scrape:
+      reason: 'a one-shot step, not a server: it runs before file-host starts, backs the database up, applies its migrations and exits (network_mode: none). What it leaves is seen from file_host: /ready names any migration still pending (dependency_up{dependency="schema"}), and its own log says why a run failed'
   # ── observability stack and exporters ───────────────────────────────────
   - service: redis-exporter
     container_name: redis-exporter

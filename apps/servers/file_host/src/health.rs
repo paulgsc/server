@@ -117,7 +117,7 @@ mod tests {
 
 	const BEHIND: &str = r#"{"ready":false,"status":"degraded","dependencies":[
 		{"name":"sqlite","healthy":true,"critical":true},
-		{"name":"schema","healthy":false,"critical":false,"error":"5 pending (20261029000200 store_each_game_feed_body_once); run `sqlx migrate run`"}]}"#;
+		{"name":"schema","healthy":false,"critical":false,"error":"5 pending (20261029000200 store_each_game_feed_body_once); run `migrate`"}]}"#;
 
 	#[test]
 	fn ready_passes() {

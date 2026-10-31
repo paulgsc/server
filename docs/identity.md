@@ -460,7 +460,10 @@ nowhere is marked as such and belongs to review.
 
    In the owner's deployment the only account is the owner's ("The owner's
    account"), so this deletion is of the owner's whole record, and home keeps
-   no copy. Whether it should first make a durable copy, or stay as it is on
+   no copy beyond the deploy's backups: each deploy that applies a migration
+   first copies the whole database to `backups/` beside it, and the newest 5
+   are kept (`file_host::migrate`, AS16). A deleted account's rows stay in
+   those copies until later deploys prune them. Whether it should first make a durable copy, or stay as it is on
    the owner's explicit call, waits on the owner (#510; paulgsc/some-ui's
    "Never lose the record"). Until then the claim stands as written, and the
    code does what it says.
@@ -1342,8 +1345,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   forwarding address headers to `file_host`; its error log still carries the
   client address and request line when an upstream fails. Docker keeps a
   container's output (`json-file`, until its size cap) wherever its log driver is
-  pointed, and nothing in this repository controls backups, a log shipper or a
-  collector.
+  pointed, and nothing in this repository controls a log shipper or a
+  collector. The one backup it makes is the deploy's copy of the database
+  (invariant 9).
 - **Behaviour is stored under the subject.** The sessions a subject builds,
   when they start, finish or abandon them, the scores and elapsed times the
   nudge reads, a presence lease per open session and the engagement state
@@ -1367,7 +1371,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **What deleting an account does not reach.** The subject's rows in the
   subject-scoped tables are deleted in one transaction. Not reached: copies in
   Redis, log lines and exported spans that carry the id, ceremonies held in
-  memory (an open pairing code is closed), backups, and SQLite's free pages
+  memory (an open pairing code is closed), backups (the deploy's own, kept
+  until five newer ones replace them, invariant 9), and SQLite's free pages
   and write-ahead log, which keep deleted rows until they are overwritten or
   checkpointed. Nor does it reach what home never held: a paired phone keeps
   its own copy of what it sent, and the owner's Drive keeps its copies. And it

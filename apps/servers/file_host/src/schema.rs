@@ -13,9 +13,11 @@
 //! set CI migrates its scratch database with — so the binary knows exactly
 //! which versions it expects. [`drift`] compares that list with
 //! `_sqlx_migrations` in the live database, read-only: it never creates the
-//! bookkeeping table or applies anything. Applying migrations stays an
-//! operator step; this only makes forgetting it visible, by name, in
-//! `/ready` (`handlers::readiness`) and at startup (`main.rs`).
+//! bookkeeping table or applies anything. Applying them is the deploy's
+//! `migrate` step (`crate::migrate`, AS16), which runs before `file_host`
+//! starts; this makes a database it has not brought current visible, by
+//! name, in `/ready` (`handlers::readiness`) and at startup (`main.rs`):
+//! a dev database nobody migrated, or a deploy that skipped the step.
 
 use sqlx::migrate::Migrator;
 use sqlx::{Row, SqlitePool};
@@ -72,7 +74,7 @@ impl fmt::Display for Drift {
 			f.write_str("never migrated: no _sqlx_migrations table, so this is an empty or wrong database file (is its volume mounted?); ")?;
 		}
 		if !self.pending.is_empty() {
-			write!(f, "{} pending ({}); run `sqlx migrate run`", self.pending.len(), self.pending.join(", "))?;
+			write!(f, "{} pending ({}); run `migrate`", self.pending.len(), self.pending.join(", "))?;
 		}
 		if !self.failed.is_empty() {
 			if !self.pending.is_empty() {
@@ -186,7 +188,7 @@ mod tests {
 		assert_eq!(drift.pending.len(), 1);
 		assert!(drift.pending[0].starts_with(&latest.to_string()), "{:?}", drift.pending);
 		let message = drift.to_string();
-		assert!(message.contains("1 pending") && message.contains("sqlx migrate run"), "{message}");
+		assert!(message.contains("1 pending") && message.contains("run `migrate`"), "{message}");
 	}
 
 	#[tokio::test]
@@ -228,7 +230,7 @@ mod tests {
 			modified: vec![2],
 			never_migrated: false,
 		};
-		assert_eq!(drift.to_string(), "1 pending (3 c); run `sqlx migrate run`; failed: [1]; modified after apply: [2]");
+		assert_eq!(drift.to_string(), "1 pending (3 c); run `migrate`; failed: [1]; modified after apply: [2]");
 		let drift = Drift {
 			modified: vec![2],
 			..Drift::default()

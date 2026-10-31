@@ -40,6 +40,23 @@ typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
 database they just migrated themselves. `/ready`'s body names the pending
 migrations; DEPS renders it as `schema down`.
 
+On home the deploy applies them (AS16, #563). Compose's one-shot `migrate`
+service, from the same image, runs before `file-host` starts, which waits
+on it with `condition: service_completed_successfully`; `make up` runs it
+once more before `docker compose up -d`, while the old container still
+serves. It backs the database up first (`VACUUM INTO`
+`<database dir>/backups/`, verified with `PRAGMA integrity_check`, newest 5
+kept), then applies the pending migrations with the embedded `MIGRATOR`
+(`file_host::migrate`). On any failure it exits non-zero with the reason in
+its own log (`docker compose logs migrate`), and the new `file_host` is not
+started: under `make up` the old one keeps serving, and a database ahead of
+its binary is one it serves (a bare `docker compose up -d` may already have
+stopped it). It refuses, rather than migrates, a database
+file that is missing or never migrated, since that is what an unmounted
+volume looks like; a new host passes `--init` once. So on home `schema`
+down means a deploy that skipped the step, or a migration it refused, and
+the `migrate` log says which.
+
 `/ready` answers in three levels, not one bit: its `status` is `ready`,
 `degraded` (only a non-critical dependency is down; today that is `schema`
 alone, and only for a migrated database behind its build) or `unavailable`

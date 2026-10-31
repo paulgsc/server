@@ -1,4 +1,33 @@
 services:
+  # One-shot, from the same image: backs the database up (VACUUM INTO, then
+  # verified) and applies the migrations the image embeds, then exits
+  # (AS16, #563; apps/servers/file_host/src/migrate.rs). file-host starts
+  # only once it exits 0, so no build runs on a schema behind it. With
+  # nothing pending it takes no backup and exits at once, as on every `up`.
+  # Backups go to backups/ beside the database (on the host,
+  # ${STORAGE}/backups); it keeps its newest 5 and removes older ones only
+  # after a run that succeeded. `make up` runs it before `docker compose up
+  # -d` too, while the old file-host still serves: compose may stop the old
+  # container before it waits on the new one's dependencies, and then a
+  # failure seen only here would leave file-host stopped rather than the
+  # old one serving.
+  migrate:
+    image: pgathondu/server:latest
+    container_name: file-host-migrate
+    entrypoint: ['/usr/local/bin/migrate']
+    environment:
+      - DATABASE_URL=sqlite:///app/dbs/hopium.db
+    volumes:
+      # The same database volume as file-host's, below.
+      - ${STORAGE:-/mnt/storage/users/dev/databases/hopium}:/app/dbs
+    network_mode: none
+    restart: 'no'
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
   file-host:
     image: pgathondu/server:latest
     container_name: file-host-server
@@ -69,6 +98,9 @@ services:
         max-size: '10m'
         max-file: '3'
     depends_on:
+      # Its migrations applied, after a verified backup (above).
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       nats:

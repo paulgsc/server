@@ -164,4 +164,8 @@ preflight: ## Check .env before docker compose up: every missing or refused vari
 	@python3 scripts/env_schema.py preflight $(if $(FILL),--fill)
 
 up: preflight ## Start the stack (docker compose up -d), once the preflight passes
+# The database's migrations, after a verified backup, while the old
+# file-host still serves: a failure stops here and leaves it serving
+# (infra/compose/file_host.yml's `migrate`, AS16 #563).
+	@docker compose run --rm migrate
 	@docker compose up -d

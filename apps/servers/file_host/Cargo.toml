@@ -36,6 +36,13 @@ path = "src/bin/dump_proposed_session.rs"
 name = "dump-provisioned-session"
 path = "src/bin/dump_provisioned_session.rs"
 
+# `migrate` backs the database up and applies the migrations this build
+# embeds; compose's one-shot `migrate` service runs it before `file-host`
+# starts (AS16, #563; `src/migrate.rs`).
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
 [[bin]]
 name = "import-curriculum"
 path = "src/bin/import_curriculum.rs"
