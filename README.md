@@ -164,11 +164,16 @@ whether `.env` sets it.
   - _Proof:_ each `Config`'s `the_checked_in_schema_is_this_config` compares
     the file with `app_config::schema` of the `Config` (`cargo test`), and
     `Lint`'s `Env schema` job runs `env_schema.py example --check`.
-  - _Tolerance:_ clap cannot see a requirement that depends on another
-    variable (`WEBAUTHN_RP_ID` while `AUTH_ENABLED` is on). The binary checks
-    it at start, and declares it beside its `Config` (file_host's
-    `REQUIRED_WHEN`) for the schema; that list agrees with the start-up checks
-    by review, not by a test.
+  - _Tolerance:_ none for what a binary declares. What clap cannot see, a
+    requirement that depends on another variable (`WEBAUTHN_RP_ID` while
+    `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_SECONDS` at least
+    60 while the mailbox is on), the binary declares beside its `Config` as
+    `RULES`. `app_config::schema::parse` refuses to start on any that does not
+    hold, naming all of them, and the same `RULES` are in the schema, so the
+    preflight checks what start-up checks (#580, each binary's
+    `tests/config.rs`). A relation between two values (the game feed's
+    backoff cap at least its cadences) and a value's shape (the mailbox URL)
+    stay the feature code's own check.
 
 ### Deploying the stack
 
@@ -211,6 +216,24 @@ preflight names those too.
     another variable are checked by the binary at start, as ENV1 and ENV2
     say. A container without the label (the third-party ones) is checked
     only for the compose variables it interpolates.
+
+### NixOS modules
+
+The flake exports each binary as a NixOS service, `nixosModules.file-host` and
+`nixosModules.orchestrator` (#408), run as an OCI container. Their options are
+generated from the same schema (`scripts/nixos_options.py` writes
+`nix/modules/generated/`, and `Lint`'s `Env schema` job holds it in step), so
+`nixos-option services.file-host.settings` lists every variable with its help,
+and `nixos-rebuild` refuses a configuration with a required setting missing,
+one required while another is on, or a number out of its limits, naming every
+gap in one evaluation (`nix/modules/test.nix`, the `NixOS modules` job). A
+secret has no option: it reaches the container only through
+`environmentFiles`, a sops-nix template on the host.
+
+Nothing uses them yet: the box still runs the compose stack (`make up`), and
+each module is off unless `enable`. Moving the box onto them is its own step,
+in its own configuration (`paulgsc/dotfiles`), and gives up what compose
+gives, such as waiting on a dependency's healthcheck (#408).
 
 ### Host-specific values
 

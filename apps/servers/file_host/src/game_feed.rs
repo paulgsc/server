@@ -45,7 +45,7 @@ pub const MIN_LIVE: Duration = Duration::from_secs(5);
 /// The longest any cadence or the backoff cap may be: a day. Past it a
 /// fetch would be due beyond any game it is for, and a time that far out can
 /// overflow the scheduler's arithmetic.
-const MAX_CADENCE: Duration = Duration::from_secs(86_400);
+pub const MAX_CADENCE: Duration = Duration::from_secs(86_400);
 
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);

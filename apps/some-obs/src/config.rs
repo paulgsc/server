@@ -5,6 +5,18 @@ use clap::Parser;
 use obs_websocket::ObsConfig;
 use std::time::Duration;
 
+/// What some-obs holds its `Config` to beyond its parsers, for the schema and
+/// `make preflight` (#580): the interval its parser already refuses below 1.
+pub const RULES: app_config::schema::Rules = app_config::schema::Rules {
+	required_when: &[],
+	bounds: &[app_config::schema::Bound {
+		variable: "HEALTH_CHECK_INTERVAL_SECS",
+		min: Some(1.0),
+		max: None,
+		when: &[],
+	}],
+};
+
 /// The OBS NATS service's whole configuration.
 ///
 /// Each field is also a flag. A value that does not parse stops startup with
@@ -115,7 +127,7 @@ mod tests {
 	#[test]
 	fn the_checked_in_schema_is_this_config() {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra/env/some-obs.json");
-		app_config::schema::assert_checked_in("some-obs", &Config::command(), &[], &path);
+		app_config::schema::assert_checked_in("some-obs", &Config::command(), &super::RULES, &path);
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 

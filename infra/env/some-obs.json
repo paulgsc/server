@@ -12,7 +12,8 @@
       "delimiter": null,
       "secret": false,
       "help": "The NATS server to connect to.\n\nThe default only works beside a NATS that publishes 4222 on the same machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see `some_transport::DEV_HOST_NATS_URL`. Every container sets it.",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     },
     {
       "name": "OBS_HOST",
@@ -24,7 +25,8 @@
       "delimiter": null,
       "secret": false,
       "help": "obs-websocket's host",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     },
     {
       "name": "OBS_PORT",
@@ -36,7 +38,8 @@
       "delimiter": null,
       "secret": false,
       "help": "obs-websocket's port",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     },
     {
       "name": "OBS_PASSWORD",
@@ -48,7 +51,8 @@
       "delimiter": null,
       "secret": true,
       "help": "obs-websocket's server password. Empty means OBS has authentication off",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     },
     {
       "name": "HEALTH_CHECK_INTERVAL_SECS",
@@ -60,7 +64,12 @@
       "delimiter": null,
       "secret": false,
       "help": "Seconds between checks that OBS is still connected. At least 1",
-      "required_when": null
+      "required_when": null,
+      "bounds": {
+        "min": 1.0,
+        "max": null,
+        "when": []
+      }
     },
     {
       "name": "SHUTDOWN_TIMEOUT_SECS",
@@ -72,7 +81,8 @@
       "delimiter": null,
       "secret": false,
       "help": "Seconds the service's tasks get to finish once it is told to stop",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     },
     {
       "name": "RUST_LOG",
@@ -84,7 +94,8 @@
       "delimiter": null,
       "secret": false,
       "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
-      "required_when": null
+      "required_when": null,
+      "bounds": null
     }
   ]
 }

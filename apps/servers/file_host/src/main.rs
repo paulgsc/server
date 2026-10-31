@@ -8,7 +8,6 @@ use axum::{
 	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next,
 	response::Response, Router,
 };
-use clap::Parser;
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
@@ -56,12 +55,14 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 #[tokio::main]
 async fn main() -> Result<()> {
 	dotenvy::dotenv().ok();
-	let config = Config::parse();
+	let (config, held): (Config, _) = app_config::schema::parse_then_hold(&file_host::RULES);
 
-	// Handle health check flag
+	// Before the rules: a health check is a separate process, run by the
+	// container's healthcheck, that inherits no flags the server got.
 	if config.health_check {
 		return perform_health_check(&config).await;
 	}
+	held.unwrap_or_else(|err| err.exit());
 
 	// Installs the global `metrics` recorder — see #139 (P1). Every
 	// `counter!`/`histogram!` call anywhere in this process, direct or via

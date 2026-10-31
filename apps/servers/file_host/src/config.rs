@@ -1,4 +1,4 @@
-use app_config::schema::RequiredWhen;
+use app_config::schema::{Bound, RequiredWhen, Rules, When, SET};
 pub use app_config::{LogArgs, NatsArgs, OtelArgs, TraceSampler, DEV_HOST_NATS_URL};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -19,10 +19,12 @@ pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
 /// What `Config` requires only while another variable is on.
 ///
-/// Each is checked where the server refuses to start without it
+/// `RULES` holds it at start, before any feature reads it, naming every gap at
+/// once (`app_config::schema::parse`), and the schema
+/// (`infra/env/file_host.json`) carries it to `make preflight` (#504, #580).
+/// The feature code checks the same again as its own guard
 /// (`auth::configured_relying_party`, `mailbox::Mailbox::from_config`,
-/// `build_nudge`), and declared here so the schema
-/// (`infra/env/file_host.json`) and `make preflight` know it (#504).
+/// `build_nudge`). `MAILBOX_SUBJECT` is not here: home knows its owner (#595).
 pub const REQUIRED_WHEN: &[RequiredWhen] = &[
 	RequiredWhen {
 		variable: "WEBAUTHN_RP_ID",
@@ -55,6 +57,106 @@ pub const REQUIRED_WHEN: &[RequiredWhen] = &[
 		is: "true",
 	},
 ];
+
+/// The limits `Config`'s numbers are held to at start, while their feature is on.
+///
+/// Built from the same constants the feature code checks, so the two cannot
+/// disagree (#580). The relation `GAME_FEED_BACKOFF_CAP_SECONDS` has to
+/// the cadences, and the mailbox's URL shape, stay the feature code's alone.
+// The limits are small whole numbers, which an f64 holds exactly.
+#[allow(clippy::cast_precision_loss)]
+pub const BOUNDS: &[Bound] = &[
+	Bound {
+		variable: "OTEL_TRACES_SAMPLER_ARG",
+		min: Some(app_config::SAMPLER_ARG_MIN),
+		max: Some(app_config::SAMPLER_ARG_MAX),
+		when: &[],
+	},
+	Bound {
+		variable: "MAILBOX_SECONDS",
+		min: Some(crate::mailbox::MIN_INTERVAL.as_secs() as f64),
+		max: None,
+		when: &[When {
+			variable: "MAILBOX_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "MAILBOX_ARCHIVE_DAYS",
+		min: Some(crate::mailbox::MIN_ARCHIVE_DAYS as f64),
+		max: Some(crate::mailbox::MAX_ARCHIVE_DAYS as f64),
+		when: &[
+			When {
+				variable: "MAILBOX_ENABLED",
+				is: "true",
+			},
+			When {
+				variable: "MAILBOX_ARCHIVE_TOKEN",
+				is: SET,
+			},
+		],
+	},
+	Bound {
+		variable: "TRANSCRIBE_SECONDS",
+		min: Some(crate::transcribe::MIN_INTERVAL.as_secs() as f64),
+		max: None,
+		when: &[When {
+			variable: "TRANSCRIBE_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "TRANSCRIBE_DEADLINE_SECONDS",
+		min: Some(crate::transcribe::MIN_DEADLINE.as_secs() as f64),
+		max: None,
+		when: &[When {
+			variable: "TRANSCRIBE_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "TRANSCRIBE_THREADS",
+		min: Some(1.0),
+		max: None,
+		when: &[When {
+			variable: "TRANSCRIBE_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "GAME_FEED_SCOREBOARD_SECONDS",
+		min: Some(crate::game_feed::MIN_SCOREBOARD.as_secs() as f64),
+		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
+		when: &[When {
+			variable: "GAME_FEED_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "GAME_FEED_LIVE_SECONDS",
+		min: Some(crate::game_feed::MIN_LIVE.as_secs() as f64),
+		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
+		when: &[When {
+			variable: "GAME_FEED_ENABLED",
+			is: "true",
+		}],
+	},
+	Bound {
+		variable: "GAME_FEED_BACKOFF_CAP_SECONDS",
+		min: None,
+		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
+		when: &[When {
+			variable: "GAME_FEED_ENABLED",
+			is: "true",
+		}],
+	},
+];
+
+/// What `file_host` holds its `Config` to at start beyond what clap parses.
+pub const RULES: Rules = Rules {
+	required_when: REQUIRED_WHEN,
+	bounds: BOUNDS,
+};
 
 /// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`
 /// and `packages/ui/topik/ROUTINE.md`).
@@ -725,7 +827,7 @@ mod tests {
 	#[test]
 	fn the_checked_in_schema_is_this_config() {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../infra/env/file_host.json");
-		app_config::schema::assert_checked_in("file_host", &Config::command(), super::REQUIRED_WHEN, &path);
+		app_config::schema::assert_checked_in("file_host", &Config::command(), &super::RULES, &path);
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 
