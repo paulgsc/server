@@ -192,6 +192,7 @@ above the button that deletes (invariant 22):
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
+| Drama prompts | `drama_prompt` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -690,8 +691,10 @@ nowhere is marked as such and belongs to review.
     paulgsc/server#463), `leetype-log` (how each finished LeetType session
     went, invariant 18; paulgsc/some-ui#2027), `index` (home's bookkeeping
     for the Jobs routine, computed from these tables and kept in none of
-    them; paulgsc/server#509) and `reflection` (each written reflection home
-    keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178).
+    them; paulgsc/server#509), `reflection` (each written reflection home
+    keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178) and
+    `prompt` (each drama prompt home keeps, as the routine's minimum,
+    invariant 31; paulgsc/some-ui#2179).
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -707,11 +710,12 @@ nowhere is marked as such and belongs to review.
       digests, and the pre-mailbox decisions and scouts files the routine
       put back there once.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
-      `PUT /routine/opened`, `PUT /routine/reflections/:id` and the poller's
-      `file_transcripts` and `file_leetype_logs`: a decisions or scouts file
-      the phone filed, which of the routine's lessons it opened, a written
-      reflection, a transcript, or a LeetType session's log, its bytes, hash
-      and when.
+      `PUT /routine/opened`, `PUT /routine/reflections/:id`,
+      `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
+      `file_leetype_logs`: a decisions or scouts file the phone filed, which
+      of the routine's lessons it opened, a written reflection, a drama
+      prompt, a transcript, or a LeetType session's log, its bytes, hash and
+      when.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -729,6 +733,13 @@ nowhere is marked as such and belongs to review.
       the session it is about, when it was written and the typed line, and
       nothing else (paulgsc/some-ui#2174, decision D2: the routine's
       minimum). A reflection sent again files nothing.
+      The prompts route files each drama prompt it keeps for the first time
+      (invariant 31), in the transaction that keeps it, as
+      `drama-<stamp>.prompt.json` in `some-ui.drama-prompt/1`: the prompt's
+      stamp and its markdown, and nothing else (the same decision D2;
+      paulgsc/some-ui#2179). Its scene notes are named in it by id only;
+      what home heard in each goes as its transcript. A prompt sent again
+      files nothing.
       The poller files each `voice_transcript` row that heard something
       (never a failure or a silence) as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
@@ -795,10 +806,12 @@ nowhere is marked as such and belongs to review.
       mailbox held them (they must match the listing's SHA-256), its hash,
       size, sequence number, when it was first put and when home stored it.
       Read only by the poller, to put a file back when the routine asks, and
-      to ask again for a written reflection whose ask heard no answer.
+      to ask again for a written reflection or drama prompt whose ask heard
+      no answer.
     - `mailbox_archive_answer`, written only by the poller with the archive
       token (invariant 21): the mailbox's answer each time home asked it to
-      drop a written reflection home holds in `mailbox_archive` (`archived`,
+      drop a written reflection or a drama prompt home holds in
+      `mailbox_archive` (`archived`,
       `unchanged`, `mismatch`, `refused` or `gone`), and when. Any answer is
       final, as a hand-off's is.
 
@@ -835,6 +848,7 @@ nowhere is marked as such and belongs to review.
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
     `a_filed_file_is_handed_over_as_filed`,
     `a_filed_reflection_is_handed_to_its_folder_as_text`,
+    `a_filed_prompt_is_handed_to_its_folder_as_text`,
     `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
     `no_transcript_is_filed_for_a_deleted_subject`,
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
@@ -849,12 +863,13 @@ nowhere is marked as such and belongs to review.
     `a_backfilled_file_in_brief_is_counted_and_said_to_be_backfilled`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
     a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript`,
-    `leetype-log`, `index` or `reflection`; `mailbox_kit`'s
+    `leetype-log`, `index`, `reflection` or `prompt`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
     `files_take_a_file_that_names_a_voice_note`; and `handlers::routine`'s
-    `a_written_reflection_is_kept_once_and_filed_once_as_text`.
+    `a_written_reflection_is_kept_once_and_filed_once_as_text` and
+    `a_drama_prompt_is_kept_once_and_filed_once_as_text`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,
@@ -880,22 +895,21 @@ nowhere is marked as such and belongs to review.
     not store (other bytes already under its name, no account) is never asked
     for, and neither is a file from a folder home reads (`brief`, `scene`,
     `drama`, `run`, `leetype`) that `mailbox_item` does not hold, so the phone never loses one
-    to the archive. A written reflection is archived the same way, with two
-    differences that keep a pass with nothing to do from asking anything of
-    its folder: the poller lists `reflection` only once a reflection it
-    filed has been taken (or already held) by the mailbox for
-    `MAILBOX_ARCHIVE_DAYS` and is not in `mailbox_archive`
-    (`mailbox_repo::reflection_due`, which reads home's own tables), and it
-    never lists the asks for one (`mailbox::pass::ASKS`), since the routine
-    cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`);
-    its words are
-    `written_reflection`'s in any case (invariant 29). Storing one makes it
-    due no more, so a listing would never find it again: the poller records
-    the mailbox's answer to each ask to archive one
-    (`mailbox_archive_answer`), and one it stored whose ask heard no answer
-    (it never reached the mailbox, its answer was lost, or home restarted
-    between the two) is asked for again by its name and the SHA-256 home
-    holds, without listing the folder
+    to the archive. A written reflection or a drama prompt is archived the
+    same way, with two differences that keep a pass with nothing to do from
+    asking anything of its folder: the poller lists `reflection` or `prompt`
+    only once a file it filed there has been taken (or already held) by the
+    mailbox for `MAILBOX_ARCHIVE_DAYS` and is not in `mailbox_archive`
+    (`mailbox_repo::filed_due`, which reads home's own tables), and it never
+    lists the asks for one (`mailbox::pass::ASKS`), since the routine cannot
+    ask either back (paulgsc/some-ui `apps/mailbox`, `ASKED`); their words
+    are `written_reflection`'s and `drama_prompt`'s in any case (invariants
+    29 and 31). Storing one makes it due no more, so a listing would never
+    find it again: the poller records the mailbox's answer to each ask to
+    archive one (`mailbox_archive_answer`), and one it stored whose ask
+    heard no answer (it never reached the mailbox, its answer was lost, or
+    home restarted between the two) is asked for again by its name and the
+    SHA-256 home holds, without listing the folder
     (`mailbox_repo::unanswered_archives`, home's own tables again), until
     the mailbox answers; one it had already dropped answers `unchanged`. When the routine asks for an archived file again, the poller puts
     back the bytes `mailbox_archive` holds for it, and the mailbox takes only
@@ -924,8 +938,11 @@ nowhere is marked as such and belongs to review.
     `an_ask_is_answered_from_home_and_one_home_lacks_stays_open`,
     `a_pass_archives_at_most_twenty`,
     `an_old_reflection_is_archived_once_and_its_asks_are_never_listed`,
-    `a_reflection_whose_archive_heard_no_answer_is_asked_for_again` and
-    `an_idle_pass_asks_nothing_of_reflections`; `mailbox_repo`'s
+    `a_reflection_whose_archive_heard_no_answer_is_asked_for_again`,
+    `an_idle_pass_asks_nothing_of_reflections`,
+    `an_old_prompt_is_archived_once_and_its_asks_are_never_listed`,
+    `a_prompt_whose_archive_heard_no_answer_is_asked_for_again` and
+    `an_idle_pass_asks_nothing_of_prompts`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
     days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB5's
@@ -1282,6 +1299,48 @@ nowhere is marked as such and belongs to review.
     *Not enforced:* that nothing else writes the table, which
     `git grep -n written_reflection -- '*.rs'` shows today.
 
+31. **The owner's drama prompts are append-only, one per stamp, and only
+    their stamp and markdown reach the mailbox.** `drama_prompt` keeps each
+    next scene's prompt the phone asks for and sends home
+    (paulgsc/some-ui#2179, HF4; "Ask for the next scene"): the prompt's
+    stamp (`drama-` and the moment it was asked for, which the drama that
+    answers it carries), its markdown as the phone wrote it (a note for an
+    agent, a line naming each scene note by the phone's id, the tree prompt
+    with the scene asked for and the last drama's review), and when it
+    reached home. Home is the owner's own store (paulgsc/some-ui#2174,
+    decision D1), so it is the record, and the phone lets one go only once
+    home holds it. A prompt is never updated (a trigger aborts an `UPDATE`)
+    or replaced (a different prompt under a held stamp is a `409`), and never
+    deleted but with the account. It is written only by
+    `PUT /routine/prompts/:stamp`, which refuses a stamp that is no moment
+    on the calendar, a blank text or one over 256 KiB, and a text the Jobs
+    mailbox would refuse (a `data:` URI, a run of 256 or more base64
+    characters, a Drive link), so home keeps no prompt it could not hand on;
+    it is readable by no route, and deleted with the account by both the
+    sweep and the migration's trigger (invariant 12). Rolling back the
+    migration that creates it fails once it holds a row, rather than
+    dropping the record. The same route files what the reflections routine
+    reads of it, once, for the mailbox's `prompt` folder (invariant 19): its
+    stamp and its markdown; never a scene note's audio, which went home as
+    a voice note (invariant 23) and reaches the routine only as its
+    transcript (decision D2). The text holds the owner's own words, so it
+    never reaches a log line: the handler records only `otel.kind`
+    (invariant 6).
+    *Enforced by* `drama_prompt_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_prompt_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_answer_is_the_prompt_as_the_phone_wrote_it`,
+    `a_stamp_is_a_real_moment`, `refusals_name_each_field`,
+    `a_prompt_carrying_audio_or_a_drive_link_is_refused`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::routine`'s
+    `a_drama_prompt_is_kept_once_and_filed_once_as_text` and
+    `a_prompt_the_mailbox_would_refuse_is_refused_and_nothing_is_filed`.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n drama_prompt -- '*.rs'` shows today; and that
+    `drama_prompt_repo::carries` reads a text as the mailbox's
+    `carriesRefusal` does, which a change on either side can break (each
+    side's tests pin the same cases).
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -1350,7 +1409,10 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   lessons the phone opened (their names, and when home filed them), and each
   written reflection home keeps (the owner's typed line about a study
   session, the session's id and when it was written: the reflections
-  routine's minimum, paulgsc/some-ui#2174 decision D2, invariant 29), live in
+  routine's minimum, paulgsc/some-ui#2174 decision D2, invariant 29), and
+  each drama prompt home keeps (the next scene's prompt as the owner asked
+  for it: the scene they asked for, the last drama's review in their words,
+  and their scene notes named by id; the same decision, invariant 31), live in
   a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps

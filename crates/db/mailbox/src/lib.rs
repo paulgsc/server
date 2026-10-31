@@ -18,7 +18,9 @@
 //! - **One writer per table.** `file_host`'s `mailbox` poller is the only
 //!   caller of [`keep_item`], [`record_handed`], [`keep_archived`],
 //!   [`file_transcript`] and [`file_leetype_log`], and
-//!   `PUT /api/v1/jobs/files/:name` and `PUT /api/v1/routine/opened` the only
+//!   `PUT /api/v1/jobs/files/:name`, `PUT /api/v1/routine/opened`,
+//!   `PUT /api/v1/routine/reflections/:id` and
+//!   `PUT /api/v1/routine/prompts/:stamp` the only
 //!   callers of [`file_outgoing`] besides it;
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
@@ -494,35 +496,41 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 /// The folder home's written reflections go to.
 pub const REFLECTION: &str = "reflection";
 
-/// Whether one of `subject`'s written reflections is due to be archived.
+/// The folder home's drama prompts go to.
+pub const PROMPT: &str = "prompt";
+
+/// Whether one of the files `subject`'s home filed itself in `folder` is due
+/// to be archived: the [`REFLECTION`] and [`PROMPT`] folders, whose files the
+/// routine cannot ask back.
 ///
 /// That is one home filed, which the mailbox took (or already held) at
 /// `cutoff` or before, and which home has not archived: the one reason a
-/// pass lists the mailbox's `reflection` folder to archive it. One home
-/// archived whose ask heard no answer is not due here: it is asked for again
-/// by name ([`unanswered_archives`]), since it may no longer be listed.
+/// pass lists the folder to archive it. One home archived whose ask heard no
+/// answer is not due here: it is asked for again by name
+/// ([`unanswered_archives`]), since it may no longer be listed.
 ///
 /// Home reads only its own tables here, so a pass with nothing due makes no
 /// request for the folder (paulgsc/some-ui's assurance ledger, MI6). It
-/// probes the reflections filed, by `mailbox_outgoing`'s key, each one's
-/// answer by `mailbox_handed_file` and its archive by `mailbox_archive`'s key.
+/// probes the files filed, by `mailbox_outgoing`'s key, each one's answer by
+/// `mailbox_handed_file` and its archive by `mailbox_archive`'s key.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn reflection_due(conn: &mut SqliteConnection, subject: &str, cutoff: &str) -> Result<bool, MailboxError> {
+pub async fn filed_due(conn: &mut SqliteConnection, subject: &str, folder: &str, cutoff: &str) -> Result<bool, MailboxError> {
 	let due = sqlx::query_scalar!(
 		r#"SELECT EXISTS (
 		     SELECT 1 FROM mailbox_outgoing AS filed
 		     JOIN mailbox_handed AS handed
 		       ON handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
-		     WHERE filed.subject_id = ?1 AND filed.folder = 'reflection'
-		       AND handed.answer IN ('added', 'unchanged') AND handed.handed_at <= ?2
+		     WHERE filed.subject_id = ?1 AND filed.folder = ?2
+		       AND handed.answer IN ('added', 'unchanged') AND handed.handed_at <= ?3
 		       AND NOT EXISTS (
 		         SELECT 1 FROM mailbox_archive AS archived
 		         WHERE archived.subject_id = filed.subject_id AND archived.folder = filed.folder AND archived.name = filed.name
 		       )
 		   ) AS "due!: bool""#,
 		subject,
+		folder,
 		cutoff
 	)
 	.fetch_one(&mut *conn)

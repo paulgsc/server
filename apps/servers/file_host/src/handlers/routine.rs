@@ -16,6 +16,12 @@
 //! invariant 29), append-only, and in the same transaction files what the
 //! reflections routine reads of it for the mailbox's `reflection` folder
 //! (`mailbox::pass::reflection_file`): its text, its session and when.
+//!
+//! **The owner's drama prompts.** `PUT /routine/prompts/:stamp` keeps each
+//! next scene's prompt the phone asks for (`drama_prompt_repo`,
+//! docs/identity.md invariant 31), append-only, and in the same transaction
+//! files what the reflections routine reads of it for the mailbox's `prompt`
+//! folder (`mailbox::pass::prompt_file`): its stamp and its markdown.
 //! Nothing typed reaches a log: each handler here records only `otel.kind`.
 
 use crate::subject::SubjectId;
@@ -256,6 +262,64 @@ pub async fn put_reflection(subject: SubjectId, State(db): State<SqlitePool>, Pa
 		change: change.as_str(),
 		reflection,
 	}))
+}
+
+/// `PUT /routine/prompts/:stamp`
+#[derive(Debug, Serialize)]
+pub struct PromptKept {
+	/// `added` or `unchanged` — `drama_prompt_repo::Change`.
+	pub change: &'static str,
+	/// The prompt as home holds it, which the phone compares with what it
+	/// sent before it counts it as home's.
+	pub prompt: drama_prompt_repo::Prompt,
+}
+
+fn prompt_refusal(err: drama_prompt_repo::PromptError) -> FileHostError {
+	match err {
+		drama_prompt_repo::PromptError::Invalid(problems) => FileHostError::unprocessable_entity(problems),
+		drama_prompt_repo::PromptError::Rewritten => FileHostError::Conflict(drama_prompt_repo::REWRITTEN),
+		drama_prompt_repo::PromptError::Storage(err) => FileHostError::Sqlite(err),
+	}
+}
+
+/// `PUT /routine/prompts/:stamp`, the request body being the drama prompt
+/// itself, `{ stamp, text }`, in the phone's shape.
+///
+/// Kept in `drama_prompt`, and, when it is new, filed in the same
+/// `BEGIN IMMEDIATE` transaction for the mailbox's `prompt` folder, so a
+/// prompt home holds is always on its way to the routine and none is filed
+/// twice. The same prompt again changes nothing.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 naming each
+/// refused field (a stamp that is no moment, a blank text, one the mailbox
+/// would refuse as audio or a Drive link), 409 for a different prompt under
+/// a held stamp, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "routine_prompt_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_prompt(subject: SubjectId, State(db): State<SqlitePool>, Path(stamp): Path<String>, body: Bytes) -> Result<Json<PromptKept>, FileHostError> {
+	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let (change, prompt) = drama_prompt_repo::put_prompt(&mut tx, subject.as_str(), &stamp, &body, &now)
+		.await
+		.map_err(prompt_refusal)?;
+	if change == drama_prompt_repo::Change::Added {
+		let (name, bytes) = crate::mailbox::pass::prompt_file(&prompt);
+		let sha256 = hex::encode(Sha256::digest(&bytes));
+		let filed = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::PROMPT, &name, &sha256, &bytes, &now)
+			.await
+			.map_err(|err| match err {
+				mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("the mailbox's copy of this prompt already holds other words"),
+				mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+			})?;
+		if filed == mailbox_repo::Change::NoAccount {
+			// `SubjectId` found the account, so this is not reachable; if it
+			// were, the transaction is dropped and nothing is written.
+			return Err(FileHostError::OperationError("the account is gone".to_owned()));
+		}
+	}
+	tx.commit().await?;
+	Ok(Json(PromptKept { change: change.as_str(), prompt }))
 }
 
 #[cfg(test)]
@@ -576,6 +640,77 @@ mod tests {
 		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
 		drop(conn);
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM written_reflection").fetch_one(&state.pool).await.unwrap();
+		assert_eq!(held, 0);
+	}
+
+	async fn put_prompt(state: TestState, auth: Option<&str>, stamp: &str, body: &Value) -> (StatusCode, Value) {
+		let app: Router = crate::routes::routine::routine().into_table_router().with_state(state);
+		let mut request = Request::builder()
+			.method(Method::PUT)
+			.uri(String::from("/routine/prompts/") + stamp)
+			.header(axum::http::header::CONTENT_TYPE, "application/json");
+		if let Some(auth) = auth {
+			request = request.header(AUTHORIZATION, auth);
+		}
+		let response = app.oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	const STAMP: &str = "drama-20261101T081500000Z";
+
+	/// docs/identity.md invariant 31: kept once, answered as the phone wrote
+	/// it, filed once for the mailbox as the routine's minimum, and never
+	/// replaced.
+	#[tokio::test]
+	async fn a_drama_prompt_is_kept_once_and_filed_once_as_text() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		let sent = json!({ "stamp": STAMP, "text": "> **For an agent:** follow the prompt below.\n\nWrite the next scene." });
+		assert_eq!(
+			put_prompt(state.clone(), Some(&phone), STAMP, &sent).await,
+			(StatusCode::OK, json!({ "change": "added", "prompt": sent }))
+		);
+		assert_eq!(
+			put_prompt(state.clone(), Some(&phone), STAMP, &sent).await,
+			(StatusCode::OK, json!({ "change": "unchanged", "prompt": sent }))
+		);
+		let (status, _) = put_prompt(state.clone(), Some(&phone), STAMP, &json!({ "stamp": STAMP, "text": "Other words." })).await;
+		assert_eq!(status, StatusCode::CONFLICT, "a different prompt under a held stamp");
+
+		let mut conn = state.pool.acquire().await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		assert_eq!(pending.len(), 1, "filed once");
+		assert_eq!((pending[0].folder.as_str(), pending[0].name.as_str()), ("prompt", "drama-20261101T081500000Z.prompt.json"));
+		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
+		assert_eq!(
+			file,
+			json!({ "schema": "some-ui.drama-prompt/1", "prompt": STAMP, "text": "> **For an agent:** follow the prompt below.\n\nWrite the next scene." })
+		);
+		assert!(mailbox_repo::pending_outgoing(&mut conn, B, 10).await.unwrap().is_empty(), "only the caller's");
+	}
+
+	#[tokio::test]
+	async fn a_prompt_the_mailbox_would_refuse_is_refused_and_nothing_is_filed() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		assert_eq!(
+			put_prompt(state.clone(), None, STAMP, &json!({ "stamp": STAMP, "text": "x" })).await.0,
+			StatusCode::UNAUTHORIZED
+		);
+		for (stamp, body) in [
+			(STAMP, json!({ "stamp": STAMP, "text": "here data:audio/webm;base64,GkXfo59ChoEB" })),
+			(STAMP, json!({ "stamp": STAMP, "text": "see https://drive.google.com/file/d/1AbC/view" })),
+			(STAMP, json!({ "stamp": STAMP, "text": " " })),
+			("drama-20261399T000000000Z", json!({ "stamp": "drama-20261399T000000000Z", "text": "x" })),
+		] {
+			assert_eq!(put_prompt(state.clone(), Some(&phone), stamp, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+		}
+		let mut conn = state.pool.acquire().await.unwrap();
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		drop(conn);
+		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drama_prompt").fetch_one(&state.pool).await.unwrap();
 		assert_eq!(held, 0);
 	}
 }
