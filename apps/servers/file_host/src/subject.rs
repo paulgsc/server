@@ -78,7 +78,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"leetype_session_event",
-		"the owner's LeetType session log (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`), every event of every session sent home: the session file played, each pick and how long it took, readings placed, opened, saved or read, rounds parked, returned and confirmed, how each spoken answer was given and whether it was strong (never what was said, typed or ticked), how the session ended, and when each was recorded and reached home; see docs/identity.md",
+		"the owner's LeetType session log (paulgsc/some-ui `packages/ui/leetype/src/lib/leetype/session-log`), every event of every session sent home: the session file played, each pick and how long it took, readings placed, opened, saved or read, rounds parked, returned and confirmed, how each spoken answer was given and whether it was strong (never what was said, typed or ticked), which round a take's rubric was shown for (by name only), how the session ended, and when each was recorded and reached home; see docs/identity.md",
 	),
 	(
 		"mailbox_archive",
@@ -90,11 +90,15 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_item",
-		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, or the reflections routine's word sets, dramas and run records): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+		"the files home read from the Jobs mailbox for the owner (paulgsc/some-ui `apps/mailbox`), each a routine's file (the Jobs digest, the reflections routine's word sets, dramas and run records, or a LeetType session file): its bytes as the mailbox held them, its hash, size and sequence number, and when home read it; see docs/identity.md invariant 19",
+	),
+	(
+		"mailbox_leetype_log",
+		"each decision home made on the owner's finished LeetType sessions for the mailbox: the session, the highest of its events the decision covered, and either the number its filed file's name carries or why it could not be filed (unreadable, no_file, too_big), and when; see docs/identity.md invariants 18 and 19",
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), and what home heard in their voice notes (text only), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's voice-free Jobs decisions and scouts, which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",

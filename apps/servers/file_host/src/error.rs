@@ -148,6 +148,18 @@ impl FileHostError {
 	}
 }
 
+// A read of home's mailbox copy: a storage failure is a 500 as any other's,
+// and a read never rewrites. A write maps `Rewritten` itself, to the `409` its
+// route means.
+impl From<mailbox_repo::MailboxError> for FileHostError {
+	fn from(err: mailbox_repo::MailboxError) -> Self {
+		match err {
+			mailbox_repo::MailboxError::Storage(err) => Self::Sqlite(err),
+			mailbox_repo::MailboxError::Rewritten => Self::OperationError("a read cannot rewrite".to_owned()),
+		}
+	}
+}
+
 // Manual From for DedupCacheError because the cache variant needs HTTP-aware
 // decomposition rather than a straight wrap.
 impl From<DedupCacheError> for FileHostError {

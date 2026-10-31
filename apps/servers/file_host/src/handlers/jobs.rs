@@ -156,12 +156,7 @@ pub async fn get_digests(subject: SubjectId, State(db): State<SqlitePool>, Query
 		}
 	}
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::digests_after(&mut conn, subject.as_str(), query.after.as_deref(), DIGESTS_PER_ANSWER)
-		.await
-		.map_err(|err| match err {
-			mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
-			mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
-		})?;
+	let held = mailbox_repo::digests_after(&mut conn, subject.as_str(), query.after.as_deref(), DIGESTS_PER_ANSWER).await?;
 	let digests = held
 		.into_iter()
 		.map(|held| {
@@ -208,10 +203,7 @@ pub struct HeldRun {
 #[instrument(name = "jobs_runs", skip_all, fields(otel.kind = "server"))]
 pub async fn get_runs(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Runs>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::jobs_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await.map_err(|err| match err {
-		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
-		mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
-	})?;
+	let held = mailbox_repo::jobs_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await?;
 	let runs = held
 		.into_iter()
 		.filter_map(|held| {
