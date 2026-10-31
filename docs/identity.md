@@ -596,8 +596,10 @@ nowhere is marked as such and belongs to review.
     (the session file started and in which form, each pick and how many
     milliseconds it took, the readings placed, opened, saved or read, the
     rounds parked, returned and confirmed, how each spoken answer was given,
-    for how many seconds and whether it was strong, and how the session
-    ended), its type, when the phone recorded it and when it reached home.
+    for how many seconds and whether it was strong, which round a take's
+    rubric was shown for (`rubric-shown`: the file, the round and the take,
+    by name only), and how the session ended), its type, when the phone
+    recorded it and when it reached home.
     What was said or typed in a spoken answer, and what it was marked against
     (`ticks`, `prompt`, `rubric`, `typed`), goes to the owner's Drive and
     never here: an event carrying any of them is a `422` naming the field, and
@@ -637,8 +639,10 @@ nowhere is marked as such and belongs to review.
     *Enforced by* `leetype_log_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced`,
     `the_record_leaves_with_the_account` and, for the soundbites,
-    `a_soundbite_is_refused_by_name` and `a_refused_event_writes_nothing`, and
-    `handlers::leetype_log`'s `refusals_name_their_fields_and_records_stay_apart`;
+    `a_soundbite_is_refused_by_name`, `a_shown_rubric_comes_home_as_ids_alone`
+    and `a_refused_event_writes_nothing`, and `handlers::leetype_log`'s
+    `refusals_name_their_fields_and_records_stay_apart` and
+    `a_shown_rubric_reads_back_as_sent_in_serdes_key_order`;
     for the file that leaves, `mailbox::pass`'s
     `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`
     and `a_session_still_arriving_waits_a_poll_interval_and_holds_back_the_ones_after_it`.
@@ -1159,8 +1163,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **The LeetType session log and its times.** The events say which session
   files the owner played, how each round went and how long each pick took,
   which rounds they struggled with and returned to, which readings they
-  opened, saved or read, and how each spoken answer went (how long it ran and
-  whether it was strong, never what was said), each with when the phone
+  opened, saved or read, how each spoken answer went (how long it ran and
+  whether it was strong, never what was said), and for which rounds a take's
+  rubric was shown (by name, never what it says), each with when the phone
   recorded it, to the millisecond, and when it reached home. That timeline is
   what the record is for: it is how the owner's growth reads back. Deleting
   the account removes it; nothing else does.
