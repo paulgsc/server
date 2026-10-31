@@ -84,6 +84,7 @@ async fn main() -> ExitCode {
 		output_ceiling: args.output_ceiling,
 		logs_ceiling: args.logs_ceiling,
 		memory_ceiling: (args.memory_ceiling > 0).then_some(args.memory_ceiling),
+		..Limits::default()
 	}) {
 		Ok(runner) => runner,
 		Err(error) => {

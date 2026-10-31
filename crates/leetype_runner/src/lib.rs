@@ -30,63 +30,33 @@
 //! (kept to the ceiling, never streamed; the truncation is noted), an
 //! address-space ceiling applied through `prlimit` when it is installed, a
 //! fresh temporary directory per round, and a cleared environment.
+//!
+//! **Where the compile and the run live.** In `rust_runner`, the neutral
+//! runner Rust Rounds' `rust-runner` service calls too (paulgsc/some-ui#2234):
+//! this crate builds a round's programs and turns what each did into the
+//! client's `RunResult`, and nothing else spawns a process here.
 
-mod process;
 pub mod recorder;
 pub mod round;
 
-use crate::process::{describe, resolve, supervise, Captured, Ending, Finished};
 use crate::round::{programs, Constraint, ProgramError, RunnableRound};
 use leetype_round_repo::{Bounds, Elapsed, ErrorClass, ExecutionError, Observation, RecordedRun, RunResult};
+use rust_runner::{describe, without_thread_ids, Captured, Compiler, Ending, Finished, Profile, SpawnError};
+pub use rust_runner::{Limits, DEFAULT_COMPILE_TIMEOUT, DEFAULT_LOGS_CEILING, DEFAULT_MEMORY_CEILING, DEFAULT_OUTPUT_CEILING, DEFAULT_RUN_CEILING};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
 pub use recorder::{record_listed, RecordReport, RecorderError, RoundOutcome, Selection};
 
-/// How long `rustc` may take over one program before the compile counts as
-/// failed.
-pub const DEFAULT_COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
-/// The wall-clock ceiling on one run.
-///
-/// See the design note for why 2 s at `opt-level=0`: every inadmissible
-/// variant in the corpus exceeds it at `C′` and every admissible one finishes
-/// in tens of milliseconds.
-pub const DEFAULT_RUN_CEILING: Duration = Duration::from_millis(2_000);
-/// The most stdout a run keeps.
-pub const DEFAULT_OUTPUT_CEILING: usize = 4 * 1024;
-/// The most stderr a run (or a failed compile) keeps.
-pub const DEFAULT_LOGS_CEILING: usize = 4 * 1024;
-/// The address-space ceiling on one run, when `prlimit` is installed.
-pub const DEFAULT_MEMORY_CEILING: u64 = 512 * 1024 * 1024;
-
-/// Everything the runner bounds, each with a default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Limits {
-	/// The compiler: a path, or a name looked up on `PATH`.
-	pub rustc: PathBuf,
-	pub compile_timeout: Duration,
-	pub run_ceiling: Duration,
-	pub output_ceiling: usize,
-	pub logs_ceiling: usize,
-	/// `None` for no address-space ceiling.
-	pub memory_ceiling: Option<u64>,
-}
-
-impl Default for Limits {
-	fn default() -> Self {
-		Self {
-			rustc: PathBuf::from("rustc"),
-			compile_timeout: DEFAULT_COMPILE_TIMEOUT,
-			run_ceiling: DEFAULT_RUN_CEILING,
-			output_ceiling: DEFAULT_OUTPUT_CEILING,
-			logs_ceiling: DEFAULT_LOGS_CEILING,
-			memory_ceiling: Some(DEFAULT_MEMORY_CEILING),
-		}
-	}
-}
+/// How a round's programs are compiled: the 2021 edition the corpus was
+/// written for, warnings off, as `check-round-programs-compile.ts` compiles
+/// them.
+const PROFILE: Profile = Profile {
+	edition: "2021",
+	crate_name: "round",
+	warnings: false,
+};
 
 /// Why a round was not recorded. A program that fails to compile, panics or
 /// runs out of time is **not** one of these: that is a recorded
@@ -138,12 +108,20 @@ impl std::fmt::Display for RecordError {
 
 impl std::error::Error for RecordError {}
 
-/// The runner, with its compiler (and `prlimit`, if any) found.
+impl From<SpawnError> for RecordError {
+	fn from(err: SpawnError) -> Self {
+		match err {
+			SpawnError::Toolchain(rustc, err) => Self::Toolchain(rustc, err),
+			SpawnError::Io(err) => Self::Io(err),
+			SpawnError::Program(err) => Self::Run(err),
+		}
+	}
+}
+
+/// The runner: `rust_runner`'s compiler, with its `prlimit` (if any) found.
 #[derive(Debug, Clone)]
 pub struct Runner {
-	limits: Limits,
-	rustc: PathBuf,
-	prlimit: Option<PathBuf>,
+	compiler: Compiler,
 }
 
 impl Runner {
@@ -152,14 +130,14 @@ impl Runner {
 	/// # Errors
 	/// [`RecordError::Toolchain`] when `limits.rustc` is not found.
 	pub fn new(limits: Limits) -> Result<Self, RecordError> {
-		let rustc = resolve(&limits.rustc).ok_or_else(|| RecordError::Toolchain(limits.rustc.clone(), std::io::Error::from(std::io::ErrorKind::NotFound)))?;
-		let prlimit = limits.memory_ceiling.and_then(|_| resolve(Path::new("prlimit")));
-		Ok(Self { limits, rustc, prlimit })
+		Ok(Self {
+			compiler: Compiler::new(limits).map_err(RecordError::from)?,
+		})
 	}
 
 	#[must_use]
 	pub const fn limits(&self) -> &Limits {
-		&self.limits
+		self.compiler.limits()
 	}
 
 	/// Whether runs are held to [`Limits::memory_ceiling`]: one is set and
@@ -167,7 +145,7 @@ impl Runner {
 	/// the machine — a known gap, which the recorder reports.
 	#[must_use]
 	pub const fn memory_ceiling_applied(&self) -> bool {
-		self.prlimit.is_some()
+		self.compiler.memory_ceiling_applied()
 	}
 
 	/// Build, compile and run every program of the round `body`, at both
@@ -233,59 +211,34 @@ impl Runner {
 	}
 
 	/// `Ok(Ok(binary))`, or `Ok(Err(message))` for a program that does not
-	/// compile in time.
+	/// compile in time. The message is the text rustc prints (each
+	/// diagnostic's `rendered`, byte for byte what it prints without
+	/// `--error-format=json`), kept to the logs ceiling.
 	fn compile(&self, dir: &Path, name: &str, source: &str) -> Result<Result<PathBuf, String>, RecordError> {
-		let file = dir.join(String::from(name) + ".rs");
-		let binary = dir.join(name);
-		std::fs::write(&file, source).map_err(RecordError::Io)?;
-
-		let mut command = Command::new(&self.rustc);
-		command
-			.args([
-				"--edition",
-				"2021",
-				"-C",
-				"opt-level=0",
-				"-A",
-				"warnings",
-				"--crate-type",
-				"bin",
-				"--crate-name",
-				"round",
-				"-o",
-			])
-			// Relative to `dir`, the child's working directory, so no message
-			// rustc or the program prints names the random temporary
-			// directory: a re-recording of an unchanged failure is then the
-			// same bytes, and the host's paths reach no route (review, #399).
-			.arg(name)
-			.arg(String::from(name) + ".rs")
-			.current_dir(dir)
-			.env_clear()
-			.env("TMPDIR", dir);
-		// What `rustc` (or rustup's proxy for it) and its linker need to be
-		// found, and nothing else. Forwarded to the child as they are, not
-		// configuration read around a binary's clap `Config` (#484).
-		#[allow(clippy::disallowed_methods)]
-		for key in ["PATH", "HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "CARGO_HOME"] {
-			if let Some(value) = std::env::var_os(key) {
-				command.env(key, value);
-			}
-		}
-		let finished = supervise(command, self.limits.compile_timeout, 0, self.limits.logs_ceiling).map_err(|err| RecordError::Toolchain(self.rustc.clone(), err))?;
-		Ok(match finished.ending {
-			Ending::Exited(status) if status.success() => Ok(binary),
-			Ending::Exited(status) => {
+		let compiled = self.compiler.compile(dir, name, source, &PROFILE)?;
+		let limits = self.compiler.limits();
+		Ok(match (compiled.ending, &compiled.binary) {
+			(Ending::Exited(_), Some(binary)) => Ok(binary.clone()),
+			(Ending::Exited(status), None) => {
 				let mut message = String::from("rustc ");
 				message.push_str(&describe(status));
 				message.push('\n');
-				message.push_str(&String::from_utf8_lossy(&finished.stderr.head));
-				note_truncation(&mut message, "rustc's output", &finished.stderr);
+				let (head, cut) = compiled.rendered_head(limits.logs_ceiling);
+				message.push_str(&head);
+				if cut {
+					let bytes = compiled.rendered.as_bytes();
+					let rendered = Captured {
+						head: bytes[..limits.logs_ceiling.min(bytes.len())].to_vec(),
+						tail: Vec::new(),
+						total: u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX),
+					};
+					note_truncation(&mut message, "rustc's output", &rendered);
+				}
 				Err(message)
 			}
-			Ending::TimedOut => {
+			(Ending::TimedOut, _) => {
 				let mut message = String::from("rustc did not finish within ");
-				message.push_str(&self.limits.compile_timeout.as_secs().to_string());
+				message.push_str(&limits.compile_timeout.as_secs().to_string());
 				message.push_str(" s, and was killed");
 				Err(message)
 			}
@@ -293,32 +246,17 @@ impl Runner {
 	}
 
 	fn run(&self, dir: &Path, binary: &Path, constraints: &[Constraint]) -> Result<RunResult, RecordError> {
-		let mut command = match (&self.prlimit, self.limits.memory_ceiling) {
-			(Some(prlimit), Some(bytes)) => {
-				let mut command = Command::new(prlimit);
-				let mut limit = OsString::from("--as=");
-				limit.push(bytes.to_string());
-				command.arg(limit).arg("--").arg(binary);
-				command
-			}
-			_ => Command::new(binary),
-		};
-		for constraint in constraints {
-			let mut argument = constraint.dimension.clone();
-			argument.push('=');
-			argument.push_str(&constraint.bound.to_string());
-			command.arg(argument);
-		}
-		command.current_dir(dir).env_clear();
-		let Finished { ending, elapsed, stdout, stderr } =
-			supervise(command, self.limits.run_ceiling, self.limits.output_ceiling, self.limits.logs_ceiling).map_err(|err| match err.kind() {
-				// What the program asked for: an argument the OS refuses, or a
-				// descendant that escaped its group. Anything else (no
-				// processes or descriptors left, a noexec TMPDIR) is the
-				// machine's, and stops the recording as before (review, #399).
-				std::io::ErrorKind::InvalidInput | std::io::ErrorKind::TimedOut => RecordError::Run(err),
-				_ => RecordError::Io(err),
-			})?;
+		let arguments: Vec<OsString> = constraints
+			.iter()
+			.map(|constraint| {
+				let mut argument = constraint.dimension.clone();
+				argument.push('=');
+				argument.push_str(&constraint.bound.to_string());
+				OsString::from(argument)
+			})
+			.collect();
+		let Finished { ending, elapsed, stdout, stderr } = self.compiler.run(dir, binary, &arguments)?;
+		let limits = self.compiler.limits();
 
 		Ok(match ending {
 			Ending::Exited(status) if status.success() => {
@@ -360,39 +298,12 @@ impl Runner {
 			}
 			Ending::TimedOut => {
 				let mut message = String::from("the program did not finish within the ");
-				message.push_str(&self.limits.run_ceiling.as_millis().to_string());
+				message.push_str(&limits.run_ceiling.as_millis().to_string());
 				message.push_str(" ms wall-clock ceiling, and was killed");
 				error(constraints, ErrorClass::BudgetExceeded, message)
 			}
 		})
 	}
-}
-
-/// `text` with each panic header's thread id dropped: `thread 'main'
-/// (3072) panicked` reads `thread 'main' panicked`, as it did before
-/// toolchains added the id, so the same failure records the same bytes.
-fn without_thread_ids(text: &str) -> String {
-	let mut out = String::with_capacity(text.len());
-	let mut rest = text;
-	while let Some(at) = rest.find("thread '") {
-		let (before, from) = rest.split_at(at);
-		out.push_str(before);
-		let name_start = "thread '".len();
-		let Some(name_len) = from[name_start..].find('\'') else {
-			out.push_str(from);
-			return out;
-		};
-		let header_end = name_start + name_len + 1;
-		out.push_str(&from[..header_end]);
-		let after = &from[header_end..];
-		let id = after.strip_prefix(" (").and_then(|inner| {
-			let digits = inner.find(|c: char| !c.is_ascii_digit())?;
-			(digits > 0 && inner[digits..].starts_with(')')).then_some(2 + digits + 1)
-		});
-		rest = id.map_or(after, |skip| &after[skip..]);
-	}
-	out.push_str(rest);
-	out
 }
 
 /// `\n<stream> truncated: kept the first K of N bytes`, when it was.
@@ -421,21 +332,5 @@ fn error(constraints: &[Constraint], error_class: ErrorClass, message: String) -
 	RunResult::Error {
 		input_size: input_size(constraints),
 		error: ExecutionError { error_class, message },
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::without_thread_ids;
-
-	#[test]
-	fn a_panic_headers_thread_id_is_dropped_and_nothing_else() {
-		assert_eq!(
-			without_thread_ids("\nthread 'main' (3072) panicked at program.rs:1:13:\nboom"),
-			"\nthread 'main' panicked at program.rs:1:13:\nboom"
-		);
-		assert_eq!(without_thread_ids("thread 'main' panicked"), "thread 'main' panicked");
-		assert_eq!(without_thread_ids("thread 'w' (12x) and thread 'unterminated"), "thread 'w' (12x) and thread 'unterminated");
-		assert_eq!(without_thread_ids("thread 'a' (1) then thread 'b' (22)"), "thread 'a' then thread 'b'");
 	}
 }

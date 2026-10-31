@@ -499,6 +499,14 @@ mod tests {
 		assert_eq!(kinds.len(), 2, "both branches walked");
 	}
 
+	/// Every file under `src/` that starts a process, and why it may. EX1
+	/// (`docs/leetype-execution.md`) is the claim; this list is its
+	/// falsifier, so adding to it amends EX1 and says so there.
+	const SPAWNS: [(&str, &str); 1] = [(
+		"transcribe/engine.rs",
+		"ffmpeg, a fixed decoder of a stored voice note's audio, on the transcriber's blocking thread; never a program, never in a request",
+	)];
+
 	/// The code lines of `source` (comments dropped), and of the handler's
 	/// own file only what precedes its tests, so this test's list is not
 	/// found in itself.
@@ -507,16 +515,21 @@ mod tests {
 		source.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
 	}
 
-	/// Never #5, and "no execution in the request path", as checks over the
-	/// source:
+	/// Never #5, and EX1 ("nothing `file_host` serves compiles or runs a
+	/// program in a request, and `file_host` spawns no compiler"), as checks
+	/// over the source:
 	///
 	/// - the runs surface — this handler, its route module, and both
 	///   commands — names nothing that produces or carries a `StudySignal`
 	///   (`study_domain`, `handlers::signals`, the nudge, outcomes, sessions,
 	///   engagement). `leetype_runner`'s own closure is checked by its
 	///   `tests/nevers.rs`;
-	/// - no file of the server but `record-leetype-runs` names the runner, so
-	///   nothing the server serves can compile or execute a program.
+	/// - no file of the server but `record-leetype-runs` names
+	///   `leetype_runner`, and none names `rust_runner`, the crate that
+	///   compiles and runs (the `rust-runner` container does that, over its
+	///   socket);
+	/// - no file but those in [`SPAWNS`] starts a process at all, and each
+	///   of those says why it may.
 	#[test]
 	fn the_runs_surface_reaches_neither_a_study_signal_nor_the_runner() {
 		let surface = [
@@ -544,6 +557,9 @@ mod tests {
 		}
 
 		let runner = ["leetype", "_runner"].concat();
+		let spawner = ["rust", "_runner"].concat();
+		let spawn_markers = [["Command", "::new"].concat(), ["process::", "Command"].concat(), ["tokio::", "process"].concat()];
+		let spawns_in_a_list = regex::Regex::new(&["process::\\{[^}]*\\b", "Command", "\\b"].concat()).unwrap();
 		let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
 		let mut stack = vec![root.clone()];
 		let mut scanned = 0;
@@ -555,8 +571,15 @@ mod tests {
 				} else if path.extension().is_some_and(|extension| extension == "rs") {
 					scanned += 1;
 					let relative = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
-					let names_runner = code(&std::fs::read_to_string(&path).unwrap()).contains(runner.as_str());
-					assert_eq!(names_runner, relative == "bin/record_leetype_runs.rs", "{relative}");
+					let code = code(&std::fs::read_to_string(&path).unwrap());
+					assert_eq!(code.contains(runner.as_str()), relative == "bin/record_leetype_runs.rs", "{relative}");
+					assert!(!code.contains(spawner.as_str()), "{relative} names the crate that compiles and runs programs");
+					let spawns = spawn_markers.iter().any(|marker| code.contains(marker.as_str())) || spawns_in_a_list.is_match(&code);
+					assert_eq!(
+						spawns,
+						SPAWNS.iter().any(|(file, _)| *file == relative),
+						"{relative} starts a process: EX1 lists every file that may"
+					);
 				}
 			}
 		}

@@ -1,0 +1,35 @@
+[package]
+name = "rust_runner"
+description = "Compiles and runs one Rust program under limits, for LeetType's recorder and the rust-runner service that records Rust Rounds"
+readme = "README.md"
+categories = ["development-tools"]
+keywords = ["rustc", "runner", "sandbox", "rust-rounds"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+# `serve` and `ask`'s arguments, the one config a binary reads (#484).
+clap = { workspace = true }
+hex = "0.4.3"
+# `kill(-pgid)` and `kill(pid)` as system calls, so killing a program's
+# processes never needs a process of its own; `getuid` for the sweep.
+rustix = { version = "1.1.5", features = ["process"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10.9"
+# A fresh directory per program, removed when it is done.
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "rust-runner"
+path = "src/bin/rust_runner.rs"

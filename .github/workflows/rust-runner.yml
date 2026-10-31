@@ -1,0 +1,47 @@
+# The rust-runner's sandbox, against hostile programs (paulgsc/some-ui#2234,
+# RR3).
+#
+# Builds the image from infra/docker/Dockerfile.rust-runner, brings up
+# infra/compose/rust_runner.yml exactly as written, and runs
+# scripts/check_rust_runner_sandbox.py: the container is the declared sandbox
+# (RX1), the pinned rustc 1.97.0 prints the worked example's exact text, and
+# a program that loops, allocates without bound, forks or spawns threads
+# without bound, leaves its process group, opens a socket, writes where it
+# can, or kills the runner ends as a recorded outcome (or a restart) and
+# leaves nothing behind (RX2, RX3). The owner's rule is that every program is
+# hostile, so these cases are a check, not review notes.
+#
+# Path-filtered to what builds or configures the runner. Stores nothing: no
+# artifact, no cache (the image builds in a few minutes from the pinned base).
+name: Rust runner
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'crates/rust_runner/**'
+      - 'infra/docker/Dockerfile.rust-runner'
+      - 'infra/compose/rust_runner.yml'
+      - 'scripts/check_rust_runner_sandbox.py'
+      - '.github/workflows/rust-runner.yml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sandbox:
+    name: Sandbox against hostile programs
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build the image and run every hostile program against it
+        run: python3 scripts/check_rust_runner_sandbox.py

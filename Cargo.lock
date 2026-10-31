@@ -2581,6 +2581,7 @@ name = "leetype_runner"
 version = "0.0.0"
 dependencies = [
  "leetype_round_repo",
+ "rust_runner",
  "serde",
  "serde_json",
  "sqlx",
@@ -3965,6 +3966,19 @@ dependencies = [
  "spki 0.7.3",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rust_runner"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "hex",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
