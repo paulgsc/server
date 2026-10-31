@@ -10,6 +10,7 @@ pub const RULES: app_config::schema::Rules = app_config::schema::Rules {
 	required_when: &[],
 	bounds: &[],
 	ours: &["NATS_URL"],
+	private: &[],
 	neutral: &["METRICS_ADDR", "RUST_LOG"],
 };
 

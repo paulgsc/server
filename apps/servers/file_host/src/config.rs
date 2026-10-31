@@ -177,10 +177,7 @@ pub const OURS: &[&str] = &[
 	"AUTH_SESSION_DAYS",
 	"AUTH_OPEN_SIGNUP",
 	"AUTH_NEW_ACCOUNTS_PER_DAY",
-	"OPERATOR_SUBJECTS",
 	"MAILBOX_ENABLED",
-	"MAILBOX_URL",
-	"MAILBOX_SUBJECT",
 	"ROUTINE_SCHEDULE",
 	"MAILBOX_ARCHIVE_DAYS",
 	"FCM_SERVICE_ACCOUNT_FILE",
@@ -191,6 +188,11 @@ pub const OURS: &[&str] = &[
 	"NATS_URL",
 	"ENVIRONMENT",
 ];
+
+/// `file_host`'s "ours" variables a public repository may not hold: an
+/// account's address and subject ids (CFG11, #607). The box's `.env` holds
+/// them until they are committed encrypted.
+pub const PRIVATE: &[&str] = &["OPERATOR_SUBJECTS", "MAILBOX_URL", "MAILBOX_SUBJECT"];
 
 /// `file_host`'s variables whose default surprises no one: an engineering
 /// constant, a dev-only knob, or one that matters only while an opt-in
@@ -234,6 +236,7 @@ pub const RULES: Rules = Rules {
 	required_when: REQUIRED_WHEN,
 	bounds: BOUNDS,
 	ours: OURS,
+	private: PRIVATE,
 	neutral: NEUTRAL,
 };
 

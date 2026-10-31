@@ -471,7 +471,7 @@
       "values": [],
       "delimiter": ",",
       "secret": false,
-      "class": "ours",
+      "class": "private",
       "help": "Comma-separated subject ids allowed to use the operator routes: the ones that rewrite, retire and restore what everyone is served (lessons, `leetype` rounds). Whitespace around an entry is trimmed and empty entries are ignored. Unset or empty, the owner's account (the only one) is the operator, and nobody is while the box has no account or several. Set, only the listed subjects are: an override for a deployment with `AUTH_OPEN_SIGNUP` on; see `auth::operator`.\n\nTo find a subject id to list, sign in where you operate from and call any operator route: the refusal is logged at info with your `subject=`.",
       "required_when": null,
       "bounds": null
@@ -499,7 +499,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "class": "ours",
+      "class": "private",
       "help": "The mailbox's base URL: `https://` and a host, no path (`https://some-ui-mailbox.<account>.workers.dev`)",
       "required_when": {
         "variable": "MAILBOX_ENABLED",
@@ -533,7 +533,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "class": "ours",
+      "class": "private",
       "help": "The subject whose copy the mailbox's files are kept as. Unset, the owner's account (the only one), read at each pass; while the box has no account or several, a pass keeps nothing and says `no_account`. Set, that subject: an override for a deployment with `AUTH_OPEN_SIGNUP` on, its id found as for `OPERATOR_SUBJECTS`",
       "required_when": null,
       "bounds": null

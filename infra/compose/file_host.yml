@@ -37,10 +37,10 @@ services:
       - RUST_BACKTRACE=1
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
-      # From the box's .env, each only when it sets it: file_host's secrets
-      # and the neutral variables an override may change. Exactly those
-      # (`make deploy-check`): an "ours" variable is decided in the
-      # deployment file, never here.
+      # From the box's .env, each only when it sets it: file_host's secrets,
+      # its private settings (until CFG11, #607) and the neutral variables an
+      # override may change. Exactly those (`make deploy-check`): an "ours"
+      # variable is decided in the deployment file, never here.
       - MAX_IN_FLIGHT
       - FILE_HOST_BIND
       - FILE_HOST_PORT
@@ -56,7 +56,10 @@ services:
       - PUSH_DELIVERY_TIMEOUT_MS
       - WAKER_PASS_DEADLINE_MS
       - NUDGE_PRESENCE_LEASE_TTL_SECONDS
+      - OPERATOR_SUBJECTS
+      - MAILBOX_URL
       - MAILBOX_TOKEN
+      - MAILBOX_SUBJECT
       - MAILBOX_SECONDS
       - MAILBOX_ARCHIVE_TOKEN
       - TRANSCRIBE_VAD_MODEL

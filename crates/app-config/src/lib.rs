@@ -216,6 +216,7 @@ mod tests {
 			},
 		],
 		ours: &["PROBE_ENABLED", "PROBE_URL"],
+		private: &[],
 		neutral: &["PROBE_SECONDS", "PROBE_DAYS", "PROBE_TOKEN"],
 	};
 
@@ -262,6 +263,7 @@ mod tests {
 			required_when: &[],
 			bounds: &[],
 			ours,
+			private: &[],
 			neutral,
 		};
 		crate::schema::schema("probe", &Classified::command(), &rules)
@@ -281,6 +283,14 @@ mod tests {
 			[("PROBE_SWITCH".to_owned(), Class::Ours), ("PROBE_KEY".to_owned(), Class::Secret)]
 		);
 		assert_eq!(classes(&[], &["PROBE_SWITCH"])[0].1, Class::Neutral);
+		let rules = crate::schema::Rules {
+			required_when: &[],
+			bounds: &[],
+			ours: &[],
+			private: &["PROBE_SWITCH"],
+			neutral: &[],
+		};
+		assert_eq!(crate::schema::schema("probe", &Classified::command(), &rules).variables[0].class, Class::Private);
 	}
 
 	#[test]

@@ -1,0 +1,27 @@
+[package]
+name = "envctl"
+description = "Every variable the stack reads, from where each one is declared: checks, generates and migrates the deployment files"
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["config", "env", "compose", "deploy"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+indexmap = "2"
+ratatui = "0.30"
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -3,9 +3,9 @@
 //! [`variables`] walks a clap `Command` and describes every argument that has
 //! an environment variable, so there is no second declaration: the `Config`
 //! is the schema. Each binary checks a copy into `infra/env/<binary>.json`
-//! with [`assert_checked_in`], and `scripts/env_schema.py` generates
-//! `example.env`, lists the stack's variables and runs the preflight from
-//! those copies, so none of that needs Rust on the host.
+//! with [`assert_checked_in`], and `envctl` (`apps/envctl`) generates
+//! `example.env` and the NixOS options, lists the stack's variables, checks
+//! the deployment files and runs the preflight from those copies.
 //!
 //! What clap cannot see, a binary declares beside its `Config` as [`Rules`]:
 //! a requirement that depends on another variable (`WEBAUTHN_RP_ID` while
@@ -19,11 +19,11 @@
 //! generated from the schema does either.
 //!
 //! Every other variable is classified beside its `Config`, in [`Rules`], as
-//! [`Class::Ours`] or [`Class::Neutral`] (CFG9, #604), and [`schema`] refuses
-//! one that is neither, so a new variable is classified in the PR that adds
-//! it. An "ours" value is decided in that PR too: every deployment file
-//! (`deploy/<role>/<app>.env`) states it, which `scripts/env_schema.py deploy
-//! --check` holds.
+//! [`Class::Ours`], [`Class::Private`] or [`Class::Neutral`] (CFG9, #604), and
+//! [`schema`] refuses one that is none of them, so a new variable is
+//! classified in the PR that adds it. An "ours" value is decided in that PR
+//! too: every deployment file (`deploy/<role>/<app>.env`) states it, which
+//! `envctl check` holds.
 
 use clap::{builder::ValueParser, error::ErrorKind, Arg, ArgAction, ArgMatches, Command, Parser};
 use serde::Serialize;
@@ -80,6 +80,8 @@ pub struct Rules {
 	pub bounds: &'static [Bound],
 	/// The variables that are [`Class::Ours`].
 	pub ours: &'static [&'static str],
+	/// The variables that are [`Class::Private`].
+	pub private: &'static [&'static str],
 	/// The variables that are [`Class::Neutral`].
 	pub neutral: &'static [&'static str],
 }
@@ -92,6 +94,11 @@ pub enum Class {
 	/// deployment file states its value, even one equal to the default, and
 	/// the box's `.env` may not set it.
 	Ours,
+	/// Ours, but not for a public repository: it names an account or a person
+	/// (a Worker's URL, a subject id) without being a credential. It stays off
+	/// the plain deployment file, in the box's `.env` until CFG11 (#607)
+	/// commits it encrypted.
+	Private,
 	/// A default that surprises no one: an engineering constant, a dev-only
 	/// knob, or one that matters only while an opt-in feature is on. The
 	/// box's `.env` may override it.
@@ -233,7 +240,7 @@ pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 /// Sets each variable's [`Class`] from `rules`, refusing one classified
 /// twice, not at all, or by a name `binary` does not declare.
 fn classify(binary: &str, variables: &mut [Variable], rules: &Rules) {
-	for name in rules.ours.iter().chain(rules.neutral) {
+	for name in rules.ours.iter().chain(rules.private).chain(rules.neutral) {
 		assert!(
 			variables.iter().any(|variable| variable.name == *name),
 			"{binary} classifies {name}, which it does not declare"
@@ -241,15 +248,15 @@ fn classify(binary: &str, variables: &mut [Variable], rules: &Rules) {
 	}
 	for variable in variables {
 		let name = variable.name.as_str();
-		let ours = rules.ours.iter().filter(|listed| **listed == name).count();
-		let neutral = rules.neutral.iter().filter(|listed| **listed == name).count();
-		variable.class = match (variable.secret, ours, neutral) {
-			(true, 0, 0) => Class::Secret,
-			(true, _, _) => panic!("{name} is a secret (hide_env_values), so {binary} may not also classify it as ours or neutral"),
-			(false, 1, 0) => Class::Ours,
-			(false, 0, 1) => Class::Neutral,
-			(false, 0, 0) => panic!(
-				"{binary} does not classify {name}: name it in its Rules' `ours` (its value is decided in every deploy/<role>/{binary}.env) or `neutral` (a default that surprises no one), #604"
+		let count = |list: &[&str]| list.iter().filter(|listed| **listed == name).count();
+		variable.class = match (variable.secret, count(rules.ours), count(rules.private), count(rules.neutral)) {
+			(true, 0, 0, 0) => Class::Secret,
+			(true, ..) => panic!("{name} is a secret (hide_env_values), so {binary} may not also classify it as ours, private or neutral"),
+			(false, 1, 0, 0) => Class::Ours,
+			(false, 0, 1, 0) => Class::Private,
+			(false, 0, 0, 1) => Class::Neutral,
+			(false, 0, 0, 0) => panic!(
+				"{binary} does not classify {name}: name it in its Rules' `ours` (its value is decided in every deploy/<role>/{binary}.env), `private` (ours, but not for a public repository) or `neutral` (a default that surprises no one), #604"
 			),
 			_ => panic!("{binary} classifies {name} more than once"),
 		};

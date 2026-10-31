@@ -127,7 +127,7 @@ surprises no one) or *secret* (its value hidden, `hide_env_values`). Each
 binary lists its ours and neutral variables beside its `Config`, in `RULES`,
 and its schema test fails on a variable that is in neither. [`example.env`](./example.env) is generated
 from those copies and the compose files' `${...}` variables by
-[`scripts/env_schema.py`](./scripts/env_schema.py); nobody writes a list of
+[`envctl`](./apps/envctl), the config tooling's one binary; nobody writes a list of
 variables by hand. `make env-schema` regenerates both after a `Config` or a
 compose file changes; `make env` lists every variable the stack reads and
 whether `.env` sets it.
@@ -159,14 +159,14 @@ whether `.env` sets it.
 
 - **ENV2: the schema, `example.env` and each binary's `Config` agree.**
   - _Claim:_ `infra/env/<binary>.json` is what that binary's `Config`
-    declares, and `example.env` is what `scripts/env_schema.py` writes from
+    declares, and `example.env` is what `envctl example` writes from
     those files and the compose files; neither can fall behind its source.
   - _Family:_ every binary with a `Config`; every variable it declares and
     every `${...}` the compose files interpolate; a changed name, default,
     help, kind or secrecy; a hand edit of either generated file.
   - _Proof:_ each `Config`'s `the_checked_in_schema_is_this_config` compares
     the file with `app_config::schema` of the `Config` (`cargo test`), and
-    `Lint`'s `Env schema` job runs `env_schema.py example --check`.
+    `Lint`'s `Env schema` job runs `envctl example --check`.
   - _Tolerance:_ none for what a binary declares. What clap cannot see, a
     requirement that depends on another variable (`WEBAUTHN_RP_ID` while
     `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_SECONDS` at least
@@ -186,14 +186,33 @@ value written out even where it equals the default. `deploy/home/` is the
 box, which compose runs; `deploy/dev/` is `make dev`'s, file_host from source
 with its own database and every feature that acts on its own off. A
 `#unset NAME` line says leaving a variable unset is the decision. The box's
-`.env` holds only what stays off git: the secrets, a neutral override, and
-what compose itself reads, `DEPLOY=home` among them.
+`.env` holds only what stays off git: the secrets, the *private* values
+(ours, but naming an account or a person, such as `MAILBOX_URL`; this
+repository is public), a neutral override, and what compose itself reads,
+`DEPLOY=home` among them. CFG11 (#607) moves the secrets and private values
+into a sops-encrypted file beside the deployment files.
+
+**Moving a running host onto `deploy/`.** On the host, with the stack up:
+
+```bash
+make import DRY=1     # what would change, from the running containers
+make import           # fill deploy/$DEPLOY/<binary>.env with what they run
+make resolve          # decide anything left in a terminal UI, full help beside each
+make deploy-check     # what CI will say
+git diff deploy/      # review, then commit
+```
+
+`envctl import` reads each container labelled `env-schema` with
+`docker inspect`: an ours value as it runs, its default where it is unset,
+`#unset` where it has none. It reads no secret or private value, and it
+names the `.env` lines the preflight will refuse once the file is
+committed.
 
 - **ENV4: every ours value is decided in every deployment file.**
   - _Claim:_ each `deploy/<role>/<binary>.env` states every ours variable of
     its binary and nothing else, each with a value its binary takes at
     start; compose gives each labelled service its file whole and, from
-    `.env`, only that binary's secrets and neutral variables; and the
+    `.env`, only that binary's secrets, private and neutral variables; and the
     preflight refuses an ours variable set in `.env`.
   - _Family:_ every role under `deploy/`, and `home` for every service
     labelled `env-schema`; every ours variable of each binary, a new one
@@ -201,8 +220,8 @@ what compose itself reads, `DEPLOY=home` among them.
     in a deployment file; a value with a `$` (compose would interpolate it);
     a required-while or a bound that does not hold under the file's own
     values.
-  - _Proof:_ `env_schema.py deploy` (`Lint`'s `Env schema` job, and
-    `make deploy-check`); `env_schema.py --self-test`.
+  - _Proof:_ `envctl check` (`Lint`'s `Env schema` job, and
+    `make deploy-check`); `apps/envctl`'s tests (`deploy.rs`).
   - _Tolerance:_ the wiring compose sets in a service's own `environment:`
     (`DATABASE_URL`, `NATS_URL`, `REDIS_URL`) is compose's network, so home's
     file leaves it out, and states it nowhere else; `deploy/dev/` states it.
@@ -228,7 +247,7 @@ any, so `make up` never starts on a known gap. It also warns about each
 `.env` line nothing reads: a renamed or retired variable is otherwise ignored
 without a word. It asks for nothing: a value decided at deploy time, on the
 box, is the one nobody reviewed.
-Both the preflight and `env_schema.py deploy` read `docker compose config
+Both the preflight and `envctl check` read `docker compose config
 --no-interpolate`, which an older compose refuses for a short-syntax volume
 holding `${NAME:?}` ("too many colons"); they are verified against compose
 v5.6.1, which `Lint`'s `Env schema` job pins. On an older one they say that no
@@ -248,7 +267,7 @@ preflight names those too.
     wrong kind where its binary refuses that (an empty value is set: clap
     hands it to the parser, which takes it as text and refuses it as a
     number or a switch); required always, or while another variable is on.
-  - _Proof:_ `env_schema.py --self-test` (`Lint`'s `Env schema` job).
+  - _Proof:_ `apps/envctl`'s tests (`preflight.rs`, `cargo test`).
   - _Tolerance:_ a free-text value (a URL, a key, a path) and a condition on
     another variable are checked by the binary at start, as ENV1 and ENV2
     say. A container without the label (the third-party ones) is checked
@@ -258,7 +277,7 @@ preflight names those too.
 
 The flake exports each binary as a NixOS service, `nixosModules.file-host` and
 `nixosModules.orchestrator` (#408), run as an OCI container. Their options are
-generated from the same schema (`scripts/nixos_options.py` writes
+generated from the same schema (`envctl nix` writes
 `nix/modules/generated/`, and `Lint`'s `Env schema` job holds it in step), so
 `nixos-option services.file-host.settings` lists every variable with its help,
 and `nixos-rebuild` refuses a configuration with a required setting missing,
