@@ -21,7 +21,10 @@
 //!   transaction. All three tables are append-only; nothing here updates or
 //!   deletes, and a revised play is a new row.
 //! - **It reads ESPN's public API and writes only those three tables.** No
-//!   route serves them yet, and no person's data is read or written.
+//!   route serves them; the paired phone's live game day
+//!   (`websocket::game_live`, GWB4) reads them to make its offers, and is
+//!   told after each pass that kept something. No person's data is read or
+//!   written.
 //! - **Logs and metrics carry counts and kinds,** never a URL, a body or a
 //!   play's text.
 //! - **It backs off** on a 429, any other refusal, an unreadable body or no
@@ -109,6 +112,7 @@ pub fn start(state: &AppState) {
 fn spawn(state: &AppState, context: GameFeedContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let live = state.realtime.game_live.clone();
 	crate::metrics::game_feed::record_started();
 
 	tokio::spawn(async move {
@@ -130,6 +134,11 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 					crate::metrics::game_feed::record_pass_started();
 					let result = pass::run_once(&db, &context.fetch, &mut schedule, context.cadence, &chrono::Utc::now).await;
 					crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(chrono::Utc::now()));
+					// What the pass kept is the phone's offer to make
+					// again, now rather than at its next tick (GWB4).
+					if result.as_ref().is_ok_and(|done| !done.fetched.is_empty()) {
+						live.fed();
+					}
 					log_pass(&result);
 				}
 			}

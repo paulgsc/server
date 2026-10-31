@@ -72,7 +72,7 @@ The `.ts` module exports:
 
 - `API_BASE_PATH` — the same `/api/v1` prefix as the JSON's `api_base_path`.
 - `ServerRoute` — a union of every versioned route's full path.
-- `UnversionedRoute` — the same for `/health`, `/ready`, `/ws`, and anything
+- `UnversionedRoute` — the same for `/health`, `/ready`, `/ws`, `/ws/game-week`, and anything
   else this file marks `versioned: false`.
 
 Parameter names (`:id`, `:tab_id`, ...) are not extracted into a separate

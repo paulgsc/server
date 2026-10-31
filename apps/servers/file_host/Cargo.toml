@@ -53,6 +53,10 @@ name = "record-leetype-runs"
 path = "src/bin/record_leetype_runs.rs"
 
 [[bin]]
+name = "dump-game-live-messages"
+path = "src/bin/dump_game_live_messages.rs"
+
+[[bin]]
 name = "dump-leetype-snapshot"
 path = "src/bin/dump_leetype_snapshot.rs"
 
@@ -126,6 +130,8 @@ korean_repo = { workspace = true }
 mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
 mailbox_repo = { workspace = true }
 nfl_feed = { workspace = true }
+game_scenarios = { workspace = true }
+scenario_engine = { workspace = true }
 fcm_kit = { workspace = true, features = ["reqwest-transport"] }
 notice_repo = { workspace = true }
 storage_repo = { workspace = true }

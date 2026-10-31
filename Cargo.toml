@@ -177,6 +177,7 @@ presence_repo = { path = "crates/db/presence" }
 push_kit = { path = "crates/push_kit" }
 intervention = { path = "crates/intervention" }
 game_scenarios = { path = "crates/game_scenarios" }
+scenario_engine = { path = "crates/scenario_engine" }
 nfl_feed = { path = "crates/nfl_feed" }
 playoff_delta = { path = "crates/playoff_delta" }
 study_domain = { path = "crates/study_domain" }

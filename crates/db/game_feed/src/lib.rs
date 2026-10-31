@@ -288,6 +288,73 @@ pub async fn situation(conn: &mut SqliteConnection, game: &str, as_of: &str) -> 
 	Ok(newest_summary(conn, game, as_of).await?.and_then(|summary| summary.situation))
 }
 
+/// The newest summary kept for `game` with a 200 and fetched by `as_of`, as
+/// read: its status, plays and the snap to come (GWB4 reads the status, which
+/// moves every live fetch, where the scoreboard's moves every ten minutes).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn summary(conn: &mut SqliteConnection, game: &str, as_of: &str) -> Result<Option<Summary>, sqlx::Error> {
+	newest_summary(conn, game, as_of).await
+}
+
+/// The week as the newest scoreboard kept with a 200 and fetched by `as_of`
+/// says (`fetched_at`'s spelling), read by [`read`]'s rule: the games home
+/// follows, which GWB4 offers the phone. `None` when none was kept, or its
+/// body does not read.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn week(conn: &mut SqliteConnection, as_of: &str) -> Result<Option<Scoreboard>, sqlx::Error> {
+	let body = sqlx::query_scalar!(
+		"SELECT b.body FROM game_feed_response r JOIN game_feed_body b ON b.sha256 = r.sha256
+		 WHERE r.kind = 'scoreboard' AND r.status = 200 AND r.fetched_at <= ?1
+		 ORDER BY r.response_id DESC LIMIT 1",
+		as_of
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(body.and_then(|body| match read(Fetched::Scoreboard, 200, &body) {
+		Read::Scoreboard(board) => Some(board),
+		_ => None,
+	}))
+}
+
+/// One game's play log as stored, oldest row first, `supersedes` as a
+/// position in it: [`log`] for `game` alone, read by `game_feed_play_by_game`.
+/// A revision supersedes a row of its own game, so every position is in it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn game_log(conn: &mut SqliteConnection, game: &str) -> Result<Vec<Entry>, sqlx::Error> {
+	let rows = sqlx::query_as!(
+		PlayRow,
+		r#"SELECT row_id AS "row_id!", game_id, espn_play_id, sequence, wallclock, period, clock, down, distance, yard_line,
+		          yards_to_endzone, possession, play_type, scoring AS "scoring: bool", away_score, home_score, text,
+		          response_id, supersedes, seen_at
+		   FROM game_feed_play WHERE game_id = ?1 ORDER BY row_id"#,
+		game
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(entries(&rows))
+}
+
+/// Rows as log entries, `supersedes` as a position among `rows`.
+fn entries(rows: &[PlayRow]) -> Vec<Entry> {
+	let position: HashMap<i64, usize> = rows.iter().enumerate().map(|(at, row)| (row.row_id, at)).collect();
+	rows
+		.iter()
+		.map(|row| Entry {
+			game_id: row.game_id.clone(),
+			play: row.play(),
+			response_id: row.response_id,
+			seen_at: row.seen_at.clone(),
+			supersedes: row.supersedes.and_then(|row| position.get(&row).copied()),
+		})
+		.collect()
+}
+
 /// The play log as stored, oldest row first, `supersedes` as a position in
 /// it.
 ///
@@ -303,19 +370,7 @@ pub async fn log(conn: &mut SqliteConnection) -> Result<Vec<Entry>, sqlx::Error>
 	)
 	.fetch_all(&mut *conn)
 	.await?;
-	let position: HashMap<i64, usize> = rows.iter().enumerate().map(|(at, row)| (row.row_id, at)).collect();
-	Ok(
-		rows
-			.iter()
-			.map(|row| Entry {
-				game_id: row.game_id.clone(),
-				play: row.play(),
-				response_id: row.response_id,
-				seen_at: row.seen_at.clone(),
-				supersedes: row.supersedes.and_then(|row| position.get(&row).copied()),
-			})
-			.collect(),
-	)
+	Ok(entries(&rows))
 }
 
 /// The play log rebuilt from the kept responses alone, each read through its
@@ -458,6 +513,49 @@ mod tests {
 		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:30.000Z").await.unwrap(), None);
 		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:29.000Z").await.unwrap(), Some(live), "replayed earlier");
 		assert_eq!(situation(&mut conn, GAME, "2026-10-31T21:38:30.000Z").await.unwrap(), None, "another game");
+	}
+
+	#[tokio::test]
+	async fn the_week_and_one_games_log_are_read_as_of_a_time() {
+		let pool = pool().await;
+		let board = |fetched_at, status, body| Response {
+			fetched: Fetched::Scoreboard,
+			url: "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+			fetched_at,
+			status,
+			body,
+		};
+		keep_one(&pool, &board("2026-10-23T00:00:00.000Z", 200, BOARD)).await;
+		keep_one(&pool, &board("2026-10-23T00:10:00.000Z", 429, b"Too Many Requests")).await;
+		keep_one(&pool, &summary(FINAL, "2026-10-23T03:30:00.000Z")).await;
+		let other = Response {
+			fetched: Fetched::Summary("401873023"),
+			..summary(PRE, "2026-10-23T03:30:05.000Z")
+		};
+		keep_one(&pool, &other).await;
+		keep_one(&pool, &summary(&revised(), "2026-10-23T03:31:00.000Z")).await;
+
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(week(&mut conn, "2026-10-22T23:59:59.999Z").await.unwrap(), None, "nothing kept yet");
+		let read = week(&mut conn, "2026-10-23T00:20:00.000Z").await.unwrap().unwrap();
+		assert_eq!(read, scoreboard::parse(BOARD).unwrap(), "a refusal leaves the last week");
+		assert!(read.games.iter().any(|game| game.id == "401873023"));
+
+		let one = game_log(&mut conn, GAME).await.unwrap();
+		let all = log(&mut conn).await.unwrap();
+		assert_eq!(one.len(), 181);
+		assert!(one.iter().all(|entry| entry.game_id == GAME));
+		assert_eq!(one.last().unwrap().supersedes, Some(0), "a revision's place is in the game's own log");
+		assert_eq!(one, all.into_iter().filter(|entry| entry.game_id == GAME).collect::<Vec<_>>());
+		assert!(game_log(&mut conn, "401873023").await.unwrap().is_empty(), "a game not started has no plays");
+
+		let newest = summary_at(&mut conn, "2026-10-23T03:30:30.000Z").await;
+		assert!(newest.status.is_final());
+		assert_eq!(super::summary(&mut conn, GAME, "2026-10-23T03:29:59.000Z").await.unwrap(), None);
+	}
+
+	async fn summary_at(conn: &mut SqliteConnection, as_of: &str) -> Summary {
+		super::summary(conn, GAME, as_of).await.unwrap().unwrap()
 	}
 
 	#[tokio::test]

@@ -278,6 +278,22 @@ HTTP, never a WebView `fetch` from `https://localhost`. Redeeming a code goes
 further and refuses any request that carries either header, so a code is
 redeemed by a native client, never by the page that asked for it.
 
+The phone's live game day (`GET /ws/game-week`, `websocket::game_live`) is a
+WebSocket from the app's page, which cannot set `Authorization` on one. The
+page offers its token as a subprotocol instead (`Sec-WebSocket-Protocol:
+game-week.v1, bearer.<token>`), and home reads that as the bearer header it
+stands for, over the same digest, so only a phone's token opens it, a
+browser's cookie is `403` and none `401`. A browser sets that header only on
+a WebSocket handshake the page itself opens, so it is no more ambient than
+`Authorization`. Home answers `game-week.v1` alone, never echoing the token;
+the header value is marked sensitive and reaches no log line or span
+(invariant 8). The socket keeps no `SubjectId` (which would hold off
+deletion for as long as it is open): it looks the session up again every
+minute and closes with `4401` once it has ended, so unpairing, signing out
+everywhere or deleting the account closes it within a minute. Nothing the
+phone says on it (its mode, the game, its watching flags, its UTC offset) is
+stored or logged; it decides one offer of public game data.
+
 That is not a defence against script running on the app's own origin (an
 XSS). Such script can start a pairing with the cookie and hand the code to a
 native client of its own, which redeems it. It gains nothing it lacked:

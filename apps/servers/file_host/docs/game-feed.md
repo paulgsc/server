@@ -16,8 +16,9 @@ same API `apps/playoff_delta_job` reads.
 | `src/game_feed.rs`, `src/game_feed/pass.rs` | The worker: configuration, the schedule, one pass, the `Fetch` port. |
 | `src/metrics/game_feed.rs` | Its metrics. |
 
-No HTTP route serves these tables yet: a route would change the client's route
-snapshot, and is a later story's.
+No HTTP route serves these tables. The paired phone's live game day
+(`GET /ws/game-week`, `src/websocket/game_live.rs`, GWB4) reads them to make its
+offers: see "The phone's live game day" below.
 
 ## The worker
 
@@ -157,3 +158,32 @@ still stored once.
 - `isRedZone` is the yards to the end zone being 20 or fewer.
 - The summary can trail the scoreboard by a play or more; a pair fetched
   seconds apart was seen a few plays apart.
+
+## The phone's live game day (GWB4)
+
+`GET /ws/game-week` is a WebSocket in file_host's own `websocket` module, on
+`/ws`'s upgrade and admission (`websocket::admit`), opened by a paired phone
+only. Its messages are `websocket/game_live/wire.rs` (version 1), and
+`dump-game-live-messages` writes one of each for some-ui's copy.
+
+- **Push and pull.** The phone's `hello` (last `seq`, mode, game, watching
+  flags, UTC offset) is answered at once with what home has: the week's games
+  from the newest scoreboard kept, and the engine's offer for that game. After
+  each pass that kept something, the worker calls `GameLive::fed`, and every
+  socket makes its offer again and sends it if anything the phone sees moved.
+  A 5 s tick does the same for what moves with the clock alone.
+- **Reads only.** `game_feed_repo::week`, `summary` and `game_log` read what
+  the worker kept, as of now; nothing is written and nothing of an offer is
+  kept. A replay at a bite's time (GWB7) reads the same way with that time.
+- **Its `seq`** is larger than every one before it on this home, across
+  sockets and restarts (it starts at the boot time in milliseconds), and never
+  below the `lastSeq` the phone says it saw.
+- **Clocks.** A `ping` carries the phone's clock and is answered with home's,
+  so each bite keeps the offset (`game_bite.clock_offset_ms`, GW5).
+- **Off is off.** With `GAME_FEED_ENABLED` unset the socket still opens, and
+  every offer says `following: false` with no games, so the phone can say home
+  follows none rather than look away from home.
+- **SF reads only its own game** as one it wants won. Which side it wants in
+  another game is Playoff Delta's reading, which home does not make per week
+  yet; any other game is read as one that cannot move SF.
+

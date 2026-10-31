@@ -1,4 +1,5 @@
 use crate::{
+	auth::AuthContext,
 	net::{Peer, PeerKey},
 	routes::table::{Module, RouteTable},
 	AppState,
@@ -23,6 +24,7 @@ use ws_events::events::EventType;
 
 pub mod broadcast;
 pub mod connection;
+pub mod game_live;
 pub mod heartbeat;
 pub mod message;
 pub mod shutdown;
@@ -43,7 +45,9 @@ use message::spawn_process_incoming_messages;
 /// for both was a coincidence of implementation, not a real invariant.
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// `GET /ws`, the upgrade. Unversioned: clients hold the socket across API versions.
+/// `GET /ws`, the upgrade, and `GET /ws/game-week`, the paired phone's live
+/// game day ([`game_live`]). Unversioned: clients hold the socket across API
+/// versions, and the game day's messages carry their own version.
 ///
 /// A free function rather than a method on [`WebSocketFsm`]: the
 /// handler reaches the FSM through `State<AppState>`, so building the route
@@ -52,8 +56,9 @@ pub fn routes<S>() -> Module<S>
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
+	AuthContext: FromRef<S>,
 {
-	Module::unversioned("websocket", RouteTable::new().get("/ws", websocket_handler))
+	Module::unversioned("websocket", RouteTable::new().get("/ws", websocket_handler).get("/ws/game-week", game_live::upgrade))
 }
 
 // Enhanced WebSocket FSM with comprehensive observability
@@ -186,33 +191,65 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<AppState>, 
 	let cancel_token = state.core.cancel_token.clone();
 	info!("Incoming WS request from {client_id}");
 
-	if !state.core.connection_guard.try_acquire_permit_hint() {
+	match admit(&state.core.connection_guard, admission).await {
+		Ok(permit) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, peer, permit, cancel_token)),
+		Err(refusal) => {
+			error!("Rejecting WS for {client_id}: {}", refusal.reason);
+			refusal.into_response()
+		}
+	}
+}
+
+/// Why a socket was not admitted: the status it is answered, and the words.
+pub(crate) struct Refused {
+	status: StatusCode,
+	pub(crate) reason: &'static str,
+}
+
+impl IntoResponse for Refused {
+	fn into_response(self) -> axum::response::Response {
+		(self.status, self.reason).into_response()
+	}
+}
+
+/// Admit one socket under the process-wide [`ws_conn_manager::ConnectionGuard`]:
+/// every socket home serves (`/ws` and `/ws/game-week`) counts against the
+/// same global and per-client limits, and each refusal is counted under
+/// `refusals_total{stage="ws"}` by why.
+pub(crate) async fn admit(guard: &ws_conn_manager::ConnectionGuard, admission: crate::net::AdmissionKey) -> Result<ConnectionPermit, Refused> {
+	if !guard.try_acquire_permit_hint() {
 		warn!("Global limit exceeded — rejecting early");
 		crate::metrics::refusals::record_ws("global_capacity");
-		return (StatusCode::SERVICE_UNAVAILABLE, "Too many connections").into_response();
+		return Err(Refused {
+			status: StatusCode::SERVICE_UNAVAILABLE,
+			reason: "Too many connections",
+		});
 	}
 
 	// Wrap acquire in a timeout (e.g., 5 seconds)
-	match timeout(Duration::from_secs(5), state.core.connection_guard.acquire(admission.into_string())).await {
-		Ok(Ok(permit)) => ws.on_upgrade(move |socket| handle_socket(socket, state, headers, peer, permit, cancel_token)),
+	match timeout(Duration::from_secs(5), guard.acquire(admission.into_string())).await {
+		Ok(Ok(permit)) => Ok(permit),
 		Ok(Err(err)) => {
-			use AcquireErrorKind::*;
 			let (reason, metric_reason) = match err.kind {
-				QueueFull => ("Too many pending connections for this client", "queue_full"),
+				AcquireErrorKind::QueueFull => ("Too many pending connections for this client", "queue_full"),
 				// A second, near-unreachable path to the same fast-path
 				// hint's conclusion — it only fires if the global semaphore
 				// is closed, which nothing in this codebase does today —
 				// so it shares that reason rather than inventing a fourth.
-				GlobalLimit => ("Server is at capacity", "global_capacity"),
+				AcquireErrorKind::GlobalLimit => ("Server is at capacity", "global_capacity"),
 			};
-			error!("Rejecting WS for {client_id}: {reason}");
 			crate::metrics::refusals::record_ws(metric_reason);
-			(StatusCode::SERVICE_UNAVAILABLE, reason).into_response()
+			Err(Refused {
+				status: StatusCode::SERVICE_UNAVAILABLE,
+				reason,
+			})
 		}
 		Err(_timeout_elapsed) => {
-			error!("Timeout waiting for permit for {client_id}");
 			crate::metrics::refusals::record_ws("permit_timeout");
-			(StatusCode::REQUEST_TIMEOUT, "Connection acquisition timed out").into_response()
+			Err(Refused {
+				status: StatusCode::REQUEST_TIMEOUT,
+				reason: "Connection acquisition timed out",
+			})
 		}
 	}
 }
