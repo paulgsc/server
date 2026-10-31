@@ -1168,7 +1168,9 @@ scope; automating it is not.
 
 ### 3. Configure the rest
 
-See `example.env`. The two that most reward attention:
+Each of these is decided in `deploy/home/file_host.env`, in git (CFG9, #604);
+`example.env` lists the secrets and the neutral ones. The two that most reward
+attention:
 
 - **`NUDGE_TIMEZONE`.** Containers are UTC unless told otherwise. A UTC day
   boundary files an 18:00 local session under *tomorrow* in a UTC-07:00 zone —
@@ -1619,7 +1621,7 @@ Three tiers, and every route above is in exactly one:
   `OPERATOR_SUBJECTS` set, one listed there, and answer `403` to every other
   subject (`auth::operator`). A refused subject is logged by id at `info`:
   with `OPERATOR_SUBJECTS`, that log line is how an operator finds the id to
-  list (see `example.env`); the owner's box needs no id.
+  list (in `deploy/<role>/file_host.env`); the owner's box needs no id.
 - **Public routes** carry no authentication beyond the CORS origin allowlist.
   The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`)
   and `GET /push/vapid-key` serve the

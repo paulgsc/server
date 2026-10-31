@@ -3,11 +3,6 @@
 {lib}: {
   # One option per variable the binary reads, but its secrets.
   settings = {
-    CONNECTION_TIMEOUT = lib.mkOption {
-      type = lib.types.nullOr lib.types.ints.unsigned;
-      default = null;
-      description = "Database connection timeout in seconds\n\nUnset (null), the binary's default: `30`.";
-    };
     MAX_IN_FLIGHT = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.unsigned;
       default = null;
@@ -53,16 +48,6 @@
       default = null;
       description = "Cache TTL in seconds\n\nUnset (null), the binary's default: `600`.";
     };
-    PROMETHEUS_PORT = lib.mkOption {
-      type = lib.types.nullOr lib.types.port;
-      default = null;
-      description = "Prometheus metrics port\n\nUnset (null), the binary's default: `9090`.";
-    };
-    BUFFER_SIZE = lib.mkOption {
-      type = lib.types.nullOr lib.types.ints.unsigned;
-      default = null;
-      description = "Streaming Chunk Size\n\nUnset (null), the binary's default: `65536`.";
-    };
     MAX_REQUEST_SIZE_MB = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.unsigned;
       default = null;
@@ -78,15 +63,10 @@
       default = null;
       description = "Hard timeout for any operation\n\nUnset (null), the binary's default: `15000`.";
     };
-    MAX_CHUNKS_IN_FLIGHT = lib.mkOption {
-      type = lib.types.nullOr lib.types.ints.unsigned;
-      default = null;
-      description = "Streaming Max Chunk Size\n\nUnset (null), the binary's default: `5`.";
-    };
-    OBS_WEBSOCKET_IP = lib.mkOption {
+    DATABASE_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "OBS Websocket Server IP Address\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
+      description = "The `SQLite` database, as `sqlite://<path>`.\n\nThe container sets its own (`infra/compose/file_host.yml`), and `make dev` its own, `deploy/dev/file_host.env`'s. Pointed at the directory the container mounts, a dev run opens the container's live database.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     NUDGE_ENABLED = lib.mkOption {
       type = lib.types.nullOr lib.types.bool;
@@ -326,24 +306,20 @@
   };
 
   # The variables the binary refuses to start without.
-  required = [ "ALLOWED_ORIGINS" "OBS_WEBSOCKET_IP" "OBS_WEBSOCKET_PWD" "DATABASE_URL" "APP_BASE_URL" ];
+  required = [ "ALLOWED_ORIGINS" "DATABASE_URL" "APP_BASE_URL" ];
   # Its secrets: no option, only `environmentFiles`.
-  secrets = [ "OBS_WEBSOCKET_PWD" "DATABASE_URL" "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" ];
+  secrets = [ "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" ];
   # The binary's defaults, for the conditions below.
   defaults = {
-    CONNECTION_TIMEOUT = "30";
     MAX_IN_FLIGHT = "256";
     FILE_HOST_BIND = "0.0.0.0";
     FILE_HOST_PORT = "3000";
     FILE_HOST_PORT_FALLBACK = "false";
     RATE_LIMIT = "60";
     CACHE_TTL = "600";
-    PROMETHEUS_PORT = "9090";
-    BUFFER_SIZE = "65536";
     MAX_REQUEST_SIZE_MB = "10";
     MAX_CONCURRENT_REQUESTS = "100";
     TASK_TIMEOUT_MS = "15000";
-    MAX_CHUNKS_IN_FLIGHT = "5";
     NUDGE_ENABLED = "false";
     VAPID_SUBJECT = "mailto:admin@maishatu.com";
     NUDGE_QUIET_HOURS_START = "22";

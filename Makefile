@@ -125,16 +125,19 @@ routes-check: ## Run the route inventory's own tests (duplicates, nesting, assem
 # container once it stops - see apps/servers/file_host/src/listen.rs. The path
 # is agreed with apps/www/vite.config.ts there; change both together.
 #
-# It reads the same environment `cargo run` would (DATABASE_URL, VAPID_*, ...).
-# Pointed at the container's database and VAPID keys, it runs a second nudge
-# waker beside the container's.
+# Its settings are deploy/dev/file_host.env (CFG9, #604): its own database
+# (dev.db, migrated as README.md, "Development" says), every feature that acts
+# on its own off, so it runs no second nudge waker or mailbox reader beside
+# the container's. A variable already in the environment wins over that file
+# (`FOO=bar make dev`), and the checkout's .env (dotenvy) adds the secrets.
 
 DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 
 .PHONY: dev
 
 dev: ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
-	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
+	@eval "$$(python3 scripts/env_schema.py export deploy/dev/file_host.env)" && \
+		FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
 
 # ── Configuration: every variable, declared once (#403) ─────────────────────
 #
@@ -144,12 +147,14 @@ dev: ## Run file_host from source beside the container: next free port from 3000
 # either is behind its declaration. `make env-schema` brings both up to date;
 # like `make routes`, building needs DATABASE_URL at a migrated SQLite file.
 #
-# On the host, `make up` is the deploy step: it runs the preflight, which
-# names every required variable .env is missing and every value its binary
-# would refuse, all at once, and only then starts the stack. `make preflight
-# FILL=1` asks for each missing value and writes it to .env.
+# Every "ours" setting is decided in git, in deploy/<role>/<binary>.env, in
+# the PR that needs it (CFG9, #604): `make deploy-check`, which CI runs, fails
+# while any deployment file misses one. On the host, `make up` is the deploy
+# step: it runs the preflight, which names every required variable missing,
+# every value its binary would refuse and every "ours" value .env would
+# override, all at once, and only then starts the stack.
 
-.PHONY: env-schema env preflight up
+.PHONY: env-schema env deploy-check preflight up
 
 env-schema: ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
 	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
@@ -160,8 +165,11 @@ env-schema: ## Regenerate infra/env/*.json from each binary's Config, then examp
 env: ## List every variable the stack reads, its default, and whether .env or the environment sets it
 	@python3 scripts/env_schema.py list
 
-preflight: ## Check .env before docker compose up: every missing or refused variable at once (FILL=1 asks for them)
-	@python3 scripts/env_schema.py preflight $(if $(FILL),--fill)
+deploy-check: ## Check every deploy/<role>/<binary>.env states every "ours" value of its binary, and compose reads it
+	@python3 scripts/env_schema.py deploy
+
+preflight: ## Check .env before docker compose up: every missing or refused variable at once
+	@python3 scripts/env_schema.py preflight
 
 up: preflight ## Start the stack (docker compose up -d), once the preflight passes
 	@docker compose up -d

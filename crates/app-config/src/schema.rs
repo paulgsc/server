@@ -17,6 +17,13 @@
 //! A variable is a secret when its `Config` hides its value
 //! (`hide_env_values = true`): `--help` shows no value for it, and nothing
 //! generated from the schema does either.
+//!
+//! Every other variable is classified beside its `Config`, in [`Rules`], as
+//! [`Class::Ours`] or [`Class::Neutral`] (CFG9, #604), and [`schema`] refuses
+//! one that is neither, so a new variable is classified in the PR that adds
+//! it. An "ours" value is decided in that PR too: every deployment file
+//! (`deploy/<role>/<app>.env`) states it, which `scripts/env_schema.py deploy
+//! --check` holds.
 
 use clap::{builder::ValueParser, error::ErrorKind, Arg, ArgAction, ArgMatches, Command, Parser};
 use serde::Serialize;
@@ -57,6 +64,7 @@ pub struct Variable {
 	/// The separator of a variable that holds a list.
 	pub delimiter: Option<char>,
 	pub secret: bool,
+	pub class: Class,
 	pub help: String,
 	/// Required, set and not empty, while another variable has a value.
 	pub required_when: Option<Condition>,
@@ -64,16 +72,34 @@ pub struct Variable {
 	pub bounds: Option<Bounds>,
 }
 
-/// What a binary checks at start that clap cannot see, declared beside its
-/// `Config`.
+/// What a binary checks at start that clap cannot see, and how each of its
+/// variables is classified, declared beside its `Config`.
 #[derive(Debug, Clone, Copy)]
 pub struct Rules {
 	pub required_when: &'static [RequiredWhen],
 	pub bounds: &'static [Bound],
+	/// The variables that are [`Class::Ours`].
+	pub ours: &'static [&'static str],
+	/// The variables that are [`Class::Neutral`].
+	pub neutral: &'static [&'static str],
 }
 
-/// For a binary that declares no [`Rules`].
-pub const NO_RULES: Rules = Rules { required_when: &[], bounds: &[] };
+/// Whose decision a variable's value is (CFG9, #604).
+#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Class {
+	/// Contextual: it decides how our app behaves on a host, so every
+	/// deployment file states its value, even one equal to the default, and
+	/// the box's `.env` may not set it.
+	Ours,
+	/// A default that surprises no one: an engineering constant, a dev-only
+	/// knob, or one that matters only while an opt-in feature is on. The
+	/// box's `.env` may override it.
+	Neutral,
+	/// Its value stays off git (`hide_env_values = true`); the box's `.env`
+	/// holds it.
+	Secret,
+}
 
 /// One variable a binary requires only while another has a value.
 #[derive(Debug, Clone, Copy)]
@@ -145,11 +171,13 @@ pub enum Kind {
 /// # Panics
 ///
 /// When an argument's parser returns a type [`Kind`] does not name (map it
-/// here deliberately rather than describe it wrongly), or a requirement names
-/// a variable `cmd` does not declare.
+/// here deliberately rather than describe it wrongly), a requirement names
+/// a variable `cmd` does not declare, or a variable is not classified exactly
+/// once (a secret is classified by its `hide_env_values`, and nowhere else).
 #[must_use]
 pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 	let mut variables = variables(cmd);
+	classify(binary, &mut variables, rules);
 	let declared = |name: &str| variables.iter().any(|variable| variable.name == name);
 	for bound in rules.bounds {
 		assert!(bound.min.is_some() || bound.max.is_some(), "{}'s bound sets neither a min nor a max", bound.variable);
@@ -202,8 +230,35 @@ pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 	}
 }
 
+/// Sets each variable's [`Class`] from `rules`, refusing one classified
+/// twice, not at all, or by a name `binary` does not declare.
+fn classify(binary: &str, variables: &mut [Variable], rules: &Rules) {
+	for name in rules.ours.iter().chain(rules.neutral) {
+		assert!(
+			variables.iter().any(|variable| variable.name == *name),
+			"{binary} classifies {name}, which it does not declare"
+		);
+	}
+	for variable in variables {
+		let name = variable.name.as_str();
+		let ours = rules.ours.iter().filter(|listed| **listed == name).count();
+		let neutral = rules.neutral.iter().filter(|listed| **listed == name).count();
+		variable.class = match (variable.secret, ours, neutral) {
+			(true, 0, 0) => Class::Secret,
+			(true, _, _) => panic!("{name} is a secret (hide_env_values), so {binary} may not also classify it as ours or neutral"),
+			(false, 1, 0) => Class::Ours,
+			(false, 0, 1) => Class::Neutral,
+			(false, 0, 0) => panic!(
+				"{binary} does not classify {name}: name it in its Rules' `ours` (its value is decided in every deploy/<role>/{binary}.env) or `neutral` (a default that surprises no one), #604"
+			),
+			_ => panic!("{binary} classifies {name} more than once"),
+		};
+	}
+}
+
 /// Every argument of `cmd` that has an environment variable, in declaration
-/// order.
+/// order, classified as [`Class::Secret`] or, until [`schema`] classifies
+/// it, [`Class::Neutral`].
 ///
 /// # Panics
 ///
@@ -238,6 +293,7 @@ fn variable(name: &str, arg: &Arg) -> Variable {
 		values,
 		delimiter,
 		secret,
+		class: if secret { Class::Secret } else { Class::Neutral },
 		help,
 		required_when: None,
 		bounds: None,

@@ -4,6 +4,15 @@ use app_config::{LogArgs, NatsArgs};
 use clap::Parser;
 use std::net::SocketAddr;
 
+/// How each of the orchestrator's variables is classified (CFG9, #604); it
+/// checks nothing at start beyond what clap parses.
+pub const RULES: app_config::schema::Rules = app_config::schema::Rules {
+	required_when: &[],
+	bounds: &[],
+	ours: &["NATS_URL"],
+	neutral: &["METRICS_ADDR", "RUST_LOG"],
+};
+
 /// The orchestrator's whole configuration.
 ///
 /// Each field is also a flag. A value that does not parse stops startup with
@@ -48,7 +57,7 @@ mod tests {
 	#[test]
 	fn the_checked_in_schema_is_this_config() {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra/env/orchestrator.json");
-		app_config::schema::assert_checked_in("orchestrator", &Config::command(), &app_config::schema::NO_RULES, &path);
+		app_config::schema::assert_checked_in("orchestrator", &Config::command(), &super::RULES, &path);
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 }

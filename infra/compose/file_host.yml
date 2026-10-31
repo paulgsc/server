@@ -7,12 +7,17 @@ services:
     labels:
       env-schema: file_host
     env_file:
+      # Every "ours" setting of file_host, decided per host in git (CFG9,
+      # #604). Only this file reaches the container whole; the box's .env
+      # reaches it through the names `environment:` lists below.
+      # DEPLOY: the deploy/ role this host runs, `home` on the box. Each
+      # container takes deploy/<role>/<binary>.env; `make dev` takes
+      # deploy/dev/ itself, without compose.
       # REPO_ROOT: this checkout's absolute path. Every service mounts files
-      # from under it. The repo's .env, all of it, reaches the container;
-      # required, because without it the container used to start on none of
-      # it, and with REPO_ROOT unset it bind-mounted /data, /config and /logs
-      # from the host's root (#407). HOST-SPECIFIC: wherever the checkout is.
-      - path: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/.env
+      # from under it; required, because with it unset /data, /config and
+      # /logs were bind-mounted from the host's root (#407). HOST-SPECIFIC:
+      # wherever the checkout is.
+      - path: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/deploy/${DEPLOY:?set DEPLOY in .env to the deploy/ role this host runs, home on the box}/file_host.env
         required: true
     ports:
       # Box only: Caddy on the host serves it to the LAN, the phone included,
@@ -24,16 +29,50 @@ services:
       # ahead of the INPUT chain that firewall filters.
       - '127.0.0.1:3000:3000'
     environment:
+      # Compose's own network: these win over the deployment file.
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=sqlite:///app/dbs/hopium.db
       - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
       - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
       - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
-      - REDIS_URL=redis://redis:6379
-      - NATS_URL=nats://nats:4222
-      - DATABASE_URL=sqlite:///app/dbs/hopium.db
-      - SQLX_OFFLINE=false
-      - DATA_DIR=/app/data
-      - CONFIG_DIR=/app/config
+      # From the box's .env, each only when it sets it: file_host's secrets
+      # and the neutral variables an override may change. Exactly those
+      # (`make deploy-check`): an "ours" variable is decided in the
+      # deployment file, never here.
+      - MAX_IN_FLIGHT
+      - FILE_HOST_BIND
+      - FILE_HOST_PORT
+      - FILE_HOST_PORT_FALLBACK
+      - FILE_HOST_PORT_FILE
+      - RATE_LIMIT
+      - CACHE_TTL
+      - MAX_REQUEST_SIZE_MB
+      - MAX_CONCURRENT_REQUESTS
+      - TASK_TIMEOUT_MS
+      - VAPID_PRIVATE_KEY
+      - NUDGE_WAKER_SECONDS
+      - PUSH_DELIVERY_TIMEOUT_MS
+      - WAKER_PASS_DEADLINE_MS
+      - NUDGE_PRESENCE_LEASE_TTL_SECONDS
+      - MAILBOX_TOKEN
+      - MAILBOX_SECONDS
+      - MAILBOX_ARCHIVE_TOKEN
+      - TRANSCRIBE_VAD_MODEL
+      - TRANSCRIBE_THREADS
+      - TRANSCRIBE_DEADLINE_SECONDS
+      - TRANSCRIBE_SECONDS
+      - RUST_ROUNDS_SOCKET
+      - RUST_ROUNDS_SECONDS
+      - RUST_ROUNDS_PASS_DEADLINE_SECONDS
+      - GAME_FEED_SCOREBOARD_SECONDS
+      - GAME_FEED_LIVE_SECONDS
+      - GAME_FEED_BACKOFF_CAP_SECONDS
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_TRACES_SAMPLER
+      - OTEL_TRACES_SAMPLER_ARG
+      - OTEL_SERVICE_NAME
     volumes:
       # STORAGE: the host directory holding file_host's SQLite database, mounted
       # at /app/dbs (DATABASE_URL above). HOST-SPECIFIC default: the nixos.local

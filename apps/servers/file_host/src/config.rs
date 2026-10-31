@@ -153,10 +153,88 @@ pub const BOUNDS: &[Bound] = &[
 	},
 ];
 
-/// What `file_host` holds its `Config` to at start beyond what clap parses.
+/// `file_host`'s "ours" variables, each decided in every deployment file.
+///
+/// Their values are in `deploy/<role>/file_host.env` (CFG9, #604, a
+/// classification the owner confirmed on 2026-10-31): a feature switch, an
+/// identity or address, a policy (who, when, how long), or wiring a new host
+/// must decide.
+pub const OURS: &[&str] = &[
+	"ALLOWED_ORIGINS",
+	"REDIS_URL",
+	"DATABASE_URL",
+	"NUDGE_ENABLED",
+	"VAPID_PUBLIC_KEY",
+	"VAPID_SUBJECT",
+	"NUDGE_TIMEZONE",
+	"NUDGE_QUIET_HOURS_START",
+	"NUDGE_QUIET_HOURS_END",
+	"RECOMMENDER_USES_OUTCOMES",
+	"APP_BASE_URL",
+	"AUTH_ENABLED",
+	"WEBAUTHN_RP_ID",
+	"WEBAUTHN_ORIGINS",
+	"AUTH_SESSION_DAYS",
+	"AUTH_OPEN_SIGNUP",
+	"AUTH_NEW_ACCOUNTS_PER_DAY",
+	"OPERATOR_SUBJECTS",
+	"MAILBOX_ENABLED",
+	"MAILBOX_URL",
+	"MAILBOX_SUBJECT",
+	"ROUTINE_SCHEDULE",
+	"MAILBOX_ARCHIVE_DAYS",
+	"FCM_SERVICE_ACCOUNT_FILE",
+	"TRANSCRIBE_ENABLED",
+	"TRANSCRIBE_MODEL",
+	"RUST_ROUNDS_ENABLED",
+	"GAME_FEED_ENABLED",
+	"NATS_URL",
+	"ENVIRONMENT",
+];
+
+/// `file_host`'s variables whose default surprises no one: an engineering
+/// constant, a dev-only knob, or one that matters only while an opt-in
+/// feature is on. The box's `.env` may override one.
+pub const NEUTRAL: &[&str] = &[
+	"MAX_IN_FLIGHT",
+	"FILE_HOST_BIND",
+	"FILE_HOST_PORT",
+	"FILE_HOST_PORT_FALLBACK",
+	"FILE_HOST_PORT_FILE",
+	"RATE_LIMIT",
+	"CACHE_TTL",
+	"MAX_REQUEST_SIZE_MB",
+	"MAX_CONCURRENT_REQUESTS",
+	"TASK_TIMEOUT_MS",
+	"NUDGE_WAKER_SECONDS",
+	"PUSH_DELIVERY_TIMEOUT_MS",
+	"WAKER_PASS_DEADLINE_MS",
+	"NUDGE_PRESENCE_LEASE_TTL_SECONDS",
+	"MAILBOX_SECONDS",
+	"TRANSCRIBE_VAD_MODEL",
+	"TRANSCRIBE_THREADS",
+	"TRANSCRIBE_DEADLINE_SECONDS",
+	"TRANSCRIBE_SECONDS",
+	"RUST_ROUNDS_SOCKET",
+	"RUST_ROUNDS_SECONDS",
+	"RUST_ROUNDS_PASS_DEADLINE_SECONDS",
+	"GAME_FEED_SCOREBOARD_SECONDS",
+	"GAME_FEED_LIVE_SECONDS",
+	"GAME_FEED_BACKOFF_CAP_SECONDS",
+	"RUST_LOG",
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	"OTEL_TRACES_SAMPLER",
+	"OTEL_TRACES_SAMPLER_ARG",
+	"OTEL_SERVICE_NAME",
+];
+
+/// What `file_host` holds its `Config` to at start beyond what clap parses,
+/// and how each of its variables is classified.
 pub const RULES: Rules = Rules {
 	required_when: REQUIRED_WHEN,
 	bounds: BOUNDS,
+	ours: OURS,
+	neutral: NEUTRAL,
 };
 
 /// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`
@@ -170,10 +248,6 @@ pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; refl
 #[command(author, version, about, long_about = None)]
 #[command(mut_arg("otel_service_name", app_config::default_service_name("file_host")))]
 pub struct Config {
-	/// Database connection timeout in seconds
-	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30", help_heading = "Server")]
-	pub connection_timeout: u64,
-
 	/// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded.
 	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256", help_heading = "Server")]
 	pub max_in_flight: u64,
@@ -237,14 +311,6 @@ pub struct Config {
 	#[arg(long, env = "CACHE_TTL", default_value = "600", help_heading = "Server")]
 	pub cache_ttl: u64,
 
-	/// Prometheus metrics port
-	#[arg(long, env = "PROMETHEUS_PORT", default_value = "9090", help_heading = "Server")]
-	pub prometheus_port: u16,
-
-	/// Streaming Chunk Size
-	#[arg(long, env = "BUFFER_SIZE", value_name = "BUFFER_SIZE", default_value = "65536", help_heading = "Server")]
-	pub chunk_size: usize,
-
 	/// Individual request payload lmit in MB
 	#[arg(long, env = "MAX_REQUEST_SIZE_MB", value_name = "MAX_REQUEST_SIZE_MB", default_value = "10", help_heading = "Server")]
 	pub max_request_size: usize,
@@ -257,24 +323,13 @@ pub struct Config {
 	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000", help_heading = "Server")]
 	pub task_timeout_ms: u64,
 
-	/// Streaming Max Chunk Size
-	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", value_name = "MAX_CHUNKS_IN_FLIGHT", default_value = "5", help_heading = "Server")]
-	pub max_chunks: usize,
-
-	/// OBS Websocket Server IP Address
-	#[arg(long, env = "OBS_WEBSOCKET_IP", value_name = "OBS_WEBSOCKET_IP", help_heading = "Server")]
-	pub obs_host: String,
-
-	/// OBS Websocket Server Password
-	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD", hide_env_values = true, help_heading = "Server")]
-	pub obs_password: String,
-
 	/// The `SQLite` database, as `sqlite://<path>`.
 	///
-	/// The container sets its own (`infra/compose/file_host.yml`), so in
-	/// `.env` this is `make dev`'s. Pointed at the directory the container
-	/// mounts, a dev run opens the container's live database.
-	#[arg(long, env = "DATABASE_URL", hide_env_values = true, help_heading = "Server")]
+	/// The container sets its own (`infra/compose/file_host.yml`), and
+	/// `make dev` its own, `deploy/dev/file_host.env`'s. Pointed at the
+	/// directory the container mounts, a dev run opens the container's live
+	/// database.
+	#[arg(long, env = "DATABASE_URL", help_heading = "Server")]
 	pub database_url: String,
 
 	// ── Study nudge ──────────────────────────────────────────────────────────
@@ -740,20 +795,16 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 43] = [
+	const REFUSED: [(&str, &str); 39] = [
 		("RUST_LOG", "info,=[bad"),
-		("CONNECTION_TIMEOUT", "soon"),
 		("MAX_IN_FLIGHT", "-1"),
 		("FILE_HOST_PORT", "70000"),
 		("FILE_HOST_PORT_FALLBACK", "1"),
 		("RATE_LIMIT", "-1"),
 		("CACHE_TTL", "1.5"),
-		("PROMETHEUS_PORT", "70000"),
-		("BUFFER_SIZE", "64k"),
 		("MAX_REQUEST_SIZE_MB", "10MB"),
 		("MAX_CONCURRENT_REQUESTS", "many"),
 		("TASK_TIMEOUT_MS", "15s"),
-		("MAX_CHUNKS_IN_FLIGHT", "-5"),
 		("NUDGE_ENABLED", "on"),
 		("NUDGE_QUIET_HOURS_START", "10pm"),
 		("NUDGE_QUIET_HOURS_END", "8am"),
@@ -787,14 +838,12 @@ mod tests {
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
 	// to start on a bad one, as the mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 27] = [
+	const FREE_TEXT: [&str; 25] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
 		"ALLOWED_ORIGINS",
 		"REDIS_URL",
 		"NATS_URL",
-		"OBS_WEBSOCKET_IP",
-		"OBS_WEBSOCKET_PWD",
 		"DATABASE_URL",
 		"VAPID_PUBLIC_KEY",
 		"VAPID_PRIVATE_KEY",
@@ -879,10 +928,6 @@ mod tests {
 	fn auth_enabled_can_be_turned_off_by_value() {
 		let required = [
 			"file_host",
-			"--obs-host",
-			"h",
-			"--obs-password",
-			"p",
 			"--database-url",
 			"sqlite::memory:",
 			"--allowed-origins",

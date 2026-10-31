@@ -62,6 +62,7 @@ jobs:
             infra/**
             docker-compose.yml
             example.env
+            deploy/**
             scripts/check_scrape_inventory.py
 
     outputs:
@@ -162,16 +163,17 @@ jobs:
       # `include:` directives into the actual service set — see
       # infra/prometheus/inventory.yml's own header for why the check reads
       # that instead of hand-parsing the compose files.
-      # file_host's `env_file` requires the repo's .env (#407); example.env
-      # stands in for it, so this also checks that example.env resolves.
+      # Compose interpolates the project from the repo's .env; example.env
+      # stands in for it, so this also checks that example.env resolves, and
+      # DEPLOY=home that home's deployment files exist (CFG9, #604).
       - name: Stand in example.env for .env
         run: cp example.env .env
 
       - name: Validate docker compose config resolves
-        run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
+        run: DEPLOY=home REPO_ROOT=${{ github.workspace }} docker compose config --quiet
 
       - name: Check scrape inventory reconciles (#146)
-        run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
+        run: DEPLOY=home REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
 
   # #212 (G1/#217): unconditional, unlike the two jobs above — a phantom
   # query is introduced by editing infra/grafana/ (the `infra` diff), and an

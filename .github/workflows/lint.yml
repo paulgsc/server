@@ -91,6 +91,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: example.env is what its declarations generate
         run: python3 scripts/env_schema.py --self-test example --check
+      # CFG9 (#604): a PR that adds or changes an "ours" variable decides its
+      # value in every deploy/<role>/<binary>.env, or this fails naming it.
+      - name: Every deployment file decides every "ours" value
+        run: python3 scripts/env_schema.py deploy
       - name: The NixOS options are what infra/env generates (#408)
         run: python3 scripts/nixos_options.py --self-test --check
 

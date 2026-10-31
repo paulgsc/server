@@ -15,6 +15,10 @@ pub const RULES: app_config::schema::Rules = app_config::schema::Rules {
 		max: None,
 		when: &[],
 	}],
+	// CFG9 (#604). `OBS_HOST`'s default is one LAN's address, so it is ours;
+	// `OBS_PORT`'s is obs-websocket's own.
+	ours: &["NATS_URL", "OBS_HOST"],
+	neutral: &["OBS_PORT", "HEALTH_CHECK_INTERVAL_SECS", "SHUTDOWN_TIMEOUT_SECS", "RUST_LOG"],
 };
 
 /// The OBS NATS service's whole configuration.

@@ -215,6 +215,8 @@ mod tests {
 				],
 			},
 		],
+		ours: &["PROBE_ENABLED", "PROBE_URL"],
+		neutral: &["PROBE_SECONDS", "PROBE_DAYS", "PROBE_TOKEN"],
 	};
 
 	fn unmet(args: &[&str]) -> Vec<String> {
@@ -245,6 +247,64 @@ mod tests {
 			unmet(&["--probe-enabled", "true", "--probe-url", "u", "--probe-days", "1"]).is_empty(),
 			"every condition must hold"
 		);
+	}
+
+	#[derive(Parser)]
+	struct Classified {
+		#[arg(long, env = "PROBE_SWITCH")]
+		switch: Option<String>,
+		#[arg(long, env = "PROBE_KEY", hide_env_values = true)]
+		key: Option<String>,
+	}
+
+	fn classes(ours: &'static [&'static str], neutral: &'static [&'static str]) -> Vec<(String, crate::schema::Class)> {
+		let rules = crate::schema::Rules {
+			required_when: &[],
+			bounds: &[],
+			ours,
+			neutral,
+		};
+		crate::schema::schema("probe", &Classified::command(), &rules)
+			.variables
+			.into_iter()
+			.map(|variable| (variable.name, variable.class))
+			.collect()
+	}
+
+	/// CFG9 (#604): each variable is ours, neutral, or a secret by its
+	/// `hide_env_values`, and the schema says which.
+	#[test]
+	fn every_variable_is_ours_neutral_or_secret() {
+		use crate::schema::Class;
+		assert_eq!(
+			classes(&["PROBE_SWITCH"], &[]),
+			[("PROBE_SWITCH".to_owned(), Class::Ours), ("PROBE_KEY".to_owned(), Class::Secret)]
+		);
+		assert_eq!(classes(&[], &["PROBE_SWITCH"])[0].1, Class::Neutral);
+	}
+
+	#[test]
+	#[should_panic(expected = "probe does not classify PROBE_SWITCH")]
+	fn an_unclassified_variable_is_refused() {
+		let _ = classes(&[], &[]);
+	}
+
+	#[test]
+	#[should_panic(expected = "probe classifies PROBE_SWITCH more than once")]
+	fn a_variable_classified_twice_is_refused() {
+		let _ = classes(&["PROBE_SWITCH"], &["PROBE_SWITCH"]);
+	}
+
+	#[test]
+	#[should_panic(expected = "PROBE_KEY is a secret")]
+	fn a_secret_classified_as_ours_is_refused() {
+		let _ = classes(&["PROBE_SWITCH", "PROBE_KEY"], &[]);
+	}
+
+	#[test]
+	#[should_panic(expected = "probe classifies PROBE_GONE, which it does not declare")]
+	fn a_classification_naming_nothing_is_refused() {
+		let _ = classes(&["PROBE_SWITCH", "PROBE_GONE"], &[]);
 	}
 
 	/// ENV1 for the groups themselves; each binary's own test walks them

@@ -121,8 +121,11 @@ that reads it (#405).
 That one declaration is also readable without starting anything (#503). Each
 binary's tests hold a copy of its `Config`'s schema in
 [`infra/env/<binary>.json`](./infra/env): every variable, whether it is
-required, its default, its kind, its help, and whether it is a secret (its
-value hidden, `hide_env_values`). [`example.env`](./example.env) is generated
+required, its default, its kind, its help, and its class (CFG9, #604):
+*ours* (it decides how our app behaves on a host), *neutral* (a default that
+surprises no one) or *secret* (its value hidden, `hide_env_values`). Each
+binary lists its ours and neutral variables beside its `Config`, in `RULES`,
+and its schema test fails on a variable that is in neither. [`example.env`](./example.env) is generated
 from those copies and the compose files' `${...}` variables by
 [`scripts/env_schema.py`](./scripts/env_schema.py); nobody writes a list of
 variables by hand. `make env-schema` regenerates both after a `Config` or a
@@ -177,26 +180,54 @@ whether `.env` sets it.
 
 ### Deploying the stack
 
+Every *ours* setting is decided in git, per host and per app, in the PR that
+needs it (CFG9, #604): `deploy/<role>/<binary>.env` states each one, its
+value written out even where it equals the default. `deploy/home/` is the
+box, which compose runs; `deploy/dev/` is `make dev`'s, file_host from source
+with its own database and every feature that acts on its own off. A
+`#unset NAME` line says leaving a variable unset is the decision. The box's
+`.env` holds only what stays off git: the secrets, a neutral override, and
+what compose itself reads, `DEPLOY=home` among them.
+
+- **ENV4: every ours value is decided in every deployment file.**
+  - _Claim:_ each `deploy/<role>/<binary>.env` states every ours variable of
+    its binary and nothing else, each with a value its binary takes at
+    start; compose gives each labelled service its file whole and, from
+    `.env`, only that binary's secrets and neutral variables; and the
+    preflight refuses an ours variable set in `.env`.
+  - _Family:_ every role under `deploy/`, and `home` for every service
+    labelled `env-schema`; every ours variable of each binary, a new one
+    included; stated, `#unset`, or missing; a neutral, secret or unknown name
+    in a deployment file; a value with a `$` (compose would interpolate it);
+    a required-while or a bound that does not hold under the file's own
+    values.
+  - _Proof:_ `env_schema.py deploy` (`Lint`'s `Env schema` job, and
+    `make deploy-check`); `env_schema.py --self-test`.
+  - _Tolerance:_ the wiring compose sets in a service's own `environment:`
+    (`DATABASE_URL`, `NATS_URL`, `REDIS_URL`) is compose's network, so home's
+    file leaves it out, and states it nowhere else; `deploy/dev/` states it.
+    some-obs has no deployment file: compose does not run it, and its image
+    sets its values.
+
 On the host, from the checkout (#504):
 
 ```bash
-cp example.env .env          # first time only
-make preflight FILL=1        # names every gap at once, and asks for each
+cp example.env .env          # first time only: DEPLOY=home, REPO_ROOT and the secrets
+make preflight               # names every gap at once
 make up                      # the preflight again, then docker compose up -d
 ```
 
-The preflight reads `docker compose config` as compose will, interpolating
-each service's environment from `.env` and the shell, and checks every
-service labelled `env-schema` against that binary's schema. It names every
-required variable that is missing and every value its binary would refuse at
-start, all in one pass (including the ones required only while another is
-on, such as the mailbox's while `MAILBOX_ENABLED`), and exits non-zero if
-there is any, so `make up`
-never starts on a known gap. It also warns about each `.env` line nothing
-reads: a renamed or retired variable is otherwise ignored without a word.
-`FILL=1` writes what it asks for to `.env` in clear text, where compose reads
-it, and leaves the file readable by its owner alone (mode 600); secrets kept
-encrypted in git come with the NixOS modules (#408).
+The preflight reads `docker compose config` as compose will, reading each
+service's deployment file and interpolating its environment from `.env` and
+the shell, and checks every service labelled `env-schema` against that
+binary's schema. It names every required variable that is missing, every
+value its binary would refuse at start, and every ours variable `.env` sets,
+all in one pass (including the ones required only while another is on, such
+as the mailbox's while `MAILBOX_ENABLED`), and exits non-zero if there is
+any, so `make up` never starts on a known gap. It also warns about each
+`.env` line nothing reads: a renamed or retired variable is otherwise ignored
+without a word. It asks for nothing: a value decided at deploy time, on the
+box, is the one nobody reviewed.
 A `${NAME:?}` in any compose file stops every service, not only its own,
 because compose interpolates the whole project before it starts one; the
 preflight names those too.
@@ -206,8 +237,9 @@ preflight names those too.
     labelled service's binary requires and is not given, every value it
     would refuse, and every required compose variable unset, in one run, and
     exits 1 when there is any.
-  - _Family:_ every service labelled `env-schema`; given by `.env`, by the
-    service's own `environment:`, or by the shell; unset, or empty or of the
+  - _Family:_ every service labelled `env-schema`; given by its deployment
+    file, by `.env` through the service's own `environment:`, or by the
+    shell; unset, or empty or of the
     wrong kind where its binary refuses that (an empty value is set: clap
     hands it to the parser, which takes it as text and refuses it as a
     number or a switch); required always, or while another variable is on.

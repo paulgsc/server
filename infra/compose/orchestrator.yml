@@ -6,11 +6,18 @@ services:
     # environment against (infra/env/orchestrator.json, #504).
     labels:
       env-schema: orchestrator
+    # orchestrator's "ours" settings, per host in git, as file-host's are
+    # (CFG9, #604; infra/compose/file_host.yml).
+    env_file:
+      - path: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/deploy/${DEPLOY:?set DEPLOY in .env to the deploy/ role this host runs, home on the box}/orchestrator.env
+        required: true
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       RUST_BACKTRACE: "1"
       TOKIO_WORKER_THREADS: ${TOKIO_WORKER_THREADS:-4}
       NATS_URL: nats://nats:4222
+      # From the box's .env when it sets it (neutral).
+      METRICS_ADDR:
     depends_on:
       nats:
         condition: service_started
