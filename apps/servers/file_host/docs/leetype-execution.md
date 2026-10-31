@@ -254,17 +254,21 @@ settles each one with a single check against a hunk.
     compiles the reviewed LeetType corpus through `leetype_runner`, on an
     operator's command, never in the server. Rust Rounds' programs are
     compiled and run by the `rust-runner` container, and file_host only
-    asks it over its socket, off any request's path.
+    asks it over its socket, off any request's path (`rust_rounds::pass`,
+    RP1), through `rust_rounds_wire`, the runner's client half, which
+    starts no process either.
   - _Falsified by_ a hunk that adds a `leetype_runner` path to any other
     file under `src/`, a `rust_runner` path to any file under `src/`, a
     dependency through which file_host reaches `rust_runner` other than
     `leetype_runner`, or a process start (`Command::new`,
-    `std::process::Command`, `tokio::process`) to a file not in `SPAWNS`; by
+    `std::process::Command`, `tokio::process`) to a file not in `SPAWNS` or
+    to any file of `crates/rust_rounds_wire/src`; by
     an entry added to `SPAWNS` that this claim does not name; or by a hunk
     that deletes or weakens either test.
   - _Enforced mechanically_ by
     `the_runs_surface_reaches_neither_a_study_signal_nor_the_runner` (the
-    source scan, and that this claim names every `SPAWNS` file) and
+    source scan, of `src/` and of `rust_rounds_wire`, and that this claim
+    names every `SPAWNS` file) and
     `the_runner_reaches_file_host_only_through_leetype_runner` (`cargo
     metadata`'s resolved graph). Cargo's graph is per package, not per
     binary, so which binary links `leetype_runner` is the scan's to hold.
@@ -310,14 +314,14 @@ but the `rust-runner` container.
 | `infra/compose/rust_runner.yml` | The sandbox (RX1). Not in `docker-compose.yml`'s stack until file_host asks it anything. |
 | `scripts/check_rust_runner_sandbox.py` (`rust-runner.yml`) | Brings the compose file up as written and runs the worked example and the hostile programs against it. |
 
-**What is not built yet** (RR3's next slice): the round stored on home as an
-append-only row, the background pass that hands each program and variant to
-the runner and stores the recording keyed as RX4 says, the `Paired` routes
-(list rounds; one round with its runs, with an ETag; `PUT` a pasted round),
-the round and run tables in `docs/identity.md` (`NOT_SUBJECT_SCOPED`: code
-is not personal) and in some-ui's assurance ledger, and the runner in the
-stack. Until then nothing in file_host asks the runner anything, which is
-why EX1's claim already holds with it.
+**Recording on arrival** (RR3's second slice; "Rust Rounds: recording on
+arrival", below): the phone puts a round, home keeps it as an append-only
+row and queues each distinct program, and a background pass in file_host
+hands each to the runner over its socket and keeps how it ended. Not yet
+done: the runner in `docker-compose.yml`'s stack, with its socket's volume
+mounted into file-host and an inventory entry, and the round, run and task
+placements in some-ui's assurance ledger. Until the stack carries the
+runner, `RUST_ROUNDS_ENABLED` stays off and file_host asks it nothing.
 
 ### Why a socket and no network, not "an internal network"
 
@@ -432,8 +436,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
   - _Falsified by_ a thread or task per connection, a removed ceiling or
     one per read or write, a peer check removed or moved after the read,
     or a handler that asks the runner.
-  - _Scope:_ the service loop and its client. The next slice's pass decides
-    how often it asks, and caps attempts per program.
+  - _Scope:_ the service loop and its client. How often the pass asks, and
+    what it does when the runner goes away holding a program, is RP3 and RP4
+    (below).
   - _Why not enforced mechanically:_ the loop is short enough to read.
     `a_trickling_client_is_refused_at_the_client_timeout` checks the read's
     deadline (the write's is the same type), `only_a_clients_uid_is_served`
@@ -452,13 +457,109 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
   - _Falsified by_ a key over anything else (a round, a card, a tutor), or
     a recording stored under a key or toolchain the client did not compute
     and send itself.
-  - _Scope:_ the runner's half today; the client's half is the next slice's
-    pass, which must hold it.
-  - _Why not enforced mechanically:_ the store is not built yet. The
-    runner's half is checked by
+  - _Scope:_ the runner, and the client's half in `rust_rounds::pass` (RP2).
+  - _Why not enforced mechanically:_ which key a future writer computes is
+    not visible to a type. The runner's half is checked by
     `the_key_is_the_toolchain_and_the_source_and_nothing_else`,
     `the_same_program_records_the_same_bytes_but_its_time` and
-    `the_service_answers_one_request_per_connection`.
+    `the_service_answers_one_request_per_connection`, and the client's by
+    `a_stored_rounds_programs_are_recorded_by_the_runner_in_one_pass` (the
+    fake runner's own `key` is never the one kept).
+
+## Rust Rounds: recording on arrival (paulgsc/some-ui#2234, RR3)
+
+| Piece | What it is |
+| --- | --- |
+| `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under the id, `422` naming each field. |
+| `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The newest rounds; one round, byte for byte, with each read and variant card's program and every run kept for it (`ended`, and `rustc`, some-ui's `RustcRunSchema`). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. |
+| `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain; and each time the runner went away holding a program. All four append-only, no row updated or deleted. No subject: docs/identity.md says why, and what a round can still say. |
+| `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `RUST_ROUNDS_SECONDS`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
+
+**A round's id is never reused, so another body under it is refused.** The
+format says ids are "unique across rounds, never reused", so a second body
+under a held id is a tutor's mistake, not a new version: home answers `409`
+and keeps the first. Never a revision and never an overwrite, so what the
+phone played is what home keeps.
+
+**The pass's invariants.** Declared per this repo's `CLAUDE.md` ("Drift is
+loud, not silent"), in the shape of EX1, EX2 and RX1–RX4; they are the
+study nudge's scaling rules ("Scaling invariants", `docs/study-nudge.md`)
+applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
+
+- **RP1: no request waits on a compile, and file_host spawns no process.**
+  - _Claim:_ no handler asks the runner: `handlers::rust_rounds` reads and
+    writes rows only, and a `PUT` answers once its transaction commits. Only
+    the pass asks, from the task `rust_rounds::start` spawns, each ask on a
+    blocking thread (`spawn_blocking`) through `rust_rounds_wire`, which
+    starts no process. The runner compiles and runs, in its container (RX1).
+  - _Falsified by_ a handler, extractor or middleware that names
+    `rust_rounds::pass`, `Runner`, `exchange` or `ask`; a process start
+    under `src/` or in `rust_rounds_wire` (EX1's `SPAWNS`); or file_host
+    depending on `rust_runner` other than through `leetype_runner`.
+  - _Why not enforced mechanically:_ EX1's two tests hold the process half
+    and the dependency half. That no handler calls the pass is a reading of
+    one module's imports.
+- **RP2: runs are keyed to the bytes and the toolchain, and what waits is
+  one range read.**
+  - _Claim:_ every run is kept by `rust_round_repo::keep_run` under the key
+    the pass computes (`key(toolchain, source)`, from the toolchain it asked
+    the runner and the source it sent; RX4), for the program that is next in
+    arrival order under that toolchain, and refused otherwise. So, per
+    toolchain, the recorded programs are always the first to arrive, and
+    what waits is every program after the toolchain's last run:
+    `rust_round_repo::waiting` reads it with two indexed reads, whatever has
+    been recorded, and a pass with nothing to do reads nothing. A toolchain
+    bump is a new key for every program, recorded again from the first.
+  - _Falsified by_ a run kept under a key or toolchain the pass did not
+    compute or ask for, a write to `rust_round_run` or `rust_round_drop`
+    outside `keep_run` and `keep_drop`, either of them writing for a program
+    other than the next waiting, or a read of what waits that scans what is
+    recorded.
+  - _Why not enforced mechanically:_ SQL text is not linted.
+    `programs_wait_in_arrival_order_until_recorded_under_the_toolchain`
+    checks the order and the refusal, and `what_waits_is_an_indexed_range_read`
+    the query plan.
+- **RP3: an outage records nothing; a program that takes the runner down is
+  recorded as that, after `DROPS` tries.**
+  - _Claim:_ an exchange that fails before the runner holds the job (no
+    socket, nothing listening, the request not written whole), that times
+    out on the pass's own deadline, or that answers a refusal or nonsense
+    keeps nothing about the program: it waits, and the next pass asks again.
+    The pass logs each such stop as an error or a warning and counts it on
+    `operation_errors_total{operation="rust_rounds"}`, every pass it lasts.
+    An exchange where the whole request was sent and the connection ended
+    before a whole answer (the runner went away holding the job: its
+    watchdog, or the program) keeps one `rust_round_drop` row; the `DROPS`th
+    (2) drop of one program under one toolchain also keeps its run, in the
+    same transaction, as `runner-restarted`, with a `stopped` `RustcRun`
+    whose `why` is `exit`. So one hostile program can take the runner down
+    at most `DROPS` times per toolchain, and the programs behind it are then
+    recorded. State per program and toolchain is at most `DROPS` rows.
+  - _Falsified by_ a drop kept for anything but a connection that ended
+    after the whole request was sent, a program kept failed for an outage,
+    a timeout or a refusal, a drop limit that grows with anything, or a
+    second `runner-restarted` path.
+  - _Why not enforced mechanically:_ which failure is the runner's and which
+    the program's is a reading of `exchange`'s phases.
+    `an_exchange_says_how_far_it_got` checks the phases,
+    `a_runner_that_is_down_leaves_every_program_waiting` the outage and
+    `a_program_that_takes_the_runner_down_is_kept_as_that` the drops.
+- **RP4: every pass is bounded by `BATCH` and the pass deadline, and
+  nothing else.**
+  - _Claim:_ a pass reads at most `BATCH` (20) waiting programs and asks
+    the runner about each in turn; it asks nothing once its deadline
+    (`RUST_ROUNDS_PASS_DEADLINE_SECONDS`, at least 120 s, so one program's
+    worst case fits) has passed, and each ask waits at most what is left of
+    it. Any outcome but a kept run ends the pass, and the next starts again
+    from the first program waiting. There is no other cap, cursor or
+    deadline: the queue is the arrival order and the toolchain's last run,
+    and `DROPS` bounds state per program, not work per pass.
+  - _Falsified by_ a per-pass cap, cursor or deadline of the mechanism's
+    own, a pass that reads past `BATCH`, an ask with a timeout longer than
+    what is left of the pass, or a pass that goes on after a failed ask.
+  - _Why not enforced mechanically:_ the pass is short enough to read.
+    `a_pass_is_bounded_by_its_batch_and_its_deadline` checks both bounds.
+
 
 ## #328: the static snapshot
 
