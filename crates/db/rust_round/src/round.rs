@@ -82,7 +82,7 @@ pub fn read(body: &[u8]) -> Result<Round, Vec<Problem>> {
 	}
 	let id = round.get("id").and_then(Value::as_str).filter(|id| is_slug(id));
 	if id.is_none() {
-		problems.push((String::from("id"), "must be lower-case letters, digits and single hyphens"));
+		problems.push((String::from("id"), "must be lower-case letters, digits and single hyphens, at most 64 characters"));
 	}
 	let programs = match round.get("cards").and_then(Value::as_array) {
 		Some(cards) if !cards.is_empty() => programs(cards, &mut problems),
@@ -116,7 +116,7 @@ fn programs(cards: &[Value], problems: &mut Vec<Problem>) -> Vec<Program> {
 			continue;
 		};
 		let Some(id) = card.get("id").and_then(Value::as_str).filter(|id| is_slug(id)) else {
-			problems.push((at(".id"), "must be lower-case letters, digits and single hyphens"));
+			problems.push((at(".id"), "must be lower-case letters, digits and single hyphens, at most 64 characters"));
 			continue;
 		};
 		if !seen.insert(id) {
@@ -267,6 +267,11 @@ mod tests {
 		assert_eq!(refused(&[0xff, 0xfe]), ["body"]);
 		assert_eq!(refused(b"[1, 2]"), ["body"]);
 		assert_eq!(refused(br#"{"schema":"some-ui.rust-round/2","id":"Bad Id","cards":[]}"#), ["schema", "id", "cards"]);
+		let long = json!({ "schema": "some-ui.rust-round/1", "id": "a".repeat(65), "cards": [{ "kind": "read", "id": "a", "program": "" }] });
+		assert_eq!(
+			read(long.to_string().as_bytes()).unwrap_err(),
+			[(String::from("id"), "must be lower-case letters, digits and single hyphens, at most 64 characters")]
+		);
 		let cards = json!([
 			{ "kind": "read", "id": "a", "program": "fn main() {}\n" },
 			{ "kind": "read", "id": "a", "program": "fn main() {}\n" },

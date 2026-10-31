@@ -590,13 +590,18 @@ mod tests {
 		// it starts no process either.
 		let wire = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../crates/rust_rounds_wire/src");
 		let mut wire_files = 0;
-		for entry in std::fs::read_dir(&wire).unwrap() {
-			let path = entry.unwrap().path();
-			if path.extension().is_some_and(|extension| extension == "rs") {
-				wire_files += 1;
-				let code = code(&std::fs::read_to_string(&path).unwrap());
-				let spawns = spawn_markers.iter().any(|marker| code.contains(marker.as_str())) || spawns_in_a_list.is_match(&code);
-				assert!(!spawns, "{} starts a process", path.display());
+		let mut stack = vec![wire];
+		while let Some(dir) = stack.pop() {
+			for entry in std::fs::read_dir(&dir).unwrap() {
+				let path = entry.unwrap().path();
+				if path.is_dir() {
+					stack.push(path);
+				} else if path.extension().is_some_and(|extension| extension == "rs") {
+					wire_files += 1;
+					let code = code(&std::fs::read_to_string(&path).unwrap());
+					let spawns = spawn_markers.iter().any(|marker| code.contains(marker.as_str())) || spawns_in_a_list.is_match(&code);
+					assert!(!spawns, "{} starts a process", path.display());
+				}
 			}
 		}
 		assert!(wire_files >= 3, "the client half was read: {wire_files} files");
