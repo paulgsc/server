@@ -735,10 +735,14 @@ nowhere is marked as such and belongs to review.
       `file_leetype_logs`: a decisions or scouts file the phone filed, which
       of the routine's lessons it opened, a transcript, or a LeetType
       session's log, its bytes, hash and when.
-      The jobs route refuses a file that names a voice note anywhere (any
-      `voice` key that is not an empty list), so no file that points at
-      audio is handed on; those go by the phone's share sheet, which carries
-      the audio to Drive. The routine route builds its file itself, as
+      The jobs route files a decisions or scouts file as the phone sent it,
+      a voice note it names by the phone's id included (paulgsc/server#508;
+      until then it refused one, which only routed the owner through Drive):
+      an id is text, the note's audio is `voice_note_audio`'s (invariant
+      23), and what home heard in it reaches the routine as the transcript
+      below, under that id. Nothing in the file points at audio, and
+      sending to home is the default (paulgsc/some-ui#2174). The routine
+      route builds its file itself, as
       `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
       `drama` and a mailbox name), at most 100, and home's time, nothing
       else (owner, 2026-10-24: the routine keeps three lessons not opened).
@@ -804,6 +808,7 @@ nowhere is marked as such and belongs to review.
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
+    `a_filed_file_is_handed_over_as_filed`,
     `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
     `no_transcript_is_filed_for_a_deleted_subject`,
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
@@ -818,7 +823,7 @@ nowhere is marked as such and belongs to review.
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
-    `files_refuse_a_file_that_names_a_voice_note_wherever_it_hangs`.
+    `files_take_a_file_that_names_a_voice_note`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,
@@ -954,7 +959,10 @@ nowhere is marked as such and belongs to review.
     heard something. A heard attempt also keeps each word it heard, with
     when the word began and ended in milliseconds from the note's start
     (whisper.cpp's per-word times, joined from its tokens and moved from the
-    speech the VAD cut out back to the note), as new rows in
+    speech the VAD cut out back to the note), and how sure the model was of
+    it (`p`, 0 to 1: the lowest of its tokens' probabilities, so one unsure
+    piece makes the word unsure; null for a word heard before it was kept,
+    paulgsc/server#577, ST22), as new rows in
     `voice_transcript_word`, one per word, keyed by the note, the model and
     the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
     follow the voice word by word; approved by the owner, paulgsc/some-ui#2074
@@ -975,8 +983,11 @@ nowhere is marked as such and belongs to review.
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
     it kept. The text leaves home only as a transcript filed for the Jobs
-    mailbox (invariant 19), for the routines to read; the words are readable
-    by no route yet, and the audio never leaves.
+    mailbox (invariant 19), for the routines to read, and since
+    paulgsc/server#577 that file carries that model's words too, each with
+    its time and how sure the model was (`words`); the words are readable by
+    no route yet, and the audio never leaves. A probability is not text, so
+    it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
     `the_audio_is_kept_byte_for_byte_beside_its_note`,
