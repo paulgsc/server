@@ -491,6 +491,113 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
+/// The folder home's written reflections go to.
+pub const REFLECTION: &str = "reflection";
+
+/// Whether one of `subject`'s written reflections is due to be archived.
+///
+/// That is one home filed, which the mailbox took (or already held) at
+/// `cutoff` or before, and which home has not archived: the one reason a
+/// pass lists the mailbox's `reflection` folder to archive it. One home
+/// archived whose ask heard no answer is not due here: it is asked for again
+/// by name ([`unanswered_archives`]), since it may no longer be listed.
+///
+/// Home reads only its own tables here, so a pass with nothing due makes no
+/// request for the folder (paulgsc/some-ui's assurance ledger, MI6). It
+/// probes the reflections filed, by `mailbox_outgoing`'s key, each one's
+/// answer by `mailbox_handed_file` and its archive by `mailbox_archive`'s key.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn reflection_due(conn: &mut SqliteConnection, subject: &str, cutoff: &str) -> Result<bool, MailboxError> {
+	let due = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM mailbox_outgoing AS filed
+		     JOIN mailbox_handed AS handed
+		       ON handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		     WHERE filed.subject_id = ?1 AND filed.folder = 'reflection'
+		       AND handed.answer IN ('added', 'unchanged') AND handed.handed_at <= ?2
+		       AND NOT EXISTS (
+		         SELECT 1 FROM mailbox_archive AS archived
+		         WHERE archived.subject_id = filed.subject_id AND archived.folder = filed.folder AND archived.name = filed.name
+		       )
+		   ) AS "due!: bool""#,
+		subject,
+		cutoff
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(due)
+}
+
+/// One file `subject`'s archive holds, as the mailbox listed it when home
+/// archived it: what an ask to archive it again names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+	pub name: String,
+	pub seq: i64,
+	/// Lowercase hex SHA-256 of the bytes home holds.
+	pub sha256: String,
+	pub size: i64,
+	pub put_at: String,
+}
+
+/// The files of `subject`'s `folder` home archived whose ask heard no answer.
+///
+/// None is in `mailbox_archive_answer`: each ask failed to reach the mailbox,
+/// or its answer was lost, so its bytes may still be live there. Oldest kept
+/// first, at most `limit`.
+///
+/// Home reads only its own tables here, so with nothing owed a pass makes no
+/// request for them (paulgsc/some-ui's assurance ledger, MI6). It probes each
+/// archived file by `mailbox_archive`'s key and its answers by
+/// `mailbox_archive_answer_file`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn unanswered_archives(conn: &mut SqliteConnection, subject: &str, folder: &str, limit: i64) -> Result<Vec<Archived>, MailboxError> {
+	let owed = sqlx::query_as!(
+		Archived,
+		"SELECT kept.name, kept.seq, kept.sha256, kept.size, kept.put_at FROM mailbox_archive AS kept
+		 WHERE kept.subject_id = ?1 AND kept.folder = ?2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM mailbox_archive_answer AS answered
+		     WHERE answered.subject_id = kept.subject_id AND answered.folder = kept.folder AND answered.name = kept.name
+		   )
+		 ORDER BY kept.kept_at, kept.name
+		 LIMIT ?3",
+		subject,
+		folder,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(owed)
+}
+
+/// Records the mailbox's `answer` to home's ask to archive a file.
+///
+/// That is `subject`'s (`folder`, `name`), and `answer` is `archived`,
+/// `unchanged`, `mismatch`, `refused` or `gone`. Any answer is final; only an
+/// ask that never heard one is made again ([`unanswered_archives`]).
+///
+/// # Errors
+/// Any `sqlx` failure, an `answer` the table does not take among them.
+pub async fn record_archive_answer(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str, answer: &str, now: &str) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		folder,
+		name,
+		answer,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
 /// The folder home's transcripts go to.
 pub const TRANSCRIPT: &str = "transcript";
 
@@ -1033,12 +1140,12 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mailbox_%'");
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6);
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 7);
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops them");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6, "up recreates them");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 7, "up recreates them");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
@@ -1056,6 +1163,7 @@ mod tests {
 			),
 			("mailbox_transcript", &["subject_id", "note_id", "model", "n", "filed_at"][..]),
 			("mailbox_leetype_log", &["subject_id", "session_id", "through", "n", "refused", "decided_at"][..]),
+			("mailbox_archive_answer", &["subject_id", "folder", "name", "answer", "answered_at"][..]),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -1094,6 +1202,7 @@ mod tests {
 			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
 			"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
+			"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'r', 'archived', 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
@@ -1104,6 +1213,7 @@ mod tests {
 			("mailbox_archive", "name"),
 			("mailbox_transcript", "n"),
 			("mailbox_leetype_log", "n"),
+			("mailbox_archive_answer", "name"),
 		] {
 			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET " + column + " = 2")).execute(&pool).await;
 			assert!(update.unwrap_err().to_string().contains("append-only"), "{table}");

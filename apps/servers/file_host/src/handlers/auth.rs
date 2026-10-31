@@ -1182,6 +1182,7 @@ mod tests {
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
 				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
 				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
+				"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'n', 'archived', 'now')",
 				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
 				"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
@@ -1195,6 +1196,7 @@ mod tests {
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
 				"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
+				"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

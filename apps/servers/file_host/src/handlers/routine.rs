@@ -10,10 +10,21 @@
 //! (`mailbox_outgoing`), which the poller hands to the mailbox's `opened`
 //! folder: the routine keeps three lessons not opened (docs/identity.md
 //! invariant 19).
+//!
+//! **The owner's written reflections.** `PUT /routine/reflections/:id` keeps
+//! each typed line the phone sends home (`reflection_repo`, docs/identity.md
+//! invariant 29), append-only, and in the same transaction files what the
+//! reflections routine reads of it for the mailbox's `reflection` folder
+//! (`mailbox::pass::reflection_file`): its text, its session and when.
+//! Nothing typed reaches a log: each handler here records only `otel.kind`.
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
-use axum::{extract::State, Json};
+use axum::{
+	body::Bytes,
+	extract::{Path, State},
+	Json,
+};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -184,6 +195,67 @@ pub async fn put_opened(subject: SubjectId, State(db): State<SqlitePool>, Json(b
 	};
 	tx.commit().await?;
 	Ok(Json(Filed { change }))
+}
+
+/// `PUT /routine/reflections/:id`
+#[derive(Debug, Serialize)]
+pub struct ReflectionWritten {
+	/// `added` or `unchanged` — `reflection_repo::Change`.
+	pub change: &'static str,
+	/// The reflection as home holds it, which the phone compares with what it
+	/// sent before it counts it as home's.
+	pub reflection: reflection_repo::Reflection,
+}
+
+fn reflection_refusal(err: reflection_repo::ReflectionError) -> FileHostError {
+	match err {
+		reflection_repo::ReflectionError::Invalid(problems) => FileHostError::unprocessable_entity(problems),
+		reflection_repo::ReflectionError::Rewritten => FileHostError::Conflict(reflection_repo::REWRITTEN),
+		reflection_repo::ReflectionError::Storage(err) => FileHostError::Sqlite(err),
+	}
+}
+
+/// `PUT /routine/reflections/:id`, the request body being the written
+/// reflection itself, in the phone's shape.
+///
+/// Kept in `written_reflection`, and, when it is new, filed in the same
+/// `BEGIN IMMEDIATE` transaction for the mailbox's `reflection` folder, so a
+/// reflection home holds is always on its way to the routine and none is
+/// filed twice. The same reflection again changes nothing.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 naming each
+/// refused field (a spoken reflection or the one-tap answers among them),
+/// 409 for a different reflection under a held id, and 500 for a storage
+/// failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "routine_reflection_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_reflection(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<ReflectionWritten>, FileHostError> {
+	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let (change, reflection) = reflection_repo::put_reflection(&mut tx, subject.as_str(), &id, &body, &now)
+		.await
+		.map_err(reflection_refusal)?;
+	if change == reflection_repo::Change::Added {
+		let (name, bytes) = crate::mailbox::pass::reflection_file(&reflection);
+		let sha256 = hex::encode(Sha256::digest(&bytes));
+		let filed = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::REFLECTION, &name, &sha256, &bytes, &now)
+			.await
+			.map_err(|err| match err {
+				mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("the mailbox's copy of this reflection already holds other words"),
+				mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+			})?;
+		if filed == mailbox_repo::Change::NoAccount {
+			// `SubjectId` found the account, so this is not reachable; if it
+			// were, the transaction is dropped and nothing is written.
+			return Err(FileHostError::OperationError("the account is gone".to_owned()));
+		}
+	}
+	tx.commit().await?;
+	Ok(Json(ReflectionWritten {
+		change: change.as_str(),
+		reflection,
+	}))
 }
 
 #[cfg(test)]
@@ -437,5 +509,73 @@ mod tests {
 		}
 		let mut conn = state.pool.acquire().await.unwrap();
 		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+	}
+
+	async fn put_reflection(state: TestState, auth: Option<&str>, id: &str, body: &Value) -> (StatusCode, Value) {
+		let app: Router = crate::routes::routine::routine().into_table_router().with_state(state);
+		let mut request = Request::builder()
+			.method(Method::PUT)
+			.uri(String::from("/routine/reflections/") + id)
+			.header(axum::http::header::CONTENT_TYPE, "application/json");
+		if let Some(auth) = auth {
+			request = request.header(AUTHORIZATION, auth);
+		}
+		let response = app.oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	fn typed(id: &str, text: &str) -> Value {
+		json!({ "id": id, "sessionId": "s-7f3a91c2", "createdAt": "2026-11-01T08:15:00.000Z", "atMs": 61_000, "body": { "kind": "text", "text": text } })
+	}
+
+	/// docs/identity.md invariant 29: kept once, answered as the phone keeps
+	/// it, filed once for the mailbox as the routine's minimum, and never
+	/// replaced.
+	#[tokio::test]
+	async fn a_written_reflection_is_kept_once_and_filed_once_as_text() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		let sent = typed("r1", "The second scene felt slow.");
+		assert_eq!(
+			put_reflection(state.clone(), Some(&phone), "r1", &sent).await,
+			(StatusCode::OK, json!({ "change": "added", "reflection": sent }))
+		);
+		assert_eq!(
+			put_reflection(state.clone(), Some(&phone), "r1", &sent).await,
+			(StatusCode::OK, json!({ "change": "unchanged", "reflection": sent }))
+		);
+		let (status, _) = put_reflection(state.clone(), Some(&phone), "r1", &typed("r1", "Other words.")).await;
+		assert_eq!(status, StatusCode::CONFLICT, "a different reflection under a held id");
+
+		let mut conn = state.pool.acquire().await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		assert_eq!(pending.len(), 1, "filed once");
+		assert_eq!((pending[0].folder.as_str(), pending[0].name.as_str()), ("reflection", "reflection-r1.json"));
+		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
+		assert_eq!(
+			file,
+			json!({ "schema": "some-ui.reflection/1", "reflection": "r1", "session": "s-7f3a91c2", "at": "2026-11-01T08:15:00.000Z", "text": "The second scene felt slow." })
+		);
+		assert!(mailbox_repo::pending_outgoing(&mut conn, B, 10).await.unwrap().is_empty(), "only the caller's");
+	}
+
+	#[tokio::test]
+	async fn a_spoken_reflection_or_the_answers_are_refused_and_nothing_is_filed() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		assert_eq!(put_reflection(state.clone(), None, "r1", &typed("r1", "x")).await.0, StatusCode::UNAUTHORIZED);
+		let voice = json!({ "id": "r2", "sessionId": "s", "createdAt": "2026-11-01T08:15:00.000Z", "atMs": 0, "body": { "kind": "voice", "durationMs": 4000, "mimeType": "audio/webm", "bytes": 512 } });
+		let answers =
+			json!({ "id": "r3", "sessionId": "s", "createdAt": "2026-11-01T08:15:00.000Z", "atMs": null, "body": { "kind": "answers", "answers": { "difficulty": "right" } } });
+		for (id, body) in [("r2", voice), ("r3", answers), ("r4", typed("r4", " "))] {
+			assert_eq!(put_reflection(state.clone(), Some(&phone), id, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+		}
+		let mut conn = state.pool.acquire().await.unwrap();
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		drop(conn);
+		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM written_reflection").fetch_one(&state.pool).await.unwrap();
+		assert_eq!(held, 0);
 	}
 }
