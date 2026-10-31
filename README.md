@@ -149,9 +149,7 @@ whether `.env` sets it.
     builder's environment readers, `tracing_subscriber::fmt::init`) a lint
     error; the reads that are not configuration carry an `#[allow]` saying so.
   - _Tolerance:_ a free-text value (a URL, a key, a path) is checked by what
-    uses it, not by clap. `NUDGE_TIMEZONE` is the one that falls back: a name
-    it does not know becomes UTC, with an error and a metric, by design
-    (`nudge::clock::NudgeClock::resolve`). Dependencies read variables of
+    uses it, not by clap. Dependencies read variables of
     their own that no `Config` declares, with their own fallbacks: tokio's
     `TOKIO_WORKER_THREADS`, polars' `POLARS_MAX_THREADS`, and the OTel SDK's
     `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_BSP_*`.
@@ -230,6 +228,15 @@ silent:
 * **Tracked.** [#406](https://github.com/paulgsc/server/issues/406) is the
   inventory and the plan to move these out of code and compose into each
   host's own configuration.
+
+That host's own configuration is
+[`paulgsc/dotfiles`](https://github.com/paulgsc/dotfiles): its `nixos/`
+builds `nixos.local` (`nixos-rebuild switch --flake`), including the Caddy
+that serves `file-host.home.maishatu.com` and the rest (`nixos/subdomains`)
+and the machine's secrets, kept encrypted with sops-nix (`nixos/secrets`,
+`secrets/nixos.yaml`). Owner, 2026-10-31. A setting this server needs from
+the host belongs there, and the NixOS modules (#408) will be consumed from
+there.
 
 The strongest one is `WEBAUTHN_RP_ID`: every passkey is bound to it, so
 moving to a new domain strands every passkey made on the old one. Settle the
