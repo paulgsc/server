@@ -620,7 +620,9 @@ nowhere is marked as such and belongs to review.
     `finishedSessions`), so home applies no rule of its own beyond waiting
     out a send in flight. The poller files a session's log once its newest
     event has been home for a poll interval (`MAILBOX_SECONDS`), and again,
-    as `.r<n>`, only once an event of it arrives after that copy. Which
+    as `.r<n>`, only once an event of it arrives after that copy. A session
+    it cannot file is recorded as refused, and is decided again the same way;
+    its events stay here, whatever the mailbox copy came to. Which
     events arrived after is read by rowid against `mailbox_leetype_log`'s
     high-water mark, so this table's rowids must only grow: nothing runs
     `VACUUM` on home's database (it may renumber a table with no INTEGER
@@ -698,13 +700,18 @@ nowhere is marked as such and belongs to review.
       so a better model's transcript goes under a new name and none is filed
       twice.
     - `mailbox_leetype_log`, written only by the poller, in the transaction
-      that reads the session's events and files its log: which session, the
-      number `n` its name carries, decided once as the session's next, and
-      `through`, the largest `leetype_session_event` rowid the file covered:
-      the high-water mark a pass reads above, so an idle pass reads two index
-      probes and no history (invariant 18). A session the poller cannot file
-      (an event that does not read back, no `started` event, a body over the
-      mailbox's 1 MiB) is counted as refused and written nowhere.
+      that reads the session's events and decides it: which session,
+      `through`, the largest `leetype_session_event` rowid the decision
+      covered (the high-water mark a pass reads above, so an idle pass reads
+      two index probes and no history, invariant 18), and either the number
+      `n` its filed log's name carries, decided once as the session's next,
+      or, for a session the poller cannot file (an event that does not read
+      back, no `started` event, a body over the mailbox's 1 MiB), `refused`
+      and why. A refusal is recorded, so the mark moves past it and no run of
+      refusals holds back the sessions after it; nothing of it goes to
+      `mailbox_outgoing`, and the session's events stay in
+      `leetype_session_event`: only the mailbox copy is skipped, until an
+      event of it arrives and it is decided again.
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
       each filed file it handed over, once, final.
     - `mailbox_archive`, written only by the poller with the archive token
@@ -731,8 +738,9 @@ nowhere is marked as such and belongs to review.
     `the_copy_leaves_with_the_account`,
     `only_heard_transcripts_wait_to_be_filed_oldest_first`,
     `each_transcript_of_a_note_takes_the_next_number_once`,
-    `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log` and
-    `the_due_query_reads_only_what_arrived_after_the_mark`; `mailbox::pass`'s
+    `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
+    `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`
+    and `the_due_query_reads_only_what_arrived_after_the_mark`; `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
@@ -741,7 +749,8 @@ nowhere is marked as such and belongs to review.
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
     `the_routines_session_files_are_kept_and_a_bad_one_refused_and_counted`,
     `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`,
-    `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`
+    `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`,
+    `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`
     and `no_leetype_log_is_filed_for_a_deleted_subject`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
     a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript` or

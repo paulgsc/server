@@ -27,11 +27,13 @@
 //!   and model, and the number its name carries, so a better model's goes
 //!   under a new name and none is filed twice
 //!   (`20261026000100_create_mailbox_transcript.up.sql`).
-//! - **A `LeetType` session's log is filed once per arrival.**
+//! - **A `LeetType` session is decided once per arrival.**
 //!   [`file_leetype_log`] records each log it filed, its number and the
-//!   highest `leetype_session_event` rowid it covered, so a session is filed
-//!   again, under the next number, only once an event of it arrives after
-//!   that mark (`20261030000400_create_mailbox_leetype_log.up.sql`).
+//!   highest `leetype_session_event` rowid it covered, and
+//!   [`refuse_leetype_log`] each session it could not file, with why, so the
+//!   mark moves past both and a session is decided again only once an event
+//!   of it arrives after that mark
+//!   (`20261030000400_create_mailbox_leetype_log.up.sql`).
 //! - **Archived here first** (docs/identity.md invariant 21): see
 //!   [`keep_archived`].
 //! - **Handed once.** A file filed for the mailbox is handed until the
@@ -695,15 +697,15 @@ pub struct Due {
 }
 
 /// `subject`'s sessions with events above the high-water mark (the largest
-/// `mailbox_leetype_log.through`), in the order their newest event arrived,
-/// at most `limit`.
+/// `mailbox_leetype_log.through`, filed or refused), in the order their
+/// newest event arrived, at most `limit`.
 ///
 /// Every session home holds is finished: the phone sends a session only
 /// once it is done with (docs/identity.md invariant 18). The caller files
 /// them in this order and stops at the first one still arriving.
 ///
 /// Two index probes and the new events alone: an idle pass reads no history
-/// (`leetype_session_event_arrival`, `mailbox_leetype_log_through`).
+/// (`leetype_session_event_arrival`, `mailbox_leetype_log`'s primary key).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -731,7 +733,7 @@ pub async fn unfiled_leetype_logs(conn: &mut SqliteConnection, subject: &str, li
 /// Any `sqlx` failure.
 pub async fn next_leetype_log_number(conn: &mut SqliteConnection, subject: &str, session: &str) -> Result<i64, MailboxError> {
 	let last = sqlx::query_scalar!(
-		r#"SELECT MAX(n) AS "n: i64" FROM mailbox_leetype_log WHERE subject_id = ?1 AND session_id = ?2"#,
+		r#"SELECT MAX(n) AS "n: i64" FROM mailbox_leetype_log WHERE subject_id = ?1 AND session_id = ?2 AND n IS NOT NULL"#,
 		subject,
 		session
 	)
@@ -774,12 +776,12 @@ pub async fn file_leetype_log(
 	now: &str,
 ) -> Result<Change, MailboxError> {
 	let written = sqlx::query!(
-		"INSERT INTO mailbox_leetype_log (subject_id, session_id, n, through, filed_at)
+		"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at)
 		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
 		subject,
 		session,
-		n,
 		through,
+		n,
 		now
 	)
 	.execute(&mut *conn)
@@ -790,12 +792,41 @@ pub async fn file_leetype_log(
 	file_outgoing(conn, subject, LEETYPE_LOG, &leetype_log_name(session, n), sha256, body, now).await
 }
 
+/// Records that `subject`'s `session` could not be filed, and `why`
+/// (`unreadable`, `no_file` or `too_big`), covering the events up to rowid
+/// `through`, as of `now`.
+///
+/// Nothing goes to `mailbox_outgoing`, and nothing of the session's events
+/// is touched: only the mailbox copy is skipped. The mark moves past it, so
+/// it never holds back the sessions after it, and an event of it that
+/// arrives later makes it due again.
+///
+/// Run it in the transaction that decided it, under the deletion hold.
+///
+/// # Errors
+/// Any `sqlx` failure, a mark taken or a reason the table does not know
+/// included.
+pub async fn refuse_leetype_log(conn: &mut SqliteConnection, subject: &str, (session, through): (&str, i64), why: &str, now: &str) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, refused, decided_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		session,
+		through,
+		why,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
 		archived_body, cursor, digests_after, file_leetype_log, file_outgoing, file_transcript, keep_archived, keep_item, leetype_files, leetype_log_name,
-		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn, Change, ItemIn,
-		MailboxError, BRIEF, LEETYPE,
+		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
+		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -870,7 +901,7 @@ mod tests {
 				&["subject_id", "folder", "name", "seq", "sha256", "size", "put_at", "body", "kept_at"][..],
 			),
 			("mailbox_transcript", &["subject_id", "note_id", "model", "n", "filed_at"][..]),
-			("mailbox_leetype_log", &["subject_id", "session_id", "n", "through", "filed_at"][..]),
+			("mailbox_leetype_log", &["subject_id", "session_id", "through", "n", "refused", "decided_at"][..]),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -908,7 +939,7 @@ mod tests {
 			"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'd', 'added', 'now')",
 			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
-			"INSERT INTO mailbox_leetype_log (subject_id, session_id, n, through, filed_at) VALUES (?1, 's', 1, 1, 'now')",
+			"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
@@ -1014,7 +1045,7 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
-			sqlx::query("INSERT INTO mailbox_leetype_log (subject_id, session_id, n, through, filed_at) VALUES (?1, 's', 1, 1, 'now')")
+			sqlx::query("INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')")
 				.bind(subject)
 				.execute(&pool)
 				.await
@@ -1336,6 +1367,30 @@ mod tests {
 		assert_eq!(file_log(&pool, "subject-gone", "s1", 1).await, (1, Change::NoAccount));
 	}
 
+	/// A refusal moves the mark like a filed log, writes nothing to hand
+	/// over and takes no number, and the session is due again once an event
+	/// of it arrives.
+	#[tokio::test]
+	async fn a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event() {
+		let pool = pool().await;
+		event(&pool, A, ("s1", "e1"), "2026-10-28T10:00:00.000Z").await;
+		event(&pool, A, ("s2", "e1"), "2026-10-28T10:00:01.000Z").await;
+		let refuse = |session: &'static str, through: i64| {
+			let pool = pool.clone();
+			async move { refuse_leetype_log(&mut pool.acquire().await.unwrap(), A, (session, through), "no_file", NOW).await.unwrap() }
+		};
+		assert_eq!(refuse("s1", 1).await, Change::Added);
+		assert_eq!(due(&pool, A).await, [(String::from("s2"), 2)], "the mark moved past s1");
+		let outgoing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_outgoing").fetch_one(&pool).await.unwrap();
+		assert_eq!(outgoing, 0, "nothing to hand over");
+		assert_eq!(file_log(&pool, A, "s2", 2).await, (1, Change::Added));
+		event(&pool, A, ("s1", "e2"), "2026-10-28T11:00:00.000Z").await;
+		assert_eq!(due(&pool, A).await, [(String::from("s1"), 3)], "due again with its new event");
+		assert_eq!(file_log(&pool, A, "s1", 3).await, (1, Change::Added), "its first filed log is number 1");
+		let bad = refuse_leetype_log(&mut pool.acquire().await.unwrap(), A, ("s3", 9), "not a reason", NOW).await;
+		assert!(matches!(bad, Err(MailboxError::Storage(_))), "only the reasons the table knows");
+	}
+
 	/// RE4: an idle pass's one query is two index probes, with no scan of the
 	/// record and no sort of it. The query mirrors `unfiled_leetype_logs`.
 	#[tokio::test]
@@ -1355,7 +1410,7 @@ mod tests {
 			"{details:?}"
 		);
 		assert!(
-			details.contains(&"SEARCH mailbox_leetype_log USING COVERING INDEX mailbox_leetype_log_through (subject_id=?)"),
+			details.contains(&"SEARCH mailbox_leetype_log USING COVERING INDEX sqlite_autoindex_mailbox_leetype_log_1 (subject_id=?)"),
 			"{details:?}"
 		);
 		assert!(!details.iter().any(|detail| detail.starts_with("SCAN")), "{details:?}");

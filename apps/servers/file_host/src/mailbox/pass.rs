@@ -479,9 +479,9 @@ fn transcript_body(heard: &Heard) -> Vec<u8> {
 /// `settle` ago: the phone may still be sending it, and the mark is the
 /// subject's, so filing a later session would pass over the rest of it. A
 /// session that cannot be filed (an event that does not read back, no
-/// `started` event, a body over the mailbox's ceiling) is counted as refused
-/// and passed over; one that is the newest is looked at again each pass until
-/// a later one is filed, as a refused file at the head of a folder is.
+/// `started` event, a body over the mailbox's ceiling) is recorded and
+/// counted as refused, and the mark moves past it: it is looked at again
+/// only once an event of it arrives.
 async fn file_leetype_logs(
 	db: &SqlitePool,
 	subject: &str,
@@ -502,11 +502,11 @@ async fn file_leetype_logs(
 			break;
 		}
 		match file_leetype_log(db, deletion, subject, due, &now()).await? {
-			Logged::Filed(Change::NoAccount) => {
+			Logged::NoAccount => {
 				outcome.no_account = true;
 				return Ok(());
 			}
-			Logged::Filed(Change::Added | Change::Unchanged) => outcome.filed += 1,
+			Logged::Filed => outcome.filed += 1,
 			Logged::Refused(why) => outcome.refused.push(why),
 		}
 	}
@@ -515,9 +515,11 @@ async fn file_leetype_logs(
 
 /// What filing one session's log came to.
 enum Logged {
-	Filed(Change),
-	/// Not filed, and why (`metrics::mailbox::REFUSALS`).
+	Filed,
+	/// Not filed, and why (`metrics::mailbox::REFUSALS`): recorded as such.
 	Refused(&'static str),
+	/// The subject has no account: nothing written.
+	NoAccount,
 }
 
 /// A `LeetType` session's log as the mailbox takes it: the session, the
@@ -725,28 +727,39 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 
 /// As [`keep`], for a `LeetType` session's log, built from the session's
 /// events as they stand and filed under its next number with `due.top` as
-/// its mark, all in one transaction. A session it cannot file writes nothing.
+/// its mark, all in one transaction. A session it cannot file is recorded as
+/// refused, with the same mark, and nothing is filed for the mailbox.
 async fn file_leetype_log(db: &SqlitePool, deletion: &DeletionLock, subject: &str, due: &mailbox_repo::Due, now: &str) -> Result<Logged, Failure> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
-	let held = match leetype_log_repo::session_events(&mut tx, subject, &due.session).await {
-		Ok(held) => held,
+	let body = match leetype_log_repo::session_events(&mut tx, subject, &due.session).await {
+		Ok(held) => leetype_log_body(&held).ok_or("no_file"),
 		Err(LogError::Storage(err)) => return Err(Failure::Storage(err)),
-		Err(LogError::Unreadable | LogError::Invalid(_) | LogError::Rewritten) => return Ok(Logged::Refused("unreadable")),
+		Err(LogError::Unreadable | LogError::Invalid(_) | LogError::Rewritten) => Err("unreadable"),
 	};
-	let Some(body) = leetype_log_body(&held) else {
-		return Ok(Logged::Refused("no_file"));
+	let body = match body {
+		Ok(body) if body.len() > MAILBOX_BODY_CEILING => Err("too_big"),
+		other => other,
 	};
-	if body.len() > MAILBOX_BODY_CEILING {
-		return Ok(Logged::Refused("too_big"));
-	}
+	let body = match body {
+		Ok(body) => body,
+		Err(why) => {
+			// Recorded, so the mark moves past it: no run of refusals ever
+			// holds back the sessions after them.
+			let change = mailbox_repo::refuse_leetype_log(&mut tx, subject, (&due.session, due.top), why, now)
+				.await
+				.map_err(storage)?;
+			tx.commit().await.map_err(Failure::Storage)?;
+			return Ok(if change == Change::NoAccount { Logged::NoAccount } else { Logged::Refused(why) });
+		}
+	};
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let n = mailbox_repo::next_leetype_log_number(&mut tx, subject, &due.session).await.map_err(storage)?;
 	let change = mailbox_repo::file_leetype_log(&mut tx, subject, (&due.session, n, due.top), (&sha256, &body), now)
 		.await
 		.map_err(storage)?;
 	tx.commit().await.map_err(Failure::Storage)?;
-	Ok(Logged::Filed(change))
+	Ok(if change == Change::NoAccount { Logged::NoAccount } else { Logged::Filed })
 }
 
 /// As [`keep`], for the mailbox's answer to a handed file.
@@ -1782,7 +1795,36 @@ mod tests {
 		assert_eq!(outcome.refused, ["unreadable", "no_file", "too_big"]);
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-good.json"]);
-		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "passed over for good, once a later one is filed");
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "each refusal is recorded, and not looked at again");
+	}
+
+	/// Codex on paulgsc/server#583: more refused sessions than a pass takes
+	/// never hold back a valid one after them, since each refusal is recorded
+	/// and moves the mark; a refused session that gains an event is tried
+	/// again, and filed once it can be.
+	#[tokio::test]
+	async fn refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for n in 0..25 {
+			played(&pool, &ended(&(String::from("r") + &n.to_string()), "e1")).await;
+		}
+		played(&pool, &started("good", "e1")).await;
+		let first = pass(&pool, &fake).await.unwrap();
+		assert_eq!((first.refused.len(), first.filed), (ITEMS_PER_PASS as usize, 0));
+		let second = pass(&pool, &fake).await.unwrap();
+		assert_eq!((second.refused, second.filed), (vec!["no_file"; 5], 1), "the valid one, on the second pass");
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/leetype-log/items/log-good.json"]);
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "a refusal is not looked at again on its own");
+
+		played(&pool, &started("r3", "e0")).await;
+		let retried = pass(&pool, &fake).await.unwrap();
+		assert_eq!((retried.refused.len(), retried.filed), (0, 1), "its new event makes it due, and now it can be filed");
+		assert_eq!(fake.puts.lock().unwrap()[1], "/v1/leetype-log/items/log-r3.json");
+		let refusals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_leetype_log WHERE refused = 'no_file'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(refusals, 25, "each refusal recorded once");
 	}
 
 	#[tokio::test]
