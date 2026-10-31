@@ -5,10 +5,11 @@
 # apps/servers/file_host/docs/leetype-execution.md; each line below that
 # holds one says which.
 #
-# Not in docker-compose.yml's `include` yet: nothing asks it anything until
-# file_host's recording pass (RR3's second slice) lands, and that change adds
-# it to the stack, mounts the socket's volume into file-host, and gives it an
-# inventory entry. Until then, run it on its own:
+# In docker-compose.yml's `include`: file-host mounts the socket's volume
+# read-only (infra/compose/file_host.yml) and asks it from its recording
+# pass, `rust_rounds`, which is off until RUST_ROUNDS_ENABLED. Nothing can
+# scrape it (no network), so infra/prometheus/inventory.yml says why. It
+# also runs on its own:
 #
 #   docker compose -f infra/compose/rust_runner.yml up -d
 #   echo '{"ask":"toolchain"}' | docker compose -f infra/compose/rust_runner.yml \
@@ -70,7 +71,7 @@ services:
       # program that fills it fails its own run and nothing else.
       - /work:rw,exec,nosuid,nodev,size=256m,mode=0755
     volumes:
-      # The socket, shared with whoever asks (file_host, in the next slice).
+      # The socket, shared with whoever asks: file-host mounts it read-only.
       - rust_runner_socket:/run/rust-runner
     # RX3: one job at a time is the service's own loop; these bound what one
     # job can take. pids counts threads too: the runner's own few, and
