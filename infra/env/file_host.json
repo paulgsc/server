@@ -96,13 +96,13 @@
     {
       "name": "ALLOWED_ORIGINS",
       "group": "Server",
-      "required": false,
-      "default": "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006",
+      "required": true,
+      "default": null,
       "kind": "string",
       "values": [],
       "delimiter": ",",
       "secret": false,
-      "help": "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nThe default carries three entries rather than one because the study app is not on `:6006` — that is Storybook. Service workers, `Notification`, and `PushManager` are all gated on a secure context, so the origin a subscription is actually posted from is an HTTPS one, and a list that only admits the Storybook origin blocks it.\n\nHOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.",
+      "help": "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin. The dev host sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.",
       "required_when": null,
       "bounds": null
     },
@@ -414,13 +414,13 @@
     {
       "name": "APP_BASE_URL",
       "group": "Study nudge",
-      "required": false,
-      "default": "https://nixos.local:5173/",
+      "required": true,
+      "default": null,
       "kind": "string",
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "Base URL of the study app, used to build the notification's deep link. Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and the server has to produce the same shape or clicks land on the dashboard.\n\nHOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.",
+      "help": "Base URL of the study app, used to build the notification's deep link. Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and the server has to produce the same shape or clicks land on the dashboard.\n\nRequired: no URL is right on every host (#406). The dev host sets `https://nixos.local:5173/`.",
       "required_when": null,
       "bounds": null
     },

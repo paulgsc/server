@@ -27,6 +27,8 @@ fn every_unmet_rule_stops_the_binary_at_start_by_name() {
 		.env("OBS_WEBSOCKET_IP", "127.0.0.1")
 		.env("OBS_WEBSOCKET_PWD", "")
 		.env("DATABASE_URL", "sqlite::memory:")
+		.env("ALLOWED_ORIGINS", "https://app.example")
+		.env("APP_BASE_URL", "https://app.example/")
 		.env("AUTH_ENABLED", "false")
 		.env("MAILBOX_ENABLED", "true")
 		.env("MAILBOX_SECONDS", "30")
@@ -56,6 +58,8 @@ fn a_health_check_is_not_held_to_the_start_up_rules() {
 		.env("OBS_WEBSOCKET_IP", "127.0.0.1")
 		.env("OBS_WEBSOCKET_PWD", "")
 		.env("DATABASE_URL", "sqlite::memory:")
+		.env("ALLOWED_ORIGINS", "https://app.example")
+		.env("APP_BASE_URL", "https://app.example/")
 		.args(["--health-check", "--health-check-port", "9"])
 		.output()
 		.unwrap();

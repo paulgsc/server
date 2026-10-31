@@ -248,6 +248,11 @@ silent:
 * **Announced.** `file_host` logs one `HOST-SPECIFIC` warning at startup naming
   every variable it is running on a dev-host value for
   (`Config::host_specific_defaults_in_use`).
+* **Required where no default is right.** `ALLOWED_ORIGINS` and `APP_BASE_URL`
+  have no default (#406): a host sets its own, and `make preflight` names them
+  if it does not. The compose files' host paths are variables (`STORAGE`,
+  `TRANSCRIBE_MODELS_DIR`, `METABASE_DATA_DIR`, `DATABASES_DIR`,
+  `OLLAMA_MODELS_PATH`) whose dev-host defaults are marked where they are used.
 * **Tracked.** [#406](https://github.com/paulgsc/server/issues/406) is the
   inventory and the plan to move these out of code and compose into each
   host's own configuration.

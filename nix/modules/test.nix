@@ -38,6 +38,7 @@
         AUTH_ENABLED = false;
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = ["https://a.example" "https://b.example"];
+        APP_BASE_URL = "https://a.example/";
       };
     };
     services.orchestrator.enable = true;
@@ -62,6 +63,8 @@ in
       "settings.OBS_WEBSOCKET_IP is required"
       "settings.OBS_WEBSOCKET_PWD is required (a secret"
       "settings.WEBAUTHN_RP_ID is required while AUTH_ENABLED is true"
+      "settings.ALLOWED_ORIGINS is required"
+      "settings.APP_BASE_URL is required"
     ]))
     (expect "an off module asks for nothing and runs nothing" (failed off == [] && off.config.virtualisation.oci-containers.containers == {}))
     (expect "a complete file-host asserts nothing" (failed complete == []))
@@ -71,6 +74,7 @@ in
         AUTH_ENABLED = "false";
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = "https://a.example,https://b.example";
+        APP_BASE_URL = "https://a.example/";
       }))
     (expect "secrets reach the container through its files" (container.environmentFiles == ["/run/secrets/file-host.env"]))
     (expect "file-host publishes what compose does" (container.ports == ["127.0.0.1:3000:3000"] && container.image == "pgathondu/server:latest"))
@@ -99,6 +103,8 @@ in
           settings = {
             OBS_WEBSOCKET_IP = "127.0.0.1";
             AUTH_ENABLED = false;
+            ALLOWED_ORIGINS = ["https://a.example"];
+            APP_BASE_URL = "https://a.example/";
             MAILBOX_SECONDS = 30;
           };
         };

@@ -41,7 +41,7 @@
     ALLOWED_ORIGINS = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;
-      description = "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nThe default carries three entries rather than one because the study app is not on `:6006` — that is Storybook. Service workers, `Notification`, and `PushManager` are all gated on a secure context, so the origin a subscription is actually posted from is an HTTPS one, and a list that only admits the Storybook origin blocks it.\n\nHOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.\n\nUnset (null), the binary's default: `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.";
+      description = "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin. The dev host sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     REDIS_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -146,7 +146,7 @@
     APP_BASE_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Base URL of the study app, used to build the notification's deep link. Must end with a slash: the client builds `\${BASE_URL}sessions/\${id}` and the server has to produce the same shape or clicks land on the dashboard.\n\nHOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.\n\nUnset (null), the binary's default: `https://nixos.local:5173/`.";
+      description = "Base URL of the study app, used to build the notification's deep link. Must end with a slash: the client builds `\${BASE_URL}sessions/\${id}` and the server has to produce the same shape or clicks land on the dashboard.\n\nRequired: no URL is right on every host (#406). The dev host sets `https://nixos.local:5173/`.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     AUTH_ENABLED = lib.mkOption {
       type = lib.types.nullOr lib.types.bool;
@@ -326,7 +326,7 @@
   };
 
   # The variables the binary refuses to start without.
-  required = [ "OBS_WEBSOCKET_IP" "OBS_WEBSOCKET_PWD" "DATABASE_URL" ];
+  required = [ "ALLOWED_ORIGINS" "OBS_WEBSOCKET_IP" "OBS_WEBSOCKET_PWD" "DATABASE_URL" "APP_BASE_URL" ];
   # Its secrets: no option, only `environmentFiles`.
   secrets = [ "OBS_WEBSOCKET_PWD" "DATABASE_URL" "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" ];
   # The binary's defaults, for the conditions below.
@@ -337,7 +337,6 @@
     FILE_HOST_PORT = "3000";
     FILE_HOST_PORT_FALLBACK = "false";
     RATE_LIMIT = "60";
-    ALLOWED_ORIGINS = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
     CACHE_TTL = "600";
     PROMETHEUS_PORT = "9090";
     BUFFER_SIZE = "65536";
@@ -354,7 +353,6 @@
     WAKER_PASS_DEADLINE_MS = "120000";
     RECOMMENDER_USES_OUTCOMES = "false";
     NUDGE_PRESENCE_LEASE_TTL_SECONDS = "75";
-    APP_BASE_URL = "https://nixos.local:5173/";
     AUTH_ENABLED = "true";
     AUTH_SESSION_DAYS = "30";
     AUTH_OPEN_SIGNUP = "false";
