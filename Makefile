@@ -154,7 +154,8 @@ dev: ## Run file_host from source beside the container: next free port from 3000
 env-schema: ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
 	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
 	@python3 scripts/env_schema.py example
-	@echo "Wrote infra/env/*.json and example.env"
+	@python3 scripts/nixos_options.py
+	@echo "Wrote infra/env/*.json, example.env and nix/modules/generated"
 
 env: ## List every variable the stack reads, its default, and whether .env or the environment sets it
 	@python3 scripts/env_schema.py list
