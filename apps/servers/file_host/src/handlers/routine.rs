@@ -67,20 +67,13 @@ pub struct HeldFile {
 #[instrument(name = "routine_files", skip_all, fields(otel.kind = "server"))]
 pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Files>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let files = mailbox_repo::routine_files(&mut conn, subject.as_str(), FILES_PER_ANSWER).await.map_err(storage)?;
-	let runs = mailbox_repo::routine_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await.map_err(storage)?;
+	let files = mailbox_repo::routine_files(&mut conn, subject.as_str(), FILES_PER_ANSWER).await?;
+	let runs = mailbox_repo::routine_runs(&mut conn, subject.as_str(), RUNS_PER_ANSWER).await?;
 	Ok(Json(Files {
 		files: readable(files),
 		runs: readable(runs),
 		at: crate::mailbox::pass::now(),
 	}))
-}
-
-fn storage(err: mailbox_repo::MailboxError) -> FileHostError {
-	match err {
-		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
-		mailbox_repo::MailboxError::Rewritten => FileHostError::OperationError("a read cannot rewrite".to_owned()),
-	}
 }
 
 /// The held files that read back as JSON, in order.

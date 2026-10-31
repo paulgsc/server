@@ -38,11 +38,11 @@ pub struct Word {
 	/// How sure the model was of the word, 0 to 1: the lowest of its tokens'
 	/// probabilities, so one unsure piece makes the word unsure
 	/// (paulgsc/server#577, ST22). None for a word heard before it was kept
-	/// (`20261031000100`), or one the model gave no number for.
+	/// (`20261031000200`), or one the model gave no number for.
 	pub p: Option<f64>,
 	/// Whisper's code for the language it was heard in (`en`, `ko`): home
 	/// hears each piece of speech in its own (paulgsc/server#578, ST23). None
-	/// for a word heard before it was kept (`20261031000200`).
+	/// for a word heard before it was kept (`20261031000300`).
 	pub language: Option<String>,
 }
 

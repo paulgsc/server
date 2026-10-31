@@ -8,7 +8,7 @@ transcriber), with each heard word, when it was said, how sure the model
 was of it and the language it was heard in beside a transcript that heard
 something (`voice_transcript_word`, written with it;
 `migrations/20261030000300_create_voice_transcript_word.up.sql`,
-`20261031000100` for how sure and `20261031000200` for the language). A game bite is a voice note said for `game`, and what it was
+`20261031000200` for how sure and `20261031000300` for the language). A game bite is a voice note said for `game`, and what it was
 said about and what the screen showed is `game_bite`'s row beside it, written
 with the note
 (`migrations/20261028000100_add_game_bite_to_voice_note.up.sql`; a bite said
