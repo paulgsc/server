@@ -33,21 +33,26 @@
 //! It adds no listing: `brief` is read every pass anyway.
 //!
 //! **Deterministic.** [`jobs_index`] is a pure function of those rows, the
-//! day and `asOf`: the same rows give the same bytes. Every list is in a
-//! fixed order (by name, or by digest day as the queue is), and the body is
-//! written from structs whose fields serialise in declaration order.
+//! day and `asOf`: the same rows give the same bytes, and on any day from
+//! `day` through `validThrough` they give the same bytes except `day`. Every
+//! list is in a fixed order (by name, or by digest day as the queue is), and
+//! the body is written from structs whose fields serialise in declaration
+//! order.
 //!
 //! **Put only when it moves.** A pass first reads when home last took in
-//! anything the index counts ([`mailbox_repo::jobs_as_of`]) and the day in
-//! [`JOBS_ZONE`]. When both match what the last index the mailbox answered
-//! was computed from ([`LastIndex`]), nothing is computed or put: the inputs
-//! are append-only and a name holds one body, so nothing it counts can have
-//! changed, and since the body carries `day` and `asOf`, a new pair always
-//! means new bytes. Otherwise it computes and puts a new name,
-//! `index-jobs-<stamp>.json`. So the mailbox gets one a day at least (the day
-//! moves at midnight in [`JOBS_ZONE`], and lapses with it), plus one each
-//! time a digest, a file or a Jobs transcript arrives. Every answer is final
-//! (a refusal is not put again until what it counts moves); only a failure
+//! anything the index counts ([`mailbox_repo::jobs_as_of`]). When that is
+//! what the last index the mailbox answered was computed from ([`LastIndex`])
+//! and today, in [`JOBS_ZONE`], is no later than that index's `validThrough`,
+//! nothing is computed or put: the inputs are append-only and a name holds
+//! one body, so nothing it counts can have changed, and the only part of the
+//! index the day moves is the queue, which moves only when an open pick no
+//! decision answers lapses. `validThrough` is the day before the first such
+//! lapse, or `null` when no open pick can lapse. Otherwise it computes and
+//! puts a new name, `index-jobs-<stamp>.json`: once each time a digest, a
+//! file or a Jobs transcript arrives, and once on a day a pick lapses. A day
+//! with neither puts none; `day` in the body is the day it was computed, and
+//! the routine reads it as standing through `validThrough`. Every answer is
+//! final (a refusal is not put again until what it counts moves); only a failure
 //! to reach the mailbox leaves the next pass to try. A body over the
 //! mailbox's ceiling is not put, and counted as refused (`too_big`).
 //!
@@ -369,6 +374,10 @@ struct JobsIndex<'a> {
 	schema: &'static str,
 	routine: &'static str,
 	day: &'a str,
+	/// The last day this index's queue holds with nothing new arriving: the
+	/// day before the first open pick would lapse, or `None` when none can.
+	#[serde(rename = "validThrough")]
+	valid_through: Option<String>,
 	#[serde(rename = "asOf")]
 	as_of: Option<&'a str>,
 	from: From,
@@ -408,10 +417,21 @@ fn standing(stands: Option<&DecidedPick>, digest_day: &str, today: &str) -> Stan
 	}
 }
 
+/// What [`queue_of`] gives on a day.
+struct QueueOn {
+	open: Vec<OpenPick>,
+	lapsed: Vec<LapsedPick>,
+	/// The last day `open` and `lapsed` stay as they are with nothing new
+	/// arriving: the day before the first open pick no decision answers
+	/// lapses, or `None` when no open pick can lapse (none, or each taken
+	/// and waiting on a debrief). Only a lapse moves the queue with the day.
+	valid_through: Option<String>,
+}
+
 /// The picks of `digests` still open on what `decisions` say, and those that
 /// lapse on `today`, oldest digest first: `queueOf`. The newest share's entry
 /// for a pick stands; files shared at the same moment keep their order.
-fn queue_of(digests: &[&DigestFile], decisions: &[&DecisionsFile], today: &str) -> (Vec<OpenPick>, Vec<LapsedPick>) {
+fn queue_of(digests: &[&DigestFile], decisions: &[&DecisionsFile], today: &str) -> QueueOn {
 	let mut by_share = decisions.to_vec();
 	by_share.sort_by(|a, b| a.shared_at.cmp(&b.shared_at));
 	let mut stands: HashMap<(&str, &str), &DecidedPick> = HashMap::new();
@@ -428,10 +448,24 @@ fn queue_of(digests: &[&DigestFile], decisions: &[&DecisionsFile], today: &str) 
 	let mut by_day = digests.to_vec();
 	by_day.sort_by(|a, b| a.day.cmp(&b.day));
 	let (mut open, mut lapsed) = (Vec::new(), Vec::new());
+	let mut valid_through: Option<String> = None;
 	for digest in by_day {
 		for pick in &digest.picks {
 			let key = (digest.day.as_str(), pick.id.as_str());
-			match standing(stands.get(&key).copied(), &digest.day, today) {
+			let stands_now = stands.get(&key).copied();
+			let can_lapse = stands_now.is_none_or(|pick| pick.decision == "untouched");
+			let standing_now = standing(stands_now, &digest.day, today);
+			if standing_now == Standing::Open && can_lapse {
+				// Open and untouched: it lapses on its digest's day plus
+				// `LAPSE_DAYS`, so the queue holds through the day before.
+				let last = LAPSE_DAYS.checked_sub(1).and_then(|days| add_days(&digest.day, days));
+				if let Some(last) = last {
+					if valid_through.as_ref().is_none_or(|held| last < *held) {
+						valid_through = Some(last);
+					}
+				}
+			}
+			match standing_now {
 				Standing::Done => {}
 				Standing::Lapsed if recorded.contains(&key) => {}
 				Standing::Open => open.push(OpenPick {
@@ -454,7 +488,7 @@ fn queue_of(digests: &[&DigestFile], decisions: &[&DecisionsFile], today: &str) 
 			}
 		}
 	}
-	(open, lapsed)
+	QueueOn { open, lapsed, valid_through }
 }
 
 /// How many new picks each track has room for while `open` holds its slots,
@@ -631,6 +665,11 @@ fn with_backfill(phone: &[HeldFile], backfill: &[HeldFile]) -> (Vec<HeldFile>, V
 /// Pure: the same inputs give the same bytes (the module doc).
 #[must_use]
 pub fn jobs_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> Vec<u8> {
+	computed_index(inputs, day, as_of).0
+}
+
+/// [`jobs_index`]'s bytes, and its `validThrough`.
+fn computed_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> (Vec<u8>, Option<String>) {
 	let (decisions, mut backfill) = with_backfill(&inputs.decisions, &inputs.backfill_decisions);
 	let (scouts, backfill_scouts) = with_backfill(&inputs.scouts, &inputs.backfill_scouts);
 	backfill.extend(backfill_scouts);
@@ -645,13 +684,14 @@ pub fn jobs_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> Vec<u8
 	let read = read_all(inputs);
 	let digests: Vec<&DigestFile> = read.digests.iter().map(|(_, digest)| digest).collect();
 	let decisions: Vec<&DecisionsFile> = read.decisions.iter().map(|(_, file)| file).collect();
-	let (open, lapsed) = queue_of(&digests, &decisions, day);
+	let QueueOn { open, lapsed, valid_through } = queue_of(&digests, &decisions, day);
 	let free = free_slots(&open);
 	let names = |files: &[HeldFile]| files.iter().map(|file| file.name.clone()).collect();
 	let index = JobsIndex {
 		schema: INDEX_SCHEMA,
 		routine: JOBS,
 		day,
+		valid_through: valid_through.clone(),
 		as_of,
 		from: From {
 			digests: names(&inputs.digests),
@@ -668,7 +708,7 @@ pub fn jobs_index(inputs: &JobsInputs, day: &str, as_of: Option<&str>) -> Vec<u8
 	let mut body = Vec::new();
 	// Writing these structs to a `Vec` cannot fail: every key is a string.
 	let _ = serde_json::to_writer(&mut body, &index);
-	body
+	(body, valid_through)
 }
 
 /// The day `now` falls on in [`JOBS_ZONE`], as `YYYY-MM-DD`; `None` when
@@ -686,12 +726,22 @@ fn stamp_of(now: &str) -> Option<String> {
 	shape.then_some(stamp)
 }
 
-/// What an index was computed from: whose, the day, and `asOf`.
+/// What an index was computed from, and how long it holds: whose, `asOf`,
+/// and `validThrough`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Computed {
 	subject: String,
-	day: String,
 	as_of: Option<String>,
+	valid_through: Option<String>,
+}
+
+impl Computed {
+	/// Whether a fresh index for `subject` on `day`, with home's newest
+	/// arrival at `as_of`, would say what this one says but its `day`: the
+	/// same subject, nothing arrived since, and no open pick lapsed yet.
+	fn holds(&self, subject: &str, as_of: Option<&str>, day: &str) -> bool {
+		self.subject == subject && self.as_of.as_deref() == as_of && self.valid_through.as_deref().is_none_or(|through| day <= through)
+	}
 }
 
 /// What the last Jobs index the mailbox answered was computed from.
@@ -704,8 +754,13 @@ struct Computed {
 pub struct LastIndex(Mutex<Option<Computed>>);
 
 impl LastIndex {
-	fn is(&self, computed: &Computed) -> bool {
-		self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref() == Some(computed)
+	fn holds(&self, subject: &str, as_of: Option<&str>, day: &str) -> bool {
+		self
+			.0
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.as_ref()
+			.is_some_and(|last| last.holds(subject, as_of, day))
 	}
 
 	fn remember(&self, computed: Computed) {
@@ -738,26 +793,28 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 	let (Some(day), Some(stamp)) = (jobs_day(&at), stamp_of(&at)) else {
 		return Ok(());
 	};
-	let (computed, inputs) = {
+	let (as_of, inputs) = {
 		let mut tx = db.begin().await.map_err(Failure::Storage)?;
 		let as_of = mailbox_repo::jobs_as_of(&mut tx, subject).await.map_err(super::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads Drive.
 		if as_of.is_none() {
 			return Ok(());
 		}
-		let computed = Computed {
-			subject: subject.to_owned(),
-			day,
-			as_of,
-		};
-		if last.is(&computed) {
+		// A new day alone is no reason: the last index still says what a
+		// fresh one would, `day` aside, until an open pick lapses.
+		if last.holds(subject, as_of.as_deref(), &day) {
 			return Ok(());
 		}
 		let inputs = mailbox_repo::jobs_inputs(&mut tx, subject).await.map_err(super::pass::storage)?;
 		tx.commit().await.map_err(Failure::Storage)?;
-		(computed, inputs)
+		(as_of, inputs)
 	};
-	let body = jobs_index(&inputs, &computed.day, computed.as_of.as_deref());
+	let (body, valid_through) = computed_index(&inputs, &day, as_of.as_deref());
+	let computed = Computed {
+		subject: subject.to_owned(),
+		as_of,
+		valid_through,
+	};
 	if body.len() > MAILBOX_BODY_CEILING {
 		outcome.refused.push("too_big");
 		last.remember(computed);
@@ -902,6 +959,7 @@ mod tests {
 			"\"schema\"",
 			"\"routine\"",
 			"\"day\"",
+			"\"validThrough\"",
 			"\"asOf\"",
 			"\"from\"",
 			"\"skipped\"",
@@ -1143,7 +1201,7 @@ mod tests {
 		assert_eq!(
 			value,
 			json!({
-				"schema": "some-ui.routine-index/1", "routine": "jobs", "day": "2026-10-31", "asOf": null,
+				"schema": "some-ui.routine-index/1", "routine": "jobs", "day": "2026-10-31", "validThrough": null, "asOf": null,
 				"from": { "digests": [], "decisions": [], "scout": [], "backfill": [] }, "skipped": [],
 				"queue": { "open": [], "lapsed": [], "free": { "software": 3, "adjacent": 2 } },
 				"new": { "decisions": [], "scout": [] }, "notes": [], "picked": []
@@ -1159,6 +1217,36 @@ mod tests {
 		assert_eq!(stamp_of("2026-10-31T15:00:00.123Z").as_deref(), Some("20261031T150000123Z"));
 		assert_eq!(stamp_of("2026-10-31T15:00:00Z"), None);
 		assert_eq!(index_name("jobs", "20261031T150000123Z"), "index-jobs-20261031T150000123Z.json");
+	}
+
+	/// The queue moves with the day only when an open pick no decision
+	/// answers lapses, so the index holds through the day before the first
+	/// such lapse; a pick taken and waiting on its debrief never lapses.
+	#[test]
+	fn valid_through_is_the_day_before_the_first_open_pick_lapses() {
+		let early = ("digest-2026-10-18.json", digest("2026-10-18", &[("sw-0001", "software")], &[]));
+		let late = ("digest-2026-10-20.json", digest("2026-10-20", &[("sw-0002", "software")], &[]));
+		let held = inputs(&[early.clone(), late.clone()], &[]);
+		assert_eq!(index(&held, "2026-10-18")["validThrough"], "2026-10-20", "10-18's pick lapses on 10-21");
+		let lapsed = index(&held, "2026-10-21");
+		assert_eq!(ids(&lapsed["queue"]["lapsed"]), ["sw-0001"]);
+		assert_eq!(lapsed["validThrough"], "2026-10-22", "now 10-20's, which lapses on 10-23");
+		// Each day through validThrough gives the same index but its `day`.
+		let through = |day: &str| {
+			let mut value = index(&held, day);
+			value["day"] = Value::Null;
+			value
+		};
+		assert_eq!(through("2026-10-21"), through("2026-10-22"));
+		assert_ne!(through("2026-10-22"), through("2026-10-23"));
+
+		let taken = decisions("2026-10-18T22:00:00Z", &[entry("2026-10-18", "sw-0001", "taken", false)]);
+		let waiting = inputs(std::slice::from_ref(&early), &[("decisions-2026-10-18.json", taken)]);
+		assert_eq!(ids(&index(&waiting, "2026-10-30")["queue"]["open"]), ["sw-0001"]);
+		assert_eq!(index(&waiting, "2026-10-18")["validThrough"], Value::Null, "taken, waiting on a debrief: never lapses");
+		let passed = decisions("2026-10-18T22:00:00Z", &[entry("2026-10-18", "sw-0001", "passed", false)]);
+		let done = inputs(&[early], &[("decisions-2026-10-18.json", passed)]);
+		assert_eq!(index(&done, "2026-10-18")["validThrough"], Value::Null, "no open pick");
 	}
 
 	/// MB2's backfill (owner, #509): a pre-mailbox file the routine put back is

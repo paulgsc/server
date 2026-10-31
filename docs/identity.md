@@ -778,7 +778,8 @@ nowhere is marked as such and belongs to review.
       poller remembers of the last one (what it was computed from) is in
       memory (`mailbox::index::LastIndex`). The mailbox keeps only the latest
       per routine. It carries only what the
-      routine needs to know what to read: the day, when home last took in
+      routine needs to know what to read: the day it was computed and the
+      last day its queue holds before an open pick lapses, when home last took in
       what it counts, the names of the files it counted (and which of them
       came from the backfill) and of those that did not read, the open and lapsed picks (each one's digest day, id, track,
       fingerprint, title, company and, while open, its posting's link) and
@@ -788,8 +789,9 @@ nowhere is marked as such and belongs to review.
       name and hash, and the fingerprints already picked or named. No file's
       body beyond those fields, no note's words, and nothing that is or
       points at audio; the mailbox refuses a body that carries audio or a
-      Drive link. It is put only when what it counts or the day has moved
-      since the last one the mailbox answered, so an idle pass puts none.
+      Drive link. It is put only when something it counts has arrived or an
+      open pick has lapsed since the last one the mailbox answered, never
+      for the day turning alone, so an idle pass puts none.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -840,7 +842,8 @@ nowhere is marked as such and belongs to review.
     and `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
     `mailbox::index`'s
     `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
-    `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone` and
+    `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`,
+    `valid_through_is_the_day_before_the_first_open_pick_lapses` and
     `a_backfilled_file_counts_as_the_phones_and_says_where_it_came_from`;
     `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
@@ -855,6 +858,7 @@ nowhere is marked as such and belongs to review.
     `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`,
     `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`,
     `no_leetype_log_is_filed_for_a_deleted_subject`,
+    `the_index_is_put_on_the_day_a_pick_lapses_and_on_no_other_quiet_day`,
     `the_jobs_index_is_put_when_what_it_counts_moves_and_only_then` (which
     also finds no index row in any table), `a_file_the_mailbox_turned_down_is_not_counted` and
     `a_backfilled_file_in_brief_is_counted_and_said_to_be_backfilled`, and its fake

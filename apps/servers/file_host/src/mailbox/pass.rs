@@ -2103,31 +2103,21 @@ mod tests {
 		fake.add(11, &next, &body);
 		let moved = pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
 		assert_eq!(moved.indexed, ["added"]);
-		// 06:59 UTC on the 25th is still the 24th in Los Angeles; 07:00 is not.
-		assert!(pass_at(&pool, &fake, "2026-10-25T06:59:00.000Z").await.unwrap().indexed.is_empty());
-		assert_eq!(
-			pass_at(&pool, &fake, "2026-10-25T07:00:00.000Z").await.unwrap().indexed,
-			["added"],
-			"a new day lapses picks"
-		);
+		// No open pick can lapse, so no day turn moves the index (MI6).
+		for now in ["2026-10-25T07:00:00.000Z", "2026-10-26T07:00:00.000Z", "2026-11-30T08:00:00.000Z"] {
+			assert!(pass_at(&pool, &fake, now).await.unwrap().indexed.is_empty(), "{now}");
+		}
 		let put = indexes(&fake);
 		assert_eq!(
 			put[1..],
-			[
-				(
-					String::from("index-jobs-20261024T150000000Z.json"),
-					String::from("2026-10-24"),
-					String::from("2026-10-24T15:00:00.000Z"),
-					vec![name.clone(), next.clone()]
-				),
-				(
-					String::from("index-jobs-20261025T070000000Z.json"),
-					String::from("2026-10-25"),
-					String::from("2026-10-24T15:00:00.000Z"),
-					vec![name, next]
-				),
-			]
+			[(
+				String::from("index-jobs-20261024T150000000Z.json"),
+				String::from("2026-10-24"),
+				String::from("2026-10-24T15:00:00.000Z"),
+				vec![name, next]
+			)]
 		);
+		assert_eq!(last_put(&fake)["validThrough"], serde_json::Value::Null);
 		let kept: i64 = sqlx::query_scalar(
 			"SELECT (SELECT COUNT(*) FROM mailbox_outgoing WHERE folder = 'index') + (SELECT COUNT(*) FROM mailbox_handed WHERE folder = 'index')
 			 + (SELECT COUNT(*) FROM mailbox_archive WHERE folder = 'index')",
@@ -2136,6 +2126,43 @@ mod tests {
 		.await
 		.unwrap();
 		assert_eq!(kept, 0, "home keeps no copy of an index and no answer to one");
+	}
+
+	/// A digest for `day` that picks one software posting, `pick`, which no
+	/// decision answers.
+	fn digest_picking(day: &str, pick: &str) -> (String, String) {
+		let body = serde_json::json!({
+			"schema": "some-ui.job-digest/1", "day": day, "read": [],
+			"picks": [{
+				"id": pick, "fingerprint": String::from("acme|") + pick + "|remote", "track": "software",
+				"posting": { "title": "Backend Engineer", "company": "Acme", "applyUrl": String::from("https://jobs.lever.co/acme/") + pick }
+			}]
+		});
+		(String::from("digest-") + day + ".json", body.to_string())
+	}
+
+	/// MI6: a day turn with open picks that do not lapse puts nothing; the
+	/// day one lapses puts exactly one, which then holds again.
+	#[tokio::test]
+	async fn the_index_is_put_on_the_day_a_pick_lapses_and_on_no_other_quiet_day() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest_picking("2026-10-23", "sw-0001");
+		fake.add(10, &name, &body);
+		assert_eq!(pass(&pool, &fake).await.unwrap().indexed, ["added"]);
+		assert_eq!(last_put(&fake)["validThrough"], "2026-10-25", "it lapses on the 26th");
+		// The 24th and 25th in Los Angeles: open, untouched, not lapsed yet.
+		for now in ["2026-10-24T07:00:00.000Z", "2026-10-25T07:00:00.000Z", "2026-10-26T06:59:00.000Z"] {
+			assert!(pass_at(&pool, &fake, now).await.unwrap().indexed.is_empty(), "{now}");
+		}
+		assert_eq!(pass_at(&pool, &fake, "2026-10-26T07:00:00.000Z").await.unwrap().indexed, ["added"], "the day it lapses");
+		let lapsed = last_put(&fake);
+		assert_eq!(lapsed["day"], "2026-10-26");
+		assert_eq!(lapsed["queue"]["lapsed"][0]["pickId"], "sw-0001");
+		assert_eq!(lapsed["validThrough"], serde_json::Value::Null, "nothing left to lapse");
+		for now in ["2026-10-26T15:00:00.000Z", "2026-10-27T07:00:00.000Z", "2026-11-03T08:00:00.000Z"] {
+			assert!(pass_at(&pool, &fake, now).await.unwrap().indexed.is_empty(), "{now}");
+		}
+		assert_eq!(indexes(&fake).len(), 2);
 	}
 
 	#[tokio::test]
@@ -2247,7 +2274,8 @@ mod tests {
 	/// MI6 (paulgsc/some-ui `packages/assurance`): with archiving, a pass with
 	/// nothing to do lists five folders it reads, ten folders' asks and ten
 	/// folders' live files, 25 requests, and never the index; once home holds
-	/// a file, a pass where nothing moved makes the same 25.
+	/// a file, a pass where nothing arrived and no pick lapsed, on a later
+	/// day included, makes the same 25.
 	#[tokio::test]
 	async fn an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index() {
 		let (pool, vault) = (pool().await, Vault::default());
@@ -2272,14 +2300,18 @@ mod tests {
 		assert_eq!(seen.len(), 25, "{seen:?}");
 		assert!(seen.iter().all(|request| request.starts_with("Get ") && !request.contains("/v1/index/")), "{seen:?}");
 
-		let (name, body) = digest("2026-10-23");
+		let (name, body) = digest_picking("2026-10-23", "sw-0001");
 		vault.add("brief", 1, &name, &body, YOUNG);
 		let (busy, seen) = pass("2026-10-23T15:15:00.000Z").await;
 		assert_eq!(busy.indexed, ["added"]);
 		assert_eq!(seen.iter().filter(|request| request.starts_with("Put /v1/index/items/index-jobs-")).count(), 1);
-		let (idle, seen) = pass("2026-10-23T15:30:00.000Z").await;
-		assert!(idle.indexed.is_empty());
-		assert_eq!(seen.len(), 25, "nothing moved: {seen:?}");
-		assert!(seen.iter().all(|request| !request.contains("/v1/index/")), "{seen:?}");
+		// Nothing arrived, and on the 24th and 25th in Los Angeles the open pick
+		// has not lapsed: 25 requests, the same as an empty mailbox's.
+		for now in ["2026-10-23T15:30:00.000Z", "2026-10-24T15:30:00.000Z", "2026-10-25T15:30:00.000Z"] {
+			let (idle, seen) = pass(now).await;
+			assert!(idle.indexed.is_empty(), "{now}");
+			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
+			assert!(seen.iter().all(|request| !request.contains("/v1/index/")), "{seen:?}");
+		}
 	}
 }
