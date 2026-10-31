@@ -153,7 +153,8 @@ pub enum SpawnError {
 	Program(std::io::Error),
 	/// Rust Rounds' recorder only: the program ran, and its run, or the sweep
 	/// after it, could not be supervised to its end. The machine's failure
-	/// (an [`Self::Io`] from [`Compiler::run`]), but one a program's
+	/// (an [`Self::Io`] from [`Compiler::run`] once the program started; a
+	/// failure to start it stays [`Self::Io`]), but one a program's
 	/// survivors can cause, so the service does not call it `unavailable`
 	/// (RX3): it answers nothing, and the client counts a drop.
 	Unsupervised(std::io::Error),

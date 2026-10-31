@@ -141,8 +141,10 @@ impl Recorder {
 				return Ok(self.recording(key, Outcome::Runtime, Some(note), compile, None));
 			}
 			// The machine's, but past the program's start, so possibly the
-			// program's doing (its survivors against the sweep).
-			Err(SpawnError::Io(err)) => return Err(SpawnError::Unsupervised(err)),
+			// program's doing (its survivors against the sweep). A failure
+			// to start it is not: nothing of it ran, and the compile's sweep
+			// left nothing of its uid, so it stays `Io` (`unavailable`).
+			Err(SpawnError::Io(err)) if !crate::process::not_started(&err) => return Err(SpawnError::Unsupervised(err)),
 			Err(err) => return Err(err),
 		};
 		let stderr = without_thread_ids(&String::from_utf8_lossy(&finished.stderr.tail));
