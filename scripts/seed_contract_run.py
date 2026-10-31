@@ -11,6 +11,13 @@ per-person contracts need in it, the same rows the server would write:
   signing in. That account is the only one, so it is the owner's and runs the
   operator routes with no OPERATOR_SUBJECTS (#510). No other account is ever
   written here: a second one would leave the box with no owner.
+- **A paired phone's session for the same subject.** The rust_rounds routes
+  answer a paired phone only (`subject::Paired`): the token must arrive as
+  `Authorization: Bearer`, and a phone's session is stored under a
+  domain-separated digest, `SHA-256(PHONE_DOMAIN || token)`
+  (`SessionToken::hash` with `Carrier::Bearer`), so the browser's cookie
+  cannot stand in for it. some-ui's harness sends it for its `paired: true`
+  contracts and skips them without it.
 - **A held LeetType session file** (#590). Only the `mailbox` poller writes
   `mailbox_item`, from the Jobs mailbox, so without this the
   `/leetype/session-files` list is empty and no file can be fetched. It holds
@@ -22,16 +29,17 @@ per-person contracts need in it, the same rows the server would write:
   literally; they are also exported (below).
 
 What it exports, to `$GITHUB_ENV` (or `--github-env`), for the harness step:
-`CONTRACT_SESSION_COOKIE`, and `CONTRACT_LEETYPE_FILE`,
-`CONTRACT_LEETYPE_FILE_SHA256` and `CONTRACT_LEETYPE_OTHER_FILE`. The cookie
-is a credential: it is never printed, and an `::add-mask::` for it is
-written to stdout before it is written anywhere, so a later step that echoes
-it shows `***`.
+`CONTRACT_SESSION_COOKIE`, `CONTRACT_PHONE_TOKEN`, and
+`CONTRACT_LEETYPE_FILE`, `CONTRACT_LEETYPE_FILE_SHA256` and
+`CONTRACT_LEETYPE_OTHER_FILE`. The cookie and the phone's token are
+credentials: neither is printed, and an `::add-mask::` for each is written to
+stdout before it is written anywhere, so a later step that echoes one shows
+`***`.
 
 `--self-test` seeds a database built from `migrations/*.up.sql` and checks
 each row reads back the way the server reads it (the same SQL for the
-listing, the digests `auth/cookie.rs` computes, the schema name
-`handlers/leetype_files.rs` accepts, read from those files), so an edit here,
+listing, the digests `auth/cookie.rs` computes with its `PHONE_DOMAIN`, the
+schema name `handlers/leetype_files.rs` accepts, both read from those files), so an edit here,
 or there, that would leave a contract signed out or fetching nothing fails
 before the harness runs.
 """
@@ -55,10 +63,15 @@ from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS = REPO_ROOT / "migrations"
+COOKIE_SOURCE = REPO_ROOT / "apps" / "servers" / "file_host" / "src" / "auth" / "cookie.rs"
 LEETYPE_HANDLER = REPO_ROOT / "apps" / "servers" / "file_host" / "src" / "handlers" / "leetype_files.rs"
 
 # How long each seeded session lives: far longer than the job.
 SESSION_SECONDS = 3600
+
+# `auth::cookie::PHONE_DOMAIN`, prefixed to a phone's token before hashing;
+# the self-test reads it there.
+PHONE_DOMAIN = b"some-ui paired phone session\0"
 
 # `handlers::leetype_files::SESSION_SCHEMA`; the self-test reads it there.
 SESSION_SCHEMA = "some-ui.leetype-session/1"
@@ -118,16 +131,23 @@ def browser_hash(token: bytes) -> bytes:
 	return hashlib.sha256(token).digest()
 
 
+def phone_hash(token: bytes) -> bytes:
+	"""What a paired phone's session is stored under (`Carrier::Bearer`)."""
+	return hashlib.sha256(PHONE_DOMAIN + token).digest()
+
+
 @dataclass(frozen=True)
 class Seeded:
 	cookie: str
+	phone_token: str
 
 	def secrets(self) -> list[str]:
-		return [self.cookie]
+		return [self.cookie, self.phone_token]
 
 	def env(self) -> dict[str, str]:
 		return {
 			"CONTRACT_SESSION_COOKIE": self.cookie,
+			"CONTRACT_PHONE_TOKEN": self.phone_token,
 			"CONTRACT_LEETYPE_FILE": HELD_FILE,
 			"CONTRACT_LEETYPE_FILE_SHA256": HELD_SHA256,
 			"CONTRACT_LEETYPE_OTHER_FILE": OTHER_FILE,
@@ -148,6 +168,7 @@ def seed(db: sqlite3.Connection, subject: str, now: int, random: Callable[[int],
 	if subject == OTHER_SUBJECT:
 		raise ValueError("the subject must not be OTHER_SUBJECT, whose file is the cross-subject 404")
 	cookie = random(32)
+	phone = random(32)
 	expires_at = now + SESSION_SECONDS
 	with db:
 		db.execute("INSERT INTO account (subject_id, user_handle) VALUES (?, ?)", (subject, random(16)))
@@ -155,9 +176,13 @@ def seed(db: sqlite3.Connection, subject: str, now: int, random: Callable[[int],
 			"INSERT INTO auth_session (token_hash, subject_id, expires_at) VALUES (?, ?, ?)",
 			(browser_hash(cookie), subject, expires_at),
 		)
+		db.execute(
+			"INSERT INTO auth_session (token_hash, subject_id, expires_at) VALUES (?, ?, ?)",
+			(phone_hash(phone), subject, expires_at),
+		)
 		hold(db, subject, HELD_FILE, 1, HELD_BODY)
 		hold(db, OTHER_SUBJECT, OTHER_FILE, 1, OTHER_BODY)
-	return Seeded(cookie=encoded(cookie))
+	return Seeded(cookie=encoded(cookie), phone_token=encoded(phone))
 
 
 def export(seeded: Seeded, github_env: Path, out: TextIO) -> None:
@@ -192,6 +217,14 @@ FILE_SQL = "SELECT sha256, body FROM mailbox_item WHERE subject_id = ? AND folde
 
 # The keys some-ui's `SessionFileSchema` (a strict object) allows.
 FILE_KEYS = {"variant", "title", "oneLine", "session", "glossary", "start", "screens"}
+
+
+def rust_bytes_literal(source: Path, name: str) -> bytes:
+	"""The value of `const NAME: &[u8] = b"...";` in `source`."""
+	found = re.search(r'const ' + name + r': &\[u8\] = b"((?:[^"\\]|\\.)*)";', source.read_text(encoding="utf-8"))
+	if found is None:
+		raise AssertionError(f"{source.relative_to(REPO_ROOT)} no longer declares {name}")
+	return found.group(1).encode().decode("unicode_escape").encode("latin-1")
 
 
 def rust_str_literal(source: Path, name: str) -> str:
@@ -231,6 +264,7 @@ def counter(start: int = 0) -> Callable[[int], bytes]:
 
 
 def self_test() -> None:
+	assert rust_bytes_literal(COOKIE_SOURCE, "PHONE_DOMAIN") == PHONE_DOMAIN, "auth/cookie.rs hashes a phone's token under another domain"
 	assert rust_str_literal(LEETYPE_HANDLER, "SESSION_SCHEMA") == SESSION_SCHEMA, "handlers/leetype_files.rs serves another schema"
 	subject = "subject-00000000000000000000000000c0ffee"
 	now = 1_800_000_000
@@ -246,6 +280,15 @@ def self_test() -> None:
 		assert len(cookie) == 32
 		live = "SELECT subject_id FROM auth_session WHERE token_hash = ? AND expires_at > ?"
 		assert db.execute(live, (hashlib.sha256(cookie).digest(), now)).fetchall() == [(subject,)]
+
+		# The phone's session opens with its token as a bearer, for the same
+		# subject, and its token as a cookie opens nothing: what lets
+		# `subject::Paired` tell a phone from a browser.
+		phone = base64.urlsafe_b64decode(seeded.phone_token + "=" * (-len(seeded.phone_token) % 4))
+		assert len(phone) == 32 and phone != cookie
+		assert db.execute(live, (hashlib.sha256(b"some-ui paired phone session\x00" + phone).digest(), now)).fetchall() == [(subject,)]
+		assert db.execute(live, (hashlib.sha256(phone).digest(), now)).fetchall() == []
+		assert db.execute(live, (phone_hash(cookie), now)).fetchall() == []
 
 		# The list shows the subject's file, and only it, as the server would.
 		listed = db.execute(LIST_SQL, (subject,)).fetchall()
@@ -321,7 +364,7 @@ def main() -> int:
 	seeded = seed(db, args.subject, int(time.time()))
 	db.close()
 	export(seeded, args.github_env, sys.stdout)
-	print(f"seeded {args.subject} with a session and {HELD_FILE}, and {OTHER_SUBJECT} with {OTHER_FILE}")
+	print(f"seeded {args.subject} with a browser and a phone session and {HELD_FILE}, and {OTHER_SUBJECT} with {OTHER_FILE}")
 	return 0
 
 

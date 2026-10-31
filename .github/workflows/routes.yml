@@ -235,12 +235,16 @@ jobs:
 
       # A throwaway database, so every contract runs, mutating ones included,
       # seeded by scripts/seed_contract_run.py (its docstring says what and
-      # why): the owner's account and a signed-in session for the per-person
-      # routes, and a held LeetType session file for that subject and one for
-      # another subject, so a contract can fetch a file, its ETag and the
-      # 304, and another subject's file is a 404 (#590). It exports the
-      # session and the files' names to the harness step, masking the
-      # session first. AUTH_OPEN_SIGNUP is on because sign-up closes once an
+      # why): the owner's account and a signed-in browser session for the
+      # per-person routes; a paired phone's session for the same subject, for
+      # the routes only a phone may call (`subject::Paired`, the rust_rounds
+      # routes), which the harness sends as a bearer for its `paired`
+      # contracts; and a held LeetType session file for that subject and one
+      # for another subject, so a contract can fetch a file, its ETag and
+      # the 304, and another subject's file is a 404 (#590). It exports both
+      # sessions (CONTRACT_SESSION_COOKIE, CONTRACT_PHONE_TOKEN) and the
+      # files' names to the harness step, masking each session before it is
+      # written anywhere. AUTH_OPEN_SIGNUP is on because sign-up closes once an
       # account exists, and the `auth.register_start` contract expects an
       # open server's options. RATE_LIMIT is per client per minute, and the
       # harness is one client making about sixty requests in a few seconds.
