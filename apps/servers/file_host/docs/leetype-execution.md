@@ -381,8 +381,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     variable, adds a request field or branch that skips a limit for some
     source ("trusted" tutors, say), or runs a Rust Rounds program anywhere
     else.
-    **Who can signal whom.** A program cannot signal the runner: it is
-    another uid, and as PID 1 it receives no signal it has no handler for.
+    **Who can signal whom.** No program can signal the runner: it is a
+    different uid with no `CAP_KILL`, and as PID 1 the runner receives no
+    signal it has no handler for.
     The sweep's helper (RX2) is a process of the programs' uid from its
     fork on, so a program's survivor *can* stop or kill it; that is why the
     helper is bounded and RX3's watchdog, a thread of the root runner that

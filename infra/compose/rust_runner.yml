@@ -36,8 +36,8 @@ services:
     # deadline) the kernel kills every process in the container's PID
     # namespace, a program's survivors included, and the restart below
     # starts it clean. As PID 1 it reaps a program's orphans itself, and no
-    # process in the container can signal it (the kernel drops a signal to
-    # PID 1 it has no handler for).
+    # program can signal it (a different uid, no CAP_KILL; and the kernel
+    # drops a signal to PID 1 it has no handler for).
     # RX1: two uids. The runner is root with two capabilities and no way to
     # gain more: SETUID and SETGID, to start every compile and run as
     # 10101:10101 (the image's RUST_RUNNER_PROGRAM_*, an id pair no other
