@@ -46,10 +46,13 @@ pub const DEFAULT_RUN_CEILING: Duration = Duration::from_millis(2_000);
 /// How long the runner's `clean` may take over what one job left.
 pub const CLEAN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What a job may take beyond its own ceilings (the compile timeout, the run
-/// ceiling, [`CLEAN_TIMEOUT`] and the client's two deadlines) before the
-/// runner's watchdog ends the runner: its sweeps, each a few milliseconds and
-/// each helper bounded by its own timeout, and the tidy's checks.
+/// What a job may take beyond its own ceilings before the runner's watchdog
+/// ends the runner.
+///
+/// Its ceilings are the compile timeout, the run ceiling, [`CLEAN_TIMEOUT`]
+/// and the client's two deadlines; beyond them come its sweeps, each a few
+/// milliseconds and each helper bounded by its own timeout, and the tidy's
+/// checks.
 pub const SWEEP_ALLOWANCE: Duration = Duration::from_secs(30);
 
 /// The watchdog's deadline for one job under these ceilings: every ceiling
@@ -68,8 +71,9 @@ pub const fn job_deadline(compile_timeout: Duration, run_ceiling: Duration) -> D
 /// runs with (it sets none, and compose passes no environment, RX1): 132 s.
 pub const DEFAULT_JOB_DEADLINE: Duration = job_deadline(DEFAULT_COMPILE_TIMEOUT, DEFAULT_RUN_CEILING);
 
-/// How long a client waits for an answer: past [`DEFAULT_JOB_DEADLINE`] by
-/// one [`CLIENT_TIMEOUT`] (137 s), so a job the runner's watchdog ends is
+/// How long a client waits for an answer: 137 s.
+///
+/// Past [`DEFAULT_JOB_DEADLINE`] by one [`CLIENT_TIMEOUT`], so a job the runner's watchdog ends is
 /// seen as a dropped connection, never as the client's own timeout. A client
 /// that gave up first would ask again while the runner was still wedged and
 /// queue behind it, and one hostile program would cost two attempts.
@@ -266,6 +270,7 @@ mod tests {
 	fn a_client_waits_past_the_watchdog() {
 		assert_eq!(DEFAULT_JOB_DEADLINE, Duration::from_secs(132));
 		assert!(ASK_TIMEOUT > DEFAULT_JOB_DEADLINE, "a wedged job is seen dropped, not timed out");
+		assert_eq!(ASK_TIMEOUT, Duration::from_secs(137), "as the server's refusal of a shorter pass deadline says");
 	}
 
 	/// A service that reads the request whole and then does `then` with the

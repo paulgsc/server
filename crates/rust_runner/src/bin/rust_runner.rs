@@ -315,7 +315,7 @@ fn run(serve: &Serve) -> Result<(), String> {
 
 /// The watchdog's deadline for one job: every ceiling it can spend, plus
 /// [`SWEEP_ALLOWANCE`]. 132 s with the defaults.
-fn serve_job_deadline(limits: &Limits) -> Duration {
+const fn serve_job_deadline(limits: &Limits) -> Duration {
 	job_deadline(limits.compile_timeout, limits.run_ceiling)
 }
 

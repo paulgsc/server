@@ -70,11 +70,7 @@ impl RustRoundsContext {
 		let interval = Duration::from_secs(config.rust_rounds_seconds);
 		anyhow::ensure!(interval >= MIN_INTERVAL, "RUST_ROUNDS_SECONDS must be at least 10");
 		let deadline = Duration::from_secs(config.rust_rounds_pass_deadline_seconds);
-		anyhow::ensure!(
-			deadline >= MIN_DEADLINE,
-			"RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least {}, one ask's wait",
-			MIN_DEADLINE.as_secs()
-		);
+		anyhow::ensure!(deadline >= MIN_DEADLINE, "RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least one ask's wait, 137");
 		Ok(Some(Self {
 			runner: Arc::new(Socket(PathBuf::from(&config.rust_rounds_socket))),
 			interval,
