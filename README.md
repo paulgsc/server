@@ -228,6 +228,11 @@ any, so `make up` never starts on a known gap. It also warns about each
 `.env` line nothing reads: a renamed or retired variable is otherwise ignored
 without a word. It asks for nothing: a value decided at deploy time, on the
 box, is the one nobody reviewed.
+Both the preflight and `env_schema.py deploy` read `docker compose config
+--no-interpolate`, which an older compose refuses for a short-syntax volume
+holding `${NAME:?}` ("too many colons"); they are verified against compose
+v5.6.1, which `Lint`'s `Env schema` job pins. On an older one they say that no
+service was checked and exit 1.
 A `${NAME:?}` in any compose file stops every service, not only its own,
 because compose interpolates the whole project before it starts one; the
 preflight names those too.

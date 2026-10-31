@@ -73,6 +73,18 @@ services:
       - OTEL_TRACES_SAMPLER
       - OTEL_TRACES_SAMPLER_ARG
       - OTEL_SERVICE_NAME
+      # The OpenTelemetry SDK's own, which no Config declares (README.md,
+      # ENV1's Tolerance): an authenticated collector's headers, resource
+      # attributes and the batch processor's limits, from .env when it sets
+      # them. The preflight warns about a dependency's variable .env sets
+      # that reaches no container.
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_EXPORTER_OTLP_HEADERS
+      - OTEL_BSP_SCHEDULE_DELAY
+      - OTEL_BSP_EXPORT_TIMEOUT
+      - OTEL_BSP_MAX_QUEUE_SIZE
+      - OTEL_BSP_MAX_EXPORT_BATCH_SIZE
+      - OTEL_BSP_MAX_CONCURRENT_EXPORTS
     volumes:
       # STORAGE: the host directory holding file_host's SQLite database, mounted
       # at /app/dbs (DATABASE_URL above). HOST-SPECIFIC default: the nixos.local

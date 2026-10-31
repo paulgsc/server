@@ -73,6 +73,9 @@ LABEL = "env-schema"
 # "Configuration", ENV1's Tolerance): a line setting one is not stale.
 DEPENDENCY_VARIABLES = re.compile(r"^(COMPOSE_\w+|DOCKER_\w+|TOKIO_WORKER_THREADS|POLARS_MAX_THREADS|RUST_BACKTRACE|OTEL_RESOURCE_ATTRIBUTES|OTEL_EXPORTER_OTLP_HEADERS|OTEL_BSP_\w+)$")
 
+# Read by docker compose itself, never passed to a container.
+COMPOSE_OWN = re.compile(r"^(COMPOSE_\w+|DOCKER_\w+)$")
+
 INTERPOLATION = re.compile(r"(?<!\$)\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?)([-?+])((?:[^{}]|\{[^{}]*\})*))?\}")
 INCLUDE = re.compile(r"^\s*-\s*path:\s*(\S+)\s*$")
 
@@ -603,6 +606,13 @@ def preflight(schemas: list[dict], compose: dict[str, ComposeVariable], env_text
                 report.invalid.append(Gap(variable["name"], reader, variable["help"], variable["secret"], problem))
     read = {variable["name"] for schema in schemas for variable in schema["variables"]} | set(compose) | referenced_inside(env_text)
     report.unread = sorted(name for name in env if name not in read and not DEPENDENCY_VARIABLES.match(name))
+    # A dependency's own variable reaches a container only by name now that no
+    # service takes .env whole (CFG9): one no service passes is dropped
+    # without a word, as a stale line would be.
+    passed = {name for service in raw.get("services", {}).values() for name in own_environment(service)}
+    for name in sorted(env):
+        if DEPENDENCY_VARIABLES.match(name) and not COMPOSE_OWN.match(name) and name not in compose and name not in passed and raw.get("services"):
+            report.warnings.append(f".env sets {name}, which no container is given: add `- {name}` to the `environment:` of the service whose dependency reads it")
     return report
 
 
@@ -960,6 +970,8 @@ def self_test() -> None:
     assert [gap.name for gap in misplaced.misplaced] == ["ON"] and failed(misplaced), misplaced
     lost = preflight([ours], {}, "", {"ROOT": "/r", "DEPLOY": "nowhere"}, raw, read=lambda path: files.get(str(path)))
     assert lost.errors and "/r/deploy/nowhere/probe.env does not exist" in lost.errors[0], lost.errors
+    dropped = preflight([ours], {}, "OTEL_EXPORTER_OTLP_HEADERS=a=b\nOTEL_BSP_SCHEDULE_DELAY=1\nKEY=k\nCOMPOSE_PROJECT_NAME=x\n", {"ROOT": "/r", "DEPLOY": "home"}, {"services": {**raw["services"], "otel": {"environment": ["OTEL_BSP_SCHEDULE_DELAY"]}}}, read=lambda path: files.get(str(path)))
+    assert [warning.split(",")[0] for warning in dropped.warnings] == [".env sets OTEL_EXPORTER_OTLP_HEADERS"], dropped.warnings
     assert resolve_path("/repo/infra/compose/${ROOT:?x}/deploy/${DEPLOY:?y}/probe.env", {"ROOT": "/r", "DEPLOY": "dev"}) == Path("/r/deploy/dev/probe.env")
     assert "No deploy/<role>/ holds probe yet" in " ".join(line.lstrip("# ") for line in render_example([ours], {}, "# head", set()).splitlines())
     example = render_example([ours], {}, "# head")
