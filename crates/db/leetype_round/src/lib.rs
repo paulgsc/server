@@ -10,8 +10,8 @@
 //! `ETag` share.
 //!
 //! [`runs`] holds each round's recorded runs (#381): `RunResult`s that
-//! `leetype_runner` produced offline, stored per round version and served by
-//! `GET /leetype/rounds/:id/runs`. [`snapshot`] writes the listed rounds and
+//! `leetype_runner` produced offline, stored per round version (no route
+//! serves them since paulgsc/some-ui#2032). [`snapshot`] writes the listed rounds and
 //! their runs as files for the static build (#328).
 
 pub mod importer;

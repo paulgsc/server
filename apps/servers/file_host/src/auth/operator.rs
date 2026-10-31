@@ -1,8 +1,9 @@
 //! Who may change what everyone is served.
 //!
 //! The operator routes rewrite, retire and restore corpus-wide content: the
-//! lessons (`routes::db::curriculum_operator`) and the `leetype` rounds
-//! (`routes::db::leetype_operator`). Before passkey auth they had no gate but
+//! lessons (`routes::db::curriculum_operator`). (The `leetype` rounds had
+//! operator routes too, retired with the round CRM in paulgsc/some-ui#2032.)
+//! Before passkey auth they had no gate but
 //! the CORS allowlist. A passkey session alone is not a gate either: anyone
 //! who can reach the server can make an account (docs/identity.md, "Who can
 //! make an account"). So an operator is a signed-in subject **listed in
@@ -116,7 +117,7 @@ mod tests {
 	}
 
 	fn operator_modules() -> Vec<Module<TestState>> {
-		vec![crate::routes::db::curriculum_operator(), crate::routes::db::leetype_operator()]
+		vec![crate::routes::db::curriculum_operator()]
 	}
 
 	async fn state(operators: &[&str]) -> TestState {

@@ -193,8 +193,8 @@ pub struct RecordedRun {
 	pub result: RunResult,
 }
 
-/// `GET /leetype/rounds/:id/runs`, and `runs/<id>.json` in the static
-/// snapshot: a round's transcript for the version it is now.
+/// `runs/<id>.json` in the static snapshot (and the body of the retired
+/// `GET /leetype/rounds/:id/runs`): a round's transcript for the version it is now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RoundRuns {

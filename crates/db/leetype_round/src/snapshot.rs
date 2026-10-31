@@ -5,7 +5,7 @@
 //! ```text
 //! <out>/rounds/manifest.json   {"rounds": [<id>, …]}, the listed rounds by id
 //! <out>/rounds/<id>.json       the stored body, byte for byte
-//! <out>/runs/<id>.json         GET /leetype/rounds/:id/runs's body
+//! <out>/runs/<id>.json         the round's RoundRuns
 //! ```
 //!
 //! `rounds/` is the layout `@some-ui/leetype`'s `export-round-corpus.ts`
