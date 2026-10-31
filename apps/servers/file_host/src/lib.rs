@@ -240,9 +240,10 @@ impl AppState {
 				// and a UTC day boundary is how an evening reminder arrives at 3am.
 				tracing::warn!("NUDGE_TIMEZONE is unset; the day boundary and quiet hours will be evaluated in UTC");
 			}
+			// `Config` refuses such a name before anything starts (#407); this
+			// is that rule again, for a clock resolved some other way.
 			nudge::clock::ZoneSource::Unparseable(name) => {
-				crate::metrics::instruments::record_error("nudge_config", "timezone_unparseable");
-				tracing::error!(zone = %name, "NUDGE_TIMEZONE is not an IANA zone name; falling back to UTC");
+				anyhow::bail!("NUDGE_TIMEZONE is not an IANA zone name: {name}");
 			}
 		}
 

@@ -1175,7 +1175,8 @@ See `example.env`. The two that most reward attention:
   so "have I studied today" answers no, and you get nudged for a day you already
   did. The same offset makes quiet hours of 22:00–08:00 silence 15:00–01:00
   local and permit 03:00. Leaving it unset is allowed, and is logged loudly at
-  startup rather than assumed.
+  startup rather than assumed. A name that is not an IANA zone stops the
+  server at start, naming the variable (#407); it used to fall back to UTC.
 - **`NUDGE_ENABLED`.** With this off, the `/push` routes still work and
   `POST /api/v1/push/test` still sends; only the schedule is idle. With it on
   and no usable VAPID pair, startup fails.

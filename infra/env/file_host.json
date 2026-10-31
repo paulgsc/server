@@ -293,7 +293,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "IANA timezone name deciding when a day starts and when quiet hours apply.\n\nDeliberately an `Option` with no default. A container is UTC unless told otherwise, and a silent UTC fallback is how an evening reminder arrives at 3am; leaving this unset is allowed but is logged as the choice it is.",
+      "help": "IANA timezone name deciding when a day starts and when quiet hours apply.\n\nDeliberately an `Option` with no default. A container is UTC unless told otherwise, and a silent UTC fallback is how an evening reminder arrives at 3am; leaving this unset is allowed but is logged as the choice it is. A name that is not an IANA zone (`America/Denvr`) stops the server at start (#407); it used to fall back to UTC.",
       "required_when": null
     },
     {
@@ -792,12 +792,12 @@
       "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
       "group": "Tracing",
       "required": false,
-      "default": "http://localhost:4317",
+      "default": null,
       "kind": "string",
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "The OTLP (gRPC) collector traces are exported to",
+      "help": "The OTLP (gRPC) collector traces are exported to, e.g. `http://otel-collector:4317`. Unset, they are not exported at all: nothing in the compose stack runs a collector, and metrics go through Prometheus (#139, #407)",
       "required_when": null
     },
     {

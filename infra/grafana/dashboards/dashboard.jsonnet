@@ -135,8 +135,9 @@ local dashboard = {
     // Is the engagement waker's tick (LOOPS, above) actually landing
     // notifications, and if not, why not. See nudge-panels.libsonnet.
     collapsedRow('Nudge waker', 46, 965, [
-      nudge.due { gridPos: utils.gridPos(0, 47, 4, 4), id: 931 },
-      nudge.configErrors { gridPos: utils.gridPos(4, 47, 5, 4), id: 933 },
+      // No config-errors panel: its one source, an unparseable NUDGE_TIMEZONE,
+      // now stops file_host at start instead of running on UTC (#407).
+      nudge.due { gridPos: utils.gridPos(0, 47, 9, 4), id: 931 },
       nudge.outcomesByVerdict { gridPos: utils.gridPos(9, 47, 15, 4), id: 932 },
       nudge.passDuration { gridPos: utils.gridPos(0, 51, 24, 4), id: 934 },
     ]),
