@@ -1326,15 +1326,14 @@ change what everyone is served, so they answer only a subject listed in
 
 ### LeetType rounds
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/leetype/rounds` | `{ version, rounds: [{ id, version, publishedAt, contentHash, witnesses: [{ propositionId, admissible }] }] }` — the listed rounds, by id (#327) |
-| `GET` | `/leetype/rounds/:id` | One round, verbatim, or a JSON `404` |
-| `GET` | `/leetype/rounds/:id/runs` | `{ roundId, contentHash, runs: [{ variant, bounds, sizes, result }] }` — the round's recorded `RunResult`s for its current version, or a JSON `404` (#381) |
-| `GET` | `/leetype/operator/rounds` | Every round's manifest entry plus `retiredAt`, retired rounds included — the operator's view |
-| `PUT` | `/leetype/operator/rounds/:id` | Write one round, `{ body }` (the round's JSON as text); answers `{ change, round }` |
-| `POST` | `/leetype/operator/rounds/:id/retire` | Take a round out of the manifest, without deleting it; answers the round |
-| `POST` | `/leetype/operator/rounds/:id/restore` | Put it back; answers the round |
+**No route serves them** (paulgsc/some-ui#2032, the owner's decision of
+2026-10-30, retired `GET /leetype/rounds*` and the operator's
+`/leetype/operator/rounds*` with the round CRM and the phone's copy of the
+rounds). **The tables and their rows stay**: `leetype_round`,
+`leetype_round_witness` and `leetype_round_run` are authored content and its
+recordings, and dropping them is a separate decision that needs a durable copy
+first. What reaches them is offline: `import-leetype-rounds`,
+`record-leetype-runs` and `dump-leetype-snapshot`.
 
 LeetType's round corpus, moved off the client bundle (#324) the way lessons
 were. A **round** is the object `@some-ui/leetype`'s `RoundSchema` describes: a
@@ -1347,13 +1346,11 @@ admissible.
 round's JSON, verbatim: programs, graphs and hunks change shape with the
 client, and this server never reasons about them. `leetype_round_witness` holds
 one row per option — the round, the option's position, its proposition, and
-whether it is the admissible one — because "which rounds witness `CW-P5`" is
-the one question two client consumers (the learner ledger and the round
-sampler) ask that a blob could answer only by reading every round. It is
-derived from the body on every write, in the same transaction, and never
-written on its own. `RoundRepository::rounds_witnessing` is that query, a range
-read of `idx_leetype_round_witness_proposition`. No route serves it yet; the
-manifest's `witnesses` already give a client every edge of every listed round.
+whether it is the admissible one — so "which rounds witness `CW-P5`" is a range
+read of `idx_leetype_round_witness_proposition`, not a read of every round. It
+is derived from the body on every write, in the same transaction, and never
+written on its own. The snapshot's manifest carries every listed round's
+witnesses.
 
 **What the server checks** (`leetype_round_repo::parse_round`, the only reading
 of a body it does): a JSON object within `ROUND_BYTES_CEILING` (256 KiB), a
@@ -1363,24 +1360,20 @@ presents, and it bounds each round's witness rows), each with a
 `member.propositionId`
 of the form `CW-P<n>` (1–999, no leading zero) and a boolean
 `member.admissible`, exactly one of them true. The key is held to the same
-URL-segment rule as a lesson key. On the write route each is a `422` naming its
-field (`key`, `body`, `body.id`, `body.algorithm.language`, `body.diffOptions`,
+URL-segment rule as a lesson key. The importer names the field each refusal is
+for (`key`, `body`, `body.id`, `body.algorithm.language`, `body.diffOptions`,
 `body.diffOptions[i].member.propositionId`, `…admissible`). Whether a
 `CW-P` number is one the canon's register defines, and #324's whole-corpus
 lints (distractor coverage, `0 < |C| ≤ |D|`), stay the client's corpus lint:
 the register is the canon's, and a copy here would drift.
 
-Everything else follows [Curriculum](#curriculum): a round's `ETag` is its
-content hash (SHA-256 over the body's exact bytes) and the manifest's is the
-hash of its listing, which is also its `version`, both answering
-`If-None-Match` with `304`; the manifest is bounded by `MANIFEST_CEILING`
-(1,000 listed rounds) and refused above it, and the write and restore routes
-refuse to list a round past it; the operator listing is bounded by
-`OPERATOR_LISTING_CEILING` (5,000). Retiring unlists a round without deleting
-it, and `GET /leetype/rounds/:id` keeps serving it. A write's `change` is
+A round's content hash is SHA-256 over the body's exact bytes, as a lesson's
+is. The listed rounds are bounded by `MANIFEST_CEILING` (1,000): the importer
+refuses to list a round past it, and the snapshot refuses a manifest above it.
+A round retired before the routes went stays retired, out of the manifest and
+the snapshot, and nothing retires or restores one now. An import's `change` is
 `inserted`, `contentChanged` or `unchanged` — there is no metadata outside the
-body, so no `metadataChanged`. The operator routes answer only a subject in
-`OPERATOR_SUBJECTS` (see the trust model below).
+body, so no `metadataChanged`.
 
 **Rounds do not feed the publication log.** Nothing about a round reaches
 `curriculum_publication` or the waker, so a new or edited round is never
@@ -1394,19 +1387,18 @@ execution transcript — for `A` and each `A + d`, at the bounds of
 `RunResult` — is produced offline by `record-leetype-runs` (the one caller of
 `leetype_runner`, which compiles the round's programs with its `harness` using
 `rustc`), stored in `leetype_round_run` against the round's content hash, and
-served by `GET /leetype/rounds/:id/runs` for the current hash only: an edited
-round answers `runs: []` until it is recorded again. The server itself compiles
+read for the current hash only, by `dump-leetype-snapshot`: an edited round has
+no runs until it is recorded again. The server itself compiles
 and executes nothing. `dump-leetype-snapshot` writes the listed rounds and
 their runs as static files for the GitHub Pages build (#328). Nothing about a
 run reaches the ledger, the sampler or the waker. The design, its limits and
 the options rejected are in
 [`apps/servers/file_host/docs/leetype-execution.md`](../apps/servers/file_host/docs/leetype-execution.md).
 
-Rounds are written through the operator routes; `paulgsc/some-ui` retired the
-corpus export that used to be imported (#1941). To import a directory in that
-export's layout (`manifest.json`, `{ "rounds": ["<id>", …] }`, plus one
-`<id>.json` per round, as in `crates/db/leetype_round/testdata/rounds/`),
-offline:
+`import-leetype-rounds` is the one way a round is written. To import a
+directory in `@some-ui/leetype`'s export layout (`manifest.json`,
+`{ "rounds": ["<id>", …] }`, plus one `<id>.json` per round, as in
+`crates/db/leetype_round/testdata/rounds/`), offline:
 
 ```sh
 DATABASE_URL=sqlite:///path/to/file_host.db \
@@ -1620,16 +1612,16 @@ Three tiers, and every route above is in exactly one:
   one they answer `401`; a state-changing request from an untrusted origin is a
   `403`. Each acts only for the session's subject, so one person cannot read
   another's sessions or receive their reminders.
-- **Operator routes** (`/curriculum/operator/*`, `/leetype/operator/*`) change
-  what *everyone* is served. They need a session **whose subject is the
-  owner's account** (the only one; `docs/identity.md`, "The owner's account"),
-  or, with `OPERATOR_SUBJECTS` set, one listed there, and answer `403` to
-  every other subject (`auth::operator`). A refused subject is logged by id at
-  `info`: with `OPERATOR_SUBJECTS`, that log line is how an operator finds the
-  id to list (see `example.env`); the owner's box needs no id.
+- **Operator routes** (`/curriculum/operator/*`) change what *everyone* is
+  served. They need a session **whose subject is the owner's account** (the
+  only one; `docs/identity.md`, "The owner's account"), or, with
+  `OPERATOR_SUBJECTS` set, one listed there, and answer `403` to every other
+  subject (`auth::operator`). A refused subject is logged by id at `info`:
+  with `OPERATOR_SUBJECTS`, that log line is how an operator finds the id to
+  list (see `example.env`); the owner's box needs no id.
 - **Public routes** carry no authentication beyond the CORS origin allowlist.
-  The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`,
-  `/leetype/rounds`, `/leetype/rounds/:id`) and `GET /push/vapid-key` serve the
+  The corpus reads (`/activities`, `/curriculum/manifest`, `/curriculum/:key`)
+  and `GET /push/vapid-key` serve the
   same thing to everyone and hold nothing about whoever asks.
   `DELETE /push/subscriptions` takes no session either: it removes the
   subscription whose endpoint URL the request names, which in practice only the

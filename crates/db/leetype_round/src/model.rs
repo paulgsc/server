@@ -18,10 +18,10 @@ pub const MIN_DIFF_OPTIONS: usize = 2;
 /// The most members `D` may have: five, as a phone presents.
 ///
 /// `MAX_PRESENTABLE_DIFFS` in the client's corpus lint. It also bounds the edge table:
-/// each member is a witness row, and the manifest and operator listing load
-/// every listed round's witnesses, so without it a compact body under
-/// [`ROUND_BYTES_CEILING`] could carry thousands of rows per round and the
-/// listing ceilings would bound rounds but not the response.
+/// each member is a witness row, and the manifest loads every listed round's
+/// witnesses, so without it a compact body under [`ROUND_BYTES_CEILING`] could
+/// carry thousands of rows per round and the manifest ceiling would bound
+/// rounds but not the snapshot.
 pub const MAX_DIFF_OPTIONS: usize = 5;
 
 /// One member of a round's option set, as the edge table holds it: `μ` of
@@ -52,8 +52,8 @@ pub struct RoundEntry {
 	pub version: i64,
 	pub published_at: String,
 	pub content_hash: String,
-	/// When the operator retired it (ISO-8601 UTC), or `None` while it is
-	/// listed.
+	/// When it was retired (ISO-8601 UTC), or `None` while it is listed.
+	/// Nothing here sets it; a retired round stays retired.
 	pub retired_at: Option<String>,
 	/// In option order.
 	pub witnesses: Vec<Witness>,
@@ -62,8 +62,7 @@ pub struct RoundEntry {
 /// A field of a round body this server refuses, and why.
 ///
 /// The field is a path rooted at `body` (`body.diffOptions[1].member.admissible`):
-/// the body is what the operator's write route calls it, and what the importer
-/// reads from one file.
+/// the body is what the importer reads from one file.
 pub type Problem = (String, &'static str);
 
 /// Whether `id` is a register identifier: `CW-P` and a number from 1 to 999
@@ -169,9 +168,8 @@ fn witness(member: Option<&Map<String, Value>>, index: usize, problems: &mut Vec
 /// [`parse_round`] for the round stored under `key`.
 ///
 /// Also refuses a key that is not a plain URL path segment ([`is_plain_key`])
-/// or that the body's own `id` disagrees with. The one check the importer and
-/// the operator's write route share, and the one
-/// [`crate::RoundRepository::upsert`] runs itself.
+/// or that the body's own `id` disagrees with. The one check the importer
+/// makes, which [`crate::RoundRepository::upsert`] runs itself.
 ///
 /// # Errors
 /// As [`parse_round`], plus `key` and `body.id`.

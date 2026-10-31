@@ -16,17 +16,24 @@
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
 //! - **One writer per table.** `file_host`'s `mailbox` poller is the only
-//!   caller of [`keep_item`], [`record_handed`], [`keep_archived`] and
-//!   [`file_transcript`], and `PUT /api/v1/jobs/files/:name` and
-//!   `PUT /api/v1/routine/opened` the only callers of [`file_outgoing`]
-//!   besides it;
-//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript' -- '*.rs'`
+//!   caller of [`keep_item`], [`record_handed`], [`keep_archived`],
+//!   [`file_transcript`] and [`file_leetype_log`], and
+//!   `PUT /api/v1/jobs/files/:name` and `PUT /api/v1/routine/opened` the only
+//!   callers of [`file_outgoing`] besides it;
+//!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
 //! - **A transcript is filed once, under a number decided once.**
 //!   [`file_transcript`] records which of home's transcripts it filed, by note
 //!   and model, and the number its name carries, so a better model's goes
 //!   under a new name and none is filed twice
 //!   (`20261026000100_create_mailbox_transcript.up.sql`).
+//! - **A `LeetType` session is decided once per arrival.**
+//!   [`file_leetype_log`] records each log it filed, its number and the
+//!   highest `leetype_session_event` rowid it covered, and
+//!   [`refuse_leetype_log`] each session it could not file, with why, so the
+//!   mark moves past both and a session is decided again only once an event
+//!   of it arrives after that mark
+//!   (`20261030000400_create_mailbox_leetype_log.up.sql`).
 //! - **Archived here first** (docs/identity.md invariant 21): see
 //!   [`keep_archived`].
 //! - **Handed once.** A file filed for the mailbox is handed until the
@@ -591,11 +598,238 @@ pub async fn file_transcript(
 	file_outgoing(conn, subject, TRANSCRIPT, &transcript_name(note_id, n), sha256, body, now).await
 }
 
+/// The folder the routine's `LeetType` session files arrive in.
+pub const LEETYPE: &str = "leetype";
+
+/// One `LeetType` session file home holds, as the list shows it.
+///
+/// `title` and `one_line` are the session file's own, read in SQL from a
+/// held file that is `some-ui.leetype-session/1` with both as strings, and
+/// `None` otherwise; `json` says whether the held bytes parse at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedSessionFile {
+	/// Its name in the mailbox, `t<thread>-<NN>-<slug>.json`.
+	pub name: String,
+	/// Lowercase hex SHA-256 of the mailbox item, as the mailbox listed it.
+	pub sha256: String,
+	/// When home read it.
+	pub pulled_at: String,
+	pub json: bool,
+	pub title: Option<String>,
+	pub one_line: Option<String>,
+}
+
+/// `subject`'s newest `LeetType` session files (the `leetype` folder), newest
+/// first, at most `limit`, with what the list shows of each: nothing of a
+/// body is read into the caller.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn leetype_files(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<ListedSessionFile>, MailboxError> {
+	let files = sqlx::query_as!(
+		ListedSessionFile,
+		r#"WITH held AS (
+		     SELECT name, sha256, pulled_at, seq, CAST(body AS TEXT) AS text
+		     FROM mailbox_item
+		     WHERE subject_id = ?1 AND folder = 'leetype'
+		     ORDER BY seq DESC
+		     LIMIT ?2
+		   )
+		   SELECT name AS "name!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String",
+		     json_valid(text) AS "json!: bool",
+		     CASE WHEN json_valid(text) THEN
+		       CASE WHEN json_extract(text, '$.schema') = 'some-ui.leetype-session/1' AND json_type(text, '$.file.title') = 'text'
+		       THEN json_extract(text, '$.file.title') END
+		     END AS "title?: String",
+		     CASE WHEN json_valid(text) THEN
+		       CASE WHEN json_extract(text, '$.schema') = 'some-ui.leetype-session/1' AND json_type(text, '$.file.oneLine') = 'text'
+		       THEN json_extract(text, '$.file.oneLine') END
+		     END AS "one_line?: String"
+		   FROM held
+		   ORDER BY seq DESC"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(files)
+}
+
+/// One `LeetType` session file home holds, whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFile {
+	/// Lowercase hex SHA-256 of the mailbox item, as the mailbox listed it.
+	pub sha256: String,
+	/// The item as the mailbox held it: `some-ui.leetype-session/1`, the
+	/// session file inside.
+	pub body: Vec<u8>,
+}
+
+/// `subject`'s `LeetType` session file named `name`, if home holds it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn leetype_file(conn: &mut SqliteConnection, subject: &str, name: &str) -> Result<Option<SessionFile>, MailboxError> {
+	let file = sqlx::query_as!(
+		SessionFile,
+		"SELECT sha256, body FROM mailbox_item WHERE subject_id = ?1 AND folder = 'leetype' AND name = ?2",
+		subject,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(file)
+}
+
+/// The folder home's `LeetType` session logs go to.
+pub const LEETYPE_LOG: &str = "leetype-log";
+
+/// One `LeetType` session with events that arrived after the last log filed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Due {
+	/// The phone's id for the session.
+	pub session: String,
+	/// The highest `leetype_session_event` rowid among them: the mark its
+	/// log records once filed.
+	pub top: i64,
+	/// When the newest of them reached home.
+	pub last_written: String,
+}
+
+/// `subject`'s sessions with events above the high-water mark (the largest
+/// `mailbox_leetype_log.through`, filed or refused), in the order their
+/// newest event arrived, at most `limit`.
+///
+/// Every session home holds is finished: the phone sends a session only
+/// once it is done with (docs/identity.md invariant 18). The caller files
+/// them in this order and stops at the first one still arriving.
+///
+/// Two index probes and the new events alone: an idle pass reads no history
+/// (`leetype_session_event_arrival`, `mailbox_leetype_log`'s primary key).
+/// The arrival index is named in the query (`INDEXED BY`): after an
+/// `ANALYZE` the planner would otherwise read the whole history through
+/// `leetype_session_event_order`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn unfiled_leetype_logs(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Due>, MailboxError> {
+	let due = sqlx::query_as!(
+		Due,
+		r#"SELECT session_id AS "session!: String", MAX(rowid) AS "top!: i64", MAX(written_at) AS "last_written!: String"
+		   FROM leetype_session_event INDEXED BY leetype_session_event_arrival
+		   WHERE subject_id = ?1
+		     AND rowid > (SELECT COALESCE(MAX(through), 0) FROM mailbox_leetype_log WHERE subject_id = ?1)
+		   GROUP BY session_id
+		   ORDER BY MAX(rowid)
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(due)
+}
+
+/// The number `subject`'s next filed log of `session` takes, from 1.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn next_leetype_log_number(conn: &mut SqliteConnection, subject: &str, session: &str) -> Result<i64, MailboxError> {
+	let last = sqlx::query_scalar!(
+		r#"SELECT MAX(n) AS "n: i64" FROM mailbox_leetype_log WHERE subject_id = ?1 AND session_id = ?2 AND n IS NOT NULL"#,
+		subject,
+		session
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(last.unwrap_or(0) + 1)
+}
+
+/// The name a session's `n`th filed log goes under in the mailbox:
+/// `log-<session>.json` for the first, `log-<session>.r<n>.json` after.
+#[must_use]
+pub fn leetype_log_name(session: &str, n: i64) -> String {
+	if n <= 1 {
+		String::from("log-") + session + ".json"
+	} else {
+		String::from("log-") + session + ".r" + &n.to_string() + ".json"
+	}
+}
+
+/// Files `subject`'s log of `session` as number `n`, covering the events up
+/// to rowid `through`.
+///
+/// The number and the mark go in `mailbox_leetype_log`, and `body`, as of
+/// `now`, in `mailbox_outgoing` under [`leetype_log_name`], for the poller
+/// to hand on.
+///
+/// Run it in one `BEGIN IMMEDIATE` transaction with
+/// [`next_leetype_log_number`] and the read of the session's events, under
+/// the deletion hold.
+///
+/// # Errors
+/// [`MailboxError::Rewritten`] when that name already holds other bytes, and
+/// [`MailboxError::Storage`] for any `sqlx` failure, a number taken
+/// included.
+pub async fn file_leetype_log(
+	conn: &mut SqliteConnection,
+	subject: &str,
+	(session, n, through): (&str, i64, i64),
+	(sha256, body): (&str, &[u8]),
+	now: &str,
+) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		session,
+		through,
+		n,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	if written.rows_affected() == 0 {
+		return Ok(Change::NoAccount);
+	}
+	file_outgoing(conn, subject, LEETYPE_LOG, &leetype_log_name(session, n), sha256, body, now).await
+}
+
+/// Records that `subject`'s `session` could not be filed, and `why`
+/// (`unreadable`, `no_file` or `too_big`), covering the events up to rowid
+/// `through`, as of `now`.
+///
+/// Nothing goes to `mailbox_outgoing`, and nothing of the session's events
+/// is touched: only the mailbox copy is skipped. The mark moves past it, so
+/// it never holds back the sessions after it, and an event of it that
+/// arrives later makes it due again.
+///
+/// Run it in the transaction that decided it, under the deletion hold.
+///
+/// # Errors
+/// Any `sqlx` failure, a mark taken or a reason the table does not know
+/// included.
+pub async fn refuse_leetype_log(conn: &mut SqliteConnection, subject: &str, (session, through): (&str, i64), why: &str, now: &str) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, refused, decided_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		session,
+		through,
+		why,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
-		archived_body, cursor, digests_after, file_outgoing, file_transcript, keep_archived, keep_item, next_transcript_number, pending_outgoing, record_handed,
-		unfiled_transcripts, Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF,
+		archived_body, cursor, digests_after, file_leetype_log, file_outgoing, file_transcript, keep_archived, keep_item, leetype_files, leetype_log_name,
+		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
+		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -648,12 +882,12 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mailbox_%'");
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 5);
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6);
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops them");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 5, "up recreates them");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6, "up recreates them");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
@@ -670,6 +904,7 @@ mod tests {
 				&["subject_id", "folder", "name", "seq", "sha256", "size", "put_at", "body", "kept_at"][..],
 			),
 			("mailbox_transcript", &["subject_id", "note_id", "model", "n", "filed_at"][..]),
+			("mailbox_leetype_log", &["subject_id", "session_id", "through", "n", "refused", "decided_at"][..]),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -707,6 +942,7 @@ mod tests {
 			"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'd', 'added', 'now')",
 			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
+			"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
@@ -716,6 +952,7 @@ mod tests {
 			("mailbox_handed", "name"),
 			("mailbox_archive", "name"),
 			("mailbox_transcript", "n"),
+			("mailbox_leetype_log", "n"),
 		] {
 			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET " + column + " = 2")).execute(&pool).await;
 			assert!(update.unwrap_err().to_string().contains("append-only"), "{table}");
@@ -811,9 +1048,21 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
+			sqlx::query("INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')")
+				.bind(subject)
+				.execute(&pool)
+				.await
+				.unwrap();
 		}
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
-		for table in ["mailbox_item", "mailbox_outgoing", "mailbox_handed", "mailbox_archive", "mailbox_transcript"] {
+		for table in [
+			"mailbox_item",
+			"mailbox_outgoing",
+			"mailbox_handed",
+			"mailbox_archive",
+			"mailbox_transcript",
+			"mailbox_leetype_log",
+		] {
 			let left: Vec<String> = sqlx::query_scalar(&(String::from("SELECT subject_id FROM ") + table)).fetch_all(&pool).await.unwrap();
 			assert_eq!(left, [B], "{table}: A's rows went with A's account, B's stayed");
 		}
@@ -1033,5 +1282,152 @@ mod tests {
 			.unwrap();
 		assert_eq!(names, ["transcript-n1-1.json", "transcript-n1-2.json"]);
 		assert_eq!(file_next(&pool, "subject-gone", "n1", "small").await.unwrap(), (1, Change::NoAccount));
+	}
+
+	/// A `LeetType` session file the poller kept for `subject`.
+	async fn keep_session_file(pool: &SqlitePool, subject: &str, name: &str, seq: i64) {
+		let body = String::from(r#"{"schema":"some-ui.leetype-session/1","file":{"title":""#) + name + r#"","oneLine":"x"}}"#;
+		let sha = String::from("sha-of-") + name;
+		let item = ItemIn {
+			folder: LEETYPE,
+			name,
+			seq,
+			sha256: &sha,
+			body: body.as_bytes(),
+		};
+		keep_item(&mut pool.acquire().await.unwrap(), subject, item, NOW).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn session_files_list_at_most_the_limit() {
+		let pool = pool().await;
+		for (seq, name) in [(3, "t1-01-raft.json"), (5, "t1-02-paxos.json")] {
+			keep_session_file(&pool, A, name, seq).await;
+		}
+		let listed = leetype_files(&mut pool.acquire().await.unwrap(), A, 1).await.unwrap();
+		assert_eq!(
+			listed.iter().map(|file| (file.name.as_str(), file.title.as_deref())).collect::<Vec<_>>(),
+			[("t1-02-paxos.json", Some("t1-02-paxos.json"))]
+		);
+	}
+
+	/// One event of `subject`'s session, as it reached home at `written`.
+	async fn event(pool: &SqlitePool, subject: &str, (session, id): (&str, &str), written: &str) {
+		sqlx::query(
+			"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, ?2, ?3, '2026-10-28T09:00:00.000Z', 'parked', '{}', ?4)",
+		)
+		.bind(subject)
+		.bind(session)
+		.bind(id)
+		.bind(written)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn due(pool: &SqlitePool, subject: &str) -> Vec<(String, i64)> {
+		unfiled_leetype_logs(&mut pool.acquire().await.unwrap(), subject, 10)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|due| (due.session, due.top))
+			.collect()
+	}
+
+	async fn file_log(pool: &SqlitePool, subject: &str, session: &str, through: i64) -> (i64, Change) {
+		let mut tx = pool.begin().await.unwrap();
+		let n = next_leetype_log_number(&mut tx, subject, session).await.unwrap();
+		let change = file_leetype_log(&mut tx, subject, (session, n, through), ("sha", b"{}"), NOW).await.unwrap();
+		tx.commit().await.unwrap();
+		(n, change)
+	}
+
+	/// Sessions with events above the mark, in the order their newest event
+	/// arrived; a filed one waits again only for an event that arrives after
+	/// it, which files it again under the next number.
+	#[tokio::test]
+	async fn a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log() {
+		let pool = pool().await;
+		event(&pool, A, ("s1", "e1"), "2026-10-28T10:00:00.000Z").await;
+		event(&pool, A, ("s2", "e1"), "2026-10-28T10:00:01.000Z").await;
+		event(&pool, A, ("s1", "e2"), "2026-10-28T10:00:02.000Z").await;
+		event(&pool, B, ("s9", "e1"), "2026-10-28T10:00:03.000Z").await;
+		assert_eq!(due(&pool, A).await, [(String::from("s2"), 2), (String::from("s1"), 3)], "by their newest arrival");
+		assert_eq!(file_log(&pool, A, "s2", 2).await, (1, Change::Added));
+		assert_eq!(due(&pool, A).await, [(String::from("s1"), 3)]);
+		assert_eq!(file_log(&pool, A, "s1", 3).await, (1, Change::Added));
+		assert!(due(&pool, A).await.is_empty(), "nothing arrived after the mark");
+		assert_eq!(due(&pool, B).await, [(String::from("s9"), 4)], "per subject");
+		event(&pool, A, ("s2", "e2"), "2026-10-28T11:00:00.000Z").await;
+		assert_eq!(due(&pool, A).await, [(String::from("s2"), 5)]);
+		assert_eq!(file_log(&pool, A, "s2", 5).await, (2, Change::Added), "under the next number");
+		let names: Vec<String> = sqlx::query_scalar("SELECT name FROM mailbox_outgoing WHERE subject_id = ?1 AND folder = 'leetype-log' ORDER BY rowid")
+			.bind(A)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(names, ["log-s2.json", "log-s1.json", "log-s2.r2.json"]);
+		assert_eq!(file_log(&pool, "subject-gone", "s1", 1).await, (1, Change::NoAccount));
+	}
+
+	/// A refusal moves the mark like a filed log, writes nothing to hand
+	/// over and takes no number, and the session is due again once an event
+	/// of it arrives.
+	#[tokio::test]
+	async fn a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event() {
+		let pool = pool().await;
+		event(&pool, A, ("s1", "e1"), "2026-10-28T10:00:00.000Z").await;
+		event(&pool, A, ("s2", "e1"), "2026-10-28T10:00:01.000Z").await;
+		let refuse = |session: &'static str, through: i64| {
+			let pool = pool.clone();
+			async move { refuse_leetype_log(&mut pool.acquire().await.unwrap(), A, (session, through), "no_file", NOW).await.unwrap() }
+		};
+		assert_eq!(refuse("s1", 1).await, Change::Added);
+		assert_eq!(due(&pool, A).await, [(String::from("s2"), 2)], "the mark moved past s1");
+		let outgoing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_outgoing").fetch_one(&pool).await.unwrap();
+		assert_eq!(outgoing, 0, "nothing to hand over");
+		assert_eq!(file_log(&pool, A, "s2", 2).await, (1, Change::Added));
+		event(&pool, A, ("s1", "e2"), "2026-10-28T11:00:00.000Z").await;
+		assert_eq!(due(&pool, A).await, [(String::from("s1"), 3)], "due again with its new event");
+		assert_eq!(file_log(&pool, A, "s1", 3).await, (1, Change::Added), "its first filed log is number 1");
+		let bad = refuse_leetype_log(&mut pool.acquire().await.unwrap(), A, ("s3", 9), "not a reason", NOW).await;
+		assert!(matches!(bad, Err(MailboxError::Storage(_))), "only the reasons the table knows");
+	}
+
+	/// RE4: an idle pass's one query is two index probes, with no scan of the
+	/// record and no sort of it. The query mirrors `unfiled_leetype_logs`.
+	#[tokio::test]
+	async fn the_due_query_reads_only_what_arrived_after_the_mark() {
+		let pool = pool().await;
+		// With statistics, as a long-running home has them, the planner
+		// prefers `leetype_session_event_order` unless the query names
+		// the arrival index.
+		for n in 0..50 {
+			event(&pool, A, ("s1", &(String::from("e") + &n.to_string())), "2026-10-28T10:00:00.000Z").await;
+		}
+		sqlx::query("ANALYZE").execute(&pool).await.unwrap();
+		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+			"EXPLAIN QUERY PLAN SELECT session_id, MAX(rowid), MAX(written_at) FROM leetype_session_event INDEXED BY leetype_session_event_arrival
+			 WHERE subject_id = 'a' AND rowid > (SELECT COALESCE(MAX(through), 0) FROM mailbox_leetype_log WHERE subject_id = 'a')
+			 GROUP BY session_id ORDER BY MAX(rowid) LIMIT 20",
+		)
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		let details: Vec<&str> = plan.iter().map(|(.., detail)| detail.as_str()).collect();
+		assert!(
+			details.contains(&"SEARCH leetype_session_event USING INDEX leetype_session_event_arrival (subject_id=? AND rowid>?)"),
+			"{details:?}"
+		);
+		assert!(
+			details.contains(&"SEARCH mailbox_leetype_log USING COVERING INDEX sqlite_autoindex_mailbox_leetype_log_1 (subject_id=?)"),
+			"{details:?}"
+		);
+		assert!(!details.iter().any(|detail| detail.starts_with("SCAN")), "{details:?}");
+	}
+
+	#[test]
+	fn a_later_logs_name_carries_its_number() {
+		assert_eq!(leetype_log_name("4f0c-a_b", 12), "log-4f0c-a_b.r12.json");
 	}
 }

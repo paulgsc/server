@@ -5,7 +5,7 @@
 //! ```text
 //! <out>/rounds/manifest.json   {"rounds": [<id>, …]}, the listed rounds by id
 //! <out>/rounds/<id>.json       the stored body, byte for byte
-//! <out>/runs/<id>.json         GET /leetype/rounds/:id/runs's body
+//! <out>/runs/<id>.json         the round's RoundRuns
 //! ```
 //!
 //! `rounds/` is the layout `@some-ui/leetype`'s `export-round-corpus.ts`
@@ -329,7 +329,13 @@ mod tests {
 		assert_eq!(missing.written.len(), 1 + 2 * ids.len(), "every file of an absent snapshot differs");
 		assert!(std::fs::read_dir(fresh.path()).unwrap().next().is_none(), "and checking writes nothing");
 
-		RoundRepository::retire(&mut pool.acquire().await.unwrap(), &id, T0).await.unwrap();
+		// A round retired by hand: nothing in the crate retires one.
+		sqlx::query("UPDATE leetype_round SET retired_at = ?1 WHERE id = ?2")
+			.bind(T0)
+			.bind(&id)
+			.execute(&pool)
+			.await
+			.unwrap();
 		let stale = dump_snapshot(&repository, out.path(), SnapshotMode::Check).await.unwrap();
 		assert_eq!((stale.written.len(), stale.removed.len()), (1, 2), "a retirement shows up in the check");
 		assert_eq!(tree(out.path()), files, "without touching the snapshot");

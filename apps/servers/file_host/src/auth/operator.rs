@@ -1,14 +1,14 @@
 //! Who may change what everyone is served.
 //!
 //! The operator routes rewrite, retire and restore corpus-wide content: the
-//! lessons (`routes::db::curriculum_operator`) and the `leetype` rounds
-//! (`routes::db::leetype_operator`). Before passkey auth they had no gate but
-//! the CORS allowlist. Now the operator is **the owner's account**: the only
-//! account, which is what a box with sign-up closed after its first account
-//! has (`auth::owner`, docs/identity.md "Who is an operator"). Nothing in the
-//! environment names it. With `OPERATOR_SUBJECTS` set (a deployment with
-//! `AUTH_OPEN_SIGNUP` on, where no account is the owner's by itself), an
-//! operator is a signed-in subject listed there, and nothing else makes one.
+//! lessons (`routes::db::curriculum_operator`). Before passkey auth they had
+//! no gate but the CORS allowlist. Now the operator is **the owner's
+//! account**: the only account, which is what a box with sign-up closed after
+//! its first account has (`auth::owner`, docs/identity.md "Who is an
+//! operator"). Nothing in the environment names it. With `OPERATOR_SUBJECTS`
+//! set (a deployment with `AUTH_OPEN_SIGNUP` on, where no account is the
+//! owner's by itself), an operator is a signed-in subject listed there, and
+//! nothing else makes one.
 //!
 //! [`Operator`]'s extractor takes a [`BrowserSubject`] first (a paired
 //! phone's token is never an operator), so a request without
@@ -128,7 +128,7 @@ mod tests {
 	}
 
 	fn operator_modules() -> Vec<Module<TestState>> {
-		vec![crate::routes::db::curriculum_operator(), crate::routes::db::leetype_operator()]
+		vec![crate::routes::db::curriculum_operator()]
 	}
 
 	async fn state(operators: &[&str]) -> TestState {

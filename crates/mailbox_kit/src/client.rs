@@ -25,11 +25,16 @@ pub enum Folder {
 	Opened,
 	/// What home heard in a voice note, `transcript-<note>-<n>.json`.
 	Transcript,
+	/// The routine's `LeetType` session files, `t<thread>-<NN>-<slug>.json`.
+	Leetype,
+	/// How each finished `LeetType` session went, as home holds it,
+	/// `log-<session>.json`, then `log-<session>.r<n>.json`.
+	LeetypeLog,
 }
 
 impl Folder {
 	/// Every folder, in the order a pass visits them.
-	pub const ALL: [Self; 8] = [
+	pub const ALL: [Self; 10] = [
 		Self::Brief,
 		Self::Decisions,
 		Self::Scout,
@@ -38,6 +43,8 @@ impl Folder {
 		Self::Run,
 		Self::Opened,
 		Self::Transcript,
+		Self::Leetype,
+		Self::LeetypeLog,
 	];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
@@ -52,6 +59,8 @@ impl Folder {
 			Self::Run => "run",
 			Self::Opened => "opened",
 			Self::Transcript => "transcript",
+			Self::Leetype => "leetype",
+			Self::LeetypeLog => "leetype-log",
 		}
 	}
 }

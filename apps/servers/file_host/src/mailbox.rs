@@ -9,7 +9,8 @@
 //! `mailbox_item` (`mailbox_repo`), which the route serves. The reflections
 //! routine's word sets and dramas arrive the same way, in `scene` and
 //! `drama`, with a record of each of its runs in `run`, and
-//! `GET /api/v1/routine/files` serves them.
+//! `GET /api/v1/routine/files` serves them. `LeetType`'s session files arrive
+//! in `leetype`, and `GET /api/v1/leetype/session-files` serves them.
 //!
 //! **Why this is a poll.** This repo leans against cron-shaped design
 //! (`nudge::waker`'s header): a timer should pick up work that something
@@ -22,13 +23,14 @@
 //!
 //! What this module promises, as docs/identity.md invariant 19 states:
 //!
-//! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`
-//!   and `run`), for one subject, the owner's account unless `MAILBOX_SUBJECT`
-//!   names another ([`pass_subject`]), and writes only `mailbox_item`,
-//!   through [`pass::run_once`].
+//! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`,
+//!   `run` and `leetype`), for one subject, the owner's account unless
+//!   `MAILBOX_SUBJECT` names another ([`pass_subject`]), and writes only
+//!   `mailbox_item`, through [`pass::run_once`].
 //! - It puts only what is filed for the mailbox: the phone's decisions,
-//!   scouts and opened lessons, and each transcript home heard in a voice
-//!   note (`transcript`), text only, which it files itself.
+//!   scouts and opened lessons, each transcript home heard in a voice note
+//!   (`transcript`), text only, and each finished `LeetType` session's log
+//!   (`leetype-log`), with no soundbite, both of which it files itself.
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is
@@ -279,7 +281,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext) {
 				mailbox,
 				after_days: context.archive_days,
 			});
-			pass::run_once(db, &context.mailbox, archiving.as_ref(), subject, &context.deletion, &pass::now).await
+			pass::run_once(db, &context.mailbox, archiving.as_ref(), subject, &context.deletion, context.interval, &pass::now).await
 		}
 		None => Ok(pass::Outcome {
 			no_account: true,

@@ -38,6 +38,8 @@ members = [
   "crates/db/push",
   "crates/intervention",
   "crates/leetype_runner",
+  "crates/rust_runner",
+  "crates/rust_rounds_wire",
   "crates/mailbox_kit",
   "crates/fcm_kit",
   "crates/game_scenarios",
@@ -48,6 +50,7 @@ members = [
   "crates/study_domain",
   "crates/db/session",
   "crates/db/voice",
+  "crates/db/rust_round",
   "crates/obs-websocket",
   "crates/some-cache",
   "crates/some-metrics",
@@ -166,6 +169,8 @@ studio_log_repo = { path = "crates/db/studio_log" }
 leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }
+rust_runner = { path = "crates/rust_runner" }
+rust_rounds_wire = { path = "crates/rust_rounds_wire" }
 push_repo = { path = "crates/db/push" }
 engagement_repo = { path = "crates/db/engagement" }
 outcome_repo = { path = "crates/db/outcome" }
@@ -179,6 +184,7 @@ playoff_delta = { path = "crates/playoff_delta" }
 study_domain = { path = "crates/study_domain" }
 session_repo = { path = "crates/db/session" }
 voice_repo = { path = "crates/db/voice" }
+rust_round_repo = { path = "crates/db/rust_round" }
 
 anyhow = "1.0"
 async-trait = "0.1.64"

@@ -669,6 +669,54 @@
       "required_when": null
     },
     {
+      "name": "RUST_ROUNDS_ENABLED",
+      "group": "Rust Rounds recording",
+      "required": false,
+      "default": "false",
+      "kind": "bool",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Whether home records Rust Rounds' programs. On, the rust-runner's socket must be mounted at `RUST_ROUNDS_SOCKET`; a runner that is not there is reported each pass, and nothing is recorded until it is",
+      "required_when": null
+    },
+    {
+      "name": "RUST_ROUNDS_SOCKET",
+      "group": "Rust Rounds recording",
+      "required": false,
+      "default": "/run/rust-runner/runner.sock",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "The rust-runner's socket, as a path inside the container: where `infra/compose/rust_runner.yml`'s socket volume is mounted",
+      "required_when": null
+    },
+    {
+      "name": "RUST_ROUNDS_SECONDS",
+      "group": "Rust Rounds recording",
+      "required": false,
+      "default": "60",
+      "kind": "u64",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Seconds between looks for programs to record. At least 10",
+      "required_when": null
+    },
+    {
+      "name": "RUST_ROUNDS_PASS_DEADLINE_SECONDS",
+      "group": "Rust Rounds recording",
+      "required": false,
+      "default": "600",
+      "kind": "u64",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Seconds one pass may take, every program it records included. At least 142: the toolchain ask's wait and one program's, which outlasts the runner's job deadline",
+      "required_when": null
+    },
+    {
       "name": "GAME_FEED_ENABLED",
       "group": "NFL game feed",
       "required": false,

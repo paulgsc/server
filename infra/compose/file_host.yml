@@ -48,6 +48,12 @@ services:
       # nixos.local dev host's models directory (#406); another host sets
       # TRANSCRIBE_MODELS_DIR.
       - ${TRANSCRIBE_MODELS_DIR:-/mnt/storage/users/dev/models/whisper-models}:/models:ro
+      # The rust-runner's socket (infra/compose/rust_runner.yml), where
+      # RUST_ROUNDS_SOCKET defaults to: Rust Rounds' recording pass asks the
+      # runner there, as uid 10000, the one client uid it serves. Read-only:
+      # connecting needs no write to the volume, and file-host may put
+      # nothing beside the socket (RX2 checks the directory holds only it).
+      - rust_runner_socket:/run/rust-runner:ro
     networks:
       - monitoring-network
     restart: unless-stopped
