@@ -84,5 +84,14 @@
 
       # For consistent formatting
       formatter = pkgs.alejandra;
-    });
+    })
+    // {
+      # This repo's binaries as NixOS services, each off unless enabled and
+      # configured from its own schema (#408, nix/modules/mk-app.nix). The
+      # host imports them and sets its own values (paulgsc/dotfiles, #406).
+      nixosModules = {
+        file-host = import ./nix/modules/file-host.nix;
+        orchestrator = import ./nix/modules/orchestrator.nix;
+      };
+    };
 }
