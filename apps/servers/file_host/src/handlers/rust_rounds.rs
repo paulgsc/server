@@ -13,7 +13,7 @@
 //! nothing.
 //!
 //! **A round is its putter's; the code is nobody's** (docs/identity.md
-//! invariant 27). Every handler takes a [`Paired`] phone, and reads and
+//! invariant 28). Every handler takes a [`Paired`] phone, and reads and
 //! writes rounds only under its subject: another subject's round under the
 //! same id is a `404` to read and a round of its own to put. A round's runs
 //! are found by its programs' bytes, so two subjects whose rounds share a

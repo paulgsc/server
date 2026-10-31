@@ -6,6 +6,7 @@ pub mod health;
 pub mod inventory;
 pub mod jobs;
 pub mod korean;
+pub mod leetype_files;
 pub mod leetype_log;
 pub mod metrics;
 pub mod outcomes;

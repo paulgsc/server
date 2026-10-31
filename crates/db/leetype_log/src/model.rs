@@ -151,6 +151,20 @@ pub enum Event {
 		file: String,
 		screen: String,
 	},
+	/// A take's rubric shown that states the answer of `screen`, a round: on
+	/// the phone, a return of that round after it, until the round's next
+	/// struggle (a pick or return that isn't correct and unhurried) parks it
+	/// again, is assisted. Home only keeps the event; it computes no
+	/// assistance. `take` is the record screen whose rubric it was. Ids only:
+	/// the rubric itself is a soundbite, and never comes home.
+	RubricShown {
+		id: String,
+		at: String,
+		session: String,
+		file: String,
+		screen: String,
+		take: String,
+	},
 	/// A return played: `screen` is the parked round, `variant` the return,
 	/// `asked` when the learner requested it.
 	Returned {
@@ -194,6 +208,7 @@ impl Event {
 			| Self::Reading { id, .. }
 			| Self::Parked { id, .. }
 			| Self::ConfirmationTaken { id, .. }
+			| Self::RubricShown { id, .. }
 			| Self::Returned { id, .. }
 			| Self::Spoken { id, .. }
 			| Self::Ended { id, .. } => id,
@@ -210,6 +225,7 @@ impl Event {
 			| Self::Reading { at, .. }
 			| Self::Parked { at, .. }
 			| Self::ConfirmationTaken { at, .. }
+			| Self::RubricShown { at, .. }
 			| Self::Returned { at, .. }
 			| Self::Spoken { at, .. }
 			| Self::Ended { at, .. } => at,
@@ -226,6 +242,7 @@ impl Event {
 			| Self::Reading { session, .. }
 			| Self::Parked { session, .. }
 			| Self::ConfirmationTaken { session, .. }
+			| Self::RubricShown { session, .. }
 			| Self::Returned { session, .. }
 			| Self::Spoken { session, .. }
 			| Self::Ended { session, .. } => session,
@@ -242,6 +259,7 @@ impl Event {
 			Self::Reading { .. } => "reading",
 			Self::Parked { .. } => "parked",
 			Self::ConfirmationTaken { .. } => "confirmation-taken",
+			Self::RubricShown { .. } => "rubric-shown",
 			Self::Returned { .. } => "returned",
 			Self::Spoken { .. } => "spoken",
 			Self::Ended { .. } => "ended",
@@ -310,6 +328,11 @@ fn payload(event: &Event, problems: &mut Vec<Problem>) {
 		Event::Parked { file, screen, .. } | Event::ConfirmationTaken { file, screen, .. } | Event::Ended { file, screen, .. } => {
 			named(problems, "file", file);
 			named(problems, "screen", screen);
+		}
+		Event::RubricShown { file, screen, take, .. } => {
+			named(problems, "file", file);
+			named(problems, "screen", screen);
+			named(problems, "take", take);
 		}
 		Event::Returned { file, screen, ms, variant, .. } => {
 			named(problems, "file", file);
@@ -448,6 +471,7 @@ mod tests {
 			event("reading", &json!({ "file": "raft-1.json", "reading": "ongaro-5.2", "action": "saved" })),
 			with("parked", json!({})),
 			with("confirmation-taken", json!({})),
+			with("rubric-shown", json!({ "take": "say-why" })),
 			with(
 				"returned",
 				json!({ "option": "Step down", "ms": 3000, "answer": { "response": "correct", "slow": false }, "variant": "r1-b", "asked": true }),
@@ -490,6 +514,33 @@ mod tests {
 		let mut off = spoken(&json!({ "as": "recorded", "ticks": [] }));
 		off["mood"] = json!("tired");
 		assert_eq!(fields(S, "e1", &off), ["answer.ticks", "body"]);
+	}
+
+	/// A take's rubric shown: the file, the round and the take, by name, and
+	/// nothing else. What the rubric says stays off home like any soundbite.
+	#[test]
+	fn a_shown_rubric_comes_home_as_ids_alone() {
+		// Sent in the order serde writes the keys, so the value it reads back
+		// as is also the same text (key order is not kept otherwise).
+		let sent =
+			String::from(r#"{"type":"rubric-shown","id":"e1","at":"2026-10-20T09:14:00.000Z","session":""#) + S + r#"","file":"raft-1.json","screen":"r2","take":"say-why"}"#;
+		let parsed = parse_event(S, "e1", sent.as_bytes()).unwrap();
+		assert_eq!(parsed.kind(), "rubric-shown");
+		let mut written = Vec::new();
+		serde_json::to_writer(&mut written, &parsed).unwrap();
+		assert_eq!(String::from_utf8(written).unwrap(), sent, "the same value, in serde's key order");
+
+		let shown = || event("rubric-shown", &json!({ "file": "raft-1.json", "screen": "r2", "take": "say-why" }));
+		let mut extra = shown();
+		extra["covers"] = json!(["r2"]);
+		assert_eq!(fields(S, "e1", &extra), ["body"], "no field the phone does not send");
+		let mut missing = shown();
+		missing.as_object_mut().unwrap().remove("take");
+		assert_eq!(fields(S, "e1", &missing), ["body"], "the take is named");
+		let mut said = shown();
+		said["rubric"] = json!(["names the term"]);
+		said["ticks"] = json!([]);
+		assert_eq!(fields(S, "e1", &said), ["rubric", "ticks"], "what the rubric says is a soundbite");
 	}
 
 	#[test]
@@ -537,6 +588,8 @@ mod tests {
 		assert_eq!(fields(S, "e1", &placed), ["reading"]);
 		let reading = event("reading", &json!({ "file": "", "reading": "", "action": "read" }));
 		assert_eq!(fields(S, "e1", &reading), ["file", "reading"]);
+		let shown = event("rubric-shown", &json!({ "file": "", "screen": "", "take": "" }));
+		assert_eq!(fields(S, "e1", &shown), ["file", "screen", "take"]);
 
 		let parked = event("parked", &json!({ "file": "f", "screen": "r1" }));
 		assert_eq!(fields(S, "e2", &parked), ["id"], "the id the path names");

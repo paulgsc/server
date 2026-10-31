@@ -3,7 +3,7 @@
 //! ended. `migrations/20261031000100_create_rust_round.up.sql` records the
 //! design; in short:
 //!
-//! - **A round is its putter's** (docs/identity.md invariant 27).
+//! - **A round is its putter's** (docs/identity.md invariant 28).
 //!   `rust_round` names the subject that put each round, and every read and
 //!   write of it takes that subject and filters on it: another subject's
 //!   round is not there. Ids are unique per subject.

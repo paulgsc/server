@@ -10,7 +10,7 @@
 -- decision of 2026-10-31): a refine card names one of their voice notes and
 -- carries the tutor's nudge, which can paraphrase what they said. So
 -- `rust_round` is subject-scoped, read only by its subject, and leaves with
--- the account (docs/identity.md invariant 27). The code it runs belongs to
+-- the account (docs/identity.md invariant 28). The code it runs belongs to
 -- nobody: `rust_round_source`, `rust_round_run` and `rust_round_drop` hold a
 -- program's bytes and what rustc did with it, name no subject, and are shared
 -- by every round that holds the same program, as LeetType's runs are (EX2).

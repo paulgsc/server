@@ -78,15 +78,15 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("mood_events", "editorial content, not per-person"),
 	(
 		"rust_round_drop",
-		"each time the rust-runner went away while it held a Rust Rounds program — code and the runner only, nobody's record; see docs/identity.md invariant 27",
+		"each time the rust-runner went away while it held a Rust Rounds program — code and the runner only, nobody's record; see docs/identity.md invariant 28",
 	),
 	(
 		"rust_round_run",
-		"what rustc did with each Rust Rounds program, per toolchain, keyed to the source's bytes — code and rustc's output only, shared by every round holding the program, nobody's record; see docs/identity.md invariant 27",
+		"what rustc did with each Rust Rounds program, per toolchain, keyed to the source's bytes — code and rustc's output only, shared by every round holding the program, nobody's record; see docs/identity.md invariant 28",
 	),
 	(
 		"rust_round_source",
-		"each distinct program a Rust Rounds round holds, once, by its SHA-256 — a tutor's code only, shared by every round holding it, nobody's record; see docs/identity.md invariant 27",
+		"each distinct program a Rust Rounds round holds, once, by its SHA-256 — a tutor's code only, shared by every round holding it, nobody's record; see docs/identity.md invariant 28",
 	),
 	(
 		"storage_sample",
