@@ -75,7 +75,9 @@ impl OtelGuard {
 	/// # Errors
 	///
 	/// Fails when the OTLP exporter cannot be built, or `rust_log` does not
-	/// parse (`Config` has already refused one that does not).
+	/// parse (`Config` has already refused one that does not). With no
+	/// `OTEL_EXPORTER_OTLP_ENDPOINT`, spans are still made, for the log lines
+	/// that carry them, but exported nowhere (#407).
 	pub fn new(config: &OtelArgs, rust_log: &str) -> Result<Self, ObservabilityError> {
 		let sampler = sampler(config);
 
@@ -87,18 +89,21 @@ impl OtelGuard {
 			])
 			.build();
 
-		let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
-			.with_tonic()
-			.with_endpoint(&config.otel_exporter_otlp_endpoint)
-			.with_timeout(Duration::from_secs(3))
-			.build()?;
-
-		let tracer_provider = SdkTracerProvider::builder()
+		let builder = SdkTracerProvider::builder()
 			.with_resource(resource)
 			.with_sampler(sampler.clone())
-			.with_id_generator(RandomIdGenerator::default())
-			.with_batch_exporter(trace_exporter)
-			.build();
+			.with_id_generator(RandomIdGenerator::default());
+		let tracer_provider = match &config.otel_exporter_otlp_endpoint {
+			Some(endpoint) => {
+				let trace_exporter = opentelemetry_otlp::SpanExporter::builder()
+					.with_tonic()
+					.with_endpoint(endpoint)
+					.with_timeout(Duration::from_secs(3))
+					.build()?;
+				builder.with_batch_exporter(trace_exporter).build()
+			}
+			None => builder.build(),
+		};
 
 		let tracer = tracer_provider.tracer(config.otel_service_name.clone());
 
@@ -119,7 +124,7 @@ impl OtelGuard {
 
 		tracing::info!(
 			service_name = %config.otel_service_name,
-			otlp_endpoint = %config.otel_exporter_otlp_endpoint,
+			otlp_endpoint = config.otel_exporter_otlp_endpoint.as_deref().unwrap_or("none: traces are not exported"),
 			sampler = ?sampler,
 			"OpenTelemetry tracing initialized"
 		);

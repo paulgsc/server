@@ -218,8 +218,10 @@ pub struct Config {
 	///
 	/// Deliberately an `Option` with no default. A container is UTC unless told
 	/// otherwise, and a silent UTC fallback is how an evening reminder arrives at
-	/// 3am; leaving this unset is allowed but is logged as the choice it is.
-	#[arg(long, env = "NUDGE_TIMEZONE", help_heading = "Study nudge")]
+	/// 3am; leaving this unset is allowed but is logged as the choice it is. A
+	/// name that is not an IANA zone (`America/Denvr`) stops the server at
+	/// start (#407); it used to fall back to UTC.
+	#[arg(long, env = "NUDGE_TIMEZONE", value_parser = parse_timezone, help_heading = "Study nudge")]
 	pub nudge_timezone: Option<String>,
 
 	/// Local hour, 0-23, at which nudges stop.
@@ -541,6 +543,16 @@ impl Config {
 	}
 }
 
+/// Refuses a name `chrono-tz` does not know, so a misspelled `NUDGE_TIMEZONE`
+/// stops the server at start, naming the variable, instead of running the
+/// nudge on UTC (#407).
+fn parse_timezone(name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+	name
+		.parse::<chrono_tz::Tz>()
+		.map(|_| name.to_owned())
+		.map_err(|_| "not an IANA zone name, e.g. America/Denver".into())
+}
+
 /// Variables the retired transcriber's setup (#407) left set in `.env`.
 ///
 /// The `WHISPER_*` three, which nothing reads, and `OTEL_SERVICE_NAME` set to
@@ -598,7 +610,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 38] = [
+	const REFUSED: [(&str, &str); 39] = [
 		("RUST_LOG", "info,=[bad"),
 		("CONNECTION_TIMEOUT", "soon"),
 		("MAX_IN_FLIGHT", "-1"),
@@ -637,13 +649,11 @@ mod tests {
 		("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
 		("OTEL_TRACES_SAMPLER_ARG", "half"),
 		("OTEL_TRACES_SAMPLER_ARG", "2"),
+		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
-	// `NUDGE_TIMEZONE` is parsed once the nudge starts, and a name it does
-	// not know falls back to UTC with an error and a metric, by design
-	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
-	// checked by what uses them, which refuses to start on a bad one, as the
-	// mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 28] = [
+	// The URLs, keys and paths are checked by what uses them, which refuses
+	// to start on a bad one, as the mailbox does `ROUTINE_SCHEDULE`.
+	const FREE_TEXT: [&str; 27] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
 		"ALLOWED_ORIGINS",
@@ -655,7 +665,6 @@ mod tests {
 		"VAPID_PUBLIC_KEY",
 		"VAPID_PRIVATE_KEY",
 		"VAPID_SUBJECT",
-		"NUDGE_TIMEZONE",
 		"APP_BASE_URL",
 		"WEBAUTHN_RP_ID",
 		"WEBAUTHN_ORIGINS",

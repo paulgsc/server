@@ -47,9 +47,11 @@ pub struct NudgeClock {
 impl NudgeClock {
 	/// Resolve the configured zone, reporting how it went.
 	///
-	/// Never fails. A misspelled zone falls back to UTC rather than refusing to
-	/// boot, but says so — the alternative is a server that will not start
-	/// because of a typo in an optional feature's configuration.
+	/// Never fails: a misspelled zone is reported as
+	/// [`ZoneSource::Unparseable`], with UTC in hand, and the caller decides.
+	/// The server's caller refuses it, and `Config` refuses it before that, so
+	/// a typo stops the server at start instead of moving every reminder to
+	/// UTC (#407).
 	#[must_use]
 	pub fn resolve(configured: Option<&str>) -> (Self, ZoneSource) {
 		configured.map_or_else(
@@ -178,7 +180,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_misspelled_zone_falls_back_loudly_rather_than_refusing_to_boot() {
+	fn a_misspelled_zone_is_reported_as_unparseable() {
 		let (clock, source) = NudgeClock::resolve(Some("America/Denvr"));
 		assert_eq!(source, ZoneSource::Unparseable("America/Denvr".to_owned()));
 		assert_eq!(clock.zone().to_string(), "UTC");

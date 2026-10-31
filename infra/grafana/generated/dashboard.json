@@ -2773,7 +2773,7 @@
           },
           "gridPos": {
             "h": 4,
-            "w": 4,
+            "w": 9,
             "x": 0,
             "y": 47
           },
@@ -2799,73 +2799,6 @@
             }
           ],
           "title": "DUE",
-          "type": "stat"
-        },
-        {
-          "description": "Startup configuration faults (e.g. an unparseable NUDGE_TIMEZONE) since the current file_host process started.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "mappings": [
-                {
-                  "options": {
-                    "match": "null+nan",
-                    "result": {
-                      "color": "#8E8E8E",
-                      "text": "no data"
-                    }
-                  },
-                  "type": "special"
-                }
-              ],
-              "noValue": "no data",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 1
-                  }
-                ]
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 4,
-            "w": 5,
-            "x": 4,
-            "y": 47
-          },
-          "id": 933,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "none",
-            "justifyMode": "center",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "values": false
-            },
-            "textMode": "value"
-          },
-          "targets": [
-            {
-              "expr": "(sum(operation_errors_total{operation=\"nudge_config\"}) or vector(0)) and on() (up{job=\"file_host\"} == 1)",
-              "instant": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Nudge Config Errors",
           "type": "stat"
         },
         {

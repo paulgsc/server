@@ -61,9 +61,12 @@ pub struct OtelArgs {
 	#[arg(long, env = "OTEL_SERVICE_NAME")]
 	pub otel_service_name: String,
 
-	/// The OTLP (gRPC) collector traces are exported to.
-	#[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT", default_value = "http://localhost:4317")]
-	pub otel_exporter_otlp_endpoint: String,
+	/// The OTLP (gRPC) collector traces are exported to, e.g.
+	/// `http://otel-collector:4317`. Unset, they are not exported at all:
+	/// nothing in the compose stack runs a collector, and metrics go through
+	/// Prometheus (#139, #407).
+	#[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+	pub otel_exporter_otlp_endpoint: Option<String>,
 
 	/// Which traces are kept: all (`always_on`), none (`always_off`), or the
 	/// share `OTEL_TRACES_SAMPLER_ARG` names (`traceidratio`).
