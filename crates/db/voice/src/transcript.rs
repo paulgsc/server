@@ -38,7 +38,7 @@ pub struct Word {
 	/// How sure the model was of the word, 0 to 1: the lowest of its tokens'
 	/// probabilities, so one unsure piece makes the word unsure
 	/// (paulgsc/server#577, ST22). None for a word heard before it was kept
-	/// (`20261031000100`), or one the model gave no number for.
+	/// (`20261031000200`), or one the model gave no number for.
 	pub p: Option<f64>,
 }
 
