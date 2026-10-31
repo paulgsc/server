@@ -16,3 +16,29 @@ fn a_variable_that_does_not_parse_stops_the_binary_at_start() {
 	assert_eq!(output.status.code(), Some(2), "{output:?}");
 	assert!(String::from_utf8_lossy(&output.stderr).contains("OTEL_TRACES_SAMPLER_ARG"), "{output:?}");
 }
+
+/// #580: a requirement clap cannot see stops the binary at start too, with
+/// every one that does not hold named at once (`file_host::RULES`).
+#[test]
+fn every_unmet_rule_stops_the_binary_at_start_by_name() {
+	let output = Command::new(env!("CARGO_BIN_EXE_file_host"))
+		.current_dir(std::env::temp_dir())
+		.env_clear()
+		.env("OBS_WEBSOCKET_IP", "127.0.0.1")
+		.env("OBS_WEBSOCKET_PWD", "")
+		.env("DATABASE_URL", "sqlite::memory:")
+		.env("AUTH_ENABLED", "false")
+		.env("MAILBOX_ENABLED", "true")
+		.env("MAILBOX_SECONDS", "30")
+		.output()
+		.unwrap();
+	assert_eq!(output.status.code(), Some(2), "{output:?}");
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	for gap in [
+		"MAILBOX_URL is required while MAILBOX_ENABLED is true",
+		"MAILBOX_TOKEN is required",
+		"MAILBOX_SECONDS must be at least 60",
+	] {
+		assert!(stderr.contains(gap), "{gap}: {output:?}");
+	}
+}

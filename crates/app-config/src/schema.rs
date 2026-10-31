@@ -7,16 +7,18 @@
 //! `example.env`, lists the stack's variables and runs the preflight from
 //! those copies, so none of that needs Rust on the host.
 //!
-//! A requirement that depends on another variable (`WEBAUTHN_RP_ID` while
-//! `AUTH_ENABLED` is on) is checked by the code that refuses to start without
-//! it, and clap cannot see it; the binary declares it beside its `Config` as
-//! a [`RequiredWhen`], so the schema and the preflight know it too.
+//! What clap cannot see, a binary declares beside its `Config` as [`Rules`]:
+//! a requirement that depends on another variable (`WEBAUTHN_RP_ID` while
+//! `AUTH_ENABLED` is on, a [`RequiredWhen`]) and a number's limits
+//! (`MAILBOX_SECONDS` at least 60, a [`Bound`]). [`parse`] refuses to start on
+//! any that does not hold, naming every one, and the same declaration goes
+//! into the schema, so the preflight checks exactly what start-up does (#580).
 //!
 //! A variable is a secret when its `Config` hides its value
 //! (`hide_env_values = true`): `--help` shows no value for it, and nothing
 //! generated from the schema does either.
 
-use clap::{builder::ValueParser, Arg, ArgAction, Command};
+use clap::{builder::ValueParser, error::ErrorKind, Arg, ArgAction, ArgMatches, Command, Parser};
 use serde::Serialize;
 use std::{
 	any::TypeId,
@@ -30,7 +32,7 @@ use std::{
 pub const UPDATE_VARIABLE: &str = "UPDATE_ENV_SCHEMA";
 
 /// One binary's schema, as checked in.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct Schema {
 	pub binary: String,
 	pub about: String,
@@ -38,7 +40,7 @@ pub struct Schema {
 }
 
 /// One environment variable a binary reads.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct Variable {
 	pub name: String,
 	/// The `--help` heading it is listed under, if any.
@@ -58,7 +60,20 @@ pub struct Variable {
 	pub help: String,
 	/// Required, set and not empty, while another variable has a value.
 	pub required_when: Option<Condition>,
+	/// The least and most it may be, while its conditions hold.
+	pub bounds: Option<Bounds>,
 }
+
+/// What a binary checks at start that clap cannot see, declared beside its
+/// `Config`.
+#[derive(Debug, Clone, Copy)]
+pub struct Rules {
+	pub required_when: &'static [RequiredWhen],
+	pub bounds: &'static [Bound],
+}
+
+/// For a binary that declares no [`Rules`].
+pub const NO_RULES: Rules = Rules { required_when: &[], bounds: &[] };
 
 /// One variable a binary requires only while another has a value.
 #[derive(Debug, Clone, Copy)]
@@ -68,11 +83,38 @@ pub struct RequiredWhen {
 	pub is: &'static str,
 }
 
-/// [`RequiredWhen`]'s condition, as checked in.
+/// A number's limits, inclusive, held while every one of `when` does.
+#[derive(Debug, Clone, Copy)]
+pub struct Bound {
+	pub variable: &'static str,
+	pub min: Option<f64>,
+	pub max: Option<f64>,
+	pub when: &'static [When],
+}
+
+/// `variable` has the value `is`; [`SET`] for any value but an empty one.
+#[derive(Debug, Clone, Copy)]
+pub struct When {
+	pub variable: &'static str,
+	pub is: &'static str,
+}
+
+/// [`When::is`] for "set to anything but nothing".
+pub const SET: &str = "*";
+
+/// [`RequiredWhen`]'s condition, or one of a [`Bound`]'s, as checked in.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Condition {
 	pub variable: String,
 	pub value: String,
+}
+
+/// A [`Bound`], as checked in.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Bounds {
+	pub min: Option<f64>,
+	pub max: Option<f64>,
+	pub when: Vec<Condition>,
 }
 
 /// What a value must parse as.
@@ -106,9 +148,39 @@ pub enum Kind {
 /// here deliberately rather than describe it wrongly), or a requirement names
 /// a variable `cmd` does not declare.
 #[must_use]
-pub fn schema(binary: &str, cmd: &Command, required_when: &[RequiredWhen]) -> Schema {
+pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 	let mut variables = variables(cmd);
-	for rule in required_when {
+	let declared = |name: &str| variables.iter().any(|variable| variable.name == name);
+	for bound in rules.bounds {
+		assert!(bound.min.is_some() || bound.max.is_some(), "{}'s bound sets neither a min nor a max", bound.variable);
+		for condition in bound.when {
+			assert!(
+				declared(condition.variable),
+				"{} is bounded when {}, which {binary} does not declare",
+				bound.variable,
+				condition.variable
+			);
+		}
+	}
+	for bound in rules.bounds {
+		let Some(variable) = variables.iter_mut().find(|variable| variable.name == bound.variable) else {
+			panic!("{binary} declares no {} to bound", bound.variable)
+		};
+		assert!(variable.bounds.is_none(), "{} is bounded twice", bound.variable);
+		variable.bounds = Some(Bounds {
+			min: bound.min,
+			max: bound.max,
+			when: bound
+				.when
+				.iter()
+				.map(|when| Condition {
+					variable: when.variable.to_owned(),
+					value: when.is.to_owned(),
+				})
+				.collect(),
+		});
+	}
+	for rule in rules.required_when {
 		assert!(
 			variables.iter().any(|variable| variable.name == rule.when),
 			"{} is required when {}, which {binary} does not declare",
@@ -168,6 +240,7 @@ fn variable(name: &str, arg: &Arg) -> Variable {
 		secret,
 		help,
 		required_when: None,
+		bounds: None,
 	}
 }
 
@@ -213,16 +286,15 @@ pub fn render(schema: &Schema) -> Vec<u8> {
 }
 
 /// Holds the copy of `binary`'s schema checked in at `path` to its `Config`,
-/// `cmd`, and its `required_when`. With [`UPDATE_VARIABLE`] set, writes it
-/// instead.
+/// `cmd`, and its [`Rules`]. With [`UPDATE_VARIABLE`] set, writes it instead.
 ///
 /// # Panics
 ///
 /// When the copy differs from the `Config`, or cannot be read or written; it
 /// is meant for a test.
 #[allow(clippy::disallowed_methods)] // A test's own switch, as INSTA_UPDATE is, not configuration (#484).
-pub fn assert_checked_in(binary: &str, cmd: &Command, required_when: &[RequiredWhen], path: &Path) {
-	let rendered = render(&schema(binary, cmd, required_when));
+pub fn assert_checked_in(binary: &str, cmd: &Command, rules: &Rules, path: &Path) {
+	let rendered = render(&schema(binary, cmd, rules));
 	if std::env::var_os(UPDATE_VARIABLE).is_some() {
 		if let Err(err) = std::fs::write(path, &rendered) {
 			panic!("writing {}: {err}", path.display());
@@ -268,5 +340,64 @@ pub fn assert_groups_hold_only_their_own(cmd: &Command) {
 				"{name} is listed under {heading} because it follows that group without a help_heading of its own"
 			);
 		}
+	}
+}
+
+/// Parses `C` from the command line and the environment, as `C::parse` does,
+/// then refuses to start, naming every one, when any of `rules` does not
+/// hold: the same exit (2) and the same kind of message as a value clap
+/// refuses itself (ENV1, #580).
+#[must_use]
+pub fn parse<C: Parser>(rules: &Rules) -> C {
+	let mut cmd = C::command();
+	let matches = cmd.clone().get_matches();
+	let unmet = unmet(&cmd, &matches, rules);
+	if !unmet.is_empty() {
+		cmd.error(ErrorKind::MissingRequiredArgument, unmet.join("\n       ")).exit();
+	}
+	C::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut cmd).exit())
+}
+
+/// Every one of `rules` that `matches` breaks, as a line naming the variable.
+#[must_use]
+pub fn unmet(cmd: &Command, matches: &ArgMatches, rules: &Rules) -> Vec<String> {
+	let value = |name: &str| -> Option<String> {
+		let arg = cmd.get_arguments().find(|arg| arg.get_env().and_then(std::ffi::OsStr::to_str) == Some(name))?;
+		let raw = matches.get_raw(arg.get_id().as_str())?;
+		let separator = arg.get_value_delimiter().map(String::from).unwrap_or_default();
+		Some(raw.map(|value| value.to_string_lossy().into_owned()).collect::<Vec<_>>().join(separator.as_str()))
+	};
+	let holds = |when: &When| value(when.variable).is_some_and(|current| if when.is == SET { !current.trim().is_empty() } else { current == when.is });
+	let mut unmet = Vec::new();
+	for rule in rules.required_when {
+		let required = holds(&When { variable: rule.when, is: rule.is });
+		if required && value(rule.variable).is_none_or(|current| current.trim().is_empty()) {
+			unmet.push(String::from(rule.variable) + " is required while " + rule.when + " is " + rule.is);
+		}
+	}
+	for bound in rules.bounds {
+		if !bound.when.iter().all(holds) {
+			continue;
+		}
+		// A value clap took that is not a number is not this check's to refuse.
+		let Some(number) = value(bound.variable).and_then(|current| current.parse::<f64>().ok()) else {
+			continue;
+		};
+		let below = bound.min.is_some_and(|min| number < min);
+		let above = bound.max.is_some_and(|max| number > max);
+		if below || above {
+			unmet.push(String::from(bound.variable) + " must be " + &describe(bound));
+		}
+	}
+	unmet
+}
+
+/// "at least 60", "at most 1", or "from 0 to 1".
+fn describe(bound: &Bound) -> String {
+	match (bound.min, bound.max) {
+		(Some(min), Some(max)) => String::from("from ") + &min.to_string() + " to " + &max.to_string(),
+		(Some(min), None) => String::from("at least ") + &min.to_string(),
+		(None, Some(max)) => String::from("at most ") + &max.to_string(),
+		(None, None) => String::new(),
 	}
 }

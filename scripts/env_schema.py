@@ -186,6 +186,9 @@ def describe(variable: dict) -> list[str]:
         facts.append("Required.")
     if variable.get("required_when"):
         facts.append(f"Required while {variable['required_when']['variable']} is {variable['required_when']['value']}.")
+    if variable.get("bounds"):
+        bounds = variable["bounds"]
+        facts.append(bound_text(bounds).capitalize() + "".join(f"{' while' if index == 0 else ' and'} {when['variable']} is {'set' if when['value'] == SET else when['value']}" for index, when in enumerate(bounds["when"])) + ".")
     if variable["kind"] == "enum":
         facts.append("One of: " + ", ".join(variable["values"]) + ".")
     elif variable["kind"] == "bool":
@@ -318,6 +321,37 @@ def set_line(text: str, name: str, line: str) -> str:
 RANGES = {"u16": 2**16, "u32": 2**32, "u64": 2**64, "usize": 2**64, "seconds": 2**64}
 
 
+SET = "*"
+
+
+def number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def bound_text(bounds: dict) -> str:
+    """"at least 60", "at most 1", or "from 0 to 1", as the binary says it."""
+    low, high = bounds.get("min"), bounds.get("max")
+    if low is not None and high is not None:
+        return f"from {number(low)} to {number(high)}"
+    return f"at least {number(low)}" if low is not None else f"at most {number(high)}"
+
+
+def bound_refusal(variable: dict, value: str, holds) -> str | None:
+    """Why `variable`'s bounds refuse `value`, while `holds` says each of their
+    conditions does, or None (`app_config::schema::unmet`, #580)."""
+    bounds = variable.get("bounds")
+    if not bounds or not all(holds(when) for when in bounds["when"]):
+        return None
+    try:
+        current = float(value)
+    except ValueError:
+        return None
+    low, high = bounds.get("min"), bounds.get("max")
+    if (low is not None and current < low) or (high is not None and current > high):
+        return "must be " + bound_text(bounds)
+    return None
+
+
 def refusal(variable: dict, value: str) -> str | None:
     """Why `variable`'s binary would refuse `value` at start, or None."""
     kind = variable["kind"]
@@ -372,6 +406,7 @@ class Report:
     invalid: list[Gap] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def compose_config() -> dict:
@@ -495,7 +530,11 @@ def preflight(schemas: list[dict], compose: dict[str, ComposeVariable], env_text
                 if variable["required"]:
                     report.missing.append(Gap(variable["name"], reader, variable["help"], variable["secret"], fillable=fillable))
                 continue
-            problem = refusal(variable, value)
+            def holds(when: dict) -> bool:
+                current = environment.get(when["variable"], defaults.get(when["variable"]))
+                return bool((current or "").strip()) if when["value"] == SET else current == when["value"]
+
+            problem = refusal(variable, value) or bound_refusal(variable, value, holds)
             if problem:
                 report.invalid.append(Gap(variable["name"], reader, variable["help"], variable["secret"], problem, fillable))
     read = {variable["name"] for schema in schemas for variable in schema["variables"]} | set(compose) | referenced_inside(env_text)
@@ -523,6 +562,8 @@ def print_report(report: Report, env_file: Path) -> None:
             print(f"  {gap.name}  [{gap.reader}]  {gap.problem}")
     for name in report.unread:
         print(f"warning: {env_file} sets {name}, which nothing reads (renamed or retired?)")
+    for warning in report.warnings:
+        print(f"warning: {warning}")
     if not (report.missing or report.invalid or report.errors):
         print(f"preflight: every required variable is set, and every value parses ({env_file}).")
 
@@ -540,7 +581,8 @@ def fill(report: Report, env_file: Path, schemas: list[dict], ask=input, ask_sec
             say(f"\n{gap.name}: {first_line(gap.help)}")
         while True:
             value = (ask_secret if gap.secret else ask)(f"{gap.name}=")
-            problem = refusal(variables[gap.name], value) if gap.name in variables and value else None
+            known = variables.get(gap.name)
+            problem = (refusal(known, value) or bound_refusal(known, value, lambda _: True)) if known and value else None
             if value and not problem and env_line(gap.name, value):
                 break
             say(f"  {problem or ('a value is required' if not value else 'a value with a single quote: write it to the file yourself')}")
@@ -695,6 +737,20 @@ def self_test() -> None:
         assert env_file.stat().st_mode & 0o777 == 0o600, "a file holding a secret is its owner's alone"
         assert len(skipped) == 1 and skipped[0].startswith("KEY:"), skipped
 
+    gated = var("SECONDS", "u64", default="60", bounds={"min": 60, "max": None, "when": [{"variable": "ON", "value": "true"}]})
+    days = var("DAYS", "u64", default="90", bounds={"min": 30, "max": 100, "when": [{"variable": "ON", "value": "true"}, {"variable": "TOKEN", "value": SET}]})
+    bounded = {"binary": "probe", "about": "", "variables": [var("ON", "bool", default="false"), var("TOKEN"), gated, days]}
+    service = {"services": {"app": {"labels": {LABEL: "probe"}, "env_file": [{"path": "/x/.env"}]}}}
+    off = preflight([bounded], {}, "SECONDS=1\nDAYS=1\n", {}, service)
+    assert not off.invalid, "a bound whose condition is off holds nothing"
+    on = preflight([bounded], {}, "ON=true\nSECONDS=59\nDAYS=101\n", {}, service)
+    assert [(gap.name, gap.problem) for gap in on.invalid] == [("SECONDS", "must be at least 60")], "every condition must hold, an unset TOKEN included"
+    both = preflight([bounded], {}, "ON=true\nTOKEN=t\nDAYS=101\n", {}, service)
+    assert [(gap.name, gap.problem) for gap in both.invalid] == [("DAYS", "must be from 30 to 100")], both.invalid
+    assert "At least 60 while ON is true." in " ".join(describe(gated)) and "From 30 to 100 while ON is true and TOKEN is set." in " ".join(describe(days))
+    assert other_env_file(REPO_ROOT / ".env", None) is None and other_env_file(Path("/elsewhere/.env"), None)
+    assert other_env_file(Path("/srv/box/.env"), "/srv/box") is None, "$REPO_ROOT/.env is the one compose reads"
+
     listing = render_list([schema, other], compose, {"DB": "x"})
     assert "set   DB  [probe]" in listing and "UNSET TOKEN" in listing and "LOG  [probe, other]" in listing, listing
     assert "RP_ID  [probe]  required while AUTH is true" in listing, listing
@@ -752,16 +808,31 @@ def main() -> int:
     return 2
 
 
+def other_env_file(env_file: Path, repo_root: str | None) -> str | None:
+    """A warning when `env_file` is not the one compose reads: the repo's
+    `.env`, and with it `$REPO_ROOT/.env` (#580)."""
+    read = {(REPO_ROOT / ".env").resolve()}
+    if repo_root:
+        read.add((Path(repo_root) / ".env").resolve())
+    if env_file.resolve() in read:
+        return None
+    return f"{env_file} is not the .env docker compose reads ({REPO_ROOT / '.env'}): this checks {env_file}, and compose starts on the other"
+
+
 def run_preflight(schemas: list[dict], compose: dict[str, ComposeVariable], env_file: Path) -> Report:
     env_text = env_file.read_text() if env_file.exists() else ""
     shell = dict(os.environ)
+    elsewhere = other_env_file(env_file, {**parse_env(env_text), **shell}.get("REPO_ROOT"))
     try:
         raw = compose_config()
     except (RuntimeError, OSError) as error:
         report = preflight(schemas, compose, env_text, shell, {})
         report.errors.append(f"docker compose config failed, so no service was checked: {error}")
+        report.warnings += [elsewhere] if elsewhere else []
         return report
-    return preflight(schemas, compose, env_text, shell, raw)
+    report = preflight(schemas, compose, env_text, shell, raw)
+    report.warnings += [elsewhere] if elsewhere else []
+    return report
 
 
 if __name__ == "__main__":

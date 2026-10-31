@@ -108,9 +108,14 @@ pub fn parse_filter(directives: &str) -> Result<String, tracing_subscriber::filt
 	tracing_subscriber::EnvFilter::try_new(directives).map(|_| directives.to_owned())
 }
 
+/// `OTEL_TRACES_SAMPLER_ARG`'s least value, for a binary's `schema::Bound`.
+pub const SAMPLER_ARG_MIN: f64 = 0.0;
+/// `OTEL_TRACES_SAMPLER_ARG`'s greatest value.
+pub const SAMPLER_ARG_MAX: f64 = 1.0;
+
 fn parse_ratio(ratio: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
 	let ratio: f64 = ratio.parse()?;
-	if !(0.0..=1.0).contains(&ratio) {
+	if !(SAMPLER_ARG_MIN..=SAMPLER_ARG_MAX).contains(&ratio) {
 		return Err("must be from 0 to 1".into());
 	}
 	Ok(ratio)
@@ -162,6 +167,84 @@ mod tests {
 	#[test]
 	fn the_groups_hold_only_their_own_in_a_config_that_names_its_headings() {
 		crate::schema::assert_groups_hold_only_their_own(&Probe::command());
+	}
+
+	#[derive(Parser)]
+	struct Gated {
+		#[arg(long, env = "PROBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+		probe_enabled: bool,
+		#[arg(long, env = "PROBE_URL")]
+		probe_url: Option<String>,
+		#[arg(long, env = "PROBE_TOKEN")]
+		probe_token: Option<String>,
+		#[arg(long, env = "PROBE_SECONDS", default_value = "60")]
+		probe_seconds: u64,
+		#[arg(long, env = "PROBE_DAYS", default_value = "90")]
+		probe_days: u64,
+	}
+
+	const GATED: crate::schema::Rules = crate::schema::Rules {
+		required_when: &[crate::schema::RequiredWhen {
+			variable: "PROBE_URL",
+			when: "PROBE_ENABLED",
+			is: "true",
+		}],
+		bounds: &[
+			crate::schema::Bound {
+				variable: "PROBE_SECONDS",
+				min: Some(60.0),
+				max: None,
+				when: &[crate::schema::When {
+					variable: "PROBE_ENABLED",
+					is: "true",
+				}],
+			},
+			crate::schema::Bound {
+				variable: "PROBE_DAYS",
+				min: Some(30.0),
+				max: Some(100.0),
+				when: &[
+					crate::schema::When {
+						variable: "PROBE_ENABLED",
+						is: "true",
+					},
+					crate::schema::When {
+						variable: "PROBE_TOKEN",
+						is: crate::schema::SET,
+					},
+				],
+			},
+		],
+	};
+
+	fn unmet(args: &[&str]) -> Vec<String> {
+		let cmd = Gated::command();
+		let matches = cmd.clone().try_get_matches_from(std::iter::once("probe").chain(args.iter().copied())).unwrap();
+		crate::schema::unmet(&cmd, &matches, &GATED)
+	}
+
+	/// #580: every rule that does not hold is named, and one whose condition
+	/// is off asks for nothing, defaults counted as values.
+	#[test]
+	fn rules_name_every_gap_while_their_condition_holds() {
+		assert!(unmet(&["--probe-seconds", "1", "--probe-days", "1"]).is_empty(), "off, nothing is required or bounded");
+		assert_eq!(
+			unmet(&["--probe-enabled", "true", "--probe-seconds", "59", "--probe-token", "t", "--probe-days", "101"]),
+			[
+				"PROBE_URL is required while PROBE_ENABLED is true",
+				"PROBE_SECONDS must be at least 60",
+				"PROBE_DAYS must be from 30 to 100"
+			]
+		);
+		assert_eq!(
+			unmet(&["--probe-enabled", "true", "--probe-url", " "]),
+			["PROBE_URL is required while PROBE_ENABLED is true"],
+			"blank is unset"
+		);
+		assert!(
+			unmet(&["--probe-enabled", "true", "--probe-url", "u", "--probe-days", "1"]).is_empty(),
+			"every condition must hold"
+		);
 	}
 
 	/// ENV1 for the groups themselves; each binary's own test walks them

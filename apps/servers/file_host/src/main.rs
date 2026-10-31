@@ -8,7 +8,6 @@ use axum::{
 	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next,
 	response::Response, Router,
 };
-use clap::Parser;
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
 use file_host::rate_limiter::token_bucket::rate_limit_middleware;
@@ -56,7 +55,7 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 #[tokio::main]
 async fn main() -> Result<()> {
 	dotenvy::dotenv().ok();
-	let config = Config::parse();
+	let config: Config = app_config::schema::parse(&file_host::RULES);
 
 	// Handle health check flag
 	if config.health_check {
