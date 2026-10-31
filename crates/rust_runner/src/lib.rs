@@ -40,15 +40,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// How long `rustc` may take over one program before the compile counts as
-/// failed.
-pub const DEFAULT_COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
-/// The wall-clock ceiling on one run.
-///
-/// See `leetype-execution.md` for why 2 s at `opt-level=0`: every
-/// inadmissible variant in the round corpus exceeds it at `C′` and every
-/// admissible one finishes in tens of milliseconds.
-pub const DEFAULT_RUN_CEILING: Duration = Duration::from_millis(2_000);
+/// The compile timeout and the run ceiling: `rust_rounds_wire`'s, so a
+/// client derives how long a job may take (`job_deadline`) from the same
+/// numbers the runner uses.
+pub use rust_rounds_wire::protocol::{DEFAULT_COMPILE_TIMEOUT, DEFAULT_RUN_CEILING};
 /// The most stdout a run keeps.
 pub const DEFAULT_OUTPUT_CEILING: usize = 4 * 1024;
 /// The most stderr a run keeps, and the most of rustc's text a failed
@@ -156,6 +151,13 @@ pub enum SpawnError {
 	/// that is the program's: an argument the OS refuses (a NUL in it), or a
 	/// descendant that escaped its process group and held its output open.
 	Program(std::io::Error),
+	/// Rust Rounds' recorder only: the program ran, and its run, or the sweep
+	/// after it, could not be supervised to its end. The machine's failure
+	/// (an [`Self::Io`] from [`Compiler::run`] once the program started; a
+	/// failure to start it stays [`Self::Io`]), but one a program's
+	/// survivors can cause, so the service does not call it `unavailable`
+	/// (RX3): it answers nothing, and the client counts a drop.
+	Unsupervised(std::io::Error),
 }
 
 impl std::fmt::Display for SpawnError {
@@ -164,6 +166,7 @@ impl std::fmt::Display for SpawnError {
 			Self::Toolchain(rustc, err) => write!(f, "could not run {}: {err}", rustc.display()),
 			Self::Io(err) => write!(f, "could not prepare or supervise the program: {err}"),
 			Self::Program(err) => write!(f, "could not run a program: {err}"),
+			Self::Unsupervised(err) => write!(f, "could not supervise a program's run to its end: {err}"),
 		}
 	}
 }

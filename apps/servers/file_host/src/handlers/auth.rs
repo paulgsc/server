@@ -1190,6 +1190,7 @@ mod tests {
 				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
+				"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

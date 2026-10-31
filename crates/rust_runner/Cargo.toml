@@ -14,15 +14,15 @@ edition.workspace = true
 [dependencies]
 # `serve` and `ask`'s arguments, the one config a binary reads (#484).
 clap = { workspace = true }
-hex = "0.4.3"
 # `kill(-pgid)` as a system call, so killing a program's process group never
 # needs a process of its own; `getuid`, the not-dumpable and (`thread`)
 # no-new-privileges flags; and (`net`) `SO_PEERCRED`, so the service serves
 # only its clients' uids.
 rustix = { version = "1.1.5", features = ["process", "net", "thread"] }
+# The protocol and what a recording holds, which a client links alone.
+rust_rounds_wire = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = "0.10.9"
 # A fresh directory per program, removed when it is done.
 tempfile = { workspace = true }
 
