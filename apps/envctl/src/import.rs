@@ -141,14 +141,20 @@ fn header(role: &str, binary: &str) -> String {
 }
 
 /// Every named (or every running) container's ours values into
-/// `deploy/<role>/<binary>.env`. True when anything differed.
-pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, containers: &[String], dry_run: bool) -> Result<bool> {
-	let containers = if containers.is_empty() { running()? } else { containers.to_vec() };
+/// `deploy/<role>/<binary>.env`.
+pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, containers: &[String], dry_run: bool) -> Result<()> {
+	let containers = if containers.is_empty() {
+		eprintln!("envctl import: asking docker for the running containers labelled {}...", compose::LABEL);
+		running()?
+	} else {
+		containers.to_vec()
+	};
 	if containers.is_empty() {
 		bail!("no running container carries the {} label; name one with --container", compose::LABEL);
 	}
 	let composed = deploy::COMPOSE_ROLES.contains(&role);
 	let raw = if composed {
+		eprintln!("envctl import: reading docker compose config for compose's own values...");
 		compose::config(repo).context("docker compose config failed, so compose's own values are unknown")?
 	} else {
 		Value::Null
@@ -156,6 +162,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, containers: &[Str
 	let (services, _) = deploy::labelled(schemas, &raw);
 	let mut changed = false;
 	for container in containers {
+		eprintln!("envctl import: reading {container} (its \"ours\" values only)...");
 		let (binary, live) = inspect(&container, schemas)?;
 		let Some(schema) = schemas.iter().find(|schema| schema.binary == binary) else {
 			continue;
@@ -195,7 +202,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, containers: &[Str
 	if dry_run && changed {
 		println!("Dry run: nothing written.");
 	}
-	Ok(changed)
+	Ok(())
 }
 
 #[cfg(test)]

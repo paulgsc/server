@@ -134,12 +134,18 @@ routes-check: ## Run the route inventory's own tests (duplicates, nesting, assem
 DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 
 # The config tooling (apps/envctl, CFG10 #606): one Rust binary for every
-# check and generator below. `cargo run` builds it on first use.
-ENVCTL ?= cargo run -q -p envctl --
+# check and generator below. Each target builds it first, with cargo's own
+# progress on stderr: the first build takes a minute, and a cargo blocked on
+# another one's lock (rust-analyzer, say) says so instead of looking hung.
+ENVCTL ?= target/debug/envctl
+
+.PHONY: envctl
+envctl: ## Build the config tooling (apps/envctl)
+	@cargo build -p envctl
 
 .PHONY: dev
 
-dev: ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
+dev: envctl ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
 	@eval "$$($(ENVCTL) export deploy/dev/file_host.env)" && \
 		FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
 
@@ -160,28 +166,28 @@ dev: ## Run file_host from source beside the container: next free port from 3000
 
 .PHONY: env-schema env deploy-check import resolve preflight up
 
-env-schema: ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
+env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
 	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
 	@$(ENVCTL) example
 	@$(ENVCTL) nix
 	@echo "Wrote infra/env/*.json, example.env and nix/modules/generated"
 
-env: ## List every variable the stack reads, its default, and whether .env or the environment sets it
+env: envctl ## List every variable the stack reads, its default, and whether .env or the environment sets it
 	@$(ENVCTL) list
 
-deploy-check: ## Check every deploy/<role>/<binary>.env states every "ours" value of its binary, and compose reads it
+deploy-check: envctl ## Check every deploy/<role>/<binary>.env states every "ours" value of its binary, and compose reads it
 	@$(ENVCTL) check
 
 # Moving to deploy/: on the box, fill deploy/$(DEPLOY)/<binary>.env from what
 # the running containers use (DRY=1 only says what would change), then
 # decide each value in a terminal UI. Neither reads a secret or private value.
-import: ## Fill deploy/<role>/<binary>.env from the running containers (DRY=1 to only show the changes)
+import: envctl ## Fill deploy/<role>/<binary>.env from the running containers (DRY=1 to only show the changes)
 	@$(ENVCTL) import --role $(or $(DEPLOY),home) $(if $(DRY),--dry-run)
 
-resolve: ## Decide each "ours" value of deploy/<role>/file_host.env in a terminal UI, beside what runs
+resolve: envctl ## Decide each "ours" value of deploy/<role>/file_host.env in a terminal UI, beside what runs
 	@$(ENVCTL) resolve --role $(or $(DEPLOY),home) --binary $(or $(BINARY),file_host)
 
-preflight: ## Check .env before docker compose up: every missing or refused variable at once
+preflight: envctl ## Check .env before docker compose up: every missing or refused variable at once
 	@$(ENVCTL) preflight
 
 up: preflight ## Start the stack (docker compose up -d), once the preflight passes

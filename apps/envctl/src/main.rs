@@ -230,8 +230,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			Ok(ExitCode::SUCCESS)
 		}
 		Command::Import { role, containers, dry_run } => {
-			let changed = import::run(&repo, &schemas, &role, &containers, dry_run)?;
-			Ok(exit(dry_run && changed))
+			import::run(&repo, &schemas, &role, &containers, dry_run)?;
+			Ok(ExitCode::SUCCESS)
 		}
 		Command::Resolve { role, binary, container } => {
 			let Some(schema) = schemas.iter().find(|schema| schema.binary == binary) else {
