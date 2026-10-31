@@ -20,7 +20,7 @@
 //! - **No background writer.** The callers are `file_host`'s `handlers::aph`
 //!   (`PUT /api/v1/aph/entries/:id`, `PUT /api/v1/aph/settings`) and
 //!   `handlers::sync` (`POST /api/v1/sync/aph/batch`, each entry as
-//!   `PUT /api/v1/aph/entries/:id`), which the phone sends once its person has opted in. A
+//!   `PUT /api/v1/aph/entries/:id`), which the phone sends once paired. A
 //!   `git grep -n -e aph_entry -e aph_settings -- '*.rs'` shows no other writer.
 
 mod model;

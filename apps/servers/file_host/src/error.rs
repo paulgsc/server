@@ -76,12 +76,6 @@ pub enum FileHostError {
 	#[error("conflicts with an existing record: {0}")]
 	Conflict(&'static str),
 
-	// A paired phone wrote a kind of record its person stopped sending home
-	// (`handlers::sharing::refusing`). A 409 of its own code, so the phone
-	// can tell it from a `Conflict` on the same route.
-	#[error("this phone stopped sending it to home")]
-	Stopped,
-
 	// ---- transparent from-conversions ----
 	#[error("serialization error: {0}")]
 	NonSerializableData(#[from] serde_json::Error),
@@ -201,7 +195,7 @@ impl FileHostError {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden | Self::SignupClosed | Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
-			Self::Conflict(_) | Self::Stopped => StatusCode::CONFLICT,
+			Self::Conflict(_) => StatusCode::CONFLICT,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -234,7 +228,6 @@ impl FileHostError {
 			Self::UnprocessableEntity { .. } => "unprocessable_entity",
 			Self::MaxRecordLimitExceeded => "max_record_limit_exceeded",
 			Self::Conflict(_) => "conflict",
-			Self::Stopped => "sharing_stopped",
 			Self::NonSerializableData(_) => "serialization_error",
 			Self::IntegerConversionError(_) => "integer_conversion_error",
 			Self::ResponseBuildError(_) => "response_build_error",
@@ -270,7 +263,6 @@ impl FileHostError {
 			Self::IntegerConversionError(_) => "integer out of range",
 			Self::UnexpectedSinglePair => "expected exactly one key-value pair",
 			Self::Conflict(reason) => reason,
-			Self::Stopped => "this phone stopped sending it to home",
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",

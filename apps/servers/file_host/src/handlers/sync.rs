@@ -5,22 +5,20 @@
 //! storage behind [`Collection`]: no store is shared between records, and
 //! nothing new is stored.
 //!
-//! **One transaction per batch.** `BEGIN IMMEDIATE`, so every item and the
-//! choice it is checked against see one snapshot. An item home refuses (a
+//! **One transaction per batch.** `BEGIN IMMEDIATE`, so every item sees one
+//! snapshot. An item home refuses (a
 //! `422` naming its fields, or a `409`) writes nothing and the rest go on;
 //! a storage failure ends the whole batch, and none of it is kept.
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns (docs/identity.md, invariant 9).
 
-use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use aph_repo::AphError;
 use axum::{
 	body::Bytes,
 	extract::{Path, State},
-	http::HeaderMap,
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
@@ -28,7 +26,6 @@ use jobs_repo::{JobsError, REWRITTEN};
 use korean_repo::KoreanError;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use sharing_repo::Scope;
 use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
 use tracing::instrument;
@@ -49,17 +46,12 @@ enum Outcome {
 
 /// One record's storage, as a batch reaches it.
 trait Collection {
-	/// What its person keeps sending when this record goes home.
-	const SCOPE: Scope;
-
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError>;
 }
 
 struct Jobs;
 
 impl Collection for Jobs {
-	const SCOPE: Scope = Scope::Jobs;
-
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match jobs_repo::put_event(conn, subject, id, body, now).await {
 			Ok((change, event)) => Ok(Outcome::Written(change.as_str(), serde_json::value::to_raw_value(&event)?)),
@@ -74,8 +66,6 @@ impl Collection for Jobs {
 struct Aph;
 
 impl Collection for Aph {
-	const SCOPE: Scope = Scope::Aph;
-
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
 		match aph_repo::put_entry(conn, subject, id, body, now).await {
 			Ok((change, entry)) => Ok(Outcome::Written(change.as_str(), serde_json::value::to_raw_value(&entry)?)),
@@ -89,8 +79,6 @@ impl Collection for Aph {
 struct Korean;
 
 impl Collection for Korean {
-	const SCOPE: Scope = Scope::Korean;
-
 	/// `id` is `<kind>/<key>`, the route's path, and a `null` body is a
 	/// removal, as `DELETE /korean/:kind/:key` answers it.
 	async fn put(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<Outcome, FileHostError> {
@@ -188,13 +176,12 @@ fn answer(id: String, outcome: Outcome) -> Answer {
 	}
 }
 
-async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMap, body: &[u8]) -> Result<Written, FileHostError> {
+async fn write<C: Collection>(db: &SqlitePool, subject: &str, body: &[u8]) -> Result<Written, FileHostError> {
 	let batch: Batch = serde_json::from_slice(body).map_err(|_| FileHostError::unprocessable_entity([("body", "is { \"items\": [{ \"id\", \"body\" }] }")]))?;
 	if batch.items.len() > BATCH_CEILING {
 		return Err(FileHostError::unprocessable_entity([("items", "are at most 100")]));
 	}
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject, headers, C::SCOPE).await?;
 	let now = now();
 	let mut results = Vec::with_capacity(batch.items.len());
 	for Item { id, body } in batch.items {
@@ -214,25 +201,18 @@ async fn write<C: Collection>(db: &SqlitePool, subject: &str, headers: &HeaderMa
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 404 for an unknown
-/// collection, 409 from a paired phone that stopped sending this record,
-/// 413 for a body over axum's 2 MiB default (about 14 of the largest Jobs
+/// collection, 413 for a body over axum's 2 MiB default (about 14 of the largest Jobs
 /// events, so a client sizes a batch by bytes as well as by count), 422 for
 /// a body that is not a batch or holds too many items, and 500 for a
 /// storage failure, which keeps none of the batch.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "sync_batch", skip_all, fields(otel.kind = "server"))]
-pub async fn write_batch(
-	subject: SubjectId,
-	State(db): State<SqlitePool>,
-	headers: HeaderMap,
-	Path(collection): Path<String>,
-	body: Bytes,
-) -> Result<Json<Written>, FileHostError> {
+pub async fn write_batch(subject: SubjectId, State(db): State<SqlitePool>, Path(collection): Path<String>, body: Bytes) -> Result<Json<Written>, FileHostError> {
 	let subject = subject.as_str();
 	match collection.as_str() {
-		"jobs" => write::<Jobs>(&db, subject, &headers, &body).await.map(Json),
-		"aph" => write::<Aph>(&db, subject, &headers, &body).await.map(Json),
-		"korean" => write::<Korean>(&db, subject, &headers, &body).await.map(Json),
+		"jobs" => write::<Jobs>(&db, subject, &body).await.map(Json),
+		"aph" => write::<Aph>(&db, subject, &body).await.map(Json),
+		"korean" => write::<Korean>(&db, subject, &body).await.map(Json),
 		_ => Err(FileHostError::NotFound),
 	}
 }
@@ -240,8 +220,7 @@ pub async fn write_batch(
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
-	//! paired phone sends) and the sharing routes for the choices a batch is
-	//! checked against.
+	//! paired phone sends).
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
@@ -307,10 +286,7 @@ mod tests {
 	}
 
 	fn app(state: TestState) -> Router {
-		crate::routes::sync::sync()
-			.into_table_router()
-			.merge(crate::routes::sharing::sharing().into_table_router())
-			.with_state(state)
+		crate::routes::sync::sync().into_table_router().with_state(state)
 	}
 
 	async fn call(app: &Router, method: Method, path: &str, auth: &(HeaderName, String), body: &str) -> (StatusCode, Value) {
@@ -376,20 +352,6 @@ mod tests {
 		let (status, b_wrote) = call(&app, Method::POST, "/sync/jobs/batch", &b, &json!({ "items": [] }).to_string()).await;
 		assert_eq!((status, b_wrote), (StatusCode::OK, json!({ "results": [] })));
 		assert_eq!(call(&app, Method::POST, "/sync/mood/batch", &a, &batch.to_string()).await.0, StatusCode::NOT_FOUND);
-	}
-
-	#[tokio::test]
-	async fn a_batch_is_refused_whole_once_its_phone_stopped_sending_it() {
-		let state = state().await;
-		let a = phone(&state, A).await;
-		let app = app(state);
-		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": true }).to_string()).await;
-		let batch = json!({ "items": [{ "id": "e1", "body": event("e1") }] });
-		assert_eq!(call(&app, Method::POST, "/sync/jobs/batch", &a, &batch.to_string()).await.0, StatusCode::OK);
-		call(&app, Method::PUT, "/sharing/jobs", &a, &json!({ "kept": false }).to_string()).await;
-		let late = json!({ "items": [{ "id": "e2", "body": event("e2") }] });
-		let (status, stopped) = call(&app, Method::POST, "/sync/jobs/batch", &a, &late.to_string()).await;
-		assert_eq!((status, stopped["error"]["code"].clone()), (StatusCode::CONFLICT, json!("sharing_stopped")));
 	}
 
 	#[tokio::test]

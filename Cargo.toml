@@ -24,7 +24,6 @@ members = [
   "crates/db/korean",
   "crates/db/mailbox",
   "crates/db/notice",
-  "crates/db/sharing",
   "crates/db/storage",
   "crates/db/leetype_log",
   "crates/db/studio_log",
@@ -162,7 +161,6 @@ mailbox_kit = { path = "crates/mailbox_kit" }
 notice_repo = { path = "crates/db/notice" }
 fcm_kit = { path = "crates/fcm_kit" }
 mailbox_repo = { path = "crates/db/mailbox" }
-sharing_repo = { path = "crates/db/sharing" }
 storage_repo = { path = "crates/db/storage" }
 leetype_log_repo = { path = "crates/db/leetype_log" }
 studio_log_repo = { path = "crates/db/studio_log" }

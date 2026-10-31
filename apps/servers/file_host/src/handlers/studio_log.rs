@@ -10,11 +10,6 @@
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 //!
-//! **No sharing choice yet.** No `sharing_choice` scope covers the Studio
-//! log, as none covers `leetype_log`, so no write here is refused
-//! as stopped (docs/identity.md, invariant 17). Whether it gets a scope of
-//! its own is the owner's call (#553).
-//!
 //! **Nothing typed reaches a log.** A report's `cause` may be typed by the
 //! owner. Every handler here is `#[instrument(skip_all)]` and records only
 //! `otel.kind` (invariant 6), which `nothing_a_report_says_reaches_a_log_line`

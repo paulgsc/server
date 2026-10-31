@@ -17,16 +17,7 @@
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
-//!
-//! **The phone's choice.** As aph's and the Jobs record's writes are, a note
-//! is checked against what a paired phone's person chose to keep sending
-//! (`handlers::sharing::refusing`, scope `voice`, paulgsc/some-ui#2038): a
-//! pairing that stopped sending voice notes is refused with a `409`
-//! (`sharing_stopped`) and nothing is written, one that never named the
-//! scope is refused nothing, and a browser's write is never refused there
-//! (docs/identity.md, invariant 17).
 
-use crate::handlers::sharing::refusing;
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
@@ -37,7 +28,6 @@ use axum::{
 };
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use sharing_repo::Scope;
 use sqlx::SqlitePool;
 use tracing::instrument;
 use voice_repo::{Note, Said, SaidBite, VoiceError, REWRITTEN};
@@ -94,17 +84,16 @@ fn refusal(err: VoiceError) -> FileHostError {
 /// A Studio take (`of=studio`, `ref` the take as `<project>:<shot>:<take>`)
 /// says nothing more, as a reflection does; a redo is a new note.
 ///
-/// `BEGIN IMMEDIATE`, so the phone's choice, the read that decides and both
-/// writes see one snapshot.
+/// `BEGIN IMMEDIATE`, so the read that decides and both writes see one
+/// snapshot.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
 /// refused field (`id`, `of`, `ref`, `at`, `contentType`, `body`, and a
 /// bite's fields: missing or wrong for a game note, said at all for any
 /// other), 409 for
-/// another note under a held id or from a paired phone that stopped sending
-/// voice notes home (`handlers::sharing::refusing`), 413 for a body past the
-/// server's limit, and 500 for a storage failure.
+/// another note under a held id, 413 for a body past the server's limit, and
+/// 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_note_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_note(
@@ -135,7 +124,6 @@ pub async fn put_note(
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	refusing(&mut tx, subject.as_str(), &headers, Scope::Voice).await?;
 	let change = voice_repo::put_note(&mut tx, subject.as_str(), &note, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
@@ -144,7 +132,7 @@ pub async fn put_note(
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
-	//! paired phone sends) and a browser's, and the phone's sharing choice.
+	//! paired phone sends) and a browser's.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
@@ -336,59 +324,6 @@ mod tests {
 			.unwrap();
 		let take = i64::try_from(TAKE.len()).unwrap();
 		assert_eq!(held, [(A.to_owned(), take), (B.to_owned(), 12)], "nothing refused was written");
-	}
-
-	/// A phone's note is refused once its person stopped sending voice notes,
-	/// and taken again once kept again, with nothing written in between; a
-	/// phone that told home nothing, another pairing, and a browser are
-	/// refused nothing.
-	#[tokio::test]
-	async fn home_refuses_a_note_once_its_phone_stopped_sending_them() {
-		let state = state().await;
-		let pool = state.pool.clone();
-		let phone = session(&state, A, Carrier::Bearer).await;
-		let other_phone = session(&state, A, Carrier::Bearer).await;
-		let browser = session(&state, A, Carrier::Cookie).await;
-		let app = module().into_table_router().merge(crate::routes::sharing::sharing().into_table_router()).with_state(state);
-		let choose = |kept: bool| {
-			let request = Request::builder()
-				.method(Method::PUT)
-				.uri("/sharing/voice")
-				.header(&phone.0, &phone.1)
-				.header(CONTENT_TYPE, "application/json")
-				.body(Body::from(json!({ "kept": kept }).to_string()))
-				.unwrap();
-			let app = app.clone();
-			async move { app.oneshot(request).await.unwrap().status() }
-		};
-		let note = |id: &str| String::from("/voice-notes/") + id + "?of=reflection&ref=session-7f2a&at=2026-10-24T20:10:00-07:00";
-
-		assert_eq!(put(&app, &note("n1"), Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK, "told home nothing yet");
-		assert_eq!(choose(false).await, StatusCode::OK);
-		let (status, refused) = put(&app, &note("n2"), Some(&phone), "audio/webm", TAKE).await;
-		assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-		assert_eq!(refused["error"]["code"], "sharing_stopped");
-		assert_eq!(put(&app, &note("n1"), Some(&phone), "audio/webm", TAKE).await.0, StatusCode::CONFLICT, "a held note too");
-
-		assert_eq!(
-			put(&app, &note("n3"), Some(&other_phone), "audio/webm", TAKE).await.0,
-			StatusCode::OK,
-			"another pairing's choices are its own"
-		);
-		assert_eq!(
-			put(&app, &note("n4"), Some(&browser), "audio/webm", TAKE).await.0,
-			StatusCode::OK,
-			"a browser makes no choice and is refused none"
-		);
-		assert_eq!(choose(true).await, StatusCode::OK);
-		assert_eq!(put(&app, &note("n2"), Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK, "kept again");
-
-		let held: Vec<String> = sqlx::query_scalar("SELECT note_id FROM voice_note WHERE subject_id = ?1 ORDER BY note_id")
-			.bind(A)
-			.fetch_all(&pool)
-			.await
-			.unwrap();
-		assert_eq!(held, ["n1", "n2", "n3", "n4"], "nothing refused was written, and what home took before the stop stays");
 	}
 
 	/// A Studio take is sent home as any note is, and is held said for

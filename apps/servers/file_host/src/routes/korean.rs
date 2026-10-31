@@ -11,8 +11,7 @@
 //! **Trust model:** a subject route, as `routes::aph`. Every handler takes
 //! a `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token, once its person has opted in to keeping Korean on home, and a
-//! pairing that stopped is refused (`handlers::sharing::refusing`).
+//! token.
 //!
 //! **Append-only.** A `PUT` or `DELETE` adds a revision or changes nothing;
 //! nothing is ever erased but with the account. See `handlers::korean` and

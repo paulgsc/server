@@ -13,13 +13,13 @@
 
 use crate::{
 	auth::{
-		cookie::{pairing_of, Carrier, SessionToken},
+		cookie::{Carrier, SessionToken},
 		AuthContext,
 	},
 	FileHostError,
 };
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::{request::Parts, HeaderMap};
+use axum::http::request::Parts;
 use rand::RngCore;
 use std::sync::Arc;
 use tokio::sync::OwnedRwLockReadGuard;
@@ -107,10 +107,6 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each Rust Rounds round the owner's phone put (paulgsc/some-ui#2234), as the tutor wrote it: its cards and programs, and a refine card's voice-note id and the tutor's nudge, which can paraphrase what the owner said; and when it reached home. See docs/identity.md invariant 28",
 	),
 	("sessions", "study sessions"),
-	(
-		"sharing_choice",
-		"what each paired phone's person chose to keep sending home, and when each choice began and ended: a time per change, none per item sent; see docs/identity.md",
-	),
 	(
 		"studio_friction",
 		"how each of the owner's Studio sittings went (paulgsc/some-ui ST9): smooth, some snags or rough, the cause chosen or said (at most 200 characters, possibly typed), the sitting and its kind, the shot it was on and a voice note's id, and when each was recorded and reached home; see docs/identity.md invariant 26",
@@ -276,34 +272,14 @@ where
 	}
 }
 
-/// A paired phone's request: its subject, and its pairing, which a browser's
-/// cookie session has none of, so it answers `403` here.
+/// A paired phone's request, which a browser's session answers `403` here.
 ///
-/// The pairing is named from its session (`auth::cookie::pairing_of`), never
-/// from anything the phone says about itself (invariant 4), and it is no
-/// identity: it only tells one pairing's choices from another's under the
-/// same subject, as the phone's own consent log does.
+/// The mirror of [`BrowserSubject`]: the session must be a phone's bearer
+/// token. It reads the session `SubjectId` resolved, as both read the bearer
+/// first (`SessionToken::from_headers`).
 #[derive(Debug)]
 pub struct Paired {
 	pub subject: SubjectId,
-	pairing: String,
-}
-
-impl Paired {
-	#[must_use]
-	pub fn pairing(&self) -> &str {
-		&self.pairing
-	}
-}
-
-/// The pairing a request's bearer session names, or `None` for a browser's.
-/// It reads the session `SubjectId` resolved, as both read the bearer first
-/// (`SessionToken::from_headers`).
-pub(crate) fn pairing_in(headers: &HeaderMap) -> Option<String> {
-	match SessionToken::from_headers(headers) {
-		Some((token, Carrier::Bearer)) => Some(pairing_of(&token.hash(Carrier::Bearer))),
-		_ => None,
-	}
 }
 
 #[axum::async_trait]
@@ -316,8 +292,10 @@ where
 
 	async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
 		let subject = SubjectId::from_request_parts(parts, state).await?;
-		let pairing = pairing_in(&parts.headers).ok_or(FileHostError::Forbidden)?;
-		Ok(Self { subject, pairing })
+		match SessionToken::from_headers(&parts.headers) {
+			Some((_, Carrier::Bearer)) => Ok(Self { subject }),
+			_ => Err(FileHostError::Forbidden),
+		}
 	}
 }
 
