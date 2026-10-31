@@ -343,10 +343,11 @@ pub fn assert_groups_hold_only_their_own(cmd: &Command) {
 	}
 }
 
-/// Parses `C` from the command line and the environment, as `C::parse` does,
-/// then refuses to start, naming every one, when any of `rules` does not
-/// hold: the same exit (2) and the same kind of message as a value clap
-/// refuses itself (ENV1, #580).
+/// Parses `C` as `C::parse` does, then holds it to `rules`.
+///
+/// It refuses to start, naming every one, when any of `rules` does not hold:
+/// the same exit (2) and the same kind of message as a value clap refuses
+/// itself (ENV1, #580).
 #[must_use]
 pub fn parse<C: Parser>(rules: &Rules) -> C {
 	let mut cmd = C::command();

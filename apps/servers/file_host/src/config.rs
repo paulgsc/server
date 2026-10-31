@@ -58,9 +58,10 @@ pub const REQUIRED_WHEN: &[RequiredWhen] = &[
 	},
 ];
 
-/// The limits `Config`'s numbers are held to at start, while their feature
-/// is on, built from the same constants the feature code checks, so the two
-/// cannot disagree (#580). The relation `GAME_FEED_BACKOFF_CAP_SECONDS` has to
+/// The limits `Config`'s numbers are held to at start, while their feature is on.
+///
+/// Built from the same constants the feature code checks, so the two cannot
+/// disagree (#580). The relation `GAME_FEED_BACKOFF_CAP_SECONDS` has to
 /// the cadences, and the mailbox's URL shape, stay the feature code's alone.
 // The limits are small whole numbers, which an f64 holds exactly.
 #[allow(clippy::cast_precision_loss)]
@@ -151,7 +152,7 @@ pub const BOUNDS: &[Bound] = &[
 	},
 ];
 
-/// What file_host holds its `Config` to at start beyond what clap parses.
+/// What `file_host` holds its `Config` to at start beyond what clap parses.
 pub const RULES: Rules = Rules {
 	required_when: REQUIRED_WHEN,
 	bounds: BOUNDS,

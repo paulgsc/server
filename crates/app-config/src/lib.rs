@@ -171,16 +171,16 @@ mod tests {
 
 	#[derive(Parser)]
 	struct Gated {
-		#[arg(long, env = "PROBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
-		probe_enabled: bool,
-		#[arg(long, env = "PROBE_URL")]
-		probe_url: Option<String>,
-		#[arg(long, env = "PROBE_TOKEN")]
-		probe_token: Option<String>,
-		#[arg(long, env = "PROBE_SECONDS", default_value = "60")]
-		probe_seconds: u64,
-		#[arg(long, env = "PROBE_DAYS", default_value = "90")]
-		probe_days: u64,
+		#[arg(long = "probe-enabled", env = "PROBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+		enabled: bool,
+		#[arg(long = "probe-url", env = "PROBE_URL")]
+		url: Option<String>,
+		#[arg(long = "probe-token", env = "PROBE_TOKEN")]
+		token: Option<String>,
+		#[arg(long = "probe-seconds", env = "PROBE_SECONDS", default_value = "60")]
+		seconds: u64,
+		#[arg(long = "probe-days", env = "PROBE_DAYS", default_value = "90")]
+		days: u64,
 	}
 
 	const GATED: crate::schema::Rules = crate::schema::Rules {
