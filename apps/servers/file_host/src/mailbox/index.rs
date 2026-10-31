@@ -619,7 +619,13 @@ fn waiting_notes(read: &Read<'_>, transcripts: &[HeldTranscript]) -> Vec<Note> {
 		if done.contains(voice) || !seen.insert(voice) {
 			continue;
 		}
-		let id = ids.get(voice).cloned();
+		// A file names a note by its Drive file name and maps it to the note's
+		// id in `notes`, or names the note by its id directly, which is what
+		// `PUT /jobs/files/:name` takes once the phone sends voice home. A
+		// direct id is known only once home holds a transcript under it; until
+		// then `note` stays null, and the transcript's arrival moves `asOf`, so
+		// the next index carries both.
+		let id = ids.get(voice).cloned().or_else(|| newest.contains_key(voice).then(|| String::from(voice)));
 		let transcript = id.as_deref().and_then(|id| newest.get(id)).map(|(_, held)| Transcript {
 			name: held.name.clone(),
 			sha256: held.sha256.clone(),
@@ -1153,6 +1159,29 @@ mod tests {
 				{ "file": "decisions-2026-10-19_voice-3.webm", "in": "decisions-2026-10-19.json", "note": "n3", "transcript": null }
 			]),
 			"voice-2 is done (an older digest's `transcribed`); voice-3 not heard yet"
+		);
+	}
+
+	#[test]
+	fn a_note_named_by_its_id_carries_its_transcript_once_home_holds_one() {
+		let mut decided = decisions("2026-10-19T07:00:00Z", &[entry("2026-10-18", "sw-0001", "taken", false)]);
+		decided["picks"][0]["voice"] = json!(["0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f", "a1b2c3d4-0000-4000-8000-000000000001"]);
+		let mut held = inputs(&[sample()], &[("decisions-2026-10-19.json", decided)]);
+		held.transcripts = vec![HeldTranscript {
+			name: String::from("transcript-0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f-1.json"),
+			sha256: String::from("sha-1"),
+		}];
+		let value = index(&held, "2026-10-19");
+		assert_eq!(
+			value["notes"],
+			json!([
+				{
+					"file": "0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f", "in": "decisions-2026-10-19.json", "note": "0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f",
+					"transcript": { "name": "transcript-0b6f0f8e-1f2a-4c55-9d7e-3a1b2c3d4e5f-1.json", "sha256": "sha-1" }
+				},
+				{ "file": "a1b2c3d4-0000-4000-8000-000000000001", "in": "decisions-2026-10-19.json", "note": null, "transcript": null }
+			]),
+			"a direct id resolves through home's transcript; one not heard yet waits with no id"
 		);
 	}
 
