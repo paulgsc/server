@@ -584,5 +584,71 @@ mod tests {
 			}
 		}
 		assert!(scanned > 50, "the tree was walked: {scanned} files");
+
+		// EX1 names every file that may start a process, so adding one to
+		// `SPAWNS` without amending the claim fails here.
+		let doc = include_str!("../../../docs/leetype-execution.md");
+		for (file, _) in SPAWNS {
+			assert!(doc.contains(&(String::from("`") + file + "`")), "EX1 does not name {file}");
+		}
+	}
+
+	/// EX1's other half, from `cargo metadata`'s resolved graph (normal and
+	/// build edges; dev edges are tests'): `rust_runner`, the crate that
+	/// compiles and runs, reaches `file_host` only through `leetype_runner`.
+	/// The source scan above then holds `leetype_runner` to
+	/// `record-leetype-runs`: Cargo's graph is per package, not per binary,
+	/// so that half is the scan's.
+	#[test]
+	fn the_runner_reaches_file_host_only_through_leetype_runner() {
+		// Set by cargo for the test it runs: the toolchain's own `cargo`.
+		#[allow(clippy::disallowed_methods)]
+		let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+		let metadata = std::process::Command::new(cargo)
+			.args(["metadata", "--format-version", "1", "--offline", "--manifest-path"])
+			.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+			.output()
+			.unwrap();
+		assert!(metadata.status.success(), "{}", String::from_utf8_lossy(&metadata.stderr));
+		let metadata: Value = serde_json::from_slice(&metadata.stdout).unwrap();
+		let names: std::collections::BTreeMap<&str, &str> = metadata["packages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|package| (package["id"].as_str().unwrap(), package["name"].as_str().unwrap()))
+			.collect();
+		let nodes: std::collections::BTreeMap<&str, &Value> = metadata["resolve"]["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|node| (node["id"].as_str().unwrap(), node))
+			.collect();
+		let id = |name: &str| names.iter().find(|(_, package)| **package == name).map(|(id, _)| *id).unwrap();
+		// What file_host reaches by normal and build edges, never passing
+		// through `skip`.
+		let reached = |skip: Option<&str>| {
+			let mut closure = std::collections::BTreeSet::new();
+			let mut stack = vec![id("file_host")];
+			while let Some(at) = stack.pop() {
+				if Some(at) == skip || !closure.insert(at) {
+					continue;
+				}
+				for dep in nodes[at]["deps"].as_array().unwrap() {
+					if dep["dep_kinds"].as_array().unwrap().iter().any(|kind| kind["kind"].as_str() != Some("dev")) {
+						stack.push(dep["pkg"].as_str().unwrap());
+					}
+				}
+			}
+			closure.into_iter().map(|at| names[at]).collect::<std::collections::BTreeSet<_>>()
+		};
+		let runner = ["rust", "_runner"].concat();
+		assert!(
+			reached(None).contains(runner.as_str()),
+			"the graph was walked: file_host reaches it through leetype_runner today"
+		);
+		assert!(
+			!reached(Some(id("leetype_runner"))).contains(runner.as_str()),
+			"file_host reaches {runner} other than through leetype_runner"
+		);
 	}
 }
