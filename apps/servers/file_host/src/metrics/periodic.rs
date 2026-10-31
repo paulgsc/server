@@ -25,6 +25,12 @@ use tracing::{debug, info};
 /// same as the `SQLite` pool's, and its idle-bucket eviction (#231) is
 /// exactly the kind of "not on the request or scrape path" work this sweep
 /// already exists for.
+///
+/// `dependency_up` rides it too (AS19, #565): `/ready` sets it only when
+/// asked, and an alert (`DatabaseBehindBuild`, `infra/prometheus/rules/home.yml`)
+/// must not depend on something outside this process asking. Each check is
+/// bounded by `/ready`'s own 2 s timeout, so a hung dependency delays one
+/// tick by at most that, not the sweep.
 pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, freshness: Duration, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
 
@@ -44,6 +50,7 @@ pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, 
 					instrument::set_guard_occupancy(state.core.connection_guard.active_global());
 					crate::metrics::pool::record(&state.core.shared_db);
 					crate::storage::refresh_footprint(&state.core.shared_db).await;
+					crate::handlers::readiness::refresh_gauges(&state).await;
 
 					let evicted = rate_limiter.evict_idle();
 					if evicted > 0 {

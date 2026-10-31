@@ -52,6 +52,14 @@ container healthy and serving, with DEPS red. Nothing in the monitoring
 stack waits on a health check either (`scripts/check_scrape_inventory.py`),
 so the dashboard and the alerts stay up to say what is wrong.
 
+Since a degraded home stays up, red DEPS alone would let it sit for days, so
+a schema down for 5 minutes is an alert, `DatabaseBehindBuild` in
+`infra/prometheus/rules/home.yml` (AS19, #565), sent to the owner like the
+watchers' alerts. It does not depend on anyone asking `/ready`:
+`metrics::periodic` re-checks every dependency and sets `dependency_up`
+every 10 s, and the container healthcheck's asks set the same gauges from
+the same checks.
+
 Two cases look like schema drift and aren't, and both are named as what
 they are. A database with no `_sqlx_migrations` table at all reads "never
 migrated … empty or wrong database file (is its volume mounted?)": with
