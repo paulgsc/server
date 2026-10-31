@@ -151,6 +151,12 @@ pub enum SpawnError {
 	/// that is the program's: an argument the OS refuses (a NUL in it), or a
 	/// descendant that escaped its process group and held its output open.
 	Program(std::io::Error),
+	/// Rust Rounds' recorder only: the program ran, and its run, or the sweep
+	/// after it, could not be supervised to its end. The machine's failure
+	/// (an [`Self::Io`] from [`Compiler::run`]), but one a program's
+	/// survivors can cause, so the service does not call it `unavailable`
+	/// (RX3): it answers nothing, and the client counts a drop.
+	Unsupervised(std::io::Error),
 }
 
 impl std::fmt::Display for SpawnError {
@@ -159,6 +165,7 @@ impl std::fmt::Display for SpawnError {
 			Self::Toolchain(rustc, err) => write!(f, "could not run {}: {err}", rustc.display()),
 			Self::Io(err) => write!(f, "could not prepare or supervise the program: {err}"),
 			Self::Program(err) => write!(f, "could not run a program: {err}"),
+			Self::Unsupervised(err) => write!(f, "could not supervise a program's run to its end: {err}"),
 		}
 	}
 }

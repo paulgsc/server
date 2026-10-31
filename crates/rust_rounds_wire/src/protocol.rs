@@ -110,6 +110,14 @@ pub enum Refusal {
 	/// The connection came from a uid that is not a client's (a program's,
 	/// say), or its peer could not be read.
 	Peer,
+	/// The runner could not prepare or compile the program for a reason of
+	/// its own machine (rustc missing or failing to run, no directory or file
+	/// for the program), before the program ran: not the program's doing.
+	/// The runner exits after answering, and restarts. A fault once the
+	/// program ran (a run or sweep it could not supervise to its end, which a
+	/// program's survivors can cause) is answered with nothing: the client
+	/// sees its connection dropped (RX2, RX3).
+	Unavailable,
 }
 
 impl Refusal {
@@ -120,6 +128,7 @@ impl Refusal {
 			Self::TooLarge => "too-large",
 			Self::WrongToolchain => "wrong-toolchain",
 			Self::Peer => "peer",
+			Self::Unavailable => "unavailable",
 		}
 	}
 }
@@ -261,7 +270,7 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(String::from_utf8(refused).unwrap(), r#"{"answer":"refused","reason":"wrong-toolchain","toolchain":"t"}"#);
-		for reason in [Refusal::Malformed, Refusal::TooLarge, Refusal::WrongToolchain, Refusal::Peer] {
+		for reason in [Refusal::Malformed, Refusal::TooLarge, Refusal::WrongToolchain, Refusal::Peer, Refusal::Unavailable] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), reason.as_str());
 		}
 	}

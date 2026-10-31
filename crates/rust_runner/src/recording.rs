@@ -72,9 +72,10 @@ impl Recorder {
 	/// runner never walks a tree the program made.
 	///
 	/// # Errors
-	/// Only the machine's failures ([`SpawnError::Toolchain`],
-	/// [`SpawnError::Io`]); whatever the program does is in the
-	/// [`Recording`].
+	/// Only the machine's failures: [`SpawnError::Toolchain`] and
+	/// [`SpawnError::Io`] before the program ran, and
+	/// [`SpawnError::Unsupervised`] once it had; whatever the program does is
+	/// in the [`Recording`].
 	pub fn record(&self, source: &str) -> Result<Recording, SpawnError> {
 		let dir = tempfile::Builder::new().prefix("rust-run-").tempdir_in(&self.work).map_err(SpawnError::Io)?;
 		if self.compiler.limits().run_as.is_none() {
@@ -139,6 +140,9 @@ impl Recorder {
 				let note = String::from("the program could not be run to its end: ") + &err.to_string();
 				return Ok(self.recording(key, Outcome::Runtime, Some(note), compile, None));
 			}
+			// The machine's, but past the program's start, so possibly the
+			// program's doing (its survivors against the sweep).
+			Err(SpawnError::Io(err)) => return Err(SpawnError::Unsupervised(err)),
 			Err(err) => return Err(err),
 		};
 		let stderr = without_thread_ids(&String::from_utf8_lossy(&finished.stderr.tail));

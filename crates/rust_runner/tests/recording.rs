@@ -11,7 +11,7 @@
 
 use rust_runner::recording::{CompileRecord, Outcome, Recorder, Recording, RunRecord, RunSpan, RustcRun, Why, PROFILE};
 use rust_runner::service::{answer, ask, Refusal, Request, Response, CLIENT_TIMEOUT, REQUEST_CEILING};
-use rust_runner::{Compiler, Limits, Profile};
+use rust_runner::{Compiler, Limits, Profile, SpawnError};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -511,4 +511,35 @@ fn only_a_clients_uid_is_served() {
 	));
 	assert!(matches!(ask(&socket, &Request::Toolchain {}, timeout).unwrap(), Response::Toolchain { .. }));
 	server.join().unwrap();
+}
+
+/// A machine fault before the program ran is answered `unavailable`, so the
+/// client keeps nothing against the program, and the service then stops on
+/// it as before (RX3).
+#[test]
+fn a_machine_fault_before_the_program_runs_is_answered_unavailable() {
+	let work = tempfile::tempdir().unwrap();
+	let socket = work.path().join("runner.sock");
+	let programs = tempfile::tempdir().unwrap();
+	let recorder = recorder(Limits::default(), programs.path());
+	let toolchain = recorder.toolchain().to_owned();
+	// No directory to make the program's in: the machine's fault.
+	drop(programs);
+	let listener = UnixListener::bind(&socket).unwrap();
+	let server = std::thread::spawn(move || {
+		let (stream, _) = listener.accept().unwrap();
+		answer(&recorder, &stream, None)
+	});
+	let request = Request::Record {
+		toolchain: toolchain.clone(),
+		source: String::from("fn main() {}"),
+	};
+	assert_eq!(
+		ask(&socket, &request, Duration::from_secs(60)).unwrap(),
+		Response::Refused {
+			reason: Refusal::Unavailable,
+			toolchain,
+		}
+	);
+	assert!(matches!(server.join().unwrap(), Err(SpawnError::Io(_))), "and the service stops on it");
 }

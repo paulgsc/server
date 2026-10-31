@@ -432,7 +432,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     directory that cannot be removed; a sweep that cannot finish (a
     survivor that stops the helper past its 5 s, or kills it every pass);
     and a job past the watchdog's deadline (RX3). The client of a job that
-    ends this way sees its connection dropped, with no answer. **What an
+    ends this way sees its connection dropped, with no answer. The one
+    restart that is answered first is a machine fault before the program
+    ran (RX3's `unavailable`), so no program is charged with it. **What an
     attempt costs:** each attempt at a program that wedges the runner holds
     it for up to the job deadline (`serve_job_deadline`, 132 s) before the
     watchdog restarts it, which is why the pass's `DROPS` cap (2) bounds
@@ -471,7 +473,17 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     client does with a dropped connection:** treat it as "the runner
     restarted while running this job" and retry it, a bounded number of
     times, then record that as the outcome (`rust_rounds::pass`, RP3); the
-    protocol has no answer for it. Each retry of a program that wedges the
+    protocol has no answer for it. **A fault that is the machine's alone is
+    said:** when `record` fails before the program ran (rustc missing or
+    failing to run, no directory or file for the program: `SpawnError`'s
+    `Toolchain` and `Io`), the service first answers `refused`, reason
+    `unavailable`, then exits as before; the client keeps nothing against
+    the program (RP3). A fault once the program ran (a run or a sweep it
+    could not supervise to its end, `SpawnError::Unsupervised`, which a
+    program's survivors can cause) is answered with nothing, so the client
+    counts a drop. This is the only change to the service since slice 1:
+    one refusal kind, and one variant that tells the two phases apart. Each
+    retry of a program that wedges the
     runner holds the one job slot for up to the job deadline, so the pass's
     `DROPS` cap (2) bounds that program at two job deadlines per toolchain.
     **A client waits past the watchdog:**
@@ -485,7 +497,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     cannot queue jobs that outlive it.
     file_host asks the runner only from a background pass (EX1), never from
     a handler, and `ask` reads at most 4 MiB of answer.
-  - _Falsified by_ a client wait (the pass's `per_ask`, `ask`'s default)
+  - _Falsified by_ a machine fault before the program ran answered with
+    anything but `unavailable`, or one after it (`Unsupervised`) answered
+    `unavailable`, a client wait (the pass's `per_ask`, `ask`'s default)
     that is a literal or shorter than the job deadline, a job deadline summed
     from anything but `rust_rounds_wire`'s constants and the runner's
     ceilings, a thread or task per connection, a removed ceiling or

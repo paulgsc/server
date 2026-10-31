@@ -112,7 +112,7 @@ impl From<SpawnError> for RecordError {
 	fn from(err: SpawnError) -> Self {
 		match err {
 			SpawnError::Toolchain(rustc, err) => Self::Toolchain(rustc, err),
-			SpawnError::Io(err) => Self::Io(err),
+			SpawnError::Io(err) | SpawnError::Unsupervised(err) => Self::Io(err),
 			SpawnError::Program(err) => Self::Run(err),
 		}
 	}

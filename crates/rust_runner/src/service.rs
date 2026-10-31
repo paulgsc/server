@@ -58,8 +58,11 @@ use std::time::{Duration, Instant};
 ///
 /// # Errors
 /// The machine's failures from [`Recorder::record`], which the service
-/// stops on. A client that sends nothing, too much, garbage or too slowly is
-/// answered with a refusal, and one that goes away is not an error.
+/// stops on. One before the program ran is first answered with
+/// [`Refusal::Unavailable`]; one after ([`SpawnError::Unsupervised`]) is
+/// answered with nothing. A client that sends nothing, too much, garbage or
+/// too slowly is answered with a refusal, and one that goes away is not an
+/// error.
 pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>) -> Result<Response, SpawnError> {
 	let refused = |reason| Response::Refused {
 		reason,
@@ -85,13 +88,22 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>)
 				toolchain: recorder.toolchain().to_owned(),
 			},
 			Some(Request::Record { toolchain, .. }) if toolchain != recorder.toolchain() => refused(Refusal::WrongToolchain),
-			Some(Request::Record { source, .. }) => {
-				let recording = recorder.record(&source)?;
-				Response::Recorded {
+			Some(Request::Record { source, .. }) => match recorder.record(&source) {
+				Ok(recording) => Response::Recorded {
 					rustc: recording.rustc_run(),
 					recording: Box::new(recording),
+				},
+				// The program ran, and could not be supervised to its end:
+				// no answer, so the client counts a drop against it (RP3).
+				Err(err @ SpawnError::Unsupervised(_)) => return Err(err),
+				// Before the program ran: the machine's alone. Said, so the
+				// client keeps nothing against the program, and then the
+				// service stops as for any machine failure.
+				Err(err) => {
+					send(stream, &refused(Refusal::Unavailable));
+					return Err(err);
 				}
-			}
+			},
 		}
 	};
 	send(stream, &response);
