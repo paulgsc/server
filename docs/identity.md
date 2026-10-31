@@ -686,8 +686,10 @@ nowhere is marked as such and belongs to review.
     paulgsc/some-ui#2026), `mailbox::pass::READS`, and puts only to
     `decisions`, `scout`, `opened`, `transcript` (what home heard in a voice
     note, as text, for the routines to read instead of transcribing;
-    paulgsc/server#463) and `leetype-log` (how each finished LeetType session
-    went, invariant 18; paulgsc/some-ui#2027).
+    paulgsc/server#463), `leetype-log` (how each finished LeetType session
+    went, invariant 18; paulgsc/some-ui#2027) and `index` (home's bookkeeping
+    for the Jobs routine, computed from these tables and kept in none of
+    them; paulgsc/server#509).
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -698,7 +700,10 @@ nowhere is marked as such and belongs to review.
       and `GET /leetype/session-files/:name` (`leetype`, invariant 27), each
       for its own subject, and by
       the arrival notice's pass (`jobs_notice`), which reads the same
-      `run-jobs-*` records for the poller's subject (invariant 24).
+      `run-jobs-*` records for the poller's subject (invariant 24), and by
+      the poller's Jobs index (`mailbox::index`), which reads `brief`: its
+      digests, and the pre-mailbox decisions and scouts files the routine
+      put back there once.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened` and the poller's `file_transcripts` and
       `file_leetype_logs`: a decisions or scouts file the phone filed, which
@@ -727,6 +732,35 @@ nowhere is marked as such and belongs to review.
       and every event `leetype_session_event` holds of it (invariant 18),
       which holds no soundbite (`ticks`, `prompt`, `rubric`, `typed`) and no
       audio.
+      The poller puts the Jobs index as `index-jobs-<stamp>.json` in
+      `some-ui.routine-index/1` (paulgsc/server#509, HF7), computed from this
+      invariant's own tables and nothing else: the digests in `mailbox_item`,
+      the decisions and scouts files and Jobs notes' transcripts in
+      `mailbox_outgoing` that the mailbox took, and the pre-mailbox decisions
+      and scouts files the routine put back in `brief` once (`mailbox_item`;
+      the mailbox's MB2 backfill, which it takes only under a name dated
+      before 2026-10-23). The index is a view of those records, not a record
+      (owner, 2026-10-31,
+      https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
+      no table here holds it, not `mailbox_outgoing`, `mailbox_handed` or
+      `mailbox_archive`, so it adds no writer to any of them, and what the
+      poller remembers of the last one (what it was computed from) is in
+      memory (`mailbox::index::LastIndex`). The mailbox keeps only the latest
+      per routine. It carries only what the
+      routine needs to know what to read: the day it was computed and the
+      last day its queue holds before an open pick lapses, when home last took in
+      what it counts, the names of the files it counted (and which of them
+      came from the backfill) and of those that did not read, the open and lapsed picks (each one's digest day, id, track,
+      fingerprint, title, company and, while open, its posting's link) and
+      each track's free slots, the files no digest has read with the event
+      and scout ids in them already taken in, each voice note still waited
+      on by its file name, the phone's id for it and its newest transcript's
+      name and hash, and the fingerprints already picked or named. No file's
+      body beyond those fields, no note's words, and nothing that is or
+      points at audio; the mailbox refuses a body that carries audio or a
+      Drive link. It is put only when something it counts has arrived or an
+      open pick has lapsed since the last one the mailbox answered, never
+      for the day turning alone, so an idle pass puts none.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -772,8 +806,15 @@ nowhere is marked as such and belongs to review.
     `only_heard_transcripts_wait_to_be_filed_oldest_first`,
     `each_transcript_of_a_note_takes_the_next_number_once`,
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
-    `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`
-    and `the_due_query_reads_only_what_arrived_after_the_mark`; `mailbox::pass`'s
+    `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
+    `the_due_query_reads_only_what_arrived_after_the_mark`,
+    and `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
+    `mailbox::index`'s
+    `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
+    `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`,
+    `valid_through_is_the_day_before_the_first_open_pick_lapses` and
+    `a_backfilled_file_counts_as_the_phones_and_says_where_it_came_from`;
+    `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
@@ -784,11 +825,15 @@ nowhere is marked as such and belongs to review.
     `the_routines_session_files_are_kept_and_a_bad_one_refused_and_counted`,
     `a_sessions_log_is_filed_and_handed_with_what_home_holds_and_no_soundbite`,
     `a_session_that_cannot_be_filed_is_refused_and_the_next_still_goes`,
-    `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`
-    and `no_leetype_log_is_filed_for_a_deleted_subject`, and its fake
+    `refusals_never_hold_back_a_later_session_and_a_refused_one_is_retried_with_new_events`,
+    `no_leetype_log_is_filed_for_a_deleted_subject`,
+    `the_index_is_put_on_the_day_a_pick_lapses_and_on_no_other_quiet_day`,
+    `the_jobs_index_is_put_when_what_it_counts_moves_and_only_then` (which
+    also finds no index row in any table), `a_file_the_mailbox_turned_down_is_not_counted` and
+    `a_backfilled_file_in_brief_is_counted_and_said_to_be_backfilled`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
-    a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript` or
-    `leetype-log`; `mailbox_kit`'s
+    a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript`,
+    `leetype-log` or `index`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
@@ -809,7 +854,8 @@ nowhere is marked as such and belongs to review.
     Worker's `archive` role, a token apart from `MAILBOX_TOKEN`), each pass
     of `file_host`'s `mailbox` poller takes the files live in any folder for
     `MAILBOX_ARCHIVE_DAYS` (at least 30, the mailbox's own floor), at most
-    `ITEMS_PER_PASS` of them. For each it reads the bytes, checks them
+    `ITEMS_PER_PASS` of them, in every folder but `index`
+    (`mailbox::pass::ARCHIVES`). For each it reads the bytes, checks them
     against the listing's size and SHA-256, and stores them in
     `mailbox_archive`, committed, under the deletion hold. Only then does it
     ask the mailbox to archive the file, naming that SHA-256 in `If-Match`,
@@ -823,7 +869,20 @@ nowhere is marked as such and belongs to review.
     are home's, and the mailbox keeps a row about it for good. Deleting the
     account deletes `mailbox_archive` with the rest (invariant 12), and an
     archived file then exists nowhere: the mailbox kept only its row.
+    **The one exception is home's index** (owner, 2026-10-31,
+    https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
+    the archive copies records, and a view home recomputes from records it
+    keeps is not one. The Jobs index (invariant 19) is such a view: the
+    mailbox keeps only the latest per routine and drops the one before in the
+    write that takes the new one, home neither archives it nor answers an ask
+    for it, and the routine cannot ask (its `ask` rights leave `index` out).
+    Nothing is lost by that: every record the index was computed from is in
+    this invariant's tables, and the next pass computes the same bytes from
+    them.
     *Enforced by* `mailbox::pass`'s
+    `archiving_walks_every_folder_but_the_index`,
+    `an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index`
+    (whose fake fails any archive-token request to `index`),
     `an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays`,
     `a_file_home_cannot_store_stays_live`,
     `a_digest_the_feed_does_not_hold_is_not_archived`,
@@ -832,8 +891,9 @@ nowhere is marked as such and belongs to review.
     `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
-    days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB1's
-    trigger that lets an item go only once its `archived` row is written.
+    days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB5's
+    trigger that lets an item go only once its `archived` row is written (an
+    `index` item excepted, which goes once a newer one of its routine is live).
     *Not enforced:* that `archive_old` stores before it asks, beyond those
     tests, which review keeps by reading the function's order.
 
