@@ -24,6 +24,12 @@
 //! [`get_runs`] the jobs routine's run records from the same copy. Both read,
 //! and write nothing; `jobs_event` still has no writer but the two above.
 //!
+//! **What became of a filed file.** [`get_files`] answers, for each
+//! decisions or scouts file the phone filed, the mailbox's answer to it and
+//! when, or `null` while the poller has not handed it over: names, times and
+//! answers only, never a body or a refusal's text (invariant 19). It reads
+//! `mailbox_outgoing` and `mailbox_handed`, and writes nothing.
+//!
 //! **Files for the mailbox are text.** [`put_file`] files the phone's
 //! decisions or scouts file for the poller to hand to the mailbox, voice
 //! notes named by id included: home transcribes each note and files the
@@ -289,6 +295,73 @@ pub async fn delete_notice(subject: SubjectId, State(db): State<SqlitePool>, bod
 	}))
 }
 
+/// The most files one `GET /jobs/files` answer holds.
+///
+/// A month of daily decisions files, as many digests as the phone keeps
+/// (`DIGESTS_KEPT` in paulgsc/some-ui `apps/www/src/lib/jobs/model.ts`). The
+/// phone asks after what it filed lately; an older file is past the cards
+/// that show it.
+pub const FILES_PER_ANSWER: i64 = 30;
+
+/// `GET /jobs/files`
+#[derive(Debug, Serialize)]
+pub struct Files {
+	/// Newest filed first.
+	pub files: Vec<FiledFile>,
+}
+
+/// One decisions or scouts file the phone filed, and what became of it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiledFile {
+	pub name: String,
+	/// The mailbox folder it goes to: `decisions` or `scout`.
+	pub folder: String,
+	/// When home took it from the phone.
+	pub filed_at: String,
+	/// The mailbox's answer, or `null` while home has not handed it over
+	/// (not tried yet, or every try so far failed to reach the mailbox).
+	pub handed: Option<Handed>,
+}
+
+/// What the mailbox said to a file home handed it, final once said.
+#[derive(Debug, Serialize)]
+pub struct Handed {
+	/// `added` or `unchanged` (the run's mailbox holds it), `conflict` (it
+	/// holds other bytes under the name) or `refused`.
+	pub answer: &'static str,
+	pub at: String,
+}
+
+/// `GET /jobs/files`: what became of each file the phone filed.
+///
+/// The caller's decisions and scouts files, newest filed first, at most
+/// [`FILES_PER_ANSWER`], each with the mailbox's answer to it and when, or
+/// `null` while it waits to be handed over.
+///
+/// Names, folders, times and answers only: never a body (the phone holds
+/// its own copy), and never why the mailbox refused one, which the pass does
+/// not keep (docs/identity.md invariant 19).
+///
+/// # Errors
+/// 401 without a session, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "jobs_files", skip_all, fields(otel.kind = "server"))]
+pub async fn get_files(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Files>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let held = mailbox_repo::jobs_files(&mut conn, subject.as_str(), FILES_PER_ANSWER).await?;
+	let files = held
+		.into_iter()
+		.map(|file| FiledFile {
+			name: file.name,
+			folder: file.folder,
+			filed_at: file.filed_at,
+			handed: file.handed.map(|(answer, at)| Handed { answer: answer.as_str(), at }),
+		})
+		.collect();
+	Ok(Json(Files { files }))
+}
+
 /// The most a filed file may hold: the Jobs record's own body ceiling.
 pub const FILE_CEILING: usize = jobs_repo::EVENT_BODY_CEILING;
 
@@ -543,7 +616,7 @@ mod tests {
 				)
 			})
 			.collect();
-		assert_eq!(routes.len(), 7, "{routes:?}");
+		assert_eq!(routes.len(), 8, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -905,6 +978,105 @@ mod tests {
 				(String::from("scout"), String::from("scouts-20261023T101500.json")),
 			]
 		);
+	}
+
+	/// The mailbox's answer to `subject`'s filed `name`, as the poller
+	/// records one (`mailbox_repo::record_handed`).
+	async fn answered(state: &TestState, subject: &str, (folder, name): (&str, &str), answer: &str, at: &str) {
+		sqlx::query("INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+			.bind(subject)
+			.bind(folder)
+			.bind(name)
+			.bind(answer)
+			.bind(at)
+			.execute(&state.pool)
+			.await
+			.unwrap();
+	}
+
+	/// What became of each file the phone filed: each of the mailbox's four
+	/// answers and when, `null` for one still pending, newest filed first,
+	/// and no body.
+	#[tokio::test]
+	async fn files_answer_what_the_mailbox_said_to_each_or_null() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let days = ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"];
+		for day in days {
+			let path = String::from("/jobs/files/decisions-") + day + ".json";
+			assert_eq!(call(&app, Method::PUT, &path, Some(&phone), &decisions(day, &[])).await.0, StatusCode::OK);
+		}
+		for (day, answer) in days.iter().zip(["added", "unchanged", "conflict", "refused"]) {
+			let name = String::from("decisions-") + day + ".json";
+			answered(&state, A, ("decisions", &name), answer, &(String::from(*day) + "T23:00:00.000Z")).await;
+		}
+		let (status, answer) = call(&app, Method::GET, "/jobs/files", Some(&phone), &Value::Null).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+		let files = answer["files"].as_array().unwrap();
+		let seen: Vec<(&str, &str, &Value)> = files
+			.iter()
+			.map(|file| (file["name"].as_str().unwrap(), file["folder"].as_str().unwrap(), &file["handed"]))
+			.collect();
+		let handed = |answer: &str, day: &str| json!({ "answer": answer, "at": String::from(day) + "T23:00:00.000Z" });
+		assert_eq!(
+			seen,
+			[
+				("decisions-2026-10-23.json", "decisions", &Value::Null),
+				("decisions-2026-10-22.json", "decisions", &handed("refused", "2026-10-22")),
+				("decisions-2026-10-21.json", "decisions", &handed("conflict", "2026-10-21")),
+				("decisions-2026-10-20.json", "decisions", &handed("unchanged", "2026-10-20")),
+				("decisions-2026-10-19.json", "decisions", &handed("added", "2026-10-19")),
+			],
+			"newest filed first, a pending file null"
+		);
+		for file in files {
+			let mut keys: Vec<&str> = file.as_object().unwrap().keys().map(String::as_str).collect();
+			keys.sort_unstable();
+			assert_eq!(keys, ["filedAt", "folder", "handed", "name"], "no body: {file}");
+			assert!(file["filedAt"].as_str().unwrap().ends_with('Z'), "{file}");
+		}
+	}
+
+	/// One subject never reads another's files, and a request with no
+	/// session is a 401 (as every route's is, above).
+	#[tokio::test]
+	async fn files_answer_only_the_callers_own() {
+		let state = state().await;
+		let a = session(&state, A, Carrier::Bearer).await;
+		let b = session(&state, B, Carrier::Bearer).await;
+		let app = app(state.clone());
+		let path = "/jobs/files/decisions-2026-10-23.json";
+		assert_eq!(call(&app, Method::PUT, path, Some(&a), &decisions("2026-10-23", &[])).await.0, StatusCode::OK);
+		answered(&state, A, ("decisions", "decisions-2026-10-23.json"), "added", "2026-10-23T23:00:00.000Z").await;
+		assert_eq!(
+			call(&app, Method::GET, "/jobs/files", Some(&b), &Value::Null).await,
+			(StatusCode::OK, json!({ "files": [] })),
+			"B reads none of A's"
+		);
+		let (_, mine) = call(&app, Method::GET, "/jobs/files", Some(&a), &Value::Null).await;
+		assert_eq!(mine["files"].as_array().unwrap().len(), 1);
+		assert_eq!(call(&app, Method::GET, "/jobs/files", None, &Value::Null).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	#[tokio::test]
+	async fn files_answer_at_most_a_month() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		for n in 1..=super::FILES_PER_ANSWER + 2 {
+			let name = String::from("decisions-2026-10-01-") + &n.to_string() + ".json";
+			// Seconds as two digits, so the times order as the files were filed.
+			let at = String::from("2026-10-01T00:00:") + &(100 + n).to_string()[1..] + ".000Z";
+			mailbox_repo::file_outgoing(&mut state.pool.acquire().await.unwrap(), A, "decisions", &name, "s", b"{}", &at)
+				.await
+				.unwrap();
+		}
+		let (_, answer) = call(&app, Method::GET, "/jobs/files", Some(&phone), &Value::Null).await;
+		let files = answer["files"].as_array().unwrap();
+		assert_eq!(i64::try_from(files.len()).unwrap(), super::FILES_PER_ANSWER);
+		let newest = String::from("decisions-2026-10-01-") + &(super::FILES_PER_ANSWER + 2).to_string() + ".json";
+		assert_eq!(files[0]["name"], json!(newest), "the newest first");
 	}
 
 	/// A voice note is named by id, and home holds its transcript for the

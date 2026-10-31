@@ -13,6 +13,9 @@
 //! PUT /jobs/notice       → { change }: tell this phone, through FCM, when a
 //!                          morning run's record arrives; `{ token }`
 //! DELETE /jobs/notice    → { change }: stop telling it; `{ token }`
+//! GET /jobs/files        → { files }: the decisions and scouts files filed
+//!                          here, newest first, at most 30, each with the
+//!                          mailbox's answer and when, or null while pending
 //! PUT /jobs/files/:name  → { change }: a decisions or scouts file, for the
 //!                          mailbox poller to hand on
 //! ```
@@ -29,7 +32,8 @@
 //! **Digests** and **runs** are read only: the `mailbox` poller is their one
 //! writer.
 //! **Files** are filed once per name and never replaced. They are text: a
-//! voice note is named by its id, never carried.
+//! voice note is named by its id, never carried. Reading them back gives
+//! each one's name, times and the mailbox's answer, never its body.
 
 use crate::auth::AuthContext;
 use crate::handlers::jobs as handlers;
@@ -59,6 +63,7 @@ where
 		.get("/jobs/runs", handlers::get_runs)
 		.put("/jobs/notice", handlers::put_notice)
 		.delete("/jobs/notice", handlers::delete_notice)
+		.get("/jobs/files", handlers::get_files)
 		.put("/jobs/files/:name", handlers::put_file);
 
 	Module::versioned("jobs", table).with_cors(cors)

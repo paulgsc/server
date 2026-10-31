@@ -708,7 +708,14 @@ nowhere is marked as such and belongs to review.
       `PUT /routine/opened` and the poller's `file_transcripts` and
       `file_leetype_logs`: a decisions or scouts file the phone filed, which
       of the routine's lessons it opened, a transcript, or a LeetType
-      session's log, its bytes, hash and when.
+      session's log, its bytes, hash and when. Read by the poller (what is
+      pending to hand over, and the Jobs index below) and by
+      `GET /jobs/files` (paulgsc/server#454), for its own subject: each
+      decisions or scouts file's name, folder and when it was filed, with
+      `mailbox_handed`'s answer to it and when, newest filed first, at most
+      30. Never a body, and never home's own files (transcripts, logs,
+      lessons opened), so the phone can say a file reached the run's
+      mailbox or was refused there and nothing more.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -780,7 +787,11 @@ nowhere is marked as such and belongs to review.
       `leetype_session_event`: only the mailbox copy is skipped, until an
       event of it arrives and it is decided again.
     - `mailbox_handed`, written only by the poller: the mailbox's answer to
-      each filed file it handed over, once, final.
+      each filed file it handed over, once, final: `added`, `unchanged`,
+      `conflict` or `refused`, never the mailbox's reason for a refusal.
+      Read by the poller and by `GET /jobs/files`, as above. A failure to
+      reach the mailbox is logged and counted, never stored, so a file with
+      no answer reads as pending (`null`) whether or not a pass has tried it.
     - `mailbox_archive`, written only by the poller with the archive token
       (invariant 21): each file it archived from any folder, its bytes as the
       mailbox held them (they must match the listing's SHA-256), its hash,
@@ -808,6 +819,7 @@ nowhere is marked as such and belongs to review.
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
     `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
     `the_due_query_reads_only_what_arrived_after_the_mark`,
+    `jobs_files_answer_each_filed_file_with_its_answer_or_none`
     and `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
     `mailbox::index`'s
     `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
@@ -836,8 +848,11 @@ nowhere is marked as such and belongs to review.
     `leetype-log` or `index`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
-    `handlers::jobs`'s `digests_answers_only_the_callers_own` and
-    `files_take_a_file_that_names_a_voice_note`.
+    `handlers::jobs`'s `digests_answers_only_the_callers_own`,
+    `files_take_a_file_that_names_a_voice_note`,
+    `files_answer_only_the_callers_own` and
+    `files_answer_what_the_mailbox_said_to_each_or_null` (which also finds
+    no body in the answer).
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,

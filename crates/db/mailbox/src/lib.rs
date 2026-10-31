@@ -42,7 +42,9 @@
 //!   (owner, paulgsc/server#509).
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
-//!   filed files with no answer recorded.
+//!   filed files with no answer recorded, and [`jobs_files`] the phone's
+//!   decisions and scouts files with the answer to each, or none yet
+//!   (`GET /api/v1/jobs/files`).
 
 use sqlx::SqliteConnection;
 
@@ -409,6 +411,78 @@ impl Answer {
 			Self::Refused => "refused",
 		}
 	}
+
+	/// The answer `mailbox_handed.answer` holds as `stored`, or `None` for a
+	/// value its `CHECK` keeps out.
+	#[must_use]
+	pub fn from_stored(stored: &str) -> Option<Self> {
+		[Self::Added, Self::Unchanged, Self::Conflict, Self::Refused]
+			.into_iter()
+			.find(|answer| answer.as_str() == stored)
+	}
+}
+
+/// One Jobs file the phone filed, and the mailbox's answer to it, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobsFile {
+	/// `decisions` or `scout`.
+	pub folder: String,
+	pub name: String,
+	/// When the phone filed it with home.
+	pub filed_at: String,
+	/// What the mailbox said and when, or `None` while it waits to be handed.
+	pub handed: Option<(Answer, String)>,
+}
+
+/// `subject`'s decisions and scouts files, and what the mailbox said to each.
+///
+/// The files `PUT /jobs/files/:name` filed, newest filed first, at most
+/// `limit`, each with the mailbox's first answer to it and when, or none
+/// while it is pending. Never a body: the phone holds its own copy, and the
+/// answer is what it asks for.
+///
+/// The other files in `mailbox_outgoing` (transcripts, `LeetType` logs,
+/// lessons opened) are home's own, not the phone's, and are left out.
+///
+/// # Errors
+/// Any `sqlx` failure, and a stored answer the table's `CHECK` keeps out.
+pub async fn jobs_files(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<JobsFile>, MailboxError> {
+	// An answer is recorded once (`record_handed` runs only for a pending
+	// file); `MIN(rowid)` keeps one row per file even if one were twice.
+	let rows = sqlx::query!(
+		r#"SELECT filed.folder, filed.name, filed.filed_at,
+		          handed.answer AS "answer?: String", handed.handed_at AS "handed_at?: String"
+		   FROM mailbox_outgoing AS filed
+		   LEFT JOIN mailbox_handed AS handed ON handed.rowid = (
+		     SELECT MIN(first.rowid) FROM mailbox_handed AS first
+		     WHERE first.subject_id = filed.subject_id AND first.folder = filed.folder AND first.name = filed.name
+		   )
+		   WHERE filed.subject_id = ?1 AND filed.folder IN ('decisions', 'scout')
+		   ORDER BY filed.filed_at DESC, filed.rowid DESC
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	rows
+		.into_iter()
+		.map(|row| {
+			let handed = match (row.answer, row.handed_at) {
+				(Some(answer), Some(at)) => {
+					let answer = Answer::from_stored(&answer).ok_or_else(|| MailboxError::Storage(sqlx::Error::Decode("a stored hand-over answer is not one".into())))?;
+					Some((answer, at))
+				}
+				_ => None,
+			};
+			Ok(JobsFile {
+				folder: row.folder,
+				name: row.name,
+				filed_at: row.filed_at,
+				handed,
+			})
+		})
+		.collect()
 }
 
 /// Files `body` under (`folder`, `name`) for `subject`, to be handed to the
@@ -981,7 +1055,7 @@ mod tests {
 		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
 		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
-	use super::{jobs_as_of, jobs_inputs};
+	use super::{jobs_as_of, jobs_files, jobs_inputs};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -1298,6 +1372,67 @@ mod tests {
 			record_handed(&mut conn, "subject-gone", "decisions", "x", Answer::Refused, NOW).await.unwrap(),
 			Change::NoAccount
 		);
+	}
+
+	/// Each of the caller's decisions and scouts files, newest filed first,
+	/// with the mailbox's answer and when, or none while it is pending; not
+	/// another subject's, and not home's own files (a transcript).
+	#[tokio::test]
+	async fn jobs_files_answer_each_filed_file_with_its_answer_or_none() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		for (folder, name, at) in [
+			("decisions", "decisions-2026-10-21.json", "2026-10-21T22:00:00.000Z"),
+			("scout", "scouts-20261022T101500.json", "2026-10-22T10:15:00.000Z"),
+			("decisions", "decisions-2026-10-23.json", "2026-10-23T22:00:00.000Z"),
+			("transcript", "transcript-n1-1.json", "2026-10-24T08:00:00.000Z"),
+		] {
+			file_outgoing(&mut conn, A, folder, name, "s", b"{}", at).await.unwrap();
+		}
+		file_outgoing(&mut conn, B, "decisions", "decisions-2026-10-24.json", "s", b"{}", NOW).await.unwrap();
+		record_handed(&mut conn, A, "decisions", "decisions-2026-10-21.json", Answer::Refused, "2026-10-21T22:15:00.000Z")
+			.await
+			.unwrap();
+		record_handed(&mut conn, A, "scout", "scouts-20261022T101500.json", Answer::Added, "2026-10-22T10:30:00.000Z")
+			.await
+			.unwrap();
+		record_handed(&mut conn, A, "transcript", "transcript-n1-1.json", Answer::Added, NOW).await.unwrap();
+		let files = jobs_files(&mut conn, A, 30).await.unwrap();
+		let seen: Vec<_> = files
+			.iter()
+			.map(|file| (file.folder.as_str(), file.name.as_str(), file.filed_at.as_str(), file.handed.clone()))
+			.collect();
+		assert_eq!(
+			seen,
+			[
+				("decisions", "decisions-2026-10-23.json", "2026-10-23T22:00:00.000Z", None),
+				(
+					"scout",
+					"scouts-20261022T101500.json",
+					"2026-10-22T10:15:00.000Z",
+					Some((Answer::Added, String::from("2026-10-22T10:30:00.000Z")))
+				),
+				(
+					"decisions",
+					"decisions-2026-10-21.json",
+					"2026-10-21T22:00:00.000Z",
+					Some((Answer::Refused, String::from("2026-10-21T22:15:00.000Z")))
+				),
+			]
+		);
+		assert_eq!(jobs_files(&mut conn, A, 1).await.unwrap().len(), 1, "at most the limit, newest first");
+		assert_eq!(jobs_files(&mut conn, A, 1).await.unwrap()[0].name, "decisions-2026-10-23.json");
+		let theirs = jobs_files(&mut conn, B, 30).await.unwrap();
+		assert_eq!(theirs.len(), 1);
+		assert_eq!(theirs[0].name, "decisions-2026-10-24.json", "per subject");
+	}
+
+	#[test]
+	fn every_answer_reads_back_from_what_it_stores() {
+		for answer in [Answer::Added, Answer::Unchanged, Answer::Conflict, Answer::Refused] {
+			assert_eq!(Answer::from_stored(answer.as_str()), Some(answer));
+		}
+		assert_eq!(Answer::from_stored("pending"), None);
 	}
 
 	/// A voice note `note` of `subject`'s, and one attempt by `model` to hear it.
