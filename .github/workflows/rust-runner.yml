@@ -1,0 +1,80 @@
+# The rust-runner's sandbox, against hostile programs (paulgsc/some-ui#2234,
+# RR3).
+#
+# Builds the image from infra/docker/Dockerfile.rust-runner, brings up
+# infra/compose/rust_runner.yml exactly as written, and runs
+# scripts/check_rust_runner_sandbox.py: the container is the declared sandbox
+# (RX1), the pinned rustc 1.97.0 prints the worked example's exact text, and
+# a program that loops, allocates without bound, forks or spawns threads
+# without bound, leaves its process group, opens a socket, writes where it
+# can, stops or kills the runner, queues requests on its socket, or leaves
+# IPC behind, and a source that makes rustc blow up, each end as a recorded
+# outcome and leave nothing behind (RX2, RX3). The owner's rule is that every
+# program is hostile, so these cases are a check, not review notes.
+#
+# Path-filtered to what builds or configures the runner, on PRs and on pushes
+# to main (so main is checked as merged). Stores nothing: no artifact, and
+# the build reads the layer cache the image detector's build already keeps
+# (`.github/actions/docker-build`, scope `rust-runner`) without writing to
+# it, so this job adds no cache entry and builds the image once more only
+# where that cache misses.
+name: Rust runner
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'crates/rust_runner/**'
+      - 'infra/docker/Dockerfile.rust-runner'
+      - 'infra/compose/rust_runner.yml'
+      - 'scripts/check_rust_runner_sandbox.py'
+      - '.github/workflows/rust-runner.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/config.toml'
+      - '.dockerignore'
+  push:
+    branches:
+      - main
+    paths:
+      - 'crates/rust_runner/**'
+      - 'infra/docker/Dockerfile.rust-runner'
+      - 'infra/compose/rust_runner.yml'
+      - 'scripts/check_rust_runner_sandbox.py'
+      - '.github/workflows/rust-runner.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/config.toml'
+      - '.dockerignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sandbox:
+    name: Sandbox against hostile programs
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # The image detector's cache, read only: no `cache-to`.
+      - name: Build the image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.rust-runner
+          push: false
+          load: true
+          tags: pgathondu/rust-runner:latest
+          cache-from: type=gha,scope=rust-runner
+      - name: Run every hostile program against it
+        run: python3 scripts/check_rust_runner_sandbox.py --no-build
