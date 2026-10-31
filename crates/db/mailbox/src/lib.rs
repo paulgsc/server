@@ -19,7 +19,7 @@
 //!   caller of [`keep_item`], [`record_handed`], [`keep_archived`],
 //!   [`file_transcript`] and [`file_leetype_log`], and
 //!   `PUT /api/v1/jobs/files/:name` and `PUT /api/v1/routine/opened` the only
-//!   callers of [`file_outgoing`] besides it;
+//!   callers of [`file_outgoing`] besides it (its index, in [`INDEX`]);
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
 //! - **A transcript is filed once, under a number decided once.**
@@ -36,6 +36,10 @@
 //!   (`20261030000400_create_mailbox_leetype_log.up.sql`).
 //! - **Archived here first** (docs/identity.md invariant 21): see
 //!   [`keep_archived`].
+//! - **An index is read from these tables, never a new one.** [`jobs_inputs`]
+//!   and [`jobs_as_of`] read what the Jobs index counts, and [`last_index`]
+//!   the newest one filed, so the poller files one only when it moved
+//!   (paulgsc/server#509).
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
@@ -824,6 +828,165 @@ pub async fn refuse_leetype_log(conn: &mut SqliteConnection, subject: &str, (ses
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
+/// The folder home's indexes go to: its bookkeeping for each routine,
+/// computed from what it holds (paulgsc/server#509).
+pub const INDEX: &str = "index";
+
+/// One file a routine's index is computed from: its name and bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldFile {
+	pub name: String,
+	pub body: Vec<u8>,
+}
+
+/// One transcript of a Jobs voice note the mailbox holds as home filed it:
+/// its name there and the SHA-256 of its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldTranscript {
+	pub name: String,
+	pub sha256: String,
+}
+
+/// Everything the Jobs index is computed from, each list by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobsInputs {
+	/// Every digest home kept from `brief`.
+	pub digests: Vec<HeldFile>,
+	/// Every decisions file the mailbox took from home as home filed it
+	/// (`added` or `unchanged`): a refused or conflicting one is not there.
+	pub decisions: Vec<HeldFile>,
+	/// Every scouts file the mailbox took, likewise.
+	pub scouts: Vec<HeldFile>,
+	/// Every transcript of a Jobs voice note the mailbox took, likewise.
+	pub transcripts: Vec<HeldTranscript>,
+}
+
+/// What the Jobs index for `subject` is computed from.
+///
+/// Read it in one transaction with [`jobs_as_of`], so both see one snapshot.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn jobs_inputs(conn: &mut SqliteConnection, subject: &str) -> Result<JobsInputs, MailboxError> {
+	let digests = sqlx::query_as!(
+		HeldFile,
+		"SELECT name, body FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief' ORDER BY name",
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let decisions = taken_files(conn, subject, "decisions").await?;
+	let scouts = taken_files(conn, subject, "scout").await?;
+	let transcripts = sqlx::query_as!(
+		HeldTranscript,
+		r#"SELECT filed.name AS "name!: String", filed.sha256 AS "sha256!: String"
+		   FROM mailbox_transcript AS heard
+		   JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
+		   JOIN mailbox_outgoing AS filed
+		     ON filed.subject_id = heard.subject_id AND filed.folder = 'transcript'
+		    AND filed.name = 'transcript-' || heard.note_id || '-' || heard.n || '.json'
+		   WHERE heard.subject_id = ?1 AND note.of_kind = 'jobs'
+		     AND EXISTS (
+		       SELECT 1 FROM mailbox_handed AS handed
+		       WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		         AND handed.answer IN ('added', 'unchanged')
+		     )
+		   ORDER BY filed.name"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(JobsInputs {
+		digests,
+		decisions,
+		scouts,
+		transcripts,
+	})
+}
+
+/// `subject`'s files filed in `folder` that the mailbox took as home filed
+/// them (`added` or `unchanged`), by name.
+async fn taken_files(conn: &mut SqliteConnection, subject: &str, folder: &str) -> Result<Vec<HeldFile>, MailboxError> {
+	let files = sqlx::query_as!(
+		HeldFile,
+		"SELECT filed.name, filed.body FROM mailbox_outgoing AS filed
+		 WHERE filed.subject_id = ?1 AND filed.folder = ?2
+		   AND EXISTS (
+		     SELECT 1 FROM mailbox_handed AS handed
+		     WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		       AND handed.answer IN ('added', 'unchanged')
+		   )
+		 ORDER BY filed.name",
+		subject,
+		folder
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(files)
+}
+
+/// When home last took in something the Jobs index counts, or `None`.
+///
+/// That is a digest it read, or the mailbox's answer taking a decisions
+/// file, a scouts file or a Jobs note's transcript home handed it. Every
+/// input [`jobs_inputs`] reads arrives with a time at least this, so an index
+/// stamped with it (`asOf`) is out of date exactly when this moves.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn jobs_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, MailboxError> {
+	let at = sqlx::query_scalar!(
+		r#"SELECT MAX(at) AS "at?: String" FROM (
+		     SELECT pulled_at AS at FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief'
+		     UNION ALL
+		     SELECT handed_at AS at FROM mailbox_handed
+		     WHERE subject_id = ?1 AND folder IN ('decisions', 'scout') AND answer IN ('added', 'unchanged')
+		     UNION ALL
+		     SELECT handed.handed_at AS at
+		     FROM mailbox_transcript AS heard
+		     JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
+		     JOIN mailbox_handed AS handed
+		       ON handed.subject_id = heard.subject_id AND handed.folder = 'transcript'
+		      AND handed.name = 'transcript-' || heard.note_id || '-' || heard.n || '.json'
+		      AND handed.answer IN ('added', 'unchanged')
+		     WHERE heard.subject_id = ?1 AND note.of_kind = 'jobs'
+		   )"#,
+		subject
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(at)
+}
+
+/// The name an index for `routine`, filed at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
+/// goes under in the mailbox.
+#[must_use]
+pub fn index_name(routine: &str, stamp: &str) -> String {
+	String::from("index-") + routine + "-" + stamp + ".json"
+}
+
+/// The newest index `subject` filed for `routine`, by name (each is named for
+/// when it was filed), if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn last_index(conn: &mut SqliteConnection, subject: &str, routine: &str) -> Result<Option<HeldFile>, MailboxError> {
+	let prefix = index_name(routine, "");
+	let prefix = prefix.strip_suffix(".json").unwrap_or(&prefix);
+	let last = sqlx::query_as!(
+		HeldFile,
+		"SELECT name, body FROM mailbox_outgoing
+		 WHERE subject_id = ?1 AND folder = 'index' AND substr(name, 1, length(?2)) = ?2
+		 ORDER BY name DESC
+		 LIMIT 1",
+		subject,
+		prefix
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(last)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
@@ -831,6 +994,7 @@ mod tests {
 		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
 		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
+	use super::{index_name, jobs_as_of, jobs_inputs, last_index, INDEX};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -1429,5 +1593,105 @@ mod tests {
 	#[test]
 	fn a_later_logs_name_carries_its_number() {
 		assert_eq!(leetype_log_name("4f0c-a_b", 12), "log-4f0c-a_b.r12.json");
+	}
+
+	/// HF7 (#509): the Jobs index counts every digest home kept and every
+	/// file and Jobs transcript the mailbox took as home filed it, and no
+	/// other subject's.
+	#[tokio::test]
+	async fn the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those() {
+		let pool = pool().await;
+		assert_eq!(jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap(), None, "nothing yet");
+		keep(&pool, A, &digest("2026-10-22"), 1, "d22").await.unwrap();
+		keep(&pool, B, &digest("2026-10-23"), 2, "theirs").await.unwrap();
+		for (folder, name, answer, at) in [
+			("decisions", "decisions-2026-10-22.json", Some(Answer::Added), "2026-10-22T16:00:00.000Z"),
+			("decisions", "decisions-2026-10-23.json", Some(Answer::Conflict), "2026-10-23T16:00:00.000Z"),
+			("decisions", "decisions-2026-10-24.json", None, ""),
+			("scout", "scouts-20261022T101500.json", Some(Answer::Unchanged), "2026-10-22T17:00:00.000Z"),
+			("scout", "scouts-20261023T101500.json", Some(Answer::Refused), "2026-10-23T17:00:00.000Z"),
+			("opened", "opened-20261024T000000000Z.json", Some(Answer::Added), "2026-10-29T00:00:00.000Z"),
+		] {
+			file_outgoing(&mut pool.acquire().await.unwrap(), A, folder, name, "sha", name.as_bytes(), NOW)
+				.await
+				.unwrap();
+			if let Some(answer) = answer {
+				record_handed(&mut pool.acquire().await.unwrap(), A, folder, name, answer, at).await.unwrap();
+			}
+		}
+		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-10-25T09:01:00.000Z").await;
+		heard(&pool, A, ("n1", "medium", 1), "heard", Some("하나요"), "2026-10-26T09:01:00.000Z").await;
+		file_next(&pool, A, "n1", "small").await.unwrap();
+		file_next(&pool, A, "n1", "medium").await.unwrap();
+		record_handed(
+			&mut pool.acquire().await.unwrap(),
+			A,
+			"transcript",
+			"transcript-n1-1.json",
+			Answer::Added,
+			"2026-10-25T09:15:00.000Z",
+		)
+		.await
+		.unwrap();
+		// A reflection's note: not the Jobs routine's.
+		heard(&pool, A, ("r1", "small", 1), "heard", Some("셋"), "2026-10-27T09:01:00.000Z").await;
+		sqlx::query("DELETE FROM voice_note WHERE note_id = 'r1'").execute(&pool).await.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'r1', 'reflection', 's1', '2026-10-27T08:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		file_next(&pool, A, "r1", "small").await.unwrap();
+		record_handed(
+			&mut pool.acquire().await.unwrap(),
+			A,
+			"transcript",
+			"transcript-r1-1.json",
+			Answer::Added,
+			"2026-10-28T09:15:00.000Z",
+		)
+		.await
+		.unwrap();
+
+		let inputs = jobs_inputs(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+		let names = |files: &[super::HeldFile]| files.iter().map(|file| file.name.clone()).collect::<Vec<_>>();
+		assert_eq!(names(&inputs.digests), [digest("2026-10-22")]);
+		assert_eq!(inputs.digests[0].body, b"d22");
+		assert_eq!(
+			names(&inputs.decisions),
+			["decisions-2026-10-22.json"],
+			"a conflict and an unhanded file are not the mailbox's"
+		);
+		assert_eq!(names(&inputs.scouts), ["scouts-20261022T101500.json"], "nor is a refusal");
+		let transcripts: Vec<&str> = inputs.transcripts.iter().map(|held| held.name.as_str()).collect();
+		assert_eq!(transcripts, ["transcript-n1-1.json"], "the Jobs note's, and only what the mailbox took");
+		assert_eq!(
+			jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(),
+			Some("2026-10-25T09:15:00.000Z"),
+			"the newest of what it counts: not the conflict, the opened filing or the reflection's transcript"
+		);
+	}
+
+	#[tokio::test]
+	async fn the_last_index_is_the_newest_of_its_routines_by_name() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(last_index(&mut conn, A, "jobs").await.unwrap(), None);
+		for (subject, routine, stamp) in [
+			(A, "jobs", "20261023T150000000Z"),
+			(A, "jobs", "20261024T150000000Z"),
+			(A, "jobsx", "20261025T150000000Z"),
+			(A, "topik", "20261026T150000000Z"),
+			(B, "jobs", "20261027T150000000Z"),
+		] {
+			let name = index_name(routine, stamp);
+			file_outgoing(&mut conn, subject, INDEX, &name, "sha", name.as_bytes(), NOW).await.unwrap();
+		}
+		let last = last_index(&mut conn, A, "jobs").await.unwrap().unwrap();
+		assert_eq!(last.name, "index-jobs-20261024T150000000Z.json");
+		assert_eq!(last.body, last.name.as_bytes());
 	}
 }

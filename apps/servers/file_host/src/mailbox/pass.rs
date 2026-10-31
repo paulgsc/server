@@ -8,7 +8,9 @@
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
 //! names a voice note by id at most), which lessons it opened, those
-//! transcripts and those logs.
+//! transcripts and those logs. Last of the handing, it files and hands the
+//! Jobs routine's index when what it counts has moved ([`super::index`]), so
+//! the index counts what this pass handed.
 //!
 //! A failure to reach or read the mailbox, or to write, ends the pass with
 //! what it kept so far, and the next pass tries again from the cursor. A file
@@ -101,6 +103,10 @@ pub struct Outcome {
 	/// Filed files handed to the mailbox this pass, each by its answer:
 	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
 	pub handed: Vec<&'static str>,
+	/// Indexes filed and handed this pass (`index`), each by the mailbox's
+	/// answer, as `handed`; an index refused before it was filed (`too_big`)
+	/// is in `refused`.
+	pub indexed: Vec<&'static str>,
 	/// Files archived home this pass, each by what came of it
 	/// (`metrics::mailbox::ARCHIVE_ANSWERS`).
 	pub archived: Vec<&'static str>,
@@ -131,6 +137,8 @@ pub enum Phase {
 	Filing,
 	/// Handing the mailbox what is filed.
 	Outbound,
+	/// Filing and handing the routines' indexes (`index`).
+	Index,
 	/// Putting back what the routine asked for.
 	Asks,
 	/// Archiving what is old.
@@ -144,6 +152,7 @@ impl Phase {
 			Self::Inbound => "inbound",
 			Self::Filing => "filing",
 			Self::Outbound => "outbound",
+			Self::Index => "index",
 			Self::Asks => "asks",
 			Self::Archive => "archive",
 		}
@@ -282,6 +291,12 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		hand_over(db, mailbox, subject, deletion, now, &mut outcome).await
 	};
+	// After outbound, so the index counts what this pass handed.
+	let index = if outcome.no_account {
+		Ok(())
+	} else {
+		super::index::file_jobs_index(db, mailbox, subject, deletion, now, &mut outcome).await
+	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
 		_ => Ok(()),
@@ -294,6 +309,7 @@ pub async fn run_once<T: MailboxTransport>(
 		(Phase::Inbound, inbound),
 		(Phase::Filing, filing),
 		(Phase::Outbound, outbound),
+		(Phase::Index, index),
 		(Phase::Asks, asks),
 		(Phase::Archive, old),
 	]
@@ -407,32 +423,64 @@ async fn hand_over<T: MailboxTransport>(
 		mailbox_repo::pending_outgoing(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
 	};
 	for file in pending {
-		let folder = match file.folder.as_str() {
-			"decisions" => Folder::Decisions,
-			"scout" => Folder::Scout,
-			"opened" => Folder::Opened,
-			"transcript" => Folder::Transcript,
-			"leetype-log" => Folder::LeetypeLog,
-			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
-			// `file_transcripts` and `file_leetype_logs` file only these.
-			_ => continue,
-		};
-		let answer = match mailbox.put(folder, &file.name, file.body).await {
-			Ok(Put::Added { .. }) => Answer::Added,
-			Ok(Put::Unchanged { .. }) => Answer::Unchanged,
-			Ok(Put::Conflict) => Answer::Conflict,
-			Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => Answer::Refused,
-			Err(err) => return Err(Failure::Mailbox(err)),
-		};
-		match record(db, deletion, subject, (&file.folder, &file.name), answer, &now()).await.map_err(storage)? {
-			Change::NoAccount => {
+		// An index the pass that filed it could not hand is counted as one.
+		let index = file.folder == mailbox_repo::INDEX;
+		match hand_one(db, mailbox, subject, deletion, now, file).await? {
+			Handed::Answered(answer) if index => outcome.indexed.push(answer.as_str()),
+			Handed::Answered(answer) => outcome.handed.push(answer.as_str()),
+			Handed::NotOurs => {}
+			Handed::NoAccount => {
 				outcome.no_account = true;
 				return Ok(());
 			}
-			Change::Added | Change::Unchanged => outcome.handed.push(answer.as_str()),
 		}
 	}
 	Ok(())
+}
+
+/// What handing one filed file came to.
+pub(super) enum Handed {
+	/// The mailbox answered, and the answer is recorded.
+	Answered(Answer),
+	/// A folder home does not put to: not handed, and nothing recorded.
+	NotOurs,
+	/// The subject has no account: nothing recorded.
+	NoAccount,
+}
+
+/// Hands one filed file to the mailbox and records its answer, which is
+/// final. A failure to reach the mailbox records nothing, so the file stays
+/// pending.
+pub(super) async fn hand_one<T: MailboxTransport>(
+	db: &SqlitePool,
+	mailbox: &Mailbox<T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	file: mailbox_repo::Outgoing,
+) -> Result<Handed, Failure> {
+	let folder = match file.folder.as_str() {
+		"decisions" => Folder::Decisions,
+		"scout" => Folder::Scout,
+		"opened" => Folder::Opened,
+		"transcript" => Folder::Transcript,
+		"leetype-log" => Folder::LeetypeLog,
+		"index" => Folder::Index,
+		// `PUT /jobs/files/:name`, `PUT /routine/opened`, `file_transcripts`,
+		// `file_leetype_logs` and `index::file_jobs_index` file only these.
+		_ => return Ok(Handed::NotOurs),
+	};
+	let answer = match mailbox.put(folder, &file.name, file.body).await {
+		Ok(Put::Added { .. }) => Answer::Added,
+		Ok(Put::Unchanged { .. }) => Answer::Unchanged,
+		Ok(Put::Conflict) => Answer::Conflict,
+		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => Answer::Refused,
+		Err(err) => return Err(Failure::Mailbox(err)),
+	};
+	match record(db, deletion, subject, (&file.folder, &file.name), answer, &now()).await.map_err(storage)? {
+		Change::NoAccount => Ok(Handed::NoAccount),
+		Change::Added | Change::Unchanged => Ok(Handed::Answered(answer)),
+	}
 }
 
 /// Files each transcript home heard and has not filed, oldest heard first,
@@ -704,7 +752,7 @@ async fn archive_one<T: MailboxTransport>(
 	Ok(Some(answer))
 }
 
-fn storage(err: mailbox_repo::MailboxError) -> Failure {
+pub(super) fn storage(err: mailbox_repo::MailboxError) -> Failure {
 	match err {
 		mailbox_repo::MailboxError::Storage(err) => Failure::Storage(err),
 		mailbox_repo::MailboxError::Rewritten => Failure::Storage(sqlx::Error::Protocol(String::from("a read or an answer cannot rewrite"))),
@@ -841,6 +889,10 @@ mod tests {
 		put_bodies: Mutex<Vec<String>>,
 		/// The body of each `LeetType` session log put.
 		logs: Mutex<Vec<String>>,
+		/// Each index put, `(name, body)`, apart from `puts`, answered
+		/// `201 added` unless `index_fails`.
+		indexes: Mutex<Vec<(String, String)>>,
+		index_fails: Mutex<bool>,
 	}
 
 	impl Fake {
@@ -864,6 +916,14 @@ mod tests {
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.method == Method::Put {
+				if let Some(name) = path.strip_prefix("/v1/index/items/") {
+					if *self.index_fails.lock().unwrap() {
+						return Err("connection refused");
+					}
+					let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
+					self.indexes.lock().unwrap().push((name.to_owned(), body));
+					return Ok(answer(201, r#"{"change":"added","seq":1}"#));
+				}
 				assert!(
 					[
 						"/v1/decisions/items/",
@@ -874,7 +934,7 @@ mod tests {
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts and LeetType session logs: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs and indexes: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -1208,7 +1268,11 @@ mod tests {
 	}
 
 	async fn answers(pool: &SqlitePool) -> Vec<(String, String)> {
-		sqlx::query_as("SELECT name, answer FROM mailbox_handed ORDER BY rowid").fetch_all(pool).await.unwrap()
+		// The index has tests of its own (`index`'s and below).
+		sqlx::query_as("SELECT name, answer FROM mailbox_handed WHERE folder <> 'index' ORDER BY rowid")
+			.fetch_all(pool)
+			.await
+			.unwrap()
 	}
 
 	#[tokio::test]
@@ -1452,6 +1516,10 @@ mod tests {
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			let path = request.url.strip_prefix(BASE).unwrap().to_owned();
 			if request.token.expose() == "home-token" {
+				// The index a pass files once it holds a digest (`index`).
+				if request.method == Method::Put && path.starts_with("/v1/index/items/") {
+					return Ok(answer(201, r#"{"change":"added","seq":1}"#));
+				}
 				assert!(
 					request.method == Method::Get
 						&& ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items", "/v1/run/items", "/v1/leetype/items"]
@@ -1970,5 +2038,127 @@ mod tests {
 		let filed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_outgoing").fetch_one(&pool).await.unwrap();
 		assert_eq!(filed, 0);
 		assert!(fake.puts.lock().unwrap().is_empty());
+	}
+
+	/// The indexes the fake took, as `(name, day, asOf, digests)`.
+	fn indexes(fake: &Fake) -> Vec<(String, String, String, Vec<String>)> {
+		fake
+			.indexes
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|(name, body)| {
+				let index: serde_json::Value = serde_json::from_str(body).unwrap();
+				let digests = index["from"]["digests"].as_array().unwrap().iter().map(|name| name.as_str().unwrap().to_owned()).collect();
+				(name.clone(), index["day"].as_str().unwrap().to_owned(), index["asOf"].as_str().unwrap().to_owned(), digests)
+			})
+			.collect()
+	}
+
+	/// HF7 (#509): home files the Jobs index once it holds something it
+	/// counts, and a new one only when that moves or the day does.
+	#[tokio::test]
+	async fn the_jobs_index_is_filed_when_what_it_counts_moves_and_only_then() {
+		let (pool, fake) = (pool().await, Fake::default());
+		assert_eq!(pass(&pool, &fake).await.unwrap(), Outcome::default(), "nothing to count: no index");
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		let first = pass(&pool, &fake).await.unwrap();
+		assert_eq!((first.kept, first.indexed), (1, vec!["added"]));
+		let at = String::from("2026-10-23T15:00:00.000Z");
+		assert_eq!(
+			indexes(&fake),
+			[(
+				String::from("index-jobs-20261023T150000000Z.json"),
+				String::from("2026-10-23"),
+				at.clone(),
+				vec![name.clone()]
+			)]
+		);
+		assert_eq!(
+			pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap(),
+			Outcome::default(),
+			"nothing moved: none filed"
+		);
+
+		let (next, body) = digest("2026-10-24");
+		fake.add(11, &next, &body);
+		let moved = pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
+		assert_eq!(moved.indexed, ["added"]);
+		// 06:59 UTC on the 25th is still the 24th in Los Angeles; 07:00 is not.
+		assert!(pass_at(&pool, &fake, "2026-10-25T06:59:00.000Z").await.unwrap().indexed.is_empty());
+		assert_eq!(
+			pass_at(&pool, &fake, "2026-10-25T07:00:00.000Z").await.unwrap().indexed,
+			["added"],
+			"a new day lapses picks"
+		);
+		let filed = indexes(&fake);
+		assert_eq!(
+			filed[1..],
+			[
+				(
+					String::from("index-jobs-20261024T150000000Z.json"),
+					String::from("2026-10-24"),
+					String::from("2026-10-24T15:00:00.000Z"),
+					vec![name.clone(), next.clone()]
+				),
+				(
+					String::from("index-jobs-20261025T070000000Z.json"),
+					String::from("2026-10-25"),
+					String::from("2026-10-24T15:00:00.000Z"),
+					vec![name, next]
+				),
+			]
+		);
+		let kept: Vec<(String, String)> = sqlx::query_as(
+			"SELECT filed.name, handed.answer FROM mailbox_outgoing AS filed JOIN mailbox_handed AS handed USING (subject_id, folder, name)
+			 WHERE filed.folder = 'index' ORDER BY filed.name",
+		)
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		assert_eq!(kept.len(), 3, "each filed in mailbox_outgoing and its answer recorded: {kept:?}");
+	}
+
+	#[tokio::test]
+	async fn the_index_counts_what_its_own_pass_handed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let body = r#"{"schema":"some-ui.job-decisions/1","sharedAt":"2026-10-23T14:00:00Z","picks":[],"notes":{},"disagreements":[],"outcomes":[]}"#;
+		filed_as(&pool, "decisions-2026-10-23.json", body.as_bytes()).await;
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!((outcome.handed, outcome.indexed), (vec!["added"], vec!["added"]));
+		let (_, index) = fake.indexes.lock().unwrap()[0].clone();
+		let index: serde_json::Value = serde_json::from_str(&index).unwrap();
+		assert_eq!(index["from"]["decisions"], serde_json::json!(["decisions-2026-10-23.json"]));
+		assert_eq!(index["new"]["decisions"], serde_json::json!([{ "name": "decisions-2026-10-23.json", "repeats": [] }]));
+	}
+
+	#[tokio::test]
+	async fn a_file_the_mailbox_turned_down_is_not_counted() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		filed(&pool, "decisions-2026-10-23.json").await;
+		*fake.put_answers.lock().unwrap() = vec![(409, r#"{"error":"conflict"}"#)];
+		pass(&pool, &fake).await.unwrap();
+		let (_, index) = fake.indexes.lock().unwrap()[0].clone();
+		let index: serde_json::Value = serde_json::from_str(&index).unwrap();
+		assert_eq!(index["from"]["decisions"], serde_json::json!([]), "the mailbox holds other bytes under that name");
+	}
+
+	#[tokio::test]
+	async fn an_index_the_mailbox_did_not_answer_is_handed_by_the_next_pass_and_not_filed_again() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		*fake.index_fails.lock().unwrap() = true;
+		let err = pass(&pool, &fake).await.unwrap_err();
+		assert!(matches!(err.failures[..], [(Phase::Index, Failure::Mailbox(MailboxError::Transport(_)))]));
+		assert_eq!(err.outcome.kept, 1, "the phases are independent");
+		*fake.index_fails.lock().unwrap() = false;
+		let next = pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
+		assert_eq!(next.indexed, ["added"]);
+		assert_eq!(fake.indexes.lock().unwrap().len(), 1);
+		assert_eq!(fake.indexes.lock().unwrap()[0].0, "index-jobs-20261023T150000000Z.json", "the one filed, handed late");
 	}
 }
