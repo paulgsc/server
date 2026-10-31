@@ -922,8 +922,9 @@ nowhere is marked as such and belongs to review.
     `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
-    days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB1's
-    trigger that lets an item go only once its `archived` row is written.
+    days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB5's
+    trigger that lets an item go only once its `archived` row is written (an
+    `index` item excepted, which goes once a newer one of its routine is live).
     *Not enforced:* that `archive_old` stores before it asks, beyond those
     tests, which review keeps by reading the function's order.
 
