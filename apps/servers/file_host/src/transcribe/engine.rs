@@ -31,7 +31,9 @@
 //! **Each piece of speech is heard in its own language** (paulgsc/server#578,
 //! ST23): the language is detected at each cut the VAD found that is a
 //! second or longer, from that cut's own audio alone, and consecutive cuts in one language are heard as one
-//! run, so a Korean phrase inside an English take comes back in Hangul. Each
+//! run, from that run's own audio alone (paulgsc/server#594), so a Korean
+//! phrase inside an English take comes back in Hangul, and no run's words are
+//! heard again in the language of the run before. Each
 //! word keeps the language it was heard in, and the note's language is the
 //! one heard for longest.
 //!
@@ -40,9 +42,10 @@
 //! times each token it hears ([`FullParams::set_token_timestamps`]); its
 //! tokens are pieces of words, so [`words`] joins them into words on the
 //! space that opens each, leaving out whisper.cpp's special tokens (its
-//! `[_BEG_]` and timestamps), and [`Cut::in_note`] moves each time from the
-//! speech the VAD cut out to the note itself, so a word's time is from the
-//! note's start, where captions over its audio need it.
+//! `[_BEG_]` and timestamps), and [`Run::in_note`] moves each time from the
+//! run it was heard in to the speech the VAD cut out, and from there to the
+//! note itself, so a word's time is from the note's start, where captions
+//! over its audio need it.
 //!
 //! **Nothing heard is logged.** whisper.cpp's own log goes nowhere
 //! (`whisper_rs::install_logging_hooks` with no log backend), ffmpeg's output
@@ -214,7 +217,7 @@ impl Whisper {
 		// the 30 seconds of mel from the offset it is given, and whisper.cpp
 		// clamps a mel against its loudest frame, so a mel of the whole speech
 		// would let the cuts after this one decide its language. `full` makes
-		// the whole speech's mel again before it hears a run.
+		// each run's own mel before it hears that run.
 		let detect = |cut: &[f32]| -> Option<(String, f64)> {
 			let mut pcm = cut[..cut.len().min(DETECT_WINDOW)].to_vec();
 			pcm.resize(pcm.len().max(DETECT_PAD), 0.0);
@@ -232,19 +235,20 @@ impl Whisper {
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
-		// Each run of one language is heard on its own, in that language.
+		// Each run of one language is heard on its own, in that language, from
+		// its own samples alone ([`Run::samples`]): they are `full`'s whole
+		// window, so its mel is made of the run's audio only (never of the whole
+		// speech once per run) and it encodes no more passes than the run needs.
 		for run in &runs {
 			if let Some(stopped) = stopped(deadline, cancel) {
 				return stopped;
 			}
-			let (Ok(offset_ms), Ok(duration_ms)) = (i32::try_from(run.offset_ms), i32::try_from(run.duration_ms)) else {
+			let Some(samples) = run.samples(speech) else {
 				return Ok(Outcome::Failed);
 			};
 			let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
 			params.set_n_threads(threads);
 			params.set_language(Some(&run.language));
-			params.set_offset_ms(offset_ms);
-			params.set_duration_ms(duration_ms);
 			params.set_print_special(false);
 			params.set_print_progress(false);
 			params.set_print_realtime(false);
@@ -264,7 +268,7 @@ impl Whisper {
 				params.set_abort_callback(Some(should_abort));
 				params.set_abort_callback_user_data(std::ptr::from_ref(&watch).cast_mut().cast());
 			}
-			if state.full(params, speech).is_err() {
+			if state.full(params, samples).is_err() {
 				return failed(cancel);
 			}
 			for segment in state.as_iter() {
@@ -281,33 +285,31 @@ impl Whisper {
 				let Some(tokens) = tokens_of(&segment, special) else {
 					return Ok(Outcome::Failed);
 				};
-				heard.extend(words(&tokens).into_iter().map(|said| (said, run.language.clone())));
+				// Timed from the run's first sample, so moved by the run's place in
+				// the speech, then to the note. A heard note always has cuts: one
+				// with no speech is silent before Whisper runs (`hear`), so no word
+				// is dropped here.
+				heard.extend(words(&tokens).into_iter().filter_map(|said| {
+					let (start_ms, end_ms) = run.in_note(cuts, said.start_ms, said.end_ms)?;
+					Some(Word {
+						text: said.text,
+						start_ms,
+						end_ms,
+						p: Some(said.p),
+						language: Some(run.language.clone()),
+					})
+				}));
 			}
 		}
 		if text.is_empty() {
 			return Ok(Outcome::Silent);
 		}
-		// A heard note always has cuts: one with no speech is silent before
-		// Whisper runs (`hear`), so no word is dropped here.
-		let words = heard
-			.into_iter()
-			.filter_map(|(said, language)| {
-				let (start_ms, end_ms) = Cut::in_note(cuts, said.start_ms, said.end_ms)?;
-				Some(Word {
-					text: said.text,
-					start_ms,
-					end_ms,
-					p: Some(said.p),
-					language: Some(language),
-				})
-			})
-			.collect();
 		let (language, language_p) = main_language(&runs);
 		Ok(Outcome::Heard {
 			language,
 			language_p,
 			text,
-			words,
+			words: heard,
 		})
 	}
 }
@@ -368,7 +370,8 @@ fn tokens_of(segment: &whisper_rs::WhisperSegment<'_>, special: whisper_rs::Whis
 }
 
 /// One token Whisper heard, as whisper.cpp gives it: a piece of a word (or a
-/// special token), timed in centiseconds into the speech it heard.
+/// special token), timed in centiseconds from the first sample `full` was
+/// handed, its run's.
 #[derive(Debug, Clone, PartialEq)]
 struct Token {
 	/// Its text's bytes. A piece of a Korean syllable can be a token of its
@@ -383,7 +386,7 @@ struct Token {
 	end_cs: i64,
 }
 
-/// A word Whisper heard, timed in milliseconds into the speech it heard.
+/// A word Whisper heard, timed in milliseconds from its run's first sample.
 #[derive(Debug, Clone, PartialEq)]
 struct Spoken {
 	text: String,
@@ -431,14 +434,37 @@ fn words(tokens: &[Token]) -> Vec<Spoken> {
 }
 
 /// A run of the speech heard in one language (ST23): consecutive cuts
-/// detected as, or joining, `language`, as `full` takes a window.
+/// detected as, or joining, `language`, `len` samples from `at` in the
+/// speech.
 #[derive(Debug, Clone, PartialEq)]
 struct Run {
 	language: String,
 	/// The surest detection among its cuts, 0 to 1.
 	p: f64,
-	offset_ms: usize,
-	duration_ms: usize,
+	at: usize,
+	len: usize,
+}
+
+impl Run {
+	/// The samples `full` hears this run from: its own and no others
+	/// (paulgsc/server#594). whisper.cpp makes its mel of every sample it is
+	/// handed and encodes 30 seconds of it from each `seek`, and its
+	/// `duration_ms` only ends the decoding, so handed the whole speech, a
+	/// run ending inside a window would hear the next run's words in its own
+	/// language. `None` only for a run past the speech's end, which
+	/// [`plan_runs`] never makes.
+	fn samples<'a>(&self, speech: &'a [f32]) -> Option<&'a [f32]> {
+		speech.get(self.at..self.at.checked_add(self.len)?)
+	}
+
+	/// A word from `start_ms` to `end_ms` into this run's own samples, as
+	/// whisper.cpp times what it hears (every segment's and token's time is
+	/// from the first sample `full` was handed), as milliseconds into the
+	/// note `cuts` were cut from: the run's place in the speech is added back
+	/// in samples, then [`Cut::in_note`] moves it to the note.
+	fn in_note(&self, cuts: &[Cut], start_ms: i64, end_ms: i64) -> Option<(i64, i64)> {
+		Cut::in_note(cuts, self.at, start_ms, end_ms)
+	}
 }
 
 /// A cut shorter than this is too short to tell a language from: it joins
@@ -485,11 +511,9 @@ enum Planned {
 /// encoder pass, so the deadline and `cancel` are checked before each, as
 /// the runs are before each is heard.
 fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken, mut detect: impl FnMut(&[f32]) -> Option<(String, f64)>) -> Planned {
-	let ms = |samples: usize| samples * 1000 / SAMPLE_RATE;
 	let mut runs: Vec<Run> = Vec::new();
 	for cut in cuts {
-		let (offset_ms, duration_ms) = (ms(cut.speech_at), ms(cut.len));
-		let detected = if runs.is_empty() || duration_ms >= DETECT_MIN_MS {
+		let detected = if runs.is_empty() || cut.len * 1000 / SAMPLE_RATE >= DETECT_MIN_MS {
 			if let Some(stopped) = stopped(deadline, cancel) {
 				return Planned::Stopped(stopped);
 			}
@@ -497,18 +521,19 @@ fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &Cancellat
 		} else {
 			None
 		};
+		let end = cut.speech_at + cut.len;
 		match (runs.last_mut(), detected) {
 			(None, None) => return Planned::Undetected,
 			(Some(last), Some((language, p))) if last.language == language => {
 				last.p = last.p.max(p);
-				last.duration_ms = offset_ms + duration_ms - last.offset_ms;
+				last.len = end - last.at;
 			}
-			(Some(last), None) => last.duration_ms = offset_ms + duration_ms - last.offset_ms,
+			(Some(last), None) => last.len = end - last.at,
 			(_, Some((language, p))) => runs.push(Run {
 				language,
 				p,
-				offset_ms,
-				duration_ms,
+				at: cut.speech_at,
+				len: cut.len,
 			}),
 		}
 	}
@@ -526,10 +551,10 @@ fn main_language(runs: &[Run]) -> (String, f64) {
 	for run in runs {
 		match heard.iter_mut().find(|(language, _, _)| *language == run.language) {
 			Some((_, duration, p)) => {
-				*duration += run.duration_ms;
+				*duration += run.len;
 				*p = p.max(run.p);
 			}
-			None => heard.push((run.language.clone(), run.duration_ms, run.p)),
+			None => heard.push((run.language.clone(), run.len, run.p)),
 		}
 	}
 	heard
@@ -548,15 +573,16 @@ struct Cut {
 }
 
 impl Cut {
-	/// A word from `start_ms` to `end_ms` into the speech Whisper heard, as
-	/// milliseconds into the note `cuts` were cut from. The word is held
-	/// within the cut its start falls in (a start where two cuts meet is the
-	/// later one's), so it never runs before 0, ends before it began, or
-	/// stretches over the silence after its cut. `None` only with no cuts,
-	/// since the first cut starts the speech.
-	fn in_note(cuts: &[Self], start_ms: i64, end_ms: i64) -> Option<(i64, i64)> {
+	/// A word from `start_ms` to `end_ms` after sample `from` of the speech
+	/// Whisper heard (where the run it was heard in starts), as milliseconds
+	/// into the note `cuts` were cut from. The word is held within the cut
+	/// its start falls in (a start where two cuts meet is the later one's),
+	/// so it never runs before `from`, ends before it began, or stretches
+	/// over the silence after its cut. `None` only with no cuts, since the
+	/// first cut starts the speech.
+	fn in_note(cuts: &[Self], from: usize, start_ms: i64, end_ms: i64) -> Option<(i64, i64)> {
 		let per_ms = SAMPLE_RATE / 1000;
-		let sample = |ms: i64| usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms);
+		let sample = |ms: i64| from.saturating_add(usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms));
 		let (start, end) = (sample(start_ms), sample(end_ms));
 		let cut = cuts.iter().rev().find(|cut| cut.speech_at <= start)?;
 		let start_in = (start - cut.speech_at).min(cut.len);
@@ -966,11 +992,11 @@ mod tests {
 			panic!("no runs");
 		};
 		assert_eq!(asked, [0, 2, 3, 4], "the half-second cut is not asked about");
-		let run = |language: &str, p: f64, offset_ms: usize, duration_ms: usize| Run {
+		let run = |language: &str, p: f64, at_ms: usize, len_ms: usize| Run {
 			language: String::from(language),
 			p,
-			offset_ms,
-			duration_ms,
+			at: at_ms * SAMPLE_RATE / 1000,
+			len: len_ms * SAMPLE_RATE / 1000,
 		};
 		assert_eq!(runs, [run("en", 0.9, 0, 2_500), run("ko", 0.8, 2_500, 3_000), run("en", 0.95, 5_500, 2_700)]);
 		assert_eq!(main_language(&runs), (String::from("en"), 0.95));
@@ -1087,7 +1113,7 @@ mod tests {
 				len: ms(500),
 			},
 		];
-		let at = |start_ms, end_ms| Cut::in_note(&cuts, start_ms, end_ms).unwrap();
+		let at = |start_ms, end_ms| Cut::in_note(&cuts, 0, start_ms, end_ms).unwrap();
 		assert_eq!(at(0, 250), (1_000, 1_250));
 		assert_eq!(at(1_200, 1_400), (5_200, 5_400), "in the second cut");
 		// A word ends within the cut it starts in, so none spans the silence
@@ -1101,6 +1127,84 @@ mod tests {
 		assert_eq!(at(1_300, 9_000), (5_300, 5_500));
 		assert_eq!(at(-40, 100), (1_000, 1_100));
 		assert_eq!(at(400, 300), (1_400, 1_400));
-		assert_eq!(Cut::in_note(&[], 0, 300), None, "no cuts, no speech to time");
+		assert_eq!(Cut::in_note(&[], 0, 0, 300), None, "no cuts, no speech to time");
+	}
+
+	/// Which of [`speech_of`]'s cuts `samples` hold, in order.
+	fn cuts_in(samples: &[f32]) -> Vec<usize> {
+		let mut held: Vec<usize> = Vec::new();
+		for sample in samples {
+			let n = (0..=u8::MAX).position(|i| f32::from(i).to_bits() == sample.to_bits()).unwrap();
+			if held.last() != Some(&n) {
+				held.push(n);
+			}
+		}
+		held
+	}
+
+	/// paulgsc/server#594: each run is heard from its own samples alone, so a
+	/// run that ends inside an encoder window does not hear the next run's
+	/// words in its own language, and Whisper's times, which count from the
+	/// first sample it was handed, are moved by the run's place in the speech
+	/// before they are moved to the note.
+	#[test]
+	fn a_run_is_heard_from_its_own_samples_and_its_words_land_where_it_sits_in_the_note() {
+		let (speech, cuts) = speech_of(&[2_000, 500, 3_000, 1_500]);
+		let languages = ["en", "", "ko", "en"];
+		let Planned::Runs(runs) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+			Some((String::from(languages[which_cut(samples)]), 0.9))
+		}) else {
+			panic!("no runs");
+		};
+		let heard: Vec<Vec<usize>> = runs.iter().map(|run| cuts_in(run.samples(&speech).unwrap())).collect();
+		assert_eq!(heard, [vec![0, 1], vec![2], vec![3]], "each run's cuts, and none of the next run's");
+		for run in &runs {
+			assert_eq!(run.samples(&speech).unwrap().len(), run.len, "the whole run, to its last sample");
+		}
+		// speech_of cuts each from twice its place in the speech: the Korean
+		// run is cut 2, from 2.5 s of the speech and 5.0 s of the note.
+		let (english, korean, last) = (&runs[0], &runs[1], &runs[2]);
+		assert_eq!(korean.in_note(&cuts, 100, 400), Some((5_100, 5_400)), "100 ms into the run, not into the speech");
+		assert_eq!(korean.in_note(&cuts, 2_900, 3_500), Some((7_900, 8_000)), "held to the run's last cut");
+		assert_eq!(english.in_note(&cuts, 2_100, 2_300), Some((4_100, 4_300)), "the half-second cut, from 4.0 s");
+		assert_eq!(last.in_note(&cuts, 0, 250), Some((11_000, 11_250)));
+		assert_eq!(last.in_note(&cuts, -40, 100), Some((11_000, 11_100)), "never before the run");
+
+		// A note heard in one language is one run, the whole speech: nothing
+		// past it to leak, and its times are the speech's own.
+		let Planned::Runs(one) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |_| Some((String::from("en"), 0.9))) else {
+			panic!("no runs");
+		};
+		assert_eq!(one.len(), 1);
+		assert_eq!(one[0].samples(&speech), Some(&speech[..]));
+		assert_eq!(one[0].in_note(&cuts, 2_100, 2_300), Cut::in_note(&cuts, 0, 2_100, 2_300));
+	}
+
+	/// The run's place is added back in samples, not milliseconds: a run
+	/// starting half a millisecond into one (sample 24 008, 1 500.5 ms) has
+	/// its first word at its own cut's start, where 1 500 ms would put it in
+	/// the cut before.
+	#[test]
+	fn a_runs_place_in_the_speech_is_added_back_to_the_sample() {
+		let cuts = [
+			Cut {
+				speech_at: 0,
+				note_at: 0,
+				len: 24_008,
+			},
+			Cut {
+				speech_at: 24_008,
+				note_at: 48_000,
+				len: 32_000,
+			},
+		];
+		let run = Run {
+			language: String::from("ko"),
+			p: 0.9,
+			at: 24_008,
+			len: 32_000,
+		};
+		assert_eq!(run.in_note(&cuts, 0, 1_000), Some((3_000, 4_000)));
+		assert_eq!(Cut::in_note(&cuts, 24_000, 0, 1_000), Some((1_500, 1_500)), "what a millisecond offset would say");
 	}
 }
