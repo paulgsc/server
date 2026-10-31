@@ -29,16 +29,20 @@
 //!   side table, no fields of its own. A redo is a new take under a new id.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
-//! - **No background writer of a note.** The one caller of [`put_note`] is
-//!   `file_host`'s `handlers::voice` (`PUT /api/v1/voice-notes/:id`). A
-//!   `git grep -n 'voice_note\b\|voice_note_audio\|game_bite' -- '*.rs'`
-//!   shows no other writer.
+//! - **No background writer of a person's note.** The one caller of
+//!   [`put_note`] is `file_host`'s `handlers::voice`
+//!   (`PUT /api/v1/voice-notes/:id`). The one other writer of `voice_note` is
+//!   [`probe`], which writes a probe note, a test fixture no person said,
+//!   under [`probe::SUBJECT`], which no account holds (paulgsc/some-ui#2383,
+//!   CK4). A `git grep -n 'voice_note\b\|voice_note_audio\|game_bite' --
+//!   '*.rs'` shows no other writer.
 //!
 //! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
 //! each heard word with its time in `voice_transcript_word`, both written
 //! only by `file_host`'s `transcribe` worker, which reads a note's audio and
 //! never writes it.
 
+pub mod probe;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};

@@ -516,7 +516,9 @@ pub struct Heard {
 /// not heard, is never one: the routine reads that from the absence. A game
 /// bite is never one either: bites leave home only inside the weekly bundle
 /// (paulgsc/some-ui#2074, GWB8), and the mailbox's `transcript` folder
-/// refuses `of: game`.
+/// refuses `of: game`. Nor is a probe note (paulgsc/some-ui#2383, CK4), a
+/// test fixture home hears to check its own transcription: it is kept under a
+/// subject no account holds, and is not one of the kinds named here either.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -530,7 +532,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind <> 'game'
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -1384,6 +1386,28 @@ mod tests {
 			[(String::from("n1"), String::from("small"))],
 			"bites leave home only in the weekly bundle"
 		);
+	}
+
+	/// A probe note (paulgsc/some-ui#2383, CK4) never reaches a routine:
+	/// neither under the probe subject it is kept under, nor even if one were
+	/// kept under the subject the mailbox files for.
+	#[tokio::test]
+	async fn a_probe_note_is_never_filed_for_a_routine() {
+		let pool = pool().await;
+		for subject in ["probe", A] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'probe-1', 'probe', 'quick-brown-fox-1', '2026-11-01T03:00:00.000Z', 'audio/ogg', 1, 's', 'now')",
+			)
+			.bind(subject)
+			.execute(&pool)
+			.await
+			.unwrap();
+			heard(&pool, subject, ("probe-1", "small", 1), "heard", Some("the quick brown fox"), "2026-11-01T03:01:00.000Z").await;
+		}
+		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-11-01T03:02:00.000Z").await;
+		assert_eq!(unfiled(&pool, A).await, [(String::from("n1"), String::from("small"))], "a probe note is no routine's");
+		assert!(unfiled(&pool, "probe").await.is_empty());
 	}
 
 	/// A Studio take's transcript is filed as any note's is, said for

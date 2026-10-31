@@ -300,6 +300,14 @@ impl FromRef<AppState> for Arc<Config> {
 	}
 }
 
+impl FromRef<AppState> for transcribe::probe::Probing {
+	fn from_ref(state: &AppState) -> Self {
+		Self {
+			transcription: state.transcribe.is_some(),
+		}
+	}
+}
+
 impl FromRef<AppState> for SqlitePool {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.shared_db.clone()

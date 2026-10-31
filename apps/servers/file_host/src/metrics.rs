@@ -11,6 +11,7 @@ pub mod mailbox;
 pub mod observability;
 pub mod periodic;
 pub mod pool;
+pub mod probe;
 pub mod rate_limit;
 pub mod refusals;
 pub mod routine;

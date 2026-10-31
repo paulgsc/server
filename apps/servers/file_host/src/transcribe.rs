@@ -24,6 +24,11 @@
 //! - **Nothing heard reaches a log line.** A pass logs the kind of each
 //!   attempt and how many, never a note's text, audio, id or subject.
 //!
+//! **It checks itself** (paulgsc/some-ui#2383, CK4): daily, and when the
+//! operator asks from the web page, a known clip goes through this worker as
+//! a probe note, and the words it hears are compared with the clip's
+//! ([`probe`]).
+//!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
 //! 500 MB while loaded, for as long as the server runs, and hears a minute
 //! of speech in about a minute on two threads. Off unless
@@ -32,10 +37,11 @@
 
 pub mod engine;
 pub mod pass;
+pub mod probe;
 
 use crate::auth::DeletionLock;
 use crate::{AppState, Config};
-use engine::Whisper;
+use engine::{Hear as _, Whisper};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,9 +133,14 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::transcribe::record_pass_started();
+					// The transcription probe rides this tick rather than a loop
+					// of its own (`probe`): a run due by now goes in before the
+					// pass hears, and what the pass heard ends runs after it.
+					probe::before_pass(&db).await;
 					let result = pass::run_once(&db, &context.engine, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
+					probe::after_pass(&db, context.engine.model()).await;
 				}
 			}
 		}

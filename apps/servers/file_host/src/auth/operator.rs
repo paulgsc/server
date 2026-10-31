@@ -94,6 +94,7 @@ mod tests {
 	use super::parse_subjects;
 	use crate::auth::{cookie::SessionToken, now, AuthContext};
 	use crate::routes::table::Module;
+	use crate::transcribe::probe::Probing;
 	use axum::{
 		body::Body,
 		extract::FromRef,
@@ -113,6 +114,13 @@ mod tests {
 	struct TestState {
 		pool: SqlitePool,
 		auth: AuthContext,
+		probing: Probing,
+	}
+
+	impl FromRef<TestState> for Probing {
+		fn from_ref(state: &TestState) -> Self {
+			state.probing
+		}
 	}
 
 	impl FromRef<TestState> for SqlitePool {
@@ -128,7 +136,7 @@ mod tests {
 	}
 
 	fn operator_modules() -> Vec<Module<TestState>> {
-		vec![crate::routes::db::curriculum_operator()]
+		vec![crate::routes::db::curriculum_operator(), crate::routes::probes::probes()]
 	}
 
 	async fn state(operators: &[&str]) -> TestState {
@@ -137,6 +145,7 @@ mod tests {
 		TestState {
 			auth: AuthContext::for_tests_with_operators(pool.clone(), operators),
 			pool,
+			probing: Probing { transcription: true },
 		}
 	}
 
@@ -286,6 +295,58 @@ mod tests {
 		for (method, path) in requests() {
 			assert_eq!(status(&app, method.clone(), &path, Some(&only), None).await, StatusCode::FORBIDDEN, "{method} {path}");
 		}
+	}
+
+	async fn answer(app: &Router, method: Method, path: &str, cookie: &str) -> (StatusCode, serde_json::Value) {
+		let request = Request::builder()
+			.method(method)
+			.uri(path)
+			.header(COOKIE, cookie)
+			.header("origin", "https://app.test")
+			.header("sec-fetch-site", "same-site");
+		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+		let status = response.status();
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null))
+	}
+
+	/// The page starts a transcription probe (paulgsc/some-ui#2383, CK4): a
+	/// second ask while it is open joins it, and `GET /probes` shows it open,
+	/// with no result until the transcriber has heard its note. While
+	/// transcription is off, nothing would hear it, so the ask is `503`.
+	#[tokio::test]
+	async fn the_page_starts_a_transcription_probe_and_reads_it_back() {
+		let state = state(&[OPERATOR]).await;
+		let operator = signed_in(&state, OPERATOR).await;
+		let off = app(TestState {
+			probing: Probing { transcription: false },
+			..state.clone()
+		});
+		let app = app(state);
+
+		let (status, first) = answer(&app, Method::POST, "/probes/transcription", &operator).await;
+		assert_eq!(status, StatusCode::ACCEPTED);
+		assert_eq!((first["joined"].as_bool(), first["run"]["askedBy"].as_str()), (Some(false), Some("page")));
+		let (_, again) = answer(&app, Method::POST, "/probes/transcription", &operator).await;
+		assert_eq!((again["joined"].as_bool(), &again["run"]["runId"]), (Some(true), &first["run"]["runId"]));
+
+		let (status, listed) = answer(&app, Method::GET, "/probes", &operator).await;
+		assert_eq!(status, StatusCode::OK);
+		let probe = &listed["probes"][0];
+		assert_eq!(
+			(probe["probe"].as_str(), probe["enabled"].as_bool(), probe["everySeconds"].as_u64()),
+			(Some("transcription"), Some(true), Some(86_400))
+		);
+		assert_eq!(probe["runs"].as_array().map(Vec::len), Some(1));
+		assert_eq!(
+			(&probe["runs"][0]["runId"], &probe["runs"][0]["result"]),
+			(&first["run"]["runId"], &serde_json::Value::Null)
+		);
+
+		let (status, _) = answer(&off, Method::POST, "/probes/transcription", &operator).await;
+		assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+		let (_, listed) = answer(&off, Method::GET, "/probes", &operator).await;
+		assert_eq!(listed["probes"][0]["enabled"].as_bool(), Some(false), "the history still reads while it is off");
 	}
 
 	#[test]

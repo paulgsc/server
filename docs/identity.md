@@ -965,7 +965,9 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line; it is readable by
+    so neither the audio nor its hash reaches a log line, and, for a probe
+    note, a test fixture no person said, by the transcription probe under a
+    subject no account holds (invariant 29); it is readable by
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
@@ -1211,6 +1213,43 @@ nowhere is marked as such and belongs to review.
     *Not enforced:* that every read of `rust_round` filters on its subject,
     which the repository's three readers do today
     (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`).
+
+29. **A probe is about home, never a person, and what it heard stays out of
+    every subject's reach and every log line.** Home checks its own
+    transcription end to end (paulgsc/some-ui#2383, CK4): daily, and when the
+    operator asks from the web page (`POST /probes/transcription`, operator
+    only), `file_host`'s `transcribe::probe` puts a known clip through the
+    voice-note path as a **probe note** and compares the words the
+    transcriber hears with the clip's. The clip is a test fixture kept in
+    this repository, speech synthesized from a fixed line, never a person's
+    recording. A probe note is a voice note said for `probe`, kept as every
+    note is (append-only, kept, invariant 23), but under the subject `probe`,
+    which no account holds or can hold (an account's is `subject-` and 32 hex
+    digits, `subject::new_account_subject`). So every reader that takes a
+    subject, the mailbox's filing for the routines and any count of a
+    subject's notes included, never meets one, and account deletion never
+    takes one; the mailbox's transcript filing also names the kinds it files,
+    and `probe` is not one. The phone cannot send one: `describe` refuses
+    `of: probe`. Its attempts are not counted in `transcribe_attempts_total`.
+    How a run ended is `probe_run` and `probe_result`: no subject, append-only
+    (their triggers abort an `UPDATE` and a `DELETE`, and a run ends once),
+    holding who asked (`schedule` or `page`), the verdict, the outcome, the
+    word error rate, the time to transcript, the engine's time and its name,
+    never the words heard. Those are the probe note's transcript, and no log
+    line carries them: a run logs its verdict, outcome and timings only. The
+    results are read only by the operator (`GET /probes`).
+    *Enforced by* `voice_repo::probe`'s
+    `a_run_puts_its_note_through_and_one_runs_at_a_time`,
+    `the_phone_cannot_say_a_note_is_a_probe`,
+    `the_schema_refuses_a_rewrite_a_delete_or_a_pass_with_nothing_heard` and
+    `the_notes_rebuilt_for_probes_keep_what_was_held_before`;
+    `mailbox_repo`'s `a_probe_note_is_never_filed_for_a_routine`;
+    `transcribe::probe`'s `what_a_probe_heard_reaches_no_log_line`; and
+    `auth::operator`'s `only_a_listed_subject_gets_past_any_operator_route`
+    and `the_page_starts_a_transcription_probe_and_reads_it_back`.
+    *Not enforced:* that a reader added later that reads `voice_note` across
+    subjects (as the transcriber's `waiting` does) leaves probe notes out
+    where it should, which review keeps.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

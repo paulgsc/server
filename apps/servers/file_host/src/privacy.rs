@@ -77,6 +77,14 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("leetype_round_witness", "each round's μ into the canon register, derived from its body — corpus-wide"),
 	("mood_events", "editorial content, not per-person"),
 	(
+		"probe_result",
+		"how each of home's probe runs ended: a verdict, timings and the engine's name, never what was heard — about home, nobody's record; see docs/identity.md invariant 29",
+	),
+	(
+		"probe_run",
+		"each time home ran a probe (a known clip through its own transcriber) and who asked, the schedule or the operator's page — about home, nobody's record; see docs/identity.md invariant 29",
+	),
+	(
 		"rust_round_drop",
 		"each time the rust-runner went away while it held a Rust Rounds program — code and the runner only, nobody's record; see docs/identity.md invariant 28",
 	),

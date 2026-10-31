@@ -39,10 +39,10 @@
 
 use super::table::Module;
 use super::{
-	aph, auth, db, health, jobs, korean, leetype_files, leetype_log, outcomes, presence, push, readiness, routine, rust_rounds, shelf, signals, studio_log, subjects, sync,
-	tab_metadata, utterance, voice,
+	aph, auth, db, health, jobs, korean, leetype_files, leetype_log, outcomes, presence, probes, push, readiness, routine, rust_rounds, shelf, signals, studio_log, subjects,
+	sync, tab_metadata, utterance, voice,
 };
-use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
+use crate::{auth::AuthContext, transcribe::probe::Probing, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -110,6 +110,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Probing: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -124,6 +125,7 @@ where
 		jobs::jobs(),
 		korean::korean(),
 		voice::voice(),
+		probes::probes(),
 		rust_rounds::rust_rounds(),
 		leetype_log::leetype_log(),
 		leetype_files::leetype_files(),
@@ -158,6 +160,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Probing: FromRef<S>,
 {
 	split(|module| module.into_router(config))
 }
@@ -168,6 +171,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Probing: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

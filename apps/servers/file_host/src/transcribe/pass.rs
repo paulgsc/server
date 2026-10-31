@@ -93,7 +93,11 @@ pub async fn run_once<H: Hear>(
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
 		if let Kept::Added(_) = keep(db, deletion, &note.subject, &note.note_id, &attempt, &now()).await? {
-			crate::metrics::transcribe::record_attempt(kind, took);
+			// A probe note is no note sent home: its run's result counts it
+			// (`super::probe`), and the attempts home's notes got do not.
+			if note.subject != voice_repo::probe::SUBJECT {
+				crate::metrics::transcribe::record_attempt(kind, took);
+			}
 			pass.kept.push(kind);
 		}
 	}
