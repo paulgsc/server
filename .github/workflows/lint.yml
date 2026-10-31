@@ -80,6 +80,17 @@ jobs:
           python3 scripts/check_artifact_retention.py --self-test
           python3 scripts/check_artifact_retention.py
 
+  # scripts/deploy.py's decisions (AS18, #564): when a deploy waits, when it
+  # rolls back, and that it never touches the database, run against a
+  # simulated Docker and clock. No path gate: stdlib python3, a second.
+  deploy_script:
+    name: Deploy script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: A deploy that does not come up ready rolls back
+        run: python3 scripts/deploy.py --self-test
+
   # No path gate either: example.env is generated from infra/env/*.json and
   # the compose files (ENV2, README.md, "Configuration"), and a hand edit of
   # it or of a compose file can come with any kind of PR. Whether the JSON

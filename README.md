@@ -182,7 +182,7 @@ On the host, from the checkout (#504):
 ```bash
 cp example.env .env          # first time only
 make preflight FILL=1        # names every gap at once, and asks for each
-make up                      # the preflight again, then docker compose up -d
+make up                      # the preflight again, then the deploy (below)
 ```
 
 The preflight reads `docker compose config` as compose will, interpolating
@@ -216,6 +216,75 @@ preflight names those too.
     another variable are checked by the binary at start, as ENV1 and ENV2
     say. A container without the label (the third-party ones) is checked
     only for the compose variables it interpolates.
+
+### Deploying to home
+
+`make up` is the deploy (AS18, #564), and `make up PULL=1` is the one that
+takes a new image: it replaces the old habit of `docker compose pull &&
+docker compose up -d`, which put whatever `:latest` was in place of a working
+container whether or not it could become ready. After the preflight,
+`scripts/deploy.py`:
+
+1. records the image the running `file-host` container was started from;
+2. pulls `file-host`'s image, with `PULL=1` (only that one: the rest of the
+   stack is not rolled back, so it is not pulled either);
+3. tags the serving image `pgathondu/server:previous` when a different one
+   is about to start, so a prune cannot take it before it is needed;
+4. runs the `migrate` one-shot (AS16, #563) while the old container still
+   serves; a failure stops the deploy there, with nothing replaced;
+5. runs `docker compose up -d`, and waits up to 90 s for the container's
+   healthcheck to read `healthy`. That check is `file_host --health-check`,
+   which passes on `/ready` saying ready or degraded (AS15, #560). A
+   container that exits, restarts or reads `unhealthy` fails at once;
+6. if it does not come up, tags the recorded image back as
+   `pgathondu/server:latest` and recreates `file-host` alone from it, then
+   waits the same 90 s for that.
+
+It says what it did on its output, in lines starting `deploy:`, and exits
+`0` deployed, `1` not deployed (pull or migration failed; the old container
+still serves), `2` rolled back (the previous image serves), or `3` nothing
+ready, which needs you: the previous image failed too, or there was none (a
+first deploy), or the image did not change, so the cause is `.env`, a config
+the binary refuses or a dependency down, which the same image would meet
+again. Once AS17's alert channel exists, exits 2 and 3 are what it should
+carry; until then the terminal is the only place they appear. After a
+rollback the local `:latest` names the previous image, so a plain `make up`
+keeps it; the next `make up PULL=1` tries the new one again.
+
+The bound is the healthcheck's (`infra/compose/file_host.yml`): it probes
+every 5 s through its 40 s `start_period` (`start_interval`, Docker Engine
+25+), then every 30 s with a 10 s timeout, and 90 s covers all of those plus
+one full interval and 10 s of slack. A bad image therefore costs about 3
+minutes of AV1's 43-minute month, plus the pull and the migration, instead of
+however long it takes someone to notice. The script lives here, beside the
+compose files it drives, not in `paulgsc/dotfiles`: home runs this stack
+from this checkout, and the NixOS modules (#408) that would move it into
+`dotfiles` are not in use yet.
+
+This is not a zero-downtime deploy: the old container stops before the new
+one proves itself, and the rollback restarts it. Running two instances behind
+Caddy so the old one serves until the new one is ready is #409 (deferred) and
+AS20 (#566).
+
+**The database is never restored by the deploy.** A migration that ran stays
+applied, and the previous image serves the database as the migration left it:
+a database ahead of its binary is designed to be one it serves
+(`apps/servers/file_host/src/schema.rs`), which is what #564 records. Restoring
+`backups/<stem>-<UTC>-before-<version>.db` is not done for a reason, not
+overlooked: the old `file_host` keeps serving while `migrate` takes the copy,
+and the new one serves (and its background passes write) from the moment it
+starts, ready or not, so the live database can hold writes the backup lacks
+at every point after the copy. A restore is safe only when nothing could have
+written since the copy, which the deploy cannot show, so on its own it would
+lose records. The one known case where the old binary does not serve a newer
+schema, `drop_sharing_choice`, is not one a restore should fix either: its down
+migration recreates the table it dropped, empty, so the old binary refuses
+nothing and no record written since the copy is lost (`schema.rs`).
+If you ever restore by hand, stop `file-host`, move the live file aside under
+`backups/` with a name of its own (never delete it, and not a
+`-before-` name, which `migrate` would count among its own and prune), then
+copy the backup in. When the deploy ends with exit 3 it names the backup this
+run took.
 
 ### NixOS modules
 

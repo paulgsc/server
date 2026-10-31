@@ -57,6 +57,11 @@ volume looks like; a new host passes `--init` once. So on home `schema`
 down means a deploy that skipped the step, or a migration it refused, and
 the `migrate` log says which.
 
+The same deploy (`make up`, `scripts/deploy.py`) waits up to 90 s for the
+new container's healthcheck, which passes on `ready` or `degraded`, and puts
+back the image it replaced when that does not come (AS18, #564; README.md,
+"Deploying to home"). It leaves the database as the migration left it.
+
 `/ready` answers in three levels, not one bit: its `status` is `ready`,
 `degraded` (only a non-critical dependency is down; today that is `schema`
 alone, and only for a migrated database behind its build) or `unavailable`
