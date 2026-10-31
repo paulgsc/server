@@ -3,16 +3,17 @@ pub use app_config::{LogArgs, NatsArgs, OtelArgs, TraceSampler, DEV_HOST_NATS_UR
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-// HOST-SPECIFIC defaults (#406). Each one is right on the dev host this server
+// HOST-SPECIFIC values (#406). Each one is right on the dev host this server
 // grew up on (`nixos.local`, with NATS and Redis on the same machine) and wrong
-// on any other. They stay as defaults so that host keeps working with an
-// unchanged `.env`, but they are named, marked, and announced at startup
-// (`Config::host_specific_defaults_in_use`), so a new host finds every value
-// it must set instead of inheriting this one's silently.
+// on any other. `ALLOWED_ORIGINS` and `APP_BASE_URL` are required, so a host
+// sets its own; the NATS and Redis URLs stay defaults, for a `cargo run` beside
+// the compose stack, which sets its own. Running on any of them is announced
+// at startup (`Config::host_specific_defaults_in_use`).
 
-/// `ALLOWED_ORIGINS`' default. HOST-SPECIFIC: the `nixos.local` dev host.
+/// The dev host's `ALLOWED_ORIGINS`, which it sets in its `.env`; startup warns
+/// while it is in use elsewhere. HOST-SPECIFIC: the `nixos.local` dev host.
 pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
-/// `APP_BASE_URL`'s default. HOST-SPECIFIC: the `nixos.local` dev host.
+/// The dev host's `APP_BASE_URL`. HOST-SPECIFIC: the `nixos.local` dev host.
 pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
 /// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
 pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
@@ -218,14 +219,12 @@ pub struct Config {
 	/// (push and sessions). Other routes deliberately allow any origin
 	/// (extensions, etc.) and are unaffected by this setting.
 	///
-	/// The default carries three entries rather than one because the study app is
-	/// not on `:6006` — that is Storybook. Service workers, `Notification`, and
-	/// `PushManager` are all gated on a secure context, so the origin a
-	/// subscription is actually posted from is an HTTPS one, and a list that only
-	/// admits the Storybook origin blocks it.
-	///
-	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
-	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', default_value = DEV_HOST_ALLOWED_ORIGINS, help_heading = "Server")]
+	/// Required: no list is right on every host (#406). Include the HTTPS origin
+	/// the study app is served from, not only Storybook's `:6006`: service
+	/// workers, `Notification`, and `PushManager` are all gated on a secure
+	/// context, so a subscription is posted from an HTTPS origin. The dev host
+	/// sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.
+	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', required = true, help_heading = "Server")]
 	pub allowed_origins: Vec<String>,
 
 	/// Redis URL for caching.
@@ -393,8 +392,9 @@ pub struct Config {
 	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
 	/// the server has to produce the same shape or clicks land on the dashboard.
 	///
-	/// HOST-SPECIFIC default: the `nixos.local` dev host. Set it on any other.
-	#[arg(long, env = "APP_BASE_URL", default_value = DEV_HOST_APP_BASE_URL, help_heading = "Study nudge")]
+	/// Required: no URL is right on every host (#406). The dev host sets
+	/// `https://nixos.local:5173/`.
+	#[arg(long, env = "APP_BASE_URL", help_heading = "Study nudge")]
 	pub app_base_url: String,
 
 	// ── Passkey auth ──────────────────────────────────────────────────────────
@@ -877,7 +877,19 @@ mod tests {
 	/// value, which a plain `bool` flag (`SetTrue`) would not allow.
 	#[test]
 	fn auth_enabled_can_be_turned_off_by_value() {
-		let required = ["file_host", "--obs-host", "h", "--obs-password", "p", "--database-url", "sqlite::memory:"];
+		let required = [
+			"file_host",
+			"--obs-host",
+			"h",
+			"--obs-password",
+			"p",
+			"--database-url",
+			"sqlite::memory:",
+			"--allowed-origins",
+			"https://app.example",
+			"--app-base-url",
+			"https://app.example/",
+		];
 		let off = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "false"])).unwrap();
 		assert!(!off.auth_enabled);
 		let on = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "true"])).unwrap();
