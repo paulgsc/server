@@ -53,5 +53,6 @@
   ];
   # A number's limits while each of `when` holds; "*" is any value but an empty one.
   bounds = [
+    { variable = "HEALTH_CHECK_INTERVAL_SECS"; min = 1.0; max = null; when = []; }
   ];
 }

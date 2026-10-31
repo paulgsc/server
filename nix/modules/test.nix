@@ -77,4 +77,17 @@ in
     (expect "orchestrator publishes no port" (complete.config.virtualisation.oci-containers.containers.orchestrator.ports == []))
     (expect "the mailbox's own requirements are named while it is on" (builtins.any (lib.hasInfix "MAILBOX_URL is required while MAILBOX_ENABLED is true") mailbox
         && builtins.any (lib.hasInfix "MAILBOX_TOKEN is required while MAILBOX_ENABLED is true (a secret") mailbox))
+    (expect "a number below its limit is named while its feature is on" (builtins.any (lib.hasInfix "settings.MAILBOX_SECONDS must be at least 60") mailbox))
+    (expect "and not while it is off" (failed (eval {
+        services.file-host = {
+          enable = true;
+          environmentFiles = ["/run/secrets/file-host.env"];
+          settings = {
+            OBS_WEBSOCKET_IP = "127.0.0.1";
+            AUTH_ENABLED = false;
+            MAILBOX_SECONDS = 30;
+          };
+        };
+      })
+      == []))
   ]

@@ -124,7 +124,8 @@ def render(schema: dict) -> str:
             when = " ".join(f"{{ variable = {string(item['variable'])}; is = {string(item['value'])}; }}" for item in bounds["when"])
             low = "null" if bounds.get("min") is None else json.dumps(bounds["min"])
             high = "null" if bounds.get("max") is None else json.dumps(bounds["max"])
-            lines.append(f"    {{ variable = {string(variable['name'])}; min = {low}; max = {high}; when = [ {when} ]; }}")
+            when = f"[ {when} ]" if when else "[]"
+            lines.append(f"    {{ variable = {string(variable['name'])}; min = {low}; max = {high}; when = {when}; }}")
     lines.append("  ];")
     lines.append("}")
     return "\n".join(lines) + "\n"

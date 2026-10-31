@@ -48,7 +48,7 @@ mod tests {
 	#[test]
 	fn the_checked_in_schema_is_this_config() {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra/env/orchestrator.json");
-		app_config::schema::assert_checked_in("orchestrator", &Config::command(), &[], &path);
+		app_config::schema::assert_checked_in("orchestrator", &Config::command(), &app_config::schema::NO_RULES, &path);
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 }

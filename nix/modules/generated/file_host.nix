@@ -394,5 +394,14 @@
   ];
   # A number's limits while each of `when` holds; "*" is any value but an empty one.
   bounds = [
+    { variable = "MAILBOX_SECONDS"; min = 60.0; max = null; when = [ { variable = "MAILBOX_ENABLED"; is = "true"; } ]; }
+    { variable = "MAILBOX_ARCHIVE_DAYS"; min = 30.0; max = 36500.0; when = [ { variable = "MAILBOX_ENABLED"; is = "true"; } { variable = "MAILBOX_ARCHIVE_TOKEN"; is = "*"; } ]; }
+    { variable = "TRANSCRIBE_THREADS"; min = 1.0; max = null; when = [ { variable = "TRANSCRIBE_ENABLED"; is = "true"; } ]; }
+    { variable = "TRANSCRIBE_DEADLINE_SECONDS"; min = 60.0; max = null; when = [ { variable = "TRANSCRIBE_ENABLED"; is = "true"; } ]; }
+    { variable = "TRANSCRIBE_SECONDS"; min = 10.0; max = null; when = [ { variable = "TRANSCRIBE_ENABLED"; is = "true"; } ]; }
+    { variable = "GAME_FEED_SCOREBOARD_SECONDS"; min = 60.0; max = 86400.0; when = [ { variable = "GAME_FEED_ENABLED"; is = "true"; } ]; }
+    { variable = "GAME_FEED_LIVE_SECONDS"; min = 5.0; max = 86400.0; when = [ { variable = "GAME_FEED_ENABLED"; is = "true"; } ]; }
+    { variable = "GAME_FEED_BACKOFF_CAP_SECONDS"; min = null; max = 86400.0; when = [ { variable = "GAME_FEED_ENABLED"; is = "true"; } ]; }
+    { variable = "OTEL_TRACES_SAMPLER_ARG"; min = 0.0; max = 1.0; when = []; }
   ];
 }
