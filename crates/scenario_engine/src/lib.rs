@@ -115,8 +115,8 @@ pub struct Reading {
 ///
 /// The play log holds each play as it stood at its own snap, so the snap
 /// still to come is not in it; the caller reads it from ESPN's live
-/// `situation` (see the README). Without one the engine offers nothing that
-/// needs the down.
+/// situation (`game_feed_repo::situation`, converted with `From`; see the
+/// README). Without one the engine offers nothing that needs the down.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Situation {
 	pub possession: Option<String>,
@@ -136,6 +136,20 @@ impl Situation {
 			down: play.down,
 			distance: play.distance,
 			yards_to_endzone: play.yards_to_endzone,
+		}
+	}
+}
+
+/// ESPN's live situation (`nfl_feed`'s), as the engine reads it. The
+/// timeouts it also carries are not read: the engine counts them from the
+/// log's timeout plays, and preferring ESPN's count would change a rule.
+impl From<&nfl_feed::situation::Situation> for Situation {
+	fn from(live: &nfl_feed::situation::Situation) -> Self {
+		Self {
+			possession: live.possession.clone(),
+			down: live.down,
+			distance: live.distance,
+			yards_to_endzone: live.yards_to_endzone,
 		}
 	}
 }

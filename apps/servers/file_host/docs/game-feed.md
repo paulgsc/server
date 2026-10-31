@@ -132,3 +132,28 @@ are those responses.
 - Every play of a finished game carries the same `modified` stamp, so it says
   nothing about which play changed; the log compares the plays themselves.
 - A live game's plays are in `drives.previous` and `drives.current`.
+
+### The snap to come (paulgsc/server#570)
+
+Read from the live API on 2026-10-31, on college games (no NFL game was live;
+it is the same site API and spelling). `nfl_feed::situation` reads it, and
+`game_feed_repo::situation(conn, game, as_of)` returns it from the newest
+summary kept for the game by `as_of`. Nothing new is fetched or stored: it is
+read from the summaries the worker already keeps, so each distinct body is
+still stored once.
+
+- The scoreboard carries it whole, as a live competition's `situation`. The
+  summary has no such object: the newest play's `end` holds the down,
+  distance and spot, and the header's competitors hold `possession` (a flag)
+  and `timeoutsUsed`. Fetched together, the two say the same; the summary,
+  fetched every 15 s, is the one home reads.
+- `yardLine` counts 0 to 100 from the home team's goal line (on plays too),
+  so the yards to the end zone depend on which side has the ball.
+- Between a kickoff or a score and the next snap ESPN marks no team as having
+  the ball, though the play's `end.team` names one; the adapter follows the
+  mark. `down` and `distance` are `-1` there.
+- Timeouts left are three less `timeoutsUsed`, on every live game recorded.
+  In overtime (two each) that is not known to hold, so it is read as unknown.
+- `isRedZone` is the yards to the end zone being 20 or fewer.
+- The summary can trail the scoreboard by a play or more; a pair fetched
+  seconds apart was seen a few plays apart.

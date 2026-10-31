@@ -20,11 +20,16 @@
 //! - **Replayable** (GW10). Which responses are read, and how, is one rule
 //!   ([`read`]), so [`replay`] over the kept responses gives the log [`log`]
 //!   reads back, `seen_at` included: it is the response's `fetched_at`.
+//! - **The snap to come is read, not stored** (paulgsc/server#570).
+//!   [`situation`] reads it from the newest summary kept for a game by a
+//!   given time; no row holds it, so it adds nothing to what is kept and
+//!   replays like the log does.
 //! - **Nobody's record.** Public game data, not subject-scoped.
 
 use nfl_feed::{
 	log::{changes, Entry, PlayLog},
 	scoreboard::{self, Scoreboard},
+	situation::Situation,
 	summary::{self, Play, Summary},
 	FeedError,
 };
@@ -237,24 +242,50 @@ async fn append(conn: &mut SqliteConnection, game: &str, response_id: i64, seen_
 	Ok(added.len())
 }
 
+/// The newest summary kept for `game` with a 200 and fetched at or before
+/// `as_of` (ISO-8601 UTC, in `fetched_at`'s spelling), read by [`read`]'s
+/// rule; `None` when there is none or its body does not read.
+async fn newest_summary(conn: &mut SqliteConnection, game: &str, as_of: &str) -> Result<Option<Summary>, sqlx::Error> {
+	let body = sqlx::query_scalar!(
+		"SELECT b.body FROM game_feed_response r JOIN game_feed_body b ON b.sha256 = r.sha256
+		 WHERE r.game_id = ?1 AND r.kind = 'summary' AND r.status = 200 AND r.fetched_at <= ?2
+		 ORDER BY r.response_id DESC LIMIT 1",
+		game,
+		as_of
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(body.and_then(|body| match read(Fetched::Summary(game), 200, &body) {
+		Read::Summary(summary) => Some(summary),
+		_ => None,
+	}))
+}
+
+/// The latest time a `fetched_at` can be: every kept response is at or
+/// before it.
+const ANY_TIME: &str = "9999";
+
 /// Whether the newest summary kept for `game` with a 200 says the game is
 /// over, so a restarted worker need not fetch it again.
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn holds_final(conn: &mut SqliteConnection, game: &str) -> Result<bool, sqlx::Error> {
-	let body = sqlx::query_scalar!(
-		"SELECT b.body FROM game_feed_response r JOIN game_feed_body b ON b.sha256 = r.sha256
-		 WHERE r.game_id = ?1 AND r.kind = 'summary' AND r.status = 200
-		 ORDER BY r.response_id DESC LIMIT 1",
-		game
-	)
-	.fetch_optional(&mut *conn)
-	.await?;
-	Ok(body.is_some_and(|body| match read(Fetched::Summary(game), 200, &body) {
-		Read::Summary(summary) => summary.status.is_final(),
-		_ => false,
-	}))
+	Ok(newest_summary(conn, game, ANY_TIME).await?.is_some_and(|summary| summary.status.is_final()))
+}
+
+/// The snap to come in `game` as of `as_of` (ISO-8601 UTC, in `fetched_at`'s
+/// spelling: `2026-10-23T00:36:50.000Z`): the situation of the newest summary
+/// kept for it with a 200 and fetched by then (paulgsc/server#570). `None`
+/// when the game was not live in it, or nothing readable was kept.
+///
+/// GWB4 passes `now`; a replay at a bite's time (GWB7) passes that time and
+/// gets what the phone could have been shown then.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn situation(conn: &mut SqliteConnection, game: &str, as_of: &str) -> Result<Option<Situation>, sqlx::Error> {
+	Ok(newest_summary(conn, game, as_of).await?.and_then(|summary| summary.situation))
 }
 
 /// The play log as stored, oldest row first, `supersedes` as a position in
@@ -321,6 +352,7 @@ mod tests {
 	const FINAL: &[u8] = include_bytes!("../../../nfl_feed/testdata/summary-401873010-final.json");
 	const PRE: &[u8] = include_bytes!("../../../nfl_feed/testdata/summary-401873023-pre.json");
 	const BOARD: &[u8] = include_bytes!("../../../nfl_feed/testdata/scoreboard-2026-week8.json");
+	const LIVE: &[u8] = include_bytes!("../../../nfl_feed/testdata/cfb-summary-401856734-live.json");
 	const GAME: &str = "401873010";
 
 	async fn pool() -> SqlitePool {
@@ -395,6 +427,37 @@ mod tests {
 		assert_eq!(bodies, 6, "the final summary fetched twice is one body");
 		assert!(holds_final(&mut conn, GAME).await.unwrap());
 		assert!(!holds_final(&mut conn, "401873023").await.unwrap());
+	}
+
+	#[tokio::test]
+	async fn the_snap_to_come_is_the_newest_summarys_by_the_time_asked() {
+		const LIVE_GAME: &str = "401856734";
+		let pool = pool().await;
+		let response = |body, fetched_at, status| Response {
+			fetched: Fetched::Summary(LIVE_GAME),
+			url: "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401856734",
+			fetched_at,
+			status,
+			body,
+		};
+		keep_one(&pool, &response(LIVE, "2026-10-31T21:38:00.000Z", 200)).await;
+		keep_one(&pool, &response(b"Too Many Requests", "2026-10-31T21:38:15.000Z", 429)).await;
+		let mut conn = pool.acquire().await.unwrap();
+		let live = summary::parse(LIVE).unwrap().situation.unwrap();
+		assert_eq!(live.down, Some(2));
+		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:37:59.999Z").await.unwrap(), None, "nothing kept yet");
+		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:00.000Z").await.unwrap().as_ref(), Some(&live));
+		let after_refusal = situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:20.000Z").await.unwrap();
+		assert_eq!(after_refusal.as_ref(), Some(&live), "a refusal leaves the last answer");
+		drop(conn);
+
+		// The same game's summary once it is over says no snap is to come.
+		let over = String::from_utf8(LIVE.to_vec()).unwrap().replacen(r#""state":"in""#, r#""state":"post""#, 1);
+		keep_one(&pool, &response(over.as_bytes(), "2026-10-31T21:38:30.000Z", 200)).await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:30.000Z").await.unwrap(), None);
+		assert_eq!(situation(&mut conn, LIVE_GAME, "2026-10-31T21:38:29.000Z").await.unwrap(), Some(live), "replayed earlier");
+		assert_eq!(situation(&mut conn, GAME, "2026-10-31T21:38:30.000Z").await.unwrap(), None, "another game");
 	}
 
 	#[tokio::test]

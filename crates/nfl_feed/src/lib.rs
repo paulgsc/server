@@ -7,6 +7,8 @@
 //!   and status ([`scoreboard::parse`]).
 //! - [`summary_url`]: one game's drives and plays, its status, and before
 //!   kickoff the weather forecast ([`summary::parse`]).
+//! - Both, while a game is live: the snap to come ([`situation::Situation`]),
+//!   which the play log never holds.
 //!
 //! What this crate promises:
 //!
@@ -18,11 +20,13 @@
 //!   differently is `None`, never a failure of the whole response; a play with
 //!   no id, the one thing the log keys on, is skipped and counted.
 //! - **ESPN's spelling stays here.** Its states (`pre`, `in`, `post`), its
-//!   numbers sometimes sent as strings, its kickoff times without seconds and
-//!   its `down: 0` on a kickoff are read here and nowhere else.
+//!   numbers sometimes sent as strings, its kickoff times without seconds,
+//!   its `down: 0` on a kickoff, its `yardLine` counted from the home goal
+//!   line and its `-1` for no down are read here and nowhere else.
 
 pub mod log;
 pub mod scoreboard;
+pub mod situation;
 pub mod summary;
 
 use serde_json::Value;

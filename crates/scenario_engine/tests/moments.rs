@@ -413,3 +413,29 @@ fn a_touchdown_called_back_by_a_flag_is_no_score() {
 	assert!(!ids(&o).contains(&"in.two-point"));
 	assert!(o.just_happened.iter().all(|j| !j.line.contains("touchdown")));
 }
+
+/// FLA vs UGA on 2026-10-31, live (`nfl_feed`'s recorded college summary,
+/// the same API's spelling): ESPN's situation reaches the strip and the
+/// rules through `Situation::from`.
+#[test]
+fn espns_live_situation_drives_the_strip() {
+	let summary = summary::parse(include_bytes!("../../nfl_feed/testdata/cfb-summary-401856734-live.json")).unwrap();
+	let live = summary.situation.as_ref().unwrap();
+	let g = Game {
+		id: "401856734".to_owned(),
+		home: "UGA".to_owned(),
+		away: "FLA".to_owned(),
+		kickoff: at("2026-10-31T19:30:00Z"),
+		status: summary.status.clone(),
+		situation: Some(Situation::from(live)),
+		weather: None,
+		reading: Reading {
+			team: "SF".to_owned(),
+			want: None,
+		},
+	};
+	let shown = offer(&g, &[], pacific(at("2026-10-31T21:38:00Z")), Mode::Standard, Watching::Unknown);
+	assert_eq!(shown.strip.possession.as_deref(), Some("FLA has the ball"));
+	assert_eq!(shown.strip.down.as_deref(), Some("2nd and 10 at the FLA 8"));
+	assert!(ids(&shown).contains(&"in.play-call"), "{:?}", ids(&shown));
+}

@@ -4,7 +4,7 @@
 //! when each kicks off, and which are live. The current week is whatever
 //! ESPN says it is: the response carries it (`week.number`).
 
-use crate::{int, object, text, FeedError, Status, Weather};
+use crate::{int, object, situation::Situation, text, FeedError, Status, Weather};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 
@@ -32,6 +32,8 @@ pub struct Game {
 	pub home: Side,
 	pub away: Side,
 	pub weather: Option<Weather>,
+	/// The snap to come, while the game is live.
+	pub situation: Option<Situation>,
 }
 
 /// One team in a game.
@@ -74,11 +76,12 @@ fn game(event: &Value) -> Option<Game> {
 			score: int(&c["score"]),
 		})
 	};
-	let status = if event["status"].is_object() { &event["status"] } else { &competition["status"] };
+	let status = Status::read(if event["status"].is_object() { &event["status"] } else { &competition["status"] });
 	Some(Game {
 		id,
 		kickoff: event["date"].as_str().and_then(kickoff),
-		status: Status::read(status),
+		situation: Situation::from_scoreboard(competition, &status),
+		status,
 		name: text(&event["shortName"]),
 		home: side("home"),
 		away: side("away"),
