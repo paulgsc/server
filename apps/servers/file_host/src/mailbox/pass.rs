@@ -7,7 +7,8 @@
 //! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
-//! names a voice note by id at most), which lessons it opened, those
+//! names a voice note by id at most), which lessons it opened, each written
+//! reflection it sent home (`PUT /routine/reflections/:id`, text only), those
 //! transcripts and those logs. Last of the handing, it puts the Jobs
 //! routine's index when what it counts has moved ([`super::index`]), so the
 //! index counts what this pass handed. The index is a view home recomputes,
@@ -47,6 +48,12 @@
 //! read, checked against its listing and stored in `mailbox_archive`, and
 //! only then does the mailbox drop its bytes, and only if they are still the
 //! ones home stored. A file home could not store stays live.
+//!
+//! A written reflection is archived the same way, but its folder is listed
+//! only once one home filed is due ([`mailbox_repo::reflection_due`], which
+//! reads home's own tables), and no ask for one is ever listed: the routine
+//! cannot ask a reflection back (paulgsc/some-ui `apps/mailbox`, `ASKED`). So
+//! a pass with nothing to do makes no request for the folder.
 
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -62,15 +69,38 @@ use std::fmt;
 /// the next pass.
 pub const ITEMS_PER_PASS: u32 = 20;
 
-/// The folders archiving walks, for the routine's asks and for files old
-/// enough to go home: every folder but `index`.
+/// The folders archiving walks for files old enough to go home: every
+/// folder but `index`. Its asks walk [`ASKS`].
 ///
 /// Home's index is a view it recomputes from records it keeps, not a record
 /// (owner, paulgsc/server#509): the mailbox holds only the latest per
 /// routine and drops the one before when home puts a new one, so there is
 /// nothing to archive or put back, and listing it would add two requests to
 /// every idle pass (MI6, paulgsc/some-ui `packages/assurance`).
-pub const ARCHIVES: [Folder; 10] = [
+///
+/// A written reflection's folder is listed only once one home filed is due
+/// (`mailbox_repo::reflection_due`, from home's own tables), so it adds no
+/// request to an idle pass either.
+pub const ARCHIVES: [Folder; 11] = [
+	Folder::Brief,
+	Folder::Decisions,
+	Folder::Scout,
+	Folder::Scene,
+	Folder::Drama,
+	Folder::Run,
+	Folder::Opened,
+	Folder::Transcript,
+	Folder::Leetype,
+	Folder::LeetypeLog,
+	Folder::Reflection,
+];
+
+/// The folders whose asks a pass answers: every one it archives but `reflection`.
+///
+/// The routine cannot ask a written reflection back (paulgsc/some-ui
+/// `apps/mailbox`, `ASKED`), so listing its asks would only add a request to
+/// every pass (MI6).
+pub const ASKS: [Folder; 10] = [
 	Folder::Brief,
 	Folder::Decisions,
 	Folder::Scout,
@@ -97,6 +127,28 @@ pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
 /// What a `LeetType` session's log put to the mailbox's `leetype-log` folder
 /// is (paulgsc/some-ui `apps/mailbox`, the `leetype-log` folder's rules).
 pub const LEETYPE_LOG_SCHEMA: &str = "some-ui.leetype-log/1";
+
+/// What a written reflection put to the mailbox's `reflection` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const REFLECTION_SCHEMA: &str = "some-ui.reflection/1";
+
+/// A written reflection as the mailbox takes it, and its name there.
+///
+/// The routine's minimum (paulgsc/some-ui#2174, decision D2): its id, the
+/// session it is about, when it was written and the typed line. Nothing of
+/// the one-tap answers, of how far into the session, or of any audio.
+#[must_use]
+pub fn reflection_file(reflection: &reflection_repo::Reflection) -> (String, Vec<u8>) {
+	let name = String::from("reflection-") + &reflection.id + ".json";
+	let body = serde_json::json!({
+		"schema": REFLECTION_SCHEMA,
+		"reflection": reflection.id,
+		"session": reflection.session_id,
+		"at": reflection.created_at,
+		"text": reflection.body.text,
+	});
+	(name, body.to_string().into_bytes())
+}
 
 /// The largest body the mailbox takes (paulgsc/some-ui `apps/mailbox`,
 /// `MAX_BODY_BYTES`): a log over it is refused at filing, never handed.
@@ -455,8 +507,10 @@ async fn hand_over<T: MailboxTransport>(
 			"opened" => Folder::Opened,
 			"transcript" => Folder::Transcript,
 			"leetype-log" => Folder::LeetypeLog,
+			"reflection" => Folder::Reflection,
 			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
-			// `file_transcripts` and `file_leetype_logs` file only these.
+			// `PUT /routine/reflections/:id`, `file_transcripts` and
+			// `file_leetype_logs` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -615,7 +669,7 @@ fn leetype_log_body(held: &SessionEvents) -> Option<Vec<u8>> {
 /// The mailbox takes only the bytes it archived; an ask home holds nothing
 /// for (`missing`) stays open.
 async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving<'_, T>, subject: &str, outcome: &mut Outcome) -> Result<(), Failure> {
-	for folder in ARCHIVES {
+	for folder in ASKS {
 		let asks = archiving.mailbox.wanted(folder, PAGE_LIMIT).await.map_err(Failure::Mailbox)?;
 		for ask in asks {
 			let body = {
@@ -656,6 +710,14 @@ async fn archive_old<T: MailboxTransport>(
 	};
 	let mut budget = ITEMS_PER_PASS as usize;
 	for folder in ARCHIVES {
+		// Home knows which reflections it filed and when the mailbox took
+		// them, so it lists the folder only once one is old enough.
+		if folder == Folder::Reflection {
+			let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+			if !mailbox_repo::reflection_due(&mut conn, subject, &cutoff).await.map_err(storage)? {
+				continue;
+			}
+		}
 		// Paged, so files that stay live at the head (each counted below)
 		// never hold back the old ones behind them.
 		let mut after = 0;
@@ -930,11 +992,12 @@ mod tests {
 						"/v1/scout/items/",
 						"/v1/opened/items/",
 						"/v1/transcript/items/",
-						"/v1/leetype-log/items/"
+						"/v1/leetype-log/items/",
+						"/v1/reflection/items/"
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs and indexes: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes and written reflections: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -1820,6 +1883,110 @@ mod tests {
 	}
 
 	/// A `LeetType` session file as the routine puts it.
+	/// A written reflection filed with home for the mailbox, as
+	/// `PUT /routine/reflections/:id` files it, and the mailbox's answer to it
+	/// recorded at `handed_at`.
+	async fn reflection_handed(pool: &SqlitePool, id: &str, handed_at: &str) -> (String, String) {
+		let reflection = reflection_repo::Reflection {
+			id: id.to_owned(),
+			session_id: String::from("s-7f3a91c2"),
+			created_at: String::from("2026-07-01T00:00:00.000Z"),
+			at_ms: None,
+			body: reflection_repo::Written {
+				kind: "text",
+				text: String::from("The second scene felt slow."),
+			},
+		};
+		let (name, body) = super::reflection_file(&reflection);
+		let mut conn = pool.acquire().await.unwrap();
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut conn, OWNER, "reflection", &name, &sha, &body, handed_at).await.unwrap();
+		mailbox_repo::record_handed(&mut conn, OWNER, "reflection", &name, mailbox_repo::Answer::Added, handed_at)
+			.await
+			.unwrap();
+		(name, String::from_utf8(body).unwrap())
+	}
+
+	/// The ledger's MI6 (paulgsc/some-ui `packages/assurance`): with nothing
+	/// to do, an archiving pass lists the five folders home reads, ten folders'
+	/// asks and ten folders' live files, 25 requests, and none of them is for
+	/// written reflections, whether home filed none, or only ones too young.
+	#[tokio::test]
+	async fn an_idle_pass_asks_nothing_of_reflections() {
+		let (pool, vault) = (pool().await, Vault::default());
+		archive_pass(&pool, &vault).await;
+		let idle = vault.seen.lock().unwrap().clone();
+		assert_eq!(idle.len(), 25, "{idle:?}");
+		assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "{idle:?}");
+
+		let (name, body) = reflection_handed(&pool, "r-young", YOUNG).await;
+		vault.add("reflection", 1, &name, &body, YOUNG);
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+		let requests = vault.seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 25, "a reflection too young to archive costs no request: {requests:?}");
+		assert!(!requests.iter().any(|path| path.contains(" /v1/reflection/")), "{requests:?}");
+	}
+
+	/// docs/identity.md invariant 21: an old written reflection is stored home
+	/// before the mailbox drops it, as any file is, and the folder is listed
+	/// only while one is due; its asks are never listed.
+	#[tokio::test]
+	async fn an_old_reflection_is_archived_once_and_its_asks_are_never_listed() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (old, old_body) = reflection_handed(&pool, "r-old", OLD).await;
+		let (young, young_body) = reflection_handed(&pool, "r-young", YOUNG).await;
+		vault.add("reflection", 1, &old, &old_body, OLD);
+		vault.add("reflection", 2, &young, &young_body, YOUNG);
+		assert_eq!(archive_pass(&pool, &vault).await.archived, ["archived"]);
+		assert_eq!(vault.names(), [young]);
+		assert_eq!(archived_home(&pool).await, [(String::from("reflection"), old, old_body.into_bytes())]);
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/reflection/wanted")), "{requests:?}");
+
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(
+			!requests.iter().any(|path| path.contains(" /v1/reflection/")),
+			"an archived one is due no more: {requests:?}"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_filed_reflection_is_handed_to_its_folder_as_text() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let reflection = reflection_repo::Reflection {
+			id: String::from("r1"),
+			session_id: String::from("s-7f3a91c2"),
+			created_at: String::from("2026-10-23T14:00:00.000Z"),
+			at_ms: Some(61_000),
+			body: reflection_repo::Written {
+				kind: "text",
+				text: String::from("More level two, please."),
+			},
+		};
+		let (name, body) = super::reflection_file(&reflection);
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, "reflection", &name, &sha, &body, "2026-10-23T14:00:01.000Z")
+			.await
+			.unwrap();
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/reflection/items/reflection-r1.json"]);
+		let sent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			sent,
+			serde_json::json!({
+				"schema": "some-ui.reflection/1",
+				"reflection": "r1",
+				"session": "s-7f3a91c2",
+				"at": "2026-10-23T14:00:00.000Z",
+				"text": "More level two, please.",
+			}),
+			"the routine's minimum: no answers, no time into the session, no audio"
+		);
+	}
+
 	fn session_file(title: &str) -> String {
 		serde_json::json!({
 			"schema": "some-ui.leetype-session/1",

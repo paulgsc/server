@@ -491,6 +491,43 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
+/// The folder home's written reflections go to.
+pub const REFLECTION: &str = "reflection";
+
+/// Whether one of `subject`'s written reflections is due to be archived.
+///
+/// That is one home filed, which the mailbox took (or already held) at
+/// `cutoff` or before, and which home has not archived: the one reason a
+/// pass lists the mailbox's `reflection` folder to archive it.
+///
+/// Home reads only its own tables here, so a pass with nothing due makes no
+/// request for the folder (paulgsc/some-ui's assurance ledger, MI6). It
+/// probes the reflections filed, by `mailbox_outgoing`'s key, each one's
+/// answer by `mailbox_handed_file` and its archive by `mailbox_archive`'s key.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn reflection_due(conn: &mut SqliteConnection, subject: &str, cutoff: &str) -> Result<bool, MailboxError> {
+	let due = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM mailbox_outgoing AS filed
+		     JOIN mailbox_handed AS handed
+		       ON handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		     WHERE filed.subject_id = ?1 AND filed.folder = 'reflection'
+		       AND handed.answer IN ('added', 'unchanged') AND handed.handed_at <= ?2
+		       AND NOT EXISTS (
+		         SELECT 1 FROM mailbox_archive AS archived
+		         WHERE archived.subject_id = filed.subject_id AND archived.folder = filed.folder AND archived.name = filed.name
+		       )
+		   ) AS "due!: bool""#,
+		subject,
+		cutoff
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(due)
+}
+
 /// The folder home's transcripts go to.
 pub const TRANSCRIPT: &str = "transcript";
 

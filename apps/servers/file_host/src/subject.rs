@@ -90,7 +90,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), and their written reflections (the typed line, its session and when), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",
@@ -130,6 +130,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	(
 		"voice_transcript_word",
 		"each word home heard in the owner's voice notes (paulgsc/some-ui GWB11), per transcript that heard something: the word as heard, its place, and when it began and ended in the note; see docs/identity.md invariant 23",
+	),
+	(
+		"written_reflection",
+		"each written reflection the owner's phone sent home (paulgsc/some-ui#2178): the typed line as typed, the session it is about, when it was written and how far into the session, and when it reached home; see docs/identity.md invariant 29",
 	),
 ];
 
