@@ -415,8 +415,9 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     uid, removes everything in each program's directory, however deep (by
     relative name, one level at a time) and opening directories the uid
     owns before reading them (a directory a full-path host such as
-    AppArmor will not let it enter is one the program could not fill
-    either, and is removed as it is); the runner then removes the empty
+    AppArmor will not let it enter is removed as it is: if it is not
+    empty, removal fails and the runner restarts, RX2); the runner then
+    removes the empty
     directories, and checks that `/proc/sysvipc`
     lists no System V object and `/dev/shm` and `/dev/mqueue` are empty,
     and that the socket's directory holds only the socket it bound. If any

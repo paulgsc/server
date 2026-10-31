@@ -422,8 +422,9 @@ fn empty_tree(dir: &Path) -> io::Result<()> {
 		if let Some(next) = pending.pop() {
 			if let Err(err) = std::env::set_current_dir(&next) {
 				// A host that mediates by full path (AppArmor) refuses to
-				// enter a directory past its buffer; the program could not
-				// enter it either, so it is empty, and goes as it is.
+				// enter a directory past its buffer, so it goes as it is: if
+				// it is not empty (a program can rename a filled subtree
+				// down there), removal fails and the runner restarts (RX2).
 				if too_long(&err) && std::fs::remove_dir(&next).is_ok() {
 					continue;
 				}
