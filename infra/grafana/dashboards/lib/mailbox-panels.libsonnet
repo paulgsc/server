@@ -111,7 +111,7 @@ local series(title, description, targets, unit) = {
 
   failingByWhy: series(
     'Why the last pass ended early',
-    'One line per reason; 1 while the last pass failed for it. no_account means MAILBOX_SUBJECT names no account; unauthorized, a wrong MAILBOX_TOKEN.',
+    'One line per reason; 1 while the last pass failed for it. no_account means there is no account to keep files for (MAILBOX_SUBJECT names none, or it is unset and home has no account yet, or several); unauthorized, a wrong MAILBOX_TOKEN.',
     [{ expr: 'max by (error) (mailbox_poll_failing)', legendFormat: '{{error}}', refId: 'A' }],
     'none',
   ),

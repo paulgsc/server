@@ -45,11 +45,6 @@ pub const REQUIRED_WHEN: &[RequiredWhen] = &[
 		is: "true",
 	},
 	RequiredWhen {
-		variable: "MAILBOX_SUBJECT",
-		when: "MAILBOX_ENABLED",
-		is: "true",
-	},
-	RequiredWhen {
 		variable: "VAPID_PUBLIC_KEY",
 		when: "NUDGE_ENABLED",
 		is: "true",
@@ -336,29 +331,33 @@ pub struct Config {
 	#[arg(long, env = "AUTH_SESSION_DAYS", default_value = "30", help_heading = "Passkey auth")]
 	pub auth_session_days: u32,
 
-	/// How many accounts may be created per UTC day, across the server. A
-	/// backstop against a flood of empty accounts; the per-client rate limit
-	/// already bounds any one client.
+	/// Whether an account may be created while one already exists. Off (the
+	/// default), the first account closes sign-up: the box is one person's,
+	/// and that account is the owner's, which runs the operator routes and
+	/// is whose copy the Jobs mailbox is kept as, with no subject id set
+	/// anywhere here. On, for a product where anyone who can reach the
+	/// server may make an account; then no account is the owner's by itself,
+	/// and `OPERATOR_SUBJECTS` and `MAILBOX_SUBJECT` say who is who. Sign-in
+	/// is open either way.
+	#[arg(long, env = "AUTH_OPEN_SIGNUP", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Passkey auth")]
+	pub auth_open_signup: bool,
+
+	/// How many accounts may be created per UTC day, across the server, with
+	/// `AUTH_OPEN_SIGNUP` on. A backstop against a flood of empty accounts;
+	/// the per-client rate limit already bounds any one client.
 	#[arg(long, env = "AUTH_NEW_ACCOUNTS_PER_DAY", default_value = "100", help_heading = "Passkey auth")]
 	pub auth_new_accounts_per_day: u32,
-
-	/// A one-time secret that lets one new account take over the data saved
-	/// before auth existed (the `subject-local` rows). Unset, nobody can: every
-	/// new account starts empty. Set it, open `/auth#claim=<token>` in the app
-	/// and create a passkey there; then unset it. Never logged.
-	#[arg(long, env = "AUTH_LEGACY_CLAIM_TOKEN", hide_env_values = true, help_heading = "Passkey auth")]
-	pub auth_legacy_claim_token: Option<String>,
 
 	/// Comma-separated subject ids allowed to use the operator routes: the
 	/// ones that rewrite, retire and restore what everyone is served (lessons,
 	/// `leetype` rounds). Whitespace around an entry is trimmed and empty
-	/// entries are ignored. Unset or empty, nobody is an operator and those
-	/// routes answer 403 to every signed-in subject. Anyone can make an
-	/// account, so being signed in is not enough; see `auth::operator`.
+	/// entries are ignored. Unset or empty, the owner's account (the only
+	/// one) is the operator, and nobody is while the box has no account or
+	/// several. Set, only the listed subjects are: an override for a
+	/// deployment with `AUTH_OPEN_SIGNUP` on; see `auth::operator`.
 	///
-	/// To find your subject id, sign in where you operate from and call any
-	/// operator route: the refusal is logged at info with your `subject=`.
-	/// The pre-auth data's claimant (`AUTH_LEGACY_CLAIM_TOKEN`) is `subject-local`.
+	/// To find a subject id to list, sign in where you operate from and call
+	/// any operator route: the refusal is logged at info with your `subject=`.
 	#[arg(long, env = "OPERATOR_SUBJECTS", value_delimiter = ',', help_heading = "Passkey auth")]
 	pub operator_subjects: Vec<String>,
 
@@ -367,10 +366,9 @@ pub struct Config {
 	// See `mailbox`. Home reads the owner's daily digest from the mailbox (a
 	// Cloudflare Worker, paulgsc/some-ui `apps/mailbox`) so the phone can take
 	// it from home. Off unless `MAILBOX_ENABLED` says otherwise; on, the server
-	// refuses to start unless the other four are set and usable.
+	// refuses to start unless the URL and token are set and usable.
 	/// Whether home reads the Jobs mailbox at all. On, the server refuses to
-	/// start unless `MAILBOX_URL`, `MAILBOX_TOKEN` and `MAILBOX_SUBJECT` are set
-	/// and usable.
+	/// start unless `MAILBOX_URL` and `MAILBOX_TOKEN` are set and usable.
 	#[arg(long, env = "MAILBOX_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Jobs mailbox")]
 	pub mailbox_enabled: bool,
 
@@ -384,8 +382,11 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_TOKEN", hide_env_values = true, help_heading = "Jobs mailbox")]
 	pub mailbox_token: Option<String>,
 
-	/// The subject whose copy the mailbox's files are kept as: the owner's
-	/// subject id, found as for `OPERATOR_SUBJECTS`.
+	/// The subject whose copy the mailbox's files are kept as. Unset, the
+	/// owner's account (the only one), read at each pass; while the box has
+	/// no account or several, a pass keeps nothing and says `no_account`. Set,
+	/// that subject: an override for a deployment with `AUTH_OPEN_SIGNUP` on,
+	/// its id found as for `OPERATOR_SUBJECTS`.
 	#[arg(long, env = "MAILBOX_SUBJECT", help_heading = "Jobs mailbox")]
 	pub mailbox_subject: Option<String>,
 
@@ -625,7 +626,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 41] = [
+	const REFUSED: [(&str, &str); 42] = [
 		("RUST_LOG", "info,=[bad"),
 		("CONNECTION_TIMEOUT", "soon"),
 		("MAX_IN_FLIGHT", "-1"),
@@ -648,6 +649,7 @@ mod tests {
 		("RECOMMENDER_USES_OUTCOMES", "on"),
 		("NUDGE_PRESENCE_LEASE_TTL_SECONDS", "75s"),
 		("AUTH_ENABLED", "off"),
+		("AUTH_OPEN_SIGNUP", "on"),
 		("AUTH_SESSION_DAYS", "a month"),
 		("AUTH_NEW_ACCOUNTS_PER_DAY", "-1"),
 		("MAILBOX_ENABLED", "on"),
@@ -673,7 +675,7 @@ mod tests {
 	// (`nudge::clock::NudgeClock::resolve`). The URLs, keys and paths are
 	// checked by what uses them, which refuses to start on a bad one, as the
 	// mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 29] = [
+	const FREE_TEXT: [&str; 28] = [
 		"FILE_HOST_BIND",
 		"FILE_HOST_PORT_FILE",
 		"ALLOWED_ORIGINS",
@@ -689,7 +691,6 @@ mod tests {
 		"APP_BASE_URL",
 		"WEBAUTHN_RP_ID",
 		"WEBAUTHN_ORIGINS",
-		"AUTH_LEGACY_CLAIM_TOKEN",
 		"OPERATOR_SUBJECTS",
 		"MAILBOX_URL",
 		"MAILBOX_TOKEN",
