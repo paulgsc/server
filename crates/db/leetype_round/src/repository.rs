@@ -7,14 +7,9 @@ use std::collections::BTreeMap;
 /// Bounded in the query and refused, never silently truncated, above it — the
 /// shape `curriculum_repo::MANIFEST_CEILING` takes, for the same reasons. An
 /// entry is an id, three scalars and a few witness pairs, so a full manifest is
-/// well under a megabyte. It bounds the **listed** rounds; the write route
+/// well under a megabyte. It bounds the **listed** rounds; the importer
 /// refuses to list one past it, so the manifest refusing is a backstop.
 pub const MANIFEST_CEILING: i64 = 1_000;
-
-/// The most rounds, listed and retired, one operator listing returns. Retiring
-/// never deletes, so the table only grows; over this the listing is refused,
-/// never truncated.
-pub const OPERATOR_LISTING_CEILING: i64 = 5_000;
 
 /// What [`RoundRepository::upsert`] did to one round.
 ///
@@ -60,15 +55,6 @@ impl From<sqlx::Error> for WriteError {
 	fn from(err: sqlx::Error) -> Self {
 		Self::Storage(err)
 	}
-}
-
-/// A listed round whose option set has a member witnessing some proposition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WitnessingRound {
-	pub id: String,
-	/// Whether that member is the round's admissible one — the proposition is
-	/// the round's answer — rather than only a distractor's.
-	pub admissible: bool,
 }
 
 pub struct RoundRepository {
@@ -216,25 +202,6 @@ impl RoundRepository {
 		Ok(entries)
 	}
 
-	/// Every round, listed and retired, by id, with witnesses and without
-	/// bodies: the operator's view. At most `limit`.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn all_entries(&self, limit: i64) -> Result<Vec<RoundEntry>, sqlx::Error> {
-		let mut tx = self.pool.begin().await?;
-		let rows = sqlx::query_as!(
-			EntryRow,
-			r#"SELECT id AS "id!", version, published_at, content_hash, retired_at FROM leetype_round ORDER BY id LIMIT ?"#,
-			limit
-		)
-		.fetch_all(&mut *tx)
-		.await?;
-		let entries = Self::with_witnesses(&mut tx, rows).await?;
-		tx.commit().await?;
-		Ok(entries)
-	}
-
 	/// One round, listed or retired, with its witnesses and without its body.
 	///
 	/// # Errors
@@ -303,64 +270,6 @@ impl RoundRepository {
 			});
 		}
 		Ok(by_round)
-	}
-
-	/// The listed rounds with a member witnessing `proposition_id` (`μ`), by
-	/// id, at most `limit` — "which rounds witness CW-P5".
-	///
-	/// A range read of `idx_leetype_round_witness_proposition`, which already
-	/// orders by round id, so the grouping and the order need no sort.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn rounds_witnessing(&self, proposition_id: &str, limit: i64) -> Result<Vec<WitnessingRound>, sqlx::Error> {
-		let rows = sqlx::query!(
-			r#"
-			SELECT w.round_id AS "round_id!", MAX(w.admissible) AS "admissible!: i64"
-			FROM leetype_round_witness w JOIN leetype_round r ON r.id = w.round_id
-			WHERE w.proposition_id = ?1 AND r.retired_at IS NULL
-			GROUP BY w.round_id
-			ORDER BY w.round_id
-			LIMIT ?2
-			"#,
-			proposition_id,
-			limit
-		)
-		.fetch_all(&self.pool)
-		.await?;
-		Ok(
-			rows
-				.into_iter()
-				.map(|row| WitnessingRound {
-					id: row.round_id,
-					admissible: row.admissible != 0,
-				})
-				.collect(),
-		)
-	}
-
-	/// Take `key` out of the manifest, as of `now`, and report whether the
-	/// table holds it. Idempotent: retiring a retired round keeps when it was
-	/// first retired. Moves no `version` and no `published_at`.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn retire(conn: &mut SqliteConnection, key: &str, now: &str) -> Result<bool, sqlx::Error> {
-		let updated = sqlx::query!("UPDATE leetype_round SET retired_at = COALESCE(retired_at, ?2) WHERE id = ?1", key, now)
-			.execute(&mut *conn)
-			.await?;
-		Ok(updated.rows_affected() == 1)
-	}
-
-	/// Put `key` back in the manifest, and report whether the table holds it.
-	/// Idempotent, and moves no `version`. The caller owns the
-	/// [`MANIFEST_CEILING`] check, in the same transaction.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn restore(conn: &mut SqliteConnection, key: &str) -> Result<bool, sqlx::Error> {
-		let updated = sqlx::query!("UPDATE leetype_round SET retired_at = NULL WHERE id = ?", key).execute(&mut *conn).await?;
-		Ok(updated.rows_affected() == 1)
 	}
 }
 

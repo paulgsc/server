@@ -267,7 +267,7 @@ buckets. An account with nothing in it costs a few hundred bytes.
 ### Who is an operator
 
 A subject listed in `OPERATOR_SUBJECTS`, and nobody else. The operator routes
-(`/curriculum/operator/*`, `/leetype/operator/*`) rewrite what everyone is
+(`/curriculum/operator/*`) rewrite what everyone is
 served, and since anyone can make an account, a session alone cannot be what
 gates them. `auth::operator::Operator` extracts a `SubjectId` first, so
 the `401`, the origin check and the hold against deletion are the same as on any
@@ -634,8 +634,7 @@ nowhere is marked as such and belongs to review.
     rebuilt first. A phone
     that sent a session before it was finished would break the first
     assumption; a change to `logGoing` is checked against this line.
-    The corpus-wide `GET /leetype/rounds*` and
-    `leetype_round` hold nothing of it.
+    The corpus-wide `leetype_round` holds nothing of it.
     *Enforced by* `leetype_log_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced`,
     `the_record_leaves_with_the_account` and, for the soundbites,

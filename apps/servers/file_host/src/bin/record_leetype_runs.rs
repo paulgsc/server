@@ -10,9 +10,8 @@
 //! An operator command, run offline after `import-leetype-rounds`, on a
 //! machine with `rustc` — a developer's, or CI. **It is the only thing in
 //! this package that compiles or executes a program**, and nothing in
-//! `main.rs` calls it, waits on it, or knows it exists: the server's
-//! `GET /leetype/rounds/:id/runs` and `dump-leetype-snapshot` read what it
-//! stored. See `apps/servers/file_host/docs/leetype-execution.md`.
+//! `main.rs` calls it, waits on it, or knows it exists:
+//! `dump-leetype-snapshot` reads what it stored. See `apps/servers/file_host/docs/leetype-execution.md`.
 //!
 //! By default it records every listed round with a harness whose current
 //! version has no runs yet; `--all` re-records every one. A round without a

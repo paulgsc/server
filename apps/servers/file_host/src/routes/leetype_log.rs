@@ -11,9 +11,7 @@
 //! **Trust model:** a subject route, as `routes::jobs`. Every handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token, from its tapped "Send to home". Not to be confused with
-//! `routes::db::leetype` (`/leetype/rounds*`), the corpus-wide round
-//! catalogue, which carries no subject.
+//! token, from its tapped "Send to home".
 //!
 //! **Append-only.** A `PUT` adds an event or changes nothing, and a different
 //! body under a held id is a `409`; there is no `DELETE`. What an event may

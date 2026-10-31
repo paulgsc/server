@@ -136,8 +136,6 @@ where
 		db::activities(),
 		db::curriculum(),
 		db::curriculum_operator(),
-		db::leetype(),
-		db::leetype_operator(),
 		push::push(),
 		presence::presence(),
 		signals::signals(),
