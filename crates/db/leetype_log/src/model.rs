@@ -151,9 +151,11 @@ pub enum Event {
 		file: String,
 		screen: String,
 	},
-	/// A take's rubric shown that states the answer of `screen`, a round: a
-	/// return of that round after it, until the round parks again, is
-	/// assisted. `take` is the record screen whose rubric it was. Ids only:
+	/// A take's rubric shown that states the answer of `screen`, a round: on
+	/// the phone, a return of that round after it, until the round's next
+	/// struggle (a pick or return that isn't correct and unhurried) parks it
+	/// again, is assisted. Home only keeps the event; it computes no
+	/// assistance. `take` is the record screen whose rubric it was. Ids only:
 	/// the rubric itself is a soundbite, and never comes home.
 	RubricShown {
 		id: String,
@@ -518,12 +520,15 @@ mod tests {
 	/// nothing else. What the rubric says stays off home like any soundbite.
 	#[test]
 	fn a_shown_rubric_comes_home_as_ids_alone() {
-		let sent = r#"{"type":"rubric-shown","id":"e1","at":"2026-10-20T09:14:00.000Z","session":"4f0c2a8e-7b1d-4c3e-9a55-0d1e2f3a4b5c","file":"raft-1.json","screen":"r2","take":"say-why"}"#;
+		// Sent in the order serde writes the keys, so the value it reads back
+		// as is also the same text (key order is not kept otherwise).
+		let sent =
+			String::from(r#"{"type":"rubric-shown","id":"e1","at":"2026-10-20T09:14:00.000Z","session":""#) + S + r#"","file":"raft-1.json","screen":"r2","take":"say-why"}"#;
 		let parsed = parse_event(S, "e1", sent.as_bytes()).unwrap();
 		assert_eq!(parsed.kind(), "rubric-shown");
 		let mut written = Vec::new();
 		serde_json::to_writer(&mut written, &parsed).unwrap();
-		assert_eq!(String::from_utf8(written).unwrap(), sent, "written back byte for byte");
+		assert_eq!(String::from_utf8(written).unwrap(), sent, "the same value, in serde's key order");
 
 		let shown = || event("rubric-shown", &json!({ "file": "raft-1.json", "screen": "r2", "take": "say-why" }));
 		let mut extra = shown();

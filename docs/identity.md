@@ -617,7 +617,7 @@ nowhere is marked as such and belongs to review.
     `a_soundbite_is_refused_by_name`, `a_shown_rubric_comes_home_as_ids_alone`
     and `a_refused_event_writes_nothing`, and `handlers::leetype_log`'s
     `refusals_name_their_fields_and_records_stay_apart` and
-    `a_shown_rubric_is_kept_and_read_back_as_sent`.
+    `a_shown_rubric_reads_back_as_sent_in_serdes_key_order`.
 
 19. **Home's copy of the Jobs mailbox is append-only, each table has one
     writer, and it holds JSON files, never audio.** The mailbox (paulgsc/some-ui

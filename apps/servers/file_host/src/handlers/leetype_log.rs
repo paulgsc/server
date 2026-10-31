@@ -280,10 +280,12 @@ mod tests {
 	}
 
 	/// The phone's `rubric-shown` (a take's rubric shown for a round) is
-	/// stored and served back exactly as sent; one with a field the phone
-	/// does not send is still refused, and nothing of it written.
+	/// stored and served back as the JSON value sent. Key order is not kept,
+	/// so it is sent here in serde's key order and the text compares too. One
+	/// with a field the phone does not send is still refused, and nothing of
+	/// it written.
 	#[tokio::test]
-	async fn a_shown_rubric_is_kept_and_read_back_as_sent() {
+	async fn a_shown_rubric_reads_back_as_sent_in_serdes_key_order() {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
@@ -307,7 +309,7 @@ mod tests {
 		assert_eq!(
 			String::from_utf8(held.to_vec()).unwrap(),
 			String::from(r#"{"session":""#) + S + r#"","events":["# + &sent + "]}",
-			"byte for byte"
+			"the same value, in serde's key order"
 		);
 
 		let mut extra: Value = serde_json::from_str(&sent).unwrap();
