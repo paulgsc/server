@@ -19,7 +19,7 @@
 //! - **No background writer.** The callers are `file_host`'s `handlers::jobs`
 //!   (`PUT /api/v1/jobs/events/:id`) and `handlers::sync`
 //!   (`POST /api/v1/sync/jobs/batch`, each event as that route), which the
-//!   phone sends once its person has opted in. A
+//!   phone sends once paired. A
 //!   `git grep -n jobs_event -- '*.rs'` shows no other writer.
 
 mod model;

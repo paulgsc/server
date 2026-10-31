@@ -17,8 +17,7 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token, and a pairing whose person stopped sending voice notes
-//! (`PUT /sharing/voice`, `routes::sharing`) is `409`.
+//! token.
 //!
 //! **Append-only, and kept for good.** A `PUT` adds a note or changes
 //! nothing, and other bytes or another description under a held id are a

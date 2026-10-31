@@ -11,7 +11,7 @@
 //! **Trust model:** a subject route, as `routes::shelf`. Every handler takes
 //! a `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token, once its person has opted in to keeping aph on home.
+//! token once paired.
 //!
 //! **Append-only.** A `PUT` adds a revision or changes nothing; there is no
 //! `DELETE`. See `handlers::aph` and `aph_repo`.

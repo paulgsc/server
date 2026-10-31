@@ -11,10 +11,6 @@
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 //!
-//! **No sharing choice.** The phone sends the log only from its tapped "Send
-//! to home", as it sends sessions, so no `sharing_choice` scope covers it and
-//! no write here is refused as stopped (docs/identity.md, invariant 17).
-//!
 //! **No other writer.** [`put_event`] is the only caller of
 //! `leetype_log_repo::put_event`; nothing writes the record in the background.
 

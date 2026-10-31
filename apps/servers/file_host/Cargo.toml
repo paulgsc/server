@@ -128,7 +128,6 @@ mailbox_repo = { workspace = true }
 nfl_feed = { workspace = true }
 fcm_kit = { workspace = true, features = ["reqwest-transport"] }
 notice_repo = { workspace = true }
-sharing_repo = { workspace = true }
 storage_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
 studio_log_repo = { workspace = true }
