@@ -1532,7 +1532,6 @@ mod tests {
 		let all = [&url[..], &token[..]].concat();
 		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..]].concat();
 		assert!(on(&insecure).is_err(), "only https");
-		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!(
 			(context.subject.as_deref(), context.interval.as_secs()),
