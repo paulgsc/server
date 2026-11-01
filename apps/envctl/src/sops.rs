@@ -185,6 +185,36 @@ pub(crate) fn render(entries: &Plain) -> Result<String> {
 	Ok(out)
 }
 
+/// The first sops with `decrypt` and `encrypt` subcommands. An older one
+/// reads `decrypt` as the name of a file to create, and fails with "no
+/// matching creation rules found", which names nothing that is wrong.
+const SUBCOMMANDS_SINCE: (u32, u32) = (3, 9);
+
+/// The `major.minor` that `sops --version` prints first (`sops 3.8.1
+/// (latest)`), or None.
+fn version(printed: &str) -> Option<(u32, u32)> {
+	let number = printed.split_whitespace().nth(1)?;
+	let mut parts = number.split('.');
+	Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// After sops failed: why, when it is older than envctl can drive (nixos-24.05
+/// ships 3.8.1). Empty when it is not, or says nothing usable.
+fn too_old(sops: &[String]) -> String {
+	let Ok(output) = command(sops).arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output() else {
+		return String::new();
+	};
+	let printed = String::from_utf8_lossy(&output.stdout);
+	match version(&printed) {
+		Some(found) if found < SUBCOMMANDS_SINCE => format!(
+			"\n  (this is sops {}.{}; envctl needs {}.{} or later, for `sops decrypt` and `sops encrypt`: \
+			 `nix shell nixpkgs#sops`, or set SOPS to a newer one)",
+			found.0, found.1, SUBCOMMANDS_SINCE.0, SUBCOMMANDS_SINCE.1
+		),
+		_ => String::new(),
+	}
+}
+
 /// `file` decrypted into memory, run from `repo` so sops finds
 /// `.sops.yaml` and its key as it would from a shell there.
 pub(crate) fn decrypt(sops: &[String], repo: &Path, file: &Path) -> Result<Plain> {
@@ -200,7 +230,12 @@ pub(crate) fn decrypt(sops: &[String], repo: &Path, file: &Path) -> Result<Plain
 		.with_context(|| format!("running {shown} (is it installed? `nix shell nixpkgs#sops`)"))?;
 	if !output.status.success() {
 		// sops' stderr names the file and the key it lacks, never a value.
-		bail!("{shown} could not decrypt {}: {}", file.display(), String::from_utf8_lossy(&output.stderr).trim());
+		bail!(
+			"{shown} could not decrypt {}: {}{}",
+			file.display(),
+			String::from_utf8_lossy(&output.stderr).trim(),
+			too_old(sops)
+		);
 	}
 	let text = String::from_utf8(output.stdout).with_context(|| format!("{} decrypts to text that is not UTF-8", file.display()))?;
 	Ok(parse(&text))
@@ -232,7 +267,12 @@ pub(crate) fn encrypt(sops: &[String], repo: &Path, target: &Path, entries: &Pla
 	drop(plain);
 	let output = child.wait_with_output().with_context(|| format!("waiting for {shown}"))?;
 	if !output.status.success() {
-		bail!("{shown} could not encrypt {}: {}", target.display(), String::from_utf8_lossy(&output.stderr).trim());
+		bail!(
+			"{shown} could not encrypt {}: {}{}",
+			target.display(),
+			String::from_utf8_lossy(&output.stderr).trim(),
+			too_old(sops)
+		);
 	}
 	let written = String::from_utf8_lossy(&output.stdout);
 	if let Err(plain) = plain_values(&written) {
@@ -243,9 +283,18 @@ pub(crate) fn encrypt(sops: &[String], repo: &Path, target: &Path, entries: &Pla
 
 #[cfg(test)]
 mod tests {
-	use super::{names, parse, plain_values, program, render, set_only, Plain};
+	use super::{names, parse, plain_values, program, render, set_only, version, Plain, SUBCOMMANDS_SINCE};
 	use indexmap::IndexMap;
 	use std::os::unix::fs::PermissionsExt as _;
+
+	#[test]
+	fn a_sops_without_decrypt_and_encrypt_is_named_too_old() {
+		assert_eq!(version("sops 3.8.1 (latest)\n"), Some((3, 8)));
+		assert!(version("sops 3.8.1 (latest)").is_some_and(|found| found < SUBCOMMANDS_SINCE));
+		assert!(version("sops 3.13.3").is_some_and(|found| found >= SUBCOMMANDS_SINCE));
+		assert!(version("sops 4.0.0").is_some_and(|found| found >= SUBCOMMANDS_SINCE));
+		assert_eq!(version("stand-in"), None, "a sops that prints no version is not called old");
+	}
 
 	#[test]
 	fn an_empty_value_is_delivered_unset() {

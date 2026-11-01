@@ -35,6 +35,10 @@
       rustEnv = import ./nix/rust-env {
         inherit pkgs isCI;
         sqlx-cli = nixpkgs-sqlx.legacyPackages.${system}.sqlx-cli;
+        # sops too: nixos-24.05's is 3.8.1, which has no `sops decrypt`,
+        # `encrypt` or `edit` (3.9 added them), so envctl and `sops edit` fail
+        # on it with "no matching creation rules found" (#613).
+        sops = nixpkgs-sqlx.legacyPackages.${system}.sops;
       };
 
       whisperManager = import ./nix/whisper-manager {
