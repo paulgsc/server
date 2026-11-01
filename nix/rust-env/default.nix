@@ -3,6 +3,8 @@
   isCI ? false,
   # From the flake's `nixpkgs-sqlx` input, not `pkgs` — see flake.nix (#385).
   sqlx-cli,
+  # Likewise: 3.9 or later, for `sops decrypt`, `encrypt` and `edit`.
+  sops,
 }: let
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
     extensions =
@@ -38,8 +40,11 @@
     duckdb
     alsa-lib
     go-jsonnet
+  ]
+  ++ [
     # Every deployment value is in deploy/<role>/<app>.sops.env (#613), which
-    # make up, make dev and make import decrypt or write.
+    # make up, make dev and make import decrypt or write. The argument, not
+    # pkgs.sops: see above.
     sops
   ];
 
