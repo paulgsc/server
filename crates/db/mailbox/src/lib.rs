@@ -975,11 +975,12 @@ pub struct JobsInputs {
 	pub scouts: Vec<HeldFile>,
 	/// Every transcript of a Jobs voice note the mailbox took, likewise.
 	pub transcripts: Vec<HeldTranscript>,
-	/// Every pre-mailbox decisions file the routine put back in `brief`
-	/// once (`decisions-*.json`; MB2's backfill, paulgsc/server#509). The
-	/// mailbox takes only a name dated before 2026-10-23 there.
+	/// Every decisions file only Drive held that the routine put back in
+	/// `brief` once (`decisions-*.json`; MB2's backfill, paulgsc/server#509).
+	/// The mailbox takes only a name dated before 2026-11-04 there
+	/// (`DRIVE_ONLY_ENDED`, paulgsc/some-ui#2393).
 	pub backfill_decisions: Vec<HeldFile>,
-	/// Every pre-mailbox scouts file put back likewise (`scouts-*.json`).
+	/// Every scouts file only Drive held, put back likewise (`scouts-*.json`).
 	pub backfill_scouts: Vec<HeldFile>,
 }
 
@@ -1916,7 +1917,7 @@ mod tests {
 		assert_eq!(jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap(), None, "nothing yet");
 		keep(&pool, A, &digest("2026-10-22"), 1, "d22").await.unwrap();
 		keep(&pool, B, &digest("2026-10-23"), 2, "theirs").await.unwrap();
-		// MB2's backfill: pre-mailbox files the routine put back in `brief`.
+		// MB2's backfill: files only Drive held that the routine put back in `brief`.
 		keep(&pool, A, "decisions-2026-10-20.json", 3, "back-d").await.unwrap();
 		keep(&pool, A, "scouts-20261020T101500.json", 4, "back-s").await.unwrap();
 		keep(&pool, B, "decisions-2026-10-19.json", 5, "theirs-d").await.unwrap();
