@@ -39,6 +39,11 @@
 //! client the recording pass in `file_host` is, for an operator and the
 //! sandbox check (`scripts/check_rust_runner_sandbox.py`).
 //!
+//! **No environment of its own** (#616, option B): every setting is a flag,
+//! which the image passes in its `CMD` (`infra/docker/Dockerfile.rust-runner`),
+//! so a deployment states nothing for it and no variable can change how it
+//! runs. A test below holds every flag to that.
+//!
 //! Exits 2 when it cannot start (no rustc or prlimit, not root, a directory
 //! that is not its own, a socket it cannot bind) or has to stop.
 
@@ -60,6 +65,10 @@ use std::time::{Duration, Instant};
 // they sum to are `rust_rounds_wire`'s, so the client's wait (`ASK_TIMEOUT`)
 // is derived from the same numbers and outlasts the watchdog.
 use rust_runner::service::{job_deadline, ASK_TIMEOUT, CLEAN_TIMEOUT, SWEEP_ALLOWANCE};
+
+/// Where the image's `serve` listens: the volume `file_host` mounts
+/// (`infra/compose/rust_runner.yml`), and `file_host`'s own default.
+const SOCKET: &str = "/run/rust-runner/runner.sock";
 
 /// How often the watchdog looks at the clock.
 const WATCH_POLL: Duration = Duration::from_millis(100);
@@ -126,7 +135,8 @@ enum Mode {
 	Serve(Serve),
 	/// Send one request, read from stdin, and print the answer.
 	Ask {
-		#[arg(long, env = "RUST_RUNNER_SOCKET")]
+		/// The socket `serve` listens on; the image's, by default.
+		#[arg(long, default_value = SOCKET)]
 		socket: PathBuf,
 		/// How long to wait for the answer, in seconds. The default outlasts
 		/// the watchdog's job deadline (`ASK_TIMEOUT`).
@@ -143,47 +153,47 @@ enum Mode {
 struct Serve {
 	/// Where to listen. Its directory must be root's, writable by nobody
 	/// else, and hold nothing but this socket, which is bound afresh.
-	#[arg(long, env = "RUST_RUNNER_SOCKET")]
+	#[arg(long)]
 	socket: PathBuf,
 	/// Root's directory, writable by nobody else; every program gets a fresh
 	/// directory in it, removed after every request.
-	#[arg(long, env = "RUST_RUNNER_WORK")]
+	#[arg(long)]
 	work: PathBuf,
 	/// The compiler: a path, or a name looked up on PATH.
-	#[arg(long, env = "RUST_RUNNER_RUSTC", default_value = "rustc")]
+	#[arg(long, default_value = "rustc")]
 	rustc: PathBuf,
 	/// Wall-clock ceiling on one run, in milliseconds.
-	#[arg(long, env = "RUST_RUNNER_RUN_CEILING_MS", default_value_t = 2_000)]
+	#[arg(long, default_value_t = 2_000)]
 	run_ceiling_ms: u64,
 	/// How long one compile may take, in seconds.
-	#[arg(long, env = "RUST_RUNNER_COMPILE_TIMEOUT_SECS", default_value_t = 60)]
+	#[arg(long, default_value_t = 60)]
 	compile_timeout_secs: u64,
 	/// Address-space ceiling on one run, in bytes (needs prlimit).
-	#[arg(long, env = "RUST_RUNNER_MEMORY_CEILING", default_value_t = rust_runner::DEFAULT_MEMORY_CEILING)]
+	#[arg(long, default_value_t = rust_runner::DEFAULT_MEMORY_CEILING)]
 	memory_ceiling: u64,
 	/// Address-space ceiling on one compile, in bytes (needs prlimit).
-	#[arg(long, env = "RUST_RUNNER_COMPILE_MEMORY_CEILING", default_value_t = rust_runner::DEFAULT_COMPILE_MEMORY_CEILING)]
+	#[arg(long, default_value_t = rust_runner::DEFAULT_COMPILE_MEMORY_CEILING)]
 	compile_memory_ceiling: u64,
 	/// The largest file one compile or run may write, in bytes (needs
 	/// prlimit).
-	#[arg(long, env = "RUST_RUNNER_FILE_SIZE_CEILING", default_value_t = rust_runner::DEFAULT_FILE_SIZE_CEILING)]
+	#[arg(long, default_value_t = rust_runner::DEFAULT_FILE_SIZE_CEILING)]
 	file_size_ceiling: u64,
 	/// `RLIMIT_NPROC` for one compile or run: processes and threads of the
 	/// programs' uid (needs prlimit).
-	#[arg(long, env = "RUST_RUNNER_PROCESS_CEILING", default_value_t = 64)]
+	#[arg(long, default_value_t = 64)]
 	process_ceiling: u64,
 	/// The uid every compile and run is started as, and every process of
 	/// which is killed after each: the programs' own, which nothing else in
 	/// the container runs as. Neither root nor the runner's.
-	#[arg(long, env = "RUST_RUNNER_PROGRAM_UID")]
+	#[arg(long)]
 	program_uid: u32,
 	/// The programs' gid; they get no supplementary groups. Like the uid,
 	/// one no service in the stack runs as.
-	#[arg(long, env = "RUST_RUNNER_PROGRAM_GID")]
+	#[arg(long)]
 	program_gid: u32,
 	/// The uid whose connections are served (`file_host`'s), besides root's;
 	/// every other connection is refused unread.
-	#[arg(long, env = "RUST_RUNNER_CLIENT_UID")]
+	#[arg(long)]
 	client_uid: u32,
 }
 
@@ -492,4 +502,32 @@ fn same_file(one: &Path, other: &Path) -> bool {
 /// `<what> <path>: <err>`, a line for the log.
 fn failed(what: &str, path: &Path, err: &dyn std::fmt::Display) -> String {
 	String::from(what) + " " + &path.display().to_string() + ": " + &err.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Args;
+	use clap::CommandFactory;
+
+	/// Every flag of every mode, with its mode's name.
+	fn flags(command: &clap::Command, path: &str, out: &mut Vec<(String, Option<String>)>) {
+		for arg in command.get_arguments() {
+			out.push((
+				path.to_owned() + " --" + arg.get_long().unwrap_or_else(|| arg.get_id().as_str()),
+				arg.get_env().map(|env| env.to_string_lossy().into_owned()),
+			));
+		}
+		for sub in command.get_subcommands() {
+			flags(sub, &(path.to_owned() + " " + sub.get_name()), out);
+		}
+	}
+
+	#[test]
+	fn no_flag_reads_the_environment() {
+		let mut all = Vec::new();
+		flags(&Args::command(), "rust-runner", &mut all);
+		assert!(all.iter().any(|(flag, _)| flag == "rust-runner serve --program-uid"), "{all:?}");
+		let read: Vec<_> = all.iter().filter(|(_, env)| env.is_some()).collect();
+		assert!(read.is_empty(), "the runner takes flags only (#616, option B): {read:?}");
+	}
 }

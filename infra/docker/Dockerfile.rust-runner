@@ -53,15 +53,16 @@ RUN groupadd --system --gid 10101 runner \
 
 COPY --from=builder /app/target/release/rust-runner /usr/local/bin/rust-runner
 
-# rustc itself, not rustup's proxy, so a run never consults rustup's state.
-# The runner forwards PATH and the rustup variables to rustc only, for the
-# linker; a program's run gets no environment at all.
-ENV RUST_RUNNER_RUSTC=/usr/local/bin/rustc-pinned \
-    RUST_RUNNER_SOCKET=/run/rust-runner/runner.sock \
-    RUST_RUNNER_WORK=/work \
-    RUST_RUNNER_PROGRAM_UID=10101 \
-    RUST_RUNNER_PROGRAM_GID=10101 \
-    RUST_RUNNER_CLIENT_UID=10000
-
+# The runner's settings are flags, not variables (#616, option B), so a
+# deployment states nothing for it. --rustc is rustc itself, not rustup's
+# proxy, so a run never consults rustup's state. The runner forwards PATH and
+# the rustup variables to rustc only, for the linker; a program's run gets no
+# environment at all.
 ENTRYPOINT ["/usr/local/bin/rust-runner"]
-CMD ["serve"]
+CMD ["serve", \
+    "--rustc", "/usr/local/bin/rustc-pinned", \
+    "--socket", "/run/rust-runner/runner.sock", \
+    "--work", "/work", \
+    "--program-uid", "10101", \
+    "--program-gid", "10101", \
+    "--client-uid", "10000"]

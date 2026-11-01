@@ -17,7 +17,7 @@
 #
 # `ask` runs as file_host's uid (10000, infra/docker/Dockerfile.server), the
 # one client uid the runner serves besides root's (the image's
-# RUST_RUNNER_CLIENT_UID); any other uid's connection is refused unread.
+# --client-uid); any other uid's connection is refused unread.
 # scripts/check_rust_runner_sandbox.py brings this file up as it is and runs
 # the hostile programs against it.
 services:
@@ -40,8 +40,8 @@ services:
     # drops a signal to PID 1 it has no handler for).
     # RX1: two uids. The runner is root with two capabilities and no way to
     # gain more: SETUID and SETGID, to start every compile and run as
-    # 10101:10101 (the image's RUST_RUNNER_PROGRAM_*, an id pair no other
-    # service in the stack uses) with no supplementary groups. Under one uid
+    # 10101:10101 (the image's --program-uid and --program-gid, an id pair
+    # no other service in the stack uses) with no supplementary groups. Under one uid
     # a program could stop the runner (SIGSTOP), so its ceilings never fired,
     # or swap its socket; under 10101 it can signal nothing of root's, and
     # write nothing but its own directory. No KILL: the uid's processes are
@@ -87,8 +87,9 @@ services:
     pids_limit: 128
     ulimits:
       core: 0
-    # No `environment` and no `env_file`: the image sets the runner's few
-    # settings, and nothing secret may ever be here. rustc gets PATH and the
+    # No `environment` and no `env_file`: the runner's few settings are
+    # flags in the image's CMD (#616, option B), so it reads no variable and
+    # has no deployment file, and nothing secret may ever be here. rustc gets PATH and the
     # rustup variables and a program none, but a compile's include_str! can
     # read a file, so nothing secret is in the image either (RX1).
     # The cleanup of last resort: whenever the runner exits, it comes back
