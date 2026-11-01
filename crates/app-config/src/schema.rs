@@ -3,9 +3,9 @@
 //! [`variables`] walks a clap `Command` and describes every argument that has
 //! an environment variable, so there is no second declaration: the `Config`
 //! is the schema. Each binary checks a copy into `infra/env/<binary>.json`
-//! with [`assert_checked_in`], and `scripts/env_schema.py` generates
-//! `example.env`, lists the stack's variables and runs the preflight from
-//! those copies, so none of that needs Rust on the host.
+//! with [`assert_checked_in`], and `envctl` (`apps/envctl`) reads those
+//! copies as the contract: it lists the stack's variables, runs the preflight
+//! on a deployment's decrypted files and generates the NixOS options.
 //!
 //! What clap cannot see, a binary declares beside its `Config` as [`Rules`]:
 //! a requirement that depends on another variable (`WEBAUTHN_RP_ID` while
@@ -314,8 +314,7 @@ pub fn assert_checked_in(binary: &str, cmd: &Command, rules: &Rules, path: &Path
 ///
 /// clap's derive never restores the heading after a `#[command(flatten)]`,
 /// so a field declared after a group, without a `help_heading` of its own,
-/// silently lands under that group's heading in `--help`, in the schema and
-/// in `example.env`.
+/// silently lands under that group's heading in `--help` and in the schema.
 ///
 /// # Panics
 ///

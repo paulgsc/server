@@ -6,6 +6,11 @@ services:
     # environment against (infra/env/orchestrator.json, #504).
     labels:
       env-schema: orchestrator
+    # orchestrator's own variables, as file-host's are
+    # (infra/compose/file_host.yml, #614).
+    env_file:
+      - path: ${ENV_DIR:?make sets ENV_DIR, so run compose through make up or make compose}/orchestrator.env
+        required: true
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       RUST_BACKTRACE: "1"

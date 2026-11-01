@@ -1,0 +1,23 @@
+[package]
+name = "envctl"
+description = "Every variable the stack reads, from its declaration, and every value a deployment sets, from its sops-encrypted files: delivers, checks and migrates them"
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["config", "env", "compose", "deploy"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+indexmap = "2"
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

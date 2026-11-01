@@ -92,8 +92,8 @@ services:
       # From Windows: ssh -L 9090:localhost:9090 paulg@nixos.local
       - '127.0.0.1:9090:9090'
     volumes:
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/prometheus/rules:/etc/prometheus/rules:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     networks:
       - monitoring-network
@@ -144,29 +144,31 @@ services:
       - '127.0.0.1:3001:3000'
     volumes:
       - grafana_data:/var/lib/grafana
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/grafana/generated:/var/lib/grafana/dashboards:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring-network
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in deploy/<role>/compose.sops.env}
       # Where the "file_host reported ERROR-level events" alert goes
       # (infra/grafana/provisioning/alerting/file-host-errors.yml): a Slack
-      # incoming webhook's full URL, for the operator-owned alert channel.
-      # Unset, a placeholder that cannot deliver, so Grafana still starts and
-      # evaluates the rule.
+      # incoming webhook's full URL, for the operator-owned alert channel,
+      # set in each role's compose.sops.env (#614). A role with no channel
+      # sets a placeholder that cannot deliver, so Grafana still starts and
+      # evaluates the rule:
+      # https://hooks.slack.com/services/NOT_CONFIGURED/NOT_CONFIGURED/NOT_CONFIGURED
       #
       # Grafana treats an empty Slack webhook URL as Slack Web API mode and
       # then refuses to provision this contact point without a recipient.
-      # The fallback must also have Slack's incoming-webhook URL shape;
+      # The placeholder must also have Slack's incoming-webhook URL shape;
       # otherwise Grafana classifies it as Slack Web API mode and still
-      # requires a recipient. These placeholder path segments cannot deliver.
-      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/NOT_CONFIGURED/NOT_CONFIGURED/NOT_CONFIGURED}
+      # requires a recipient. Its path segments cannot deliver.
+      - FILE_HOST_ALERT_SLACK_WEBHOOK_URL=${FILE_HOST_ALERT_SLACK_WEBHOOK_URL:?set FILE_HOST_ALERT_SLACK_WEBHOOK_URL in deploy/<role>/compose.sops.env}
       - GF_USERS_ALLOW_SIGN_UP=false
       # The address browsers use, for links, redirects and the login page;
       # without it Grafana builds them from its own :3000.
-      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-https://grafana.home.maishatu.com/}
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:?set GRAFANA_ROOT_URL in deploy/<role>/compose.sops.env}
     # Started, never healthy, as Prometheus above: an unreachable Prometheus
     # is a datasource error Grafana alerts on (home-alerts.yml's
     # execErrState), which it can only do while it runs.
@@ -194,12 +196,12 @@ services:
       retries: 3
   dashboard-builder:
     build:
-      context: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}
-      dockerfile: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/docker/Dockerfile.grafana.builder
+      context: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}
+      dockerfile: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/docker/Dockerfile.grafana.builder
     container_name: dashboard-builder
     volumes:
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/grafana/dashboards:/workspace
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/grafana/generated:/generated:rw
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/dashboards:/workspace
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/generated:rw
     command: ./build.sh
     restart: 'no'
     mem_limit: 1G
@@ -246,7 +248,7 @@ services:
       - monitoring-network
     volumes:
       - /proc:/host/proc:ro
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/prometheus/process-exporter.yml:/config/process-exporter.yml:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/prometheus/process-exporter.yml:/config/process-exporter.yml:ro
     # No host port: Prometheus scrapes it by container name on
     # monitoring-network (infra/prometheus/prometheus.yml).
     command:
@@ -269,7 +271,7 @@ services:
     networks:
       - monitoring-network
     volumes:
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/infra/blackbox.yml:/config/blackbox.yml:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/blackbox.yml:/config/blackbox.yml:ro
     # No host port: Prometheus scrapes it by container name on
     # monitoring-network (infra/prometheus/prometheus.yml).
     command:

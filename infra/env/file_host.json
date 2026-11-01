@@ -3,19 +3,6 @@
   "about": "File hosting server",
   "variables": [
     {
-      "name": "CONNECTION_TIMEOUT",
-      "group": "Server",
-      "required": false,
-      "default": "30",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Database connection timeout in seconds",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "MAX_IN_FLIGHT",
       "group": "Server",
       "required": false,
@@ -133,32 +120,6 @@
       "bounds": null
     },
     {
-      "name": "PROMETHEUS_PORT",
-      "group": "Server",
-      "required": false,
-      "default": "9090",
-      "kind": "u16",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Prometheus metrics port",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "BUFFER_SIZE",
-      "group": "Server",
-      "required": false,
-      "default": "65536",
-      "kind": "usize",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Streaming Chunk Size",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "MAX_REQUEST_SIZE_MB",
       "group": "Server",
       "required": false,
@@ -194,45 +155,6 @@
       "delimiter": null,
       "secret": false,
       "help": "Hard timeout for any operation",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "MAX_CHUNKS_IN_FLIGHT",
-      "group": "Server",
-      "required": false,
-      "default": "5",
-      "kind": "usize",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Streaming Max Chunk Size",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "OBS_WEBSOCKET_IP",
-      "group": "Server",
-      "required": true,
-      "default": null,
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "OBS Websocket Server IP Address",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "OBS_WEBSOCKET_PWD",
-      "group": "Server",
-      "required": true,
-      "default": null,
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": true,
-      "help": "OBS Websocket Server Password",
       "required_when": null,
       "bounds": null
     },

@@ -146,7 +146,7 @@ impl AppState {
 		if !retired.is_empty() {
 			tracing::warn!(
 				variables = ?retired,
-				"left over from the retired transcriber setup (#407): remove these from .env; the WHISPER_* ones are not read, and OTEL_SERVICE_NAME=transcriber renames file_host's traces (example.env, \"Voice-note transcription\")"
+				"left over from the retired transcriber setup (#407): remove these from deploy/<role>/file_host.sops.env; the WHISPER_* ones are not read, and OTEL_SERVICE_NAME=transcriber renames file_host's traces"
 			);
 		}
 		let core = CoreContext {

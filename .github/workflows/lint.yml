@@ -80,19 +80,42 @@ jobs:
           python3 scripts/check_artifact_retention.py --self-test
           python3 scripts/check_artifact_retention.py
 
-  # No path gate either: example.env is generated from infra/env/*.json and
-  # the compose files (ENV2, README.md, "Configuration"), and a hand edit of
-  # it or of a compose file can come with any kind of PR. Whether the JSON
-  # matches each binary's Config is `cargo test`'s part (test.yml).
+  # No path gate either: a compose file or a deploy/ file can come with any
+  # kind of PR. Whether the JSON matches each binary's Config is `cargo
+  # test`'s part (test.yml), and so are envctl's own tests. CI holds no key:
+  # this reads names and the shape of the files, never a value (#613).
   env_schema:
     name: Env schema
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: example.env is what its declarations generate
-        run: python3 scripts/env_schema.py --self-test example --check
+      # Any toolchain builds envctl; this is rust_lint's pin, so a runner
+      # that already has it skips the download.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.1
+      - name: Build envctl
+        run: cargo build -q -p envctl
       - name: The NixOS options are what infra/env generates (#408)
-        run: python3 scripts/nixos_options.py --self-test --check
+        run: target/debug/envctl nix --check
+      # `check` reads `docker compose config --no-interpolate`, which the
+      # runner's compose refuses for a short-syntax volume holding `${X:?}`
+      # ("too many colons"); v5 reads it. Pinned, and checked against the
+      # release's own checksum, so the model envctl holds compose to is the
+      # version it was verified against.
+      - name: Install Docker Compose v5.6.1
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
+            https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64
+          echo "47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+      # ENV1 (#614): each labelled service reads only its own decrypted
+      # file, and every file under deploy/ is one sops wrote.
+      - name: Each service reads only its own file, and deploy/ is encrypted
+        run: target/debug/envctl check
 
   # The NixOS modules (#408) evaluated against the flake's own nixpkgs, no
   # build: nix/modules/test.nix throws unless a bare module names every gap,

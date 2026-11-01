@@ -24,7 +24,7 @@ contactPoints:
         settings:
           title: '{{ template "default.title" . }}'
           text: '{{ template "default.message" . }}'
-          # See example.env's FILE_HOST_ALERT_SLACK_WEBHOOK_URL and
+          # See FILE_HOST_ALERT_SLACK_WEBHOOK_URL (deploy/<role>/compose.sops.env) and
           # infra/compose/monitoring.yml's grafana service — Grafana
           # substitutes $-prefixed names from its own process environment
           # at provisioning time. This must live under `settings`, not
