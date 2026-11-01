@@ -82,6 +82,9 @@ pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; refl
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
+// Its own filter, which compose used to supply (#617): `async_nats` logs
+// every reconnect attempt at info.
+#[command(mut_arg("rust_log", |arg| arg.default_value("info,async_nats=warn")))]
 pub struct Config {
 	/// Dev only: when the port is taken, listen on the next free one instead
 	/// of failing (`listen::bind`). A flag, not a variable (#617): `make dev`

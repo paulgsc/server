@@ -437,19 +437,6 @@
       "bounds": null
     },
     {
-      "name": "RUST_LOG",
-      "group": "Logging",
-      "required": false,
-      "default": "info",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
       "group": "Tracing",
       "required": false,
@@ -472,6 +459,19 @@
       "delimiter": null,
       "secret": false,
       "help": "The `service.environment` traces carry",
+      "required_when": null,
+      "bounds": null
+    },
+    {
+      "name": "RUST_LOG",
+      "group": "Logging",
+      "required": false,
+      "default": "info,async_nats=warn",
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
       "required_when": null,
       "bounds": null
     }
