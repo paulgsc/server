@@ -41,18 +41,34 @@ pub(crate) fn parse_entries(text: &str) -> Entries {
 	let mut entries = Entries::new();
 	for line in text.lines() {
 		let Some((name, raw)) = assignment(line) else { continue };
-		let entry = raw.strip_prefix('\'').filter(|rest| rest.contains('\'')).map_or_else(
-			|| interpolated(&raw),
-			|rest| Entry {
-				value: rest[..rest.find('\'').unwrap_or(rest.len())].to_owned(),
-				literal: true,
-			},
-		);
+		let entry = raw
+			.strip_prefix('\'')
+			.and_then(single_quoted)
+			.map_or_else(|| interpolated(&raw), |value| Entry { value, literal: true });
 		// A repeated name keeps its first place, as a Python dict and compose's
 		// own reader do; its last value wins.
 		entries.insert(name, entry);
 	}
 	entries
+}
+
+/// The body of a single-quoted value, from just after its opening quote,
+/// as compose reads it: literal, but for `\'`, a quote. None when it never
+/// closes.
+fn single_quoted(rest: &str) -> Option<String> {
+	let mut out = String::new();
+	let mut characters = rest.chars();
+	while let Some(character) = characters.next() {
+		match character {
+			'\\' if characters.clone().next() == Some('\'') => {
+				out.push('\'');
+				characters.next();
+			}
+			'\'' => return Some(out),
+			other => out.push(other),
+		}
+	}
+	None
 }
 
 /// A value that is not single-quoted: double-quoted, or bare up to a
@@ -255,6 +271,8 @@ mod tests {
 		let parsed = parse("A=\"x # y\"\nB=z # c\nexport C='q'\nD=\"3000\" # d\nE=\"a\\\"b\"\n# F=no\nG=1\nG=2\n");
 		let pairs: Vec<(&str, &str)> = parsed.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
 		assert_eq!(pairs, [("A", "x # y"), ("B", "z"), ("C", "q"), ("D", "3000"), ("E", "a\"b"), ("G", "2")]);
+		assert_eq!(parse("Q='it\\'s'\nB='a\\\\b'\n")["Q"], "it's", "\\' is a quote, as compose reads it");
+		assert_eq!(parse("B='a\\\\b'\n")["B"], "a\\\\b", "any other backslash is literal");
 		assert_eq!(
 			parse_entries("K='pa$word'\n")["K"],
 			Entry {

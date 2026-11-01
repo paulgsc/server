@@ -148,14 +148,21 @@ DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 # names every missing or refused variable at once. Any other compose command
 # needs the same files: `make compose ARGS="logs -f file-host"`.
 #
-# DEPLOY is the role: home for the box (make up), dev for make dev. REPO_ROOT
+# DEPLOY is the role make up and the rest use, home by default; make dev's is
+# DEV_DEPLOY, dev by default. cargo runs under the decrypted file too: sqlx's
+# query! checks SQL at compile time against its DATABASE_URL, which no .env
+# gives it any more. REPO_ROOT
 # is this checkout, from make itself. Building envctl, like `make routes`,
 # needs no database; `make env-schema` does (sqlx checks queries at compile
 # time).
 
 ROLE = $(or $(DEPLOY),home)
+# make dev's own role, apart from DEPLOY: an exported DEPLOY=home must never
+# run a second file_host on home's values (its VAPID keys, its waker).
+DEV_DEPLOY ?= dev
 REPO_ROOT := $(CURDIR)
-ENVCTL ?= target/debug/envctl
+TARGET_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target))
+ENVCTL ?= $(TARGET_DIR)/debug/envctl
 ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
 .PHONY: envctl dev env-schema env preflight up compose import deploy-check
@@ -168,7 +175,7 @@ envctl: ## Build the config tooling (apps/envctl)
 
 dev: envctl ## Run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
 	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) \
-		$(ENVCTL_RUN) run --role $(or $(DEPLOY),dev) --app file_host -- cargo run -p file_host --bin file_host
+		$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- cargo run -p file_host --bin file_host
 
 env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, then nix/modules/generated from those
 	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config

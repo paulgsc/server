@@ -52,18 +52,23 @@ pub(crate) fn names(encrypted: &str) -> Vec<String> {
 }
 
 /// Whether `encrypted` reads as a file sops wrote: a MAC, and every value
-/// but sops' own wrapped in `ENC[...]`. A name whose value is not is named.
+/// but sops' own wrapped in `ENC[...]`, or empty (sops leaves an empty
+/// value as it is: there is nothing to hide). A name whose value is not is
+/// named; a line that is no `NAME=value` by its number, never its text.
 pub(crate) fn plain_values(encrypted: &str) -> Result<(), Vec<String>> {
 	let mut plain = Vec::new();
 	let mut mac = false;
-	for line in encrypted.lines().filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')) {
+	for (number, line) in encrypted.lines().enumerate() {
+		if line.trim().is_empty() || line.trim_start().starts_with('#') {
+			continue;
+		}
 		let Some((name, value)) = line.split_once('=') else {
-			plain.push(line.chars().take(40).collect());
+			plain.push(format!("line {}", number + 1));
 			continue;
 		};
 		if name == "sops_mac" {
 			mac = true;
-		} else if !name.starts_with("sops_") && !value.starts_with("ENC[") {
+		} else if !name.starts_with("sops_") && !value.is_empty() && !value.starts_with("ENC[") {
 			plain.push(name.to_owned());
 		}
 	}
@@ -177,6 +182,12 @@ mod tests {
 		assert_eq!(names(ENCRYPTED), ["WEBAUTHN_RP_ID", "NUDGE_ENABLED"]);
 		assert!(plain_values(ENCRYPTED).is_ok());
 		assert_eq!(plain_values("A=ENC[x]\nB=plain\nsops_mac=ENC[m]\n"), Err(vec!["B".to_owned()]));
+		assert!(plain_values("EMPTY=\nsops_mac=ENC[m]\n").is_ok(), "sops leaves an empty value as it is");
+		assert_eq!(
+			plain_values("A=ENC[x]\n-----BEGIN PRIVATE KEY-----\nsops_mac=ENC[m]\n"),
+			Err(vec!["line 2".to_owned()]),
+			"a line's text is never shown"
+		);
 		assert_eq!(plain_values("A=ENC[x]\n"), Err(vec!["sops_mac".to_owned()]), "a file sops did not write");
 	}
 

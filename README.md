@@ -226,7 +226,8 @@ its own, because compose interpolates the whole project before it starts one;
 the preflight names those too. It prints names, never a value.
 
 To change a value: `sops edit deploy/<role>/<app>.sops.env` (or
-`sops set`), then `make up`. To add a machine: add its recipient to
+`sops set`), then `make up`. sops' dotenv does no quoting: `KEY="v"` gives
+the container `"v"`, quotes and all, so write `KEY=v`. To add a machine: add its recipient to
 `.sops.yaml` here and in `paulgsc/dotfiles`, then `sops updatekeys` each
 file.
 
@@ -260,8 +261,8 @@ delete `.env`.
     say. A container without the label (the third-party ones) is checked
     only for the compose variables it interpolates.
 
-- **ENV4: no deployment value is in the clear in git, in CI, or on the
-  box's disk.**
+- **ENV4: no deployment value is in the clear in git, in CI, or in the
+  checkout.**
   - _Claim:_ every file under `deploy/` is one sops encrypted, and no other
     tracked file is a deployment's env file; CI reads names and never holds
     a key; `make up`, `make compose`, `make dev` and `make import` hold
@@ -278,9 +279,14 @@ delete `.env`.
     import, a preflight or an `up`, the decrypted file mode 600 while compose
     runs and gone after, and a directory on a disk refused.
   - _Tolerance:_ the stand-ins are not sops or Docker; the first real run is
-    the owner's, on the box. A running container's environment is readable by
-    whoever can `docker inspect` it. A `make up` killed mid-way leaves its
-    tmpfs file until the next run replaces it or the session ends. Defaults
+    the owner's, on the box. Docker itself keeps each container's environment:
+    dockerd writes it in the clear to
+    `/var/lib/docker/containers/<id>/config.v2.json` (root's alone), which is
+    how a container restarts after a reboot without decrypting again, and
+    whoever can `docker inspect` a container reads it. tmpfs pages can be
+    swapped out. envctl survives Ctrl-C, SIGTERM and SIGHUP while compose
+    runs and removes its files after; only a SIGKILL leaves them, until the
+    next run replaces them or the session ends. Defaults
     are source constants: a `Config`'s, and the few compose keeps
     (`RUST_LOG`, `TOKIO_WORKER_THREADS`, `POLARS_MAX_THREADS`,
     `OLLAMA_HOST_PORT`); whether each is a constant, policy or a deployment
@@ -413,8 +419,9 @@ itself is `FILE_HOST_BIND`/`FILE_HOST_PORT` (default `0.0.0.0:3000`). `make dev`
 runs it on `deploy/dev/file_host.sops.env`, decrypted into its environment
 alone (`envctl run`), a variable the shell already sets winning
 (`NUDGE_ENABLED=false make dev`). Write that file once with
-`sops edit deploy/dev/file_host.sops.env`, and `make preflight DEPLOY=dev`
-names what it lacks. Pointed at the container's database and VAPID keys, it
+`sops edit deploy/dev/file_host.sops.env`; file_host itself names every
+variable it lacks or refuses at start. (The preflight checks a container's
+view, with compose's own wiring, so it does not cover `make dev`.) Pointed at the container's database and VAPID keys, it
 would run a second nudge waker beside the container's, so give dev its own
 (`DATABASE_URL=sqlite://<checkout>/dev.db`, migrated as above).
 

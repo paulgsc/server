@@ -32,7 +32,7 @@ const SCHEMA: &str = r#"{
 }"#;
 
 /// What `docker compose config --no-interpolate` prints for the checkout.
-const CONFIG: &str = r#"{"services": {
+const CONFIG: &str = r#"{"name": "repo", "services": {
   "probe": {
     "labels": {"env-schema": "probe"},
     "env_file": [{"path": "/repo/${ENV_DIR:?make sets ENV_DIR}/probe.env", "required": true}],
@@ -60,6 +60,12 @@ case "$1" in
     [ "$1" = "--env-file" ] && [ "$2" = "/dev/null" ] || { echo "compose without --env-file /dev/null" >&2; exit 9; }
     shift 2
     if [ "$1" = config ]; then cat "$here/config.json"; exit 0; fi
+    if [ "$1" = logs ]; then
+      echo "compose logs: started" >> "$here/log"
+      trap 'echo "compose logs: TERM" >> "$here/log"; exit 143' TERM
+      trap '' INT
+      i=0; while [ $i -lt 200 ]; do sleep 0.1; i=$((i+1)); done; exit 1
+    fi
     file="$ENV_DIR/probe.env"
     mode=$(stat -c %a "$file" 2>/dev/null)
     if [ "$mode" = 600 ] && grep -qx "RP_ID='s3cret-rp-id.example'" "$file" && [ "$STORAGE" = /mnt/secret/storage ] && [ -z "$STRAY" ]; then
@@ -81,6 +87,7 @@ case "$1" in
     while IFS= read -r line; do
       case "$line" in "#"*) printf '#ENC[%s]\n' "$(printf '%s' "$line" | base64 -w0)"; continue ;; esac
       name="${line%%=*}"; value="${line#*=}"
+      if [ -z "$value" ]; then printf '%s=\n' "$name"; continue; fi
       printf '%s=ENC[%s]\n' "$name" "$(printf '%s' "$value" | base64 -w0)"
     done
     echo "sops_mac=ENC[stand-in]"; echo "sops_version=stand-in" ;;
@@ -90,6 +97,7 @@ case "$1" in
       case "$line" in "#"*) continue ;; esac
       name="${line%%=*}"; value="${line#*=}"
       case "$name" in sops_*) continue ;; esac
+      if [ -z "$value" ]; then printf '%s=\n' "$name"; continue; fi
       inner="${value#ENC[}"; inner="${inner%]}"
       printf '%s=%s\n' "$name" "$(printf '%s' "$inner" | base64 -d)"
     done < "$last" ;;
@@ -321,4 +329,77 @@ fn check_holds_deploy_to_encrypted_files_without_a_key() {
 	assert!(shown.contains("deploy/home/plain.sops.env is not encrypted by sops: A in the clear"), "{shown}");
 	assert!(shown.contains("deploy/home/file_host.env is not a <app>.sops.env file"), "{shown}");
 	assert!(!fixture.log().contains("decrypt"), "check holds no key, so it decrypts nothing");
+}
+
+#[test]
+fn compose_outlives_ctrl_c_passes_sigterm_on_and_removes_the_files() {
+	let Some(shm) = tmpfs() else {
+		return;
+	};
+	let fixture = Fixture::new("signals").unwrap();
+	imported(&fixture).unwrap();
+	let env_dir = shm.join(format!("envctl-signals-{}", std::process::id()));
+	let mut child = fixture
+		.envctl(&["compose", "--role", "home", "--env-dir", env_dir.to_str().unwrap(), "--", "logs", "-f"])
+		.stdout(std::process::Stdio::null())
+		.stderr(std::process::Stdio::null())
+		.spawn()
+		.unwrap();
+	let file = env_dir.join("probe.env");
+	let started = std::time::Instant::now();
+	while !(file.exists() && fixture.log().contains("compose logs: started")) {
+		assert!(started.elapsed().as_secs() < 20, "compose never started: {}", fixture.log());
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+	let pid = child.id().to_string();
+	let signal = |name: &str| Command::new("kill").args([name, pid.as_str()]).status().unwrap();
+	assert!(signal("-INT").success());
+	std::thread::sleep(std::time::Duration::from_millis(300));
+	assert!(child.try_wait().unwrap().is_none() && file.exists(), "Ctrl-C ended envctl before compose");
+	assert!(signal("-TERM").success());
+	let status = child.wait().unwrap();
+	assert_eq!(status.code(), Some(143), "compose's own exit, after its SIGTERM");
+	assert!(fixture.log().contains("compose logs: TERM"), "{}", fixture.log());
+	assert!(!file.exists(), "the decrypted file outlived compose");
+	let _ = fs::remove_dir_all(&env_dir);
+}
+
+#[test]
+fn compose_refuses_a_missing_file_and_a_link_off_tmpfs() {
+	let Some(shm) = tmpfs() else {
+		return;
+	};
+	let fixture = Fixture::new("refusals").unwrap();
+	imported(&fixture).unwrap();
+	let mounts = fs::read_to_string("/proc/self/mounts").unwrap();
+	if !mounts.lines().any(|line| line.split_whitespace().nth(1) == Some("/tmp")) {
+		let base = shm.join(format!("envctl-link-{}", std::process::id()));
+		fs::create_dir_all(&base).unwrap();
+		let link = base.join("link");
+		let _ = fs::remove_file(&link);
+		std::os::unix::fs::symlink(&fixture.root, &link).unwrap();
+		let through = base.join("new/../link/d");
+		let output = fixture
+			.envctl(&["compose", "--role", "home", "--env-dir", through.to_str().unwrap(), "--", "ps"])
+			.output()
+			.unwrap();
+		assert!(printed(&output).contains("not tmpfs"), "a link from tmpfs to a disk is followed: {}", printed(&output));
+		assert!(!fixture.root.join("d/probe.env").exists());
+		let _ = fs::remove_dir_all(&base);
+	}
+	let relative = fixture.envctl(&["compose", "--role", "home", "--env-dir", "relative/dir", "--", "ps"]).output().unwrap();
+	assert!(printed(&relative).contains("not an absolute path"), "{}", printed(&relative));
+	fs::remove_file(fixture.repo.join("deploy/home/probe.sops.env")).unwrap();
+	let env_dir = shm.join(format!("envctl-missing-{}", std::process::id()));
+	let missing = fixture
+		.envctl(&["compose", "--role", "home", "--env-dir", env_dir.to_str().unwrap(), "--", "up", "-d"])
+		.output()
+		.unwrap();
+	assert!(
+		!missing.status.success() && printed(&missing).contains("deploy/home/probe.sops.env does not exist"),
+		"{}",
+		printed(&missing)
+	);
+	assert!(!fixture.log().contains("compose up"), "compose never ran");
+	let _ = fs::remove_dir_all(&env_dir);
 }

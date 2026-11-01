@@ -12,9 +12,10 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-/// Where the decrypted files go: `$XDG_RUNTIME_DIR/server`, or `given`.
-/// Either must be on tmpfs (or ramfs): a decrypted value never reaches a
-/// disk.
+/// Where the decrypted files go: `$XDG_RUNTIME_DIR/server`, or `given`,
+/// created (mode 700) and returned as its canonical path. It must be
+/// absolute and, once created and every link in it resolved, on tmpfs (or
+/// ramfs): a decrypted value never reaches a disk.
 pub(crate) fn env_dir(given: Option<&Path>, shell: &IndexMap<String, String>) -> Result<PathBuf> {
 	let dir = match given {
 		Some(dir) => dir.to_path_buf(),
@@ -23,13 +24,22 @@ pub(crate) fn env_dir(given: Option<&Path>, shell: &IndexMap<String, String>) ->
 			None => bail!("XDG_RUNTIME_DIR is not set, so there is no tmpfs to decrypt into; log in through a session that sets it, or pass --env-dir on a tmpfs"),
 		},
 	};
+	if !dir.is_absolute() {
+		bail!("{} is not an absolute path; compose would read it from infra/compose/", dir.display());
+	}
+	fs::DirBuilder::new()
+		.recursive(true)
+		.mode(0o700)
+		.create(&dir)
+		.with_context(|| format!("creating {}", dir.display()))?;
+	// The directory itself, every `..` and link resolved: what the files will
+	// really be written under.
+	let real = fs::canonicalize(&dir).with_context(|| format!("resolving {}", dir.display()))?;
 	let mounts = fs::read_to_string("/proc/self/mounts").context("reading /proc/self/mounts to see what holds the decrypted files")?;
-	let parent = dir.ancestors().find(|ancestor| ancestor.exists()).unwrap_or_else(|| Path::new("/"));
-	let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-	match filesystem(&mounts, &parent) {
-		Some("tmpfs" | "ramfs") => Ok(dir),
-		Some(other) => bail!("{} is on {other}, not tmpfs: a decrypted value is never written to a disk", dir.display()),
-		None => bail!("no mount holds {}", dir.display()),
+	match filesystem(&mounts, &real) {
+		Some("tmpfs" | "ramfs") => Ok(real),
+		Some(other) => bail!("{} is on {other}, not tmpfs: a decrypted value is never written to a disk", real.display()),
+		None => bail!("no mount holds {}", real.display()),
 	}
 }
 

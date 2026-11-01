@@ -28,28 +28,24 @@ use std::{
 /// The label compose gives each container: its service's name.
 const SERVICE_LABEL: &str = "com.docker.compose.service";
 
-/// The containers running a binary of ours (labelled env-schema).
-fn running() -> Result<Vec<String>> {
-	let output = Command::new("docker")
-		.args(["ps", "--filter", &format!("label={}", compose::LABEL), "--format", "{{.Names}}"])
-		.output()
-		.context("running docker ps")?;
-	if !output.status.success() {
-		bail!("docker ps failed: {}", String::from_utf8_lossy(&output.stderr).trim());
-	}
-	Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).filter(|name| !name.is_empty()).collect())
-}
+/// The label compose gives each container: its project's name.
+const PROJECT_LABEL: &str = "com.docker.compose.project";
 
-/// Every running container compose started, for compose's own variables.
-fn every_running() -> Result<Vec<String>> {
+/// The running containers of `project` (not one-off `compose run` ones)
+/// carrying `label`: compose's own, or ours (env-schema).
+fn running(project: &str, label: &str) -> Result<Vec<String>> {
 	let output = Command::new("docker")
-		.args(["ps", "--filter", &format!("label={SERVICE_LABEL}"), "--format", "{{.Names}}"])
+		.args(["ps", "--filter", &format!("label={label}")])
+		.args(["--filter", &format!("label={PROJECT_LABEL}={project}")])
+		.args(["--filter", "label=com.docker.compose.oneoff=False", "--format", "{{.Names}}"])
 		.output()
 		.context("running docker ps")?;
 	if !output.status.success() {
 		bail!("docker ps failed: {}", String::from_utf8_lossy(&output.stderr).trim());
 	}
-	Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).filter(|name| !name.is_empty()).collect())
+	let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).filter(|name| !name.is_empty()).collect();
+	names.sort();
+	Ok(names)
 }
 
 /// `docker inspect` of one container, held in memory only.
@@ -204,31 +200,52 @@ pub(crate) fn merge(existing: &Plain, imported: &Plain) -> (Plain, Change) {
 	(merged, change)
 }
 
+/// Each of our containers' deployment file, and the variables two
+/// containers of one binary disagree on (the first is kept).
+fn read_ours(ours: &[String], schemas: &[Schema], raw: &Value, role: &str) -> Result<(IndexMap<PathBuf, Plain>, Vec<String>)> {
+	let mut files: IndexMap<PathBuf, Plain> = IndexMap::new();
+	let mut conflicts = Vec::new();
+	for container in ours {
+		eprintln!("envctl import: reading {container} (names are shown, values never)...");
+		let inspected = inspect(container)?;
+		let (binary, values) = app_values(&inspected, schemas, raw).with_context(|| format!("container {container}"))?;
+		let file = files.entry(sops::relative(role, &binary)).or_default();
+		for (name, value) in values {
+			match file.get(&name) {
+				Some(known) if *known != value => conflicts.push(format!("{binary}'s {name}")),
+				Some(_) => {}
+				None => {
+					file.insert(name, value);
+				}
+			}
+		}
+	}
+	Ok((files, conflicts))
+}
+
 /// Every running container of ours (or those named) into
 /// `deploy/<role>/`, through `sops`.
 pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String], dry_run: bool, sops_program: &str) -> Result<()> {
-	eprintln!("envctl import: docker ps, for the running containers labelled {}...", compose::LABEL);
-	let ours = if named.is_empty() { running()? } else { named.to_vec() };
-	if ours.is_empty() {
-		bail!("no running container carries the {} label; name one with --container", compose::LABEL);
-	}
 	eprintln!("envctl import: docker compose config, for what compose itself sets...");
 	let raw = compose::config(repo).context("docker compose config failed, so compose's own wiring is unknown")?;
-	// Each deployment file, relative to the checkout, and what it will hold.
-	let mut files: IndexMap<PathBuf, Plain> = IndexMap::new();
-	for container in &ours {
-		eprintln!("envctl import: reading {container} (names are shown, values never)...");
-		let inspected = inspect(container)?;
-		let (binary, values) = app_values(&inspected, schemas, &raw).with_context(|| format!("container {container}"))?;
-		files.entry(sops::relative(role, &binary)).or_default().extend(values);
+	let Some(project) = raw.get("name").and_then(Value::as_str).map(str::to_owned) else {
+		bail!("docker compose config names no project");
+	};
+	eprintln!("envctl import: docker ps, for project {project}'s running containers labelled {}...", compose::LABEL);
+	let ours = if named.is_empty() { running(&project, compose::LABEL)? } else { named.to_vec() };
+	if ours.is_empty() {
+		bail!("no running container of project {project} carries the {} label; name one with --container", compose::LABEL);
 	}
-	eprintln!("envctl import: docker ps, for every container compose started (compose's own variables)...");
+	// Each deployment file, relative to the checkout, and what it will hold.
+	let (mut files, app_conflicts) = read_ours(&ours, schemas, &raw, role)?;
+	eprintln!("envctl import: docker ps, for every running container of project {project} (compose's own variables)...");
 	let mut containers = Vec::new();
-	for container in every_running()? {
+	for container in running(&project, SERVICE_LABEL)? {
 		eprintln!("envctl import: reading {container}...");
 		containers.push(inspect(&container)?);
 	}
-	let (mut compose_found, conflicts) = compose_values(&raw, &containers);
+	let (mut compose_found, mut conflicts) = compose_values(&raw, &containers);
+	conflicts.extend(app_conflicts);
 	// What no running container shows (a service that is stopped), from the
 	// box's .env while it is still there.
 	let env = dotenv::parse(&std::fs::read_to_string(repo.join(".env")).unwrap_or_default());

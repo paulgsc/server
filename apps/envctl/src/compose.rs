@@ -12,7 +12,7 @@ use std::{
 	sync::LazyLock,
 };
 
-static INCLUDE: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r"^\s*-\s*path:\s*(\S+)\s*$"));
+static INCLUDE: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r#"^\s+-\s+(?:path:\s*)?['"]?([^'"\s#]+)['"]?\s*(?:#.*)?$"#));
 static OTHER_NAME: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r"^[A-Z][A-Z0-9_]*: "));
 
 /// The label naming the binary a service's container runs (#504).
@@ -49,11 +49,43 @@ pub(crate) type ComposeVariables = IndexMap<String, ComposeVariable>;
 
 /// `docker-compose.yml` and each file it includes, in that order.
 pub(crate) fn files(compose: &Path) -> Result<Vec<PathBuf>> {
-	let text = std::fs::read_to_string(compose).with_context(|| format!("reading {}", compose.display()))?;
-	let parent = compose.parent().unwrap_or_else(|| Path::new("."));
-	let mut files = vec![compose.to_path_buf()];
-	files.extend(text.lines().filter_map(|line| INCLUDE.captures(line)).map(|captures| parent.join(&captures[1])));
+	let mut files = Vec::new();
+	let mut pending = vec![compose.to_path_buf()];
+	while let Some(path) = pending.pop() {
+		if files.contains(&path) {
+			continue;
+		}
+		let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+		let parent = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+		let mut included: Vec<PathBuf> = included(&text).into_iter().map(|file| parent.join(file)).collect();
+		included.reverse();
+		files.push(path);
+		pending.extend(included);
+	}
 	Ok(files)
+}
+
+/// The files a compose file's top-level `include:` names, long form
+/// (`- path: x.yml`) or short (`- x.yml`), in order. A `path:` anywhere else
+/// (an `env_file`'s) is not an include.
+pub(crate) fn included(text: &str) -> Vec<String> {
+	let mut inside = false;
+	let mut found = Vec::new();
+	for line in text.lines() {
+		if line.trim().is_empty() || line.trim_start().starts_with('#') {
+			continue;
+		}
+		if !line.starts_with(char::is_whitespace) {
+			inside = line.trim_end() == "include:";
+			continue;
+		}
+		if inside {
+			if let Some(captures) = INCLUDE.captures(line) {
+				found.push(captures[1].to_owned());
+			}
+		}
+	}
+	found
 }
 
 /// Every `${NAME...}` in the compose files under `repo`.
@@ -274,7 +306,7 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 
 #[cfg(test)]
 mod tests {
-	use super::{own_paragraph, variables, wired};
+	use super::{included, own_paragraph, variables, wired};
 	use serde_json::json;
 
 	fn texts(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -298,6 +330,13 @@ mod tests {
 		)]));
 		assert_eq!((pair["A"].help.as_str(), pair["B"].help.as_str()), ("A: the first.\nMore of A.", "B: the second."));
 		assert_eq!(own_paragraph("no names here", "A"), "no names here");
+	}
+
+	#[test]
+	fn only_the_top_level_include_block_is_included() {
+		let text = "include:\n  - path: ./a.yml\n  # - path: ./off.yml\n  - b.yml\n  - path: 'c.yml' # c\nservices:\n  x:\n    env_file:\n      - path: ${ENV_DIR:?x}/x.env\n";
+		assert_eq!(included(text), ["./a.yml", "b.yml", "c.yml"]);
+		assert!(included("services:\n  x:\n    env_file:\n      - path: ./y.env\n").is_empty());
 	}
 
 	#[test]

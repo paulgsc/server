@@ -32,6 +32,11 @@ use serde_json::Value;
 use std::{
 	path::{Path, PathBuf},
 	process::{Command as Process, ExitCode},
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+	time::Duration,
 };
 
 #[derive(Parser)]
@@ -223,6 +228,12 @@ fn check_preflight(repo: &Path, schemas: &[Schema], raw: &Value, deployment: &De
 
 /// `docker compose <args>` on `deployment`, its apps' files on tmpfs in
 /// `env_dir` for as long as compose runs.
+///
+/// Every labelled app's file must exist: an empty stand-in would start its
+/// service on nothing, which `env_file`'s `required` is there to prevent.
+/// While compose runs, envctl outlives the signals that end it (Ctrl-C on
+/// `logs -f` is the usual way out): SIGINT reaches compose from the terminal,
+/// SIGTERM and SIGHUP are passed on, and the files are removed either way.
 fn compose_on(
 	repo: &Path,
 	deployment: &Deployment,
@@ -231,7 +242,25 @@ fn compose_on(
 	shell: &IndexMap<String, String>,
 	compose_variables: &compose::ComposeVariables,
 ) -> Result<ExitCode> {
+	let missing: Vec<String> = deployment
+		.apps
+		.iter()
+		.filter(|(_, file)| file.is_none())
+		.map(|(app, _)| sops::relative(&deployment.role, app).display().to_string())
+		.collect();
+	if !missing.is_empty() {
+		bail!(
+			"{} does not exist, so its service would start on none of its variables; `make import` or `sops edit` writes it",
+			missing.join(", ")
+		);
+	}
 	let apps: IndexMap<String, sops::Plain> = deployment.apps.iter().map(|(app, file)| (app.clone(), file.clone().unwrap_or_default())).collect();
+	let interrupted = Arc::new(AtomicBool::new(false));
+	let ended = Arc::new(AtomicBool::new(false));
+	signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&interrupted)).context("handling SIGINT")?;
+	for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+		signal_hook::flag::register(signal, Arc::clone(&ended)).context("handling SIGTERM and SIGHUP")?;
+	}
 	let delivered = deliver::Delivered::write(env_dir, &apps)?;
 	let mut process = Process::new("docker");
 	process.args(["compose", "--env-file", "/dev/null"]).args(args).current_dir(repo);
@@ -243,7 +272,18 @@ fn compose_on(
 		}
 	}
 	process.envs(&deployment.compose);
-	let status = process.status().context("running docker compose")?;
+	let mut child = process.spawn().context("running docker compose")?;
+	let status = loop {
+		if let Some(status) = child.try_wait().context("waiting for docker compose")? {
+			break status;
+		}
+		if ended.swap(false, Ordering::SeqCst) {
+			if let Some(pid) = i32::try_from(child.id()).ok().and_then(rustix::process::Pid::from_raw) {
+				let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+			}
+		}
+		std::thread::sleep(Duration::from_millis(50));
+	};
 	drop(delivered);
 	Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 }
@@ -344,6 +384,15 @@ fn check(repo: &Path) -> Result<ExitCode> {
 	}
 	let deploy = repo.join(sops::DEPLOY);
 	for role in std::fs::read_dir(&deploy).into_iter().flatten().filter_map(Result::ok) {
+		if !role.path().is_dir() {
+			let path = role.path();
+			problems.push(format!(
+				"{} is not a role directory; deploy/ holds only deploy/<role>/<app>{}",
+				path.strip_prefix(repo).unwrap_or(&path).display(),
+				sops::SUFFIX
+			));
+			continue;
+		}
 		for file in std::fs::read_dir(role.path()).into_iter().flatten().filter_map(Result::ok) {
 			let path = file.path();
 			let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();
