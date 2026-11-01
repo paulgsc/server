@@ -28,7 +28,7 @@
 //! paulgsc/some-ui#2393). Drive holds Jobs decisions and scouts files home
 //! never saw, from before the phone filed every one home. The routine puts
 //! each once in `brief`, under its Drive name, which the mailbox takes only
-//! for a name dated before 2026-11-04 (`DRIVE_ONLY_ENDED`), so the set is
+//! for a name dated before 2026-11-04 (the Worker's `DRIVE_ONLY_ENDED`), so the set is
 //! closed. Home keeps it as any `brief` file, and the
 //! index counts it with the phone's files and names it in `from.backfill`.
 //! It adds no listing: `brief` is read every pass anyway.
