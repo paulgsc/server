@@ -2773,7 +2773,7 @@ mod tests {
 		assert_eq!(last_put(&fake)["from"]["decisions"], serde_json::json!([]), "the mailbox holds other bytes under that name");
 	}
 
-	/// MB2's one-time backfill (owner, #509): a pre-mailbox decisions or
+	/// MB2's one-time backfill (owner, #509): a decisions or
 	/// scouts file the routine put in `brief` is kept as any `brief` file is,
 	/// counted by the index under its own name, and named in `from.backfill`.
 	#[tokio::test]
