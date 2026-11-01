@@ -77,6 +77,12 @@ case "$1" in
 esac
 "#;
 
+/// A `git` whose tracked files are `tracked.txt`, and a `cargo` whose
+/// workspace is `metadata.json`: enough for `check`.
+const GIT: &str = "#!/bin/sh\n[ \"$1\" = ls-files ] || exit 2\ntr '\\n' '\\0' < \"$(dirname \"$0\")/tracked.txt\"\n";
+const CARGO: &str = "#!/bin/sh\n[ \"$1\" = metadata ] || exit 2\ncat \"$(dirname \"$0\")/metadata.json\"\n";
+const METADATA: &str = r#"{"packages": [{"name": "probe", "dependencies": [{"name": "app-config"}], "targets": [{"name": "probe", "kind": ["bin"]}]}]}"#;
+
 /// A `sops` whose "encryption" is base64 in `ENC[...]`, with sops' own
 /// metadata lines: enough for envctl, which only ever pipes to and from it.
 const SOPS: &str = r##"#!/bin/sh
@@ -90,7 +96,7 @@ case "$1" in
       if [ -z "$value" ]; then printf '%s=\n' "$name"; continue; fi
       printf '%s=ENC[%s]\n' "$name" "$(printf '%s' "$value" | base64 -w0)"
     done
-    echo "sops_mac=ENC[stand-in]"; echo "sops_version=stand-in" ;;
+    echo "sops_age__list_0__map_recipient=age1stand-in"; echo "sops_mac=ENC[stand-in]"; echo "sops_version=stand-in" ;;
   decrypt)
     for last; do :; done
     while IFS= read -r line; do
@@ -126,7 +132,9 @@ impl Fixture {
 		)?;
 		fs::write(bin.join("config.json"), CONFIG)?;
 		fs::write(bin.join("inspect.json"), INSPECT)?;
-		for (script, text) in [("docker", DOCKER), ("sops", SOPS)] {
+		fs::write(bin.join("tracked.txt"), "docker-compose.yml\ninfra/env/probe.json\n")?;
+		fs::write(bin.join("metadata.json"), METADATA)?;
+		for (script, text) in [("docker", DOCKER), ("sops", SOPS), ("git", GIT), ("cargo", CARGO)] {
 			let path = bin.join(script);
 			fs::write(&path, text)?;
 			fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
@@ -323,11 +331,25 @@ fn check_holds_deploy_to_encrypted_files_without_a_key() {
 	assert!(clean.status.success(), "{}", printed(&clean));
 	fs::write(fixture.repo.join("deploy/home/plain.sops.env"), "A=1\nsops_mac=ENC[x]\n").unwrap();
 	fs::write(fixture.repo.join("deploy/home/file_host.env"), "A=1\n").unwrap();
+	fs::write(fixture.bin.join("tracked.txt"), "docker-compose.yml\n.env\napps/x/prod.env\n").unwrap();
+	let with_new_app = r#"{"packages": [
+		{"name": "probe", "dependencies": [{"name": "app-config"}], "targets": [{"name": "probe", "kind": ["bin"]}]},
+		{"name": "new_app", "dependencies": [{"name": "app-config"}], "targets": [{"name": "new_app", "kind": ["bin"]}]}
+	]}"#;
+	fs::write(fixture.bin.join("metadata.json"), with_new_app).unwrap();
 	let dirty = fixture.envctl(&["check"]).output().unwrap();
 	let shown = printed(&dirty);
 	assert!(!dirty.status.success(), "{shown}");
-	assert!(shown.contains("deploy/home/plain.sops.env is not encrypted by sops: A in the clear"), "{shown}");
-	assert!(shown.contains("deploy/home/file_host.env is not a <app>.sops.env file"), "{shown}");
+	for expected in [
+		"deploy/home/plain.sops.env is not sops-encrypted: A in the clear",
+		"deploy/home/plain.sops.env is for plain, and infra/env/ has no plain.json",
+		"deploy/home/file_host.env is not a <app>.sops.env file",
+		".env is tracked and is a plain-text env file",
+		"apps/x/prod.env is tracked and is a plain-text env file",
+		"new_app reads its environment through app-config and has no infra/env/new_app.json",
+	] {
+		assert!(shown.contains(expected), "{expected}:\n{shown}");
+	}
 	assert!(!fixture.log().contains("decrypt"), "check holds no key, so it decrypts nothing");
 }
 

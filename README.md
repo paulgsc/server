@@ -272,8 +272,14 @@ delete `.env`.
     labelled `env-schema`, each reading exactly its own decrypted file;
     `import` from running containers; a value with quotes, `$`, `#` or a
     newline.
-  - _Proof:_ `Lint`'s `Env schema` job runs `envctl check` (each labelled
-    service's one `env_file`, and every `deploy/` file sops-shaped);
+  - _Proof:_ `Lint`'s `Env schema` job runs `envctl check` (ENV3, #616),
+    which holds no key and names each problem: a labelled service reading
+    anything but its own `env_file`, or with no file in a role that runs
+    compose; a `deploy/` file sops did not write (a value or comment in the
+    clear, no MAC, version or recipient); a name in one that its binary or
+    compose does not read, or that compose's own `environment:` overrides; a
+    binary reading `app-config` with no checked-in schema; and any tracked
+    plain-text env file (`.env`, `.env.*`, `*.env`);
     `envctl`'s `stand_ins` tests run its binary against stand-in `sops` and
     `docker` scripts and find no value on disk or in its output after an
     import, a preflight or an `up`, the decrypted file mode 600 while compose
