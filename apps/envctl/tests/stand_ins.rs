@@ -306,7 +306,7 @@ fn preflight_names_what_is_missing_and_never_a_value() {
 	let list = fixture.envctl(&["list", "--role", "home"]).output().unwrap();
 	let listing = printed(&list);
 	assert!(
-		listing.contains("UNSET RP_ID") && listing.contains("set   KEY") && listing.contains("set   STORAGE"),
+		listing.contains("MISSING RP_ID") && listing.contains("set     KEY") && listing.contains("set     STORAGE"),
 		"{listing}"
 	);
 	assert_eq!(fixture.log().matches("sops decrypt").count(), decrypted, "list reads names, and decrypts nothing");

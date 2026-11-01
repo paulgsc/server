@@ -334,16 +334,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 		}
 		Command::List { role } => {
-			let names = |app: &str| -> Vec<String> {
-				std::fs::read_to_string(repo.join(sops::relative(&role, app)))
-					.map(|text| sops::names(&text))
-					.unwrap_or_default()
-			};
+			let read = |app: &str| std::fs::read_to_string(repo.join(sops::relative(&role, app))).unwrap_or_default();
 			let mut set: IndexMap<String, Vec<String>> = IndexMap::new();
-			for schema in &schemas {
-				set.insert(schema.binary.clone(), names(&schema.binary));
+			let mut unset: IndexMap<String, Vec<String>> = IndexMap::new();
+			for app in schemas.iter().map(|schema| schema.binary.as_str()).chain([sops::COMPOSE]) {
+				let text = read(app);
+				let empty = sops::unset_names(&text);
+				set.insert(app.to_owned(), sops::names(&text).into_iter().filter(|name| !empty.contains(name)).collect());
+				unset.insert(app.to_owned(), empty);
 			}
-			set.insert(sops::COMPOSE.to_owned(), names(sops::COMPOSE));
 			// What compose's own environment: gives a labelled service is set
 			// too, by compose. Without compose, the files alone say.
 			if let Ok(raw) = compose::config(&repo) {
@@ -353,12 +352,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
 					}
 				}
 			}
-			print!(
-				"{}",
-				preflight::render_list(&schemas, &compose::read(&repo)?, &|reader, name| set
-					.get(reader)
-					.is_some_and(|names| names.iter().any(|known| known == name)))
-			);
+			let has = |map: &IndexMap<String, Vec<String>>, reader: &str, name: &str| map.get(reader).is_some_and(|names| names.iter().any(|known| known == name));
+			let stated = |reader: &str, name: &str| {
+				if has(&set, reader, name) {
+					preflight::Stated::Set
+				} else if has(&unset, reader, name) {
+					preflight::Stated::Unset
+				} else {
+					preflight::Stated::Absent
+				}
+			};
+			print!("{}", preflight::render_list(&schemas, &compose::read(&repo)?, &stated));
 			Ok(ExitCode::SUCCESS)
 		}
 		Command::Check => check(&repo, &schemas),

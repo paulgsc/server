@@ -206,10 +206,21 @@ pub(crate) fn render(report: &Report, role: &str) -> String {
 	out
 }
 
-/// Every variable the stack reads, who reads it, its default, and whether
-/// the role's files set it, by name (`make env`).
-pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariables, sets: &dyn Fn(&str, &str) -> bool) -> String {
-	let mut rows: Vec<(String, String, bool, String, String, String)> = Vec::new();
+/// How a role's files state one variable, read by name without a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stated {
+	/// A value (encrypted), or compose's own wiring.
+	Set,
+	/// An empty value: decided, unset (sops leaves an empty value as it is).
+	Unset,
+	/// Not in the file at all.
+	Absent,
+}
+
+/// Every variable the stack reads, who reads it, its default, and how the
+/// role's files state it, by name (`make env`).
+pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariables, stated: &dyn Fn(&str, &str) -> Stated) -> String {
+	let mut rows: Vec<(String, String, Stated, String, String, String)> = Vec::new();
 	let mut seen = BTreeSet::new();
 	for schema in schemas {
 		for variable in &schema.variables {
@@ -221,7 +232,14 @@ pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariabl
 				.filter(|other| other.variable(&variable.name).is_some())
 				.map(|other| other.binary.as_str())
 				.collect();
-			let set = readers.iter().all(|reader| sets(reader, &variable.name));
+			let by_reader: Vec<Stated> = readers.iter().map(|reader| stated(reader, &variable.name)).collect();
+			let set = if by_reader.iter().all(|state| *state == Stated::Set) {
+				Stated::Set
+			} else if by_reader.iter().all(|state| *state != Stated::Absent) {
+				Stated::Unset
+			} else {
+				Stated::Absent
+			};
 			let when = variable
 				.required_when
 				.as_ref()
@@ -246,17 +264,16 @@ pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariabl
 		} else {
 			variable.default.clone().unwrap_or_default()
 		};
-		let set = sets(sops::COMPOSE, &variable.name);
+		let set = stated(sops::COMPOSE, &variable.name);
 		rows.push((variable.name.clone(), "docker compose".to_owned(), set, default, String::new(), variable.help.clone()));
 	}
 	let mut out = String::new();
 	for (name, readers, set, default, when, help) in rows {
-		let state = if set {
-			"set  "
-		} else if default == "required" {
-			"UNSET"
-		} else {
-			"     "
+		let state = match set {
+			Stated::Set => "set    ",
+			Stated::Unset => "unset  ",
+			Stated::Absent if default == "required" => "MISSING",
+			Stated::Absent => "       ",
 		};
 		let shown = match default.as_str() {
 			"" => String::new(),
@@ -392,12 +409,20 @@ mod tests {
 
 	#[test]
 	fn listing_and_sentences() {
-		let listing = render_list(&[probe()], &compose(), &|reader, name| reader == "probe" && name == "DB");
+		let stated = |reader: &str, name: &str| match (reader, name) {
+			("probe", "DB") => super::Stated::Set,
+			("probe", "ON") => super::Stated::Unset,
+			_ => super::Stated::Absent,
+		};
+		let listing = render_list(&[probe()], &compose(), &stated);
 		assert!(
-			listing.contains("set   DB  [probe]") && listing.contains("UNSET TOKEN") && listing.contains("RP_ID  [probe]  required while AUTH is true"),
+			listing.contains("set     DB  [probe]")
+				&& listing.contains("unset   ON  [probe]")
+				&& listing.contains("MISSING TOKEN")
+				&& listing.contains("RP_ID  [probe]  required while AUTH is true"),
 			"{listing}"
 		);
-		assert!(listing.contains("UNSET STORAGE  [docker compose]") && !listing.contains("ENV_DIR"), "{listing}");
+		assert!(listing.contains("MISSING STORAGE  [docker compose]") && !listing.contains("ENV_DIR"), "{listing}");
 		assert_eq!(first_line("One. Two.\nThree"), "One.");
 		assert_eq!(first_line(&"x".repeat(120)).len(), 100);
 	}
