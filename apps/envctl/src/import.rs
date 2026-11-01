@@ -122,18 +122,13 @@ fn lone(written: &str) -> Option<(&str, Option<&str>, &str)> {
 /// mount whose source starts with one. A value equal to the default compose
 /// would use anyway is left out. Two containers that disagree are named.
 pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<String>) {
-	let mut found = Plain::new();
-	let mut conflicts = Vec::new();
-	let mut keep = |name: &str, value: String, default: Option<&str>, found: &mut Plain| {
-		if FROM_MAKE.contains(&name) || default == Some(value.as_str()) {
-			return;
-		}
-		match found.get(name) {
-			Some(known) if *known != value => conflicts.push(name.to_owned()),
-			Some(_) => {}
-			None => {
-				found.insert(name.to_owned(), value);
-			}
+	// Every place each variable reached, with the default that use declares:
+	// all of them are weighed before any is left out, since two uses can
+	// declare different defaults (file-host's RUST_LOG and orchestrator's).
+	let mut seen: IndexMap<String, Vec<(String, Option<String>)>> = IndexMap::new();
+	let mut observe = |name: &str, value: String, default: Option<&str>| {
+		if !FROM_MAKE.contains(&name) {
+			seen.entry(name.to_owned()).or_default().push((value, default.map(str::to_owned)));
 		}
 	};
 	for (service_name, service) in compose::services(raw) {
@@ -147,7 +142,7 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 				continue;
 			}
 			if let Some(value) = given.get(&key) {
-				keep(name, value.clone(), default, &mut found);
+				observe(name, value.clone(), default);
 			}
 		}
 		let mounts: Vec<(String, String)> = container
@@ -163,12 +158,29 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 				continue;
 			};
 			if let Some(value) = mounted.strip_suffix(suffix) {
-				keep(name, value.to_owned(), default, &mut found);
+				observe(name, value.to_owned(), default);
 			}
 		}
 	}
+	let mut found = Plain::new();
+	let mut conflicts = Vec::new();
+	for (name, observations) in seen {
+		// Every use already runs on its own default: compose gives it again.
+		if observations.iter().all(|(value, default)| default.as_deref() == Some(value.as_str())) {
+			continue;
+		}
+		let mut values: Vec<&String> = observations.iter().map(|(value, _)| value).collect();
+		values.dedup();
+		if values.iter().any(|value| *value != values[0]) {
+			// One value for every use would change another's: the owner decides.
+			conflicts.push(name.clone());
+		}
+		// The first value no use takes by default, for the owner to check.
+		if let Some((value, _)) = observations.iter().find(|(value, default)| default.as_deref() != Some(value.as_str())) {
+			found.insert(name, value.clone());
+		}
+	}
 	conflicts.sort();
-	conflicts.dedup();
 	(found, conflicts)
 }
 
@@ -304,7 +316,11 @@ pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
 pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unfound: &[String], dry_run: bool, wrote: bool) -> String {
 	let mut out = String::new();
 	if !conflicts.is_empty() {
-		let _ = write!(out, "Two containers disagree on {}; the first was kept.\n\n", conflicts.join(", "));
+		let _ = write!(
+			out,
+			"Containers disagree on {}: no one value keeps every one as it runs. The file holds the first value\nno use takes by default; decide each with `sops edit` before `make up`.\n\n",
+			conflicts.join(", ")
+		);
 	}
 	let compose = sops::relative(role, sops::COMPOSE).display().to_string();
 	let mut steps: Vec<String> = Vec::new();
@@ -506,6 +522,23 @@ mod tests {
 		let mut disagree = again;
 		disagree["Config"]["Env"] = json!(["GF_LOG=warn", "GF_PASSWORD=pw"]);
 		assert_eq!(compose_values(&raw_twice, &[other, disagree]).1, ["LOG"]);
+		// Codex on #622: one use on its own default and another set otherwise
+		// is a disagreement too, not a value to write for both.
+		let defaults_differ = json!({"services": {
+			"app": {"environment": ["LOG=${LOG:-info,nats=warn}"]},
+			"grafana": {"environment": ["GF_LOG=${LOG:-info}"]},
+		}});
+		let on_default = container("app", &["LOG=info,nats=warn"], &json!([]));
+		let mut set = container("grafana", &[], &json!([]));
+		set["Config"]["Env"] = json!(["GF_LOG=debug"]);
+		let (found, conflicts) = compose_values(&defaults_differ, &[on_default, set]);
+		assert_eq!((found, conflicts), (plain(&[("LOG", "debug")]), vec!["LOG".to_owned()]));
+		let both_default = [container("app", &["LOG=info,nats=warn"], &json!([])), {
+			let mut grafana = container("grafana", &[], &json!([]));
+			grafana["Config"]["Env"] = json!(["GF_LOG=info"]);
+			grafana
+		}];
+		assert_eq!(compose_values(&defaults_differ, &both_default), (Plain::new(), Vec::new()), "every use on its own default");
 	}
 
 	#[test]
