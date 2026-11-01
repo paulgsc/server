@@ -14,7 +14,6 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       RUST_BACKTRACE: "1"
-      TOKIO_WORKER_THREADS: ${TOKIO_WORKER_THREADS:-4}
       NATS_URL: nats://nats:4222
     depends_on:
       nats:

@@ -65,7 +65,10 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 	response
 }
 
-#[tokio::main]
+// Worker threads are a source constant (#617), not tokio's own
+// TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
+// and nothing about how it runs changes.
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
 	// Its whole environment is what it was started with: compose's env_file
 	// for the container, or `make dev`'s decrypted deploy/dev/ file. No

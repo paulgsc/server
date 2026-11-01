@@ -5,7 +5,10 @@ use some_transport::NatsTransport;
 use tracing_subscriber::EnvFilter;
 use ws_events::events::UnifiedEvent;
 
-#[tokio::main]
+// Worker threads are a source constant (#617), not tokio's own
+// TOKIO_WORKER_THREADS: compose gave this 1-CPU container 4, so 4 it is,
+// and nothing about how it runs changes.
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
 	let config = Config::parse();
 
