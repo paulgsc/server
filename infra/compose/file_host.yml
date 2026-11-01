@@ -9,9 +9,9 @@ services:
     env_file:
       # file_host's own variables and nothing else: deploy/<role>/file_host.sops.env,
       # decrypted by `make up` (or `make compose`) to tmpfs, mode 600, and
-      # removed once compose has read it (#614). ENV_DIR is where: make sets
-      # it to $XDG_RUNTIME_DIR/server. Required, because without it the
-      # container would start on none of its variables.
+      # removed once compose has read it (#614). ENV_DIR is where: envctl
+      # sets it to its run's own $XDG_RUNTIME_DIR/server/<pid>. Required,
+      # because without it the container would start on none of its variables.
       - path: ${ENV_DIR:?make sets ENV_DIR, so run compose through make up or make compose}/file_host.env
         required: true
     ports:

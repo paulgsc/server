@@ -274,6 +274,7 @@ fn compose_on(
 		}
 	}
 	process.envs(&deployment.compose);
+	process.env("ENV_DIR", delivered.dir());
 	let mut child = process.spawn().context("running docker compose")?;
 	let status = loop {
 		if let Some(status) = child.try_wait().context("waiting for docker compose")? {
