@@ -1,0 +1,19 @@
+{
+  "source_sha": "dd674a28a752e727b04f68bc47e641f43784111f",
+  "include": [
+    {
+      "name": "file_host",
+      "dockerfile": "./infra/docker/Dockerfile.server",
+      "repo_suffix": "server",
+      "needs_sqlx": true,
+      "needs_migrations": true
+    },
+    {
+      "name": "rust-runner",
+      "dockerfile": "./infra/docker/Dockerfile.rust-runner",
+      "repo_suffix": "rust-runner",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    }
+  ]
+}
