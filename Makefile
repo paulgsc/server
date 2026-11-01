@@ -211,8 +211,8 @@ import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sop
 # an undeclared one removed, written through sops. NAMES=A,B prunes without it.
 # A command run by hand on the box (`sqlx migrate run`, say) gets the role's
 # host-side values from deploy/$(ROLE)/tools.sops.env (#634), decrypted into
-# its environment only. `nix develop .#rust` exports the same file for the
-# whole shell; this is the one-off form, for any shell.
+# its environment only. In `nix develop .#rust`, `tool <command>` does the
+# same; this is the form for any other shell.
 tool: envctl ## Run one command with deploy/$(ROLE)/tools.sops.env in its environment: make tool ARGS="sqlx migrate run --dry-run"
 	@$(ENVCTL_RUN) run --role $(ROLE) --app tools -- $(IN_RUST_SHELL) $(ARGS)
 

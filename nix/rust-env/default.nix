@@ -65,28 +65,18 @@
       export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.alsa-lib]}:$LD_LIBRARY_PATH"
       export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
       echo "🦀 Rust development environment loaded!"
-      # The role's host-side values for tools run by hand (`sqlx migrate run`),
-      # from deploy/<role>/tools.sops.env, decrypted into this shell's
-      # environment only (#634). The role is $DEPLOY, home by default, as for
-      # `make up`; DEPLOY=dev for a scratch database. ENVCTL_NO_EXPORT=1 skips
-      # it. The shell's own variables win, and only names are printed.
-      envctl_repo="$(git rev-parse --show-toplevel 2>/dev/null)"
-      envctl_role="''${DEPLOY:-home}"
-      envctl_tools="$envctl_repo/deploy/$envctl_role/tools.sops.env"
-      if [ -z "''${ENVCTL_NO_EXPORT:-}" ] && [ -n "$envctl_repo" ] && [ -d "$envctl_repo/apps/envctl" ]; then
-        if [ -f "$envctl_tools" ]; then
-          [ -x "$envctl_repo/target/debug/envctl" ] || echo "envctl: building it once to read deploy/$envctl_role/tools.sops.env (about a minute)"
-          if envctl_out="$(cargo run -q --manifest-path "$envctl_repo/Cargo.toml" -p envctl -- --repo "$envctl_repo" export --role "$envctl_role")"; then
-            eval "$envctl_out"
-          else
-            echo "envctl: deploy/$envctl_role/tools.sops.env not exported (above); the shell opens without it"
-          fi
-          unset envctl_out
-        else
-          echo "envctl: no deploy/$envctl_role/tools.sops.env, so tools get no role values (sops edit deploy/$envctl_role/tools.sops.env)"
-        fi
-      fi
-      unset envctl_repo envctl_role envctl_tools
+      # `tool <command>`: one command run with the role's host-side values for
+      # tools run by hand (`tool sqlx migrate run --dry-run`), from
+      # deploy/<role>/tools.sops.env, decrypted into that command's
+      # environment only (#634). Nothing is exported into this shell, so no
+      # role's value can reach `make dev` or anything else run here. The role
+      # is $DEPLOY, home by default, as for `make up`; a variable this shell
+      # sets itself wins (`DATABASE_URL=sqlite://x.db tool sqlx ...`).
+      tool() {
+        local repo
+        repo="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "tool: not in a checkout" >&2; return 2; }
+        cargo run -q --manifest-path "$repo/Cargo.toml" -p envctl -- --repo "$repo" run --role "''${DEPLOY:-home}" --app tools -- "$@"
+      }
     '';
 in {
   inherit buildInputs shellHook;

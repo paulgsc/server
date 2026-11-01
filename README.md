@@ -249,16 +249,14 @@ say, reads host-side values no app file holds: compose gives file-host
 `DATABASE_URL` as a path inside the container. Those go in
 `deploy/<role>/tools.sops.env` (`sops edit` it; on home,
 `DATABASE_URL=sqlite:///<STORAGE>/hopium.db`), whose names are free.
-`nix develop .#rust` exports it into the shell as it opens, for the role in
-`$DEPLOY` (home by default, as for `make up`; `DEPLOY=dev` for a scratch
-database; `ENVCTL_NO_EXPORT=1` to skip it), printing names only and keeping
-any the shell already sets. In that shell every command sees home's real
-database, the compile-time checks of `sqlx::query!` included (they only
-read). From any other shell, `make tool ARGS="sqlx migrate run --dry-run"`
-runs one command with the file. Either way the values exist only in memory.
-A value the shell got this way is not the shell's own: `make dev` and every
-other `envctl run` never pass it on to another role's command, so dev's
-server never sees home's database.
+`nix develop .#rust` gives the shell a `tool` command:
+`tool sqlx migrate run --dry-run` runs that one command with the file
+decrypted into its environment only, for the role in `$DEPLOY` (home by
+default, as for `make up`; `DEPLOY=dev tool …` for a scratch database). A
+variable the shell sets itself wins. From any other shell,
+`make tool ARGS="sqlx migrate run --dry-run"` does the same. Nothing is
+exported into a shell, so no role's value reaches `make dev` or anything
+else run there.
 
 **Moving the box onto them, once (ENV2, #615).** The values exist today only
 in the running containers and the box's plain-text `.env`. `make import`

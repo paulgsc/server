@@ -563,103 +563,21 @@ fn import_takes_out_what_an_app_file_holds_and_its_container_does_not_carry() {
 }
 
 #[test]
-fn export_gives_a_shell_the_tools_file_quoted_and_never_shows_a_value() {
-	let fixture = Fixture::new("export").unwrap();
+fn a_tools_file_runs_one_command_and_make_up_never_reads_it() {
+	let fixture = Fixture::new("tools").unwrap();
+	imported(&fixture).unwrap();
 	let deploy = fixture.repo.join("deploy/home");
-	fs::create_dir_all(&deploy).unwrap();
 	// DATABASE_URL=sqlite:///srv/a b/x.db, QUOTE=it's $HOME `x` (base64 inside ENC[]).
 	let tools = "DATABASE_URL=ENC[c3FsaXRlOi8vL3Nydi9hIGIveC5kYg==]\nQUOTE=ENC[aXQncyAkSE9NRSBgeGA=]\nEMPTY=\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n";
 	fs::write(deploy.join("tools.sops.env"), tools).unwrap();
-	let output = fixture.envctl(&["export", "--role", "home"]).output().unwrap();
-	assert!(output.status.success(), "{}", printed(&output));
-	let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-	let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-	assert!(stderr.contains("DATABASE_URL, QUOTE from deploy/home/tools.sops.env (role home)"), "{stderr}");
-	assert!(!stderr.contains("sqlite") && !stderr.contains("it's"), "names only on stderr: {stderr}");
-	assert!(!stdout.contains("EMPTY"), "an empty value is unset, not exported: {stdout}");
-	// A shell that evaluates it gets each value back whole, nothing expanded.
-	let check = Command::new("sh")
-		.arg("-c")
-		.arg(format!(
-			"{stdout}\n[ \"$DATABASE_URL\" = 'sqlite:///srv/a b/x.db' ] && [ \"$QUOTE\" = \"it's \\$HOME \\`x\\`\" ]"
-		))
-		.env_clear()
-		.output()
-		.unwrap();
-	assert!(check.status.success(), "{}", printed(&check));
-	// The shell's own value wins, and is named as kept.
-	let kept = fixture.envctl(&["export", "--role", "home"]).env("DATABASE_URL", "sqlite://mine.db").output().unwrap();
-	let kept_out = String::from_utf8_lossy(&kept.stdout).into_owned();
-	assert!(!kept_out.contains("DATABASE_URL"), "{kept_out}");
-	assert!(String::from_utf8_lossy(&kept.stderr).contains("kept the shell's own DATABASE_URL"), "{}", printed(&kept));
-	// make up's files are the apps' and compose's: the tools file is
-	// neither checked by the preflight nor delivered to a service.
-	imported(&fixture).unwrap();
+	// What `make tool` and the rust shell's `tool` run (#634): the values
+	// reach the one command whole, an empty one unset.
+	let check = r#"[ "$DATABASE_URL" = 'sqlite:///srv/a b/x.db' ] && [ "$QUOTE" = "it's \$HOME \`x\`" ] && [ -z "${EMPTY+set}" ]"#;
+	let run = fixture.envctl(&["run", "--role", "home", "--app", "tools", "--", "sh", "-c", check]).output().unwrap();
+	assert!(run.status.success(), "{}", printed(&run));
+	no_secret_in(&printed(&run), "run's output");
+	// make up's files are the apps' and compose's: the preflight neither
+	// checks the tools file nor mentions it.
 	let preflight = fixture.envctl(&["preflight", "--role", "home"]).output().unwrap();
 	assert!(preflight.status.success() && !printed(&preflight).contains("tools"), "{}", printed(&preflight));
-	let missing = fixture.envctl(&["export", "--role", "dev"]).output().unwrap();
-	assert!(
-		!missing.status.success() && printed(&missing).contains("deploy/dev/tools.sops.env does not exist"),
-		"{}",
-		printed(&missing)
-	);
-}
-
-#[test]
-fn values_a_shell_got_from_export_never_reach_another_roles_command() {
-	let fixture = Fixture::new("isolate").unwrap();
-	let dev = fixture.repo.join("deploy/dev");
-	fs::create_dir_all(&dev).unwrap();
-	// dev's file: ON=true only (base64 "true"), no DATABASE_URL.
-	fs::write(dev.join("probe.sops.env"), "ON=ENC[dHJ1ZQ==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n").unwrap();
-	let run = |extra: &[(&str, &str)], check: &str| {
-		let mut command = fixture.envctl(&["run", "--role", "dev", "--app", "probe", "--", "sh", "-c", check]);
-		command.envs(extra.iter().copied());
-		command.output().unwrap()
-	};
-	// Home's tools value, exported into the shell: dev's command never sees it
-	// (Codex on #639), and the child is told not to export again.
-	let exported = [("DATABASE_URL", "sqlite:///live/home.db"), ("ENVCTL_EXPORTED", "DATABASE_URL")];
-	let isolated = run(
-		&exported,
-		r#"[ -z "${DATABASE_URL+set}" ] && [ -z "${ENVCTL_EXPORTED+set}" ] && [ "$ON" = true ] && [ "$ENVCTL_NO_EXPORT" = 1 ]"#,
-	);
-	assert!(isolated.status.success(), "{}", printed(&isolated));
-	// A variable the shell set itself still wins over the file.
-	let own = run(&[("ON", "false")], r#"[ "$ON" = false ]"#);
-	assert!(own.status.success(), "{}", printed(&own));
-	// And an exported name the role's own file sets comes from the file.
-	fs::write(
-		dev.join("probe.sops.env"),
-		"ON=ENC[dHJ1ZQ==]\nDATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
-	)
-	.unwrap();
-	let from_file = run(&exported, r#"[ "$DATABASE_URL" = sqlite://dev.db ]"#);
-	assert!(from_file.status.success(), "{}", printed(&from_file));
-	// export lists what it exported.
-	let deploy = fixture.repo.join("deploy/home");
-	fs::create_dir_all(&deploy).unwrap();
-	fs::write(
-		deploy.join("tools.sops.env"),
-		"DATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
-	)
-	.unwrap();
-	let listed = fixture.envctl(&["export", "--role", "home"]).output().unwrap();
-	assert!(
-		String::from_utf8_lossy(&listed.stdout).contains("export ENVCTL_EXPORTED='DATABASE_URL'"),
-		"{}",
-		printed(&listed)
-	);
-	// A second export (dev's tools, with one more name) replaces the first's
-	// values and keeps every name listed, so home's never looks like the
-	// shell's own (Codex on #639).
-	fs::write(
-		dev.join("tools.sops.env"),
-		"DATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nEXTRA=ENC[eA==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
-	)
-	.unwrap();
-	let again = fixture.envctl(&["export", "--role", "dev"]).envs(exported).output().unwrap();
-	let again_out = String::from_utf8_lossy(&again.stdout).into_owned();
-	assert!(again_out.contains("export DATABASE_URL='sqlite://dev.db'"), "{}", printed(&again));
-	assert!(again_out.contains("export ENVCTL_EXPORTED='DATABASE_URL,EXTRA'"), "{}", printed(&again));
 }

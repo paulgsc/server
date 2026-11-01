@@ -32,7 +32,6 @@ use preflight::Deployment;
 use schema::Schema;
 use serde_json::Value;
 use std::{
-	io::IsTerminal as _,
 	path::{Path, PathBuf},
 	process::{Command as Process, ExitCode},
 	sync::{
@@ -92,16 +91,6 @@ enum Command {
 		app: String,
 		#[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
 		command: Vec<String>,
-	},
-	/// `export NAME='value'` lines for a shell to `eval`, from one of the
-	/// role's files (its `tools` file by default, #634), the shell's own
-	/// variables winning. Names go to stderr; it refuses to write to a
-	/// terminal, so a value is never shown.
-	Export {
-		#[arg(long, default_value = "home")]
-		role: String,
-		#[arg(long, default_value = sops::TOOLS)]
-		app: String,
 	},
 	/// Every variable the stack reads, its default, and whether the role's
 	/// files set it, read by name without decrypting (`make env`).
@@ -169,107 +158,6 @@ fn find_repo(given: Option<PathBuf>) -> Result<PathBuf> {
 			.with_context(|| format!("no checkout (infra/env and docker-compose.yml) at or above {}", start.display()))?
 	};
 	std::fs::canonicalize(&found).with_context(|| format!("no checkout at {}", found.display()))
-}
-
-/// `export NAME='value'` lines on stdout for a shell to `eval`, from one of
-/// `role`'s files, the shell's own variables winning; names on stderr.
-fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, sops_program: &[String]) -> Result<ExitCode> {
-	if std::io::stdout().is_terminal() {
-		bail!("export prints values: run it as eval \"$(envctl export --role {role})\", never to a terminal");
-	}
-	let relative = sops::relative(role, app);
-	if !repo.join(&relative).exists() {
-		bail!("{} does not exist; `sops edit {}` writes it", relative.display(), relative.display());
-	}
-	let file = sops::set_only(sops::decrypt(sops_program, repo, &relative)?);
-	// A name an earlier export put here is not the shell's own: this file's
-	// value replaces it, and the list keeps every name ever exported, so a
-	// second export never makes the first one's values look like the
-	// shell's (Codex on #639).
-	let earlier = exported_names(shell);
-	let (exported, kept): (Vec<_>, Vec<_>) = file.iter().partition(|(name, _)| !own(shell, &earlier, name));
-	let mut out = String::new();
-	for (name, value) in &exported {
-		out.push_str("export ");
-		out.push_str(name);
-		out.push('=');
-		out.push_str(&shell_quoted(value));
-		out.push('\n');
-	}
-	// The names it exported, so `run` can tell them from the shell's own and
-	// never hand them to another role's command (Codex on #639).
-	if !exported.is_empty() {
-		let mut names: Vec<&str> = earlier.clone();
-		names.extend(exported.iter().map(|(name, _)| name.as_str()).filter(|name| !earlier.contains(name)));
-		out.push_str("export ");
-		out.push_str(EXPORTED);
-		out.push('=');
-		out.push_str(&shell_quoted(&names.join(",")));
-		out.push('\n');
-	}
-	print!("{out}");
-	let names = |pairs: &[(&String, &String)]| pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
-	eprintln!(
-		"envctl: {} from {} (role {role})",
-		if exported.is_empty() { "nothing new".to_owned() } else { names(&exported) },
-		relative.display()
-	);
-	if !kept.is_empty() {
-		eprintln!("envctl: kept the shell's own {}", names(&kept));
-	}
-	Ok(ExitCode::SUCCESS)
-}
-
-/// Where `export` lists the names it put into a shell.
-const EXPORTED: &str = "ENVCTL_EXPORTED";
-
-/// The names an `export` put into this shell, from [`EXPORTED`].
-fn exported_names(shell: &IndexMap<String, String>) -> Vec<&str> {
-	shell
-		.get(EXPORTED)
-		.map(|names| names.split(',').filter(|name| !name.is_empty()).collect())
-		.unwrap_or_default()
-}
-
-/// Whether `name` is the shell's own: set, and not by an `export`. The one
-/// rule `export` and `run` both hold to.
-fn own(shell: &IndexMap<String, String>, exported: &[&str], name: &str) -> bool {
-	shell.contains_key(name) && !exported.contains(&name)
-}
-
-/// The environment `run` gives `command`: the shell's own variables, then
-/// `file`'s for any the shell does not set. A name `export` put into the
-/// shell (listed in [`EXPORTED`]) is not the shell's own: it came from a
-/// role's tools file, maybe another role's, so it is never passed on, and
-/// `file` gives it if it has it (Codex on #639). The child is told not to
-/// export again, so a `nix develop .#rust` inside it adds nothing.
-fn run_environment(shell: &IndexMap<String, String>, file: &sops::Plain) -> (Vec<String>, Vec<(String, String)>) {
-	let exported = exported_names(shell);
-	let mut removed: Vec<String> = exported.iter().map(|name| (*name).to_owned()).collect();
-	removed.push(EXPORTED.to_owned());
-	let mut set: Vec<(String, String)> = file
-		.iter()
-		.filter(|(name, _)| !own(shell, &exported, name))
-		.map(|(name, value)| (name.clone(), value.clone()))
-		.collect();
-	set.push(("ENVCTL_NO_EXPORT".to_owned(), "1".to_owned()));
-	(removed, set)
-}
-
-/// `value` as one POSIX shell word: single-quoted, each `'` closed, escaped
-/// and reopened. Nothing in it is expanded when the shell evaluates it.
-fn shell_quoted(value: &str) -> String {
-	let mut out = String::with_capacity(value.len() + 2);
-	out.push('\'');
-	for character in value.chars() {
-		if character == '\'' {
-			out.push_str("'\\''");
-		} else {
-			out.push(character);
-		}
-	}
-	out.push('\'');
-	out
 }
 
 /// The variables this process was started with. Reading them is the point
@@ -457,15 +345,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			};
 			let mut process = Process::new(program);
 			process.args(args).current_dir(&repo);
-			let (removed, set) = run_environment(&shell, &file);
-			for name in &removed {
-				process.env_remove(name);
-			}
-			process.envs(set);
+			process.envs(file.iter().filter(|(name, _)| !shell.contains_key(*name)));
 			let status = process.status().with_context(|| format!("running {program}"))?;
 			Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 		}
-		Command::Export { role, app } => export(&repo, &role, &app, &shell, &sops_program),
 		Command::List { role } => {
 			let read = |app: &str| std::fs::read_to_string(repo.join(sops::relative(&role, app))).unwrap_or_default();
 			let mut set: IndexMap<String, Vec<String>> = IndexMap::new();
