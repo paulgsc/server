@@ -189,12 +189,13 @@ pub struct SessionRecord {
 
 /// What `SessionsRepository.create(input)` sends.
 ///
-/// Deliberately not a `SessionRecord`: the timestamps, the initial status,
+/// Deliberately not a `SessionRecord`: `updatedAt`, the initial status,
 /// and `totalDurationMs` are all the server's to decide now, and a client
 /// that could send them could disagree with itself. The id is the server's
 /// too unless the client names one ([`is_session_id`]): a fresh one for
 /// each copy it makes, kept until home answers, so the same create sent
-/// twice makes one session.
+/// twice makes one session. `createdAt` is the server's too unless a copy
+/// sends when the session was made where it was made.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSession {
@@ -208,10 +209,13 @@ pub struct CreateSession {
 	pub layout_mode: LayoutMode,
 	#[serde(default, deserialize_with = "deserialize_explicit_null")]
 	pub layout: Option<serde_json::Value>,
+	/// When the session was made where it was made, for a copy; absent is now.
+	#[serde(default)]
+	pub created_at: Option<String>,
 }
 
 /// What `SessionsRepository.update(id, patch)` sends: `Partial<Omit<SessionRecord,
-/// "id" | "createdAt" | "updatedAt">>`. Every field absent means "leave it".
+/// "id" | "updatedAt">>`. Every field absent means "leave it".
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSession {
@@ -244,6 +248,10 @@ pub struct UpdateSession {
 	pub completed_at: Option<String>,
 	#[serde(default)]
 	pub final_elapsed_ms: Option<i64>,
+	/// When the session was made where it was made, for a copy home dated
+	/// on arrival.
+	#[serde(default)]
+	pub created_at: Option<String>,
 }
 
 /// Whether a `paused` transition for this session is a real abandonment.
