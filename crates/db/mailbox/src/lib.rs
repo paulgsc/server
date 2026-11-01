@@ -1993,6 +1993,35 @@ mod tests {
 		);
 	}
 
+	/// HF11 (paulgsc/some-ui#2401): a list of the takes Drive holds, kept
+	/// from `brief` after the digest, leaves the Jobs index's time where it
+	/// was; a backfilled file kept as late moves it.
+	#[tokio::test]
+	async fn a_list_of_drives_takes_leaves_the_jobs_index_time_where_it_was() {
+		let pool = pool().await;
+		keep(&pool, A, &digest("2026-10-22"), 1, "d22").await.unwrap();
+		let later = |name: &'static str, seq: i64, at: &'static str| {
+			let pool = pool.clone();
+			async move {
+				let item = ItemIn {
+					folder: BRIEF,
+					name,
+					seq,
+					sha256: name,
+					body: b"{}",
+				};
+				keep_item(&mut pool.acquire().await.unwrap(), A, item, at).await.unwrap();
+			}
+		};
+		later("drive-takes-20261101T091500Z.json", 2, "2026-11-01T09:20:00.000Z").await;
+		assert_eq!(jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(), Some(NOW));
+		later("decisions-2026-10-20.json", 3, "2026-11-01T09:30:00.000Z").await;
+		assert_eq!(
+			jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(),
+			Some("2026-11-01T09:30:00.000Z")
+		);
+	}
+
 	/// A note for the reflections index's fixtures: `of_kind`'s, recorded at
 	/// `recorded_at`, reaching home at `stored_at`.
 	async fn note(pool: &SqlitePool, subject: &str, (note, of_kind, of_ref): (&str, &str, &str), recorded_at: &str, stored_at: &str) {

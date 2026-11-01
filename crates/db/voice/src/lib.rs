@@ -366,10 +366,16 @@ fn container(content_type: &str) -> Option<&'static str> {
 	CONTENT_TYPES.into_iter().find(|known| known.eq_ignore_ascii_case(base))
 }
 
-/// Whether `id` reads as a note's id, as [`describe`] takes one.
+/// The names under `/voice-notes/` that are routes of their own, never a
+/// note's id: `PUT /voice-notes/on-drive` reaches the `GET` route of that
+/// name, not a note's.
+const ROUTE_NAMES: [&str; 1] = ["on-drive"];
+
+/// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
+/// not one of [`ROUTE_NAMES`].
 #[must_use]
 pub fn is_note_id(id: &str) -> bool {
-	is_name(id, MAX_ID_CHARS)
+	is_name(id, MAX_ID_CHARS) && !ROUTE_NAMES.contains(&id)
 }
 
 /// Whether `text` is a non-empty name of at most `max` characters, each a
@@ -487,8 +493,8 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 /// any other note, each bite field said at all (only a game bite carries one).
 pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Problem>> {
 	let mut problems: Vec<Problem> = Vec::new();
-	if !is_name(id, MAX_ID_CHARS) {
-		problems.push(("id", "not a note id: 1 to 64 letters, digits, '-', '_', '.' or ':'"));
+	if !is_note_id(id) {
+		problems.push(("id", "not a note id: 1 to 64 letters, digits, '-', '_', '.' or ':', and not on-drive"));
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
@@ -709,7 +715,7 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 
 #[cfg(test)]
 mod tests {
-	use super::{describe, put_note, whole, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
+	use super::{describe, is_note_id, put_note, whole, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -731,6 +737,16 @@ mod tests {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		pool
+	}
+
+	/// `on-drive` is a route's name under `/voice-notes/`, so never a note's
+	/// id, though it reads as one; a name that only starts with it is one.
+	#[test]
+	fn a_route_name_is_not_a_note_id() {
+		assert!(!is_note_id("on-drive"));
+		assert!(is_note_id("on-drive-2") && is_note_id("t1"));
+		let refused = describe("on-drive", said(NOW), b"frames").unwrap_err();
+		assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["id"]);
 	}
 
 	fn said(at: &str) -> Said<'_> {

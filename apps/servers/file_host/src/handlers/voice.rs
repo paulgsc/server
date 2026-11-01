@@ -129,13 +129,6 @@ pub async fn put_note(
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
 }
 
-/// `GET /voice-notes/on-drive`'s query: the phone's ids for the takes it
-/// asks about, comma-separated.
-#[derive(Debug, Deserialize)]
-pub struct OnDriveQuery {
-	ids: Option<String>,
-}
-
 /// One take home knows Drive holds too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,17 +157,23 @@ pub struct TakesOnDrive {
 /// as `PUT /voice-notes/:id` took them; one home does not know as on Drive,
 /// or does not hold, is simply not in the answer.
 ///
+/// The query is read as its pairs, so `ids` said twice is refused as any
+/// other wrong `ids` is, not by the extractor; other keys are ignored.
+///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 for no ids, more
-/// than `voice_repo::on_drive::MAX_IDS`, or one that is not a note's id, and
-/// 500 for a storage failure.
+/// than `voice_repo::on_drive::MAX_IDS`, one that is not a note's id, or
+/// `ids` said more than once, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_on_drive_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Query(query): Query<OnDriveQuery>) -> Result<Json<TakesOnDrive>, FileHostError> {
-	let asked = query.ids.unwrap_or_default();
+pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<TakesOnDrive>, FileHostError> {
+	let mut said = query.iter().filter(|(key, _)| key == "ids").map(|(_, value)| value.as_str());
+	let asked = said.next().unwrap_or_default();
 	let ids: Vec<&str> = asked.split(',').filter(|id| !id.is_empty()).collect();
-	if ids.is_empty() || ids.len() > voice_repo::on_drive::MAX_IDS || !ids.iter().all(|id| voice_repo::is_note_id(id)) {
-		return Err(FileHostError::unprocessable_entity([("ids", "between 1 and 100 of the phone's note ids, comma-separated")]));
+	if said.next().is_some() || ids.is_empty() || ids.len() > voice_repo::on_drive::MAX_IDS || !ids.iter().all(|id| voice_repo::is_note_id(id)) {
+		let max = voice_repo::on_drive::MAX_IDS.to_string();
+		let message = String::from("between 1 and ") + &max + " of the phone's note ids, comma-separated, said once";
+		return Err(FileHostError::unprocessable_entity([("ids", message)]));
 	}
 	let mut conn = db.acquire().await?;
 	let found = voice_repo::on_drive::on_drive(&mut conn, subject.as_str(), &ids).await?;
@@ -460,12 +459,15 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/on-drive?ids=t1", Some(&other)).await.1, json!({ "onDrive": [] }));
 		assert_eq!(get(&app, "/voice-notes/on-drive?ids=t1", None).await.0, StatusCode::UNAUTHORIZED);
 		let many = vec!["t"; 101].join(",");
-		for bad in ["", "?ids=", "?ids=a/b", "?ids=,,"] {
+		for bad in ["", "?ids=", "?ids=a/b", "?ids=,,", "?ids=t1&ids=t2", "?ids=t1,on-drive"] {
 			let path = String::from("/voice-notes/on-drive") + bad;
 			assert_eq!(get(&app, &path, Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
 		}
 		let path = String::from("/voice-notes/on-drive?ids=") + &many;
-		assert_eq!(get(&app, &path, Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		let (status, refused) = get(&app, &path, Some(&phone)).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		let said = String::from("between 1 and ") + &voice_repo::on_drive::MAX_IDS.to_string() + " of the phone's note ids";
+		assert!(refused["error"]["details"]["ids"][0].as_str().unwrap().starts_with(&said), "{refused}");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

@@ -1106,7 +1106,10 @@ nowhere is marked as such and belongs to review.
     subject holds whose `voice_note.sha256` the list names: the note's id,
     when the session looked, the list's mailbox name and when home recorded
     it. A hash naming nothing home holds, or a note said for anything but
-    `studio`, is dropped, never kept. A take is recorded once, by the first
+    `studio`, is dropped, never kept. A list matches only the takes home
+    holds when it arrives, and is never read again, so a take that reaches
+    home after the list naming it is recorded only once a later list names
+    it too. A take is recorded once, by the first
     list that names it, and never updated (the trigger aborts an `UPDATE`);
     a later list that no longer names it takes nothing away, and it leaves
     with the account by both the sweep and its own trigger (invariant 12).

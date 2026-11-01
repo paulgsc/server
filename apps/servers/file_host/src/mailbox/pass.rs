@@ -1271,7 +1271,9 @@ mod tests {
 	/// HF11 (paulgsc/some-ui#2401): the build-journal session's list of the
 	/// takes Drive holds, in `brief`, is kept as any `brief` file is, and each
 	/// take home holds that it names is recorded as on Drive, once; the Jobs
-	/// index, which does not count it, is not put again for it.
+	/// index, which does not count it, is not put again for it. Each list
+	/// arrives after the digest, so a `jobs_as_of` that counted every `brief`
+	/// file would move with it and put the index again.
 	#[tokio::test]
 	async fn a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index() {
 		let (pool, fake) = (pool().await, Fake::default());
@@ -1288,7 +1290,7 @@ mod tests {
 		})
 		.to_string();
 		fake.add(2, "drive-takes-20261101T091500Z.json", &list);
-		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().kept, 1);
 		assert_eq!(
 			on_drive(&pool).await,
 			vec![(
@@ -1306,7 +1308,8 @@ mod tests {
 		})
 		.to_string();
 		fake.add(3, "drive-takes-20261102T090000Z.json", &later);
-		pass(&pool, &fake).await.unwrap();
+		pass_at(&pool, &fake, "2026-10-23T15:30:00.000Z").await.unwrap();
+		assert_eq!(fake.indexes.lock().unwrap().len(), indexes, "nor does a later one");
 		let recorded: Vec<(String, String)> = on_drive(&pool).await.into_iter().map(|(note, at, _)| (note, at)).collect();
 		assert_eq!(
 			recorded,
