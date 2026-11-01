@@ -3,32 +3,6 @@
   "about": "File hosting server",
   "variables": [
     {
-      "name": "FILE_HOST_PORT_FALLBACK",
-      "group": "Server",
-      "required": false,
-      "default": "false",
-      "kind": "bool",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Dev only: when the port is taken, listen on the next free one instead of failing (`listen::bind`). `make dev` sets it, so a server run from source can sit beside the production container. Never set it in production: its published port and healthcheck assume `listen::PORT`",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "FILE_HOST_PORT_FILE",
-      "group": "Server",
-      "required": false,
-      "default": null,
-      "kind": "path",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Where to record the port actually listened on, as `{ port, pid }`, for `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on shutdown. `make dev` sets it",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "RATE_LIMIT",
       "group": "Server",
       "required": false,
@@ -50,20 +24,20 @@
       "values": [],
       "delimiter": ",",
       "secret": false,
-      "help": "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin. The dev host sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.",
+      "help": "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin.",
       "required_when": null,
       "bounds": null
     },
     {
       "name": "REDIS_URL",
       "group": "Server",
-      "required": false,
+      "required": true,
       "default": null,
       "kind": "string",
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "Redis URL for caching.\n\nUnset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).",
+      "help": "Redis URL for caching.\n\nRequired: no address is right on every host (#617).",
       "required_when": null,
       "bounds": null
     },
@@ -452,13 +426,13 @@
     {
       "name": "NATS_URL",
       "group": "NATS",
-      "required": false,
-      "default": "nats://localhost:4222",
+      "required": true,
+      "default": null,
       "kind": "string",
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "The NATS server to connect to.\n\nThe default only works beside a NATS that publishes 4222 on the same machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see `some_transport::DEV_HOST_NATS_URL`. Every container sets it.",
+      "help": "The NATS server to connect to.\n\nRequired: no address is right on every host (#617). Compose's services set theirs; `make dev` takes its role's.",
       "required_when": null,
       "bounds": null
     },

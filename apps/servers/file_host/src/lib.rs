@@ -132,16 +132,8 @@ impl AppState {
 	pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {
 		let otel_guard = Arc::new(Mutex::new(Some(OtelGuard::new(&config.otel, &config.log.rust_log)?)));
 
-		// The first thing logged once there is a subscriber: which values this
-		// run took from the `nixos.local` dev host (#406). Fine there, wrong on
-		// any other host, and never silent either way.
-		let host_defaults = config.host_specific_defaults_in_use();
-		if !host_defaults.is_empty() {
-			tracing::warn!(
-				variables = ?host_defaults,
-				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
-			);
-		}
+		// The first thing logged once there is a subscriber: a stale
+		// deployment file, which is never silent.
 		let retired = crate::config::retired_variables_set();
 		if !retired.is_empty() {
 			tracing::warn!(

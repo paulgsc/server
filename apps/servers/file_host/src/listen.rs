@@ -7,9 +7,9 @@
 //! nobody could see.
 //!
 //! A server run from source beside that container opts into the juggle
-//! (`make dev`): `FILE_HOST_PORT_FALLBACK` takes the next free port when the
-//! asked-for one is taken, and `FILE_HOST_PORT_FILE` records the port it
-//! actually got, so `paulgsc/some-ui`'s `vite dev` can find it without anyone
+//! (`make dev`): `--port-fallback true` takes the next free port when the
+//! asked-for one is taken, and `--port-file` records the port it actually
+//! got, so `paulgsc/some-ui`'s `vite dev` can find it without anyone
 //! choosing a port. The file is JSON, `{ "port": 3001, "pid": 12345 }`: the
 //! pid lets a reader ignore a file left behind by a process that no longer
 //! exists (a `kill -9` never reaches the cleanup below).
@@ -69,11 +69,7 @@ pub async fn from_config(config: &crate::Config) -> io::Result<(TcpListener, Opt
 	let listener = bind(BIND, PORT, config.port_fallback).await?;
 	let bound = listener.local_addr()?;
 	if bound.port() != PORT {
-		tracing::warn!(
-			requested = PORT,
-			bound = bound.port(),
-			"port taken; listening on the next free one (FILE_HOST_PORT_FALLBACK)"
-		);
+		tracing::warn!(requested = PORT, bound = bound.port(), "port taken; listening on the next free one (--port-fallback)");
 	}
 	tracing::info!("listening on {bound}");
 	let port_file = config.port_file.as_deref().map(|path| PortFile::write(path, bound.port())).transpose()?;

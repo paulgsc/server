@@ -78,7 +78,7 @@ pub mod nats;
 pub use inmem::{InMemReceiver, InMemTransport};
 
 #[cfg(feature = "nats")]
-pub use nats::{NatsConnectionPool, NatsReceiver, NatsTransport, DEV_HOST_NATS_URL};
+pub use nats::{NatsConnectionPool, NatsReceiver, NatsTransport};
 
 // Type aliases for convenience and ergonomics
 #[cfg(feature = "inmem")]

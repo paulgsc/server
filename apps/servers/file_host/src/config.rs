@@ -1,22 +1,7 @@
 use app_config::schema::{Bound, RequiredWhen, Rules, When, SET};
-pub use app_config::{LogArgs, NatsArgs, OtelArgs, DEV_HOST_NATS_URL};
+pub use app_config::{LogArgs, NatsArgs, OtelArgs};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-
-// HOST-SPECIFIC values (#406). Each one is right on the dev host this server
-// grew up on (`nixos.local`, with NATS and Redis on the same machine) and wrong
-// on any other. `ALLOWED_ORIGINS` and `APP_BASE_URL` are required, so a host
-// sets its own; the NATS and Redis URLs stay defaults, for a `cargo run` beside
-// the compose stack, which sets its own. Running on any of them is announced
-// at startup (`Config::host_specific_defaults_in_use`).
-
-/// The dev host's `ALLOWED_ORIGINS`, which it sets in its `.env`; startup warns
-/// while it is in use elsewhere. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
-/// The dev host's `APP_BASE_URL`. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
-/// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
-pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
 /// What `Config` requires only while another variable is on.
 ///
@@ -99,16 +84,17 @@ pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; refl
 #[command(author, version, about, long_about = None)]
 pub struct Config {
 	/// Dev only: when the port is taken, listen on the next free one instead
-	/// of failing (`listen::bind`). `make dev` sets it, so a server run from
-	/// source can sit beside the production container. Never set it in
-	/// production: its published port and healthcheck assume `listen::PORT`.
-	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", value_name = "FILE_HOST_PORT_FALLBACK", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Server")]
+	/// of failing (`listen::bind`). A flag, not a variable (#617): `make dev`
+	/// passes it, so a server run from source can sit beside the production
+	/// container, and no deployment file can set it. Its published port and
+	/// healthcheck assume `listen::PORT`.
+	#[arg(long, default_value_t = false, action = clap::ArgAction::Set, help_heading = "Server")]
 	pub port_fallback: bool,
 
 	/// Where to record the port actually listened on, as `{ port, pid }`, for
 	/// `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on
-	/// shutdown. `make dev` sets it.
-	#[arg(long, env = "FILE_HOST_PORT_FILE", value_name = "FILE_HOST_PORT_FILE", help_heading = "Server")]
+	/// shutdown. A flag `make dev` passes, like `--port-fallback`.
+	#[arg(long, help_heading = "Server")]
 	pub port_file: Option<std::path::PathBuf>,
 
 	/// Rate limit, in requests per minute, per client (`main.rs`'s
@@ -126,16 +112,15 @@ pub struct Config {
 	/// Required: no list is right on every host (#406). Include the HTTPS origin
 	/// the study app is served from, not only Storybook's `:6006`: service
 	/// workers, `Notification`, and `PushManager` are all gated on a secure
-	/// context, so a subscription is posted from an HTTPS origin. The dev host
-	/// sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.
+	/// context, so a subscription is posted from an HTTPS origin.
 	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', required = true, help_heading = "Server")]
 	pub allowed_origins: Vec<String>,
 
 	/// Redis URL for caching.
 	///
-	/// Unset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).
-	#[arg(long, env = "REDIS_URL", help_heading = "Server")]
-	pub redis_url: Option<String>,
+	/// Required: no address is right on every host (#617).
+	#[arg(long, env = "REDIS_URL", required = true, help_heading = "Server")]
+	pub redis_url: String,
 
 	/// The `SQLite` database, as `sqlite://<path>`.
 	///
@@ -413,15 +398,7 @@ impl Config {
 	}
 
 	pub fn as_cache_config(&self) -> some_cache::CacheConfig {
-		some_cache::CacheConfig::new(self.redis_url.clone().unwrap_or_else(|| DEV_HOST_REDIS_URL.into())).with_ttl(crate::cache::CACHE_TTL)
-	}
-
-	/// The variables this run is taking from a HOST-SPECIFIC default (#406):
-	/// values that are right on the `nixos.local` dev host and wrong anywhere
-	/// else. Startup logs them, so running on them is never silent.
-	#[must_use]
-	pub fn host_specific_defaults_in_use(&self) -> Vec<&'static str> {
-		host_specific_defaults_in_use(&self.allowed_origins, &self.app_base_url, &self.nats.nats_url, self.redis_url.as_deref())
+		some_cache::CacheConfig::new(self.redis_url.clone()).with_ttl(crate::cache::CACHE_TTL)
 	}
 }
 
@@ -458,29 +435,9 @@ fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static st
 		.collect()
 }
 
-/// Compares values, not where they came from: setting a variable to the dev
-/// host's value explicitly is still running on the dev host's value.
-fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: &str, redis_url: Option<&str>) -> Vec<&'static str> {
-	let mut in_use = Vec::new();
-	if allowed_origins.join(",") == DEV_HOST_ALLOWED_ORIGINS {
-		in_use.push("ALLOWED_ORIGINS");
-	}
-	if app_base_url == DEV_HOST_APP_BASE_URL {
-		in_use.push("APP_BASE_URL");
-	}
-	if nats_url == DEV_HOST_NATS_URL {
-		in_use.push("NATS_URL");
-	}
-	// Unset falls back to the dev-host value; set to it is the same value.
-	if redis_url.is_none_or(|url| url == DEV_HOST_REDIS_URL) {
-		in_use.push("REDIS_URL");
-	}
-	in_use
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{host_specific_defaults_in_use, retired_variables_in, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
+	use super::{retired_variables_in, Config};
 	use clap::{CommandFactory, Parser};
 
 	#[test]
@@ -488,9 +445,8 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 17] = [
+	const REFUSED: [(&str, &str); 16] = [
 		("RUST_LOG", "info,=[bad"),
-		("FILE_HOST_PORT_FALLBACK", "1"),
 		("RATE_LIMIT", "-1"),
 		("NUDGE_ENABLED", "on"),
 		("NUDGE_QUIET_HOURS_START", "10pm"),
@@ -509,8 +465,7 @@ mod tests {
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
 	// to start on a bad one, as the mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 19] = [
-		"FILE_HOST_PORT_FILE",
+	const FREE_TEXT: [&str; 18] = [
 		"ALLOWED_ORIGINS",
 		"REDIS_URL",
 		"NATS_URL",
@@ -545,32 +500,6 @@ mod tests {
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 
-	#[test]
-	fn every_dev_host_default_in_use_is_named() {
-		let dev_origins: Vec<String> = DEV_HOST_ALLOWED_ORIGINS.split(',').map(String::from).collect();
-		assert_eq!(
-			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, None),
-			["ALLOWED_ORIGINS", "APP_BASE_URL", "NATS_URL", "REDIS_URL"]
-		);
-	}
-
-	/// A dev deployment may set `NATS_URL` to the dev host's value
-	/// explicitly, for `make dev`; that is still running on it.
-	#[test]
-	fn a_dev_host_value_set_explicitly_is_still_named() {
-		let origins = [String::from("https://app.example.com")];
-		assert_eq!(
-			host_specific_defaults_in_use(&origins, "https://app.example.com/", DEV_HOST_NATS_URL, Some(DEV_HOST_REDIS_URL)),
-			["NATS_URL", "REDIS_URL"]
-		);
-	}
-
-	#[test]
-	fn a_host_that_sets_its_own_values_runs_on_none() {
-		let origins = [String::from("https://app.example.com")];
-		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", "nats://nats:4222", Some("redis://redis:6379")).is_empty());
-	}
-
 	/// The `.env` #476 met: every retired variable left set is named.
 	#[test]
 	fn a_retired_transcriber_variable_left_set_is_named() {
@@ -598,6 +527,10 @@ mod tests {
 			"https://app.example",
 			"--app-base-url",
 			"https://app.example/",
+			"--nats-url",
+			"nats://nats:4222",
+			"--redis-url",
+			"redis://redis:6379",
 		];
 		let off = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "false"])).unwrap();
 		assert!(!off.auth_enabled);
