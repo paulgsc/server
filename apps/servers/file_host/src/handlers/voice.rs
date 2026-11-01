@@ -129,6 +129,65 @@ pub async fn put_note(
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
 }
 
+/// One take home knows Drive holds too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeOnDrive {
+	/// The phone's id for the take.
+	pub note: String,
+	/// When the build-journal session that first listed it there looked.
+	pub listed_at: String,
+}
+
+/// `GET /voice-notes/on-drive`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakesOnDrive {
+	/// Each asked-about take home knows Drive holds, in the order asked.
+	pub on_drive: Vec<TakeOnDrive>,
+}
+
+/// `GET /voice-notes/on-drive?ids=<id>,<id>`
+///
+/// Which of the phone's Studio takes home knows Drive holds too
+/// (paulgsc/some-ui#2401, HF11), from the build-journal session's lists in
+/// the mailbox (`voice_repo::on_drive`).
+///
+/// Reads only; it writes nothing and sends nothing. The ids are the phone's,
+/// as `PUT /voice-notes/:id` took them; one home does not know as on Drive,
+/// or does not hold, is simply not in the answer.
+///
+/// The query is read as its pairs, so `ids` said twice is refused as any
+/// other wrong `ids` is, not by the extractor; other keys are ignored.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 for no ids, more
+/// than `voice_repo::on_drive::MAX_IDS`, one that is not a note's id, or
+/// `ids` said more than once, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_on_drive_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<TakesOnDrive>, FileHostError> {
+	let mut said = query.iter().filter(|(key, _)| key == "ids").map(|(_, value)| value.as_str());
+	let asked = said.next().unwrap_or_default();
+	let ids: Vec<&str> = asked.split(',').filter(|id| !id.is_empty()).collect();
+	if said.next().is_some() || ids.is_empty() || ids.len() > voice_repo::on_drive::MAX_IDS || !ids.iter().all(|id| voice_repo::is_note_id(id)) {
+		let max = voice_repo::on_drive::MAX_IDS.to_string();
+		let message = String::from("between 1 and ") + &max + " of the phone's note ids, comma-separated, said once";
+		return Err(FileHostError::unprocessable_entity([("ids", message)]));
+	}
+	let mut conn = db.acquire().await?;
+	let found = voice_repo::on_drive::on_drive(&mut conn, subject.as_str(), &ids).await?;
+	Ok(Json(TakesOnDrive {
+		on_drive: found
+			.into_iter()
+			.map(|take| TakeOnDrive {
+				note: take.note,
+				listed_at: take.listed_at,
+			})
+			.collect(),
+	}))
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
@@ -239,7 +298,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 1);
+		assert_eq!(module().descriptors().count(), 2);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -354,6 +413,61 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(held, (String::from("studio"), String::from("build-journal-ep04:s3:2")));
+	}
+
+	async fn get(app: &Router, path: &str, auth: Option<&(HeaderName, String)>) -> (StatusCode, Value) {
+		let mut request = Request::builder().method(Method::GET).uri(path);
+		if let Some((name, value)) = auth {
+			request = request.header(name, value);
+		}
+		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	/// HF11 (paulgsc/some-ui#2401): the phone reads which of its takes home
+	/// knows Drive holds, its own only, and the id route still takes a note.
+	#[tokio::test]
+	async fn the_phone_reads_which_of_its_takes_home_knows_drive_holds() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [
+			"/voice-notes/t1?of=studio&ref=ep04:s1:t1&at=2026-10-30T18:20:00Z",
+			"/voice-notes/t2?of=studio&ref=ep04:s2:t2&at=2026-10-30T18:21:00Z",
+		] {
+			let body: &[u8] = if path.contains("t1?") { TAKE } else { b"other frames" };
+			assert_eq!(put(&app, path, Some(&phone), "audio/webm", body).await.0, StatusCode::OK);
+		}
+		let sha256 = vec![String::from(TAKE_SHA256)];
+		let listed = voice_repo::on_drive::Listed {
+			at: "2026-11-01T09:15:00.000Z",
+			name: "drive-takes-20261101T091500Z.json",
+			sha256: &sha256,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(voice_repo::on_drive::record(&mut conn, A, listed, "now").await.unwrap(), 1);
+		drop(conn);
+
+		let (status, answer) = get(&app, "/voice-notes/on-drive?ids=t2,t1,nope", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+		assert_eq!(answer, json!({ "onDrive": [{ "note": "t1", "listedAt": "2026-11-01T09:15:00.000Z" }] }));
+		// Another subject's read finds none of A's.
+		assert_eq!(get(&app, "/voice-notes/on-drive?ids=t1", Some(&other)).await.1, json!({ "onDrive": [] }));
+		assert_eq!(get(&app, "/voice-notes/on-drive?ids=t1", None).await.0, StatusCode::UNAUTHORIZED);
+		let many = vec!["t"; 101].join(",");
+		for bad in ["", "?ids=", "?ids=a/b", "?ids=,,", "?ids=t1&ids=t2", "?ids=t1,on-drive"] {
+			let path = String::from("/voice-notes/on-drive") + bad;
+			assert_eq!(get(&app, &path, Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+		}
+		let path = String::from("/voice-notes/on-drive?ids=") + &many;
+		let (status, refused) = get(&app, &path, Some(&phone)).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		let said = String::from("between 1 and ") + &voice_repo::on_drive::MAX_IDS.to_string() + " of the phone's note ids";
+		assert!(refused["error"]["details"]["ids"][0].as_str().unwrap().starts_with(&said), "{refused}");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

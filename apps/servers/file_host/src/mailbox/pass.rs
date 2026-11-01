@@ -68,6 +68,7 @@ use leetype_log_repo::{Event, LogError, SessionEvents};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
 use mailbox_repo::{Answer, ArchiveIn, Change, Heard, ItemIn};
 use serde::de::IgnoredAny;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fmt;
@@ -915,12 +916,56 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// `keep_item` and `record_handed` check the subject's account in the
 /// statement that writes, and the hold keeps a deletion from landing between
 /// them. Held for this write only, never across a request to the mailbox.
+///
+/// A list of the takes Drive holds, new in `brief` ([`drive_takes`]), has
+/// its takes home holds recorded as on Drive in the same transaction
+/// (`voice_repo::on_drive`, paulgsc/some-ui#2401).
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+	let listed = drive_takes(&item);
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
+	if let (Change::Added, Some((at, sha256))) = (change, &listed) {
+		let listed = voice_repo::on_drive::Listed { at, name: item.name, sha256 };
+		voice_repo::on_drive::record(&mut tx, subject, listed, now).await?;
+	}
 	tx.commit().await?;
 	Ok(change)
+}
+
+/// The name a list of the takes Drive holds goes under in `brief`.
+const DRIVE_TAKES_PREFIX: &str = "drive-takes-";
+
+/// A list of the takes Drive holds, as the build-journal session put it in
+/// `brief` (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`): when it
+/// looked, and each recording's SHA-256 that reads as one. `None` for any
+/// other file, or one that does not read as a list; such a file is kept as
+/// every `brief` file is, and records nothing.
+fn drive_takes(item: &ItemIn<'_>) -> Option<(String, Vec<String>)> {
+	#[derive(Deserialize)]
+	struct Take {
+		sha256: String,
+	}
+	#[derive(Deserialize)]
+	struct List {
+		schema: String,
+		at: String,
+		takes: Vec<Take>,
+	}
+	if item.folder != Folder::Brief.as_str() || !item.name.starts_with(DRIVE_TAKES_PREFIX) {
+		return None;
+	}
+	let list: List = serde_json::from_slice(item.body).ok()?;
+	if list.schema != voice_repo::on_drive::DRIVE_TAKES_SCHEMA {
+		return None;
+	}
+	let sha256 = list
+		.takes
+		.into_iter()
+		.map(|take| take.sha256)
+		.filter(|sha256| sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+		.collect();
+	Some((list.at, sha256))
 }
 
 /// As [`keep`], for a file about to be archived.
@@ -1200,6 +1245,91 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!((seq, stored), (10, body.into_bytes()), "the mailbox's seq and the bytes as it held them");
+	}
+
+	/// A `studio` voice note `id` home holds, its audio hashing to `sha256`.
+	async fn studio_take(pool: &SqlitePool, id: &str, sha256: &str) {
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'studio', 'ep04:s1:t', 'then', 'audio/webm', 1, ?3, 'now')",
+		)
+		.bind(OWNER)
+		.bind(id)
+		.bind(sha256)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn on_drive(pool: &SqlitePool) -> Vec<(String, String, String)> {
+		sqlx::query_as("SELECT note_id, listed_at, list_name FROM studio_take_on_drive ORDER BY note_id")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	/// HF11 (paulgsc/some-ui#2401): the build-journal session's list of the
+	/// takes Drive holds, in `brief`, is kept as any `brief` file is, and each
+	/// take home holds that it names is recorded as on Drive, once; the Jobs
+	/// index, which does not count it, is not put again for it. Each list
+	/// arrives after the digest, so a `jobs_as_of` that counted every `brief`
+	/// file would move with it and put the index again.
+	#[tokio::test]
+	async fn a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(1, &name, &body);
+		pass(&pool, &fake).await.unwrap();
+		let indexes = fake.indexes.lock().unwrap().len();
+		studio_take(&pool, "t1", &"a".repeat(64)).await;
+		studio_take(&pool, "t2", &"b".repeat(64)).await;
+		let list = serde_json::json!({
+			"schema": "some-ui.drive-takes/1",
+			"at": "2026-11-01T09:15:00.000Z",
+			"takes": [{ "sha256": "a".repeat(64) }, { "sha256": "c".repeat(64) }],
+		})
+		.to_string();
+		fake.add(2, "drive-takes-20261101T091500Z.json", &list);
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().kept, 1);
+		assert_eq!(
+			on_drive(&pool).await,
+			vec![(
+				String::from("t1"),
+				String::from("2026-11-01T09:15:00.000Z"),
+				String::from("drive-takes-20261101T091500Z.json")
+			)]
+		);
+		assert_eq!(fake.indexes.lock().unwrap().len(), indexes, "a list of Drive's takes moves no Jobs index");
+		// A later list naming t1 and t2 records t2 alone; t1 stays as first listed.
+		let later = serde_json::json!({
+			"schema": "some-ui.drive-takes/1",
+			"at": "2026-11-02T09:00:00.000Z",
+			"takes": [{ "sha256": "a".repeat(64) }, { "sha256": "b".repeat(64) }],
+		})
+		.to_string();
+		fake.add(3, "drive-takes-20261102T090000Z.json", &later);
+		pass_at(&pool, &fake, "2026-10-23T15:30:00.000Z").await.unwrap();
+		assert_eq!(fake.indexes.lock().unwrap().len(), indexes, "nor does a later one");
+		let recorded: Vec<(String, String)> = on_drive(&pool).await.into_iter().map(|(note, at, _)| (note, at)).collect();
+		assert_eq!(
+			recorded,
+			vec![
+				(String::from("t1"), String::from("2026-11-01T09:15:00.000Z")),
+				(String::from("t2"), String::from("2026-11-02T09:00:00.000Z"))
+			]
+		);
+	}
+
+	/// A file under the list's name that does not read as one is kept as
+	/// any `brief` file is, and records nothing.
+	#[tokio::test]
+	async fn a_list_that_does_not_read_records_nothing() {
+		let (pool, fake) = (pool().await, Fake::default());
+		studio_take(&pool, "t1", &"a".repeat(64)).await;
+		let wrong = serde_json::json!({ "schema": "some-ui.job-digest/1", "takes": [{ "sha256": "a".repeat(64) }] }).to_string();
+		fake.add(1, "drive-takes-20261101T091500Z.json", &wrong);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		assert!(on_drive(&pool).await.is_empty());
 	}
 
 	#[tokio::test]

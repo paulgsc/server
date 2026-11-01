@@ -140,6 +140,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each word home heard in the owner's voice notes (paulgsc/some-ui GWB11), per transcript that heard something: the word as heard, its place, and when it began and ended in the note; see docs/identity.md invariant 23",
 	),
 	(
+		"studio_take_on_drive",
+		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
+	),
+	(
 		"drama_prompt",
 		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
 	),
