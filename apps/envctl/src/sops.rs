@@ -87,6 +87,18 @@ pub(crate) fn names(encrypted: &str) -> Vec<String> {
 		.collect()
 }
 
+/// The names an encrypted file states unset: an empty value, which sops
+/// leaves as it is, so it reads without the key too.
+pub(crate) fn unset_names(encrypted: &str) -> Vec<String> {
+	encrypted
+		.lines()
+		.filter(|line| !line.trim_start().starts_with('#'))
+		.filter_map(|line| line.split_once('='))
+		.filter(|(name, value)| value.is_empty() && is_name(name.trim()) && !name.starts_with("sops_"))
+		.map(|(name, _)| name.trim().to_owned())
+		.collect()
+}
+
 /// Whether `encrypted` reads as a file sops wrote: a MAC, and every value
 /// but sops' own wrapped in `ENC[...]`, or empty (sops leaves an empty
 /// value as it is: there is nothing to hide). A name whose value is not is
@@ -270,6 +282,7 @@ mod tests {
 	fn names_read_without_the_key_and_metadata_is_not_a_name() {
 		assert_eq!(names(ENCRYPTED), ["WEBAUTHN_RP_ID", "NUDGE_ENABLED"]);
 		assert_eq!(names("pass word hunter2=old\n  # x=y\nA=ENC[v]\n"), ["A"], "what is not a name is never one");
+		assert_eq!(super::unset_names("A=ENC[v]\nB=\nsops_x=\n"), ["B"]);
 		assert!(plain_values(ENCRYPTED).is_ok());
 		assert_eq!(plain_values("A=ENC[x]\nB=plain\nsops_mac=ENC[m]\n"), Err(vec!["B".to_owned()]));
 		assert!(plain_values("EMPTY=\nsops_mac=ENC[m]\n").is_ok(), "sops leaves an empty value as it is");
