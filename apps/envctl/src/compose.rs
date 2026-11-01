@@ -274,6 +274,59 @@ pub(crate) fn own_environment(service: &Value) -> IndexMap<String, Option<String
 	}
 }
 
+/// Each published port of a service: what it publishes as written (it may
+/// hold a `${...}`), and the container port with its protocol
+/// (`11434/tcp`), as docker inspect keys a binding.
+pub(crate) fn ports(service: &Value) -> Vec<(String, String)> {
+	service
+		.get("ports")
+		.and_then(Value::as_array)
+		.into_iter()
+		.flatten()
+		.filter_map(|port| match port {
+			Value::String(short) => {
+				// `[ip:]published:target[/protocol]`; the published part may be a
+				// `${X:-d}` holding a colon itself, so the target is the last part.
+				let (published, target) = short.rsplit_once(':')?;
+				let target = if target.contains('/') { target.to_owned() } else { format!("{target}/tcp") };
+				Some((published.to_owned(), target))
+			}
+			Value::Object(long) => {
+				let published = text(long.get("published")?);
+				let protocol = long.get("protocol").and_then(Value::as_str).unwrap_or("tcp");
+				Some((published, format!("{}/{protocol}", text(long.get("target")?))))
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+/// The `${NAME}`s a service uses where import cannot read a value back from
+/// its container: anywhere but its `environment:`, its volumes' sources, its
+/// ports and its `env_file`.
+pub(crate) fn unread_uses(service: &Value) -> Vec<String> {
+	let Some(fields) = service.as_object() else { return Vec::new() };
+	let mut names = Vec::new();
+	let mut walk = vec![];
+	for (key, value) in fields {
+		if !matches!(key.as_str(), "environment" | "volumes" | "ports" | "env_file") {
+			walk.push(value);
+		}
+	}
+	while let Some(value) = walk.pop() {
+		match value {
+			Value::String(text) => names.extend(dotenv::tokens(text).into_iter().filter_map(|token| match token {
+				Token::Braced { name, .. } | Token::Bare(name) => Some(name.to_owned()),
+				_ => None,
+			})),
+			Value::Array(items) => walk.extend(items),
+			Value::Object(map) => walk.extend(map.values()),
+			_ => {}
+		}
+	}
+	names
+}
+
 /// Each bind mount of a service, its source as written and its target.
 pub(crate) fn volumes(service: &Value) -> Vec<(String, String)> {
 	service
@@ -337,6 +390,27 @@ mod tests {
 		let text = "include:\n  - path: ./a.yml\n  # - path: ./off.yml\n  - b.yml\n  - path: 'c.yml' # c\nservices:\n  x:\n    env_file:\n      - path: ${ENV_DIR:?x}/x.env\n";
 		assert_eq!(included(text), ["./a.yml", "b.yml", "c.yml"]);
 		assert!(included("services:\n  x:\n    env_file:\n      - path: ./y.env\n").is_empty());
+	}
+
+	#[test]
+	fn ports_and_unread_uses_are_found_where_compose_puts_them() {
+		let service = json!({
+			"ports": ["127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434", "8080:80/udp", {"published": "${P:-9}", "target": 9000}],
+			"build": {"context": "${REPO_ROOT:?x}/infra"},
+			"command": ["--flag", "${LEVEL:-info}"],
+			"environment": ["A=${B}"],
+		});
+		assert_eq!(
+			super::ports(&service),
+			[
+				("127.0.0.1:${OLLAMA_HOST_PORT:-11434}".to_owned(), "11434/tcp".to_owned()),
+				("8080".to_owned(), "80/udp".to_owned()),
+				("${P:-9}".to_owned(), "9000/tcp".to_owned()),
+			]
+		);
+		let mut unread = super::unread_uses(&service);
+		unread.sort();
+		assert_eq!(unread, ["LEVEL", "REPO_ROOT"], "environment, volumes and ports are read back; the rest is not");
 	}
 
 	#[test]

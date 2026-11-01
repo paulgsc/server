@@ -152,6 +152,21 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 			.flatten()
 			.filter_map(|mount| Some((mount.get("Destination")?.as_str()?.to_owned(), mount.get("Source")?.as_str()?.to_owned())))
 			.collect();
+		// A published port is read back from the binding docker made (Codex on
+		// #622: OLLAMA_HOST_PORT).
+		for (published, target) in compose::ports(service) {
+			let Some((name, default, "")) = lone(&published) else { continue };
+			let host_port = container
+				.pointer("/HostConfig/PortBindings")
+				.and_then(|bindings| bindings.get(&target))
+				.and_then(Value::as_array)
+				.and_then(|bindings| bindings.first())
+				.and_then(|binding| binding.get("HostPort"))
+				.and_then(Value::as_str);
+			if let Some(value) = host_port.filter(|value| !value.is_empty()) {
+				observe(name, value.to_owned(), default);
+			}
+		}
 		for (source, target) in compose::volumes(service) {
 			let Some((name, default, suffix)) = lone(&source) else { continue };
 			let Some((_, mounted)) = mounts.iter().find(|(destination, _)| *destination == target) else {
@@ -320,7 +335,7 @@ pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
 }
 
 /// What is left to do, numbered.
-pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unfound: &[String], dry_run: bool, wrote: bool) -> String {
+pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unverified: &[String], unfound: &[String], dry_run: bool, wrote: bool) -> String {
 	let mut out = String::new();
 	if !conflicts.is_empty() {
 		let _ = write!(
@@ -333,6 +348,13 @@ pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unfound:
 	let mut steps: Vec<String> = Vec::new();
 	if dry_run {
 		steps.push("make import          write the files above, through sops (nothing was written)".to_owned());
+	}
+	if !unverified.is_empty() {
+		let mut step = format!("check these by hand before make up, with sops edit {compose}:");
+		for name in unverified {
+			let _ = write!(step, "\n       {name}");
+		}
+		steps.push(step);
 	}
 	if !unfound.is_empty() {
 		steps.push(format!(
@@ -457,6 +479,12 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	let env = dotenv::parse(&std::fs::read_to_string(repo.join(".env")).unwrap_or_default());
 	let compose_variables = compose::read(repo)?;
 	let mut unfound = Vec::new();
+	// What no running container showed is never taken silently: a value from
+	// .env, and a variable compose uses where import cannot read it back, are
+	// named for the owner to check (Codex on #622, four findings in this one
+	// mechanism: reading compose's variables back is best effort).
+	let unread: std::collections::BTreeSet<String> = compose::services(&raw).into_iter().flat_map(|(_, service)| compose::unread_uses(service)).collect();
+	let mut unverified = Vec::new();
 	for variable in compose_variables.values() {
 		// Only what no running container showed: one seen on its default runs
 		// on that, whatever an edited .env says now (Codex on #622).
@@ -466,8 +494,12 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 		match env.get(&variable.name) {
 			Some(value) => {
 				compose_found.insert(variable.name.clone(), value.clone());
+				unverified.push(format!("{} (from .env; no running container shows it)", variable.name));
 			}
 			None if variable.required => unfound.push(variable.name.clone()),
+			None if unread.contains(&variable.name) => {
+				unverified.push(format!("{} (compose uses it where import cannot read it back)", variable.name));
+			}
 			None => {}
 		}
 	}
@@ -475,7 +507,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	let on_default = IndexMap::from([(compose_file.clone(), observed.iter().filter(|name| !compose_found.contains_key(*name)).cloned().collect())]);
 	files.insert(compose_file, compose_found);
 	let wrote = write(repo, schemas, &raw, &files, &on_default, dry_run, sops_program)?;
-	print!("{}", next_steps(repo, role, &conflicts, &unfound, dry_run, wrote));
+	print!("{}", next_steps(repo, role, &conflicts, &unverified, &unfound, dry_run, wrote));
 	Ok(())
 }
 
@@ -614,7 +646,7 @@ mod tests {
 			super::report("deploy/home/p.sops.env", false, &change),
 			"deploy/home/p.sops.env  (new)\n  from what runs now: 2\n    A  B\n  at the binary's default (nothing set them): 1\n    ON\n  unset (an empty value; no default): 1\n    URL\n\n"
 		);
-		let left = super::next_steps(std::path::Path::new("/nowhere"), "home", &[], &["X".into()], true, false);
+		let left = super::next_steps(std::path::Path::new("/nowhere"), "home", &[], &[], &["X".into()], true, false);
 		assert!(
 			left.starts_with("Next:\n  1. make import") && left.contains("  2. set what no container") && left.contains("       X"),
 			"{left}"
