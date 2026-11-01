@@ -1494,12 +1494,8 @@ mod tests {
 	async fn a_disabled_mailbox_spawns_nothing() {
 		use crate::Config;
 		use clap::Parser;
-		const REQUIRED: [&str; 13] = [
+		const REQUIRED: [&str; 9] = [
 			"file_host",
-			"--obs-host",
-			"h",
-			"--obs-password",
-			"p",
 			"--database-url",
 			"sqlite::memory:",
 			"--auth-enabled",

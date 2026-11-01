@@ -81,6 +81,9 @@ duplicate of it.
   --version 0.7.4 --locked --no-default-features --features sqlite`, matching
   the version CI installs) — needed to create/migrate the database and run
   `cargo sqlx prepare`
+* [`sops`](https://github.com/getsops/sops) 3.9 or later, and a key
+  `.sops.yaml` names, to deploy or run `make dev` (`nix shell nixpkgs#sops`;
+  the default `nix develop` shell has it). See "Deploying the stack"
 * SQLite — every `crates/db/*` repository builds with SQLx's `sqlite`
   feature only; migrations live under [`migrations/`](./migrations)
 * A NATS server with JetStream enabled — `file_host` opens a real
@@ -121,13 +124,23 @@ that reads it (#405).
 That one declaration is also readable without starting anything (#503). Each
 binary's tests hold a copy of its `Config`'s schema in
 [`infra/env/<binary>.json`](./infra/env): every variable, whether it is
-required, its default, its kind, its help, and whether it is a secret (its
-value hidden, `hide_env_values`). [`example.env`](./example.env) is generated
-from those copies and the compose files' `${...}` variables by
-[`scripts/env_schema.py`](./scripts/env_schema.py); nobody writes a list of
-variables by hand. `make env-schema` regenerates both after a `Config` or a
-compose file changes; `make env` lists every variable the stack reads and
-whether `.env` sets it.
+required, its default, its kind and its help. It is the contract
+[`envctl`](./apps/envctl) reads, and it holds names and rules, never a
+deployment's values. `make env-schema` regenerates it, and the NixOS options
+from it, after a `Config` changes; `make env` lists every variable the stack
+reads and whether `deploy/<role>/` sets it.
+
+Every variable is a secret, set once per deployment (#613, the owner's
+principles). A value that is not a secret is a constant in the source, not a
+variable, and a value that changes while the app runs is data behind an
+admin lever, not a variable. So a deployment's values are never plain text in
+git, and CI never sees one: they are in `deploy/<role>/<app>.sops.env`, one
+file per app and one for compose's own `${...}` variables
+(`compose.sops.env`), encrypted with [sops](https://github.com/getsops/sops)
+to the age recipients in [`.sops.yaml`](./.sops.yaml), the same as
+`paulgsc/dotfiles`' (its admin key, and the box's SSH host key). Each file's
+names are readable and its values are not. A new machine or shell needs only
+its key: nothing is retyped and there is no `.env` (#614).
 
 - **ENV1: a variable that does not parse stops its binary at start, by name.**
   - _Claim:_ every environment variable this workspace's own code reads is
@@ -153,17 +166,19 @@ whether `.env` sets it.
     their own that no `Config` declares, with their own fallbacks: tokio's
     `TOKIO_WORKER_THREADS`, polars' `POLARS_MAX_THREADS`, and the OTel SDK's
     `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_BSP_*`.
+    An app's deployment file may set the OTel SDK's; its container gets them
+    with the rest of the file.
 
-- **ENV2: the schema, `example.env` and each binary's `Config` agree.**
+- **ENV2: the schema, the NixOS options and each binary's `Config` agree.**
   - _Claim:_ `infra/env/<binary>.json` is what that binary's `Config`
-    declares, and `example.env` is what `scripts/env_schema.py` writes from
-    those files and the compose files; neither can fall behind its source.
-  - _Family:_ every binary with a `Config`; every variable it declares and
-    every `${...}` the compose files interpolate; a changed name, default,
-    help, kind or secrecy; a hand edit of either generated file.
+    declares, and `nix/modules/generated/` is what `envctl nix` writes from
+    those files; neither can fall behind its source.
+  - _Family:_ every binary with a `Config`; every variable it declares; a
+    changed name, default, help, kind or secrecy; a hand edit of either
+    generated file.
   - _Proof:_ each `Config`'s `the_checked_in_schema_is_this_config` compares
     the file with `app_config::schema` of the `Config` (`cargo test`), and
-    `Lint`'s `Env schema` job runs `env_schema.py example --check`.
+    `Lint`'s `Env schema` job runs `envctl nix --check`.
   - _Tolerance:_ none for what a binary declares. What clap cannot see, a
     requirement that depends on another variable (`WEBAUTHN_RP_ID` while
     `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_SECONDS` at least
@@ -177,51 +192,120 @@ whether `.env` sets it.
 
 ### Deploying the stack
 
-On the host, from the checkout (#504):
+On the box, from the checkout, in any shell, with a key `.sops.yaml` names.
+`make` builds envctl with the flake's cargo (through `nix develop .#rust`
+when no `cargo` is on `PATH`), and envctl runs `sops` from `PATH` (the
+`.#rust` and default shells have it), else through `nix shell
+nixpkgs#sops`, else `$SOPS` (the admin key at `~/.config/sops/age/keys.txt`, as
+`paulgsc/dotfiles`' `docs/secrets.md` sets up):
 
 ```bash
-cp example.env .env          # first time only
-make preflight FILL=1        # names every gap at once, and asks for each
-make up                      # the preflight again, then docker compose up -d
+make up                       # DEPLOY=home: the preflight, then docker compose up -d
+make compose ARGS="logs -f file-host"   # any other compose command, on the same files
 ```
 
-The preflight reads `docker compose config` as compose will, interpolating
-each service's environment from `.env` and the shell, and checks every
-service labelled `env-schema` against that binary's schema. It names every
-required variable that is missing and every value its binary would refuse at
-start, all in one pass (including the ones required only while another is
-on, such as the mailbox's while `MAILBOX_ENABLED`), and exits non-zero if
-there is any, so `make up`
-never starts on a known gap. It also warns about each `.env` line nothing
-reads: a renamed or retired variable is otherwise ignored without a word.
-`FILL=1` writes what it asks for to `.env` in clear text, where compose reads
-it, and leaves the file readable by its owner alone (mode 600); secrets kept
-encrypted in git come with the NixOS modules (#408).
-A `${NAME:?}` in any compose file stops every service, not only its own,
-because compose interpolates the whole project before it starts one; the
-preflight names those too.
+`make up` decrypts `deploy/home/` with `sops decrypt` into envctl's memory and
+runs the preflight on it. Only then does it start compose: compose's own
+variables in its environment, and each labelled service's own file written
+to `$XDG_RUNTIME_DIR/server/<pid>/<app>.env` (tmpfs, mode 600 in a mode 700
+directory of that run's own, refused anywhere that is not tmpfs) for that
+service's `env_file` alone, so two runs never touch each other's. They are removed
+once compose returns, and a running container keeps its environment. Compose
+runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
+compose variable the shell happens to export is dropped unless the role's
+file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
+`ENV_DIR`. A bare `docker compose` stops on the first of them it lacks,
+naming it, which is why every compose command goes through `make compose`.
+
+The preflight checks every service labelled `env-schema` against that
+binary's schema, as compose would start it: its file, and its service's own
+`environment:` over it. It names every required variable that is missing
+and every value its binary would refuse at start, all in one pass (including
+the ones required only while another is on, such as the mailbox's while
+`MAILBOX_ENABLED`), and exits non-zero if there is any, so `make up` never
+starts on a known gap. It warns about a name a file sets that nothing reads
+(a renamed or retired variable), and one compose's own `environment:` would
+override. A `${NAME:?}` in any compose file stops every service, not only
+its own, because compose interpolates the whole project before it starts one;
+the preflight names those too. It prints names, never a value.
+
+Every file states every variable of its binary but compose's own wiring,
+so a deployment decides each one. An empty value (`NAME=`) is "decided:
+unset" (#616): it reaches the binary unset, never set to nothing. To change
+a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
+`make up`. sops' dotenv does no quoting: `KEY="v"` gives
+the container `"v"`, quotes and all, so write `KEY=v`. To add a machine: add its recipient to
+`.sops.yaml` here and in `paulgsc/dotfiles`, then `sops updatekeys` each
+file.
+
+**Moving the box onto them, once (ENV2, #615).** The values exist today only
+in the running containers and the box's plain-text `.env`. `make import`
+(`DRY=1` to only name what would change) reads each running container with
+`docker inspect` and writes `deploy/home/` straight through `sops encrypt`,
+plain text only on its stdin: each labelled container's schema variables
+(and the OTel SDK's own), less compose's own wiring and whatever else the
+image sets, and every other variable of its schema stated too: at its
+default, or empty (unset) when it has none; and compose's own variables, read back from the container
+environment or bind mount compose put each into, else from `.env`. It names
+each step on stderr and each variable it writes, never a value, and ends by
+naming the `.env` to delete. Then commit `deploy/home/`, run `make up`, and
+delete `.env`.
 
 - **ENV3: the preflight names every gap before anything starts.**
-  - _Claim:_ given an `.env`, `make preflight` lists every variable a
+  - _Claim:_ given a role's files, `make preflight` lists every variable a
     labelled service's binary requires and is not given, every value it
-    would refuse, and every required compose variable unset, in one run, and
-    exits 1 when there is any.
-  - _Family:_ every service labelled `env-schema`; given by `.env`, by the
-    service's own `environment:`, or by the shell; unset, or empty or of the
-    wrong kind where its binary refuses that (an empty value is set: clap
-    hands it to the parser, which takes it as text and refuses it as a
-    number or a switch); required always, or while another variable is on.
-  - _Proof:_ `env_schema.py --self-test` (`Lint`'s `Env schema` job).
+    would refuse, every required compose variable unset, and a labelled
+    service with no file, in one run, and exits 1 when there is any.
+  - _Family:_ every service labelled `env-schema`; given by its file or by
+    the service's own `environment:`; unset, or empty or of the wrong kind
+    where its binary refuses that (an empty value is set: clap hands it to
+    the parser, which takes it as text and refuses it as a number or a
+    switch); required always, or while another variable is on.
+  - _Proof:_ `envctl`'s `preflight` tests, and its
+    `preflight_names_what_is_missing_and_never_a_value` against stand-in
+    `sops` and `docker` (`cargo test`).
   - _Tolerance:_ a free-text value (a URL, a key, a path) and a condition on
     another variable are checked by the binary at start, as ENV1 and ENV2
     say. A container without the label (the third-party ones) is checked
     only for the compose variables it interpolates.
 
+- **ENV4: no deployment value is in the clear in git, in CI, or in the
+  checkout.**
+  - _Claim:_ every file under `deploy/` is one sops encrypted, and no other
+    tracked file is a deployment's env file; CI reads names and never holds
+    a key; `make up`, `make compose`, `make dev` and `make import` hold
+    values in memory and write them only to tmpfs (one service's file, while
+    compose reads it) or through `sops encrypt`; and none prints a value.
+  - _Family:_ every role and app under `deploy/`; every compose service
+    labelled `env-schema`, each reading exactly its own decrypted file;
+    `import` from running containers; a value with quotes, `$`, `#` or a
+    newline.
+  - _Proof:_ `Lint`'s `Env schema` job runs `envctl check` (each labelled
+    service's one `env_file`, and every `deploy/` file sops-shaped);
+    `envctl`'s `stand_ins` tests run its binary against stand-in `sops` and
+    `docker` scripts and find no value on disk or in its output after an
+    import, a preflight or an `up`, the decrypted file mode 600 while compose
+    runs and gone after, and a directory on a disk refused.
+  - _Tolerance:_ the stand-ins are not sops or Docker; the first real run is
+    the owner's, on the box. Docker itself keeps each container's environment:
+    dockerd writes it in the clear to
+    `/var/lib/docker/containers/<id>/config.v2.json` (root's alone), which is
+    how a container restarts after a reboot without decrypting again, and
+    whoever can `docker inspect` a container reads it. tmpfs pages can be
+    swapped out. envctl survives Ctrl-C, SIGTERM and SIGHUP while compose
+    runs and removes its files after; only a SIGKILL leaves them, until the
+    next run replaces them or the session ends. Defaults
+    are source constants: a `Config`'s, and the few compose keeps
+    (`RUST_LOG`, `TOKIO_WORKER_THREADS`, `POLARS_MAX_THREADS`,
+    `OLLAMA_HOST_PORT`); whether each is a constant, policy or a deployment
+    value is the audit's (#617). The NixOS modules below put settings in the
+    store, and nothing uses them.
+
 ### NixOS modules
 
 The flake exports each binary as a NixOS service, `nixosModules.file-host` and
 `nixosModules.orchestrator` (#408), run as an OCI container. Their options are
-generated from the same schema (`scripts/nixos_options.py` writes
+generated from the same schema (`envctl nix` writes
 `nix/modules/generated/`, and `Lint`'s `Env schema` job holds it in step), so
 `nixos-option services.file-host.settings` lists every variable with its help,
 and `nixos-rebuild` refuses a configuration with a required setting missing,
@@ -243,16 +327,18 @@ paths and example values are right only there. They are allowed, but never
 silent:
 
 * **Marked.** Each one carries the word `HOST-SPECIFIC` where it is defined:
-  `grep -rn HOST-SPECIFIC example.env infra/ apps/ crates/` lists every value
+  `grep -rn HOST-SPECIFIC infra/ apps/ crates/` lists every value
   a new host (a VPS, say) must replace.
 * **Announced.** `file_host` logs one `HOST-SPECIFIC` warning at startup naming
   every variable it is running on a dev-host value for
   (`Config::host_specific_defaults_in_use`).
 * **Required where no default is right.** `ALLOWED_ORIGINS` and `APP_BASE_URL`
   have no default (#406): a host sets its own, and `make preflight` names them
-  if it does not. The compose files' host paths are variables (`STORAGE`,
+  if it does not. The compose files' host paths (`STORAGE`,
   `TRANSCRIBE_MODELS_DIR`, `METABASE_DATA_DIR`, `DATABASES_DIR`,
-  `OLLAMA_MODELS_PATH`) whose dev-host defaults are marked where they are used.
+  `OLLAMA_MODELS_PATH`), Grafana's and Metabase's addresses and Grafana's
+  admin password have no default either: each role's `compose.sops.env`
+  sets them (#614).
 * **Tracked.** [#406](https://github.com/paulgsc/server/issues/406) is the
   inventory and the plan to move these out of code and compose into each
   host's own configuration.
@@ -338,8 +424,14 @@ failure, as production needs. It records the port it got in
 `paulgsc/some-ui`'s `vite dev` proxies there while it runs and back to the
 container when it stops, reloading the page either way. The listen address
 itself is `FILE_HOST_BIND`/`FILE_HOST_PORT` (default `0.0.0.0:3000`). `make dev`
-reads the same environment as `cargo run`: pointed at the container's database
-and VAPID keys, it runs a second nudge waker beside the container's.
+runs it on `deploy/dev/file_host.sops.env`, decrypted into its environment
+alone (`envctl run`), a variable the shell already sets winning
+(`NUDGE_ENABLED=false make dev`). Write that file once with
+`sops edit deploy/dev/file_host.sops.env`; file_host itself names every
+variable it lacks or refuses at start. (The preflight checks a container's
+view, with compose's own wiring, so it does not cover `make dev`.) Pointed at the container's database and VAPID keys, it
+would run a second nudge waker beside the container's, so give dev its own
+(`DATABASE_URL=sqlite://<checkout>/dev.db`, migrated as above).
 
 ---
 

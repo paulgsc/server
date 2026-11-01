@@ -125,43 +125,83 @@ routes-check: ## Run the route inventory's own tests (duplicates, nesting, assem
 # container once it stops - see apps/servers/file_host/src/listen.rs. The path
 # is agreed with apps/www/vite.config.ts there; change both together.
 #
-# It reads the same environment `cargo run` would (DATABASE_URL, VAPID_*, ...).
-# Pointed at the container's database and VAPID keys, it runs a second nudge
-# waker beside the container's.
+# Its variables are deploy/dev/file_host.sops.env (#614), decrypted into its
+# environment only, never to a file. A variable the shell already sets wins
+# (`FOO=bar make dev`). Pointed at the container's database and VAPID keys,
+# it would run a second nudge waker beside the container's, so dev's file
+# gives it its own (README.md, "Development").
 
 DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 
-.PHONY: dev
-
-dev: ## Run file_host from source beside the container: next free port from 3000, recorded for some-ui's vite dev
-	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) cargo run -p file_host --bin file_host
-
-# ── Configuration: every variable, declared once (#403) ─────────────────────
+# ── Configuration: every variable a secret, set once per deployment (#613) ───
 #
 # Each binary's clap Config is its schema; its tests hold a copy of it in
-# infra/env/<binary>.json, and example.env is generated from those copies and
-# the compose files' ${...} variables (scripts/env_schema.py). CI fails when
-# either is behind its declaration. `make env-schema` brings both up to date;
-# like `make routes`, building needs DATABASE_URL at a migrated SQLite file.
+# infra/env/<binary>.json, the contract envctl (apps/envctl) reads. A
+# deployment's values are deploy/<role>/<app>.sops.env, one file per app and
+# one for compose's own ${...} variables (compose.sops.env), encrypted with
+# sops to .sops.yaml's recipients: names readable, values not. Nothing on the
+# box is a plain .env.
 #
-# On the host, `make up` is the deploy step: it runs the preflight, which
-# names every required variable .env is missing and every value its binary
-# would refuse, all at once, and only then starts the stack. `make preflight
-# FILL=1` asks for each missing value and writes it to .env.
+# `make up` decrypts them: each app's file to $(XDG_RUNTIME_DIR)/server/<pid> for its
+# compose service only (tmpfs, mode 600, removed once compose has started it),
+# compose's into compose's own environment. It runs the preflight first, which
+# names every missing or refused variable at once. Any other compose command
+# needs the same files: `make compose ARGS="logs -f file-host"`.
+#
+# DEPLOY is the role make up and the rest use, home by default; make dev's is
+# DEV_DEPLOY, dev by default. cargo runs under the decrypted file too: sqlx's
+# query! checks SQL at compile time against its DATABASE_URL, which no .env
+# gives it any more. REPO_ROOT
+# is this checkout, from make itself. Building envctl, like `make routes`,
+# needs no database; `make env-schema` does (sqlx checks queries at compile
+# time).
 
-.PHONY: env-schema env preflight up
+ROLE = $(or $(DEPLOY),home)
+# make dev's own role, apart from DEPLOY: an exported DEPLOY=home must never
+# run a second file_host on home's values (its VAPID keys, its waker).
+DEV_DEPLOY ?= dev
+REPO_ROOT := $(CURDIR)
+TARGET_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target))
+# cargo is the flake's, not the system's: outside `nix develop`, each cargo
+# command runs through the rust shell (which also has sops).
+IN_RUST_SHELL := $(if $(shell command -v cargo 2>/dev/null),,nix develop $(CURDIR)\#rust -c)
+ENVCTL ?= $(TARGET_DIR)/debug/envctl
+ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
-env-schema: ## Regenerate infra/env/*.json from each binary's Config, then example.env from those and the compose files
-	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
-	@python3 scripts/env_schema.py example
-	@python3 scripts/nixos_options.py
-	@echo "Wrote infra/env/*.json, example.env and nix/modules/generated"
+.PHONY: envctl dev env-schema env preflight up compose import deploy-check
 
-env: ## List every variable the stack reads, its default, and whether .env or the environment sets it
-	@python3 scripts/env_schema.py list
+# Cargo's own progress on stderr: the first build takes a minute, and a cargo
+# blocked on another one's lock (rust-analyzer, say) says so instead of
+# looking hung.
+envctl: ## Build the config tooling (apps/envctl)
+	@$(IN_RUST_SHELL) cargo build -p envctl
 
-preflight: ## Check .env before docker compose up: every missing or refused variable at once (FILL=1 asks for them)
-	@python3 scripts/env_schema.py preflight $(if $(FILL),--fill)
+dev: envctl ## Run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
+	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) \
+		$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) cargo run -p file_host --bin file_host
 
-up: preflight ## Start the stack (docker compose up -d), once the preflight passes
-	@docker compose up -d
+env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, then nix/modules/generated from those
+	@UPDATE_ENV_SCHEMA=1 $(IN_RUST_SHELL) cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
+	@$(ENVCTL_RUN) nix
+	@echo "Wrote infra/env/*.json and nix/modules/generated"
+
+env: envctl ## List every variable the stack reads, its default, and whether deploy/$(ROLE)/ sets it (by name; nothing decrypted)
+	@$(ENVCTL_RUN) list --role $(ROLE)
+
+deploy-check: envctl ## Without a key: each labelled service reads only its own file, and every file under deploy/ is encrypted
+	@$(ENVCTL_RUN) check
+
+preflight: envctl ## Decrypt deploy/$(ROLE)/ into memory and name every missing or refused variable at once
+	@$(ENVCTL_RUN) preflight --role $(ROLE)
+
+up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decrypted to tmpfs only
+	@$(ENVCTL_RUN) up --role $(ROLE)
+
+compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose ARGS="ps"
+	@$(ENVCTL_RUN) compose --role $(ROLE) -- $(ARGS)
+
+# Once, on the box (ENV2, #615): deploy/$(ROLE)/ written from what the
+# running containers use, straight into sops. DRY=1 only names what would
+# change. It ends by naming the .env to delete once `make up` has run.
+import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sops (DRY=1 to only report)
+	@$(ENVCTL_RUN) import --role $(ROLE) $(if $(DRY),--dry-run)

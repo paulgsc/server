@@ -81,7 +81,7 @@ const FFMPEG: &str = "ffmpeg";
 /// How often a running decode is checked against its deadline.
 const DECODE_POLL: Duration = Duration::from_millis(20);
 
-/// What fetches the models, as example.env says it.
+/// What fetches the models, as `TRANSCRIBE_ENABLED`'s help says it.
 const FETCH: &str = "nix develop .#whisper -c whisper fetch";
 
 /// How a note was heard, and how long its audio is when it decoded.

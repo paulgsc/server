@@ -1,5 +1,5 @@
 # A NixOS module for one of this repo's binaries, run as an OCI container,
-# from its generated options (`generated/<binary>.nix`, scripts/nixos_options.py,
+# from its generated options (`generated/<binary>.nix`, `envctl nix`,
 # #408). The module declares no variable of its own: every setting is the
 # binary's, typed after its schema, and null leaves the binary's default.
 #

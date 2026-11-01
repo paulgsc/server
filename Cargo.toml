@@ -10,6 +10,7 @@ members = [
   "apps/orchestrator",
   "apps/some-obs",
   "apps/playoff_delta_job",
+  "apps/envctl",
 
   # crates (transitive deps of the apps above)
   "crates/app-config",
@@ -195,7 +196,6 @@ async-trait = "0.1.64"
 axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
 clap = { version = "4.5.8", features = ["derive", "env"] }
 chrono = "0.4.23"
-dotenvy = "0.15.7"
 futures = "0.3.26"
 lazy_static = "1.4.0"
 metrics = "0.24.6"

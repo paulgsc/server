@@ -10,15 +10,14 @@ services:
     environment:
       - MB_DB_FILE=/metabase-data/metabase.db
       # The address browsers use, for links in emails, embeds and exports.
-      - MB_SITE_URL=${METABASE_SITE_URL:-https://metabase.home.maishatu.com}
+      - MB_SITE_URL=${METABASE_SITE_URL:?set METABASE_SITE_URL in deploy/<role>/compose.sops.env}
       - JAVA_OPTS=-Xmx1500m -Xms512m
     volumes:
       # METABASE_DATA_DIR: where Metabase keeps its own database, and
       # DATABASES_DIR: the directory of SQLite databases it reads, at /data.
-      # HOST-SPECIFIC defaults: the nixos.local dev host's storage mount
-      # (#406); another host sets both.
-      - ${METABASE_DATA_DIR:-/mnt/storage/users/dev/metabase-data}:/metabase-data
-      - ${DATABASES_DIR:-/mnt/storage/users/dev/databases}:/data:rw
+      # Each role's compose.sops.env sets both (#614).
+      - ${METABASE_DATA_DIR:?set METABASE_DATA_DIR in deploy/<role>/compose.sops.env}:/metabase-data
+      - ${DATABASES_DIR:?set DATABASES_DIR in deploy/<role>/compose.sops.env}:/data:rw
     networks:
       - monitoring-network
     mem_limit: 2G

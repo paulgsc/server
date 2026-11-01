@@ -54,7 +54,9 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenvy::dotenv().ok();
+	// Its whole environment is what it was started with: compose's env_file
+	// for the container, or `make dev`'s decrypted deploy/dev/ file. No
+	// `.env` is read (#614): every value lives encrypted (#613).
 	let (config, held): (Config, _) = app_config::schema::parse_then_hold(&file_host::RULES);
 
 	// Before the rules: a health check is a separate process, run by the

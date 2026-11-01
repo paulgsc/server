@@ -34,7 +34,6 @@
       enable = true;
       environmentFiles = ["/run/secrets/file-host.env"];
       settings = {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = false;
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = ["https://a.example" "https://b.example"];
@@ -50,7 +49,6 @@
     services.file-host = {
       enable = true;
       settings = {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = false;
         MAILBOX_ENABLED = true;
         MAILBOX_SECONDS = 30;
@@ -60,8 +58,7 @@
 in
   lib.all (x: x) [
     (expect "a bare file-host names its required settings and secrets" (lib.all (gap: builtins.any (lib.hasInfix gap) bare) [
-      "settings.OBS_WEBSOCKET_IP is required"
-      "settings.OBS_WEBSOCKET_PWD is required (a secret"
+      "settings.DATABASE_URL is required (a secret"
       "settings.WEBAUTHN_RP_ID is required while AUTH_ENABLED is true"
       "settings.ALLOWED_ORIGINS is required"
       "settings.APP_BASE_URL is required"
@@ -70,7 +67,6 @@ in
     (expect "a complete file-host asserts nothing" (failed complete == []))
     (expect "set settings reach the container as strings, unset ones not at all" (container.environment
       == {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = "false";
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = "https://a.example,https://b.example";
@@ -101,7 +97,6 @@ in
           enable = true;
           environmentFiles = ["/run/secrets/file-host.env"];
           settings = {
-            OBS_WEBSOCKET_IP = "127.0.0.1";
             AUTH_ENABLED = false;
             ALLOWED_ORIGINS = ["https://a.example"];
             APP_BASE_URL = "https://a.example/";
