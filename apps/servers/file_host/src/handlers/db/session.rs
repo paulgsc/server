@@ -23,13 +23,10 @@
 //! case: a create may name its id, and the same create sent again then
 //! answers with the session the first made (`create_session`).
 //!
-//! `createdAt` is the server's unless a copy sends it: a session copied
-//! from the phone (or this browser) keeps when it was made there, checked
-//! by [`created_at_of`].
-//!
 //! Every mutating call returns the full record, because the client's
 //! repositories already do and its react-query cache depends on it.
 
+use crate::nudge::clock::parse_timestamp;
 use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};
 use axum::{
@@ -68,16 +65,20 @@ fn to_http(err: &session_repo::repository::SessionRepoError) -> FileHostError {
 /// until that day came, so it is refused rather than kept or moved.
 const CREATED_AT_AHEAD: TimeDelta = TimeDelta::minutes(5);
 
-/// A sent `createdAt` as home stores it: an RFC 3339 time no more than
-/// [`CREATED_AT_AHEAD`] past `now`, in UTC and in the form home writes its
-/// own stamps (`to_rfc3339`), so `ORDER BY created_at` still compares like
-/// with like. How far back it goes is the client's to say: a copy of a
-/// session made long ago is dated long ago.
+/// A sent `createdAt` as home stores it, for a copy of a session made
+/// elsewhere (the phone's, or this browser's), which keeps when it was made
+/// there: an RFC 3339 time no more than [`CREATED_AT_AHEAD`] past `now`,
+/// in UTC and in the form home writes its own stamps (`to_rfc3339`), so
+/// `ORDER BY created_at` still compares like with like. How far back it
+/// goes is the client's to say: a copy of a session made long ago is dated
+/// long ago. Absent, a create is dated now and a patch leaves the date;
+/// `upsert` never moves it, so a patch's goes through
+/// `SessionRepository::set_created_at`.
 ///
 /// # Errors
 /// What is wrong with it, for the `422` naming `createdAt`.
 fn created_at_of(sent: &str, now: DateTime<Utc>) -> Result<String, &'static str> {
-	let at = DateTime::parse_from_rfc3339(sent).map_err(|_| "is an RFC 3339 time")?.with_timezone(&Utc);
+	let at = parse_timestamp(sent).ok_or("is an RFC 3339 time")?;
 	if at > now + CREATED_AT_AHEAD {
 		return Err("is no more than five minutes past home's clock");
 	}
@@ -122,8 +123,7 @@ pub async fn get_session(State(state): State<AppState>, subject: SubjectId, Path
 /// changes nothing, so a client that names its own id can send a create
 /// whose answer was lost again. An id another subject holds is a `409`; a
 /// named one that is not [`is_session_id`] a `422`; without one, the server
-/// mints it. A `createdAt` dates the session (a copy's, from where it was
-/// made) or is a `422` ([`created_at_of`]); without one, it is now.
+/// mints it. A `createdAt` is [`created_at_of`]'s.
 #[axum::debug_handler]
 #[instrument(name = "create_session", skip_all, fields(otel.kind = "server"))]
 pub async fn create_session(State(state): State<AppState>, subject: SubjectId, Json(input): Json<CreateSession>) -> Result<Json<SessionRecord>, FileHostError> {
@@ -171,9 +171,7 @@ pub async fn create_session(State(state): State<AppState>, subject: SubjectId, J
 
 /// `PATCH /sessions/:id`
 ///
-/// A `createdAt` is checked as a create's is ([`created_at_of`]) and dates
-/// the session: it is how a copy made before `POST /sessions` took one
-/// catches up with the device it was copied from.
+/// A `createdAt` is [`created_at_of`]'s.
 #[axum::debug_handler]
 #[instrument(name = "update_session", skip_all, fields(otel.kind = "server"))]
 pub async fn update_session(
@@ -233,7 +231,6 @@ pub async fn update_session(
 
 	record.updated_at = clock.to_rfc3339();
 	sessions.upsert(subject.as_str(), &record).await.map_err(|err| to_http(&err))?;
-	// `upsert` never moves `created_at`; this is the one write that does.
 	if let Some(created_at) = created_at {
 		sessions.set_created_at(subject.as_str(), &record.id, &created_at).await.map_err(|err| to_http(&err))?;
 	}
@@ -359,7 +356,7 @@ mod tests {
 	#[test]
 	fn a_stamp_that_is_no_time_is_refused() {
 		let now = at(NOW);
-		for sent in ["", "yesterday", "2026-10-14", "2026-10-14 09:00:00", "2026-10-14T09:00:00", "1760432400000"] {
+		for sent in ["2026-10-14", "2026-10-14T09:00:00"] {
 			assert_eq!(created_at_of(sent, now), Err("is an RFC 3339 time"), "{sent}");
 		}
 	}

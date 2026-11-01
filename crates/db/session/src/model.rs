@@ -194,10 +194,8 @@ pub struct SessionRecord {
 /// that could send them could disagree with itself. The id is the server's
 /// too unless the client names one ([`is_session_id`]): a fresh one for
 /// each copy it makes, kept until home answers, so the same create sent
-/// twice makes one session. `createdAt` is the server's too unless the
-/// client sends one: a copy of a session made elsewhere (the phone's, or
-/// this browser's) carries when it was made there, so a draft let go from
-/// the phone is not dated the day it reached home (paulgsc/server#630).
+/// twice makes one session. `createdAt` is the server's too unless a copy
+/// sends when the session was made where it was made.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSession {
@@ -211,9 +209,7 @@ pub struct CreateSession {
 	pub layout_mode: LayoutMode,
 	#[serde(default, deserialize_with = "deserialize_explicit_null")]
 	pub layout: Option<serde_json::Value>,
-	/// When the session was made where it was made, for a copy; absent is
-	/// now. The handler refuses one that is not RFC 3339 or that is ahead of
-	/// home's clock by more than a phone's clock drifts.
+	/// When the session was made where it was made, for a copy; absent is now.
 	#[serde(default)]
 	pub created_at: Option<String>,
 }
@@ -252,9 +248,8 @@ pub struct UpdateSession {
 	pub completed_at: Option<String>,
 	#[serde(default)]
 	pub final_elapsed_ms: Option<i64>,
-	/// When the session was made where it was made: a copy made before home
-	/// took `createdAt` on create is caught up by the patch that brings it
-	/// level with the device's. Checked as a create's is.
+	/// When the session was made where it was made, for a copy home dated
+	/// on arrival.
 	#[serde(default)]
 	pub created_at: Option<String>,
 }
