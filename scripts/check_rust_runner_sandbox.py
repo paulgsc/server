@@ -62,25 +62,25 @@ CLIENT_UID = "10000"
 OTHER_UID = "10002"
 PROGRAM_ID = "10101"
 PROGRAM_IDS = "\t".join([PROGRAM_ID] * 4)
-# The image's own variables and the runner's settings; nothing else, and so
-# nothing secret, may be in its environment.
+# The base image's own variables; nothing else, and so nothing secret, may
+# be in its environment. The runner's settings are flags in the image's CMD
+# (#616, option B), never variables.
 ENV_ALLOWED = {
 	"PATH",
 	"RUSTUP_HOME",
 	"CARGO_HOME",
 	"RUST_VERSION",
-	"RUST_RUNNER_RUSTC",
-	"RUST_RUNNER_SOCKET",
-	"RUST_RUNNER_WORK",
-	"RUST_RUNNER_PROGRAM_UID",
-	"RUST_RUNNER_PROGRAM_GID",
-	"RUST_RUNNER_CLIENT_UID",
 }
 # CAP_SETGID (6) and CAP_SETUID (7).
 RUNNER_CAPS = 0xC0
 TOOLCHAIN = "rustc 1.97.0 (2d8144b78 2026-07-07); --edition 2024 -C opt-level=0"
 # The one process the container holds between jobs: the runner, its PID 1.
-RESIDENTS = ("/usr/local/bin/rust-runner serve",)
+# The image's CMD, as `docker top` and /proc/<pid>/cmdline show it.
+SERVE = (
+	"/usr/local/bin/rust-runner serve --rustc /usr/local/bin/rustc-pinned --socket /run/rust-runner/runner.sock"
+	" --work /work --program-uid 10101 --program-gid 10101 --client-uid 10000"
+)
+RESIDENTS = (SERVE,)
 # The runner's watchdog deadline for one job with the default limits
 # (`serve_job_deadline`): 60 s compile, 2 s run, 30 s clean, 2 x 5 s client,
 # 30 s sweep allowance.
@@ -164,7 +164,7 @@ def restart_count() -> int:
 
 def runner_status() -> str:
 	"""The runner's /proc status, read as root from outside the job."""
-	pid = compose("exec", "-T", CONTAINER, "sh", "-c", "for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline)\" = '/usr/local/bin/rust-runner serve ' ] && echo ${p#/proc/}; done; true").stdout.split()
+	pid = compose("exec", "-T", CONTAINER, "sh", "-c", f"for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline)\" = '{SERVE} ' ] && echo ${{p#/proc/}}; done; true").stdout.split()
 	expect(pid == ["1"], f"the runner is not the container's PID 1: {pid}")
 	return compose("exec", "-T", CONTAINER, "cat", f"/proc/{pid[0]}/status").stdout
 
