@@ -15,7 +15,8 @@
 //!   ended and has failed on fewer than `attempts` times, so one note whose
 //!   audio cannot be heard is never retried forever.
 //! - **A note set aside waits on no model** ([`crate::set_aside`]): [`waiting`]
-//!   skips it, and whatever was heard in it before stays.
+//!   skips it, and whatever was heard in it before stays. A Jobs note is the
+//!   exception: a file naming it still waits on its transcript.
 //! - **Per subject.** A row is written only for a note the subject holds, in
 //!   the statement that writes it, so nothing outlives its note or account.
 //! - **Each heard word keeps its time** (paulgsc/some-ui#2085, GWB11;
@@ -124,6 +125,9 @@ pub struct Waiting {
 /// A note the owner set aside ([`crate::set_aside`]) is not one: hearing it
 /// is work nothing wants, since its transcript is filed for no routine and
 /// the phone has let it go. One it had already heard keeps its transcripts.
+/// A Jobs note is the exception, heard though set aside: a decisions or
+/// scouts file naming it is what puts it in front of the routine, and a mark
+/// does not unname it (`mailbox_repo::unfiled_transcripts` files it too).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -135,8 +139,8 @@ pub async fn waiting(conn: &mut SqliteConnection, model: &str, attempts: i64, li
 		                     AND t.outcome IN ('heard', 'silent'))
 		   AND (SELECT COUNT(*) FROM voice_transcript t
 		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.model = ?1) < ?2
-		   AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                   WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id)
+		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		 ORDER BY n.stored_at, n.subject_id, n.note_id
 		 LIMIT ?3"#,
 		model,

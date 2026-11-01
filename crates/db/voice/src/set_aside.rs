@@ -19,7 +19,9 @@
 //!   stay. What a mark changes is what does work on the note: the
 //!   transcriber's queue ([`crate::transcript::waiting`]) skips it, and so do
 //!   the transcripts filed for the mailbox and the reflections index
-//!   (`mailbox_repo`).
+//!   (`mailbox_repo`). A Jobs note is the exception, still heard and filed:
+//!   a decisions or scouts file naming it is what puts it in front of the
+//!   routine, and a mark does not unname it.
 //! - **Per subject.** Every query takes the subject and filters on it.
 //! - **Written only by `PUT /voice-notes/:id/set-aside`** (`file_host`'s
 //!   `handlers::voice`).
@@ -202,7 +204,7 @@ mod tests {
 	}
 
 	/// The transcriber's queue skips a note set aside before any model heard
-	/// it, and keeps waiting on the others.
+	/// it, and keeps waiting on the others, a Jobs note set aside included.
 	#[tokio::test]
 	async fn the_transcribers_queue_skips_a_note_set_aside() {
 		const MODEL: &str = "ggml-small-q5_1.bin";
@@ -210,6 +212,14 @@ mod tests {
 		note(&pool, A, "kept", "2026-10-31T10:00:00.000Z").await;
 		note(&pool, A, "let-go", "2026-10-31T10:01:00.000Z").await;
 		note(&pool, B, "let-go", "2026-10-31T10:02:00.000Z").await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'a-pick', 'jobs', '2026-10-31:acme', 'then', 'audio/webm', 1, 's', '2026-10-31T10:03:00.000Z')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
 		let queued = |pool: SqlitePool| async move {
 			let mut conn = pool.acquire().await.unwrap();
 			waiting(&mut conn, MODEL, 3, 10)
@@ -219,13 +229,14 @@ mod tests {
 				.map(|note| (note.subject, note.note_id))
 				.collect::<Vec<_>>()
 		};
-		assert_eq!(queued(pool.clone()).await.len(), 3);
+		assert_eq!(queued(pool.clone()).await.len(), 4);
 
 		assert_eq!(mark(&pool, A, "let-go", AT).await, SetAside::Marked);
+		assert_eq!(mark(&pool, A, "a-pick", AT).await, SetAside::Marked);
 		assert_eq!(
 			queued(pool.clone()).await,
-			[(A.to_owned(), "kept".to_owned()), (B.to_owned(), "let-go".to_owned())],
-			"only A's mark, on A's note"
+			[(A.to_owned(), "kept".to_owned()), (B.to_owned(), "let-go".to_owned()), (A.to_owned(), "a-pick".to_owned())],
+			"only A's mark, on A's note; a Jobs note a file may name is heard though set aside"
 		);
 	}
 }

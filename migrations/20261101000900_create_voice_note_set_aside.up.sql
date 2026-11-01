@@ -20,10 +20,13 @@
 -- (`voice_repo::set_aside::set_aside`), and only for a note the subject
 -- holds. Read by what skips a set-aside note: the transcriber's queue
 -- (`voice_repo::transcript::waiting`), the transcripts filed for the
--- mailbox (`mailbox_repo::unfiled_transcripts`) and the reflections index
--- (`mailbox_repo::reflections_inputs` and `reflections_as_of`). The Jobs
--- index is left as it is: the notes it waits on are the ones a decisions or
--- scouts file names, which a mark does not unname.
+-- mailbox (`mailbox_repo::unfiled_transcripts`, rechecked by
+-- `mailbox_repo::set_aside_from_routines` in the transaction that files)
+-- and the reflections index (`mailbox_repo::reflections_inputs` and
+-- `reflections_as_of`). A Jobs note is the exception: it is still heard and
+-- filed, and the Jobs index is left as it is, because a decisions or scouts
+-- file naming it is what puts it in front of the routine, and a mark does
+-- not unname it.
 --
 -- Nothing here is audio or anything said: the note is home's own id for a
 -- note it holds, and the two times say when.

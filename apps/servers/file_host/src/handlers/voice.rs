@@ -218,9 +218,9 @@ pub struct NoteHeard {
 /// the newest transcript that heard speech, or, when none did, the newest
 /// that found the note silent, as empty text (`voice_repo::transcript::heard`).
 /// `heard` is null while no model has ended the note, and stays null for one
-/// every attempt failed on, or one set aside (`PUT /voice-notes/:id/set-aside`)
-/// before any model ended it, since the transcriber skips those; the phone
-/// keeps the take either way.
+/// every attempt failed on, or one but a Jobs note set aside
+/// (`PUT /voice-notes/:id/set-aside`) before any model ended it, since the
+/// transcriber skips those; the phone keeps the take either way.
 ///
 /// Reads only; it writes nothing, sends nothing, and reads no audio and no
 /// word. The text never reaches a log line: the span skips every argument.
@@ -258,7 +258,8 @@ pub struct SetAsideQuery {
 /// paulgsc/some-ui epic #2368, MIC2 paulgsc/some-ui#2372): home sets it
 /// aside and keeps it (`voice_repo::set_aside`). The note, its audio and any
 /// transcript stay; the transcriber's queue, the transcripts filed for the
-/// mailbox and the reflections index skip it from then on.
+/// mailbox and the reflections index skip it from then on, unless it is a
+/// Jobs note, which a decisions or scouts file naming it still waits on.
 ///
 /// Idempotent: the first mark stands, so a repeat (a retry, or another
 /// device's) is a `204` that changes nothing, its time included. There is
@@ -700,6 +701,13 @@ mod tests {
 		}
 		assert!(marks().await.is_empty());
 
+		// What home heard in the note before it was let go.
+		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("an idea let go", "en"), "2026-11-01T09:00:00.000Z").await;
+		let heard = json!({
+			"heard": { "text": "an idea let go", "language": "en", "model": "ggml-small-q5_1.bin", "heardAt": "2026-11-01T09:00:00.000Z" }
+		});
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, heard.clone()));
+
 		let (status, body) = put(&app, SET_ASIDE, Some(&phone), "text/plain", b"").await;
 		assert_eq!((status, body), (StatusCode::NO_CONTENT, Value::Null));
 		let first = vec![(A.to_owned(), String::from("n1"), String::from("2026-11-01T09:15:00.000Z"))];
@@ -708,14 +716,14 @@ mod tests {
 		assert_eq!(again, (StatusCode::NO_CONTENT, Value::Null), "a repeat is idempotent");
 		assert_eq!(marks().await, first, "the first mark's time stands");
 
-		// Home keeps the note: its audio, and what it heard in it, are as before.
+		// Home keeps the note: its audio, and what it heard in it, as before.
 		let audio: Vec<u8> = sqlx::query_scalar("SELECT body FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 'n1'")
 			.bind(A)
 			.fetch_one(&pool)
 			.await
 			.unwrap();
 		assert_eq!(audio, TAKE);
-		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, json!({ "heard": null })));
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, heard), "its transcript is kept");
 		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.1["change"], "unchanged");
 	}
 

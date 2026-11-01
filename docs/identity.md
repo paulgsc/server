@@ -761,8 +761,9 @@ nowhere is marked as such and belongs to review.
       `scene` or `studio`, the kinds a routine reads and the mailbox's
       `transcript` folder takes (never a game bite, a soundbite, a
       grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
-      and never of a note the owner set aside before it was filed
-      (`voice_note_set_aside`, invariant 23), as `transcript-<note>-<n>.json` in
+      and never of a note but a Jobs note the owner set aside before it was
+      filed (`voice_note_set_aside`, invariant 23, read again in the
+      transaction that files it), as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
@@ -895,7 +896,7 @@ nowhere is marked as such and belongs to review.
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
     `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
     `the_due_query_reads_only_what_arrived_after_the_mark`,
-    `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
+    `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`,
     `the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
     and `a_note_set_aside_leaves_what_the_routines_read`;
     `mailbox::index`'s
@@ -1149,9 +1150,12 @@ nowhere is marked as such and belongs to review.
     every transcript stay. What a mark changes is the work done on the note
     from then on: the transcriber's queue skips it
     (`voice_repo::transcript::waiting`), no transcript of it is filed for
-    the mailbox, and the reflections index counts neither it nor a
-    transcript of it already filed (invariant 19). The table holds no audio
-    and nothing said.
+    the mailbox (checked again in the transaction that files one), and the
+    reflections index counts neither it nor a transcript of it already
+    filed (invariant 19). A Jobs note is the exception: it is still heard
+    and filed, and the Jobs index is as it was, since a decisions or scouts
+    file naming it is what puts it in front of the routine and a mark does
+    not unname it. The table holds no audio and nothing said.
 
     **What home heard in a note is `voice_transcript`, and when each word
     was said is `voice_transcript_word`, append-only too**
@@ -1241,6 +1245,7 @@ nowhere is marked as such and belongs to review.
     `the_transcribers_queue_skips_a_note_set_aside`, `mailbox_repo`'s
     `a_note_set_aside_leaves_what_the_routines_read`,
     `mailbox::index::reflections`'s `a_prompt_waits_on_no_note_set_aside`,
+    `mailbox::pass`'s `a_note_set_aside_after_it_was_read_is_not_filed`,
     and `handlers::voice`'s
     `the_phone_sets_its_own_note_aside_once_and_home_keeps_it`, and for
     the text read back `handlers::voice`'s

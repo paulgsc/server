@@ -46,14 +46,15 @@
 //!   holds it (owner, paulgsc/server#509).
 //! - **A note the owner set aside is out of what the routines read** (the
 //!   owner's D3 on paulgsc/some-ui epic #2368; `voice_note_set_aside`): no
-//!   transcript of it is filed ([`unfiled_transcripts`]), and the
-//!   reflections index counts neither it nor a transcript of it already
-//!   filed; setting one aside moves that index's time
-//!   ([`reflections_as_of`]), so the next pass puts one without it. The Jobs
-//!   index is left as it is: the notes it waits on are the ones a decisions
-//!   or scouts file names, which a mark does not unname, so dropping a
-//!   transcript there would only make a named note read as unheard. The
-//!   note, its audio and every file already filed are kept.
+//!   transcript of it is filed ([`unfiled_transcripts`], rechecked by
+//!   [`set_aside_from_routines`] where it is filed), and the reflections
+//!   index counts neither it nor a transcript of it already filed; setting
+//!   one aside moves that index's time ([`reflections_as_of`]), so the next
+//!   pass puts one without it. A Jobs note is the exception: the notes the
+//!   Jobs index waits on are the ones a decisions or scouts file names, and
+//!   a mark does not unname one, so a Jobs note set aside is still heard
+//!   and filed, and the Jobs index is left as it is. The note, its audio and
+//!   every file already filed are kept.
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
@@ -647,9 +648,14 @@ pub struct Heard {
 /// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
 /// `LeetType` spoken answer never does, since no routine reads them
 /// (paulgsc/some-ui#2180, HF5; docs/identity.md invariant 19). Nor is a
-/// note the owner set aside: it is out of what the routines read (D3,
-/// paulgsc/some-ui epic #2368), and a transcript filed before the mark stays
-/// filed.
+/// note the owner set aside ([`set_aside_from_routines`]): it is out of what
+/// the routines read (D3, paulgsc/some-ui epic #2368), and a transcript filed
+/// before the mark stays filed. A Jobs note is the exception, filed though
+/// set aside: a decisions or scouts file naming it is what puts it in front
+/// of the routine, and a mark does not unname it, so the Jobs index would
+/// otherwise wait on a transcript that never comes. The filer checks the
+/// mark again in the transaction that files ([`set_aside_from_routines`]),
+/// since one can land after this read.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -664,10 +670,10 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
 		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
-		     AND NOT EXISTS (
+		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
-		     )
+		     ))
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -680,6 +686,32 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 	.fetch_all(&mut *conn)
 	.await?;
 	Ok(heard)
+}
+
+/// Whether the owner set `subject`'s note `note_id` aside from the routines.
+///
+/// That is a note set aside (`voice_note_set_aside`) and said for anything
+/// but `jobs`, which [`unfiled_transcripts`] files though set aside.
+///
+/// Read it in the transaction that files the note's transcript, so a mark
+/// committed after [`unfiled_transcripts`] read the note still keeps it from
+/// being filed.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn set_aside_from_routines(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, MailboxError> {
+	let set_aside = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM voice_note_set_aside AS aside
+		     JOIN voice_note AS note ON note.subject_id = aside.subject_id AND note.note_id = aside.note_id
+		     WHERE aside.subject_id = ?1 AND aside.note_id = ?2 AND note.of_kind <> 'jobs'
+		   ) AS "set_aside!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(set_aside)
 }
 
 /// The number `subject`'s next filed transcript of `note_id` takes, from 1.
@@ -1332,8 +1364,8 @@ pub async fn reflections_as_of(conn: &mut SqliteConnection, subject: &str) -> Re
 mod tests {
 	use super::{
 		archived_body, cursor, digests_after, file_leetype_log, file_outgoing, file_transcript, keep_archived, keep_item, leetype_files, leetype_log_name,
-		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
-		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
+		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, set_aside_from_routines, unfiled_leetype_logs, unfiled_transcripts,
+		Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
 	use super::{jobs_as_of, jobs_inputs, reflections_as_of, reflections_inputs};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -2174,17 +2206,39 @@ mod tests {
 		);
 	}
 
+	/// One mark: `subject` set its note `note` aside, home recording it at
+	/// `stored_at`.
+	async fn set_aside(pool: &SqlitePool, subject: &str, note: &str, stored_at: &str) {
+		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, '2026-10-27T07:59:00.000Z', ?3)")
+			.bind(subject)
+			.bind(note)
+			.bind(stored_at)
+			.execute(pool)
+			.await
+			.unwrap();
+	}
+
 	/// D3 (paulgsc/some-ui epic #2368): a note the owner set aside leaves
 	/// what the routines read. No transcript of it is filed, the reflections
 	/// index counts neither it nor a transcript of it already filed, and the
-	/// mark moves that index's time; the Jobs index, whose notes are the ones
-	/// a file names, is as it was; the note and what was filed stay.
+	/// mark moves that index's time. A Jobs note is the exception: one set
+	/// aside before it was heard is still filed, and the Jobs index, whose
+	/// notes are the ones a file names, is as it was. Another subject's mark
+	/// moves nothing of A's, and the notes and what was filed stay.
 	#[tokio::test]
 	async fn a_note_set_aside_leaves_what_the_routines_read() {
 		let pool = pool().await;
 		note(&pool, A, ("v1", "reflection", "s1"), "2026-10-25T09:00:00.000Z", "2026-10-25T09:30:00.000Z").await;
 		note(&pool, A, ("v2", "scene", "next-scene"), "2026-10-25T10:00:00.000Z", "2026-10-25T10:30:00.000Z").await;
-		for (id, at) in [("v1", "2026-10-25T09:40:00.000Z"), ("v2", "2026-10-25T10:40:00.000Z"), ("j1", "2026-10-25T11:40:00.000Z")] {
+		note(&pool, A, ("v3", "reflection", "s1"), "2026-10-25T12:00:00.000Z", "2026-10-25T12:30:00.000Z").await;
+		note(&pool, A, ("j2", "jobs", "2026-10-25:acme"), "2026-10-25T11:00:00.000Z", "2026-10-25T11:30:00.000Z").await;
+		note(&pool, B, ("v3", "reflection", "s9"), "2026-10-25T12:00:00.000Z", "2026-10-25T12:30:00.000Z").await;
+		for (id, at) in [
+			("v1", "2026-10-25T09:40:00.000Z"),
+			("v2", "2026-10-25T10:40:00.000Z"),
+			("j1", "2026-10-25T11:40:00.000Z"),
+			("v3", "2026-10-25T12:40:00.000Z"),
+		] {
 			heard(&pool, A, (id, "small", 1), "heard", Some("하나"), at).await;
 		}
 		for (id, at) in [("v1", "2026-10-26T09:00:00.000Z"), ("j1", "2026-10-26T10:00:00.000Z")] {
@@ -2202,37 +2256,52 @@ mod tests {
 			let at = (reflections_as_of(&mut conn, A).await.unwrap(), jobs_as_of(&mut conn, A).await.unwrap());
 			(unfiled, notes, heard, jobs, reflections.set_aside, at)
 		};
-		let (unfiled, notes, heard, jobs, set_aside, at) = read(pool.clone()).await;
-		assert_eq!(unfiled, ["v2"]);
-		assert_eq!(notes, ["v1", "v2"]);
-		assert_eq!(heard, ["transcript-v1-1.json"]);
+		let (unfiled, notes, heard_before, jobs, marked, at) = read(pool.clone()).await;
+		assert_eq!(unfiled, ["v2", "v3"]);
+		assert_eq!(notes, ["v1", "v2", "v3"]);
+		assert_eq!(heard_before, ["transcript-v1-1.json"]);
 		assert_eq!(jobs, ["transcript-j1-1.json"]);
-		assert!(set_aside.is_empty());
+		assert!(marked.is_empty());
 		assert_eq!(at.0.as_deref(), Some("2026-10-26T09:00:00.000Z"));
 		assert_eq!(at.1.as_deref(), Some("2026-10-26T10:00:00.000Z"));
 
-		for (id, stored_at) in [("v1", "2026-10-27T08:00:00.000Z"), ("v2", "2026-10-27T08:01:00.000Z"), ("j1", "2026-10-27T08:02:00.000Z")] {
-			sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, '2026-10-27T07:59:00.000Z', ?3)")
-				.bind(A)
-				.bind(id)
-				.bind(stored_at)
-				.execute(&pool)
-				.await
-				.unwrap();
+		// B sets aside its own v3, an id A holds too and has not set aside.
+		set_aside(&pool, B, "v3", "2026-12-01T00:00:00.000Z").await;
+		let (unfiled, notes, _, _, set_aside_ids, at) = read(pool.clone()).await;
+		assert_eq!(
+			(unfiled, notes),
+			(
+				vec![String::from("v2"), String::from("v3")],
+				vec![String::from("v1"), String::from("v2"), String::from("v3")]
+			)
+		);
+		assert!(set_aside_ids.is_empty(), "B's mark is not A's");
+		assert_eq!(at.0.as_deref(), Some("2026-10-26T09:00:00.000Z"), "B's mark moves no index of A's");
+
+		for (id, stored_at) in [("v1", "2026-10-27T08:00:00.000Z"), ("v2", "2026-10-27T08:01:00.000Z"), ("j2", "2026-10-27T08:02:00.000Z")] {
+			set_aside(&pool, A, id, stored_at).await;
 		}
-		// Another subject's mark, under an id A uses too, moves nothing of A's.
-		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'v1', 'then', '2026-12-01T00:00:00.000Z')")
-			.bind(B)
-			.execute(&pool)
-			.await
-			.unwrap();
-		let (unfiled, notes, heard, jobs, set_aside, at) = read(pool.clone()).await;
-		assert!(unfiled.is_empty(), "no transcript of a note set aside is filed: {unfiled:?}");
-		assert!(notes.is_empty() && heard.is_empty(), "the reflections index counts neither: {notes:?} {heard:?}");
+		// A Jobs note set aside before it was heard: heard now, by hand.
+		heard(&pool, A, ("j2", "small", 1), "heard", Some("둘"), "2026-10-27T09:00:00.000Z").await;
+		let (unfiled, notes, heard, jobs, set_aside_ids, at) = read(pool.clone()).await;
+		assert_eq!(unfiled, ["v3", "j2"], "no transcript of a note set aside is filed, but a Jobs note's is");
+		assert_eq!(notes, ["v3"], "the reflections index counts no note set aside");
+		assert!(heard.is_empty(), "nor a transcript of one already filed: {heard:?}");
 		assert_eq!(jobs, ["transcript-j1-1.json"], "the Jobs index still names what a file names");
-		assert_eq!(set_aside, ["v1", "v2"], "a Jobs note is not the reflections index's");
+		assert_eq!(set_aside_ids, ["v1", "v2"], "a Jobs note is not the reflections index's");
 		assert_eq!(at.0.as_deref(), Some("2026-10-27T08:01:00.000Z"), "the reflections index moves with its own notes' marks");
 		assert_eq!(at.1.as_deref(), Some("2026-10-26T10:00:00.000Z"), "the Jobs index does not move");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let rechecked = [
+			set_aside_from_routines(&mut conn, A, "v1").await.unwrap(),
+			set_aside_from_routines(&mut conn, A, "j2").await.unwrap(),
+			set_aside_from_routines(&mut conn, A, "v3").await.unwrap(),
+			set_aside_from_routines(&mut conn, B, "v3").await.unwrap(),
+		];
+		drop(conn);
+		assert_eq!(rechecked, [true, false, false, true], "the filer's recheck: set aside, and not a Jobs note");
+		assert_eq!(file_next(&pool, A, "j2", "small").await.unwrap(), (1, Change::Added), "the Jobs note is filed");
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note WHERE subject_id = ?1")
 			.bind(A)
 			.fetch_one(&pool)
@@ -2243,6 +2312,6 @@ mod tests {
 			.fetch_one(&pool)
 			.await
 			.unwrap();
-		assert_eq!((kept, filed), (3, 2), "the notes and what was filed stay");
+		assert_eq!((kept, filed), (5, 3), "the notes and what was filed stay");
 	}
 }
