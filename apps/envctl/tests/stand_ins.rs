@@ -27,7 +27,8 @@ const SCHEMA: &str = r#"{
     {"name": "RP_ID", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "The relying party id.", "required_when": null, "bounds": null},
     {"name": "KEY", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": true, "help": "A key.", "required_when": null, "bounds": null},
     {"name": "ON", "group": null, "required": false, "default": "false", "kind": "bool", "values": [], "delimiter": null, "secret": false, "help": "A switch.", "required_when": null, "bounds": null},
-    {"name": "WIRE", "group": null, "required": false, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Compose's own.", "required_when": null, "bounds": null}
+    {"name": "WIRE", "group": null, "required": false, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Compose's own.", "required_when": null, "bounds": null},
+    {"name": "EXTRA", "group": null, "required": false, "default": "d", "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Not in the container.", "required_when": null, "bounds": null}
   ]
 }"#;
 
@@ -491,4 +492,18 @@ fn prune_states_a_declared_one_unset_removes_an_undeclared_one_and_shows_no_valu
 	}
 	let unknown = fixture.envctl(&["prune", "--role", "home", "--app", "probe", "--prune", "NOPE"]).output().unwrap();
 	assert!(!unknown.status.success() && printed(&unknown).contains("states no NOPE"), "{}", printed(&unknown));
+
+fn import_replaces_an_override_of_what_the_container_does_not_carry() {
+	let fixture = Fixture::new("carry").unwrap();
+	// The file already holds EXTRA=stale; the container carries no EXTRA, so
+	// it runs on the default `d` (Codex on #622).
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	fs::write(deploy.join("probe.sops.env"), "EXTRA=ENC[c3RhbGU=]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n").unwrap();
+	let output = fixture.envctl(&["import", "--role", "home"]).output().unwrap();
+	let shown = printed(&output);
+	assert!(output.status.success(), "{shown}");
+	assert!(shown.contains("at the binary's default (nothing set them): 1\n    EXTRA"), "{shown}");
+	let written = fs::read_to_string(deploy.join("probe.sops.env")).unwrap();
+	assert!(written.contains("EXTRA=ENC[ZA==]"), "the stale override is replaced by the default: {written}");
 }
