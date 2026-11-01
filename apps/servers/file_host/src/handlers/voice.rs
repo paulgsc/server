@@ -30,7 +30,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
-use voice_repo::{Note, Said, SaidBite, VoiceError, REWRITTEN};
+use voice_repo::{transcript::Hearing, Note, Said, SaidBite, VoiceError, REWRITTEN};
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
 #[derive(Debug, Deserialize)]
@@ -188,6 +188,59 @@ pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Quer
 	}))
 }
 
+/// What home heard in a note, as `GET /voice-notes/:id/heard` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeardText {
+	/// What was heard; empty when home found the note silent (no speech).
+	pub text: String,
+	/// Whisper's code for the language detected; null for a silent note.
+	pub language: Option<String>,
+	/// The model file home heard it with.
+	pub model: String,
+	/// When home heard it: RFC 3339, UTC.
+	pub heard_at: String,
+}
+
+/// `GET /voice-notes/:id/heard`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteHeard {
+	/// Null while home holds the note and has not heard it yet.
+	pub heard: Option<HeardText>,
+}
+
+/// `GET /voice-notes/:id/heard`
+///
+/// What home heard in the caller's note `id` (paulgsc/some-ui#2428, MIC10):
+/// the newest transcript that heard speech, or, when none did, the newest
+/// that found the note silent, as empty text (`voice_repo::transcript::heard`).
+/// `heard` is null while no model has ended the note, and stays null for one
+/// every attempt failed on; the phone keeps the take either way.
+///
+/// Reads only; it writes nothing, sends nothing, and reads no audio and no
+/// word. The text never reaches a log line: the span skips every argument.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 404 for a note the
+/// caller's subject does not hold (another subject's included), and 500 for
+/// a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_heard_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<NoteHeard>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let heard = match voice_repo::transcript::heard(&mut conn, subject.as_str(), &id).await.map_err(refusal)? {
+		Hearing::NotHeld => return Err(FileHostError::NotFound),
+		Hearing::Waiting => None,
+		Hearing::Heard(transcript) => Some(HeardText {
+			text: transcript.text,
+			language: transcript.language,
+			model: transcript.model,
+			heard_at: transcript.heard_at,
+		}),
+	};
+	Ok(Json(NoteHeard { heard }))
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
@@ -298,7 +351,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 2);
+		assert_eq!(module().descriptors().count(), 3);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -468,6 +521,86 @@ mod tests {
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		let said = String::from("between 1 and ") + &voice_repo::on_drive::MAX_IDS.to_string() + " of the phone's note ids";
 		assert!(refused["error"]["details"]["ids"][0].as_str().unwrap().starts_with(&said), "{refused}");
+	}
+
+	/// One attempt by `model` on `subject`'s note `note`, ended at `at`.
+	async fn hear(pool: &SqlitePool, subject: &str, note: &str, model: &str, outcome: voice_repo::transcript::Outcome, at: &str) {
+		let attempt = voice_repo::transcript::Attempt {
+			model,
+			engine: "whisper.cpp 1.8.3",
+			outcome,
+			duration_ms: Some(1_200),
+			took_ms: 900,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		let kept = voice_repo::transcript::keep_attempt(&mut conn, subject, note, &attempt, at).await.unwrap();
+		assert!(matches!(kept, voice_repo::transcript::Kept::Added(_)), "{kept:?}");
+	}
+
+	fn said(text: &str, language: &str) -> voice_repo::transcript::Outcome {
+		voice_repo::transcript::Outcome::Heard {
+			language: language.to_owned(),
+			language_p: 0.97,
+			text: text.to_owned(),
+			words: Vec::new(),
+		}
+	}
+
+	/// MIC10 (paulgsc/some-ui#2428): the phone reads back what home heard in
+	/// its own note: null until a model ends it (a failure is not an ending),
+	/// then the newest transcript that heard speech, which a later silent
+	/// ending does not hide; another subject's note is not found, as an
+	/// unknown one is.
+	#[tokio::test]
+	async fn the_phone_reads_back_what_home_heard_in_its_note() {
+		use voice_repo::transcript::Outcome;
+		const SMALL: &str = "ggml-small-q5_1.bin";
+		const MEDIUM: &str = "ggml-medium-q5_0.bin";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+
+		assert_eq!(get(&app, "/voice-notes/n1/heard", None).await.0, StatusCode::UNAUTHORIZED);
+		let (status, unknown) = get(&app, "/voice-notes/n9/heard", Some(&phone)).await;
+		assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+		assert_eq!(get(&app, "/voice-notes/on-drive/heard", Some(&phone)).await.0, StatusCode::NOT_FOUND);
+
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, json!({ "heard": null })));
+		hear(&pool, A, "n1", SMALL, Outcome::Deadline, "2026-10-25T16:00:00.000Z").await;
+		assert_eq!(
+			get(&app, "/voice-notes/n1/heard", Some(&phone)).await.1,
+			json!({ "heard": null }),
+			"a failed attempt heard nothing"
+		);
+
+		hear(&pool, A, "n1", SMALL, said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;
+		let small = json!({
+			"heard": { "text": "a small idea", "language": "en", "model": SMALL, "heardAt": "2026-10-25T16:05:00.000Z" }
+		});
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, small));
+
+		hear(&pool, A, "n1", MEDIUM, said("a smaller idea", "en"), "2026-10-26T09:00:00.000Z").await;
+		let medium = json!({
+			"heard": { "text": "a smaller idea", "language": "en", "model": MEDIUM, "heardAt": "2026-10-26T09:00:00.000Z" }
+		});
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await.1, medium, "the newest transcript is read");
+		hear(&pool, A, "n1", "ggml-large.bin", Outcome::Silent, "2026-10-27T09:00:00.000Z").await;
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await.1, medium, "words are not hidden by a later silence");
+
+		let (status, hidden) = get(&app, "/voice-notes/n1/heard", Some(&other)).await;
+		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to read: {hidden}");
+		assert!(!hidden.to_string().contains("idea"), "{hidden}");
+
+		// A note home found silent, and nothing else, reads as heard with no words.
+		assert_eq!(put(&app, NOTE, Some(&other), "audio/webm", TAKE).await.0, StatusCode::OK);
+		hear(&pool, B, "n1", SMALL, Outcome::Silent, "2026-10-25T17:00:00.000Z").await;
+		assert_eq!(
+			get(&app, "/voice-notes/n1/heard", Some(&other)).await.1,
+			json!({ "heard": { "text": "", "language": null, "model": SMALL, "heardAt": "2026-10-25T17:00:00.000Z" } })
+		);
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

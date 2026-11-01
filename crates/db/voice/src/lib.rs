@@ -46,7 +46,8 @@
 //! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
 //! each heard word with its time in `voice_transcript_word`, both written
 //! only by `file_host`'s `transcribe` worker, which reads a note's audio and
-//! never writes it.
+//! never writes it. The phone reads a note's text back through
+//! [`transcript::heard`] (paulgsc/some-ui#2428).
 
 pub mod on_drive;
 pub mod transcript;
