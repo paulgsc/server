@@ -492,7 +492,9 @@ fn prune_states_a_declared_one_unset_removes_an_undeclared_one_and_shows_no_valu
 	}
 	let unknown = fixture.envctl(&["prune", "--role", "home", "--app", "probe", "--prune", "NOPE"]).output().unwrap();
 	assert!(!unknown.status.success() && printed(&unknown).contains("states no NOPE"), "{}", printed(&unknown));
+}
 
+#[test]
 fn import_replaces_an_override_of_what_the_container_does_not_carry() {
 	let fixture = Fixture::new("carry").unwrap();
 	// The file already holds EXTRA=stale; the container carries no EXTRA, so
