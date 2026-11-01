@@ -36,7 +36,7 @@ const CONFIG: &str = r#"{"name": "repo", "services": {
   "probe": {
     "labels": {"env-schema": "probe"},
     "env_file": [{"path": "/repo/${ENV_DIR:?make sets ENV_DIR}/probe.env", "required": true}],
-    "environment": ["WIRE=w://wire", "GF_PASSWORD=${GRAFANA_PASSWORD:?set it}"],
+    "environment": ["WIRE=w://wire", "GF_PASSWORD=${GRAFANA_PASSWORD:?set it}", "FROM_SHELL=${STRAY:-none}"],
     "volumes": [{"source": "${STORAGE:?set STORAGE}", "target": "/app/dbs", "type": "bind"}]
   }
 }}"#;
@@ -44,7 +44,7 @@ const CONFIG: &str = r#"{"name": "repo", "services": {
 /// What `docker inspect` says of the running container.
 const INSPECT: &str = r#"[{"Config": {
   "Labels": {"env-schema": "probe", "com.docker.compose.service": "probe"},
-  "Env": ["RP_ID=s3cret-rp-id.example", "KEY=hunter2-vapid-key", "ON=true", "WIRE=w://wire", "GF_PASSWORD=grafana-pw-123", "PATH=/usr/bin", "IMAGE_ONLY=1"]
+  "Env": ["RP_ID=s3cret-rp-id.example", "KEY=hunter2-vapid-key", "ON=true", "WIRE=w://wire", "GF_PASSWORD=grafana-pw-123", "FROM_SHELL=none", "PATH=/usr/bin", "IMAGE_ONLY=1"]
 }, "Mounts": [{"Destination": "/app/dbs", "Source": "/mnt/secret/storage"}]}]"#;
 
 /// A `docker` that answers `ps`, `inspect` and `compose`. On `compose ...
@@ -448,4 +448,21 @@ fn overlapping_runs_never_touch_each_others_files() {
 	second.wait().unwrap();
 	assert!(!second_file.exists());
 	let _ = fs::remove_dir_all(&env_dir);
+}
+
+#[test]
+fn import_takes_out_an_override_of_what_runs_on_its_default() {
+	let fixture = Fixture::new("stale").unwrap();
+	// The file already holds STRAY=8, and the container runs FROM_SHELL on
+	// compose's default for STRAY (Codex on #622).
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	let stale = "STRAY=ENC[OA==]\nSTORAGE=ENC[L21udC9zZWNyZXQvc3RvcmFnZQ==]\nsops_age__list_0__map_recipient=age1stand-in\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n";
+	fs::write(deploy.join("compose.sops.env"), stale).unwrap();
+	let output = fixture.envctl(&["import", "--role", "home"]).output().unwrap();
+	let shown = printed(&output);
+	assert!(output.status.success(), "{shown}");
+	assert!(shown.contains("removed (what runs takes its default): 1\n    STRAY"), "{shown}");
+	let written = fs::read_to_string(deploy.join("compose.sops.env")).unwrap();
+	assert!(!written.contains("STRAY="), "the override would change what runs at the next make up");
 }

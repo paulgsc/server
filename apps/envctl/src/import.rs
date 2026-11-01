@@ -198,11 +198,14 @@ pub(crate) struct Change {
 	pub(crate) unset: Vec<String>,
 	/// How many variables the file states once written.
 	pub(crate) total: usize,
+	/// Taken out: what runs takes them by default, so a value the file held
+	/// would change what runs.
+	pub(crate) removed: Vec<String>,
 }
 
 impl Change {
 	pub(crate) const fn is_empty(&self) -> bool {
-		self.added.is_empty() && self.changed.is_empty() && self.defaulted.is_empty() && self.unset.is_empty()
+		self.added.is_empty() && self.changed.is_empty() && self.defaulted.is_empty() && self.unset.is_empty() && self.removed.is_empty()
 	}
 }
 
@@ -302,6 +305,7 @@ pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
 		("changed, to what runs now", &change.changed),
 		("at the binary's default (nothing set them)", &change.defaulted),
 		("unset (an empty value; no default)", &change.unset),
+		("removed (what runs takes its default)", &change.removed),
 	] {
 		if !names.is_empty() {
 			let _ = writeln!(out, "  {label}: {}", names.len());
@@ -358,12 +362,27 @@ pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unfound:
 /// Each file `files` holds, merged into what is there, completed (every
 /// variable stated), and written through sops unless `dry_run`; the names
 /// of each change printed. Whether anything was written.
-fn write(repo: &Path, schemas: &[Schema], raw: &Value, files: &IndexMap<PathBuf, Plain>, dry_run: bool, sops_program: &[String]) -> Result<bool> {
+fn write(
+	repo: &Path,
+	schemas: &[Schema],
+	raw: &Value,
+	files: &IndexMap<PathBuf, Plain>,
+	on_default: &IndexMap<PathBuf, std::collections::BTreeSet<String>>,
+	dry_run: bool,
+	sops_program: &[String],
+) -> Result<bool> {
 	let mut wrote = false;
 	for (relative, imported) in files {
 		let path = repo.join(relative);
 		let existing = if path.exists() { sops::decrypt(sops_program, repo, relative)? } else { Plain::new() };
 		let (mut merged, mut change) = merge(&existing, imported);
+		// Every use runs on its own default: a value the file still holds would
+		// change what runs at the next make up (Codex on #622).
+		for name in on_default.get(relative).into_iter().flatten() {
+			if merged.shift_remove(name).is_some() {
+				change.removed.push(name.clone());
+			}
+		}
 		let app = relative
 			.file_name()
 			.and_then(|name| name.to_str())
@@ -434,8 +453,10 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 			None => {}
 		}
 	}
-	files.insert(sops::relative(role, sops::COMPOSE), compose_found);
-	let wrote = write(repo, schemas, &raw, &files, dry_run, sops_program)?;
+	let compose_file = sops::relative(role, sops::COMPOSE);
+	let on_default = IndexMap::from([(compose_file.clone(), observed.iter().filter(|name| !compose_found.contains_key(*name)).cloned().collect())]);
+	files.insert(compose_file, compose_found);
+	let wrote = write(repo, schemas, &raw, &files, &on_default, dry_run, sops_program)?;
 	print!("{}", next_steps(repo, role, &conflicts, &unfound, dry_run, wrote));
 	Ok(())
 }
