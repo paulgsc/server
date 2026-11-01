@@ -32,9 +32,11 @@ use std::time::Duration;
 // The nudge's engineering values: source constants, not variables (#617).
 // Each was its variable's default; changing one is a PR with its reason.
 
-/// The VAPID `sub` claim: a `mailto:` identifying the sender. Push services
-/// reject or deprioritise senders without one. One operator, one contact:
-/// home's own `VAPID_SUBJECT`, which the owner chose to keep (#642).
+/// The VAPID `sub` claim: a `mailto:` identifying the sender.
+///
+/// Push services reject or deprioritise senders without one. One operator,
+/// one contact: home's own `VAPID_SUBJECT`, which the owner chose to keep
+/// (#642).
 pub const VAPID_SUBJECT: &str = "mailto:pgathondudev@gmail.com";
 
 /// How often the waker picks up work the engine already decided.
