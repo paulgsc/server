@@ -121,7 +121,7 @@ fn lone(written: &str) -> Option<(&str, Option<&str>, &str)> {
 /// service's `environment:` entry that is one `${NAME...}`, and each bind
 /// mount whose source starts with one. A value equal to the default compose
 /// would use anyway is left out. Two containers that disagree are named.
-pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<String>) {
+pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<String>, std::collections::BTreeSet<String>) {
 	// Every place each variable reached, with the default that use declares:
 	// all of them are weighed before any is left out, since two uses can
 	// declare different defaults (file-host's RUST_LOG and orchestrator's).
@@ -164,6 +164,7 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 	}
 	let mut found = Plain::new();
 	let mut conflicts = Vec::new();
+	let observed = seen.keys().cloned().collect();
 	for (name, observations) in seen {
 		// Every use already runs on its own default: compose gives it again.
 		if observations.iter().all(|(value, default)| default.as_deref() == Some(value.as_str())) {
@@ -181,7 +182,7 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 		}
 	}
 	conflicts.sort();
-	(found, conflicts)
+	(found, conflicts, observed)
 }
 
 /// How one file changes, by name only.
@@ -195,6 +196,8 @@ pub(crate) struct Change {
 	/// Stated unset (an empty value), having no default and nothing setting
 	/// them.
 	pub(crate) unset: Vec<String>,
+	/// How many variables the file states once written.
+	pub(crate) total: usize,
 }
 
 impl Change {
@@ -291,7 +294,7 @@ pub(crate) fn columns(names: &[String]) -> String {
 /// value came from, names only.
 pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
 	if existed && change.is_empty() {
-		return format!("{file}\n  already what runs: {} variable(s), nothing to change\n\n", change.kept);
+		return format!("{file}\n  already what runs: {} variable(s), nothing to change\n\n", change.total);
 	}
 	let mut out = format!("{file}{}\n", if existed { "" } else { "  (new)" });
 	for (label, names) in [
@@ -371,6 +374,7 @@ fn write(repo: &Path, schemas: &[Schema], raw: &Value, files: &IndexMap<PathBuf,
 			change.defaulted = defaulted;
 			change.unset = unset;
 		}
+		change.total = merged.len();
 		print!("{}", report(&relative.display().to_string(), path.exists(), &change));
 		if path.exists() && change.is_empty() {
 			continue;
@@ -409,7 +413,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 		containers.push(inspect(&container)?);
 	}
 	eprintln!();
-	let (mut compose_found, mut conflicts) = compose_values(&raw, &containers);
+	let (mut compose_found, mut conflicts, observed) = compose_values(&raw, &containers);
 	conflicts.extend(app_conflicts);
 	// What no running container shows (a service that is stopped), from the
 	// box's .env while it is still there.
@@ -417,7 +421,9 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	let compose_variables = compose::read(repo)?;
 	let mut unfound = Vec::new();
 	for variable in compose_variables.values() {
-		if FROM_MAKE.contains(&variable.name.as_str()) || compose_found.contains_key(&variable.name) {
+		// Only what no running container showed: one seen on its default runs
+		// on that, whatever an edited .env says now (Codex on #622).
+		if FROM_MAKE.contains(&variable.name.as_str()) || compose_found.contains_key(&variable.name) || observed.contains(&variable.name) {
 			continue;
 		}
 		match env.get(&variable.name) {
@@ -506,7 +512,8 @@ mod tests {
 			]),
 		);
 		let grafana = container("grafana", &["GF_PASSWORD=pw"], &json!([]));
-		let (found, conflicts) = compose_values(&raw(), &[app, grafana]);
+		let (found, conflicts, observed) = compose_values(&raw(), &[app, grafana]);
+		assert!(observed.contains("THREADS"), "a variable on its default is still one a container showed");
 		assert_eq!(
 			found,
 			plain(&[("LOG", "debug"), ("STORAGE", "/mnt/db"), ("MODELS", "/mnt/models"), ("GRAFANA_PASSWORD", "pw")]),
@@ -531,14 +538,16 @@ mod tests {
 		let on_default = container("app", &["LOG=info,nats=warn"], &json!([]));
 		let mut set = container("grafana", &[], &json!([]));
 		set["Config"]["Env"] = json!(["GF_LOG=debug"]);
-		let (found, conflicts) = compose_values(&defaults_differ, &[on_default, set]);
+		let (found, conflicts, _) = compose_values(&defaults_differ, &[on_default, set]);
 		assert_eq!((found, conflicts), (plain(&[("LOG", "debug")]), vec!["LOG".to_owned()]));
 		let both_default = [container("app", &["LOG=info,nats=warn"], &json!([])), {
 			let mut grafana = container("grafana", &[], &json!([]));
 			grafana["Config"]["Env"] = json!(["GF_LOG=info"]);
 			grafana
 		}];
-		assert_eq!(compose_values(&defaults_differ, &both_default), (Plain::new(), Vec::new()), "every use on its own default");
+		let (found, conflicts, observed) = compose_values(&defaults_differ, &both_default);
+		assert_eq!((found, conflicts), (Plain::new(), Vec::new()), "every use on its own default");
+		assert!(observed.contains("LOG"), "and so .env is not asked for it");
 	}
 
 	#[test]
