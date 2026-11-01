@@ -6,7 +6,14 @@
 //! PUT /voice-notes/:id?of=&ref=&at=  → { change, note }: the body is the
 //!                                      audio itself, its container the
 //!                                      request's `Content-Type`
+//! GET /voice-notes/on-drive?ids=      → { onDrive: [{ note, listedAt }] }:
+//!                                      which of the phone's Studio takes
+//!                                      home knows Drive holds too
 //! ```
+//!
+//! The read (paulgsc/some-ui#2401, HF11) answers from what the build-journal
+//! session told home through the mailbox (`voice_repo::on_drive`); home
+//! never reaches Drive.
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
@@ -44,11 +51,13 @@ where
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
 {
-	let table = RouteTable::new().put("/voice-notes/:id", handlers::put_note);
+	let table = RouteTable::new()
+		.put("/voice-notes/:id", handlers::put_note)
+		.get("/voice-notes/on-drive", handlers::get_on_drive);
 
 	Module::versioned("voice", table).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
 }
