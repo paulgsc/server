@@ -234,7 +234,12 @@ so a deployment decides each one. An empty value (`NAME=`) is "decided:
 unset" (#616): it reaches the binary unset, never set to nothing. To change
 a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
 `make up`. sops' dotenv does no quoting: `KEY="v"` gives
-the container `"v"`, quotes and all, so write `KEY=v`. To add a machine: add its recipient to
+the container `"v"`, quotes and all, so write `KEY=v`. To prune variables,
+`make prune APP=file_host` opens a checklist of the file's variables grouped
+by the schema's sections, a page at a time (`PAGE=10`), names and states
+only: a declared one pruned is stated unset, an undeclared one removed, and
+the file is written through sops (`NAMES=A,B` prunes without it; #628).
+To add a machine: add its recipient to
 `.sops.yaml` here and in `paulgsc/dotfiles`, then `sops updatekeys` each
 file.
 

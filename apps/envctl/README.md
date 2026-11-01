@@ -11,6 +11,7 @@ through `make`:
 | `make preflight` | `preflight` | Decrypts `deploy/<role>/` into memory and names every missing or refused variable at once. |
 | `make dev` | `run` | Runs `file_host` from source on `deploy/dev/file_host.sops.env`, decrypted into its environment, the shell winning. |
 | `make import` | `import` | Once, on the box (#615): writes `deploy/<role>/` from the running containers, straight through `sops encrypt`. |
+| `make prune APP=…` | `prune` | A checklist of one app's variables, grouped by the schema's sections and paged, to prune some (declared: stated unset; undeclared: removed), written through sops (#628). |
 | `make env` | `list` | Every variable the stack reads, and whether the role's files set it, read by name without decrypting. |
 | `make deploy-check` | `check` | Without a key (CI's `Env schema`, ENV3 #616): every `deploy/` file sops-encrypted and naming only what its binary or compose reads, each labelled service reading only its own file, a schema for every binary that reads `app-config`, and no tracked plain-text env file. |
 | `make env-schema` | `nix` | Regenerates `nix/modules/generated/`. |

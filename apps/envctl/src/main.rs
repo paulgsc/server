@@ -20,6 +20,7 @@ mod dotenv;
 mod import;
 mod nix;
 mod preflight;
+mod prune;
 mod schema;
 mod sops;
 mod values;
@@ -105,6 +106,20 @@ enum Command {
 	Nix {
 		#[arg(long)]
 		check: bool,
+	},
+	/// Prune variables of one app's file, in a checklist grouped by the
+	/// schema's sections, a page at a time; written through sops (`ENV2b`, #628).
+	Prune {
+		#[arg(long, default_value = "home")]
+		role: String,
+		#[arg(long, default_value = "file_host")]
+		app: String,
+		/// Rows per page.
+		#[arg(long, default_value_t = 10)]
+		page: usize,
+		/// Prune these, without the checklist (comma-separated).
+		#[arg(long = "prune", value_delimiter = ',')]
+		names: Vec<String>,
 	},
 	/// Write deploy/<role>/ from what the running containers use, through
 	/// sops: no plain text reaches a disk (ENV2, #615).
@@ -367,6 +382,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
 		}
 		Command::Check => check(&repo, &schemas),
 		Command::Nix { check } => nix(&repo, &schemas, check),
+		Command::Prune { role, app, page, names } => {
+			let Some(schema) = schemas.iter().find(|schema| schema.binary == app) else {
+				bail!("infra/env/ has no {app}.json");
+			};
+			prune::prune(&repo, schema, &role, &names, page, &sops_program)?;
+			Ok(ExitCode::SUCCESS)
+		}
 		Command::Import { role, containers, dry_run } => {
 			import::run(&repo, &schemas, &role, &containers, dry_run, &sops_program)?;
 			Ok(ExitCode::SUCCESS)
