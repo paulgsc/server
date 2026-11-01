@@ -188,7 +188,7 @@ env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, the
 env: envctl ## List every variable the stack reads, its default, and whether deploy/$(ROLE)/ sets it (by name; nothing decrypted)
 	@$(ENVCTL_RUN) list --role $(ROLE)
 
-deploy-check: envctl ## Without a key: each labelled service reads only its own file, and every file under deploy/ is encrypted
+deploy-check: envctl ## Without a key, names only (CI's Env schema): every deploy/ file, service and binary conforms
 	@$(ENVCTL_RUN) check
 
 preflight: envctl ## Decrypt deploy/$(ROLE)/ into memory and name every missing or refused variable at once

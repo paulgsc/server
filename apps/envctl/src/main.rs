@@ -14,6 +14,7 @@
 #![allow(clippy::disallowed_macros)]
 
 mod compose;
+mod conform;
 mod deliver;
 mod dotenv;
 mod import;
@@ -364,7 +365,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			print!("{}", preflight::render_list(&schemas, &compose::read(&repo)?, &stated));
 			Ok(ExitCode::SUCCESS)
 		}
-		Command::Check => check(&repo),
+		Command::Check => check(&repo, &schemas),
 		Command::Nix { check } => nix(&repo, &schemas, check),
 		Command::Import { role, containers, dry_run } => {
 			import::run(&repo, &schemas, &role, &containers, dry_run, &sops_program)?;
@@ -373,50 +374,78 @@ fn run(cli: Cli) -> Result<ExitCode> {
 	}
 }
 
-/// Without a key: each labelled service reads only its own decrypted file,
-/// and every file under deploy/ is one sops wrote.
-fn check(repo: &Path) -> Result<ExitCode> {
+/// Conformance without a key (ENV3, #616): every problem in the deployment
+/// files, compose's wiring, the binaries' schemas and the tracked files, by
+/// name. Nothing is decrypted, and no value is read.
+fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
 	let raw = compose::config(repo).context("docker compose config failed, so no service was checked")?;
+	let mut roles = Vec::new();
 	let mut problems = Vec::new();
-	for (name, service) in compose::services(&raw) {
-		if let Some(binary) = compose::labels(service).get(compose::LABEL) {
-			problems.extend(compose::wired(service, binary).map(|problem| format!("service {name} {problem}")));
-		} else if !compose::env_file_paths(service).is_empty() {
-			problems.push(format!(
-				"service {name} reads an env_file and carries no {} label, so nothing holds it to a schema",
-				compose::LABEL
-			));
-		}
-	}
-	let deploy = repo.join(sops::DEPLOY);
-	for role in std::fs::read_dir(&deploy).into_iter().flatten().filter_map(Result::ok) {
-		if !role.path().is_dir() {
-			let path = role.path();
-			problems.push(format!(
-				"{} is not a role directory; deploy/ holds only deploy/<role>/<app>{}",
-				path.strip_prefix(repo).unwrap_or(&path).display(),
-				sops::SUFFIX
-			));
+	let mut entries: Vec<PathBuf> = std::fs::read_dir(repo.join(sops::DEPLOY))
+		.into_iter()
+		.flatten()
+		.filter_map(|entry| Some(entry.ok()?.path()))
+		.collect();
+	entries.sort();
+	for dir in entries {
+		let shown = dir.strip_prefix(repo).unwrap_or(&dir).display().to_string();
+		let Some(role) = dir.file_name().and_then(|name| name.to_str()).filter(|_| dir.is_dir()).map(str::to_owned) else {
+			problems.push(format!("{shown} is not a role directory; deploy/ holds only deploy/<role>/<app>{}", sops::SUFFIX));
 			continue;
-		}
-		for file in std::fs::read_dir(role.path()).into_iter().flatten().filter_map(Result::ok) {
-			let path = file.path();
+		};
+		let mut files = Vec::new();
+		let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+			.with_context(|| format!("reading {shown}"))?
+			.filter_map(|entry| Some(entry.ok()?.path()))
+			.collect();
+		paths.sort();
+		for path in paths {
 			let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();
-			if !shown.ends_with(sops::SUFFIX) {
-				problems.push(format!("{shown} is not a <app>{} file; deploy/ holds only encrypted ones", sops::SUFFIX));
-				continue;
+			let app = path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(sops::SUFFIX));
+			match app {
+				Some(app) if path.is_file() => {
+					let text = std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?;
+					files.push((app.to_owned(), text));
+				}
+				_ => problems.push(format!("{shown} is not a <app>{} file; deploy/ holds only encrypted ones", sops::SUFFIX)),
 			}
-			let text = std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?;
-			if let Err(plain) = sops::plain_values(&text) {
-				problems.push(format!("{shown} is not encrypted by sops: {} in the clear", plain.join(", ")));
-			}
+		}
+		roles.push(conform::Role { name: role, files });
+	}
+	problems.extend(conform::problems(schemas, &compose::read(repo)?, &raw, &roles));
+	let tracked = Process::new("git").args(["ls-files", "-z"]).current_dir(repo).output().context("running git ls-files")?;
+	if !tracked.status.success() {
+		bail!("git ls-files failed: {}", String::from_utf8_lossy(&tracked.stderr).trim());
+	}
+	for path in String::from_utf8_lossy(&tracked.stdout).split('\0').filter(|path| conform::plain_env_file(path)) {
+		problems.push(format!(
+			"{path} is tracked and is a plain-text env file; every value is encrypted (deploy/<role>/<app>{})",
+			sops::SUFFIX
+		));
+	}
+	let metadata = Process::new("cargo")
+		.args(["metadata", "--format-version", "1", "--no-deps", "--offline"])
+		.current_dir(repo)
+		.output()
+		.context("running cargo metadata")?;
+	if !metadata.status.success() {
+		bail!("cargo metadata failed: {}", String::from_utf8_lossy(&metadata.stderr).trim());
+	}
+	let metadata: Value = serde_json::from_slice(&metadata.stdout).context("cargo metadata printed no JSON")?;
+	for binary in conform::configured_binaries(&metadata) {
+		if !schemas.iter().any(|schema| schema.binary == binary) {
+			problems.push(format!(
+				"{binary} reads its environment through app-config and has no infra/env/{binary}.json; check its schema in (app_config::schema::assert_checked_in)"
+			));
 		}
 	}
 	for problem in &problems {
 		println!("{problem}");
 	}
 	if problems.is_empty() {
-		println!("each labelled service reads only its own decrypted file, and every file under deploy/ is encrypted.");
+		println!("every deployment file is sops-encrypted and names only what its binary or compose reads; each labelled service reads only its own file; every configured binary has its schema; no plain-text env file is tracked.");
+	} else {
+		println!("{} problem(s), named by variable and file only (ENV3, #616).", problems.len());
 	}
 	Ok(exit(!problems.is_empty()))
 }
