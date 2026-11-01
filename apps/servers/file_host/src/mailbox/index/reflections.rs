@@ -221,10 +221,30 @@ fn day_of(at: DateTime<Utc>) -> String {
 	at.with_timezone(&REFLECTIONS_ZONE).format("%Y-%m-%d").to_string()
 }
 
+/// The letters, digits and `-` of a session id, as written: what a base may
+/// carry of it (the mailbox's `scene` names take nothing else).
+fn session_letters(session: &str) -> Vec<char> {
+	session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
+}
+
 /// A group's base: `<day>_reflection_<session8>`, `<session8>` being the
-/// session's first 8 letters, digits or `-`, as written (step 3).
+/// session's last 8 letters, digits or `-`, as written (step 3).
+///
+/// The last, not the first: every session id starts `session-`
+/// (`session::model::new_session_id`, and the phone's `newSessionId`), so its
+/// first 8 are the same for every session, while its last 8 are random.
 fn base_of(day: &str, session: &str) -> String {
-	let session8: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(8).collect();
+	let letters = session_letters(session);
+	let session8: String = letters[letters.len().saturating_sub(8)..].iter().collect();
+	String::from(day) + "_reflection_" + &session8
+}
+
+/// A group's base under the rule before 2026-11-01, its session's *first* 8
+/// letters, digits or `-`: `<day>_reflection_session-` for every session.
+/// Scenes the routine wrote then answer it, so it still answers a group when
+/// no other group of that day has it ([`waiting_groups`]).
+fn earlier_base_of(day: &str, session: &str) -> String {
+	let session8: String = session_letters(session).into_iter().take(8).collect();
 	String::from(day) + "_reflection_" + &session8
 }
 
@@ -402,9 +422,10 @@ struct Gathering<'a> {
 	since: DateTime<Utc>,
 }
 
-/// The written reflections grouped by session and day (step 3), by base, and
-/// the names of those that do not read.
-fn gather<'a>(reflections: &'a [TakenFile], skipped: &mut Vec<String>) -> BTreeMap<String, Gathering<'a>> {
+/// The written reflections grouped by session and day (step 3), and the names
+/// of those that do not read. Keyed by the whole session id and the day, never
+/// by the base: two sessions may share a base, and each stays its own group.
+fn gather<'a>(reflections: &'a [TakenFile], skipped: &mut Vec<String>) -> Vec<Gathering<'a>> {
 	let mut groups: BTreeMap<(String, String), Gathering<'a>> = BTreeMap::new();
 	for file in reflections {
 		let (Some((reflection, at)), Some(taken)) = (reflection_of(file), instant(&file.handed_at)) else {
@@ -425,22 +446,38 @@ fn gather<'a>(reflections: &'a [TakenFile], skipped: &mut Vec<String>) -> BTreeM
 		.into_values()
 		.map(|mut group| {
 			group.written.sort_unstable();
-			(base_of(&group.day, &group.session), group)
+			group
 		})
 		.collect()
 }
 
 /// The groups no scene answers, newest first, each with its notes: the
 /// reflection notes of its session recorded on its day ("Voice notes").
+///
+/// A scene answers a group when it answers the group's base, or its earlier
+/// base ([`earlier_base_of`]) while no other group of that day has the same
+/// earlier base: one old scene then can't tell which of them it answered, so
+/// it hides none of them.
 fn waiting_groups(
-	gathered: BTreeMap<String, Gathering<'_>>,
+	gathered: Vec<Gathering<'_>>,
 	answered: &BTreeSet<String>,
 	(notes, newest): (&[HeldNote], &HashMap<&str, (u64, &HeldTranscript)>),
 	moments: &mut Moments,
 ) -> Vec<Group> {
+	let mut sharing: HashMap<String, usize> = HashMap::new();
+	for group in &gathered {
+		*sharing.entry(earlier_base_of(&group.day, &group.session)).or_default() += 1;
+	}
 	let mut groups: Vec<Group> = gathered
 		.into_iter()
-		.filter(|(base, _)| !answered.contains(base))
+		.map(|group| (base_of(&group.day, &group.session), group))
+		.filter(|(base, group)| {
+			let earlier = earlier_base_of(&group.day, &group.session);
+			let alone = sharing.get(&earlier) == Some(&1);
+			let answers = |base: &String| answered.contains(base);
+			let is_answered = answers(base) || (alone && answers(&earlier));
+			!is_answered
+		})
 		.map(|(base, group)| {
 			let said: Vec<&HeldNote> = notes
 				.iter()
@@ -468,7 +505,7 @@ fn waiting_groups(
 			}
 		})
 		.collect();
-	groups.sort_by(|a, b| b.newest_at.cmp(&a.newest_at).then_with(|| a.base.cmp(&b.base)));
+	groups.sort_by(|a, b| b.newest_at.cmp(&a.newest_at).then_with(|| a.base.cmp(&b.base)).then_with(|| a.session.cmp(&b.session)));
 	groups
 }
 
@@ -763,7 +800,8 @@ mod tests {
 		}
 	}
 
-	const SESSION: &str = "7f3a91c2-0000-4000-8000-000000000001";
+	/// A session id as `session::model::new_session_id` makes one.
+	const SESSION: &str = "session-7f3a91c2-5d1e-4b6a-9c3f-0e8d2a4b6c01";
 
 	#[test]
 	fn an_empty_home_has_an_empty_index() {
@@ -807,11 +845,11 @@ mod tests {
 		assert_eq!(
 			groups,
 			[
-				("2026-10-30_reflection_7f3a91c2", vec!["reflection-r4.json"]),
-				("2026-10-29_reflection_7f3a91c2", vec!["reflection-r1.json", "reflection-r2.json", "reflection-r3.json"]),
+				("2026-10-30_reflection_2a4b6c01", vec!["reflection-r4.json"]),
+				("2026-10-29_reflection_2a4b6c01", vec!["reflection-r1.json", "reflection-r2.json", "reflection-r3.json"]),
 				("2026-10-29_reflection_s7x", vec!["reflection-r5.json"]),
 			],
-			"newest first; the session's first 8 letters, digits or -"
+			"newest first; the session's last 8 letters, digits or -"
 		);
 		let first = &value["reflections"][1];
 		assert_eq!((first["session"].as_str(), first["day"].as_str()), (Some(SESSION), Some("2026-10-29")));
@@ -830,7 +868,7 @@ mod tests {
 	fn what_a_scene_or_a_drama_answers_is_answered_and_not_listed() {
 		let inputs = ReflectionsInputs {
 			scenes: vec![
-				scene(2, "2026-10-29_reflection_7f3a91c2", "TOPIK 2 · romance · At the café", &[]),
+				scene(2, "2026-10-29_reflection_2a4b6c01", "TOPIK 2 · romance · At the café", &[]),
 				scene(5, "2026-10-30_stock_1", "TOPIK 2 · thriller · The last train", &[]),
 			],
 			dramas: vec![drama(3, "drama-20261029T071503120Z")],
@@ -847,13 +885,59 @@ mod tests {
 		let value = index(&inputs, "2026-10-31T15:00:00.000Z");
 		assert_eq!(
 			value["answered"],
-			json!({ "scenes": ["2026-10-29_reflection_7f3a91c2", "2026-10-30_stock_1"], "dramas": ["drama-20261029T071503120Z"] })
+			json!({ "scenes": ["2026-10-29_reflection_2a4b6c01", "2026-10-30_stock_1"], "dramas": ["drama-20261029T071503120Z"] })
 		);
 		assert_eq!(value["reflections"].as_array().unwrap().len(), 1);
-		assert_eq!(value["reflections"][0]["base"], "2026-10-30_reflection_7f3a91c2");
+		assert_eq!(value["reflections"][0]["base"], "2026-10-30_reflection_2a4b6c01");
 		assert_eq!(value["prompts"].as_array().unwrap().len(), 1);
 		assert_eq!(value["prompts"][0]["prompt"], "drama-20261030T071503120Z");
 		assert_eq!(value["prompts"][0]["name"], "drama-20261030T071503120Z.prompt.json");
+	}
+
+	/// Step 3: two sessions on one day are two groups, each with its own base,
+	/// and a scene answering one leaves the other waiting. A scene answering
+	/// the base both shared under the earlier rule (`<day>_reflection_session-`)
+	/// hides neither, and answers a session that was alone on its day.
+	#[test]
+	fn two_sessions_on_one_day_are_two_groups_and_one_scene_answers_one() {
+		const OTHER: &str = "session-0c9e1b77-3f2a-4d5e-8a6b-71c2d3e4f5a6";
+		let reflections = vec![
+			reflection("r1", SESSION, "2026-10-29T16:00:00.000Z", "2026-10-29T16:01:00.000Z"),
+			reflection("r2", OTHER, "2026-10-29T18:00:00.000Z", "2026-10-29T18:01:00.000Z"),
+			reflection("r3", SESSION, "2026-10-28T16:00:00.000Z", "2026-10-28T16:01:00.000Z"),
+		];
+		let bases = |scenes: Vec<HeldLesson>| -> Vec<String> {
+			let inputs = ReflectionsInputs {
+				scenes,
+				reflections: reflections.clone(),
+				..ReflectionsInputs::default()
+			};
+			let value = index(&inputs, "2026-10-31T15:00:00.000Z");
+			value["reflections"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.map(|group| String::from(group["base"].as_str().unwrap()))
+				.collect()
+		};
+		assert_eq!(
+			bases(Vec::new()),
+			["2026-10-29_reflection_d3e4f5a6", "2026-10-29_reflection_2a4b6c01", "2026-10-28_reflection_2a4b6c01"],
+			"one group per session and day, each its own base"
+		);
+		assert_eq!(
+			bases(vec![scene(1, "2026-10-29_reflection_2a4b6c01", "TOPIK 1 · everyday · One", &[])]),
+			["2026-10-29_reflection_d3e4f5a6", "2026-10-28_reflection_2a4b6c01"],
+			"a scene answering one session leaves the other's group"
+		);
+		assert_eq!(
+			bases(vec![
+				scene(1, "2026-10-29_reflection_session-", "TOPIK 1 · everyday · One", &[]),
+				scene(2, "2026-10-28_reflection_session-", "TOPIK 1 · everyday · Two", &[]),
+			]),
+			["2026-10-29_reflection_d3e4f5a6", "2026-10-29_reflection_2a4b6c01"],
+			"an earlier-rule scene answers a session alone on its day, and hides none it can't tell apart"
+		);
 	}
 
 	/// Step 3: a group whose newest reflection is under two hours old waits,
