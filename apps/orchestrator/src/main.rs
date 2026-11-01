@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
 	tracing::info!("🎬 Starting NATS Orchestrator Service");
 
 	let metrics_handle = some_metrics::install()?;
-	let metrics_addr = config.metrics_addr;
+	let metrics_addr = orchestrator::config::METRICS_ADDR;
 	tokio::spawn(async move {
 		if let Err(error) = some_metrics::serve(metrics_addr, metrics_handle).await {
 			tracing::error!(%error, "metrics listener exited");

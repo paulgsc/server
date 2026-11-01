@@ -1471,7 +1471,7 @@ mod tests {
 	async fn a_disabled_mailbox_spawns_nothing() {
 		use crate::Config;
 		use clap::Parser;
-		const REQUIRED: [&str; 9] = [
+		const REQUIRED: [&str; 13] = [
 			"file_host",
 			"--database-url",
 			"sqlite::memory:",
@@ -1481,6 +1481,10 @@ mod tests {
 			"https://app.example",
 			"--app-base-url",
 			"https://app.example/",
+			"--nats-url",
+			"nats://nats:4222",
+			"--redis-url",
+			"redis://redis:6379",
 		];
 		let config = Config::try_parse_from(REQUIRED).unwrap();
 		assert!(!config.mailbox_enabled, "off by default");

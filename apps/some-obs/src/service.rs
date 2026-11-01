@@ -12,7 +12,6 @@ pub mod heartbeat;
 
 /// Main OBS NATS service that bridges OBS WebSocket and NATS
 pub struct ObsNatsService {
-	config: Config,
 	obs_manager: Arc<ObsWebSocketManager>,
 	transport: NatsTransport<UnifiedEvent>,
 	cancel_token: CancellationToken,
@@ -24,7 +23,7 @@ impl ObsNatsService {
 	/// # Errors
 	///
 	/// Fails when NATS at `config.nats.nats_url` is unreachable.
-	pub async fn new(config: Config) -> Result<Self> {
+	pub async fn new(config: &Config) -> Result<Self> {
 		tracing::info!("🔌 Initializing OBS NATS Service");
 
 		let obs_manager = Arc::new(ObsWebSocketManager::new(config.obs()));
@@ -37,7 +36,6 @@ impl ObsNatsService {
 		tracing::info!("✅ NATS transports initialized");
 
 		Ok(Self {
-			config,
 			obs_manager,
 			transport,
 			cancel_token: CancellationToken::new(),
@@ -69,7 +67,7 @@ impl ObsNatsService {
 		tracing::info!("🔄 Initiating graceful shutdown...");
 
 		// Give tasks time to complete gracefully
-		let shutdown_timeout = service.config.shutdown_timeout;
+		let shutdown_timeout = crate::config::SHUTDOWN_TIMEOUT;
 		let _ = timeout(shutdown_timeout, async {
 			let _ = tokio::join!(command_handler, event_bridge, health_checker);
 		})

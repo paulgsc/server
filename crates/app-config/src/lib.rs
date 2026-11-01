@@ -21,18 +21,15 @@ use serde::{Deserialize, Serialize};
 pub mod env1;
 pub mod schema;
 
-pub use some_transport::DEV_HOST_NATS_URL;
-
 /// Where a binary reaches NATS.
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
 #[command(next_help_heading = "NATS")]
 pub struct NatsArgs {
 	/// The NATS server to connect to.
 	///
-	/// The default only works beside a NATS that publishes 4222 on the same
-	/// machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see
-	/// `some_transport::DEV_HOST_NATS_URL`. Every container sets it.
-	#[arg(long, env = "NATS_URL", default_value = DEV_HOST_NATS_URL)]
+	/// Required: no address is right on every host (#617). Compose's services
+	/// set theirs; `make dev` takes its role's.
+	#[arg(long, env = "NATS_URL", required = true)]
 	pub nats_url: String,
 }
 
@@ -78,7 +75,7 @@ pub fn parse_filter(directives: &str) -> Result<String, tracing_subscriber::filt
 
 #[cfg(test)]
 mod tests {
-	use super::{LogArgs, NatsArgs, OtelArgs, DEV_HOST_NATS_URL};
+	use super::{LogArgs, NatsArgs, OtelArgs};
 	use clap::{CommandFactory, Parser};
 
 	#[derive(Parser)]
@@ -99,9 +96,18 @@ mod tests {
 
 	#[test]
 	fn a_binary_keeps_the_shared_defaults_and_sets_its_own() {
-		let probe = Probe::try_parse_from(["probe"]).unwrap();
+		let probe = Probe::try_parse_from(["probe", "--nats-url", "nats://nats:4222"]).unwrap();
 		assert_eq!(probe.log.rust_log, "probe=debug");
-		assert_eq!(probe.nats.nats_url, DEV_HOST_NATS_URL);
+		assert_eq!(probe.nats.nats_url, "nats://nats:4222");
+	}
+
+	/// #617: no NATS is right on every host, so none is assumed.
+	#[test]
+	fn nats_url_is_required_and_has_no_default() {
+		let command = Probe::command();
+		let nats_url = command.get_arguments().find(|arg| arg.get_id() == "nats_url").unwrap();
+		assert!(nats_url.is_required_set());
+		assert!(nats_url.get_default_values().is_empty());
 	}
 
 	#[derive(Parser)]

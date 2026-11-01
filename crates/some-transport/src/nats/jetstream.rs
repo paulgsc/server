@@ -38,10 +38,15 @@ pub struct JetStreamConfig {
 	pub fetch_batch: usize,
 }
 
-impl Default for JetStreamConfig {
-	fn default() -> Self {
+impl JetStreamConfig {
+	/// The pipeline's settings on the NATS at `nats_url`.
+	///
+	/// There is no default NATS: which one is right is the deployment's to
+	/// say, in its `NATS_URL` (#617).
+	#[must_use]
+	pub fn new(nats_url: impl Into<String>) -> Self {
 		Self {
-			nats_url: super::DEV_HOST_NATS_URL.into(),
+			nats_url: nats_url.into(),
 			consumer_name: "pipeline-worker".into(),
 			max_bytes: 512 * 1024 * 1024,
 			max_message_size: 8 * 1024 * 1024,
@@ -55,6 +60,7 @@ impl Default for JetStreamConfig {
 // ── AckHandle ──────────────────────────────────────────────────────────────
 
 /// Invariant: exactly one of `ack`, `nak`, `term` must be called per handle.
+///
 /// For stages that may exceed `ack_wait`, call `heartbeat` at intervals
 /// shorter than `ack_wait` to prevent server-side lease expiration and
 /// concurrent redelivery.

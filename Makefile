@@ -177,8 +177,8 @@ envctl: ## Build the config tooling (apps/envctl)
 	@$(IN_RUST_SHELL) cargo build -p envctl
 
 dev: envctl ## Run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
-	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) \
-		$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) cargo run -p file_host --bin file_host
+	@$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) \
+		cargo run -p file_host --bin file_host -- --port-fallback true $(if $(DEV_PORT_FILE),--port-file $(DEV_PORT_FILE))
 
 env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, then nix/modules/generated from those
 	@UPDATE_ENV_SCHEMA=1 $(IN_RUST_SHELL) cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config

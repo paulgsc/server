@@ -27,6 +27,8 @@ fn every_unmet_rule_stops_the_binary_at_start_by_name() {
 		.env("DATABASE_URL", "sqlite::memory:")
 		.env("ALLOWED_ORIGINS", "https://app.example")
 		.env("APP_BASE_URL", "https://app.example/")
+		.env("NATS_URL", "nats://nats:4222")
+		.env("REDIS_URL", "redis://redis:6379")
 		.env("AUTH_ENABLED", "false")
 		.env("MAILBOX_ENABLED", "true")
 		.env("MAILBOX_ARCHIVE_TOKEN", "a-token")
@@ -57,6 +59,8 @@ fn a_health_check_is_not_held_to_the_start_up_rules() {
 		.env("DATABASE_URL", "sqlite::memory:")
 		.env("ALLOWED_ORIGINS", "https://app.example")
 		.env("APP_BASE_URL", "https://app.example/")
+		.env("NATS_URL", "nats://nats:4222")
+		.env("REDIS_URL", "redis://redis:6379")
 		.args(["--health-check", "--health-check-port", "9"])
 		.output()
 		.unwrap();

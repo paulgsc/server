@@ -38,10 +38,17 @@
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = ["https://a.example" "https://b.example"];
         APP_BASE_URL = "https://a.example/";
+        NATS_URL = "nats://nats:4222";
+        REDIS_URL = "redis://redis:6379";
       };
     };
-    services.orchestrator.enable = true;
+    services.orchestrator = {
+      enable = true;
+      settings.NATS_URL = "nats://nats:4222";
+    };
   };
+  # On, with nothing set: since #617 no NATS is assumed.
+  bareOrchestrator = failed (eval {services.orchestrator.enable = true;});
   container = complete.config.virtualisation.oci-containers.containers.file-host;
   # The mailbox on, with neither its URL nor a secrets file. (No numeric
   # bound is left to test here: since #617 the one file_host keeps,
@@ -63,7 +70,10 @@ in
       "settings.WEBAUTHN_RP_ID is required while AUTH_ENABLED is true"
       "settings.ALLOWED_ORIGINS is required"
       "settings.APP_BASE_URL is required"
+      "settings.NATS_URL is required"
+      "settings.REDIS_URL is required"
     ]))
+    (expect "a bare orchestrator names NATS_URL" (builtins.any (lib.hasInfix "services.orchestrator.settings.NATS_URL is required") bareOrchestrator))
     (expect "an off module asks for nothing and runs nothing" (failed off == [] && off.config.virtualisation.oci-containers.containers == {}))
     (expect "a complete file-host asserts nothing" (failed complete == []))
     (expect "set settings reach the container as strings, unset ones not at all" (container.environment
@@ -72,6 +82,8 @@ in
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = "https://a.example,https://b.example";
         APP_BASE_URL = "https://a.example/";
+        NATS_URL = "nats://nats:4222";
+        REDIS_URL = "redis://redis:6379";
       }))
     (expect "secrets reach the container through its files" (container.environmentFiles == ["/run/secrets/file-host.env"]))
     (expect "file-host publishes what compose does" (container.ports == ["127.0.0.1:3000:3000"] && container.image == "pgathondu/server:latest"))

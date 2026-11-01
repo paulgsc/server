@@ -163,7 +163,6 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
- "some-transport",
  "tracing-subscriber",
 ]
 

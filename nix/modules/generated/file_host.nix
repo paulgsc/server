@@ -3,16 +3,6 @@
 {lib}: {
   # One option per variable the binary reads, but its secrets.
   settings = {
-    FILE_HOST_PORT_FALLBACK = lib.mkOption {
-      type = lib.types.nullOr lib.types.bool;
-      default = null;
-      description = "Dev only: when the port is taken, listen on the next free one instead of failing (`listen::bind`). `make dev` sets it, so a server run from source can sit beside the production container. Never set it in production: its published port and healthcheck assume `listen::PORT`\n\nUnset (null), the binary's default: `false`.";
-    };
-    FILE_HOST_PORT_FILE = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Where to record the port actually listened on, as `{ port, pid }`, for `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on shutdown. `make dev` sets it\n\nUnset (null), the binary's own behaviour for an unset variable.";
-    };
     RATE_LIMIT = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.u32;
       default = null;
@@ -21,12 +11,12 @@
     ALLOWED_ORIGINS = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;
-      description = "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin. The dev host sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
+      description = "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     REDIS_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Redis URL for caching.\n\nUnset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).\n\nUnset (null), the binary's own behaviour for an unset variable.";
+      description = "Redis URL for caching.\n\nRequired: no address is right on every host (#617).\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     NUDGE_ENABLED = lib.mkOption {
       type = lib.types.nullOr lib.types.bool;
@@ -146,7 +136,7 @@
     NATS_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "The NATS server to connect to.\n\nThe default only works beside a NATS that publishes 4222 on the same machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see `some_transport::DEV_HOST_NATS_URL`. Every container sets it.\n\nUnset (null), the binary's default: `nats://localhost:4222`.";
+      description = "The NATS server to connect to.\n\nRequired: no address is right on every host (#617). Compose's services set theirs; `make dev` takes its role's.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
     RUST_LOG = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -166,12 +156,11 @@
   };
 
   # The variables the binary refuses to start without.
-  required = [ "ALLOWED_ORIGINS" "DATABASE_URL" "APP_BASE_URL" ];
+  required = [ "ALLOWED_ORIGINS" "REDIS_URL" "DATABASE_URL" "APP_BASE_URL" "NATS_URL" ];
   # Its secrets: no option, only `environmentFiles`.
   secrets = [ "DATABASE_URL" "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" ];
   # The binary's defaults, for the conditions below.
   defaults = {
-    FILE_HOST_PORT_FALLBACK = "false";
     RATE_LIMIT = "60";
     NUDGE_ENABLED = "false";
     NUDGE_QUIET_HOURS_START = "22";
@@ -187,7 +176,6 @@
     TRANSCRIBE_ENABLED = "false";
     RUST_ROUNDS_ENABLED = "false";
     GAME_FEED_ENABLED = "false";
-    NATS_URL = "nats://localhost:4222";
     RUST_LOG = "info";
     ENVIRONMENT = "development";
   };

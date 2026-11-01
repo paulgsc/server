@@ -2176,11 +2176,6 @@
       "fn from_client": {
         "pub fn from_client(client: Client) -> Self {": 1
       }
-    },
-    "clippy::too_long_first_doc_paragraph": {
-      "fn default": {
-        "/// Invariant: exactly one of `ack`, `nak`, `term` must be called per handle. /// For stages that may exceed `ack_wait`, call `heartbeat` at intervals /// shorter than `ack_wait` to prevent server-side lease expiration and /// concurrent redelivery. /// /// Failure: dropping without settling is treated as NAK by the server": 1
-      }
     }
   },
   "crates/some-transport/src/nats/pool.rs": {

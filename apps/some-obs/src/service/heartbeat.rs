@@ -10,7 +10,7 @@ impl ObsNatsService {
 		tokio::spawn(async move {
 			tracing::info!("💓 Starting health checker");
 
-			let mut check_interval = interval(self.config.health_check_interval);
+			let mut check_interval = interval(crate::config::HEALTH_CHECK_INTERVAL);
 			check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
 			loop {

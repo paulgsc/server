@@ -8,9 +8,10 @@ use std::process::Command;
 fn a_variable_that_does_not_parse_stops_the_binary_at_start() {
 	let output = Command::new(env!("CARGO_BIN_EXE_some-obs"))
 		.env_clear()
-		.env("HEALTH_CHECK_INTERVAL_SECS", "thirty")
+		.env("NATS_URL", "nats://nats:4222")
+		.env("OBS_PORT", "not-a-port")
 		.output()
 		.unwrap();
 	assert_eq!(output.status.code(), Some(2), "{output:?}");
-	assert!(String::from_utf8_lossy(&output.stderr).contains("HEALTH_CHECK_INTERVAL_SECS"), "{output:?}");
+	assert!(String::from_utf8_lossy(&output.stderr).contains("OBS_PORT"), "{output:?}");
 }

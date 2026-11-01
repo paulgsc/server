@@ -355,12 +355,10 @@ silent:
 * **Marked.** Each one carries the word `HOST-SPECIFIC` where it is defined:
   `grep -rn HOST-SPECIFIC infra/ apps/ crates/` lists every value
   a new host (a VPS, say) must replace.
-* **Announced.** `file_host` logs one `HOST-SPECIFIC` warning at startup naming
-  every variable it is running on a dev-host value for
-  (`Config::host_specific_defaults_in_use`).
-* **Required where no default is right.** `ALLOWED_ORIGINS` and `APP_BASE_URL`
-  have no default (#406): a host sets its own, and `make preflight` names them
-  if it does not. The compose files' host paths (`STORAGE`,
+* **Required where no default is right.** `ALLOWED_ORIGINS`, `APP_BASE_URL`,
+  `NATS_URL` and `REDIS_URL` have no default (#406, #617): a host sets its
+  own, and `make preflight` names them if it does not. The dev host's values
+  are its role's, in `deploy/dev/`, not defaults in the code. The compose files' host paths (`STORAGE`,
   `TRANSCRIBE_MODELS_DIR`, `METABASE_DATA_DIR`, `DATABASES_DIR`,
   `OLLAMA_MODELS_PATH`), Grafana's and Metabase's addresses and Grafana's
   admin password have no default either: each role's `compose.sops.env`
@@ -444,8 +442,9 @@ make dev   # takes the next free port from 3000 and records it for some-ui's vit
 ```
 
 It moves up to the next free port only because `make dev` asks it to
-(`FILE_HOST_PORT_FALLBACK`); run any other way, a taken port is a startup
-failure, as production needs. It records the port it got in
+(`--port-fallback true`, a flag and never a variable, so no deployment file
+can set it); run any other way, a taken port is a startup failure, as
+production needs. It records the port it got (`--port-file`) in
 `$XDG_RUNTIME_DIR/file_host/dev-port.json` (`/tmp/...` without one), and
 `paulgsc/some-ui`'s `vite dev` proxies there while it runs and back to the
 container when it stops, reloading the page either way. The listen address
@@ -457,7 +456,10 @@ alone (`envctl run`), a variable the shell already sets winning
 variable it lacks or refuses at start. (The preflight checks a container's
 view, with compose's own wiring, so it does not cover `make dev`.) Pointed at the container's database and VAPID keys, it
 would run a second nudge waker beside the container's, so give dev its own
-(`DATABASE_URL=sqlite://<checkout>/dev.db`, migrated as above).
+(`DATABASE_URL=sqlite://<checkout>/dev.db`, migrated as above). It names
+its NATS and Redis too, which have no default since #617: beside the
+compose stack, `NATS_URL=nats://localhost:4222` and
+`REDIS_URL=redis://127.0.0.1:6379`, the ports the stack publishes.
 
 ---
 

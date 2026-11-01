@@ -294,10 +294,10 @@ mod tests {
 		message: String,
 	}
 
-	// The NATS these tests use, and skip without: the dev host's own. A
+	// The NATS these tests use, and skip without: one on this machine. A
 	// library reads no environment (#484), its tests included.
 	fn nats_url() -> String {
-		crate::DEV_HOST_NATS_URL.to_string()
+		"nats://localhost:4222".to_string()
 	}
 
 	// Helper to check if NATS is available
