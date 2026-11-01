@@ -694,8 +694,9 @@ nowhere is marked as such and belongs to review.
     note, as text, for the routines to read instead of transcribing;
     paulgsc/server#463), `leetype-log` (how each finished LeetType session
     went, invariant 18; paulgsc/some-ui#2027), `index` (home's bookkeeping
-    for the Jobs routine, computed from these tables and kept in none of
-    them; paulgsc/server#509), `reflection` (each written reflection home
+    for the Jobs routine and for the reflections routine, computed from
+    these tables, with `voice_note`'s, and kept in none of them;
+    paulgsc/server#509), `reflection` (each written reflection home
     keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178) and
     `prompt` (each drama prompt home keeps, as the routine's minimum,
     invariant 31; paulgsc/some-ui#2179).
@@ -712,7 +713,8 @@ nowhere is marked as such and belongs to review.
       `run-jobs-*` records for the poller's subject (invariant 24), and by
       the poller's Jobs index (`mailbox::index`), which reads `brief`: its
       digests, and the pre-mailbox decisions and scouts files the routine
-      put back there once.
+      put back there once, and by its reflections index
+      (`mailbox::index::reflections`), which reads `scene` and `drama`.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened`, `PUT /routine/reflections/:id`,
       `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
@@ -788,6 +790,39 @@ nowhere is marked as such and belongs to review.
       Drive link. It is put only when something it counts has arrived or an
       open pick has lapsed since the last one the mailbox answered, never
       for the day turning alone, so an idle pass puts none.
+      The poller puts the reflections index as
+      `index-reflections-<stamp>.json` in the same schema, a view of the same
+      kind (the same decision), computed from this invariant's own tables and
+      `voice_note`'s metadata and nothing else: the scenes and dramas in
+      `mailbox_item`; the written reflections, drama prompts and lists of
+      opened lessons in `mailbox_outgoing` that the mailbox took and home
+      has not archived (`mailbox_archive`), which are what
+      `written_reflection` and `drama_prompt` keep as the routine may read
+      it (invariants 29 and 31), so it reads neither of those tables; each
+      reflection or scene note's id, what it was said for and which one, and
+      when it was recorded (`voice_note`, never `voice_note_audio`); and those
+      notes' transcripts in `mailbox_outgoing` that the mailbox took. It
+      carries only what the routine needs to know what to read: when home
+      last took in what it counts and the first moment still to come at
+      which it would say something else (`validUntil`), the names of the
+      files that did not read, the bases the scenes answer and the prompts
+      the dramas answer, every word id the scenes' decks use with its
+      dictionary form, the latest three scenes' names, bases, folder names,
+      levels and genres, how many of the routine's lessons wait unopened and
+      which, by `<folder>/<name>`, and the name of the list of opened
+      lessons it went by, each group of written reflections no scene answers
+      (its base, session id, day, its reflections' names, when the newest was
+      written and whether two hours have passed since) and each drama prompt
+      no drama answers (its name and stamp), each with the ids of its voice
+      notes (and, for a prompt, their file names), each note's newest
+      transcript's name and hash, and whether it still waits on one, since
+      when and until when. No reflection's, prompt's or transcript's words
+      (a prompt is read only for the line that names its notes by id), and
+      nothing that is or points at audio; the mailbox refuses a body that
+      carries audio or a Drive link. It is put only when something it counts
+      has arrived or left, or a moment it carries has passed, since the last
+      one the mailbox answered (a group's two hours, a note's two-day wait, a
+      lesson leaving the unopened window), so an idle pass puts none.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -812,9 +847,11 @@ nowhere is marked as such and belongs to review.
       (invariant 21): each file it archived from any folder, its bytes as the
       mailbox held them (they must match the listing's SHA-256), its hash,
       size, sequence number, when it was first put and when home stored it.
-      Read only by the poller, to put a file back when the routine asks, and
-      to ask again for a written reflection or drama prompt whose ask heard
-      no answer.
+      Read only by the poller, to put a file back when the routine asks, to
+      ask again for a written reflection or drama prompt whose ask heard no
+      answer, and, by name and when it was stored only, for the reflections
+      index to leave out a reflection, prompt or list of opened lessons home
+      archived.
     - `mailbox_archive_answer`, written only by the poller with the archive
       token (invariant 21): the mailbox's answer each time home asked it to
       drop a written reflection or a drama prompt home holds in
@@ -843,12 +880,19 @@ nowhere is marked as such and belongs to review.
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
     `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
     `the_due_query_reads_only_what_arrived_after_the_mark`,
-    and `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
+    `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
+    and `the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
     `mailbox::index`'s
     `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
     `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`,
     `valid_through_is_the_day_before_the_first_open_pick_lapses` and
     `a_backfilled_file_counts_as_the_phones_and_says_where_it_came_from`;
+    `mailbox::index::reflections`'s
+    `written_reflections_group_by_session_and_los_angeles_day` (which also
+    finds no reflection's words in the index),
+    `a_prompts_notes_are_the_ones_it_names_in_the_order_said` (no prompt's
+    words), `a_groups_unheard_note_waits_two_days_from_its_newest_put_then_is_missed`
+    and `the_same_rows_give_the_same_bytes_until_valid_until`;
     `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
@@ -927,10 +971,11 @@ nowhere is marked as such and belongs to review.
     **The one exception is home's index** (owner, 2026-10-31,
     https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
     the archive copies records, and a view home recomputes from records it
-    keeps is not one. The Jobs index (invariant 19) is such a view: the
-    mailbox keeps only the latest per routine and drops the one before in the
-    write that takes the new one, home neither archives it nor answers an ask
-    for it, and the routine cannot ask (its `ask` rights leave `index` out).
+    keeps is not one. The Jobs index and the reflections index (invariant
+    19) are such views: the mailbox keeps only the latest per routine and
+    drops the one before in the write that takes the new one, home neither
+    archives one nor answers an ask for one, and the routine cannot ask (its
+    `ask` rights leave `index` out).
     Nothing is lost by that: every record the index was computed from is in
     this invariant's tables, and the next pass computes the same bytes from
     them.

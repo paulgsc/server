@@ -105,10 +105,10 @@ pub struct MailboxContext {
 	/// When each routine is due (`ROUTINE_SCHEDULE`), for
 	/// [`crate::routine_watch::stamp`] after each pass.
 	pub schedules: Vec<crate::routine_watch::Schedule>,
-	/// What the last Jobs index the mailbox answered was computed from, so a
-	/// pass puts one only when that moves ([`index::LastIndex`]). Memory only:
-	/// home keeps no copy of an index.
-	pub last_index: Arc<index::LastIndex>,
+	/// What each routine's last index the mailbox answered was computed
+	/// from, so a pass puts one only when that moves ([`index::LastIndexes`]).
+	/// Memory only: home keeps no copy of an index.
+	pub last_index: Arc<index::LastIndexes>,
 }
 
 impl MailboxContext {
