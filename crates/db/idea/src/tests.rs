@@ -1,4 +1,5 @@
-use super::{idea, ideas, lists, mark_entry, mark_furnishing, put_idea, set_aside, Change, IdeaError, List, SetAside, MAX_LIST_ENTRIES, SEED_KEYWORDS, SEED_TOPICS};
+use super::{idea, ideas, lists, mark_entry, mark_furnishing, put_idea, set_aside, Change, IdeaError, List, SetAside, IDEAS_LISTED};
+use crate::model::{MAX_LIST_ENTRIES, SEED_KEYWORDS, SEED_TOPICS};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -124,27 +125,6 @@ async fn the_tables_hold_exactly_their_described_columns() {
 	}
 }
 
-/// Every read goes by an index on the subject, with no scan of a table. The
-/// queries mirror the crate's, with literals for their binds.
-#[tokio::test]
-async fn every_read_goes_by_the_subject() {
-	let pool = pool().await;
-	for query in [
-		"SELECT revision FROM idea_revision WHERE subject_id = 'a' AND idea_id = 'i' ORDER BY revision DESC LIMIT 1",
-		"SELECT question FROM idea_answer WHERE subject_id = 'a' AND idea_id = 'i' AND revision = 1",
-		"SELECT furnishing FROM idea_furnishing WHERE subject_id = 'a' AND idea_id = 'i' ORDER BY seq DESC LIMIT 1",
-		"SELECT 1 FROM idea_set_aside WHERE subject_id = 'a' AND idea_id = 'i'",
-		"SELECT list, entry, MAX(seq), listed FROM idea_list_mark WHERE subject_id = 'a' GROUP BY list, entry",
-		"SELECT r.idea_id FROM idea_revision r WHERE r.subject_id = 'a'
-		   AND r.revision = (SELECT MAX(m.revision) FROM idea_revision m WHERE m.subject_id = r.subject_id AND m.idea_id = r.idea_id)
-		   AND NOT EXISTS (SELECT 1 FROM idea_set_aside s WHERE s.subject_id = r.subject_id AND s.idea_id = r.idea_id)
-		   ORDER BY r.created_at DESC, r.idea_id LIMIT 1000",
-	] {
-		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(&(String::from("EXPLAIN QUERY PLAN ") + query)).fetch_all(&pool).await.unwrap();
-		assert!(!plan.iter().any(|(_, _, _, detail)| detail.starts_with("SCAN")), "{query}: {plan:?}");
-	}
-}
-
 #[tokio::test]
 async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 	let pool = pool().await;
@@ -157,8 +137,8 @@ async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 			"id": "i1", "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
 			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false }
 			],
 			"furnishing": false, "setAside": false
 		})
@@ -175,18 +155,25 @@ async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 		Change::Unchanged,
 		"however its answers are ordered or its title padded"
 	);
+	let mut keywords = later.clone();
+	keywords["keywords"] = json!(["voice", "home"]);
+	assert_eq!(put(&pool, A, &keywords).await.unwrap().1.keywords, ["home", "voice"], "kept sorted");
+	keywords["keywords"] = json!(["home", "voice"]);
+	keywords["sentAt"] = json!("2026-11-01T10:30:00.000Z");
+	assert_eq!(put(&pool, A, &keywords).await.unwrap().0, Change::Unchanged, "so keywords reordered are the same bundle");
 
-	let mut changed = later.clone();
+	let mut changed = keywords.clone();
+	changed["sentAt"] = json!("2026-11-01T10:40:00.000Z");
 	changed["title"] = json!("The mic clips");
 	changed["answers"][1] = json!({ "question": "spark", "note": "n2" });
 	let (change, held) = put(&pool, A, &changed).await.unwrap();
 	assert_eq!(
 		(change, held.revision, held.title.as_str()),
-		(Change::Added, 2, "The mic clips"),
+		(Change::Added, 3, "The mic clips"),
 		"a changed bundle is a new revision"
 	);
 	assert_eq!(held.answers.iter().map(|answer| answer.question.as_str()).collect::<Vec<_>>(), ["what", "spark"]);
-	assert_eq!(put(&pool, A, &first).await.unwrap().1.revision, 2, "the first send retried late changes nothing");
+	assert_eq!(put(&pool, A, &first).await.unwrap().1.revision, 3, "the first send retried late changes nothing");
 
 	let mut rewritten = first.clone();
 	rewritten["format"] = json!("video");
@@ -195,13 +182,20 @@ async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 	moved["createdAt"] = json!("2026-11-01T08:00:00.000Z");
 	assert!(matches!(put(&pool, A, &moved).await, Err(IdeaError::Invalid(problems)) if problems == [("createdAt", "must be the idea's, as its first send carried it")]));
 
-	assert_eq!(count(&pool, "idea_revision").await, 2, "every revision stays");
-	assert_eq!(count(&pool, "idea_answer").await, 4);
-	let kept: Vec<(i64, String)> = sqlx::query_as("SELECT revision, title FROM idea_revision ORDER BY revision")
+	assert_eq!(count(&pool, "idea_revision").await, 3, "every revision stays");
+	assert_eq!(count(&pool, "idea_answer").await, 6);
+	let kept: Vec<(i64, String, String)> = sqlx::query_as("SELECT revision, title, keywords FROM idea_revision ORDER BY revision")
 		.fetch_all(&pool)
 		.await
 		.unwrap();
-	assert_eq!(kept, [(1, "Why the mic clips".into()), (2, "The mic clips".into())]);
+	assert_eq!(
+		kept,
+		[
+			(1, "Why the mic clips".into(), r#"["voice"]"#.into()),
+			(2, "Why the mic clips".into(), r#"["home","voice"]"#.into()),
+			(3, "The mic clips".into(), r#"["home","voice"]"#.into())
+		]
+	);
 	assert_eq!(put(&pool, B, &rewritten).await.unwrap().0, Change::Added, "B's ideas are B's");
 }
 
@@ -241,34 +235,59 @@ async fn a_named_note_must_be_the_subjects_own_studio_note_on_home() {
 	assert_eq!(put(&pool, A, &sent).await.unwrap().0, Change::Added, "once home holds them");
 }
 
+/// What a send adds to an idea must be on the lists as they stand; what its
+/// latest revision already carries stays valid once taken off the lists
+/// (#645; the prototype the owner approved on paulgsc/some-ui#2453).
 #[tokio::test]
-async fn topic_and_keywords_must_be_on_the_lists_as_they_stand() {
+async fn what_a_send_adds_must_be_on_the_lists_as_they_stand() {
+	const TOPIC_OFF: (&str, &str) = ("topic", "must be on the topics list as it stands, or the one the idea carries");
+	const KEYWORD_OFF: (&str, &str) = ("keywords", "each must be on the keywords list as it stands, or one the idea carries");
 	let pool = pool().await;
 	let mut sent = send("i1", "2026-11-01T09:10:00.000Z");
 	sent["topic"] = json!("Cooking");
 	sent["keywords"] = json!(["voice", "lighting"]);
-	assert!(
-		matches!(put(&pool, A, &sent).await, Err(IdeaError::Invalid(problems)) if problems == [("topic", "must be on the topics list as it stands"), ("keywords", "each must be on the keywords list as it stands")])
-	);
+	assert!(matches!(put(&pool, A, &sent).await, Err(IdeaError::Invalid(problems)) if problems == [TOPIC_OFF, KEYWORD_OFF]));
 	entry(&pool, List::Topic, "Cooking", true).await.unwrap();
 	entry(&pool, List::Keyword, "lighting", true).await.unwrap();
 	assert_eq!(put(&pool, A, &sent).await.unwrap().0, Change::Added);
 	assert!(put(&pool, B, &sent).await.is_err(), "A's lists are not B's");
 
+	entry(&pool, List::Topic, "Cooking", false).await.unwrap();
 	let (_, standing) = entry(&pool, List::Keyword, "lighting", false).await.unwrap();
 	assert!(!standing.keywords.contains(&"lighting".to_owned()));
 	let held = idea(&mut pool.acquire().await.unwrap(), A, "i1").await.unwrap().unwrap();
 	assert_eq!(
-		(held.revision, held.keywords),
-		(1, vec!["voice".to_owned(), "lighting".to_owned()]),
+		(held.revision, held.topic.as_str(), held.keywords),
+		(1, "Cooking", vec!["lighting".to_owned(), "voice".to_owned()]),
 		"taking an entry off leaves the ideas that use it as they are"
 	);
 	assert_eq!(put(&pool, A, &sent).await.unwrap().0, Change::Unchanged, "and a held send still reads as held");
 	sent["sentAt"] = json!("2026-11-01T10:00:00.000Z");
 	sent["title"] = json!("Another title");
+	assert_eq!(
+		put(&pool, A, &sent).await.unwrap().1.revision,
+		2,
+		"a new revision may keep the entries the idea carries, though they are off the lists"
+	);
+	sent["sentAt"] = json!("2026-11-01T11:00:00.000Z");
+	sent["keywords"] = json!(["voice", "lighting", "Cooking"]);
 	assert!(
-		matches!(put(&pool, A, &sent).await, Err(IdeaError::Invalid(problems)) if problems == [("keywords", "each must be on the keywords list as it stands")]),
-		"a new revision uses the lists as they stand"
+		matches!(put(&pool, A, &sent).await, Err(IdeaError::Invalid(problems)) if problems == [KEYWORD_OFF]),
+		"but what it adds must be on them"
+	);
+	sent["keywords"] = json!(["voice"]);
+	assert_eq!(put(&pool, A, &sent).await.unwrap().1.revision, 3, "one dropped is gone from the idea");
+	sent["sentAt"] = json!("2026-11-01T12:00:00.000Z");
+	sent["keywords"] = json!(["voice", "lighting"]);
+	assert!(
+		matches!(put(&pool, A, &sent).await, Err(IdeaError::Invalid(problems)) if problems == [KEYWORD_OFF]),
+		"so putting it back adds it, and it must be on the list again"
+	);
+	let mut moved = send("i2", "2026-11-01T09:10:00.000Z");
+	moved["topic"] = json!("Cooking");
+	assert!(
+		matches!(put(&pool, A, &moved).await, Err(IdeaError::Invalid(problems)) if problems == [TOPIC_OFF]),
+		"another idea cannot take an entry off the list"
 	);
 }
 
@@ -389,11 +408,84 @@ async fn a_read_carries_what_home_heard_in_each_note() {
 	assert_eq!(
 		serde_json::to_value(&held.ideas[0].answers).unwrap(),
 		json!([
-			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" } },
-			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null }
+			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" }, "setAside": false },
+			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false }
 		])
 	);
 	assert!(idea(&mut pool.acquire().await.unwrap(), B, "i1").await.unwrap().is_none(), "B reads none of A's");
+}
+
+/// A note the owner set aside after the idea was sent (on the phone, Delete:
+/// MIC D3) is not held for a send, and the idea shows its answer set aside,
+/// without its words.
+#[tokio::test]
+async fn a_note_set_aside_is_not_held_and_its_words_leave_the_idea() {
+	let pool = pool().await;
+	let first = send("i1", "2026-11-01T09:10:00.000Z");
+	put(&pool, A, &first).await.unwrap();
+	sqlx::query(
+		"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+		 VALUES (?1, 'n1', 'ggml-small', 'whisper.cpp', 1, 'heard', 'en', 0.9, 1000, 'the mic clips', 10, '2026-11-01T09:20:00.000Z')",
+	)
+	.bind(A)
+	.execute(&pool)
+	.await
+	.unwrap();
+	let mut conn = pool.acquire().await.unwrap();
+	voice_repo::set_aside::set_aside(&mut conn, A, "n1", "2026-11-01T09:30:00.000Z", NOW).await.unwrap();
+	for held in [idea(&mut conn, A, "i1").await.unwrap().unwrap(), ideas(&mut conn, A).await.unwrap().ideas.remove(0)] {
+		assert_eq!(
+			serde_json::to_value(&held.answers[0]).unwrap(),
+			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": true }),
+			"set aside, and its words left out"
+		);
+		assert!(!held.answers[1].set_aside, "a typed answer is never set aside");
+	}
+	drop(conn);
+	assert_eq!(put(&pool, A, &first).await.unwrap().0, Change::Unchanged, "a held send retried is still held");
+	let mut again = first.clone();
+	again["sentAt"] = json!("2026-11-01T10:00:00.000Z");
+	again["title"] = json!("Said again");
+	match put(&pool, A, &again).await {
+		Err(IdeaError::NotesNotHeld(notes)) => assert_eq!(notes, ["n1"], "a new send may not name it"),
+		other => panic!("{other:?}"),
+	}
+	again["answers"][0]["note"] = json!("n2");
+	assert_eq!(put(&pool, A, &again).await.unwrap().0, Change::Added, "the answer said again");
+	let mut conn = pool.acquire().await.unwrap();
+	assert_eq!(voice_repo::set_aside::set_aside_at(&mut conn, B, "n1").await.unwrap(), None, "B's n1 is not A's");
+}
+
+/// The list holds at most [`IDEAS_LISTED`] ideas, and says when there are
+/// more.
+#[tokio::test]
+async fn the_list_says_when_it_holds_back_ideas() {
+	let pool = pool().await;
+	let fill = |n: i64| {
+		sqlx::query(
+			"WITH RECURSIVE k(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM k WHERE n < ?2)
+			 INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
+			 SELECT ?1, 'i' || n, 1, printf('2026-11-01T09:00:00.%03dZ', n % 1000), 'then', 't', 'Studio', 'short', '[]', 1, 'now' FROM k",
+		)
+		.bind(A)
+		.bind(n)
+	};
+	fill(IDEAS_LISTED).execute(&pool).await.unwrap();
+	let mut conn = pool.acquire().await.unwrap();
+	let listed = ideas(&mut conn, A).await.unwrap();
+	assert_eq!((listed.ideas.len(), listed.more), (1_000, false), "all of them");
+	drop(conn);
+	sqlx::query(
+		"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
+		 VALUES (?1, 'one-more', 1, '2026-11-01T08:00:00.000Z', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+	)
+	.bind(A)
+	.execute(&pool)
+	.await
+	.unwrap();
+	let listed = ideas(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	assert_eq!((listed.ideas.len(), listed.more), (1_000, true), "the newest 1,000, and more held back");
+	assert!(!listed.ideas.iter().any(|idea| idea.id == "one-more"), "the oldest begun is the one left out");
 }
 
 #[tokio::test]

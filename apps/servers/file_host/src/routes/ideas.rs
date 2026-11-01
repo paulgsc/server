@@ -6,7 +6,7 @@
 //! version and its answers), sent together by Send.
 //!
 //! ```text
-//! GET    /ideas                       → { ideas: [Idea] }: newest begun first, set-aside left out, at most 1,000
+//! GET    /ideas                       → { ideas: [Idea], more }: newest begun first, set-aside left out, at most 1,000
 //! GET    /ideas/:id                   → Idea, set aside or not
 //! PUT    /ideas/:id                   → { change, idea }: the body is the send
 //! PUT    /ideas/:id/furnishing        → { change, furnishing }: the body is { furnishing }

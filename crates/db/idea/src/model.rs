@@ -5,8 +5,8 @@
 //! object per send, its keys `camelCase`, each answer naming a voice note by
 //! id or carrying the words typed when voice failed.
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
+use studio_log_repo::instant;
 
 /// `(field, why)`: one reason a write was refused.
 pub type Problem = (&'static str, &'static str);
@@ -17,23 +17,23 @@ pub type Problem = (&'static str, &'static str);
 /// [`MAX_TYPED_CHARS`] characters each: well under this. Every field is
 /// bounded on its own, so this only stops a body from being read whole before
 /// it is refused.
-pub const BODY_CEILING: usize = 64 * 1024;
+pub(crate) const BODY_CEILING: usize = 64 * 1024;
 
 /// The most characters a title holds, after trimming (the owner, on
 /// paulgsc/some-ui#2453: "we don't expect title to be some essay").
-pub const MAX_TITLE_CHARS: usize = 80;
+pub(crate) const MAX_TITLE_CHARS: usize = 80;
 
 /// The most characters an answer typed when voice failed holds.
-pub const MAX_TYPED_CHARS: usize = 1_000;
+pub(crate) const MAX_TYPED_CHARS: usize = 1_000;
 
 /// The most keywords one idea carries.
-pub const MAX_KEYWORDS: usize = 20;
+pub(crate) const MAX_KEYWORDS: usize = 20;
 
 /// The most characters one entry of a list holds.
-pub const MAX_ENTRY_CHARS: usize = 40;
+pub(crate) const MAX_ENTRY_CHARS: usize = 40;
 
 /// The most entries one list holds.
-pub const MAX_LIST_ENTRIES: usize = 100;
+pub(crate) const MAX_LIST_ENTRIES: usize = 100;
 
 const MAX_ID_CHARS: usize = 64;
 
@@ -43,16 +43,16 @@ const MAX_ID_CHARS: usize = 64;
 /// The phone's own copy is `IDEA_QUESTIONS` (paulgsc/some-ui
 /// `packages/ui/soundbites/src/lib/idea/model.ts`). A new version there is a
 /// new entry here, and an idea answering an older one still reads.
-pub const QUESTION_SETS: &[(i64, &[&str])] = &[(1, &["what", "takeaway", "spark", "picture"])];
+pub(crate) const QUESTION_SETS: &[(i64, &[&str])] = &[(1, &["what", "takeaway", "spark", "picture"])];
 
 /// The topics every subject's list starts with (paulgsc/server#645).
-pub const SEED_TOPICS: &[&str] = &["Studio", "LeetType", "Korean", "Playoff Delta", "Rust Rounds"];
+pub(crate) const SEED_TOPICS: &[&str] = &["Studio", "LeetType", "Korean", "Playoff Delta", "Rust Rounds"];
 
 /// The keywords every subject's list starts with (paulgsc/server#645).
-pub const SEED_KEYWORDS: &[&str] = &["home", "voice", "phone", "mistakes", "how it works", "behind the scenes"];
+pub(crate) const SEED_KEYWORDS: &[&str] = &["home", "voice", "phone", "mistakes", "how it works", "behind the scenes"];
 
 /// The format an idea is for.
-pub const FORMATS: [&str; 2] = ["short", "video"];
+pub(crate) const FORMATS: [&str; 2] = ["short", "video"];
 
 /// One of the lists the owner edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ impl List {
 
 /// How an answer was given.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Said {
+pub(crate) enum Said {
 	/// A `studio` voice note, by the phone's id.
 	Note(String),
 	/// The words typed when voice failed.
@@ -92,34 +92,35 @@ pub enum Said {
 
 /// One answer of a send.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Answer {
-	pub question: String,
-	pub said: Said,
+pub(crate) struct Answer {
+	pub(crate) question: String,
+	pub(crate) said: Said,
 }
 
 /// What a send says of the idea: everything but when it was sent. Two sends
 /// with equal content are the same bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Content {
+pub(crate) struct Content {
 	/// ISO-8601 UTC to the millisecond.
-	pub created_at: String,
+	pub(crate) created_at: String,
 	/// Trimmed.
-	pub title: String,
-	pub topic: String,
-	pub format: String,
-	pub keywords: Vec<String>,
-	pub questions: i64,
+	pub(crate) title: String,
+	pub(crate) topic: String,
+	pub(crate) format: String,
+	/// Sorted, so a reordered list is the same bundle.
+	pub(crate) keywords: Vec<String>,
+	pub(crate) questions: i64,
 	/// In the question set's order.
-	pub answers: Vec<Answer>,
+	pub(crate) answers: Vec<Answer>,
 }
 
 /// One send, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Bundle {
-	pub id: String,
+pub(crate) struct Bundle {
+	pub(crate) id: String,
 	/// ISO-8601 UTC to the millisecond.
-	pub sent_at: String,
-	pub content: Content,
+	pub(crate) sent_at: String,
+	pub(crate) content: Content,
 }
 
 #[derive(Deserialize)]
@@ -149,34 +150,20 @@ struct Wire {
 
 /// The phone's own ids (`crypto.randomUUID()` today): URL-safe, short.
 #[must_use]
-pub fn is_id(text: &str) -> bool {
+pub(crate) fn is_id(text: &str) -> bool {
 	!text.is_empty() && text.len() <= MAX_ID_CHARS && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// An entry of a list, as the owner writes it: 1 to [`MAX_ENTRY_CHARS`]
 /// characters, with no space at either end, no control character and no `/`.
 #[must_use]
-pub fn is_entry(text: &str) -> bool {
+pub(crate) fn is_entry(text: &str) -> bool {
 	!text.is_empty() && text.trim() == text && text.chars().count() <= MAX_ENTRY_CHARS && !text.chars().any(|c| c.is_control() || c == '/')
-}
-
-/// `at` as ISO-8601 UTC to the millisecond, the form home keeps.
-///
-/// `None` when it is not an RFC 3339 instant in UTC (`Z`, as the phone's
-/// `toISOString()` writes).
-#[must_use]
-pub fn instant(at: &str) -> Option<String> {
-	if !at.ends_with('Z') {
-		return None;
-	}
-	DateTime::parse_from_rfc3339(at)
-		.ok()
-		.map(|at| at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 /// The question set of `version`, if home knows it.
 #[must_use]
-pub fn question_set(version: i64) -> Option<&'static [&'static str]> {
+pub(crate) fn question_set(version: i64) -> Option<&'static [&'static str]> {
 	QUESTION_SETS.iter().find(|(known, _)| *known == version).map(|(_, set)| *set)
 }
 
@@ -249,7 +236,7 @@ fn answers(problems: &mut Vec<Problem>, set: Option<&[&str]>, given: Vec<WireAns
 ///
 /// # Errors
 /// Every problem found, as `(field, why)`, each field once per reason.
-pub fn parse_bundle(id: &str, body: &[u8]) -> Result<Bundle, Vec<Problem>> {
+pub(crate) fn parse_bundle(id: &str, body: &[u8]) -> Result<Bundle, Vec<Problem>> {
 	if body.len() > BODY_CEILING {
 		return Err(vec![("body", "is over the size ceiling")]);
 	}
@@ -287,6 +274,8 @@ pub fn parse_bundle(id: &str, body: &[u8]) -> Result<Bundle, Vec<Problem>> {
 	if !problems.is_empty() {
 		return Err(problems);
 	}
+	let mut keywords = wire.keywords;
+	keywords.sort_unstable();
 	Ok(Bundle {
 		id: wire.id,
 		sent_at,
@@ -295,7 +284,7 @@ pub fn parse_bundle(id: &str, body: &[u8]) -> Result<Bundle, Vec<Problem>> {
 			title,
 			topic: wire.topic,
 			format: wire.format,
-			keywords: wire.keywords,
+			keywords,
 			questions: wire.questions,
 			answers,
 		},
@@ -304,7 +293,7 @@ pub fn parse_bundle(id: &str, body: &[u8]) -> Result<Bundle, Vec<Problem>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{instant, is_entry, parse_bundle, Said, BODY_CEILING, MAX_TITLE_CHARS, MAX_TYPED_CHARS, SEED_KEYWORDS, SEED_TOPICS};
+	use super::{is_entry, parse_bundle, Said, BODY_CEILING, MAX_TITLE_CHARS, MAX_TYPED_CHARS, SEED_KEYWORDS, SEED_TOPICS};
 	use serde_json::{json, Value};
 
 	fn send() -> Value {
@@ -337,7 +326,7 @@ mod tests {
 		assert_eq!(bundle.id, "i1");
 		assert_eq!(bundle.sent_at, "2026-11-01T09:10:00.000Z");
 		assert_eq!(bundle.content.created_at, "2026-11-01T09:00:00.000Z");
-		assert_eq!(bundle.content.keywords, ["voice", "mistakes"], "in the order sent");
+		assert_eq!(bundle.content.keywords, ["mistakes", "voice"], "sorted, whatever order they were sent in");
 		let questions: Vec<&str> = bundle.content.answers.iter().map(|answer| answer.question.as_str()).collect();
 		assert_eq!(questions, ["what", "takeaway"], "in the set's order, however sent");
 		assert_eq!(bundle.content.answers[0].said, Said::Note("n1".into()));
@@ -432,14 +421,12 @@ mod tests {
 	}
 
 	#[test]
-	fn entries_and_instants() {
+	fn entries() {
 		for entry in SEED_TOPICS.iter().chain(SEED_KEYWORDS) {
 			assert!(is_entry(entry), "{entry}");
 		}
 		for entry in ["", " voice", "voice ", "a/b", "tab\there", &"x".repeat(41)] {
 			assert!(!is_entry(entry), "{entry:?}");
 		}
-		assert_eq!(instant("2026-11-01T09:15:00Z").as_deref(), Some("2026-11-01T09:15:00.000Z"));
-		assert_eq!(instant("2026-11-01T02:15:00-07:00"), None);
 	}
 }

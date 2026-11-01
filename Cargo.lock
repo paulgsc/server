@@ -2352,10 +2352,10 @@ dependencies = [
 name = "idea_repo"
 version = "0.0.0"
 dependencies = [
- "chrono",
  "serde",
  "serde_json",
  "sqlx",
+ "studio_log_repo",
  "tokio",
  "voice_repo",
 ]

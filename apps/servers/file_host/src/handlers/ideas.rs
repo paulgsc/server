@@ -4,8 +4,9 @@
 //!
 //! **Refusals.** A write that breaks one of those rules is a `422` naming
 //! each field and why. A send naming a voice note that is not the subject's
-//! own `studio` note on home is a `409` naming each such note by id under
-//! `details.notes`, so the phone can send that take first and try again. A
+//! own `studio` note on home, or one the owner set aside, is a `409` naming
+//! each such note by id under `details.notes`, so the phone can send that
+//! take first, or have that answer said again, and try again. A
 //! different bundle under a held `sentAt`, and a new revision of an idea set
 //! aside, are each a `409`. Every refusal writes nothing.
 //!
@@ -18,9 +19,6 @@
 //! `#[instrument(skip_all)]` and records only `otel.kind` (invariant 6), and
 //! refusals carry fixed words and ids, never a value sent;
 //! `nothing_an_idea_says_reaches_a_log_line` checks it.
-//!
-//! **No other writer.** These handlers are the only callers of `idea_repo`'s
-//! writes; nothing writes the record in the background.
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
@@ -125,7 +123,7 @@ pub async fn get_idea(subject: SubjectId, State(db): State<SqlitePool>, Path(id)
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
 /// refused field, 409 naming each voice note home does not hold as the
-/// subject's `studio` note, 409 for a different bundle under a held `sentAt`
+/// subject's `studio` note or holds set aside, 409 for a different bundle under a held `sentAt`
 /// or an idea set aside, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "idea_put", skip_all, fields(otel.kind = "server"))]
@@ -367,10 +365,10 @@ mod tests {
 	fn held(id: &str) -> Value {
 		json!({
 			"id": id, "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
-			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["voice", "how it works"], "questions": 1,
+			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["how it works", "voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false }
 			],
 			"furnishing": false, "setAside": false
 		})
@@ -424,7 +422,7 @@ mod tests {
 
 		assert_eq!(
 			call(&app, Method::GET, "/ideas", Some(&phone), &Value::Null).await,
-			(StatusCode::OK, json!({ "ideas": [] }))
+			(StatusCode::OK, json!({ "ideas": [], "more": false }))
 		);
 		let seeds = json!({
 			"topics": ["Studio", "LeetType", "Korean", "Playoff Delta", "Rust Rounds"],
@@ -443,7 +441,7 @@ mod tests {
 		assert_eq!(call(&app, Method::GET, &idea_path("i1"), Some(&browser), &Value::Null).await, (StatusCode::OK, held("i1")));
 		assert_eq!(
 			call(&app, Method::GET, "/ideas", Some(&browser), &Value::Null).await,
-			(StatusCode::OK, json!({ "ideas": [held("i1")] }))
+			(StatusCode::OK, json!({ "ideas": [held("i1")], "more": false }))
 		);
 
 		let furnishing = idea_path("i1") + "/furnishing";
@@ -485,7 +483,7 @@ mod tests {
 		);
 		assert_eq!(
 			call(&app, Method::GET, &idea_path("i1"), Some(&phone), &Value::Null).await.1["keywords"],
-			json!(["voice", "how it works"]),
+			json!(["how it works", "voice"]),
 			"the idea that uses it is unchanged"
 		);
 		assert_eq!(
@@ -575,7 +573,7 @@ mod tests {
 		assert_eq!(ids, ["i2"], "B lists only B's");
 		assert_eq!(
 			call(&app, Method::GET, "/ideas", Some(&a), &Value::Null).await.1,
-			json!({ "ideas": [] }),
+			json!({ "ideas": [], "more": false }),
 			"nothing refused was written"
 		);
 	}

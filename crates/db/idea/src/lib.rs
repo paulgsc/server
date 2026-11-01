@@ -16,29 +16,26 @@
 //! - **An answer's audio is a voice note's.** A send names `studio` notes by
 //!   id, and only ones the subject already holds; their audio went home
 //!   through `PUT /voice-notes/:id` and only there (docs/identity.md
-//!   invariant 23). This crate reads `voice_note`'s kind and, for a read, what
-//!   home heard in a note (`voice_repo::transcript::heard`), and writes
-//!   neither.
+//!   invariant 23), and none the owner set aside. This crate reads
+//!   `voice_note`'s kind, whether a note is set aside
+//!   (`voice_repo::set_aside::set_aside_at`) and, for a read, what home heard
+//!   in it (`voice_repo::transcript::heard`), and writes none of them.
 //! - **The lists are seeds and marks.** A list is its seeds
-//!   ([`SEED_TOPICS`], [`SEED_KEYWORDS`]) with each entry's latest mark
-//!   applied. A send must use entries on the lists as they stand; taking one
-//!   off leaves every revision that used it as it is.
+//!   (`SEED_TOPICS`, `SEED_KEYWORDS`) with each entry's latest mark applied.
+//!   A topic or keyword a send adds to the idea must be on the lists as they
+//!   stand; one its latest revision already carries stays valid after it is
+//!   taken off, so taking an entry off leaves the ideas that use it as they
+//!   are, and still editable.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
-//! - **No background writer.** The one caller is `file_host`'s
-//!   `handlers::ideas`. A `git grep -n -e idea_revision -e idea_answer -e
-//!   idea_furnishing -e idea_set_aside -e idea_list_mark -- '*.rs'` shows no
-//!   other writer.
 
 mod model;
 
-pub use model::{
-	instant, is_entry, is_id, parse_bundle, question_set, Answer, Bundle, Content, List, Problem, Said, BODY_CEILING, FORMATS, MAX_ENTRY_CHARS, MAX_KEYWORDS, MAX_LIST_ENTRIES,
-	MAX_TITLE_CHARS, MAX_TYPED_CHARS, QUESTION_SETS, SEED_KEYWORDS, SEED_TOPICS,
-};
+use model::{is_entry, parse_bundle, question_set, Answer, Content, Said, MAX_LIST_ENTRIES};
+pub use model::{List, Problem};
 use serde::Serialize;
 use sqlx::SqliteConnection;
-use voice_repo::transcript::Hearing;
+use voice_repo::transcript::{Hearing, Transcript};
 
 /// The most ideas [`ideas`] lists: the newest begun.
 pub const IDEAS_LISTED: i64 = 1_000;
@@ -84,7 +81,8 @@ pub enum IdeaError {
 	/// The idea is set aside for good, and takes no new revision.
 	SetAside,
 	/// These named voice notes are not the subject's own `studio` notes on
-	/// home; by the phone's ids, in the order the answers name them.
+	/// home, or are ones the owner set aside; by the phone's ids, in the order
+	/// the answers name them.
 	NotesNotHeld(Vec<String>),
 	/// A stored row this crate wrote does not read back.
 	Unreadable,
@@ -134,24 +132,10 @@ pub const REWRITTEN: &str = "this send already holds a different bundle: an idea
 pub const SET_ASIDE: &str = "this idea is set aside for good and takes no new revision";
 
 /// What [`IdeaError::NotesNotHeld`] says.
-pub const NOTES_NOT_HELD: &str = "a named voice note is not one of this subject's studio notes on home: send it first";
+pub const NOTES_NOT_HELD: &str = "a named voice note is not one of this subject's studio notes on home, or was set aside: send it first, or say it again";
 
 /// What [`IdeaError::Unreadable`] says.
 pub const UNREADABLE: &str = "a stored idea does not read back";
-
-/// What home heard in an answer's voice note.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Heard {
-	/// What was heard; empty when home found the note silent.
-	pub text: String,
-	/// Whisper's code for the language detected; none for a silent note.
-	pub language: Option<String>,
-	/// The model file home heard it with.
-	pub model: String,
-	/// When home heard it: ISO-8601 UTC.
-	pub heard_at: String,
-}
 
 /// One answer as home serves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -162,9 +146,12 @@ pub struct AnswerView {
 	pub note: Option<String>,
 	/// The words typed when voice failed.
 	pub typed: Option<String>,
-	/// What home heard in the note; none while it has not, and for a typed
-	/// answer.
-	pub heard: Option<Heard>,
+	/// What home heard in the note; none while it has not, for a note set
+	/// aside, and for a typed answer.
+	pub heard: Option<Transcript>,
+	/// Whether the owner set the answer's note aside after the idea was sent
+	/// (on the phone, Delete); false for a typed answer.
+	pub set_aside: bool,
 }
 
 /// An idea as home serves it: its latest revision and its marks.
@@ -198,6 +185,8 @@ pub struct Idea {
 pub struct Ideas {
 	/// Newest begun first, set-aside ideas left out, at most [`IDEAS_LISTED`].
 	pub ideas: Vec<Idea>,
+	/// Whether the subject holds more ideas not set aside than `ideas` lists.
+	pub more: bool,
 }
 
 /// The lists as they stand.
@@ -319,34 +308,45 @@ async fn is_set_aside(conn: &mut SqliteConnection, subject: &str, id: &str) -> R
 	)
 }
 
-async fn heard(conn: &mut SqliteConnection, subject: &str, note: &str) -> Result<Option<Heard>, IdeaError> {
+async fn note_set_aside(conn: &mut SqliteConnection, subject: &str, note: &str) -> Result<bool, IdeaError> {
+	Ok(voice_repo::set_aside::set_aside_at(conn, subject, note).await?.is_some())
+}
+
+/// What home heard in the subject's note: none while it has not, and for a
+/// note set aside, whose words the idea no longer carries.
+async fn heard(conn: &mut SqliteConnection, subject: &str, note: &str, set_aside: bool) -> Result<Option<Transcript>, IdeaError> {
+	if set_aside {
+		return Ok(None);
+	}
 	Ok(match voice_repo::transcript::heard(conn, subject, note).await? {
 		Hearing::NotHeld | Hearing::Waiting => None,
-		Hearing::Heard(transcript) => Some(Heard {
-			text: transcript.text,
-			language: transcript.language,
-			model: transcript.model,
-			heard_at: transcript.heard_at,
-		}),
+		Hearing::Heard(transcript) => Some(transcript),
 	})
 }
 
-async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: RevisionRow) -> Result<Idea, IdeaError> {
+/// The idea as it stands at `row`; `set_aside` is the idea's own mark, which
+/// the caller has read (or knows, as [`ideas`] does, which lists none).
+async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: RevisionRow, set_aside: bool) -> Result<Idea, IdeaError> {
 	let content = held_content(conn, subject, id, &row).await?;
 	let mut answers = Vec::with_capacity(content.answers.len());
 	for answer in content.answers {
 		answers.push(match answer.said {
-			Said::Note(note) => AnswerView {
-				question: answer.question,
-				heard: heard(conn, subject, &note).await?,
-				note: Some(note),
-				typed: None,
-			},
+			Said::Note(note) => {
+				let aside = note_set_aside(conn, subject, &note).await?;
+				AnswerView {
+					question: answer.question,
+					heard: heard(conn, subject, &note, aside).await?,
+					note: Some(note),
+					typed: None,
+					set_aside: aside,
+				}
+			}
 			Said::Typed(typed) => AnswerView {
 				question: answer.question,
 				note: None,
 				typed: Some(typed),
 				heard: None,
+				set_aside: false,
 			},
 		});
 	}
@@ -362,7 +362,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 		questions: content.questions,
 		answers,
 		furnishing: furnishing(conn, subject, id).await?,
-		set_aside: is_set_aside(conn, subject, id).await?,
+		set_aside,
 	})
 }
 
@@ -374,18 +374,22 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 /// [`IdeaError::Storage`] for any `sqlx` failure.
 pub async fn idea(conn: &mut SqliteConnection, subject: &str, id: &str) -> Result<Option<Idea>, IdeaError> {
 	match latest_revision(conn, subject, id).await? {
-		Some(row) => view(conn, subject, id, row).await.map(Some),
+		Some(row) => {
+			let set_aside = is_set_aside(conn, subject, id).await?;
+			view(conn, subject, id, row, set_aside).await.map(Some)
+		}
 		None => Ok(None),
 	}
 }
 
 /// The newest [`IDEAS_LISTED`] of `subject`'s ideas not set aside, newest
-/// begun first, each as it stands.
+/// begun first, each as it stands, and whether there are more.
 ///
 /// # Errors
 /// As [`idea`].
 pub async fn ideas(conn: &mut SqliteConnection, subject: &str) -> Result<Ideas, IdeaError> {
-	let rows = sqlx::query!(
+	let asked = IDEAS_LISTED + 1;
+	let mut rows = sqlx::query!(
 		r#"SELECT r.idea_id AS "idea_id!: String", r.revision AS "revision!: i64", r.created_at AS "created_at!: String",
 		          r.sent_at AS "sent_at!: String", r.title AS "title!: String", r.topic AS "topic!: String",
 		          r.format AS "format!: String", r.keywords AS "keywords!: String", r.questions AS "questions!: i64"
@@ -396,10 +400,15 @@ pub async fn ideas(conn: &mut SqliteConnection, subject: &str) -> Result<Ideas, 
 		   ORDER BY r.created_at DESC, r.idea_id
 		   LIMIT ?2"#,
 		subject,
-		IDEAS_LISTED
+		asked
 	)
 	.fetch_all(&mut *conn)
 	.await?;
+	// One past the cap is asked for only to tell whether there are more.
+	let more = i64::try_from(rows.len()).map_or(true, |listed| listed > IDEAS_LISTED);
+	if more {
+		rows.pop();
+	}
 	let mut ideas = Vec::with_capacity(rows.len());
 	for row in rows {
 		let revision = RevisionRow {
@@ -412,9 +421,10 @@ pub async fn ideas(conn: &mut SqliteConnection, subject: &str) -> Result<Ideas, 
 			keywords: row.keywords,
 			questions: row.questions,
 		};
-		ideas.push(view(conn, subject, &row.idea_id, revision).await?);
+		// The query leaves set-aside ideas out.
+		ideas.push(view(conn, subject, &row.idea_id, revision, false).await?);
 	}
-	Ok(Ideas { ideas })
+	Ok(Ideas { ideas, more })
 }
 
 /// `subject`'s lists as they stand.
@@ -496,7 +506,7 @@ async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Co
 			let kind = sqlx::query_scalar!("SELECT of_kind FROM voice_note WHERE subject_id = ?1 AND note_id = ?2", subject, note)
 				.fetch_optional(&mut *conn)
 				.await?;
-			if kind.as_deref() != Some("studio") {
+			if kind.as_deref() != Some("studio") || note_set_aside(conn, subject, note).await? {
 				missing.push(note.clone());
 			}
 		}
@@ -516,11 +526,12 @@ async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Co
 ///
 /// # Errors
 /// [`IdeaError::Invalid`] naming every problem [`parse_bundle`] finds, or a
-/// `createdAt` other than the idea's, a topic or keyword not on its list as
-/// it stands; [`IdeaError::Rewritten`] for a different bundle under a held
-/// `sentAt`; [`IdeaError::SetAside`] for an idea set aside;
+/// `createdAt` other than the idea's, or a topic or keyword the latest
+/// revision does not carry and its list does not hold as it stands;
+/// [`IdeaError::Rewritten`] for a different bundle under a held `sentAt`;
+/// [`IdeaError::SetAside`] for an idea set aside;
 /// [`IdeaError::NotesNotHeld`] naming each voice note that is not the
-/// subject's own `studio` note on home; and [`IdeaError::Storage`] for any
+/// subject's own `studio` note on home, or that the owner set aside; and [`IdeaError::Storage`] for any
 /// `sqlx` failure. A refusal is decided before anything is written.
 pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<(Change, Idea), IdeaError> {
 	let bundle = parse_bundle(id, body).map_err(IdeaError::Invalid)?;
@@ -529,19 +540,20 @@ pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body
 			return Err(IdeaError::Rewritten);
 		}
 		let latest = latest_revision(conn, subject, id).await?.ok_or(IdeaError::Unreadable)?;
-		return Ok((Change::Unchanged, view(conn, subject, id, latest).await?));
+		let set_aside = is_set_aside(conn, subject, id).await?;
+		return Ok((Change::Unchanged, view(conn, subject, id, latest, set_aside).await?));
 	}
 	if is_set_aside(conn, subject, id).await? {
 		return Err(IdeaError::SetAside);
 	}
-	let mut latest = latest_revision(conn, subject, id).await?;
-	let same = match latest.as_ref() {
-		Some(row) => held_content(conn, subject, id, row).await? == bundle.content,
-		None => false,
+	let latest = latest_revision(conn, subject, id).await?;
+	let carried = match latest.as_ref() {
+		Some(row) => Some(held_content(conn, subject, id, row).await?),
+		None => None,
 	};
-	if same {
-		if let Some(row) = latest.take() {
-			return Ok((Change::Unchanged, view(conn, subject, id, row).await?));
+	if carried.as_ref() == Some(&bundle.content) {
+		if let Some(row) = latest {
+			return Ok((Change::Unchanged, view(conn, subject, id, row, false).await?));
 		}
 	}
 	let content = bundle.content;
@@ -549,12 +561,20 @@ pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body
 	if latest.as_ref().is_some_and(|latest| latest.created_at != content.created_at) {
 		problems.push(("createdAt", "must be the idea's, as its first send carried it"));
 	}
+	// Only what the send adds is held to the lists: an entry taken off leaves
+	// the ideas that carry it as they are, and still editable (#645, and the
+	// prototype the owner approved on paulgsc/some-ui#2453).
+	let (carried_topic, carried_keywords) = carried.map(|held| (Some(held.topic), held.keywords)).unwrap_or_default();
 	let standing = lists(conn, subject).await?;
-	if !standing.topics.contains(&content.topic) {
-		problems.push(("topic", "must be on the topics list as it stands"));
+	if carried_topic.as_ref() != Some(&content.topic) && !standing.topics.contains(&content.topic) {
+		problems.push(("topic", "must be on the topics list as it stands, or the one the idea carries"));
 	}
-	if !content.keywords.iter().all(|keyword| standing.keywords.contains(keyword)) {
-		problems.push(("keywords", "each must be on the keywords list as it stands"));
+	if !content
+		.keywords
+		.iter()
+		.all(|keyword| carried_keywords.contains(keyword) || standing.keywords.contains(keyword))
+	{
+		problems.push(("keywords", "each must be on the keywords list as it stands, or one the idea carries"));
 	}
 	if !problems.is_empty() {
 		return Err(IdeaError::Invalid(problems));
@@ -600,7 +620,7 @@ pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body
 		.await?;
 	}
 	let latest = latest_revision(conn, subject, id).await?.ok_or(IdeaError::Unreadable)?;
-	Ok((Change::Added, view(conn, subject, id, latest).await?))
+	Ok((Change::Added, view(conn, subject, id, latest, false).await?))
 }
 
 /// Marks `subject`'s idea `id` as still being furnished or not, as of `now`.

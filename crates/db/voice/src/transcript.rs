@@ -326,8 +326,10 @@ pub enum Hearing {
 	Heard(Transcript),
 }
 
-/// One ended transcript of a note.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One ended transcript of a note. Serialized as `GET /voice-notes/:id/heard`
+/// and `GET /ideas` answer it, keys in `camelCase`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Transcript {
 	/// What was heard; empty when the model found the note silent. Never
 	/// logged.

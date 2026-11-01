@@ -12,10 +12,10 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-chrono = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
+studio_log_repo = { workspace = true }
 voice_repo = { workspace = true }
 
 [dev-dependencies]

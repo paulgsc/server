@@ -9,8 +9,7 @@
 -- Every table here is a record, not a convenience copy, so every table is
 -- APPEND-ONLY, as the owner's other records are (docs/identity.md invariants
 -- 15-31). No row is ever updated (each trigger below aborts an UPDATE), and
--- the only deletes are account deletion's (invariant 12). Written only by
--- `file_host`'s `handlers::ideas`, through `idea_repo`.
+-- the only deletes are account deletion's (invariant 12).
 --
 -- **One revision per send.** A send that changes the bundle adds a revision
 -- with its answers; earlier revisions stay. The idea as home serves it is its
@@ -18,8 +17,9 @@
 -- bundle), or one whose bundle is the latest revision's, writes nothing.
 --
 -- **An answer names a voice note by its id, or is typed.** The note must be
--- one of the subject's own `studio` notes home already holds: its audio went
--- home through `PUT /voice-notes/:id` (invariant 23), and only there. Typed
+-- one of the subject's own `studio` notes home already holds, and not one the
+-- owner set aside: its audio went home through `PUT /voice-notes/:id`
+-- (invariant 23), and only there. Typed
 -- text is a fallback for when voice failed, at most 1,000 characters.
 --
 -- **Marks sit beside the idea, never on it.** "Still furnishing" is a mark
@@ -31,7 +31,7 @@
 -- **The lists the owner edits.** Topics and keywords start as a few entries
 -- `idea_repo` names (`SEED_TOPICS`, `SEED_KEYWORDS`), and the owner adds and
 -- takes off entries, each as a mark. Taking one off leaves the ideas that
--- use it as they are.
+-- use it as they are: a send is held to the lists only for what it adds.
 --
 -- Columns of `idea_revision`, one row per send that changed the idea:
 --
@@ -43,10 +43,12 @@
 --   sent_at    -- when the owner pressed Send, ISO-8601 UTC to the millisecond;
 --                 what tells a retried send from a new one.
 --   title      -- the title the owner typed, trimmed: 1 to 80 characters.
---   topic      -- one entry of the topics list as it stood at the send.
+--   topic      -- an entry of the topics list as it stood at the send, or
+--                 the topic the idea's previous revision carried.
 --   format     -- `short` (vertical) or `video` (wide).
 --   keywords   -- a JSON array of entries of the keywords list as it stood at
---                 the send, each once, in the order the phone sent them.
+--                 the send (or that the previous revision carried), each
+--                 once, sorted.
 --   questions  -- the version of the question set the answers answer.
 --   stored_at  -- ISO-8601 UTC, when the revision reached home.
 CREATE TABLE idea_revision (

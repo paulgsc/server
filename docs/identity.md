@@ -1109,8 +1109,10 @@ nowhere is marked as such and belongs to review.
     so neither the audio nor its hash reaches a log line; its audio is
     readable by no route yet, and the routes that read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
-    (both below) and `PUT /ideas/:id` (invariant 32), read only whether the
-    caller's subject holds it, and for an idea what it was said for; and it is deleted with the account by both the sweep and
+    (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
+    (invariant 32), read only whether the caller's subject holds it, and,
+    for an idea, whether it is a `studio` note and whether it was set aside;
+    and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
     **Home's word that Drive holds a Studio take too is
@@ -1587,24 +1589,30 @@ nowhere is marked as such and belongs to review.
     that changed it: the phone's id for the idea, when the phone began it
     (every revision carries the first's), when the owner pressed Send, the
     title they typed (trimmed, 1 to 80 characters), the topic (the owner's
-    word is "subject"), the format (`short` or `video`), its keywords, the
-    question set's version, and when it reached home. `idea_answer` keeps
+    word is "subject"), the format (`short` or `video`), its keywords
+    (sorted, so a reordered list is the same bundle), the question set's
+    version, and when it reached home. `idea_answer` keeps
     each answer of a revision: the question, and either a `studio` voice
     note by the phone's id (its audio is `voice_note_audio`'s and went home
     only through `PUT /voice-notes/:id`, invariant 23) or the words typed
     when voice failed (1 to 1,000 characters). The first question of the
     set is always answered. A note an answer names must already be one of
-    the subject's own `studio` notes on home, read in the transaction that
-    writes, or the send is a `409` naming each note by id and writes
+    the subject's own `studio` notes on home and not one the owner set
+    aside (`voice_note_set_aside`, invariant 23), read in the transaction
+    that writes, or the send is a `409` naming each note by id and writes
     nothing. `idea_furnishing` keeps every change of the "still furnishing"
     mark, the latest standing; it is the owner's alone, and nothing reads
     it for a routine or the mailbox. `idea_set_aside` keeps the one mark
     that takes an idea out of the list for good: a mark, never a delete,
     after which the idea takes no new revision. `idea_list_mark` keeps each
     entry the owner adds to or takes off the topics and keywords lists, the
-    latest per entry standing over the seeds `idea_repo` names; a send's
-    topic and keywords must be on the lists as they stand, and taking an
-    entry off leaves every revision that used it as it is. Every table is
+    latest per entry standing over the seeds `idea_repo` names. A topic or
+    keyword a send adds to the idea, one its latest revision does not carry,
+    must be on the lists as they stand; one the latest revision carries
+    stays valid after it is taken off. So taking an entry off leaves every
+    idea that uses it as it is, and still editable (paulgsc/server#645,
+    "Taking one off leaves the ideas that use it unchanged", and the
+    prototype the owner approved on paulgsc/some-ui#2453, 2026-11-01). Every table is
     the owner's record, so none is ever updated (each trigger aborts an
     `UPDATE`) or replaced: a send whose `sentAt` a revision holds is
     `unchanged` with the same bundle and a `409` with another, a send whose
@@ -1616,8 +1624,11 @@ nowhere is marked as such and belongs to review.
     `PUT /ideas/:id/set-aside` and `PUT` and `DELETE
     /idea-lists/{topics,keywords}/:name`, and read only by `GET /ideas`,
     `GET /ideas/:id` and `GET /idea-lists`, each for the caller's own
-    subject (another subject's idea is a `404`). A read carries, for each
-    answer's note, what home heard in it (invariant 23). No file the poller
+    subject (another subject's idea is a `404`). `GET /ideas` lists at most
+    the 1,000 newest begun of the ideas not set aside, and says `more` when
+    it holds others back. A read carries, for each answer's note, what home
+    heard in it (invariant 23), unless the owner set the note aside after
+    the send: then the answer says `setAside` and carries no words. No file the poller
     files reads them, so they never leave home for the mailbox; a routine
     reads an idea's takes only as their transcripts, as before. A title, a
     typed answer and what was heard are the owner's own words, so they never
@@ -1627,7 +1638,9 @@ nowhere is marked as such and belongs to review.
     `a_send_is_a_revision_and_the_same_bundle_again_is_unchanged`,
     `no_row_is_ever_updated`,
     `a_named_note_must_be_the_subjects_own_studio_note_on_home`,
-    `topic_and_keywords_must_be_on_the_lists_as_they_stand`,
+    `what_a_send_adds_must_be_on_the_lists_as_they_stand`,
+    `a_note_set_aside_is_not_held_and_its_words_leave_the_idea`,
+    `the_list_says_when_it_holds_back_ideas`,
     `the_lists_start_with_their_seeds_and_each_mark_is_kept`,
     `the_latest_furnishing_mark_stands_and_every_mark_is_kept`,
     `an_idea_set_aside_leaves_the_list_for_good`,
