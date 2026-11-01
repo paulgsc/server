@@ -1063,7 +1063,9 @@ async fn taken_files(conn: &mut SqliteConnection, subject: &str, folder: &str) -
 
 /// When home last took in something the Jobs index counts, or `None`.
 ///
-/// That is a digest it read, or the mailbox's answer taking a decisions
+/// That is a digest it read (or a decisions or scouts file the routine's
+/// backfill put in `brief`; never another kind of file there, such as a
+/// list of the takes Drive holds, which the index does not count), or the mailbox's answer taking a decisions
 /// file, a scouts file or a Jobs note's transcript home handed it. Every
 /// input [`jobs_inputs`] reads arrives with a time at least this, so an index
 /// stamped with it (`asOf`) is out of date exactly when this moves.
@@ -1074,6 +1076,7 @@ pub async fn jobs_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Op
 	let at = sqlx::query_scalar!(
 		r#"SELECT MAX(at) AS "at?: String" FROM (
 		     SELECT pulled_at AS at FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief'
+		       AND (substr(name, 1, 7) = 'digest-' OR substr(name, 1, 10) = 'decisions-' OR substr(name, 1, 7) = 'scouts-')
 		     UNION ALL
 		     SELECT handed_at AS at FROM mailbox_handed
 		     WHERE subject_id = ?1 AND folder IN ('decisions', 'scout') AND answer IN ('added', 'unchanged')

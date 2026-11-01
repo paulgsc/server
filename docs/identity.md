@@ -193,7 +193,7 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -683,7 +683,10 @@ nowhere is marked as such and belongs to review.
     and home leave each other files. For one subject, the owner's account
     unless `MAILBOX_SUBJECT` names another (`mailbox::pass_subject`),
     `file_host`'s `mailbox` poller reads only its `brief` folder (the
-    routine's daily job digests), its `scene` and `drama` folders (the
+    routine's daily job digests, and the build-journal session's lists of
+    the Studio takes Drive holds, `drive-takes-<stamp>.json`, SHA-256s and
+    when it looked, nothing else; paulgsc/some-ui#2401, the owner's route a),
+    its `scene` and `drama` folders (the
     reflections routine's word sets and dramas) and its `run` folder (a
     record of what each routine's runs found and added, which the phone
     shows as when the routine last ran and, for the jobs routine, what this
@@ -713,8 +716,15 @@ nowhere is marked as such and belongs to review.
       `run-jobs-*` records for the poller's subject (invariant 24), and by
       the poller's Jobs index (`mailbox::index`), which reads `brief`: its
       digests, and the pre-mailbox decisions and scouts files the routine
-      put back there once, and by its reflections index
-      (`mailbox::index::reflections`), which reads `scene` and `drama`.
+      put back there once, by name, and takes when home last took in one of
+      those (`jobs_as_of`) from them alone, so a list of Drive's takes
+      arriving moves no index; and by its reflections index
+      (`mailbox::index::reflections`), which reads `scene` and `drama`. A
+      list of Drive's takes is read once, by the
+      poller, from the bytes it is keeping, in the transaction that keeps
+      it: each `studio` voice note home holds whose SHA-256 it names is
+      recorded in `studio_take_on_drive` (invariant 23), and nothing else of
+      it is kept beyond the file itself.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened`, `PUT /routine/reflections/:id`,
       `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
@@ -1086,6 +1096,29 @@ nowhere is marked as such and belongs to review.
     no route yet; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
+    **Home's word that Drive holds a Studio take too is
+    `studio_take_on_drive`, append-only, and comes from the mailbox, never
+    from Drive** (paulgsc/some-ui#2401, HF11; the owner's route a,
+    2026-10-31, "go with route a": home gets no Drive credential). The
+    build-journal session lists Drive's takes folder and puts the SHA-256 of
+    each recording there in the Jobs mailbox (invariant 19); the poller, in
+    the transaction that keeps that list, records each `studio` note the
+    subject holds whose `voice_note.sha256` the list names: the note's id,
+    when the session looked, the list's mailbox name and when home recorded
+    it. A hash naming nothing home holds, or a note said for anything but
+    `studio`, is dropped, never kept. A take is recorded once, by the first
+    list that names it, and never updated (the trigger aborts an `UPDATE`);
+    a later list that no longer names it takes nothing away, and it leaves
+    with the account by both the sweep and its own trigger (invariant 12).
+    The table holds no audio, no Drive name, id or link, and nothing the
+    list did not say. It is written only by the poller
+    (`voice_repo::on_drive::record`, from `mailbox::pass`'s `keep`) and read
+    only by `GET /voice-notes/on-drive?ids=`, for the caller's own subject,
+    by the phone's ids, at most 100 a read, which answers each id home has
+    recorded and when its list was made, and reads no `voice_note` row; the
+    phone lets a take go on it under the owner's choice (paulgsc/some-ui
+    LG1).
+
     **What home heard in a note is `voice_transcript`, and when each word
     was said is `voice_transcript_word`, append-only too**
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
@@ -1148,7 +1181,15 @@ nowhere is marked as such and belongs to review.
     `the_schema_refuses_a_bite_that_breaks_its_rules` and
     `the_rebuilt_notes_keep_what_was_held_before`, and for HF5's kinds
     `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` and
-    `the_notes_rebuilt_for_takes_keep_what_was_held_before`; `voice_repo::transcript`'s
+    `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Drive's
+    word `voice_repo::on_drive`'s
+    `only_the_subjects_own_studio_takes_a_list_names_are_recorded_once`,
+    `no_row_is_ever_updated_and_rows_leave_with_the_account` and
+    `an_empty_list_records_nothing_and_a_read_stops_at_its_cap`,
+    `mailbox::pass`'s
+    `a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index`
+    and `a_list_that_does_not_read_records_nothing`, and `handlers::voice`'s
+    `the_phone_reads_which_of_its_takes_home_knows_drive_holds`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
@@ -1170,7 +1211,7 @@ nowhere is marked as such and belongs to review.
     `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript\|game_bite' -- '*.rs'` shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.
@@ -1518,7 +1559,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   routine's minimum, paulgsc/some-ui#2174 decision D2, invariant 29), and
   each drama prompt home keeps (the next scene's prompt as the owner asked
   for it: the scene they asked for, the last drama's review in their words,
-  and their scene notes named by id; the same decision, invariant 31), live in
+  and their scene notes named by id; the same decision, invariant 31), and
+  the build-journal session's lists of the Studio takes Drive holds (the
+  SHA-256 of each recording, and when it looked; paulgsc/some-ui#2401: which
+  say how many takes Drive held and when, and let anyone holding one of the
+  recordings tell that it was among them), live in
   a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps

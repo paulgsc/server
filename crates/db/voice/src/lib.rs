@@ -39,11 +39,16 @@
 //!   `git grep -n 'voice_note\b\|voice_note_audio\|game_bite' -- '*.rs'`
 //!   shows no other writer.
 //!
+//! Which Studio takes home knows Drive holds too is [`on_drive`]'s:
+//! `studio_take_on_drive`, written only by `file_host`'s mailbox poller from
+//! the build-journal session's list of SHA-256s (paulgsc/some-ui#2401).
+//!
 //! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
 //! each heard word with its time in `voice_transcript_word`, both written
 //! only by `file_host`'s `transcribe` worker, which reads a note's audio and
 //! never writes it.
 
+pub mod on_drive;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -359,6 +364,12 @@ fn instant(at: &str) -> Option<String> {
 fn container(content_type: &str) -> Option<&'static str> {
 	let base = content_type.split(';').next().unwrap_or_default().trim();
 	CONTENT_TYPES.into_iter().find(|known| known.eq_ignore_ascii_case(base))
+}
+
+/// Whether `id` reads as a note's id, as [`describe`] takes one.
+#[must_use]
+pub fn is_note_id(id: &str) -> bool {
+	is_name(id, MAX_ID_CHARS)
 }
 
 /// Whether `text` is a non-empty name of at most `max` characters, each a
