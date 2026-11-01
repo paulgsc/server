@@ -33,9 +33,9 @@ use std::time::Duration;
 // Each was its variable's default; changing one is a PR with its reason.
 
 /// The VAPID `sub` claim: a `mailto:` identifying the sender. Push services
-/// reject or deprioritise senders without one. One operator, one contact
-/// (`VAPID_SUBJECT` was this by default).
-pub const VAPID_SUBJECT: &str = "mailto:admin@maishatu.com";
+/// reject or deprioritise senders without one. One operator, one contact:
+/// home's own `VAPID_SUBJECT`, which the owner chose to keep (#642).
+pub const VAPID_SUBJECT: &str = "mailto:pgathondudev@gmail.com";
 
 /// How often the waker picks up work the engine already decided.
 ///
