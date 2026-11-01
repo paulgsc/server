@@ -650,4 +650,16 @@ fn values_a_shell_got_from_export_never_reach_another_roles_command() {
 		"{}",
 		printed(&listed)
 	);
+	// A second export (dev's tools, with one more name) replaces the first's
+	// values and keeps every name listed, so home's never looks like the
+	// shell's own (Codex on #639).
+	fs::write(
+		dev.join("tools.sops.env"),
+		"DATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nEXTRA=ENC[eA==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
+	)
+	.unwrap();
+	let again = fixture.envctl(&["export", "--role", "dev"]).envs(exported).output().unwrap();
+	let again_out = String::from_utf8_lossy(&again.stdout).into_owned();
+	assert!(again_out.contains("export DATABASE_URL='sqlite://dev.db'"), "{}", printed(&again));
+	assert!(again_out.contains("export ENVCTL_EXPORTED='DATABASE_URL,EXTRA'"), "{}", printed(&again));
 }

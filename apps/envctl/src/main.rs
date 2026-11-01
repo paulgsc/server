@@ -182,7 +182,12 @@ fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, 
 		bail!("{} does not exist; `sops edit {}` writes it", relative.display(), relative.display());
 	}
 	let file = sops::set_only(sops::decrypt(sops_program, repo, &relative)?);
-	let (exported, kept): (Vec<_>, Vec<_>) = file.iter().partition(|(name, _)| !shell.contains_key(*name));
+	// A name an earlier export put here is not the shell's own: this file's
+	// value replaces it, and the list keeps every name ever exported, so a
+	// second export never makes the first one's values look like the
+	// shell's (Codex on #639).
+	let earlier = exported_names(shell);
+	let (exported, kept): (Vec<_>, Vec<_>) = file.iter().partition(|(name, _)| !own(shell, &earlier, name));
 	let mut out = String::new();
 	for (name, value) in &exported {
 		out.push_str("export ");
@@ -194,7 +199,8 @@ fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, 
 	// The names it exported, so `run` can tell them from the shell's own and
 	// never hand them to another role's command (Codex on #639).
 	if !exported.is_empty() {
-		let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+		let mut names: Vec<&str> = earlier.clone();
+		names.extend(exported.iter().map(|(name, _)| name.as_str()).filter(|name| !earlier.contains(name)));
 		out.push_str("export ");
 		out.push_str(EXPORTED);
 		out.push('=');
@@ -217,6 +223,20 @@ fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, 
 /// Where `export` lists the names it put into a shell.
 const EXPORTED: &str = "ENVCTL_EXPORTED";
 
+/// The names an `export` put into this shell, from [`EXPORTED`].
+fn exported_names(shell: &IndexMap<String, String>) -> Vec<&str> {
+	shell
+		.get(EXPORTED)
+		.map(|names| names.split(',').filter(|name| !name.is_empty()).collect())
+		.unwrap_or_default()
+}
+
+/// Whether `name` is the shell's own: set, and not by an `export`. The one
+/// rule `export` and `run` both hold to.
+fn own(shell: &IndexMap<String, String>, exported: &[&str], name: &str) -> bool {
+	shell.contains_key(name) && !exported.contains(&name)
+}
+
 /// The environment `run` gives `command`: the shell's own variables, then
 /// `file`'s for any the shell does not set. A name `export` put into the
 /// shell (listed in [`EXPORTED`]) is not the shell's own: it came from a
@@ -224,14 +244,14 @@ const EXPORTED: &str = "ENVCTL_EXPORTED";
 /// `file` gives it if it has it (Codex on #639). The child is told not to
 /// export again, so a `nix develop .#rust` inside it adds nothing.
 fn run_environment(shell: &IndexMap<String, String>, file: &sops::Plain) -> (Vec<String>, Vec<(String, String)>) {
-	let exported: Vec<&str> = shell
-		.get(EXPORTED)
-		.map(|names| names.split(',').filter(|name| !name.is_empty()).collect())
-		.unwrap_or_default();
+	let exported = exported_names(shell);
 	let mut removed: Vec<String> = exported.iter().map(|name| (*name).to_owned()).collect();
 	removed.push(EXPORTED.to_owned());
-	let own = |name: &str| shell.contains_key(name) && !exported.contains(&name);
-	let mut set: Vec<(String, String)> = file.iter().filter(|(name, _)| !own(name)).map(|(name, value)| (name.clone(), value.clone())).collect();
+	let mut set: Vec<(String, String)> = file
+		.iter()
+		.filter(|(name, _)| !own(shell, &exported, name))
+		.map(|(name, value)| (name.clone(), value.clone()))
+		.collect();
 	set.push(("ENVCTL_NO_EXPORT".to_owned(), "1".to_owned()));
 	(removed, set)
 }
