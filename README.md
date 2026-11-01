@@ -322,9 +322,9 @@ delete `.env`.
     swapped out. envctl survives Ctrl-C, SIGTERM and SIGHUP while compose
     runs and removes its files after; only a SIGKILL leaves them, until the
     next run replaces them or the session ends. Defaults
-    are source constants: a `Config`'s, and compose's `RUST_LOG`, which
-    moves into each app's own file (#617); whether each `Config` default is
-    a constant, policy or a deployment value is the audit's (#617). The NixOS modules below put settings in the
+    are source constants, a `Config`'s (#617). `RUST_LOG` is each app's
+    own: its binary's default filter, or the app's file in `deploy/<role>/`;
+    neither compose nor an image sets one. The NixOS modules below put settings in the
     store, and nothing uses them.
 
 ### NixOS modules

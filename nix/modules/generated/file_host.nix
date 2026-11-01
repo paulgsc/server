@@ -138,11 +138,6 @@
       default = null;
       description = "The NATS server to connect to.\n\nRequired: no address is right on every host (#617). Compose's services set theirs; `make dev` takes its role's.\n\nUnset (null), the binary's own behaviour for an unset variable. Required.";
     };
-    RUST_LOG = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.\n\nUnset (null), the binary's default: `info`.";
-    };
     OTEL_EXPORTER_OTLP_ENDPOINT = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -152,6 +147,11 @@
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "The `service.environment` traces carry\n\nUnset (null), the binary's default: `development`.";
+    };
+    RUST_LOG = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.\n\nUnset (null), the binary's default: `info,async_nats=warn`.";
     };
   };
 
@@ -176,8 +176,8 @@
     TRANSCRIBE_ENABLED = "false";
     RUST_ROUNDS_ENABLED = "false";
     GAME_FEED_ENABLED = "false";
-    RUST_LOG = "info";
     ENVIRONMENT = "development";
+    RUST_LOG = "info,async_nats=warn";
   };
   # Required while another variable has a value (the binary's RULES).
   requiredWhen = [

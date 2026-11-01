@@ -76,8 +76,7 @@ RUN groupadd -r orchestrator && useradd -r -g orchestrator orchestrator
 COPY --from=builder /app/target/release/orchestrator /usr/local/bin/orchestrator
 
 # Environment variables
-ENV RUST_LOG=info \
-    RUST_BACKTRACE=1 \
+ENV RUST_BACKTRACE=1 \
     NATS_URL=nats://nats:4222
 
 USER orchestrator

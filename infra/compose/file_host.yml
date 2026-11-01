@@ -24,7 +24,6 @@ services:
       # ahead of the INPUT chain that firewall filters.
       - '127.0.0.1:3000:3000'
     environment:
-      - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
       - REDIS_URL=redis://redis:6379
       - NATS_URL=nats://nats:4222
