@@ -1092,8 +1092,10 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line; it is readable by
-    no route yet; and it is deleted with the account by both the sweep and
+    so neither the audio nor its hash reaches a log line; its audio is
+    readable by no route yet, and the one route that reads its row,
+    `GET /voice-notes/:id/heard` (below), reads only whether the caller's
+    subject holds it; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
     **Home's word that Drive holds a Studio take too is
@@ -1165,11 +1167,21 @@ nowhere is marked as such and belongs to review.
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home only as a transcript filed for the Jobs
-    mailbox (invariant 19), for the routines to read, and since
+    it kept. The text leaves home in two ways only. One is a transcript
+    filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
-    its time, how sure the model was and its language (`words`); the words are readable by
-    no route yet, and the audio never leaves. A probability is not text, so
+    its time, how sure the model was and its language (`words`). The other,
+    since paulgsc/some-ui#2428 (MIC10; the owner took its recommendation that
+    home give a take's words back to the phone, 2026-11-01), is
+    `GET /voice-notes/:id/heard`'s answer, to a session of the
+    note's own subject only (another subject's note is a `404`, as an
+    unknown one is): the text of the newest transcript that heard speech
+    (`voice_repo::transcript::heard`, the one
+    `voice_repo::transcript::words` takes), or empty text for a note only ever found silent, with its language, model and
+    when it was heard, and nothing while no model has ended the note. It
+    reads no audio, no word and no probability, and its span skips every
+    argument. The words are readable by no route yet, and the audio never
+    leaves. A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
@@ -1192,7 +1204,9 @@ nowhere is marked as such and belongs to review.
     `mailbox::pass`'s
     `a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index`
     and `a_list_that_does_not_read_records_nothing`, and `handlers::voice`'s
-    `the_phone_reads_which_of_its_takes_home_knows_drive_holds`; `voice_repo::transcript`'s
+    `the_phone_reads_which_of_its_takes_home_knows_drive_holds`, and for
+    the text read back `handlers::voice`'s
+    `the_phone_reads_back_what_home_heard_in_its_note`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,

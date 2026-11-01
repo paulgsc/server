@@ -9,11 +9,18 @@
 //! GET /voice-notes/on-drive?ids=      → { onDrive: [{ note, listedAt }] }:
 //!                                      which of the phone's Studio takes
 //!                                      home knows Drive holds too
+//! GET /voice-notes/:id/heard          → { heard: null | { text, language,
+//!                                      model, heardAt } }: what home heard
+//!                                      in the note, or null while it has
+//!                                      not heard it yet
 //! ```
 //!
-//! The read (paulgsc/some-ui#2401, HF11) answers from what the build-journal
-//! session told home through the mailbox (`voice_repo::on_drive`); home
-//! never reaches Drive.
+//! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
+//! build-journal session told home through the mailbox
+//! (`voice_repo::on_drive`); home never reaches Drive. The heard read
+//! (paulgsc/some-ui#2428, MIC10) answers from the transcribe worker's rows
+//! (`voice_repo::transcript::heard`), so a screen that wants a take's words
+//! gets them from home rather than from a recognizer on the phone.
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
@@ -53,7 +60,8 @@ where
 {
 	let table = RouteTable::new()
 		.put("/voice-notes/:id", handlers::put_note)
-		.get("/voice-notes/on-drive", handlers::get_on_drive);
+		.get("/voice-notes/on-drive", handlers::get_on_drive)
+		.get("/voice-notes/:id/heard", handlers::get_heard);
 
 	Module::versioned("voice", table).with_cors(cors)
 }
