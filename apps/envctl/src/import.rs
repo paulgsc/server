@@ -177,12 +177,48 @@ pub(crate) struct Change {
 	pub(crate) added: Vec<String>,
 	pub(crate) changed: Vec<String>,
 	pub(crate) kept: usize,
+	/// Stated at the binary's default, since nothing set them.
+	pub(crate) defaulted: Vec<String>,
+	/// Stated unset (an empty value), having no default and nothing setting
+	/// them.
+	pub(crate) unset: Vec<String>,
 }
 
 impl Change {
 	pub(crate) const fn is_empty(&self) -> bool {
-		self.added.is_empty() && self.changed.is_empty()
+		self.added.is_empty() && self.changed.is_empty() && self.defaulted.is_empty() && self.unset.is_empty()
 	}
+}
+
+/// The names compose's own `environment:` sets for `binary`'s labelled
+/// services: compose's wiring, which a deployment file never states.
+pub(crate) fn wired(raw: &Value, binary: &str) -> std::collections::BTreeSet<String> {
+	compose::services(raw)
+		.into_iter()
+		.filter(|(_, service)| compose::labels(service).get(compose::LABEL).is_some_and(|label| label == binary))
+		.flat_map(|(_, service)| compose::own_environment(service).into_keys())
+		.collect()
+}
+
+/// `file` stating every variable of `schema` but compose's own (`wired`):
+/// one it lacks takes the binary's default, or an empty value, "decided:
+/// unset", when it has none (#616). The names each way, in schema order.
+pub(crate) fn complete(schema: &Schema, wired: &std::collections::BTreeSet<String>, file: &mut Plain) -> (Vec<String>, Vec<String>) {
+	let mut defaulted = Vec::new();
+	let mut unset = Vec::new();
+	for variable in &schema.variables {
+		if wired.contains(&variable.name) || file.contains_key(&variable.name) {
+			continue;
+		}
+		if let Some(default) = &variable.default {
+			file.insert(variable.name.clone(), default.clone());
+			defaulted.push(variable.name.clone());
+		} else {
+			file.insert(variable.name.clone(), String::new());
+			unset.push(variable.name.clone());
+		}
+	}
+	(defaulted, unset)
 }
 
 /// `existing` with `imported` over it, and what moved.
@@ -223,9 +259,64 @@ fn read_ours(ours: &[String], schemas: &[Schema], raw: &Value, role: &str) -> Re
 	Ok((files, conflicts))
 }
 
+/// Each file `files` holds, merged into what is there, completed (every
+/// variable stated), and written through sops unless `dry_run`; the names
+/// of each change printed. Whether anything was written.
+fn write(repo: &Path, schemas: &[Schema], raw: &Value, files: &IndexMap<PathBuf, Plain>, dry_run: bool, sops_program: &[String]) -> Result<bool> {
+	let mut wrote = false;
+	for (relative, imported) in files {
+		let path = repo.join(relative);
+		let existing = if path.exists() { sops::decrypt(sops_program, repo, relative)? } else { Plain::new() };
+		let (mut merged, mut change) = merge(&existing, imported);
+		let app = relative
+			.file_name()
+			.and_then(|name| name.to_str())
+			.and_then(|name| name.strip_suffix(sops::SUFFIX))
+			.unwrap_or_default();
+		if let Some(schema) = schemas.iter().find(|schema| schema.binary == app) {
+			let (defaulted, unset) = complete(schema, &wired(raw, app), &mut merged);
+			change.defaulted = defaulted;
+			change.unset = unset;
+		}
+		let shown = relative.display();
+		if path.exists() && change.is_empty() {
+			println!("{shown}: already what runs ({} variable(s)).", change.kept);
+			continue;
+		}
+		println!(
+			"{shown}: {} new, {} changed, {} the same, {} at its default, {} unset.",
+			change.added.len(),
+			change.changed.len(),
+			change.kept,
+			change.defaulted.len(),
+			change.unset.len()
+		);
+		for name in &change.added {
+			println!("  + {name}");
+		}
+		for name in &change.changed {
+			println!("  ~ {name}");
+		}
+		for name in &change.defaulted {
+			println!("  + {name} (its default; nothing set it)");
+		}
+		for name in &change.unset {
+			println!("  + {name} (unset: an empty value)");
+		}
+		if dry_run {
+			continue;
+		}
+		let encrypted = sops::encrypt(sops_program, repo, relative, &merged)?;
+		std::fs::create_dir_all(path.parent().unwrap_or(repo)).with_context(|| format!("creating {}", path.display()))?;
+		std::fs::write(&path, encrypted).with_context(|| format!("writing {}", path.display()))?;
+		wrote = true;
+	}
+	Ok(wrote)
+}
+
 /// Every running container of ours (or those named) into
 /// `deploy/<role>/`, through `sops`.
-pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String], dry_run: bool, sops_program: &str) -> Result<()> {
+pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String], dry_run: bool, sops_program: &[String]) -> Result<()> {
 	eprintln!("envctl import: docker compose config, for what compose itself sets...");
 	let raw = compose::config(repo).context("docker compose config failed, so compose's own wiring is unknown")?;
 	let Some(project) = raw.get("name").and_then(Value::as_str).map(str::to_owned) else {
@@ -264,31 +355,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 		}
 	}
 	files.insert(sops::relative(role, sops::COMPOSE), compose_found);
-	let mut wrote = false;
-	for (relative, imported) in &files {
-		let path = repo.join(relative);
-		let existing = if path.exists() { sops::decrypt(sops_program, repo, relative)? } else { Plain::new() };
-		let (merged, change) = merge(&existing, imported);
-		let shown = relative.display();
-		if path.exists() && change.is_empty() {
-			println!("{shown}: already what runs ({} variable(s)).", change.kept);
-			continue;
-		}
-		println!("{shown}: {} new, {} changed, {} the same.", change.added.len(), change.changed.len(), change.kept);
-		for name in &change.added {
-			println!("  + {name}");
-		}
-		for name in &change.changed {
-			println!("  ~ {name}");
-		}
-		if dry_run {
-			continue;
-		}
-		let encrypted = sops::encrypt(sops_program, repo, relative, &merged)?;
-		std::fs::create_dir_all(path.parent().unwrap_or(repo)).with_context(|| format!("creating {}", path.display()))?;
-		std::fs::write(&path, encrypted).with_context(|| format!("writing {}", path.display()))?;
-		wrote = true;
-	}
+	let wrote = write(repo, schemas, &raw, &files, dry_run, sops_program)?;
 	if !conflicts.is_empty() {
 		println!(
 			"Two containers disagree on {}; the first was kept. Check with `sops edit` before committing.",
@@ -404,6 +471,19 @@ mod tests {
 		let mut disagree = again;
 		disagree["Config"]["Env"] = json!(["GF_LOG=warn", "GF_PASSWORD=pw"]);
 		assert_eq!(compose_values(&raw_twice, &[other, disagree]).1, ["LOG"]);
+	}
+
+	#[test]
+	fn every_variable_is_stated_its_default_or_unset_but_compose_wiring() {
+		let mut on = var("ON", Kind::Bool);
+		on.default = Some("false".into());
+		let probe = schema("probe", vec![on, var("URL", Kind::String), var("WIRE", Kind::String), var("SET", Kind::String)]);
+		let wired = std::collections::BTreeSet::from(["WIRE".to_owned()]);
+		let mut file = plain(&[("SET", "x")]);
+		let (defaulted, unset) = super::complete(&probe, &wired, &mut file);
+		assert_eq!((defaulted, unset), (vec!["ON".to_owned()], vec!["URL".to_owned()]));
+		assert_eq!(file, plain(&[("SET", "x"), ("ON", "false"), ("URL", "")]), "compose's wiring is never stated");
+		assert_eq!(super::wired(&raw(), "probe"), ["LOG", "MIXED", "THREADS", "WIRE"].into_iter().map(str::to_owned).collect());
 	}
 
 	#[test]

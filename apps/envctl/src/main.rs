@@ -188,11 +188,12 @@ fn files_of(repo: &Path, role: &str) -> Vec<String> {
 }
 
 /// One role's files, decrypted into memory, and what make gives compose.
-fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program: &str) -> Result<Deployment> {
+fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program: &[String]) -> Result<Deployment> {
+	// An empty value is "decided: unset" (#616): the binary sees it unset.
 	let read = |app: &str| -> Result<Option<sops::Plain>> {
 		let relative = sops::relative(role, app);
 		if repo.join(&relative).exists() {
-			sops::decrypt(sops_program, repo, &relative).map(Some)
+			sops::decrypt(sops_program, repo, &relative).map(|file| Some(sops::set_only(file)))
 		} else {
 			Ok(None)
 		}
@@ -321,7 +322,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			if !repo.join(&relative).exists() {
 				bail!("{} does not exist; `sops edit {}` writes it", relative.display(), relative.display());
 			}
-			let file = sops::decrypt(&sops_program, &repo, &relative)?;
+			let file = sops::set_only(sops::decrypt(&sops_program, &repo, &relative)?);
 			let Some((program, args)) = command.split_first() else {
 				bail!("no command to run");
 			};
