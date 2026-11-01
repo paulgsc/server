@@ -43,6 +43,8 @@ pub(crate) enum Key {
 	Enter,
 	Yes,
 	Quit,
+	/// Any other key: at the review, it goes back.
+	Other,
 }
 
 /// What the checklist asks for after a key.
@@ -64,6 +66,10 @@ pub(crate) struct Model {
 	/// The row on the page.
 	row: usize,
 	page_size: usize,
+	/// The rows a page asks for (`--page`), before the terminal's height.
+	wanted: usize,
+	/// The terminal's width, to cut each line to; 0 for no limit.
+	width: usize,
 	reviewing: bool,
 }
 
@@ -111,7 +117,24 @@ impl Model {
 			page: 0,
 			row: 0,
 			page_size: page_size.max(1),
+			wanted: page_size.max(1),
+			width: 0,
 			reviewing: false,
+		}
+	}
+
+	/// Fit to a terminal of `width` × `height`: each line cut to the width,
+	/// and a page no taller than what is left beside the header and keys, so
+	/// the cursor's row is always on screen (Codex on #629). The cursor keeps
+	/// its item.
+	pub(crate) fn fit(&mut self, width: usize, height: usize) {
+		self.width = width;
+		let rows = self.wanted.min(height.saturating_sub(5)).max(1);
+		if rows != self.page_size {
+			let at = self.page * self.page_size + self.row;
+			self.page_size = rows;
+			self.page = at / rows;
+			self.row = at % rows;
 		}
 	}
 
@@ -190,8 +213,17 @@ impl Model {
 		Step::Continue
 	}
 
-	/// The screen: the group and page, its rows, and the keys; or the review.
+	/// The screen, each line cut to the terminal's width.
 	pub(crate) fn render(&self, file: &str) -> String {
+		let screen = self.screen(file);
+		if self.width == 0 {
+			return screen;
+		}
+		screen.lines().map(|line| line.chars().take(self.width).collect::<String>() + "\n").collect()
+	}
+
+	/// The group and page, its rows, and the keys; or the review.
+	fn screen(&self, file: &str) -> String {
 		let mut out = String::new();
 		if self.reviewing {
 			let _ = writeln!(out, "{file}: prune {} variable(s)?\n", self.ticked().len());
@@ -308,6 +340,9 @@ mod terminal {
 		let _raw = Raw;
 		execute!(stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
 		loop {
+			if let Ok((width, height)) = terminal::size() {
+				model.fit(usize::from(width), usize::from(height));
+			}
 			let screen = model.render(file).replace('\n', "\r\n");
 			execute!(stdout(), cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
 			print!("{screen}");
@@ -329,7 +364,8 @@ mod terminal {
 				KeyCode::Char('y' | 'Y') => Key::Yes,
 				KeyCode::Char('q') | KeyCode::Esc => Key::Quit,
 				KeyCode::Char('c') if pressed.modifiers.contains(KeyModifiers::CONTROL) => Key::Quit,
-				_ => continue,
+				// Not ignored: at the review, any other key goes back, as it says.
+				_ => Key::Other,
 			};
 			match model.key(key) {
 				Step::Continue => {}
@@ -423,6 +459,31 @@ mod tests {
 		assert_eq!(pruned.get("A1").map(String::as_str), Some(""), "a declared one is stated unset");
 		assert!(!pruned.contains_key("OLD"), "an undeclared one is removed");
 		assert_eq!(pruned.get("A3").map(String::as_str), Some("y"));
+	}
+
+	#[test]
+	fn any_other_key_at_the_review_goes_back_and_y_then_writes_nothing_unasked() {
+		let (mut model, _) = model(10);
+		model.key(Key::Toggle);
+		model.key(Key::Enter);
+		assert!(model.render("f").contains("prune 1 variable(s)?"));
+		assert_eq!(model.key(Key::Other), Step::Continue, "`n`, or any key the checklist does not use");
+		assert!(model.render("f").contains("> [x] A1"), "back to the checklist");
+		assert_eq!(model.key(Key::Yes), Step::Continue, "y outside the review writes nothing");
+	}
+
+	#[test]
+	fn the_screen_fits_the_terminal_and_the_cursor_keeps_its_item() {
+		let (mut model, _) = model(10);
+		model.key(Key::Down);
+		model.key(Key::Down);
+		model.fit(80, 7);
+		let screen = model.render("f");
+		assert!(screen.lines().count() <= 7, "no taller than the terminal: {screen}");
+		assert!(screen.contains("page 2/2") && screen.contains("> [ ] A3"), "the cursor keeps A3 on screen: {screen}");
+		model.fit(30, 7);
+		let narrow = model.render("deploy/home/probe.sops.env");
+		assert!(narrow.lines().all(|line| line.chars().count() <= 30), "no wider than the terminal: {narrow}");
 	}
 
 	#[test]
