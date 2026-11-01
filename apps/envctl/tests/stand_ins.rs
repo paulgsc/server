@@ -581,3 +581,21 @@ fn a_tools_file_runs_one_command_and_make_up_never_reads_it() {
 	let preflight = fixture.envctl(&["preflight", "--role", "home"]).output().unwrap();
 	assert!(preflight.status.success() && !printed(&preflight).contains("tools"), "{}", printed(&preflight));
 }
+
+#[test]
+fn a_value_wrapped_in_quotes_is_named_and_never_shown() {
+	let fixture = Fixture::new("quoted").unwrap();
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	// DATABASE_URL="sqlite:///x.db", quotes and all, as sops keeps them.
+	fs::write(
+		deploy.join("tools.sops.env"),
+		"DATABASE_URL=ENC[InNxbGl0ZTovLy94LmRiIg==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
+	)
+	.unwrap();
+	let run = fixture.envctl(&["run", "--role", "home", "--app", "tools", "--", "true"]).output().unwrap();
+	let shown = printed(&run);
+	assert!(run.status.success(), "named, never refused: {shown}");
+	assert!(shown.contains("deploy/home/tools.sops.env: DATABASE_URL wrapped in quotes"), "{shown}");
+	assert!(!shown.contains("sqlite"), "never the value: {shown}");
+}
