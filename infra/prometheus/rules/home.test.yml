@@ -53,12 +53,28 @@ tests:
         alertname: MailboxPollerFailing
         exp_alerts:
           - exp_labels:
-              error: not_found
               objective: MI3
-              says: "The Jobs mailbox poller has failed every pass for 45 minutes (not_found)."
+              says: "The Jobs mailbox poller has failed every pass for 45 minutes; the MAILBOX dashboard's FAILING panel says why."
       - eval_time: 50m
         alertname: MailboxPollerStale
         exp_alerts: []
+
+  - name: an outage whose class changes every pass still alerts (Codex on #643)
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x60'
+      - series: 'mailbox_poll_failing{job="file_host",error="transport"}'
+        values: '1x14 0x15 1x14 0x15'
+      - series: 'mailbox_poll_failing{job="file_host",error="http"}'
+        values: '0x14 1x15 0x14 1x15'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: MailboxPollerFailing
+        exp_alerts:
+          - exp_labels:
+              objective: MI3
+              says: "The Jobs mailbox poller has failed every pass for 45 minutes; the MAILBOX dashboard's FAILING panel says why."
 
   - name: one failing pass that recovers does not alert
     interval: 1m
