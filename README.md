@@ -163,9 +163,10 @@ its key: nothing is retyped and there is no `.env` (#614).
     error; the reads that are not configuration carry an `#[allow]` saying so.
   - _Tolerance:_ a free-text value (a URL, a key, a path) is checked by what
     uses it, not by clap. Dependencies read variables of
-    their own that no `Config` declares, with their own fallbacks: tokio's
-    `TOKIO_WORKER_THREADS`, polars' `POLARS_MAX_THREADS`, and the OTel SDK's
-    `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_BSP_*`.
+    their own that no `Config` declares, with their own fallbacks: the OTel
+    SDK's `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS` and
+    `OTEL_BSP_*`. Tokio's `TOKIO_WORKER_THREADS` is not one of them: each
+    binary sets its worker threads in its `#[tokio::main]` (#617).
     An app's deployment file may set the OTel SDK's; its container gets them
     with the rest of the file.
 
@@ -307,10 +308,9 @@ delete `.env`.
     swapped out. envctl survives Ctrl-C, SIGTERM and SIGHUP while compose
     runs and removes its files after; only a SIGKILL leaves them, until the
     next run replaces them or the session ends. Defaults
-    are source constants: a `Config`'s, and the few compose keeps
-    (`RUST_LOG`, `TOKIO_WORKER_THREADS`, `POLARS_MAX_THREADS`,
-    `OLLAMA_HOST_PORT`); whether each is a constant, policy or a deployment
-    value is the audit's (#617). The NixOS modules below put settings in the
+    are source constants: a `Config`'s, and compose's `RUST_LOG`, which
+    moves into each app's own file (#617); whether each `Config` default is
+    a constant, policy or a deployment value is the audit's (#617). The NixOS modules below put settings in the
     store, and nothing uses them.
 
 ### NixOS modules
