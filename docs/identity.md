@@ -193,7 +193,7 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -760,7 +760,9 @@ nowhere is marked as such and belongs to review.
       (never a failure or a silence) of a note said for `reflection`, `jobs`,
       `scene` or `studio`, the kinds a routine reads and the mailbox's
       `transcript` folder takes (never a game bite, a soundbite, a
-      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180), as `transcript-<note>-<n>.json` in
+      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
+      and never of a note the owner set aside before it was filed
+      (`voice_note_set_aside`, invariant 23), as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
@@ -810,8 +812,11 @@ nowhere is marked as such and belongs to review.
       `written_reflection` and `drama_prompt` keep as the routine may read
       it (invariants 29 and 31), so it reads neither of those tables; each
       reflection or scene note's id, what it was said for and which one, and
-      when it was recorded (`voice_note`, never `voice_note_audio`); and those
-      notes' transcripts in `mailbox_outgoing` that the mailbox took. It
+      when it was recorded (`voice_note`, never `voice_note_audio`), but for
+      a note the owner set aside (`voice_note_set_aside`, invariant 23),
+      which it counts no longer and a prompt naming it waits on no longer;
+      and those notes' transcripts in `mailbox_outgoing` that the mailbox
+      took. It
       carries only what the routine needs to know what to read: when home
       last took in what it counts and the first moment still to come at
       which it would say something else (`validUntil`), the names of the
@@ -891,7 +896,8 @@ nowhere is marked as such and belongs to review.
     `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
     `the_due_query_reads_only_what_arrived_after_the_mark`,
     `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
-    and `the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
+    `the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
+    and `a_note_set_aside_leaves_what_the_routines_read`;
     `mailbox::index`'s
     `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
     `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`,
@@ -1093,9 +1099,9 @@ nowhere is marked as such and belongs to review.
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line; its audio is
-    readable by no route yet, and the one route that reads its row,
-    `GET /voice-notes/:id/heard` (below), reads only whether the caller's
-    subject holds it; and it is deleted with the account by both the sweep and
+    readable by no route yet, and the two routes that read its row,
+    `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
+    (both below), read only whether the caller's subject holds it; and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
     **Home's word that Drive holds a Studio take too is
@@ -1123,6 +1129,29 @@ nowhere is marked as such and belongs to review.
     recorded and when its list was made, and reads no `voice_note` row; the
     phone lets a take go on it under the owner's choice (paulgsc/some-ui
     LG1).
+
+    **Home's mark that the owner let a note go is `voice_note_set_aside`,
+    append-only, and sets the note aside without deleting it** (the
+    owner's D3 on paulgsc/some-ui epic #2368, 2026-10-31: Let go on any
+    voice take sets it aside and keeps it; paulgsc/some-ui#2372, MIC2). It
+    is its own table so that no note is updated
+    (`20261101000900_create_voice_note_set_aside`): the subject, the note's
+    id, when the owner let it go on the phone and when home recorded it.
+    `PUT /voice-notes/:id/set-aside?at=`, whose span skips its arguments, is
+    its one writer (`voice_repo::set_aside::set_aside`), for a note the
+    caller's subject holds, in the statement that reads it: another
+    subject's note, or one home does not hold, is a `404` and marks nothing.
+    A note is marked once, by the first mark; a repeat is a `204` that
+    changes nothing, its time included, and a mark is never updated (the
+    trigger aborts an `UPDATE`) or taken back (no route un-sets one: the
+    phone has no undo for Let go). It leaves with the account by both the
+    sweep and its own trigger (invariant 12). The note, its audio and
+    every transcript stay. What a mark changes is the work done on the note
+    from then on: the transcriber's queue skips it
+    (`voice_repo::transcript::waiting`), no transcript of it is filed for
+    the mailbox, and the reflections index counts neither it nor a
+    transcript of it already filed (invariant 19). The table holds no audio
+    and nothing said.
 
     **What home heard in a note is `voice_transcript`, and when each word
     was said is `voice_transcript_word`, append-only too**
@@ -1205,6 +1234,15 @@ nowhere is marked as such and belongs to review.
     `a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index`
     and `a_list_that_does_not_read_records_nothing`, and `handlers::voice`'s
     `the_phone_reads_which_of_its_takes_home_knows_drive_holds`, and for
+    the set-aside mark `voice_repo::set_aside`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `a_held_note_is_set_aside_once_and_kept`,
+    `no_mark_is_ever_updated_and_marks_leave_with_the_account` and
+    `the_transcribers_queue_skips_a_note_set_aside`, `mailbox_repo`'s
+    `a_note_set_aside_leaves_what_the_routines_read`,
+    `mailbox::index::reflections`'s `a_prompt_waits_on_no_note_set_aside`,
+    and `handlers::voice`'s
+    `the_phone_sets_its_own_note_aside_once_and_home_keeps_it`, and for
     the text read back `handlers::voice`'s
     `the_phone_reads_back_what_home_heard_in_its_note`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
@@ -1228,7 +1266,7 @@ nowhere is marked as such and belongs to review.
     `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.

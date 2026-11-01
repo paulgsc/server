@@ -10,6 +10,9 @@
 //! **The one way audio reaches home** (docs/identity.md invariant 23):
 //! [`put_note`] is the only caller of `voice_repo::put_note`, and nothing
 //! writes `voice_note`, `voice_note_audio` or `game_bite` in the background.
+//! [`put_set_aside`] is likewise the only caller of
+//! `voice_repo::set_aside::set_aside`, the one writer of
+//! `voice_note_set_aside`; it writes no note.
 //! Neither the audio, nor its hash, nor a bite's strip or context line
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
@@ -23,14 +26,14 @@ use crate::FileHostError;
 use axum::{
 	body::Bytes,
 	extract::{Path, Query, State},
-	http::{header::CONTENT_TYPE, HeaderMap},
+	http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
 	Json,
 };
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
-use voice_repo::{transcript::Hearing, Note, Said, SaidBite, VoiceError, REWRITTEN};
+use voice_repo::{set_aside::SetAside, transcript::Hearing, Note, Said, SaidBite, VoiceError, REWRITTEN};
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
 #[derive(Debug, Deserialize)]
@@ -215,7 +218,9 @@ pub struct NoteHeard {
 /// the newest transcript that heard speech, or, when none did, the newest
 /// that found the note silent, as empty text (`voice_repo::transcript::heard`).
 /// `heard` is null while no model has ended the note, and stays null for one
-/// every attempt failed on; the phone keeps the take either way.
+/// every attempt failed on, or one set aside (`PUT /voice-notes/:id/set-aside`)
+/// before any model ended it, since the transcriber skips those; the phone
+/// keeps the take either way.
 ///
 /// Reads only; it writes nothing, sends nothing, and reads no audio and no
 /// word. The text never reaches a log line: the span skips every argument.
@@ -239,6 +244,47 @@ pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id
 		}),
 	};
 	Ok(Json(NoteHeard { heard }))
+}
+
+/// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
+#[derive(Debug, Deserialize)]
+pub struct SetAsideQuery {
+	at: Option<String>,
+}
+
+/// `PUT /voice-notes/:id/set-aside?at=`
+///
+/// The owner let the caller's note `id` go on the phone (the owner's D3 on
+/// paulgsc/some-ui epic #2368, MIC2 paulgsc/some-ui#2372): home sets it
+/// aside and keeps it (`voice_repo::set_aside`). The note, its audio and any
+/// transcript stay; the transcriber's queue, the transcripts filed for the
+/// mailbox and the reflections index skip it from then on.
+///
+/// Idempotent: the first mark stands, so a repeat (a retry, or another
+/// device's) is a `204` that changes nothing, its time included. There is
+/// no route that un-sets a mark: the phone has no undo for Let go.
+///
+/// `BEGIN IMMEDIATE`, so the write and the read that tells an earlier mark
+/// from no note see one snapshot. No body, in either direction.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 naming `at` when
+/// it is missing or not an RFC 3339 instant, 404 for a note the caller's
+/// subject does not hold (another subject's included), and 500 for a storage
+/// failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_set_aside_put", skip_all, fields(otel.kind = "server"))]
+pub async fn put_set_aside(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, Query(query): Query<SetAsideQuery>) -> Result<StatusCode, FileHostError> {
+	let Some(at) = query.at.as_deref().and_then(voice_repo::set_aside::when) else {
+		return Err(FileHostError::unprocessable_entity([("at", "not an RFC 3339 instant")]));
+	};
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let marked = voice_repo::set_aside::set_aside(&mut tx, subject.as_str(), &id, &at, &now()).await.map_err(refusal)?;
+	tx.commit().await?;
+	match marked {
+		SetAside::Marked | SetAside::AlreadyMarked => Ok(StatusCode::NO_CONTENT),
+		SetAside::NotHeld => Err(FileHostError::NotFound),
+	}
 }
 
 #[cfg(test)]
@@ -351,7 +397,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 3);
+		assert_eq!(module().descriptors().count(), 4);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -601,6 +647,76 @@ mod tests {
 			get(&app, "/voice-notes/n1/heard", Some(&other)).await.1,
 			json!({ "heard": { "text": "", "language": null, "model": SMALL, "heardAt": "2026-10-25T17:00:00.000Z" } })
 		);
+	}
+
+	/// MIC2 (paulgsc/some-ui#2372, D3): Let go sets the caller's own note aside
+	/// and keeps it. A repeat is a 204 that leaves the first mark's time; an
+	/// unknown note and another subject's are a 404; a missing or wrong `at`
+	/// is a 422; and the route needs a session and a trusted origin.
+	#[tokio::test]
+	async fn the_phone_sets_its_own_note_aside_once_and_home_keeps_it() {
+		const SET_ASIDE: &str = "/voice-notes/n1/set-aside?at=2026-11-01T02:15:00-07:00";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		let marks = || async {
+			sqlx::query_as::<_, (String, String, String)>("SELECT subject_id, note_id, set_aside_at FROM voice_note_set_aside ORDER BY subject_id")
+				.fetch_all(&pool)
+				.await
+				.unwrap()
+		};
+
+		assert_eq!(put(&app, SET_ASIDE, None, "text/plain", b"").await.0, StatusCode::UNAUTHORIZED);
+		let request = Request::builder()
+			.method(Method::PUT)
+			.uri(SET_ASIDE)
+			.header(&phone.0, &phone.1)
+			.header("origin", "https://evil.app.test")
+			.header("sec-fetch-site", "cross-site")
+			.body(Body::empty())
+			.unwrap();
+		assert_eq!(app.clone().oneshot(request).await.unwrap().status(), StatusCode::FORBIDDEN);
+		assert!(marks().await.is_empty(), "nothing refused was written");
+
+		let (status, refused) = put(&app, SET_ASIDE, Some(&other), "text/plain", b"").await;
+		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to set aside: {refused}");
+		assert_eq!(
+			put(&app, "/voice-notes/n9/set-aside?at=2026-11-01T09:15:00Z", Some(&phone), "text/plain", b"").await.0,
+			StatusCode::NOT_FOUND
+		);
+		assert_eq!(
+			put(&app, "/voice-notes/on-drive/set-aside?at=2026-11-01T09:15:00Z", Some(&phone), "text/plain", b"")
+				.await
+				.0,
+			StatusCode::NOT_FOUND
+		);
+		for bad in ["/voice-notes/n1/set-aside", "/voice-notes/n1/set-aside?at=soon"] {
+			let (status, refused) = put(&app, bad, Some(&phone), "text/plain", b"").await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+			assert!(refused["error"]["details"]["at"].is_array(), "{refused}");
+		}
+		assert!(marks().await.is_empty());
+
+		let (status, body) = put(&app, SET_ASIDE, Some(&phone), "text/plain", b"").await;
+		assert_eq!((status, body), (StatusCode::NO_CONTENT, Value::Null));
+		let first = vec![(A.to_owned(), String::from("n1"), String::from("2026-11-01T09:15:00.000Z"))];
+		assert_eq!(marks().await, first);
+		let again = put(&app, "/voice-notes/n1/set-aside?at=2026-11-02T09:15:00Z", Some(&phone), "text/plain", b"").await;
+		assert_eq!(again, (StatusCode::NO_CONTENT, Value::Null), "a repeat is idempotent");
+		assert_eq!(marks().await, first, "the first mark's time stands");
+
+		// Home keeps the note: its audio, and what it heard in it, are as before.
+		let audio: Vec<u8> = sqlx::query_scalar("SELECT body FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 'n1'")
+			.bind(A)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(audio, TAKE);
+		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, json!({ "heard": null })));
+		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.1["change"], "unchanged");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

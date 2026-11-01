@@ -18,8 +18,10 @@
 //! took from home as home filed it and home has not archived (the copy in
 //! `mailbox_outgoing` of what `written_reflection` and `drama_prompt` keep,
 //! which is what the routine can read); every reflection or scene voice note
-//! home holds (`voice_note`); and each of those notes' transcripts the
-//! mailbox took. No new table.
+//! home holds (`voice_note`) and the owner has not set aside
+//! (`voice_note_set_aside`, D3 on paulgsc/some-ui epic #2368); and each of
+//! those notes' transcripts the mailbox took. A prompt naming a note set
+//! aside waits on it no longer. The index keeps no table of its own.
 //!
 //! **What it leaves to the routine**, since home holds none of it: Drive's
 //! own files. A reflection or prompt shared to Drive before the phone sent
@@ -509,20 +511,22 @@ fn waiting_groups(
 	groups
 }
 
-/// The prompts no drama answers, oldest first, each with the notes it names.
+/// The prompts no drama answers, oldest first, each with the notes it names
+/// but those the owner set aside (`set_aside`), which it waits on no longer.
 fn waiting_prompts(
 	prompts: &[TakenFile],
 	answered: &BTreeSet<String>,
-	newest: &HashMap<&str, (u64, &HeldTranscript)>,
+	(newest, set_aside): (&HashMap<&str, (u64, &HeldTranscript)>, &[String]),
 	moments: &mut Moments,
 	skipped: &mut Vec<String>,
 ) -> Vec<Asked> {
 	let mut waiting = Vec::new();
 	for file in prompts {
-		let (Some((prompt, named)), Some(taken)) = (prompt_of(file), instant(&file.handed_at)) else {
+		let (Some((prompt, mut named)), Some(taken)) = (prompt_of(file), instant(&file.handed_at)) else {
 			skipped.push(file.name.clone());
 			continue;
 		};
+		named.retain(|(_, id)| !set_aside.contains(id));
 		if answered.contains(&prompt.prompt) {
 			continue;
 		}
@@ -645,7 +649,7 @@ fn computed_index(inputs: &ReflectionsInputs, now: DateTime<Utc>, as_of: Option<
 	let newest = newest_transcripts(&inputs.transcripts);
 	let gathered = gather(&inputs.reflections, &mut skipped);
 	let reflections = waiting_groups(gathered, &answered, (&inputs.notes, &newest), &mut moments);
-	let prompts = waiting_prompts(&inputs.prompts, &dramas, &newest, &mut moments, &mut skipped);
+	let prompts = waiting_prompts(&inputs.prompts, &dramas, (&newest, &inputs.set_aside), &mut moments, &mut skipped);
 	let unopened = unopened(inputs, &mut moments, &mut skipped);
 	skipped.sort();
 	let valid_until = moments.first.map(written);
@@ -1040,6 +1044,30 @@ mod tests {
 				.contains("The scene I want"),
 			"never a prompt's words"
 		);
+	}
+
+	/// D3 (paulgsc/some-ui epic #2368): a prompt waits no longer on a note the
+	/// owner set aside, and names it no more; the rest it names are as before.
+	#[test]
+	fn a_prompt_waits_on_no_note_set_aside() {
+		let named = [("drama-20261030T071503120Z.voice-1.webm", "n1"), ("drama-20261030T071503120Z.voice-2.webm", "n2")];
+		let mut inputs = ReflectionsInputs {
+			prompts: vec![prompt("drama-20261030T071503120Z", &named, "2026-10-30T07:16:00.000Z")],
+			transcripts: vec![transcript("transcript-n1-1.json")],
+			..ReflectionsInputs::default()
+		};
+		assert_eq!(index(&inputs, "2026-10-31T15:00:00.000Z")["prompts"][0]["voice"]["state"], "waiting");
+		inputs.set_aside = vec![String::from("n2")];
+		let value = index(&inputs, "2026-10-31T15:00:00.000Z");
+		assert_eq!(
+			value["prompts"][0]["notes"],
+			json!([{
+				"file": "drama-20261030T071503120Z.voice-1.webm",
+				"note": "n1",
+				"transcript": { "name": "transcript-n1-1.json", "sha256": "sha-of-transcript-n1-1.json" }
+			}])
+		);
+		assert_eq!(value["prompts"][0]["voice"]["state"], "heard");
 	}
 
 	/// Step 4: every word id with its dictionary form, across every deck of

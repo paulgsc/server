@@ -13,6 +13,10 @@
 //!                                      model, heardAt } }: what home heard
 //!                                      in the note, or null while it has
 //!                                      not heard it yet
+//! PUT /voice-notes/:id/set-aside?at=  → 204, no body: the owner let the
+//!                                      note go; home sets it aside and
+//!                                      keeps it (idempotent, the first
+//!                                      mark stands)
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -20,7 +24,10 @@
 //! (`voice_repo::on_drive`); home never reaches Drive. The heard read
 //! (paulgsc/some-ui#2428, MIC10) answers from the transcribe worker's rows
 //! (`voice_repo::transcript::heard`), so a screen that wants a take's words
-//! gets them from home rather than from a recognizer on the phone.
+//! gets them from home rather than from a recognizer on the phone. The
+//! set-aside mark (paulgsc/some-ui#2372, MIC2; the owner's D3 on epic #2368:
+//! Let go sets a take aside and keeps it) is `voice_repo::set_aside`'s, its
+//! own table beside the note, so no note is rewritten.
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
@@ -35,7 +42,8 @@
 //!
 //! **Append-only, and kept for good.** A `PUT` adds a note or changes
 //! nothing, and other bytes or another description under a held id are a
-//! `409`; there is no `DELETE`. See `handlers::voice` and `voice_repo`.
+//! `409`; there is no `DELETE`, and setting a note aside deletes nothing.
+//! See `handlers::voice` and `voice_repo`.
 
 use crate::auth::AuthContext;
 use crate::handlers::voice as handlers;
@@ -61,7 +69,8 @@ where
 	let table = RouteTable::new()
 		.put("/voice-notes/:id", handlers::put_note)
 		.get("/voice-notes/on-drive", handlers::get_on_drive)
-		.get("/voice-notes/:id/heard", handlers::get_heard);
+		.get("/voice-notes/:id/heard", handlers::get_heard)
+		.put("/voice-notes/:id/set-aside", handlers::put_set_aside);
 
 	Module::versioned("voice", table).with_cors(cors)
 }

@@ -20,7 +20,12 @@ Studio take is a voice note said for `studio`, its `ref` the take
 grammar-lens take and a LeetType spoken answer are voice notes said for
 `soundbite`, `lens` and `leetype`, with nothing beside them; what the phone
 wrote beside a soundbite or an answer is `study_note_repo`'s
-(`migrations/20261101000500_add_takes_to_voice_note.up.sql`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
+(`migrations/20261101000500_add_takes_to_voice_note.up.sql`). A note the
+owner let go of on the phone is set aside, never deleted: one mark per note
+in `voice_note_set_aside`, the first standing, which the transcriber's queue
+and the mailbox's reflections routine skip
+(`migrations/20261101000900_create_voice_note_set_aside.up.sql`,
+`src/set_aside.rs`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
 `migrations/20261025000100_create_voice_note.up.sql` and
 `migrations/20261025000200_create_voice_transcript.up.sql` (and the word
 table's migration above), and in
