@@ -226,6 +226,18 @@ mod tests {
 			"never the line's text"
 		);
 		assert_eq!(sops_problems(&format!("{SOPS_TAIL}sops_mac=forged\n")), ["sops_mac is not one sops wrote"]);
+		// Codex on #626: an indented plain comment holding `=` is a comment,
+		// and text before `=` that is no name is reported by its line, never
+		// printed, here or in any other message.
+		let indented = sops_problems(&format!("  # temporary password hunter2=old\n{SOPS_TAIL}"));
+		assert_eq!(indented, ["a comment in the clear on line 1 (sops encrypts comments)"]);
+		assert_eq!(sops_problems(&format!("pass word=x\n{SOPS_TAIL}")), ["line 1 is no NAME=value"]);
+		let stray = Role {
+			name: "home".into(),
+			files: vec![("compose".into(), format!("pass word hunter2=old\n{SOPS_TAIL}"))],
+		};
+		let printed = problems(&[], &variables(&[]), &json!({"services": {}}), &[stray]).join("\n");
+		assert!(!printed.contains("hunter2") && printed.contains("line 1 is no NAME=value"), "{printed}");
 	}
 
 	#[test]
