@@ -466,3 +466,29 @@ fn import_takes_out_an_override_of_what_runs_on_its_default() {
 	let written = fs::read_to_string(deploy.join("compose.sops.env")).unwrap();
 	assert!(!written.contains("STRAY="), "the override would change what runs at the next make up");
 }
+
+#[test]
+fn prune_states_a_declared_one_unset_removes_an_undeclared_one_and_shows_no_value() {
+	let fixture = Fixture::new("prune").unwrap();
+	imported(&fixture).unwrap();
+	let path = fixture.repo.join("deploy/home/probe.sops.env");
+	// A name probe no longer declares, as the OBS placeholders are once the
+	// new image runs.
+	let with_old = fs::read_to_string(&path).unwrap().replacen("sops_mac", "OLD=ENC[aHVudGVyMi12YXBpZC1rZXk=]\nsops_mac", 1);
+	fs::write(&path, &with_old).unwrap();
+	assert!(with_old.contains("OLD="));
+	let output = fixture.envctl(&["prune", "--role", "home", "--app", "probe", "--prune", "RP_ID,OLD"]).output().unwrap();
+	let shown = printed(&output);
+	assert!(output.status.success(), "{shown}");
+	assert!(shown.contains("pruned RP_ID, OLD"), "{shown}");
+	no_secret_in(&shown, "prune's output");
+	let written = fs::read_to_string(&path).unwrap();
+	assert!(written.contains("\nRP_ID=\n") || written.starts_with("RP_ID=\n"), "a declared one is stated unset");
+	assert!(!written.contains("OLD="), "an undeclared one is removed");
+	assert!(written.contains("KEY=ENC["), "the rest is kept, encrypted");
+	for (file, text) in fixture.on_disk().unwrap() {
+		no_secret_in(&text, &file.display().to_string());
+	}
+	let unknown = fixture.envctl(&["prune", "--role", "home", "--app", "probe", "--prune", "NOPE"]).output().unwrap();
+	assert!(!unknown.status.success() && printed(&unknown).contains("states no NOPE"), "{}", printed(&unknown));
+}

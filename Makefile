@@ -168,7 +168,7 @@ IN_RUST_SHELL := $(if $(shell command -v cargo 2>/dev/null),,nix develop $(CURDI
 ENVCTL ?= $(TARGET_DIR)/debug/envctl
 ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
-.PHONY: envctl dev env-schema env preflight up compose import deploy-check
+.PHONY: envctl dev env-schema env preflight up compose import prune deploy-check
 
 # Cargo's own progress on stderr: the first build takes a minute, and a cargo
 # blocked on another one's lock (rust-analyzer, say) says so instead of
@@ -205,3 +205,9 @@ compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose A
 # change. It ends by naming the .env to delete once `make up` has run.
 import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sops (DRY=1 to only report)
 	@$(ENVCTL_RUN) import --role $(ROLE) $(if $(DRY),--dry-run)
+
+# Prune variables of one app's file (ENV2b, #628): a checklist grouped by the
+# schema's sections, PAGE rows at a time; a declared variable is stated unset,
+# an undeclared one removed, written through sops. NAMES=A,B prunes without it.
+prune: envctl ## Prune deploy/$(ROLE)/$(APP).sops.env's variables in a checklist (APP=file_host, NAMES=A,B to skip it)
+	@$(ENVCTL_RUN) prune --role $(ROLE) --app $(or $(APP),file_host) $(if $(PAGE),--page $(PAGE)) $(if $(NAMES),--prune $(NAMES))
