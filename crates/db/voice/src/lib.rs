@@ -40,8 +40,10 @@
 //!   shows no other writer.
 //!
 //! Which Studio takes home knows Drive holds too is [`on_drive`]'s:
-//! `studio_take_on_drive`, written only by `file_host`'s mailbox poller from
-//! the build-journal session's list of SHA-256s (paulgsc/some-ui#2401).
+//! `studio_take_on_drive`, from the build-journal session's lists of
+//! SHA-256s (paulgsc/some-ui#2401), written only there: by `file_host`'s
+//! mailbox poller when a list arrives, and by [`put_note`] when a `studio`
+//! take arrives after a list naming it (paulgsc/some-ui#2416).
 //!
 //! What home heard in each note is [`transcript`]'s: `voice_transcript`, and
 //! each heard word with its time in `voice_transcript_word`, both written
@@ -691,6 +693,10 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 		)
 		.execute(&mut *conn)
 		.await?;
+	}
+	if note.of == Of::Studio {
+		// A take that reaches home after a list naming it (paulgsc/some-ui#2416).
+		on_drive::match_take(conn, subject, &note.id, &note.sha256, &note.at, now).await?;
 	}
 	Ok(Change::Added)
 }
