@@ -11,6 +11,7 @@ use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
 use std::{
 	io::Write as _,
+	os::unix::fs::PermissionsExt as _,
 	path::{Path, PathBuf},
 	process::{Command, Stdio},
 };
@@ -34,9 +35,37 @@ pub(crate) fn relative(role: &str, app: &str) -> PathBuf {
 	Path::new(DEPLOY).join(role).join(format!("{app}{SUFFIX}"))
 }
 
-/// The program to run: `$SOPS` when it is set, else `sops` on `PATH`.
-pub(crate) fn program(shell: &IndexMap<String, String>) -> String {
-	shell.get("SOPS").filter(|program| !program.is_empty()).cloned().unwrap_or_else(|| "sops".to_owned())
+/// The command that runs sops, its words in order: `$SOPS` (split on
+/// whitespace) when it is set; else `sops` on `PATH`; else, on a machine with
+/// nix but no sops (the box), `nix shell nixpkgs#sops -c sops`; else `sops`,
+/// whose absence is then named.
+pub(crate) fn program(shell: &IndexMap<String, String>) -> Vec<String> {
+	if let Some(given) = shell.get("SOPS").filter(|given| !given.trim().is_empty()) {
+		return given.split_whitespace().map(str::to_owned).collect();
+	}
+	let on_path = |name: &str| {
+		shell.get("PATH").is_some_and(|path| {
+			path
+				.split(':')
+				.filter(|dir| !dir.is_empty())
+				.any(|dir| std::fs::metadata(Path::new(dir).join(name)).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+		})
+	};
+	if !on_path("sops") && on_path("nix") {
+		return ["nix", "--extra-experimental-features", "nix-command flakes", "shell", "nixpkgs#sops", "-c", "sops"]
+			.into_iter()
+			.map(str::to_owned)
+			.collect();
+	}
+	vec!["sops".to_owned()]
+}
+
+/// A process for `sops`, as [`program`] gives it.
+fn command(sops: &[String]) -> Command {
+	let (program, args) = sops.split_first().map_or(("sops", &[][..]), |(program, args)| (program.as_str(), args));
+	let mut command = Command::new(program);
+	command.args(args);
+	command
 }
 
 /// The names an encrypted file sets, read without decrypting it: every
@@ -82,6 +111,14 @@ pub(crate) fn plain_values(encrypted: &str) -> Result<(), Vec<String>> {
 	}
 }
 
+/// `file` without its empty values. An empty value is how a deployment file
+/// says "decided: unset" (#616), since sops' dotenv has no other way to, so
+/// a binary is given it unset, never set to nothing.
+pub(crate) fn set_only(mut file: Plain) -> Plain {
+	file.retain(|_, value| !value.is_empty());
+	file
+}
+
 /// sops' dotenv as it decrypts it: `NAME=value` up to the line's end, with
 /// `\n` standing for a newline; no quoting, no comment after a value.
 pub(crate) fn parse(text: &str) -> Plain {
@@ -119,8 +156,9 @@ pub(crate) fn render(entries: &Plain) -> Result<String> {
 
 /// `file` decrypted into memory, run from `repo` so sops finds
 /// `.sops.yaml` and its key as it would from a shell there.
-pub(crate) fn decrypt(sops: &str, repo: &Path, file: &Path) -> Result<Plain> {
-	let output = Command::new(sops)
+pub(crate) fn decrypt(sops: &[String], repo: &Path, file: &Path) -> Result<Plain> {
+	let shown = sops.join(" ");
+	let output = command(sops)
 		.args(["decrypt", "--input-type", "dotenv", "--output-type", "dotenv"])
 		.arg(file)
 		.current_dir(repo)
@@ -128,10 +166,10 @@ pub(crate) fn decrypt(sops: &str, repo: &Path, file: &Path) -> Result<Plain> {
 		.stderr(Stdio::piped())
 		.stdout(Stdio::piped())
 		.output()
-		.with_context(|| format!("running {sops} (is it installed? `nix shell nixpkgs#sops`)"))?;
+		.with_context(|| format!("running {shown} (is it installed? `nix shell nixpkgs#sops`)"))?;
 	if !output.status.success() {
 		// sops' stderr names the file and the key it lacks, never a value.
-		bail!("{sops} could not decrypt {}: {}", file.display(), String::from_utf8_lossy(&output.stderr).trim());
+		bail!("{shown} could not decrypt {}: {}", file.display(), String::from_utf8_lossy(&output.stderr).trim());
 	}
 	let text = String::from_utf8(output.stdout).with_context(|| format!("{} decrypts to text that is not UTF-8", file.display()))?;
 	Ok(parse(&text))
@@ -140,11 +178,12 @@ pub(crate) fn decrypt(sops: &str, repo: &Path, file: &Path) -> Result<Plain> {
 /// `entries` encrypted by sops for `target` (repo-relative, so
 /// `.sops.yaml`'s rule for it picks the recipients), plain text only on
 /// sops' stdin. Returns the encrypted file; nothing is written here.
-pub(crate) fn encrypt(sops: &str, repo: &Path, target: &Path, entries: &Plain) -> Result<Vec<u8>> {
+pub(crate) fn encrypt(sops: &[String], repo: &Path, target: &Path, entries: &Plain) -> Result<Vec<u8>> {
+	let shown = sops.join(" ");
 	// A first line that is no value, so a file with none (compose sets all
 	// of an app's) is still one sops will encrypt; sops encrypts it too.
 	let plain = format!("# {}: `sops edit` it; README.md, \"Deploying the stack\"\n{}", target.display(), render(entries)?);
-	let mut child = Command::new(sops)
+	let mut child = command(sops)
 		.args(["encrypt", "--input-type", "dotenv", "--output-type", "dotenv", "--filename-override"])
 		.arg(target)
 		.current_dir(repo)
@@ -152,28 +191,59 @@ pub(crate) fn encrypt(sops: &str, repo: &Path, target: &Path, entries: &Plain) -
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
 		.spawn()
-		.with_context(|| format!("running {sops} (is it installed? `nix shell nixpkgs#sops`)"))?;
+		.with_context(|| format!("running {shown} (is it installed? `nix shell nixpkgs#sops`)"))?;
 	{
 		let Some(mut stdin) = child.stdin.take() else {
-			bail!("{sops} took no stdin");
+			bail!("{shown} took no stdin");
 		};
-		stdin.write_all(plain.as_bytes()).with_context(|| format!("writing to {sops}"))?;
+		stdin.write_all(plain.as_bytes()).with_context(|| format!("writing to {shown}"))?;
 	}
 	drop(plain);
-	let output = child.wait_with_output().with_context(|| format!("waiting for {sops}"))?;
+	let output = child.wait_with_output().with_context(|| format!("waiting for {shown}"))?;
 	if !output.status.success() {
-		bail!("{sops} could not encrypt {}: {}", target.display(), String::from_utf8_lossy(&output.stderr).trim());
+		bail!("{shown} could not encrypt {}: {}", target.display(), String::from_utf8_lossy(&output.stderr).trim());
 	}
 	let written = String::from_utf8_lossy(&output.stdout);
 	if let Err(plain) = plain_values(&written) {
-		bail!("{sops} wrote {} with values in the clear ({}); nothing was written", target.display(), plain.join(", "));
+		bail!("{shown} wrote {} with values in the clear ({}); nothing was written", target.display(), plain.join(", "));
 	}
 	Ok(output.stdout)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{names, parse, plain_values, render, Plain};
+	use super::{names, parse, plain_values, program, render, set_only, Plain};
+	use indexmap::IndexMap;
+	use std::os::unix::fs::PermissionsExt as _;
+
+	#[test]
+	fn an_empty_value_is_delivered_unset() {
+		let file = Plain::from([("ON".to_owned(), "true".to_owned()), ("URL".to_owned(), String::new())]);
+		assert_eq!(set_only(file), Plain::from([("ON".to_owned(), "true".to_owned())]));
+	}
+
+	#[test]
+	fn sops_comes_from_sops_then_nix_then_what_the_shell_says() {
+		let dir = std::env::temp_dir().join(format!("envctl-program-{}", std::process::id()));
+		let (with_nix, with_sops) = (dir.join("nix-only"), dir.join("both"));
+		for (bin, names) in [(&with_nix, &["nix"][..]), (&with_sops, &["nix", "sops"][..])] {
+			std::fs::create_dir_all(bin).unwrap();
+			for name in names {
+				std::fs::write(bin.join(name), "").unwrap();
+				std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+			}
+		}
+		let shell =
+			|pairs: &[(&str, &std::path::Path)]| -> IndexMap<String, String> { pairs.iter().map(|(name, value)| ((*name).to_owned(), value.display().to_string())).collect() };
+		assert_eq!(program(&shell(&[("PATH", &with_sops)])), ["sops"]);
+		let through_nix = program(&shell(&[("PATH", &with_nix)]));
+		assert_eq!(through_nix.first().map(String::as_str), Some("nix"));
+		assert_eq!(through_nix[through_nix.len() - 3..], ["nixpkgs#sops", "-c", "sops"]);
+		let given = IndexMap::from([("SOPS".to_owned(), "/opt/sops --verbose".to_owned())]);
+		assert_eq!(program(&given), ["/opt/sops", "--verbose"]);
+		assert_eq!(program(&IndexMap::new()), ["sops"], "nothing found: sops, whose absence is then named");
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
 
 	const ENCRYPTED: &str = "WEBAUTHN_RP_ID=ENC[AES256_GCM,data:abc,iv:x,tag:y,type:str]\n#ENC[AES256_GCM,data:comment,type:comment]\nNUDGE_ENABLED=ENC[AES256_GCM,data:t,iv:x,tag:y,type:str]\nsops_age__list_0__map_recipient=age1xyz\nsops_mac=ENC[AES256_GCM,data:m,type:str]\nsops_version=3.11.0\n";
 

@@ -192,8 +192,9 @@ its key: nothing is retyped and there is no `.env` (#614).
 
 ### Deploying the stack
 
-On the box, from the checkout, with `sops` on `PATH` and a key `.sops.yaml`
-names (the admin key at `~/.config/sops/age/keys.txt`, as
+On the box, from the checkout, with a key `.sops.yaml` names (envctl runs
+`sops` from `PATH`, or `nix shell nixpkgs#sops` where only nix is, or
+`$SOPS`) (the admin key at `~/.config/sops/age/keys.txt`, as
 `paulgsc/dotfiles`' `docs/secrets.md` sets up):
 
 ```bash
@@ -225,8 +226,11 @@ override. A `${NAME:?}` in any compose file stops every service, not only
 its own, because compose interpolates the whole project before it starts one;
 the preflight names those too. It prints names, never a value.
 
-To change a value: `sops edit deploy/<role>/<app>.sops.env` (or
-`sops set`), then `make up`. sops' dotenv does no quoting: `KEY="v"` gives
+Every file states every variable of its binary but compose's own wiring,
+so a deployment decides each one. An empty value (`NAME=`) is "decided:
+unset" (#616): it reaches the binary unset, never set to nothing. To change
+a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
+`make up`. sops' dotenv does no quoting: `KEY="v"` gives
 the container `"v"`, quotes and all, so write `KEY=v`. To add a machine: add its recipient to
 `.sops.yaml` here and in `paulgsc/dotfiles`, then `sops updatekeys` each
 file.
@@ -237,7 +241,8 @@ in the running containers and the box's plain-text `.env`. `make import`
 `docker inspect` and writes `deploy/home/` straight through `sops encrypt`,
 plain text only on its stdin: each labelled container's schema variables
 (and the OTel SDK's own), less compose's own wiring and whatever else the
-image sets; and compose's own variables, read back from the container
+image sets, and every other variable of its schema stated too: at its
+default, or empty (unset) when it has none; and compose's own variables, read back from the container
 environment or bind mount compose put each into, else from `.env`. It names
 each step on stderr and each variable it writes, never a value, and ends by
 naming the `.env` to delete. Then commit `deploy/home/`, run `make up`, and
