@@ -71,6 +71,10 @@ pub(crate) struct Model {
 	/// The terminal's width, to cut each line to; 0 for no limit.
 	width: usize,
 	reviewing: bool,
+	/// The review's page, and the furthest page of it shown: `y` writes only
+	/// once every page has been (Codex on #629).
+	review_page: usize,
+	review_seen: usize,
 }
 
 impl Model {
@@ -120,6 +124,8 @@ impl Model {
 			wanted: page_size.max(1),
 			width: 0,
 			reviewing: false,
+			review_page: 0,
+			review_seen: 0,
 		}
 	}
 
@@ -136,6 +142,11 @@ impl Model {
 			self.page = at / rows;
 			self.row = at % rows;
 		}
+	}
+
+	/// How many pages the review of the ticked names takes.
+	fn review_pages(&self) -> usize {
+		self.ticked().len().div_ceil(self.page_size).max(1)
 	}
 
 	fn members(&self) -> &[usize] {
@@ -166,8 +177,20 @@ impl Model {
 	/// The checklist after `key`, and what it asks for.
 	pub(crate) fn key(&mut self, key: Key) -> Step {
 		if self.reviewing {
+			let pages = self.review_pages();
 			return match key {
-				Key::Yes => Step::Write,
+				Key::Yes if self.review_seen + 1 >= pages => Step::Write,
+				Key::Right | Key::Down if self.review_page + 1 < pages => {
+					self.review_page += 1;
+					self.review_seen = self.review_seen.max(self.review_page);
+					Step::Continue
+				}
+				Key::Left | Key::Up => {
+					self.review_page = self.review_page.saturating_sub(1);
+					Step::Continue
+				}
+				// A y before every page is seen, or paging past the last, stays.
+				Key::Yes | Key::Right | Key::Down => Step::Continue,
 				Key::Quit => Step::Quit,
 				_ => {
 					self.reviewing = false;
@@ -206,7 +229,11 @@ impl Model {
 					self.items[index].ticked = !self.items[index].ticked;
 				}
 			}
-			Key::Enter if !self.ticked().is_empty() => self.reviewing = true,
+			Key::Enter if !self.ticked().is_empty() => {
+				self.reviewing = true;
+				self.review_page = 0;
+				self.review_seen = 0;
+			}
 			Key::Quit => return Step::Quit,
 			_ => {}
 		}
@@ -226,8 +253,10 @@ impl Model {
 	fn screen(&self, file: &str) -> String {
 		let mut out = String::new();
 		if self.reviewing {
-			let _ = writeln!(out, "{file}: prune {} variable(s)?\n", self.ticked().len());
-			for item in self.ticked() {
+			let ticked = self.ticked();
+			let pages = self.review_pages();
+			let _ = writeln!(out, "{file}: prune {} variable(s)?   page {}/{pages}\n", ticked.len(), self.review_page + 1);
+			for item in ticked.iter().skip(self.review_page * self.page_size).take(self.page_size) {
 				let what = if item.declared {
 					"state unset (an empty value; the binary takes its default)"
 				} else {
@@ -235,7 +264,11 @@ impl Model {
 				};
 				let _ = writeln!(out, "  {:<36} {what}", item.name);
 			}
-			out.push_str("\n  y  write, through sops      any other key  back      q  leave, nothing written\n");
+			if self.review_seen + 1 >= pages {
+				out.push_str("\n  y  write, through sops   left/right page   any other key  back   q  leave, nothing written\n");
+			} else {
+				out.push_str("\n  right  the next page (y writes once every page is seen)   any other key  back   q  leave\n");
+			}
 			return out;
 		}
 		let (group, members) = self.groups.get(self.group).map_or(("", &[][..]), |(name, members)| (name.as_str(), members.as_slice()));
@@ -452,7 +485,7 @@ mod tests {
 		for value in ["x", "y", "z", "w"] {
 			assert!(!review.contains(&format!(" {value}\n")) && !model.render("f").contains(&format!("={value}")));
 		}
-		assert_eq!(model.key(Key::Left), Step::Continue, "any other key goes back");
+		assert_eq!(model.key(Key::Other), Step::Continue, "any other key goes back");
 		model.key(Key::Enter);
 		assert_eq!(model.key(Key::Yes), Step::Write);
 		let pruned = apply(&file, &model.ticked());
@@ -484,6 +517,26 @@ mod tests {
 		model.fit(30, 7);
 		let narrow = model.render("deploy/home/probe.sops.env");
 		assert!(narrow.lines().all(|line| line.chars().count() <= 30), "no wider than the terminal: {narrow}");
+	}
+
+	#[test]
+	fn the_review_pages_too_and_y_writes_only_once_every_page_is_seen() {
+		let (mut model, _) = model(10);
+		model.fit(80, 7);
+		for _ in 0..3 {
+			model.key(Key::Toggle);
+			model.key(Key::Down);
+		}
+		model.key(Key::NextGroup);
+		model.key(Key::Toggle);
+		model.key(Key::Enter);
+		let first = model.render("f");
+		assert!(first.contains("prune 4 variable(s)?   page 1/2") && first.lines().count() <= 7, "{first}");
+		assert_eq!(model.key(Key::Yes), Step::Continue, "page 2 not seen yet: {first}");
+		model.key(Key::Right);
+		assert!(model.render("f").contains("page 2/2") && model.render("f").contains("B1"));
+		model.key(Key::Left);
+		assert_eq!(model.key(Key::Yes), Step::Write, "every page has been shown");
 	}
 
 	#[test]
