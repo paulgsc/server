@@ -60,11 +60,16 @@ pub(crate) fn program(shell: &IndexMap<String, String>) -> Vec<String> {
 	vec!["sops".to_owned()]
 }
 
-/// A process for `sops`, as [`program`] gives it.
+/// A process for `sops`, as [`program`] gives it. One run through nix gets
+/// no `LD_LIBRARY_PATH`: a dev shell's (the `.#rust` one points it at its own
+/// OpenSSL) breaks the `nix` binary, which links a newer one.
 fn command(sops: &[String]) -> Command {
 	let (program, args) = sops.split_first().map_or(("sops", &[][..]), |(program, args)| (program.as_str(), args));
 	let mut command = Command::new(program);
 	command.args(args);
+	if program == "nix" {
+		command.env_remove("LD_LIBRARY_PATH");
+	}
 	command
 }
 

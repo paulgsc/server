@@ -38,6 +38,9 @@
     duckdb
     alsa-lib
     go-jsonnet
+    # Every deployment value is in deploy/<role>/<app>.sops.env (#613), which
+    # make up, make dev and make import decrypt or write.
+    sops
   ];
 
   buildInputs =
