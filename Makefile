@@ -142,7 +142,7 @@ DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 # sops to .sops.yaml's recipients: names readable, values not. Nothing on the
 # box is a plain .env.
 #
-# `make up` decrypts them: each app's file to $(XDG_RUNTIME_DIR)/server for its
+# `make up` decrypts them: each app's file to $(XDG_RUNTIME_DIR)/server/<pid> for its
 # compose service only (tmpfs, mode 600, removed once compose has started it),
 # compose's into compose's own environment. It runs the preflight first, which
 # names every missing or refused variable at once. Any other compose command

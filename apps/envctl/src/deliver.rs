@@ -69,32 +69,51 @@ pub(crate) fn compose_line(name: &str, value: &str) -> Result<String> {
 	Ok(format!("{name}='{}'\n", value.replace('\'', "\\'")))
 }
 
-/// The decrypted files of one run; each is removed when this is dropped.
+/// The decrypted files of one run, in a directory of its own; the directory
+/// goes when this is dropped.
+///
+/// Its own, so runs never touch each other's files: a `make compose ARGS="logs
+/// -f …"` ending while a `make up` starts, or two roles at once, would
+/// otherwise remove or replace the other's before compose has read them.
 #[derive(Debug)]
 pub(crate) struct Delivered {
-	files: Vec<PathBuf>,
+	dir: PathBuf,
 }
 
 impl Delivered {
-	/// `<dir>/<app>.env` for each app, mode 600 in a mode 700 directory.
-	/// A file a run before this one left (one killed mid-way) is replaced.
-	pub(crate) fn write(dir: &Path, apps: &IndexMap<String, Plain>) -> Result<Self> {
+	/// `<base>/<pid>/<app>.env` for each app: mode 600 in a mode 700
+	/// directory that only this run uses. A run's directory whose process is
+	/// gone (one killed with SIGKILL) is removed first, and so is a file an
+	/// older envctl left directly in `base`.
+	pub(crate) fn write(base: &Path, apps: &IndexMap<String, Plain>) -> Result<Self> {
 		fs::DirBuilder::new()
 			.recursive(true)
 			.mode(0o700)
-			.create(dir)
-			.with_context(|| format!("creating {}", dir.display()))?;
-		let mut delivered = Self { files: Vec::new() };
+			.create(base)
+			.with_context(|| format!("creating {}", base.display()))?;
+		let own = std::process::id();
+		for entry in fs::read_dir(base).with_context(|| format!("reading {}", base.display()))?.filter_map(Result::ok) {
+			let path = entry.path();
+			let name = entry.file_name().to_string_lossy().into_owned();
+			let older_file = path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("env"));
+			match name.parse::<u32>() {
+				Ok(pid) if pid == own || !Path::new("/proc").join(&name).exists() => {
+					let _ = fs::remove_dir_all(&path);
+				}
+				Err(_) if older_file => {
+					let _ = fs::remove_file(&path);
+				}
+				_ => {}
+			}
+		}
+		let dir = base.join(own.to_string());
+		fs::DirBuilder::new().mode(0o700).create(&dir).with_context(|| format!("creating {}", dir.display()))?;
+		let delivered = Self { dir };
 		for (app, entries) in apps {
-			let path = dir.join(format!("{app}.env"));
+			let path = delivered.dir.join(format!("{app}.env"));
 			let mut text = String::new();
 			for (name, value) in entries {
 				text.push_str(&compose_line(name, value)?);
-			}
-			match fs::remove_file(&path) {
-				Ok(()) => {}
-				Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-				Err(err) => return Err(err).with_context(|| format!("removing a stale {}", path.display())),
 			}
 			let mut file = OpenOptions::new()
 				.write(true)
@@ -102,18 +121,20 @@ impl Delivered {
 				.mode(0o600)
 				.open(&path)
 				.with_context(|| format!("creating {}", path.display()))?;
-			delivered.files.push(path.clone());
 			file.write_all(text.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
 		}
 		Ok(delivered)
+	}
+
+	/// This run's directory: compose's `ENV_DIR`.
+	pub(crate) fn dir(&self) -> &Path {
+		&self.dir
 	}
 }
 
 impl Drop for Delivered {
 	fn drop(&mut self) {
-		for file in &self.files {
-			let _ = fs::remove_file(file);
-		}
+		let _ = fs::remove_dir_all(&self.dir);
 	}
 }
 
@@ -143,19 +164,25 @@ mod tests {
 	}
 
 	#[test]
-	fn the_files_are_private_and_gone_after() {
-		let dir = std::env::temp_dir().join(format!("envctl-deliver-{}", std::process::id()));
+	fn each_run_has_its_own_private_directory_gone_after() {
+		let base = std::env::temp_dir().join(format!("envctl-deliver-{}", std::process::id()));
 		let apps = IndexMap::from([("probe".to_owned(), Plain::from([("A".to_owned(), "1".to_owned())]))]);
-		std::fs::create_dir_all(&dir).unwrap();
-		std::fs::write(dir.join("probe.env"), "STALE=1\n").unwrap();
+		std::fs::create_dir_all(base.join("4294967295")).unwrap();
+		std::fs::create_dir_all(base.join("1")).unwrap();
+		std::fs::write(base.join("probe.env"), "STALE=1\n").unwrap();
 		{
-			let delivered = Delivered::write(&dir, &apps).unwrap();
-			let path = dir.join("probe.env");
-			assert_eq!(std::fs::read_to_string(&path).unwrap(), "A='1'\n", "a stale file is replaced");
+			let delivered = Delivered::write(&base, &apps).unwrap();
+			let path = delivered.dir().join("probe.env");
+			assert_eq!(delivered.dir(), base.join(std::process::id().to_string()));
+			assert_eq!(std::fs::read_to_string(&path).unwrap(), "A='1'\n");
 			assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+			assert_eq!(std::fs::metadata(delivered.dir()).unwrap().permissions().mode() & 0o777, 0o700);
+			assert!(!base.join("4294967295").exists(), "a dead run's directory is swept");
+			assert!(base.join("1").exists(), "a live process's directory is not touched");
+			assert!(!base.join("probe.env").exists(), "an older envctl's file is swept");
 			drop(delivered);
-			assert!(!path.exists());
+			assert!(!path.exists() && !base.join(std::process::id().to_string()).exists());
 		}
-		std::fs::remove_dir_all(&dir).unwrap();
+		std::fs::remove_dir_all(&base).unwrap();
 	}
 }

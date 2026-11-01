@@ -205,8 +205,9 @@ make compose ARGS="logs -f file-host"   # any other compose command, on the same
 `make up` decrypts `deploy/home/` with `sops decrypt` into envctl's memory and
 runs the preflight on it. Only then does it start compose: compose's own
 variables in its environment, and each labelled service's own file written
-to `$XDG_RUNTIME_DIR/server/<app>.env` (tmpfs, mode 600, refused anywhere
-that is not tmpfs) for that service's `env_file` alone. The files are removed
+to `$XDG_RUNTIME_DIR/server/<pid>/<app>.env` (tmpfs, mode 600 in a mode 700
+directory of that run's own, refused anywhere that is not tmpfs) for that
+service's `env_file` alone, so two runs never touch each other's. They are removed
 once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's

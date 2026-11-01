@@ -257,7 +257,10 @@ fn up_decrypts_to_tmpfs_for_compose_alone_then_removes_it() {
 	assert!(up.status.success(), "{shown}\n{}", fixture.log());
 	no_secret_in(&shown, "up's output");
 	assert!(fixture.log().contains("compose up -d: file ok"), "{}", fixture.log());
-	assert!(!env_dir.join("probe.env").exists(), "the decrypted file outlived compose");
+	assert!(
+		fs::read_dir(&env_dir).map_or(true, |mut entries| entries.next().is_none()),
+		"the decrypted file outlived compose"
+	);
 	for (path, text) in fixture.on_disk().unwrap() {
 		no_secret_in(&text, &path.display().to_string());
 	}
@@ -348,7 +351,7 @@ fn compose_outlives_ctrl_c_passes_sigterm_on_and_removes_the_files() {
 		.stderr(std::process::Stdio::null())
 		.spawn()
 		.unwrap();
-	let file = env_dir.join("probe.env");
+	let file = env_dir.join(child.id().to_string()).join("probe.env");
 	let started = std::time::Instant::now();
 	while !(file.exists() && fixture.log().contains("compose logs: started")) {
 		assert!(started.elapsed().as_secs() < 20, "compose never started: {}", fixture.log());
@@ -404,5 +407,45 @@ fn compose_refuses_a_missing_file_and_a_link_off_tmpfs() {
 		printed(&missing)
 	);
 	assert!(!fixture.log().contains("compose up"), "compose never ran");
+	let _ = fs::remove_dir_all(&env_dir);
+}
+
+#[test]
+fn overlapping_runs_never_touch_each_others_files() {
+	let Some(shm) = tmpfs() else {
+		return;
+	};
+	let fixture = Fixture::new("overlap").unwrap();
+	imported(&fixture).unwrap();
+	let env_dir = shm.join(format!("envctl-overlap-{}", std::process::id()));
+	let start = || {
+		fixture
+			.envctl(&["compose", "--role", "home", "--env-dir", env_dir.to_str().unwrap(), "--", "logs", "-f"])
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.spawn()
+			.unwrap()
+	};
+	let wait_for = |path: &std::path::Path| {
+		let started = std::time::Instant::now();
+		while !path.exists() {
+			assert!(started.elapsed().as_secs() < 20, "{} never appeared", path.display());
+			std::thread::sleep(std::time::Duration::from_millis(50));
+		}
+	};
+	let mut first = start();
+	let first_file = env_dir.join(first.id().to_string()).join("probe.env");
+	wait_for(&first_file);
+	let mut second = start();
+	let second_file = env_dir.join(second.id().to_string()).join("probe.env");
+	wait_for(&second_file);
+	assert!(first_file.exists(), "the second run replaced the first's file");
+	assert!(Command::new("kill").args(["-TERM", &first.id().to_string()]).status().unwrap().success());
+	first.wait().unwrap();
+	assert!(!first_file.exists(), "the first run left its file");
+	assert!(second_file.exists(), "the first run, ending, removed the second's file");
+	assert!(Command::new("kill").args(["-TERM", &second.id().to_string()]).status().unwrap().success());
+	second.wait().unwrap();
+	assert!(!second_file.exists());
 	let _ = fs::remove_dir_all(&env_dir);
 }
