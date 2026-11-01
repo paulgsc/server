@@ -162,6 +162,9 @@ ROLE = $(or $(DEPLOY),home)
 DEV_DEPLOY ?= dev
 REPO_ROOT := $(CURDIR)
 TARGET_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target))
+# cargo is the flake's, not the system's: outside `nix develop`, each cargo
+# command runs through the rust shell (which also has sops).
+IN_RUST_SHELL := $(if $(shell command -v cargo 2>/dev/null),,nix develop $(CURDIR)\#rust -c)
 ENVCTL ?= $(TARGET_DIR)/debug/envctl
 ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
@@ -171,14 +174,14 @@ ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 # blocked on another one's lock (rust-analyzer, say) says so instead of
 # looking hung.
 envctl: ## Build the config tooling (apps/envctl)
-	@cargo build -p envctl
+	@$(IN_RUST_SHELL) cargo build -p envctl
 
 dev: envctl ## Run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
 	@FILE_HOST_PORT_FALLBACK=true FILE_HOST_PORT_FILE=$(DEV_PORT_FILE) \
-		$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- cargo run -p file_host --bin file_host
+		$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) cargo run -p file_host --bin file_host
 
 env-schema: envctl ## Regenerate infra/env/*.json from each binary's Config, then nix/modules/generated from those
-	@UPDATE_ENV_SCHEMA=1 cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
+	@UPDATE_ENV_SCHEMA=1 $(IN_RUST_SHELL) cargo test -q -p file_host -p orchestrator -p some-obs --lib the_checked_in_schema_is_this_config
 	@$(ENVCTL_RUN) nix
 	@echo "Wrote infra/env/*.json and nix/modules/generated"
 

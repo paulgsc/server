@@ -192,9 +192,11 @@ its key: nothing is retyped and there is no `.env` (#614).
 
 ### Deploying the stack
 
-On the box, from the checkout, with a key `.sops.yaml` names (envctl runs
-`sops` from `PATH`, or `nix shell nixpkgs#sops` where only nix is, or
-`$SOPS`) (the admin key at `~/.config/sops/age/keys.txt`, as
+On the box, from the checkout, in any shell, with a key `.sops.yaml` names.
+`make` builds envctl with the flake's cargo (through `nix develop .#rust`
+when no `cargo` is on `PATH`), and envctl runs `sops` from `PATH` (the
+`.#rust` and default shells have it), else through `nix shell
+nixpkgs#sops`, else `$SOPS` (the admin key at `~/.config/sops/age/keys.txt`, as
 `paulgsc/dotfiles`' `docs/secrets.md` sets up):
 
 ```bash

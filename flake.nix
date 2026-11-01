@@ -46,13 +46,10 @@
       };
 
       # Combine inputs (whisper auto-excludes in CI)
-      # sops: every deployment value is in deploy/<role>/<app>.sops.env
-      # (#613), which `make up` and `make dev` decrypt.
       combinedBuildInputs =
         (rustEnv.buildInputs or [])
         ++ (whisperManager.packages or [])
-        ++ (llmManager.packages or [])
-        ++ [pkgs.sops];
+        ++ (llmManager.packages or []);
 
       combinedShellHook = ''
         export CARGO_BUILD_JOBS=3

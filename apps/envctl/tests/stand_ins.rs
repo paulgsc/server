@@ -214,7 +214,7 @@ fn imported(fixture: &Fixture) -> std::io::Result<()> {
 		no_secret_in(&text, &path.display().to_string());
 	}
 	assert!(
-		shown.contains("deploy/home/probe.sops.env: 3 new") && shown.contains("+ RP_ID") && shown.contains("+ KEY") && shown.contains("+ ON"),
+		shown.contains("deploy/home/probe.sops.env  (new)\n  from what runs now: 3\n    KEY") && shown.contains("RP_ID") && shown.contains(" ON "),
 		"{shown}"
 	);
 	assert!(
@@ -222,10 +222,10 @@ fn imported(fixture: &Fixture) -> std::io::Result<()> {
 		"compose's own wiring and the image's own are left out: {shown}"
 	);
 	assert!(
-		shown.contains("deploy/home/compose.sops.env: 2 new") && shown.contains("+ GRAFANA_PASSWORD") && shown.contains("+ STORAGE"),
+		shown.contains("deploy/home/compose.sops.env  (new)\n  from what runs now: 2\n    GRAFANA_PASSWORD  STORAGE"),
 		"{shown}"
 	);
-	for step in ["docker ps", "docker compose config", "reading probe-1"] {
+	for step in ["docker ps", "docker compose config", "docker inspect probe-1"] {
 		assert!(shown.contains(step), "import names each step on stderr ({step}): {shown}");
 	}
 	assert!(fixture
@@ -241,8 +241,8 @@ fn import_writes_through_sops_only_and_prints_names_only() {
 	imported(&fixture).unwrap();
 	let again = fixture.envctl(&["import", "--role", "home", "--dry-run"]).output().unwrap();
 	let shown = printed(&again);
-	assert!(shown.contains("probe.sops.env: already what runs") && shown.contains("Dry run"), "{shown}");
-	assert!(shown.contains("delete the box's plain-text .env"), "{shown}");
+	assert!(shown.contains("probe.sops.env\n  already what runs") && shown.contains("1. make import"), "{shown}");
+	assert!(shown.contains("rm ") && shown.contains("once make up has run"), "{shown}");
 }
 
 #[test]

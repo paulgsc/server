@@ -21,6 +21,7 @@ use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
 use serde_json::Value;
 use std::{
+	fmt::Write as _,
 	path::{Path, PathBuf},
 	process::Command,
 };
@@ -242,7 +243,6 @@ fn read_ours(ours: &[String], schemas: &[Schema], raw: &Value, role: &str) -> Re
 	let mut files: IndexMap<PathBuf, Plain> = IndexMap::new();
 	let mut conflicts = Vec::new();
 	for container in ours {
-		eprintln!("envctl import: reading {container} (names are shown, values never)...");
 		let inspected = inspect(container)?;
 		let (binary, values) = app_values(&inspected, schemas, raw).with_context(|| format!("container {container}"))?;
 		let file = files.entry(sops::relative(role, &binary)).or_default();
@@ -257,6 +257,83 @@ fn read_ours(ours: &[String], schemas: &[Schema], raw: &Value, role: &str) -> Re
 		}
 	}
 	Ok((files, conflicts))
+}
+
+/// Names in columns under a two-space indent, sorted, to fit 100 columns.
+pub(crate) fn columns(names: &[String]) -> String {
+	let mut sorted: Vec<&String> = names.iter().collect();
+	sorted.sort();
+	let width = sorted.iter().map(|name| name.len()).max().unwrap_or(0) + 2;
+	let per_line = (96 / width.max(1)).max(1);
+	let mut out = String::new();
+	for line in sorted.chunks(per_line) {
+		out.push_str("    ");
+		let cells: Vec<String> = line.iter().map(|name| format!("{name:<width$}")).collect();
+		out.push_str(cells.concat().trim_end());
+		out.push('\n');
+	}
+	out
+}
+
+/// One file's part of the report: what it states, grouped by where each
+/// value came from, names only.
+pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
+	if existed && change.is_empty() {
+		return format!("{file}\n  already what runs: {} variable(s), nothing to change\n\n", change.kept);
+	}
+	let mut out = format!("{file}{}\n", if existed { "" } else { "  (new)" });
+	for (label, names) in [
+		("from what runs now", &change.added),
+		("changed, to what runs now", &change.changed),
+		("at the binary's default (nothing set them)", &change.defaulted),
+		("unset (an empty value; no default)", &change.unset),
+	] {
+		if !names.is_empty() {
+			let _ = writeln!(out, "  {label}: {}", names.len());
+			out.push_str(&columns(names));
+		}
+	}
+	if change.kept > 0 {
+		let _ = writeln!(out, "  already in the file, unchanged: {}", change.kept);
+	}
+	out.push('\n');
+	out
+}
+
+/// What is left to do, numbered.
+pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unfound: &[String], dry_run: bool, wrote: bool) -> String {
+	let mut out = String::new();
+	if !conflicts.is_empty() {
+		let _ = write!(out, "Two containers disagree on {}; the first was kept.\n\n", conflicts.join(", "));
+	}
+	let compose = sops::relative(role, sops::COMPOSE).display().to_string();
+	let mut steps: Vec<String> = Vec::new();
+	if dry_run {
+		steps.push("make import          write the files above, through sops (nothing was written)".to_owned());
+	}
+	if !unfound.is_empty() {
+		steps.push(format!(
+			"set what no container or .env shows, each with sops set {compose} '[\"NAME\"]' '\"value\"'\n{}",
+			columns(unfound).trim_end_matches('\n').replace("\n    ", "\n       ").replacen("    ", "       ", 1)
+		));
+	}
+	if dry_run || wrote || !unfound.is_empty() {
+		steps.push(format!(
+			"make up{}              start the stack from deploy/{role}/",
+			if role == "home" { String::new() } else { format!(" DEPLOY={role}") }
+		));
+		steps.push(format!("git add deploy/{role} && git commit && git push"));
+	}
+	if repo.join(".env").exists() {
+		steps.push(format!("rm {}   once make up has run from the encrypted files", repo.join(".env").display()));
+	}
+	if !steps.is_empty() {
+		out.push_str("Next:\n");
+		for (number, step) in steps.iter().enumerate() {
+			let _ = writeln!(out, "  {}. {step}", number + 1);
+		}
+	}
+	out
 }
 
 /// Each file `files` holds, merged into what is there, completed (every
@@ -278,30 +355,9 @@ fn write(repo: &Path, schemas: &[Schema], raw: &Value, files: &IndexMap<PathBuf,
 			change.defaulted = defaulted;
 			change.unset = unset;
 		}
-		let shown = relative.display();
+		print!("{}", report(&relative.display().to_string(), path.exists(), &change));
 		if path.exists() && change.is_empty() {
-			println!("{shown}: already what runs ({} variable(s)).", change.kept);
 			continue;
-		}
-		println!(
-			"{shown}: {} new, {} changed, {} the same, {} at its default, {} unset.",
-			change.added.len(),
-			change.changed.len(),
-			change.kept,
-			change.defaulted.len(),
-			change.unset.len()
-		);
-		for name in &change.added {
-			println!("  + {name}");
-		}
-		for name in &change.changed {
-			println!("  ~ {name}");
-		}
-		for name in &change.defaulted {
-			println!("  + {name} (its default; nothing set it)");
-		}
-		for name in &change.unset {
-			println!("  + {name} (unset: an empty value)");
 		}
 		if dry_run {
 			continue;
@@ -317,24 +373,26 @@ fn write(repo: &Path, schemas: &[Schema], raw: &Value, files: &IndexMap<PathBuf,
 /// Every running container of ours (or those named) into
 /// `deploy/<role>/`, through `sops`.
 pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String], dry_run: bool, sops_program: &[String]) -> Result<()> {
-	eprintln!("envctl import: docker compose config, for what compose itself sets...");
+	eprintln!("· docker compose config (what compose sets itself)");
 	let raw = compose::config(repo).context("docker compose config failed, so compose's own wiring is unknown")?;
 	let Some(project) = raw.get("name").and_then(Value::as_str).map(str::to_owned) else {
 		bail!("docker compose config names no project");
 	};
-	eprintln!("envctl import: docker ps, for project {project}'s running containers labelled {}...", compose::LABEL);
+	eprintln!("· docker ps (project {project}'s containers labelled {})", compose::LABEL);
 	let ours = if named.is_empty() { running(&project, compose::LABEL)? } else { named.to_vec() };
 	if ours.is_empty() {
 		bail!("no running container of project {project} carries the {} label; name one with --container", compose::LABEL);
 	}
+	eprintln!("· docker inspect {} (names are shown, values never)", ours.join(", "));
 	// Each deployment file, relative to the checkout, and what it will hold.
 	let (mut files, app_conflicts) = read_ours(&ours, schemas, &raw, role)?;
-	eprintln!("envctl import: docker ps, for every running container of project {project} (compose's own variables)...");
+	let every = running(&project, SERVICE_LABEL)?;
+	eprintln!("· docker inspect {} more of project {project} (compose's own variables)", every.len());
 	let mut containers = Vec::new();
-	for container in running(&project, SERVICE_LABEL)? {
-		eprintln!("envctl import: reading {container}...");
+	for container in every {
 		containers.push(inspect(&container)?);
 	}
+	eprintln!();
 	let (mut compose_found, mut conflicts) = compose_values(&raw, &containers);
 	conflicts.extend(app_conflicts);
 	// What no running container shows (a service that is stopped), from the
@@ -356,30 +414,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	}
 	files.insert(sops::relative(role, sops::COMPOSE), compose_found);
 	let wrote = write(repo, schemas, &raw, &files, dry_run, sops_program)?;
-	if !conflicts.is_empty() {
-		println!(
-			"Two containers disagree on {}; the first was kept. Check with `sops edit` before committing.",
-			conflicts.join(", ")
-		);
-	}
-	if !unfound.is_empty() {
-		println!(
-			"No running container or .env shows {}; set each with `sops set {} '[\"NAME\"]' '\"value\"'`.",
-			unfound.join(", "),
-			sops::relative(role, sops::COMPOSE).display()
-		);
-	}
-	if dry_run {
-		println!("Dry run: nothing written.");
-	} else if wrote {
-		println!("Commit deploy/{role}/, then `make up DEPLOY={role}` starts the stack from it.");
-	}
-	if repo.join(".env").exists() {
-		println!(
-			"Once `make up` has run from the encrypted files, delete the box's plain-text .env: rm {}",
-			repo.join(".env").display()
-		);
-	}
+	print!("{}", next_steps(repo, role, &conflicts, &unfound, dry_run, wrote));
 	Ok(())
 }
 
@@ -484,6 +519,25 @@ mod tests {
 		assert_eq!((defaulted, unset), (vec!["ON".to_owned()], vec!["URL".to_owned()]));
 		assert_eq!(file, plain(&[("SET", "x"), ("ON", "false"), ("URL", "")]), "compose's wiring is never stated");
 		assert_eq!(super::wired(&raw(), "probe"), ["LOG", "MIXED", "THREADS", "WIRE"].into_iter().map(str::to_owned).collect());
+	}
+
+	#[test]
+	fn the_report_groups_names_in_columns_and_numbers_what_is_left() {
+		let change = super::Change {
+			added: vec!["B".into(), "A".into()],
+			defaulted: vec!["ON".into()],
+			unset: vec!["URL".into()],
+			..super::Change::default()
+		};
+		assert_eq!(
+			super::report("deploy/home/p.sops.env", false, &change),
+			"deploy/home/p.sops.env  (new)\n  from what runs now: 2\n    A  B\n  at the binary's default (nothing set them): 1\n    ON\n  unset (an empty value; no default): 1\n    URL\n\n"
+		);
+		let left = super::next_steps(std::path::Path::new("/nowhere"), "home", &[], &["X".into()], true, false);
+		assert!(
+			left.starts_with("Next:\n  1. make import") && left.contains("  2. set what no container") && left.contains("       X"),
+			"{left}"
+		);
 	}
 
 	#[test]
