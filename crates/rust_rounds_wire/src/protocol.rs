@@ -159,7 +159,7 @@ pub enum AskError {
 	/// restarting), or there is no socket. Nothing was asked.
 	Unreachable(std::io::Error),
 	/// Connected, but the request could not be written whole, so the service
-	/// never held the job.
+	/// never held the job, and no whole answer came back.
 	NotSent(std::io::Error),
 	/// The whole request was sent, and the connection ended before a whole
 	/// answer came: the service went away while it held the job.
@@ -206,6 +206,12 @@ pub fn ask(socket: &Path, request: &Request, timeout: Duration) -> std::io::Resu
 /// Ask the service on `socket` one thing, and wait up to `timeout` for the
 /// answer, which is one whole line.
 ///
+/// A service may answer before it reads the request, and close: the runner
+/// refuses a peer that is not a client's that way. The client's write then
+/// breaks (`BrokenPipe`, or `ConnectionReset`) with the answer waiting
+/// unread, so a broken write still reads: a whole, valid answer is returned,
+/// and anything else is [`AskError::NotSent`] (#623).
+///
 /// # Errors
 /// [`AskError`], by how far the exchange got.
 pub fn exchange(socket: &Path, request: &Request, timeout: Duration) -> Result<Response, AskError> {
@@ -214,10 +220,22 @@ pub fn exchange(socket: &Path, request: &Request, timeout: Duration) -> Result<R
 	serde_json::to_writer(&mut body, request).map_err(|err| AskError::NotSent(std::io::Error::other(err)))?;
 	body.push(b'\n');
 	stream.set_write_timeout(Some(CLIENT_TIMEOUT)).map_err(AskError::NotSent)?;
-	(&stream).write_all(&body).map_err(AskError::NotSent)?;
+	match (&stream).write_all(&body) {
+		Ok(()) => read_answer(&stream, timeout),
+		Err(err) if matches!(err.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset) => {
+			// The service closed its end, so what it said is already here or
+			// never coming: the read ends at once, and is bounded anyway.
+			read_answer(&stream, timeout.min(CLIENT_TIMEOUT)).map_err(|_| AskError::NotSent(err))
+		}
+		Err(err) => Err(AskError::NotSent(err)),
+	}
+}
+
+/// Read one whole answer line from `stream`, waiting up to `timeout`.
+fn read_answer(stream: &UnixStream, timeout: Duration) -> Result<Response, AskError> {
 	stream.set_read_timeout(Some(timeout)).map_err(AskError::Dropped)?;
 	let mut line = Vec::new();
-	match BufReader::new((&stream).take(ANSWER_CEILING + 1)).read_until(b'\n', &mut line) {
+	match BufReader::new(stream.take(ANSWER_CEILING + 1)).read_until(b'\n', &mut line) {
 		Ok(_) => {}
 		Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => return Err(AskError::TimedOut),
 		Err(err) => return Err(AskError::Dropped(err)),
@@ -336,5 +354,53 @@ mod tests {
 		let socket = serve(garbled.path(), |mut stream| stream.write_all(b"not json\n").unwrap());
 		let nonsense = exchange(&socket, &request, Duration::from_secs(5));
 		assert!(matches!(nonsense, Err(AskError::Invalid(_))), "{nonsense:?}");
+	}
+
+	/// A service that answers `answer` without reading a byte, and closes,
+	/// as the runner does with a peer it refuses (#623).
+	fn refuse_unread(dir: &std::path::Path, answer: &'static [u8]) -> std::path::PathBuf {
+		let socket = dir.join("runner.sock");
+		let listener = UnixListener::bind(&socket).unwrap();
+		std::thread::spawn(move || {
+			let (mut stream, _) = listener.accept().unwrap();
+			stream.write_all(answer).unwrap();
+		});
+		socket
+	}
+
+	/// A request too large for the socket's buffer, so its write cannot
+	/// finish unless the service reads it: one the service never reads fails
+	/// with a broken pipe every time, not only when the close wins the race.
+	fn unsendable() -> Request {
+		Request::Record {
+			toolchain: String::from("t"),
+			source: "x".repeat(8 * 1024 * 1024),
+		}
+	}
+
+	/// A service that answers before it reads, and closes, can break the
+	/// client's write; its answer is still read, and a client is told its
+	/// request was not sent only when no whole answer came.
+	#[test]
+	fn an_answer_sent_before_the_request_was_read_is_read() {
+		let refusing = tempfile::tempdir().unwrap();
+		let socket = refuse_unread(refusing.path(), b"{\"answer\":\"refused\",\"reason\":\"peer\",\"toolchain\":\"t\"}\n");
+		assert_eq!(
+			exchange(&socket, &unsendable(), Duration::from_secs(5)).unwrap(),
+			Response::Refused {
+				reason: Refusal::Peer,
+				toolchain: String::from("t"),
+			}
+		);
+
+		let silent = tempfile::tempdir().unwrap();
+		let socket = refuse_unread(silent.path(), b"");
+		let unsent = exchange(&socket, &unsendable(), Duration::from_secs(5));
+		assert!(matches!(unsent, Err(AskError::NotSent(_))), "{unsent:?}");
+
+		let cut = tempfile::tempdir().unwrap();
+		let socket = refuse_unread(cut.path(), b"{\"answer\":\"refu");
+		let half = exchange(&socket, &unsendable(), Duration::from_secs(5));
+		assert!(matches!(half, Err(AskError::NotSent(_))), "half an answer is no answer: {half:?}");
 	}
 }
