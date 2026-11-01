@@ -38,7 +38,8 @@ const CONFIG: &str = r#"{"name": "repo", "services": {
     "labels": {"env-schema": "probe"},
     "env_file": [{"path": "/repo/${ENV_DIR:?make sets ENV_DIR}/probe.env", "required": true}],
     "environment": ["WIRE=w://wire", "GF_PASSWORD=${GRAFANA_PASSWORD:?set it}", "FROM_SHELL=${STRAY:-none}"],
-    "volumes": [{"source": "${STORAGE:?set STORAGE}", "target": "/app/dbs", "type": "bind"}]
+    "volumes": [{"source": "${STORAGE:?set STORAGE}", "target": "/app/dbs", "type": "bind"}],
+    "ports": ["127.0.0.1:${PORT_HOST:-1000}:3000"]
   }
 }}"#;
 
@@ -46,7 +47,8 @@ const CONFIG: &str = r#"{"name": "repo", "services": {
 const INSPECT: &str = r#"[{"Config": {
   "Labels": {"env-schema": "probe", "com.docker.compose.service": "probe"},
   "Env": ["RP_ID=s3cret-rp-id.example", "KEY=hunter2-vapid-key", "ON=true", "WIRE=w://wire", "GF_PASSWORD=grafana-pw-123", "FROM_SHELL=none", "PATH=/usr/bin", "IMAGE_ONLY=1"]
-}, "Mounts": [{"Destination": "/app/dbs", "Source": "/mnt/secret/storage"}]}]"#;
+}, "HostConfig": {"PortBindings": {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "1001"}]}},
+  "Mounts": [{"Destination": "/app/dbs", "Source": "/mnt/secret/storage"}]}]"#;
 
 /// A `docker` that answers `ps`, `inspect` and `compose`. On `compose ...
 /// up`, it checks the container's file is there, private, and holds what
@@ -123,7 +125,7 @@ impl Fixture {
 		fs::write(repo.join("infra/env/probe.json"), SCHEMA)?;
 		fs::write(
 			repo.join("docker-compose.yml"),
-			"services:\n  probe:\n    env_file:\n      - path: ${ENV_DIR:?make sets ENV_DIR}/probe.env\n    environment:\n      - GF_PASSWORD=${GRAFANA_PASSWORD:?set it}\n      - FROM_SHELL=${STRAY:-none}\n    volumes:\n      - ${STORAGE:?set STORAGE}:/app/dbs\n",
+			"services:\n  probe:\n    env_file:\n      - path: ${ENV_DIR:?make sets ENV_DIR}/probe.env\n    environment:\n      - GF_PASSWORD=${GRAFANA_PASSWORD:?set it}\n      - FROM_SHELL=${STRAY:-none}\n      - ONLY=${ONLY_ENV:-a}\n    volumes:\n      - ${STORAGE:?set STORAGE}:/app/dbs\n    ports:\n      - 127.0.0.1:${PORT_HOST:-1000}:3000\n",
 		)?;
 		fs::write(bin.join("config.json"), CONFIG)?;
 		fs::write(bin.join("inspect.json"), INSPECT)?;
@@ -215,7 +217,7 @@ fn imported(fixture: &Fixture) -> std::io::Result<()> {
 		"compose's own wiring and the image's own are left out: {shown}"
 	);
 	assert!(
-		shown.contains("deploy/home/compose.sops.env  (new)\n  from what runs now: 2\n    GRAFANA_PASSWORD  STORAGE"),
+		shown.contains("deploy/home/compose.sops.env  (new)\n  from what runs now: 3\n    GRAFANA_PASSWORD  PORT_HOST         STORAGE"),
 		"{shown}"
 	);
 	for step in ["docker ps", "docker compose config", "docker inspect probe-1"] {
@@ -232,6 +234,14 @@ fn import_writes_through_sops_only_and_prints_names_only() {
 	let fixture = Fixture::new("import").unwrap();
 	fs::write(fixture.repo.join(".env"), "STORAGE=/old\n").unwrap();
 	imported(&fixture).unwrap();
+	// A compose variable only .env shows is taken, and named to check by hand
+	// (Codex on #622): no running container vouches for it.
+	fs::write(fixture.repo.join(".env"), "ONLY_ENV=b\n").unwrap();
+	let flagged = printed(&fixture.envctl(&["import", "--role", "home", "--dry-run"]).output().unwrap());
+	assert!(
+		flagged.contains("check these by hand") && flagged.contains("ONLY_ENV (from .env; no running container shows it)"),
+		"{flagged}"
+	);
 	let again = fixture.envctl(&["import", "--role", "home", "--dry-run"]).output().unwrap();
 	let shown = printed(&again);
 	assert!(shown.contains("probe.sops.env\n  already what runs") && shown.contains("1. make import"), "{shown}");
