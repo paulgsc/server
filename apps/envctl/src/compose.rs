@@ -358,6 +358,8 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 }
 
 #[cfg(test)]
+// `${...}` is compose's syntax under test here, not a format argument.
+#[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
 	use super::{included, own_paragraph, variables, wired};
 	use serde_json::json;
