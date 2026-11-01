@@ -12,7 +12,7 @@
 //! **What it is computed from** ([`mailbox_repo::jobs_inputs`]): every
 //! digest home kept from `brief`, every decisions file, scouts file and Jobs
 //! note's transcript the mailbox took from home as home filed it, and every
-//! pre-mailbox decisions or scouts file the routine put back in `brief` once
+//! decisions or scouts file only Drive held that the routine put back in `brief` once
 //! (the backfill, below). No new table: those are home's own rows.
 //!
 //! **A view, not a record** (owner, 2026-10-31, paulgsc/server#509). Home
@@ -24,11 +24,12 @@
 //! What home remembers is in memory, [`LastIndex`]: what the last index the
 //! mailbox answered was computed from, so a restart costs one put.
 //!
-//! **The backfill** (MB2's amendment, the same decision). Drive holds Jobs
-//! decisions and scouts files from before the mailbox (before 2026-10-23)
-//! that home never saw. The routine puts each once in `brief`, under its
-//! Drive name, which the mailbox takes only for a name dated before that
-//! day, so the set is closed. Home keeps it as any `brief` file, and the
+//! **The backfill** (MB2's amendment, the same decision, widened by
+//! paulgsc/some-ui#2393). Drive holds Jobs decisions and scouts files home
+//! never saw, from before the phone filed every one home. The routine puts
+//! each once in `brief`, under its Drive name, which the mailbox takes only
+//! for a name dated before 2026-11-04 (`DRIVE_ONLY_ENDED`), so the set is
+//! closed. Home keeps it as any `brief` file, and the
 //! index counts it with the phone's files and names it in `from.backfill`.
 //! It adds no listing: `brief` is read every pass anyway.
 //!
@@ -332,7 +333,7 @@ struct From {
 	/// Every scouts file counted, likewise.
 	scout: Vec<String>,
 	/// Those of `decisions` and `scout` that came from the routine's one-time
-	/// backfill of pre-mailbox files (`brief`), not from the phone.
+	/// backfill of files only Drive held (`brief`), not from the phone.
 	backfill: Vec<String>,
 }
 
@@ -1312,7 +1313,7 @@ mod tests {
 		assert_eq!(index(&done, "2026-10-18")["validThrough"], Value::Null, "no open pick");
 	}
 
-	/// MB2's backfill (owner, #509): a pre-mailbox file the routine put back is
+	/// MB2's backfill (owner, #509): a file only Drive held that the routine put back is
 	/// counted as the phone's would be, named in `from.backfill`, and loses to
 	/// the phone's copy of the same name.
 	#[test]

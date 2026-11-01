@@ -975,11 +975,12 @@ pub struct JobsInputs {
 	pub scouts: Vec<HeldFile>,
 	/// Every transcript of a Jobs voice note the mailbox took, likewise.
 	pub transcripts: Vec<HeldTranscript>,
-	/// Every pre-mailbox decisions file the routine put back in `brief`
-	/// once (`decisions-*.json`; MB2's backfill, paulgsc/server#509). The
-	/// mailbox takes only a name dated before 2026-10-23 there.
+	/// Every decisions file only Drive held that the routine put back in
+	/// `brief` once (`decisions-*.json`; MB2's backfill, paulgsc/server#509).
+	/// The mailbox takes only a name dated before 2026-11-04 there
+	/// (`DRIVE_ONLY_ENDED`, paulgsc/some-ui#2393).
 	pub backfill_decisions: Vec<HeldFile>,
-	/// Every pre-mailbox scouts file put back likewise (`scouts-*.json`).
+	/// Every scouts file only Drive held, put back likewise (`scouts-*.json`).
 	pub backfill_scouts: Vec<HeldFile>,
 }
 

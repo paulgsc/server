@@ -712,7 +712,7 @@ nowhere is marked as such and belongs to review.
       the arrival notice's pass (`jobs_notice`), which reads the same
       `run-jobs-*` records for the poller's subject (invariant 24), and by
       the poller's Jobs index (`mailbox::index`), which reads `brief`: its
-      digests, and the pre-mailbox decisions and scouts files the routine
+      digests, and the decisions and scouts files only Drive held that the routine
       put back there once, and by its reflections index
       (`mailbox::index::reflections`), which reads `scene` and `drama`.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
@@ -765,10 +765,10 @@ nowhere is marked as such and belongs to review.
       `some-ui.routine-index/1` (paulgsc/server#509, HF7), computed from this
       invariant's own tables and nothing else: the digests in `mailbox_item`,
       the decisions and scouts files and Jobs notes' transcripts in
-      `mailbox_outgoing` that the mailbox took, and the pre-mailbox decisions
-      and scouts files the routine put back in `brief` once (`mailbox_item`;
-      the mailbox's MB2 backfill, which it takes only under a name dated
-      before 2026-10-23). The index is a view of those records, not a record
+      `mailbox_outgoing` that the mailbox took, and the decisions and scouts
+      files only Drive held that the routine put back in `brief` once
+      (`mailbox_item`; the mailbox's MB2 backfill, which it takes only under a
+      name dated before 2026-11-04, paulgsc/some-ui#2393). The index is a view of those records, not a record
       (owner, 2026-10-31,
       https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
       no table here holds it, not `mailbox_outgoing`, `mailbox_handed` or
