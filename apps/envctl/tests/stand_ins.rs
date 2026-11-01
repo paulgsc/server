@@ -561,3 +561,46 @@ fn import_takes_out_what_an_app_file_holds_and_its_container_does_not_carry() {
 	let written = fs::read_to_string(deploy.join("probe.sops.env")).unwrap();
 	assert!(!written.contains("OTEL_EXPORTER_OTLP_HEADERS=") && !written.contains("NO_BINARY_READS="), "{written}");
 }
+
+#[test]
+fn export_gives_a_shell_the_tools_file_quoted_and_never_shows_a_value() {
+	let fixture = Fixture::new("export").unwrap();
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	// DATABASE_URL=sqlite:///srv/a b/x.db, QUOTE=it's $HOME `x` (base64 inside ENC[]).
+	let tools = "DATABASE_URL=ENC[c3FsaXRlOi8vL3Nydi9hIGIveC5kYg==]\nQUOTE=ENC[aXQncyAkSE9NRSBgeGA=]\nEMPTY=\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n";
+	fs::write(deploy.join("tools.sops.env"), tools).unwrap();
+	let output = fixture.envctl(&["export", "--role", "home"]).output().unwrap();
+	assert!(output.status.success(), "{}", printed(&output));
+	let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+	let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+	assert!(stderr.contains("DATABASE_URL, QUOTE from deploy/home/tools.sops.env (role home)"), "{stderr}");
+	assert!(!stderr.contains("sqlite") && !stderr.contains("it's"), "names only on stderr: {stderr}");
+	assert!(!stdout.contains("EMPTY"), "an empty value is unset, not exported: {stdout}");
+	// A shell that evaluates it gets each value back whole, nothing expanded.
+	let check = Command::new("sh")
+		.arg("-c")
+		.arg(format!(
+			"{stdout}\n[ \"$DATABASE_URL\" = 'sqlite:///srv/a b/x.db' ] && [ \"$QUOTE\" = \"it's \\$HOME \\`x\\`\" ]"
+		))
+		.env_clear()
+		.output()
+		.unwrap();
+	assert!(check.status.success(), "{}", printed(&check));
+	// The shell's own value wins, and is named as kept.
+	let kept = fixture.envctl(&["export", "--role", "home"]).env("DATABASE_URL", "sqlite://mine.db").output().unwrap();
+	let kept_out = String::from_utf8_lossy(&kept.stdout).into_owned();
+	assert!(!kept_out.contains("DATABASE_URL"), "{kept_out}");
+	assert!(String::from_utf8_lossy(&kept.stderr).contains("kept the shell's own DATABASE_URL"), "{}", printed(&kept));
+	// make up's files are the apps' and compose's: the tools file is
+	// neither checked by the preflight nor delivered to a service.
+	imported(&fixture).unwrap();
+	let preflight = fixture.envctl(&["preflight", "--role", "home"]).output().unwrap();
+	assert!(preflight.status.success() && !printed(&preflight).contains("tools"), "{}", printed(&preflight));
+	let missing = fixture.envctl(&["export", "--role", "dev"]).output().unwrap();
+	assert!(
+		!missing.status.success() && printed(&missing).contains("deploy/dev/tools.sops.env does not exist"),
+		"{}",
+		printed(&missing)
+	);
+}

@@ -32,6 +32,7 @@ use preflight::Deployment;
 use schema::Schema;
 use serde_json::Value;
 use std::{
+	io::IsTerminal as _,
 	path::{Path, PathBuf},
 	process::{Command as Process, ExitCode},
 	sync::{
@@ -91,6 +92,16 @@ enum Command {
 		app: String,
 		#[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
 		command: Vec<String>,
+	},
+	/// `export NAME='value'` lines for a shell to `eval`, from one of the
+	/// role's files (its `tools` file by default, #634), the shell's own
+	/// variables winning. Names go to stderr; it refuses to write to a
+	/// terminal, so a value is never shown.
+	Export {
+		#[arg(long, default_value = "home")]
+		role: String,
+		#[arg(long, default_value = sops::TOOLS)]
+		app: String,
 	},
 	/// Every variable the stack reads, its default, and whether the role's
 	/// files set it, read by name without decrypting (`make env`).
@@ -160,6 +171,55 @@ fn find_repo(given: Option<PathBuf>) -> Result<PathBuf> {
 	std::fs::canonicalize(&found).with_context(|| format!("no checkout at {}", found.display()))
 }
 
+/// `export NAME='value'` lines on stdout for a shell to `eval`, from one of
+/// `role`'s files, the shell's own variables winning; names on stderr.
+fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, sops_program: &[String]) -> Result<ExitCode> {
+	if std::io::stdout().is_terminal() {
+		bail!("export prints values: run it as eval \"$(envctl export --role {role})\", never to a terminal");
+	}
+	let relative = sops::relative(role, app);
+	if !repo.join(&relative).exists() {
+		bail!("{} does not exist; `sops edit {}` writes it", relative.display(), relative.display());
+	}
+	let file = sops::set_only(sops::decrypt(sops_program, repo, &relative)?);
+	let (exported, kept): (Vec<_>, Vec<_>) = file.iter().partition(|(name, _)| !shell.contains_key(*name));
+	let mut out = String::new();
+	for (name, value) in &exported {
+		out.push_str("export ");
+		out.push_str(name);
+		out.push('=');
+		out.push_str(&shell_quoted(value));
+		out.push('\n');
+	}
+	print!("{out}");
+	let names = |pairs: &[(&String, &String)]| pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
+	eprintln!(
+		"envctl: {} from {} (role {role})",
+		if exported.is_empty() { "nothing new".to_owned() } else { names(&exported) },
+		relative.display()
+	);
+	if !kept.is_empty() {
+		eprintln!("envctl: kept the shell's own {}", names(&kept));
+	}
+	Ok(ExitCode::SUCCESS)
+}
+
+/// `value` as one POSIX shell word: single-quoted, each `'` closed, escaped
+/// and reopened. Nothing in it is expanded when the shell evaluates it.
+fn shell_quoted(value: &str) -> String {
+	let mut out = String::with_capacity(value.len() + 2);
+	out.push('\'');
+	for character in value.chars() {
+		if character == '\'' {
+			out.push_str("'\\''");
+		} else {
+			out.push(character);
+		}
+	}
+	out.push('\'');
+	out
+}
+
 /// The variables this process was started with. Reading them is the point
 /// of a tool that starts compose and a dev server on them, not configuration
 /// of envctl itself (#484).
@@ -189,14 +249,15 @@ fn labelled(raw: &Value) -> Vec<String> {
 	binaries
 }
 
-/// Each `<app>.sops.env` in deploy/<role>/ but compose's own.
+/// Each `<app>.sops.env` in deploy/<role>/ but compose's own and the tools
+/// file, which no service reads (#634).
 fn files_of(repo: &Path, role: &str) -> Vec<String> {
 	let mut apps: Vec<String> = std::fs::read_dir(repo.join(sops::DEPLOY).join(role))
 		.into_iter()
 		.flatten()
 		.filter_map(|entry| entry.ok()?.file_name().into_string().ok())
 		.filter_map(|name| name.strip_suffix(sops::SUFFIX).map(str::to_owned))
-		.filter(|app| app != sops::COMPOSE)
+		.filter(|app| app != sops::COMPOSE && app != sops::TOOLS)
 		.collect();
 	apps.sort();
 	apps
@@ -348,6 +409,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			let status = process.status().with_context(|| format!("running {program}"))?;
 			Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 		}
+		Command::Export { role, app } => export(&repo, &role, &app, &shell, &sops_program),
 		Command::List { role } => {
 			let read = |app: &str| std::fs::read_to_string(repo.join(sops::relative(&role, app))).unwrap_or_default();
 			let mut set: IndexMap<String, Vec<String>> = IndexMap::new();
