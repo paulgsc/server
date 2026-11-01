@@ -375,23 +375,41 @@ fn write(
 	for (relative, imported) in files {
 		let path = repo.join(relative);
 		let existing = if path.exists() { sops::decrypt(sops_program, repo, relative)? } else { Plain::new() };
-		let (mut merged, mut change) = merge(&existing, imported);
+		let app = relative
+			.file_name()
+			.and_then(|name| name.to_str())
+			.and_then(|name| name.strip_suffix(sops::SUFFIX))
+			.unwrap_or_default();
+		// What runs, whole, before it meets the file: a variable the container
+		// does not carry runs on its default (or unset), so a value the file
+		// still holds for it is replaced, not kept (Codex on #622).
+		let mut what_runs = imported.clone();
+		let (filled_default, filled_unset) = schemas
+			.iter()
+			.find(|schema| schema.binary == app)
+			.map_or_else(Default::default, |schema| complete(schema, &wired(raw, app), &mut what_runs));
+		let (mut merged, mut change) = merge(&existing, &what_runs);
+		// Names the completion filled are reported as such, not as values the
+		// containers gave.
+		for list in [&mut change.added, &mut change.changed] {
+			list.retain(|name| {
+				if filled_default.contains(name) {
+					change.defaulted.push(name.clone());
+					false
+				} else if filled_unset.contains(name) {
+					change.unset.push(name.clone());
+					false
+				} else {
+					true
+				}
+			});
+		}
 		// Every use runs on its own default: a value the file still holds would
 		// change what runs at the next make up (Codex on #622).
 		for name in on_default.get(relative).into_iter().flatten() {
 			if merged.shift_remove(name).is_some() {
 				change.removed.push(name.clone());
 			}
-		}
-		let app = relative
-			.file_name()
-			.and_then(|name| name.to_str())
-			.and_then(|name| name.strip_suffix(sops::SUFFIX))
-			.unwrap_or_default();
-		if let Some(schema) = schemas.iter().find(|schema| schema.binary == app) {
-			let (defaulted, unset) = complete(schema, &wired(raw, app), &mut merged);
-			change.defaulted = defaulted;
-			change.unset = unset;
 		}
 		change.total = merged.len();
 		print!("{}", report(&relative.display().to_string(), path.exists(), &change));
