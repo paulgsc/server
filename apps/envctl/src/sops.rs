@@ -103,7 +103,9 @@ pub(crate) fn plain_values(encrypted: &str) -> Result<(), Vec<String>> {
 		if name == "sops_mac" {
 			mac = true;
 		} else if !name.starts_with("sops_") && !value.is_empty() && !value.starts_with("ENC[") {
-			plain.push(name.to_owned());
+			// A name is printed only when it is one; anything else on the
+			// line could be a value, and is reported by number.
+			plain.push(if is_name(name) { name.to_owned() } else { format!("line {}", number + 1) });
 		}
 	}
 	if !mac {
@@ -122,6 +124,16 @@ pub(crate) fn plain_values(encrypted: &str) -> Result<(), Vec<String>> {
 pub(crate) fn set_only(mut file: Plain) -> Plain {
 	file.retain(|_, value| !value.is_empty());
 	file
+}
+
+/// Whether `text` is a variable name (`[A-Za-z_][A-Za-z0-9_]*`), and so safe
+/// to print.
+pub(crate) fn is_name(text: &str) -> bool {
+	text
+		.bytes()
+		.enumerate()
+		.all(|(at, byte)| byte == b'_' || byte.is_ascii_alphabetic() || (at > 0 && byte.is_ascii_digit()))
+		&& !text.is_empty()
 }
 
 /// sops' dotenv as it decrypts it: `NAME=value` up to the line's end, with
@@ -258,6 +270,11 @@ mod tests {
 		assert!(plain_values(ENCRYPTED).is_ok());
 		assert_eq!(plain_values("A=ENC[x]\nB=plain\nsops_mac=ENC[m]\n"), Err(vec!["B".to_owned()]));
 		assert!(plain_values("EMPTY=\nsops_mac=ENC[m]\n").is_ok(), "sops leaves an empty value as it is");
+		assert_eq!(
+			plain_values("pass word hunter2=old\nsops_mac=ENC[m]\n"),
+			Err(vec!["line 1".to_owned()]),
+			"what is not a name is never printed"
+		);
 		assert_eq!(
 			plain_values("A=ENC[x]\n-----BEGIN PRIVATE KEY-----\nsops_mac=ENC[m]\n"),
 			Err(vec!["line 2".to_owned()]),
