@@ -187,9 +187,12 @@ fn printed(output: &Output) -> String {
 	format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
 }
 
+/// Fails naming the test value by its place in [`SECRETS`], and never
+/// printing it or the text that holds it: the rule under test is that no
+/// value is shown, and a failure report is a log too.
 fn no_secret_in(text: &str, what: &str) {
-	for secret in SECRETS {
-		assert!(!text.contains(secret), "{what} holds {secret}:\n{text}");
+	for (index, secret) in SECRETS.iter().enumerate() {
+		assert!(!text.contains(secret), "{what} holds SECRETS[{index}]");
 	}
 }
 

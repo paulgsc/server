@@ -351,7 +351,7 @@ mod tests {
 		assert_eq!(names(&report.missing), ["STORAGE", "BARE", "DB", "RP_ID"], "a condition's default counts");
 		assert_eq!(names(&report.invalid), ["ON", "PORT"]);
 		let shown = render(&report, "home");
-		assert!(!shown.contains(SECRET), "{shown}");
+		assert!(!shown.contains(SECRET), "the preflight printed a value");
 		assert!(shown.contains("deploy/home/compose.sops.env sets UNUSED, which no compose file reads"), "{shown}");
 		assert!(shown.contains("deploy/home/probe.sops.env sets OLD, which probe does not read"), "{shown}");
 		assert!(shown.contains("sets TOKEN, and compose's own environment:"), "{shown}");
