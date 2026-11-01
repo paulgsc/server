@@ -214,7 +214,7 @@ import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sop
 # its environment only. `nix develop .#rust` exports the same file for the
 # whole shell; this is the one-off form, for any shell.
 tool: envctl ## Run one command with deploy/$(ROLE)/tools.sops.env in its environment: make tool ARGS="sqlx migrate run --dry-run"
-	@$(ENVCTL_RUN) run --role $(ROLE) --app tools -- $(ARGS)
+	@$(ENVCTL_RUN) run --role $(ROLE) --app tools -- $(IN_RUST_SHELL) $(ARGS)
 
 prune: envctl ## Prune deploy/$(ROLE)/$(APP).sops.env's variables in a checklist (APP=file_host, NAMES=A,B to skip it)
 	@$(ENVCTL_RUN) prune --role $(ROLE) --app $(or $(APP),file_host) $(if $(PAGE),--page $(PAGE)) $(if $(NAMES),--prune $(NAMES))

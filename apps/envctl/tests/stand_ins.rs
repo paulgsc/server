@@ -604,3 +604,50 @@ fn export_gives_a_shell_the_tools_file_quoted_and_never_shows_a_value() {
 		printed(&missing)
 	);
 }
+
+#[test]
+fn values_a_shell_got_from_export_never_reach_another_roles_command() {
+	let fixture = Fixture::new("isolate").unwrap();
+	let dev = fixture.repo.join("deploy/dev");
+	fs::create_dir_all(&dev).unwrap();
+	// dev's file: ON=true only (base64 "true"), no DATABASE_URL.
+	fs::write(dev.join("probe.sops.env"), "ON=ENC[dHJ1ZQ==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n").unwrap();
+	let run = |extra: &[(&str, &str)], check: &str| {
+		let mut command = fixture.envctl(&["run", "--role", "dev", "--app", "probe", "--", "sh", "-c", check]);
+		command.envs(extra.iter().copied());
+		command.output().unwrap()
+	};
+	// Home's tools value, exported into the shell: dev's command never sees it
+	// (Codex on #639), and the child is told not to export again.
+	let exported = [("DATABASE_URL", "sqlite:///live/home.db"), ("ENVCTL_EXPORTED", "DATABASE_URL")];
+	let isolated = run(
+		&exported,
+		r#"[ -z "${DATABASE_URL+set}" ] && [ -z "${ENVCTL_EXPORTED+set}" ] && [ "$ON" = true ] && [ "$ENVCTL_NO_EXPORT" = 1 ]"#,
+	);
+	assert!(isolated.status.success(), "{}", printed(&isolated));
+	// A variable the shell set itself still wins over the file.
+	let own = run(&[("ON", "false")], r#"[ "$ON" = false ]"#);
+	assert!(own.status.success(), "{}", printed(&own));
+	// And an exported name the role's own file sets comes from the file.
+	fs::write(
+		dev.join("probe.sops.env"),
+		"ON=ENC[dHJ1ZQ==]\nDATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
+	)
+	.unwrap();
+	let from_file = run(&exported, r#"[ "$DATABASE_URL" = sqlite://dev.db ]"#);
+	assert!(from_file.status.success(), "{}", printed(&from_file));
+	// export lists what it exported.
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	fs::write(
+		deploy.join("tools.sops.env"),
+		"DATABASE_URL=ENC[c3FsaXRlOi8vZGV2LmRi]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n",
+	)
+	.unwrap();
+	let listed = fixture.envctl(&["export", "--role", "home"]).output().unwrap();
+	assert!(
+		String::from_utf8_lossy(&listed.stdout).contains("export ENVCTL_EXPORTED='DATABASE_URL'"),
+		"{}",
+		printed(&listed)
+	);
+}

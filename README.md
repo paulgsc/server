@@ -255,6 +255,9 @@ any the shell already sets. In that shell every command sees home's real
 database, the compile-time checks of `sqlx::query!` included (they only
 read). From any other shell, `make tool ARGS="sqlx migrate run --dry-run"`
 runs one command with the file. Either way the values exist only in memory.
+A value the shell got this way is not the shell's own: `make dev` and every
+other `envctl run` never pass it on to another role's command, so dev's
+server never sees home's database.
 
 **Moving the box onto them, once (ENV2, #615).** The values exist today only
 in the running containers and the box's plain-text `.env`. `make import`

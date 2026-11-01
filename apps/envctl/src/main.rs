@@ -191,6 +191,16 @@ fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, 
 		out.push_str(&shell_quoted(value));
 		out.push('\n');
 	}
+	// The names it exported, so `run` can tell them from the shell's own and
+	// never hand them to another role's command (Codex on #639).
+	if !exported.is_empty() {
+		let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+		out.push_str("export ");
+		out.push_str(EXPORTED);
+		out.push('=');
+		out.push_str(&shell_quoted(&names.join(",")));
+		out.push('\n');
+	}
 	print!("{out}");
 	let names = |pairs: &[(&String, &String)]| pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
 	eprintln!(
@@ -202,6 +212,28 @@ fn export(repo: &Path, role: &str, app: &str, shell: &IndexMap<String, String>, 
 		eprintln!("envctl: kept the shell's own {}", names(&kept));
 	}
 	Ok(ExitCode::SUCCESS)
+}
+
+/// Where `export` lists the names it put into a shell.
+const EXPORTED: &str = "ENVCTL_EXPORTED";
+
+/// The environment `run` gives `command`: the shell's own variables, then
+/// `file`'s for any the shell does not set. A name `export` put into the
+/// shell (listed in [`EXPORTED`]) is not the shell's own: it came from a
+/// role's tools file, maybe another role's, so it is never passed on, and
+/// `file` gives it if it has it (Codex on #639). The child is told not to
+/// export again, so a `nix develop .#rust` inside it adds nothing.
+fn run_environment(shell: &IndexMap<String, String>, file: &sops::Plain) -> (Vec<String>, Vec<(String, String)>) {
+	let exported: Vec<&str> = shell
+		.get(EXPORTED)
+		.map(|names| names.split(',').filter(|name| !name.is_empty()).collect())
+		.unwrap_or_default();
+	let mut removed: Vec<String> = exported.iter().map(|name| (*name).to_owned()).collect();
+	removed.push(EXPORTED.to_owned());
+	let own = |name: &str| shell.contains_key(name) && !exported.contains(&name);
+	let mut set: Vec<(String, String)> = file.iter().filter(|(name, _)| !own(name)).map(|(name, value)| (name.clone(), value.clone())).collect();
+	set.push(("ENVCTL_NO_EXPORT".to_owned(), "1".to_owned()));
+	(removed, set)
 }
 
 /// `value` as one POSIX shell word: single-quoted, each `'` closed, escaped
@@ -405,7 +437,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			};
 			let mut process = Process::new(program);
 			process.args(args).current_dir(&repo);
-			process.envs(file.iter().filter(|(name, _)| !shell.contains_key(*name)));
+			let (removed, set) = run_environment(&shell, &file);
+			for name in &removed {
+				process.env_remove(name);
+			}
+			process.envs(set);
 			let status = process.status().with_context(|| format!("running {program}"))?;
 			Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 		}
