@@ -266,7 +266,7 @@ jobs:
 
           chmod +x contract-run/file_host
           env DATABASE_URL="sqlite://$db" NATS_URL=nats://127.0.0.1:4222 REDIS_URL=redis://127.0.0.1:6379 \
-            FILE_HOST_BIND=127.0.0.1 FILE_HOST_PORT=3000 RATE_LIMIT=6000 \
+            RATE_LIMIT=6000 \
             WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=https://localhost AUTH_OPEN_SIGNUP=true \
             ALLOWED_ORIGINS=https://localhost APP_BASE_URL=https://localhost/ \
             RUST_LOG=info \

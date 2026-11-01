@@ -22,7 +22,7 @@ use std::time::Instant;
 ///
 /// See `main.rs`'s `some_metrics::install_with` call, which is where this
 /// actually takes effect. The exporter's default buckets top out at 10s;
-/// `TASK_TIMEOUT_MS` (`config.rs`) defaults to 15,000ms, so a request that
+/// `main.rs's REQUEST_TIMEOUT` (`config.rs`) defaults to 15,000ms, so a request that
 /// times out needs a bucket above that or it falls off the end of the
 /// histogram into `+Inf` and p99 becomes unrepresentable for exactly the
 /// requests it matters most to see.

@@ -181,8 +181,8 @@ its key: nothing is retyped and there is no `.env` (#614).
     `Lint`'s `Env schema` job runs `envctl nix --check`.
   - _Tolerance:_ none for what a binary declares. What clap cannot see, a
     requirement that depends on another variable (`WEBAUTHN_RP_ID` while
-    `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_SECONDS` at least
-    60 while the mailbox is on), the binary declares beside its `Config` as
+    `AUTH_ENABLED` is on) and a number's limits (`MAILBOX_ARCHIVE_DAYS`
+    from 30 to 36500 while the mailbox archives), the binary declares beside its `Config` as
     `RULES`. `app_config::schema::parse` refuses to start on any that does not
     hold, naming all of them, and the same `RULES` are in the schema, so the
     preflight checks what start-up checks (#580, each binary's
@@ -435,7 +435,7 @@ failure, as production needs. It records the port it got in
 `$XDG_RUNTIME_DIR/file_host/dev-port.json` (`/tmp/...` without one), and
 `paulgsc/some-ui`'s `vite dev` proxies there while it runs and back to the
 container when it stops, reloading the page either way. The listen address
-itself is `FILE_HOST_BIND`/`FILE_HOST_PORT` (default `0.0.0.0:3000`). `make dev`
+itself is `listen::BIND`/`listen::PORT` (default `0.0.0.0:3000`). `make dev`
 runs it on `deploy/dev/file_host.sops.env`, decrypted into its environment
 alone (`envctl run`), a variable the shell already sets winning
 (`NUDGE_ENABLED=false make dev`). Write that file once with

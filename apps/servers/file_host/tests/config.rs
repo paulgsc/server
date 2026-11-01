@@ -10,11 +10,11 @@ fn a_variable_that_does_not_parse_stops_the_binary_at_start() {
 		// Away from the checkout, as a container is.
 		.current_dir(std::env::temp_dir())
 		.env_clear()
-		.env("OTEL_TRACES_SAMPLER_ARG", "half")
+		.env("RATE_LIMIT", "half")
 		.output()
 		.unwrap();
 	assert_eq!(output.status.code(), Some(2), "{output:?}");
-	assert!(String::from_utf8_lossy(&output.stderr).contains("OTEL_TRACES_SAMPLER_ARG"), "{output:?}");
+	assert!(String::from_utf8_lossy(&output.stderr).contains("RATE_LIMIT"), "{output:?}");
 }
 
 /// #580: a requirement clap cannot see stops the binary at start too, with
@@ -29,7 +29,8 @@ fn every_unmet_rule_stops_the_binary_at_start_by_name() {
 		.env("APP_BASE_URL", "https://app.example/")
 		.env("AUTH_ENABLED", "false")
 		.env("MAILBOX_ENABLED", "true")
-		.env("MAILBOX_SECONDS", "30")
+		.env("MAILBOX_ARCHIVE_TOKEN", "a-token")
+		.env("MAILBOX_ARCHIVE_DAYS", "1")
 		.output()
 		.unwrap();
 	assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -37,7 +38,7 @@ fn every_unmet_rule_stops_the_binary_at_start_by_name() {
 	for gap in [
 		"MAILBOX_URL is required while MAILBOX_ENABLED is true",
 		"MAILBOX_TOKEN is required",
-		"MAILBOX_SECONDS must be at least 60",
+		"MAILBOX_ARCHIVE_DAYS must be from 30 to 36500",
 	] {
 		assert!(stderr.contains(gap), "{gap}: {output:?}");
 	}

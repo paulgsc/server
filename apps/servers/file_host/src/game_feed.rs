@@ -8,8 +8,8 @@
 //! **Why this is a poll.** ESPN pushes nothing to home, and home makes only
 //! outbound requests. The worker wakes every [`TICK`], fetches only what its
 //! [`pass::Schedule`] says is due, and an idle wake does no I/O at all: the
-//! scoreboard every `GAME_FEED_SCOREBOARD_SECONDS` (600), a game's summary
-//! every `GAME_FEED_LIVE_SECONDS` (15) while it is live, once more after it
+//! scoreboard every 10 minutes ([`CADENCE`]), a game's summary
+//! every 15 seconds while it is live, once more after it
 //! goes final. GW6 asks for a play within a minute, 8 times in 10; the live
 //! cadence plus one tick is 20 s, which leaves the rest to ESPN's own delay.
 //!
@@ -25,7 +25,7 @@
 //! - **Logs and metrics carry counts and kinds,** never a URL, a body or a
 //!   play's text.
 //! - **It backs off** on a 429, any other refusal, an unreadable body or no
-//!   answer, exponentially and to at most `GAME_FEED_BACKOFF_CAP_SECONDS`.
+//!   answer, exponentially and to at most 15 minutes.
 
 pub mod pass;
 
@@ -36,16 +36,33 @@ use tracing::{error, info};
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
 pub const TICK: Duration = Duration::from_secs(5);
 
-/// The shortest `GAME_FEED_SCOREBOARD_SECONDS`.
+/// The shortest scoreboard cadence.
 pub const MIN_SCOREBOARD: Duration = Duration::from_secs(60);
 
-/// The shortest `GAME_FEED_LIVE_SECONDS`: ESPN caches its responses for 5 s
+/// The shortest live cadence: ESPN caches its responses for 5 s
 /// (`cache-control: max-age=5`), so asking more often gets the same bytes.
 pub const MIN_LIVE: Duration = Duration::from_secs(5);
 /// The longest any cadence or the backoff cap may be: a day. Past it a
 /// fetch would be due beyond any game it is for, and a time that far out can
 /// overflow the scheduler's arithmetic.
 pub const MAX_CADENCE: Duration = Duration::from_secs(86_400);
+
+/// The feed's cadences: source constants, not variables (#617), each its
+/// variable's default (`GAME_FEED_SCOREBOARD_SECONDS`,
+/// `GAME_FEED_LIVE_SECONDS`, `GAME_FEED_BACKOFF_CAP_SECONDS`). The backoff
+/// cap is at least both cadences and every value is within the floors and
+/// [`MAX_CADENCE`]: the assertions below hold that at compile time.
+pub const CADENCE: pass::Cadence = pass::Cadence {
+	scoreboard: Duration::from_secs(600),
+	live: Duration::from_secs(15),
+	backoff_cap: Duration::from_secs(900),
+};
+
+const _: () = {
+	let (scoreboard, live, cap) = (CADENCE.scoreboard.as_secs(), CADENCE.live.as_secs(), CADENCE.backoff_cap.as_secs());
+	assert!(scoreboard >= MIN_SCOREBOARD.as_secs() && live >= MIN_LIVE.as_secs());
+	assert!(cap <= MAX_CADENCE.as_secs() && cap >= scoreboard && cap >= live);
+};
 
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -59,34 +76,16 @@ pub struct GameFeedContext {
 }
 
 impl GameFeedContext {
-	/// Validate the feed's configuration once, at startup. Off is fine and
-	/// logged; on with a cadence out of range is a hard error naming the
-	/// variable.
+	/// The feed's context once, at startup. Off is fine and logged.
 	///
 	/// # Errors
-	/// `GAME_FEED_ENABLED` with `GAME_FEED_SCOREBOARD_SECONDS` below 60,
-	/// `GAME_FEED_LIVE_SECONDS` below 5, or `GAME_FEED_BACKOFF_CAP_SECONDS`
-	/// below either; or an HTTP client that does not build.
+	/// `GAME_FEED_ENABLED` with an HTTP client that does not build.
 	pub fn from_config(config: &Config) -> anyhow::Result<Option<Self>> {
 		if !config.game_feed_enabled {
 			info!("the game feed is not enabled; home follows no NFL game");
 			return Ok(None);
 		}
-		let cadence = pass::Cadence {
-			scoreboard: Duration::from_secs(config.game_feed_scoreboard_seconds),
-			live: Duration::from_secs(config.game_feed_live_seconds),
-			backoff_cap: Duration::from_secs(config.game_feed_backoff_cap_seconds),
-		};
-		anyhow::ensure!(cadence.scoreboard >= MIN_SCOREBOARD, "GAME_FEED_SCOREBOARD_SECONDS must be at least 60");
-		anyhow::ensure!(cadence.live >= MIN_LIVE, "GAME_FEED_LIVE_SECONDS must be at least 5");
-		anyhow::ensure!(
-			cadence.backoff_cap <= MAX_CADENCE,
-			"GAME_FEED_BACKOFF_CAP_SECONDS, and so both cadences, must be at most 86400 (a day)"
-		);
-		anyhow::ensure!(
-			cadence.backoff_cap >= cadence.scoreboard.max(cadence.live),
-			"GAME_FEED_BACKOFF_CAP_SECONDS must be at least GAME_FEED_SCOREBOARD_SECONDS and GAME_FEED_LIVE_SECONDS"
-		);
+		let cadence = CADENCE;
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 		Ok(Some(Self {
 			fetch: pass::ReqwestFetch::new(client),

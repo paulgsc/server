@@ -10,7 +10,7 @@
 //! What clap cannot see, a binary declares beside its `Config` as [`Rules`]:
 //! a requirement that depends on another variable (`WEBAUTHN_RP_ID` while
 //! `AUTH_ENABLED` is on, a [`RequiredWhen`]) and a number's limits
-//! (`MAILBOX_SECONDS` at least 60, a [`Bound`]). [`parse`] refuses to start on
+//! (`MAILBOX_ARCHIVE_DAYS` from 30 to 36500, a [`Bound`]). [`parse`] refuses to start on
 //! any that does not hold, naming every one, and the same declaration goes
 //! into the schema, so the preflight checks exactly what start-up does (#580).
 //!

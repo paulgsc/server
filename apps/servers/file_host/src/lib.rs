@@ -142,11 +142,11 @@ impl AppState {
 				"HOST-SPECIFIC: running on the nixos.local dev host's values for these variables; any other host must set them (#406)"
 			);
 		}
-		let retired = crate::config::retired_variables_set(&config.otel.otel_service_name);
+		let retired = crate::config::retired_variables_set();
 		if !retired.is_empty() {
 			tracing::warn!(
 				variables = ?retired,
-				"left over from the retired transcriber setup (#407): remove these from deploy/<role>/file_host.sops.env; the WHISPER_* ones are not read, and OTEL_SERVICE_NAME=transcriber renames file_host's traces"
+				"set but read by nothing (#407, #617): remove these from deploy/<role>/file_host.sops.env"
 			);
 		}
 		let core = CoreContext {
@@ -162,7 +162,7 @@ impl AppState {
 		let auth = auth::AuthContext::from_config(core.shared_db.clone(), &config)?;
 
 		let cache_store = CacheStore::new(config.as_cache_config())?;
-		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));
+		let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), crate::cache::MAX_IN_FLIGHT));
 
 		// Initialize NATS transports
 		let nats_url = config.nats.nats_url.as_str();
@@ -184,7 +184,7 @@ impl AppState {
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock())?;
-		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config)?;
+		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config);
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 
 		Ok(Self {
@@ -217,7 +217,7 @@ impl AppState {
 	fn build_nudge(config: &Config, deletion: auth::DeletionLock) -> anyhow::Result<Option<NudgeContext>> {
 		use push_kit::VapidIdentity;
 
-		let identity = VapidIdentity::from_config(config.vapid_private_key.as_deref(), config.vapid_public_key.as_deref(), &config.vapid_subject);
+		let identity = VapidIdentity::from_config(config.vapid_private_key.as_deref(), config.vapid_public_key.as_deref(), nudge::VAPID_SUBJECT);
 
 		let identity = match identity {
 			Ok(identity) => identity,
@@ -254,10 +254,10 @@ impl AppState {
 			enabled: config.nudge_enabled,
 			quiet_hours_start: config.nudge_quiet_hours_start,
 			quiet_hours_end: config.nudge_quiet_hours_end,
-			presence_lease_ttl: std::time::Duration::from_secs(config.nudge_presence_lease_ttl_seconds),
+			presence_lease_ttl: nudge::PRESENCE_LEASE_TTL,
 			base_url: config.app_base_url.clone(),
-			delivery_timeout: std::time::Duration::from_millis(config.push_delivery_timeout_ms),
-			pass_deadline: std::time::Duration::from_millis(config.waker_pass_deadline_ms),
+			delivery_timeout: nudge::DELIVERY_TIMEOUT,
+			pass_deadline: nudge::PASS_DEADLINE,
 			recommender_uses_outcomes: config.recommender_uses_outcomes,
 			deletion,
 		}))

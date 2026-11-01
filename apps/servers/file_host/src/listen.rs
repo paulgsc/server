@@ -1,6 +1,6 @@
 //! Where `file_host` listens, and the dev-only port juggle.
 //!
-//! Production listens on exactly the port it is given (`FILE_HOST_PORT`,
+//! Production listens on exactly the port it is given (`listen::PORT`,
 //! 3000 by default) or fails to start: its container publishes
 //! `127.0.0.1:3000:3000` and its healthcheck asks 3000, so a server that
 //! quietly moved would be up, unreachable, and marked unhealthy for a reason
@@ -46,17 +46,28 @@ pub async fn bind(host: &str, port: u16, fallback: bool) -> io::Result<TcpListen
 	Err(in_use.unwrap_or_else(|| io::Error::from(io::ErrorKind::AddrInUse)))
 }
 
+/// The address the server listens on: every interface of its container,
+/// whose host side compose publishes on 127.0.0.1 only
+/// (`infra/compose/file_host.yml`). A source constant (#617), as
+/// `FILE_HOST_BIND` was by default.
+pub const BIND: &str = "0.0.0.0";
+
+/// The port the server listens on: compose publishes it and the healthcheck
+/// asks it. `make dev` moves past it with the port fallback, never by
+/// changing it. A source constant (#617), as `FILE_HOST_PORT` was by default.
+pub const PORT: u16 = 3000;
+
 /// The listener `main` serves on, from `config`, and the port file recording
 /// it when `config.port_file` asks for one.
 ///
 /// # Errors
 /// A bind failure (see [`bind`]) or a port file that cannot be written.
 pub async fn from_config(config: &crate::Config) -> io::Result<(TcpListener, Option<PortFile>)> {
-	let listener = bind(&config.host, config.port, config.port_fallback).await?;
+	let listener = bind(BIND, PORT, config.port_fallback).await?;
 	let bound = listener.local_addr()?;
-	if bound.port() != config.port {
+	if bound.port() != PORT {
 		tracing::warn!(
-			requested = config.port,
+			requested = PORT,
 			bound = bound.port(),
 			"port taken; listening on the next free one (FILE_HOST_PORT_FALLBACK)"
 		);
