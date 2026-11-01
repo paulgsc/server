@@ -68,7 +68,6 @@ use leetype_log_repo::{Event, LogError, SessionEvents};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
 use mailbox_repo::{Answer, ArchiveIn, Change, Heard, ItemIn};
 use serde::de::IgnoredAny;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fmt;
@@ -919,11 +918,16 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// statement that writes, and the hold keeps a deletion from landing between
 /// them. Held for this write only, never across a request to the mailbox.
 ///
-/// A list of the takes Drive holds, new in `brief` ([`drive_takes`]), has
-/// its takes home holds recorded as on Drive in the same transaction
-/// (`voice_repo::on_drive`, paulgsc/some-ui#2401).
+/// A list of the takes Drive holds, new in `brief` as `drive-takes-*`
+/// (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`), has its takes
+/// home holds recorded as on Drive in the same transaction
+/// (`voice_repo::on_drive`, paulgsc/some-ui#2401). Any other file, or one
+/// that does not read as a list, is kept as every `brief` file is, and
+/// records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
-	let listed = drive_takes(&item);
+	let listed = (item.folder == Folder::Brief.as_str() && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
+		.then(|| voice_repo::on_drive::listed_in(item.body))
+		.flatten();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
@@ -933,41 +937,6 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	}
 	tx.commit().await?;
 	Ok(change)
-}
-
-/// The name a list of the takes Drive holds goes under in `brief`.
-const DRIVE_TAKES_PREFIX: &str = "drive-takes-";
-
-/// A list of the takes Drive holds, as the build-journal session put it in
-/// `brief` (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`): when it
-/// looked, and each recording's SHA-256 that reads as one. `None` for any
-/// other file, or one that does not read as a list; such a file is kept as
-/// every `brief` file is, and records nothing.
-fn drive_takes(item: &ItemIn<'_>) -> Option<(String, Vec<String>)> {
-	#[derive(Deserialize)]
-	struct Take {
-		sha256: String,
-	}
-	#[derive(Deserialize)]
-	struct List {
-		schema: String,
-		at: String,
-		takes: Vec<Take>,
-	}
-	if item.folder != Folder::Brief.as_str() || !item.name.starts_with(DRIVE_TAKES_PREFIX) {
-		return None;
-	}
-	let list: List = serde_json::from_slice(item.body).ok()?;
-	if list.schema != voice_repo::on_drive::DRIVE_TAKES_SCHEMA {
-		return None;
-	}
-	let sha256 = list
-		.takes
-		.into_iter()
-		.map(|take| take.sha256)
-		.filter(|sha256| sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-		.collect();
-	Some((list.at, sha256))
 }
 
 /// As [`keep`], for a file about to be archived.

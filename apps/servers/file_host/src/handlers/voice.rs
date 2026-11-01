@@ -85,7 +85,10 @@ fn refusal(err: VoiceError) -> FileHostError {
 /// A game bite (`of=game`, `ref` the game's id) also says its bite's fields
 /// (`voice_repo::SaidBite`), stored beside the note in the same transaction.
 /// A Studio take (`of=studio`, `ref` the take as `<project>:<shot>:<take>`)
-/// says nothing more, as a reflection does; a redo is a new note.
+/// says nothing more, as a reflection does; a redo is a new note. A take a
+/// list of Drive's takes home already holds names is recorded as on Drive
+/// in the same transaction (`voice_repo::on_drive::match_take`,
+/// paulgsc/some-ui#2416).
 ///
 /// `BEGIN IMMEDIATE`, so the read that decides and both writes see one
 /// snapshot.

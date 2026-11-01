@@ -719,12 +719,18 @@ nowhere is marked as such and belongs to review.
       routine put back there once, by name, and takes when home last took in one of
       those (`jobs_as_of`) from them alone, so a list of Drive's takes
       arriving moves no index; and by its reflections index
-      (`mailbox::index::reflections`), which reads `scene` and `drama`. A
-      list of Drive's takes is read once, by the
-      poller, from the bytes it is keeping, in the transaction that keeps
-      it: each `studio` voice note home holds whose SHA-256 it names is
-      recorded in `studio_take_on_drive` (invariant 23), and nothing else of
-      it is kept beyond the file itself.
+      (`mailbox::index::reflections`), which reads `scene` and `drama`; and
+      by `PUT /voice-notes/:id` (`voice_repo::on_drive::match_take`), which,
+      when it stores a `studio` note, reads its own subject's lists of
+      Drive's takes in `brief` (`drive-takes-*`) made no earlier than a day
+      before the note was recorded, and only their `at` and SHA-256s (the
+      owner's decision on paulgsc/some-ui#2416, approved 2026-11-01). A
+      list of Drive's takes is read by the poller from the bytes it is
+      keeping, in the transaction that keeps it, and again by that route,
+      in the transaction that stores a take it names: each `studio` voice
+      note home holds whose SHA-256 it names is recorded in
+      `studio_take_on_drive` (invariant 23), and nothing else of it is kept
+      beyond the file itself.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened`, `PUT /routine/reflections/:id`,
       `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
@@ -1112,19 +1118,36 @@ nowhere is marked as such and belongs to review.
     build-journal session lists Drive's takes folder and puts the SHA-256 of
     each recording there in the Jobs mailbox (invariant 19); the poller, in
     the transaction that keeps that list, records each `studio` note the
-    subject holds whose `voice_note.sha256` the list names: the note's id,
+    subject holds whose `voice_note.sha256` the list names, and
+    `PUT /voice-notes/:id`, in the transaction that stores a `studio` note
+    arriving after a list naming it, records that note: the note's id,
     when the session looked, the list's mailbox name and when home recorded
     it. A hash naming nothing home holds, or a note said for anything but
-    `studio`, is dropped, never kept. A list matches only the takes home
-    holds when it arrives, and is never read again, so a take that reaches
-    home after the list naming it is recorded only once a later list names
-    it too. A take is recorded once, by the first
+    `studio`, is dropped, never kept. Whichever of a take and a list naming
+    it reaches home second matches them (the owner's decision on
+    paulgsc/some-ui#2416, option 1 bounded, approved 2026-11-01): a list
+    matches the takes home holds when it arrives, and a `studio` take that
+    reaches home after a list naming it is matched when it arrives, in the
+    transaction that stores it, against the subject's lists of Drive's takes
+    that `mailbox_item` holds and that were made no earlier than a day (the
+    most a phone's clock may be off home's) before the take was recorded. A
+    list's mailbox name is its stamp, so that is one indexed range read over
+    `mailbox_item`'s key, from a day before the take was recorded onward,
+    with the body filter in SQL: SQLite returns only the first list in that
+    range whose bytes contain the take's SHA-256, only that list is parsed,
+    and the read moves past it to the next only when it contains the hash
+    without naming it. A list made earlier than that is not read, and a
+    take it names is recorded only once a later list names it too (the
+    phone keeps it until "Drive has it" meanwhile).
+    A take is recorded once, by the first
     list that names it, and never updated (the trigger aborts an `UPDATE`);
     a later list that no longer names it takes nothing away, and it leaves
     with the account by both the sweep and its own trigger (invariant 12).
     The table holds no audio, no Drive name, id or link, and nothing the
-    list did not say. It is written only by the poller
-    (`voice_repo::on_drive::record`, from `mailbox::pass`'s `keep`) and read
+    list did not say. It is written only by `voice_repo::on_drive`: by
+    `record`, from `mailbox::pass`'s `keep`, and by `match_take`, from
+    `voice_repo::put_note` for a newly stored `studio` note (so from
+    `PUT /voice-notes/:id`, its one caller); and read
     only by `GET /voice-notes/on-drive?ids=`, for the caller's own subject,
     by the phone's ids, at most 100 a read, which answers each id home has
     recorded and when its list was made, and reads no `voice_note` row; the
@@ -1232,8 +1255,11 @@ nowhere is marked as such and belongs to review.
     `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Drive's
     word `voice_repo::on_drive`'s
     `only_the_subjects_own_studio_takes_a_list_names_are_recorded_once`,
-    `no_row_is_ever_updated_and_rows_leave_with_the_account` and
+    `no_row_is_ever_updated_and_rows_leave_with_the_account`,
     `an_empty_list_records_nothing_and_a_read_stops_at_its_cap`,
+    `a_take_that_reaches_home_after_its_list_is_recorded_when_it_arrives`,
+    `a_take_named_by_many_lists_is_recorded_once_by_the_first` and
+    `a_list_made_more_than_a_day_before_the_take_was_recorded_is_not_read`,
     `mailbox::pass`'s
     `a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index`
     and `a_list_that_does_not_read_records_nothing`, and `handlers::voice`'s
