@@ -9,6 +9,7 @@ pub mod aph;
 pub mod auth;
 pub mod db;
 pub mod health;
+pub mod ideas;
 pub mod jobs;
 pub mod korean;
 pub mod leetype_files;

@@ -1586,6 +1586,7 @@ dependencies = [
  "futures",
  "game_feed_repo",
  "hex",
+ "idea_repo",
  "intervention",
  "jobs_repo",
  "jwt-simple",
@@ -2345,6 +2346,18 @@ dependencies = [
  "zerofrom",
  "zerotrie",
  "zerovec",
+]
+
+[[package]]
+name = "idea_repo"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "studio_log_repo",
+ "tokio",
+ "voice_repo",
 ]
 
 [[package]]

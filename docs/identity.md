@@ -190,6 +190,7 @@ above the button that deletes (invariant 22):
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript`, `mailbox_leetype_log` |
 | LeetType sessions | `leetype_session_event` |
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
+| Studio's ideas, their marks and the lists they pick from | `idea_revision`, `idea_answer`, `idea_furnishing`, `idea_set_aside`, `idea_list_mark` |
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
@@ -1106,9 +1107,12 @@ nowhere is marked as such and belongs to review.
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line; its audio is
-    readable by no route yet, and the two routes that read its row,
+    readable by no route yet, and the routes that read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
-    (both below), read only whether the caller's subject holds it; and it is deleted with the account by both the sweep and
+    (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
+    (invariant 32), read only whether the caller's subject holds it, and,
+    for an idea, whether it is a `studio` note and whether it was set aside;
+    and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
 
     **Home's word that Drive holds a Studio take too is
@@ -1223,10 +1227,10 @@ nowhere is marked as such and belongs to review.
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home in two ways only. One is a transcript
+    it kept. The text leaves home in three ways only. One is a transcript
     filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
-    its time, how sure the model was and its language (`words`). The other,
+    its time, how sure the model was and its language (`words`). Another,
     since paulgsc/some-ui#2428 (MIC10; the owner took its recommendation that
     home give a take's words back to the phone, 2026-11-01), is
     `GET /voice-notes/:id/heard`'s answer, to a session of the
@@ -1236,7 +1240,11 @@ nowhere is marked as such and belongs to review.
     `voice_repo::transcript::words` takes), or empty text for a note only ever found silent, with its language, model and
     when it was heard, and nothing while no model has ended the note. It
     reads no audio, no word and no probability, and its span skips every
-    argument. The words are readable by no route yet, and the audio never
+    argument. The third, since paulgsc/server#645 (ST26), is the same
+    reading of each `studio` note an idea's answer names, inside
+    `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
+    subject only, by the same `voice_repo::transcript::heard`. The words
+    are readable by no route yet, and the audio never
     leaves. A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
@@ -1574,6 +1582,78 @@ nowhere is marked as such and belongs to review.
     `carriesRefusal` does, which a change on either side can break (each
     side's tests pin the same cases).
 
+32. **The owner's ideas are append-only, one revision per send that changes
+    one, and name their takes only by id.** An idea is one record on home
+    (STUDIO ST26: paulgsc/server#645; the phone's half paulgsc/some-ui#2453,
+    the owner's decisions there, 2026-11-01). `idea_revision` keeps each send
+    that changed it: the phone's id for the idea, when the phone began it
+    (every revision carries the first's), when the owner pressed Send, the
+    title they typed (trimmed, 1 to 80 characters), the topic (the owner's
+    word is "subject"), the format (`short` or `video`), its keywords
+    (sorted, so a reordered list is the same bundle), the question set's
+    version, and when it reached home. `idea_answer` keeps
+    each answer of a revision: the question, and either a `studio` voice
+    note by the phone's id (its audio is `voice_note_audio`'s and went home
+    only through `PUT /voice-notes/:id`, invariant 23) or the words typed
+    when voice failed (1 to 1,000 characters). The first question of the
+    set is always answered. A note an answer names must already be one of
+    the subject's own `studio` notes on home and not one the owner set
+    aside (`voice_note_set_aside`, invariant 23), read in the transaction
+    that writes, or the send is a `409` naming each note by id and writes
+    nothing. `idea_furnishing` keeps every change of the "still furnishing"
+    mark, the latest standing; it is the owner's alone, and nothing reads
+    it for a routine or the mailbox. `idea_set_aside` keeps the one mark
+    that takes an idea out of the list for good: a mark, never a delete,
+    after which the idea takes no new revision. `idea_list_mark` keeps each
+    entry the owner adds to or takes off the topics and keywords lists, the
+    latest per entry standing over the seeds `idea_repo` names. A topic or
+    keyword a send adds to the idea, one its latest revision does not carry,
+    must be on the lists as they stand; one the latest revision carries
+    stays valid after it is taken off. So taking an entry off leaves every
+    idea that uses it as it is, and still editable (paulgsc/server#645,
+    "Taking one off leaves the ideas that use it unchanged", and the
+    prototype the owner approved on paulgsc/some-ui#2453, 2026-11-01). Every table is
+    the owner's record, so none is ever updated (each trigger aborts an
+    `UPDATE`) or replaced: a send whose `sentAt` a revision holds is
+    `unchanged` with the same bundle and a `409` with another, a send whose
+    bundle is the latest revision's is `unchanged`, and a mark that changes
+    nothing writes nothing. Nothing is deleted but with the account, by both
+    the sweep and the migration's triggers (invariant 12), and rolling back
+    the migration that creates them fails once any holds a row. They are
+    written only by `PUT /ideas/:id`, `PUT /ideas/:id/furnishing`,
+    `PUT /ideas/:id/set-aside` and `PUT` and `DELETE
+    /idea-lists/{topics,keywords}/:name`, and read only by `GET /ideas`,
+    `GET /ideas/:id` and `GET /idea-lists`, each for the caller's own
+    subject (another subject's idea is a `404`). `GET /ideas` lists at most
+    the 1,000 newest begun of the ideas not set aside, and says `more` when
+    it holds others back. A read carries, for each answer's note, what home
+    heard in it (invariant 23), unless the owner set the note aside after
+    the send: then the answer says `setAside` and carries no words. No file the poller
+    files reads them, so they never leave home for the mailbox; a routine
+    reads an idea's takes only as their transcripts, as before. A title, a
+    typed answer and what was heard are the owner's own words, so they never
+    reach a log line: every handler records only `otel.kind` (invariant 6),
+    and a refusal names fields in fixed words and notes by id.
+    *Enforced by* `idea_repo`'s `the_tables_hold_exactly_their_described_columns`,
+    `a_send_is_a_revision_and_the_same_bundle_again_is_unchanged`,
+    `no_row_is_ever_updated`,
+    `a_named_note_must_be_the_subjects_own_studio_note_on_home`,
+    `what_a_send_adds_must_be_on_the_lists_as_they_stand`,
+    `a_note_set_aside_is_not_held_and_its_words_leave_the_idea`,
+    `the_list_says_when_it_holds_back_ideas`,
+    `the_lists_start_with_their_seeds_and_each_mark_is_kept`,
+    `the_latest_furnishing_mark_stands_and_every_mark_is_kept`,
+    `an_idea_set_aside_leaves_the_list_for_good`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::ideas`'s
+    `refusals_name_their_fields_and_records_stay_apart` and
+    `nothing_an_idea_says_reaches_a_log_line`.
+    *Not enforced:* that nothing else writes the tables, which
+    `git grep -n -e idea_revision -e idea_answer -e idea_furnishing -e idea_set_aside -e idea_list_mark -- '*.rs'`
+    shows today; and that the phone's question sets match
+    `idea_repo::QUESTION_SETS`, which a new set on the phone breaks until
+    home names it too.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -1668,6 +1748,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   recorded it, to the millisecond, and when it reached home. That timeline is
   what the record is for: it is how the owner's growth reads back. Deleting
   the account removes it; nothing else does.
+- **Studio's ideas and their times.** Each idea's title, topic, format and
+  keywords, every revision of them, the words the owner typed when voice
+  failed, which takes answer which question, whether they are still
+  furnishing it and whether they set it aside, and when the idea was begun
+  and each revision sent, to the millisecond (invariant 32). Deleting the
+  account removes them; nothing else does.
 - **Studio's log and its times.** The events say when the owner sat down to
   work on a video, which screens they had open and for how long, and when
   they put the phone down, each to the millisecond; the friction reports say

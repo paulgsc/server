@@ -47,6 +47,26 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"game_bite",
 		"what each of the owner's game bites (a voice note said while watching a game) was said about and what the screen showed: the scenario and how it came to be said, the offer, the live strip and context line, whether they were watching, when they started saying it, the phone's clock offset, the mode and the scenario set's version; see docs/identity.md invariant 23",
 	),
+	(
+		"idea_answer",
+		"each answer of each revision of the owner's ideas (STUDIO ST26): the question it answers and either the studio voice note that answers it, by id, or the words the owner typed when voice failed (at most 1,000 characters); see docs/identity.md invariant 32",
+	),
+	(
+		"idea_furnishing",
+		"each time the owner marked one of their ideas as still being furnished or not (STUDIO ST26), and when home recorded it; the owner's alone, read for no routine; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_list_mark",
+		"each entry the owner added to or took off the topics and keywords lists their ideas pick from (STUDIO ST26), and when; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_revision",
+		"every revision of the owner's ideas sent home (STUDIO ST26): the title they typed, the topic, the format (short or video), the keywords, the question set's version, when the idea was begun and the revision sent, and when it reached home; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_set_aside",
+		"each of the owner's ideas the owner set aside (STUDIO ST26), and when home recorded it; the idea itself is kept; see docs/identity.md invariant 32",
+	),
 	("intervention_log", "what the waker decided and when"),
 	(
 		"jobs_event",

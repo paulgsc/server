@@ -33,7 +33,11 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
-use voice_repo::{set_aside::SetAside, transcript::Hearing, Note, Said, SaidBite, VoiceError, REWRITTEN};
+use voice_repo::{
+	set_aside::SetAside,
+	transcript::{Hearing, Transcript},
+	Note, Said, SaidBite, VoiceError, REWRITTEN,
+};
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
 #[derive(Debug, Deserialize)]
@@ -194,25 +198,11 @@ pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Quer
 	}))
 }
 
-/// What home heard in a note, as `GET /voice-notes/:id/heard` answers it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HeardText {
-	/// What was heard; empty when home found the note silent (no speech).
-	pub text: String,
-	/// Whisper's code for the language detected; null for a silent note.
-	pub language: Option<String>,
-	/// The model file home heard it with.
-	pub model: String,
-	/// When home heard it: RFC 3339, UTC.
-	pub heard_at: String,
-}
-
 /// `GET /voice-notes/:id/heard`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NoteHeard {
 	/// Null while home holds the note and has not heard it yet.
-	pub heard: Option<HeardText>,
+	pub heard: Option<Transcript>,
 }
 
 /// `GET /voice-notes/:id/heard`
@@ -239,12 +229,7 @@ pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id
 	let heard = match voice_repo::transcript::heard(&mut conn, subject.as_str(), &id).await.map_err(refusal)? {
 		Hearing::NotHeld => return Err(FileHostError::NotFound),
 		Hearing::Waiting => None,
-		Hearing::Heard(transcript) => Some(HeardText {
-			text: transcript.text,
-			language: transcript.language,
-			model: transcript.model,
-			heard_at: transcript.heard_at,
-		}),
+		Hearing::Heard(transcript) => Some(transcript),
 	};
 	Ok(Json(NoteHeard { heard }))
 }
