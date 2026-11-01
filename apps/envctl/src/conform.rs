@@ -1,7 +1,8 @@
 //! Conformance, for CI (ENV3, #616): names only, never a value, and no key.
 //!
 //! Every deployment file is one sops wrote; every name in it is a variable
-//! its binary or compose reads; a role that runs compose has a file for every
+//! its binary or compose reads, and every variable of its binary has a name
+//! in it (an empty value is "decided: unset"); a role that runs compose has a file for every
 //! labelled service; every binary of ours that reads its environment through
 //! `app-config` has a checked-in schema; and no tracked file is a plain-text
 //! env file. Each problem is named.
@@ -98,7 +99,8 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 	for role in roles {
 		let shown = |app: &str| sops::relative(&role.name, app).display().to_string();
 		let has = |app: &str| role.files.iter().any(|(file, _)| file == app);
-		if has(sops::COMPOSE) {
+		let runs_compose = has(sops::COMPOSE);
+		if runs_compose {
 			for (binary, _) in &labelled {
 				if !has(binary) {
 					problems.push(format!("{} does not exist: {} runs compose, which starts {binary}", shown(binary), role.name));
@@ -124,16 +126,31 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 				problems.push(format!("{file} is for {app}, and infra/env/ has no {app}.json"));
 				continue;
 			};
-			let wired: BTreeSet<String> = labelled
-				.iter()
-				.filter(|(binary, _)| binary == app)
-				.flat_map(|(_, service)| compose::own_environment(service).into_keys())
-				.collect();
-			for name in names {
-				if wired.contains(&name) {
+			// In a role that runs compose, compose's own environment: wires these
+			// for the app, and wins; a role that runs the binary itself (dev)
+			// states them like any other.
+			let wired: BTreeSet<String> = if runs_compose {
+				labelled
+					.iter()
+					.filter(|(binary, _)| binary == app)
+					.flat_map(|(_, service)| compose::own_environment(service).into_keys())
+					.collect()
+			} else {
+				BTreeSet::new()
+			};
+			for name in &names {
+				if wired.contains(name) {
 					problems.push(format!("{file} sets {name}, which compose's own environment: sets for {app} and wins"));
-				} else if schema.variable(&name).is_none() && !DEPENDENCY.is_match(&name) {
+				} else if schema.variable(name).is_none() && !DEPENDENCY.is_match(name) {
 					problems.push(format!("{file} sets {name}, which {app} does not declare (renamed or retired?)"));
+				}
+			}
+			for variable in &schema.variables {
+				if !wired.contains(&variable.name) && !names.contains(&variable.name) {
+					problems.push(format!(
+						"{file} does not state {}: every variable of {app} is decided per role (its value, or empty for unset)",
+						variable.name
+					));
 				}
 			}
 		}
@@ -260,9 +277,38 @@ mod tests {
 			"deploy/dev/probe.sops.env is not sops-encrypted: no sops_mac",
 			"deploy/dev/probe.sops.env is not sops-encrypted: no sops_version",
 			"deploy/dev/probe.sops.env is not sops-encrypted: no recipient",
+			"deploy/dev/probe.sops.env does not state WIRE: every variable of probe is decided per role (its value, or empty for unset)",
 			"deploy/dev/unknown.sops.env is for unknown, and infra/env/ has no unknown.json",
 		];
-		assert_eq!(found, expected, "dev runs no compose, so it needs no ghost file; OTEL_BSP_* is the SDK's own");
+		assert_eq!(
+			found, expected,
+			"dev runs no compose: it needs no ghost file, and states WIRE itself; OTEL_BSP_* is the SDK's own"
+		);
+	}
+
+	#[test]
+	fn every_variable_is_stated_in_every_role_but_compose_wiring() {
+		let probe = schema("probe", vec![var("ON", Kind::Bool), var("URL", Kind::String), var("WIRE", Kind::String)]);
+		let raw = json!({"services": {"app": {
+			"labels": {LABEL: "probe"},
+			"env_file": [{"path": "/r/${ENV_DIR:?x}/probe.env", "required": true}],
+			"environment": ["WIRE=w://wire"],
+		}}});
+		let role = |files: Vec<(&str, String)>| Role {
+			name: "home".into(),
+			files: files.into_iter().map(|(app, text)| (app.to_owned(), text)).collect(),
+		};
+		let unset_url = encrypted(&["ON"]).replace("#ENC", "URL=\n#ENC");
+		let stated = [role(vec![("compose", encrypted(&[])), ("probe", unset_url)])];
+		assert!(
+			problems(std::slice::from_ref(&probe), &variables(&[]), &raw, &stated).is_empty(),
+			"an empty value states it unset"
+		);
+		let forgot = [role(vec![("compose", encrypted(&[])), ("probe", encrypted(&["ON"]))])];
+		assert_eq!(
+			problems(&[probe], &variables(&[]), &raw, &forgot),
+			["deploy/home/probe.sops.env does not state URL: every variable of probe is decided per role (its value, or empty for unset)"]
+		);
 	}
 
 	#[test]
