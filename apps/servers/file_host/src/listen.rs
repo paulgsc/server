@@ -46,14 +46,17 @@ pub async fn bind(host: &str, port: u16, fallback: bool) -> io::Result<TcpListen
 	Err(in_use.unwrap_or_else(|| io::Error::from(io::ErrorKind::AddrInUse)))
 }
 
-/// The address the server listens on: every interface of its container,
-/// whose host side compose publishes on 127.0.0.1 only
+/// The address the server listens on.
+///
+/// Every interface of its container, whose host side compose publishes on
+/// 127.0.0.1 only
 /// (`infra/compose/file_host.yml`). A source constant (#617), as
 /// `FILE_HOST_BIND` was by default.
 pub const BIND: &str = "0.0.0.0";
 
-/// The port the server listens on: compose publishes it and the healthcheck
-/// asks it. `make dev` moves past it with the port fallback, never by
+/// The port the server listens on.
+///
+/// Compose publishes it and the healthcheck asks it. `make dev` moves past it with the port fallback, never by
 /// changing it. A source constant (#617), as `FILE_HOST_PORT` was by default.
 pub const PORT: u16 = 3000;
 

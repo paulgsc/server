@@ -47,8 +47,9 @@ pub const MIN_LIVE: Duration = Duration::from_secs(5);
 /// overflow the scheduler's arithmetic.
 pub const MAX_CADENCE: Duration = Duration::from_secs(86_400);
 
-/// The feed's cadences: source constants, not variables (#617), each its
-/// variable's default (`GAME_FEED_SCOREBOARD_SECONDS`,
+/// The feed's cadences.
+///
+/// Source constants, not variables (#617), each its variable's default (`GAME_FEED_SCOREBOARD_SECONDS`,
 /// `GAME_FEED_LIVE_SECONDS`, `GAME_FEED_BACKOFF_CAP_SECONDS`). The backoff
 /// cap is at least both cadences and every value is within the floors and
 /// [`MAX_CADENCE`]: the assertions below hold that at compile time.

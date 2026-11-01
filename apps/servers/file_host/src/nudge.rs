@@ -69,8 +69,10 @@ pub const PASS_DEADLINE: Duration = Duration::from_millis(120_000);
 
 const _: () = assert!(PASS_DEADLINE.as_secs() < WAKER_INTERVAL.as_secs(), "a pass must end before the next tick");
 
-/// How long a client-written presence lease stays fresh before a due
-/// subject's notification is sent as though nobody were looking. The client
+/// How long a client-written presence lease stays fresh.
+///
+/// Past it, a due subject's notification is sent as though nobody were
+/// looking. The client
 /// renews roughly every 45s while visible, so this absorbs timer throttling
 /// and scheduling jitter (`NUDGE_PRESENCE_LEASE_TTL_SECONDS`).
 pub const PRESENCE_LEASE_TTL: Duration = Duration::from_secs(75);
