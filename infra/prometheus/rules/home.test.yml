@@ -30,6 +30,60 @@ tests:
         alertname: MailboxPollerMetricsMissing
         exp_alerts: []
 
+  - name: a mailbox poller whose every pass fails alerts after three passes, naming why (#641)
+    interval: 1m
+    input_series:
+      - series: 'up{job="file_host"}'
+        values: '1x60'
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x60'
+      - series: 'mailbox_poll_interval_seconds{job="file_host"}'
+        values: '900x60'
+      - series: 'mailbox_poll_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+60x60'
+      - series: 'mailbox_poll_failing{job="file_host",error="not_found"}'
+        values: '1x60'
+      - series: 'mailbox_poll_failing{job="file_host",error="unauthorized"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: MailboxPollerFailing
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: MailboxPollerFailing
+        exp_alerts:
+          - exp_labels:
+              error: not_found
+              objective: MI3
+              says: "The Jobs mailbox poller has failed every pass for 45 minutes (not_found)."
+      - eval_time: 50m
+        alertname: MailboxPollerStale
+        exp_alerts: []
+
+  - name: one failing pass that recovers does not alert
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x60'
+      - series: 'mailbox_poll_failing{job="file_host",error="not_found"}'
+        values: '1x14 0x45'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: MailboxPollerFailing
+        exp_alerts: []
+
+  - name: a failing mailbox poller that is switched off does not alert
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '0x60'
+      - series: 'mailbox_poll_failing{job="file_host",error="not_found"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: MailboxPollerFailing
+        exp_alerts: []
+
   - name: a poller that keeps stamping, or is off, is not stale
     interval: 1m
     input_series:

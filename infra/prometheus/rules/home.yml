@@ -47,6 +47,19 @@ groups:
           objective: MI3
           says: "The Jobs mailbox poller is on, but home reports no pass at all."
 
+      - alert: MailboxPollerFailing
+        # MI3: passes start but every one fails (a 404, a refused token, a
+        # mailbox that changed under home), which the stale rule cannot see:
+        # a failing pass still stamps its attempt (#641). Three 15-minute
+        # passes in a row, so one blip does not page.
+        expr: |
+          max by (error) (mailbox_poll_failing) == 1
+          and on() max(mailbox_poll_enabled) == 1
+        for: 45m
+        labels:
+          objective: MI3
+          says: "The Jobs mailbox poller has failed every pass for 45 minutes ({{ $labels.error }})."
+
       - alert: NudgeWakerStale
         # NW2: no pass started within the waker's interval, its pass deadline
         # and 60 s.
