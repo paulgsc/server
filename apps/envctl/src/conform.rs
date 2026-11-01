@@ -32,7 +32,7 @@ pub(crate) fn sops_problems(encrypted: &str) -> Vec<String> {
 		if line.trim().is_empty() {
 			continue;
 		}
-		if line.starts_with('#') {
+		if line.trim_start().starts_with('#') {
 			if !line.starts_with("#ENC[") {
 				problems.push(format!("a comment in the clear on line {} (sops encrypts comments)", number + 1));
 			}
@@ -51,6 +51,9 @@ pub(crate) fn sops_problems(encrypted: &str) -> Vec<String> {
 			seen.insert("version");
 		} else if RECIPIENT.is_match(name) {
 			seen.insert("recipient");
+		} else if !sops::is_name(name) {
+			// Not a name, so it may hold a value: reported by its number only.
+			problems.push(format!("line {} is no NAME=value", number + 1));
 		} else if !name.starts_with("sops_") && !value.is_empty() && !value.starts_with("ENC[") {
 			problems.push(format!("{name} in the clear"));
 		}
