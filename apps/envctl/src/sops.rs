@@ -81,7 +81,9 @@ pub(crate) fn names(encrypted: &str) -> Vec<String> {
 		.filter(|line| !line.trim_start().starts_with('#'))
 		.filter_map(|line| line.split_once('='))
 		.map(|(name, _)| name.trim().to_owned())
-		.filter(|name| !name.is_empty() && !name.starts_with("sops_"))
+		// Only what is a name: other text before `=` (a sentence, a stray
+		// plain line) could hold a value, and every caller prints names.
+		.filter(|name| is_name(name) && !name.starts_with("sops_"))
 		.collect()
 }
 
@@ -267,6 +269,7 @@ mod tests {
 	#[test]
 	fn names_read_without_the_key_and_metadata_is_not_a_name() {
 		assert_eq!(names(ENCRYPTED), ["WEBAUTHN_RP_ID", "NUDGE_ENABLED"]);
+		assert_eq!(names("pass word hunter2=old\n  # x=y\nA=ENC[v]\n"), ["A"], "what is not a name is never one");
 		assert!(plain_values(ENCRYPTED).is_ok());
 		assert_eq!(plain_values("A=ENC[x]\nB=plain\nsops_mac=ENC[m]\n"), Err(vec!["B".to_owned()]));
 		assert!(plain_values("EMPTY=\nsops_mac=ENC[m]\n").is_ok(), "sops leaves an empty value as it is");
