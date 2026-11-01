@@ -3,6 +3,7 @@ pub mod auth;
 pub mod cors;
 pub mod db;
 pub mod health;
+pub mod ideas;
 pub mod inventory;
 pub mod jobs;
 pub mod korean;

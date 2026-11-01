@@ -1201,6 +1201,11 @@ mod tests {
 				"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
 				"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
 				"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
+				"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+				"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'n', NULL)",
+				"INSERT INTO idea_furnishing (subject_id, idea_id, seq, furnishing, stored_at) VALUES (?1, 'i', 1, 1, 'now')",
+				"INSERT INTO idea_set_aside (subject_id, idea_id, stored_at) VALUES (?1, 'i', 'now')",
+				"INSERT INTO idea_list_mark (subject_id, list, entry, seq, listed, stored_at) VALUES (?1, 'topic', 'Cooking', 1, 1, 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

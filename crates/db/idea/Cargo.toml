@@ -1,0 +1,28 @@
+[package]
+name = "idea_repo"
+description = "The owner's ideas, their marks and the lists they pick from: append-only, per subject — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["studio", "idea", "record", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
+voice_repo = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
