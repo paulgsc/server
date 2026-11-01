@@ -111,7 +111,7 @@ in {
     extraEnvironment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {};
-      description = "Variables the schema does not list, for the container's dependencies (TOKIO_WORKER_THREADS, RUST_BACKTRACE). Not for secrets: these land in the store.";
+      description = "Variables the schema does not list, for the container's dependencies (RUST_BACKTRACE, say). Not for secrets: these land in the store.";
     };
 
     ports = lib.mkOption {

@@ -26,14 +26,9 @@ services:
     environment:
       - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
-      - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
-      - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
       - REDIS_URL=redis://redis:6379
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
-      - SQLX_OFFLINE=false
-      - DATA_DIR=/app/data
-      - CONFIG_DIR=/app/config
     volumes:
       # STORAGE: the host directory holding file_host's SQLite database, mounted
       # at /app/dbs (DATABASE_URL above). A deployment constant, so it has no
