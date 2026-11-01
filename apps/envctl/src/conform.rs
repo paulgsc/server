@@ -113,6 +113,10 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 		for (app, text) in &role.files {
 			let file = shown(app);
 			problems.extend(sops_problems(text).into_iter().map(|problem| format!("{file} is not sops-encrypted: {problem}")));
+			if app == sops::TOOLS {
+				// Host-side values for tools, which no schema declares (#634).
+				continue;
+			}
 			let names = sops::names(text);
 			if app == sops::COMPOSE {
 				for name in names {
@@ -323,6 +327,21 @@ mod tests {
 		assert_eq!(
 			problems(&[probe], &variables(&[]), &raw, &forgot),
 			["deploy/home/probe.sops.env does not state URL: every variable of probe is decided per role (its value, or empty for unset)"]
+		);
+	}
+
+	#[test]
+	fn a_tools_file_may_name_anything_but_must_be_encrypted() {
+		let role = |text: String| Role {
+			name: "home".into(),
+			files: vec![("tools".to_owned(), text)],
+		};
+		let free = [role(encrypted(&["DATABASE_URL", "ANY_TOOL_TOKEN"]))];
+		assert!(problems(&[], &variables(&[]), &json!({}), &free).is_empty(), "no schema declares a tool's names (#634)");
+		let plain = [role(format!("DATABASE_URL=sqlite:///x.db\n{SOPS_TAIL}"))];
+		assert_eq!(
+			problems(&[], &variables(&[]), &json!({}), &plain),
+			["deploy/home/tools.sops.env is not sops-encrypted: DATABASE_URL in the clear"]
 		);
 	}
 

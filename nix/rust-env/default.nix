@@ -65,6 +65,18 @@
       export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.alsa-lib]}:$LD_LIBRARY_PATH"
       export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
       echo "🦀 Rust development environment loaded!"
+      # `tool <command>`: one command run with the role's host-side values for
+      # tools run by hand (`tool sqlx migrate run --dry-run`), from
+      # deploy/<role>/tools.sops.env, decrypted into that command's
+      # environment only (#634). Nothing is exported into this shell, so no
+      # role's value can reach `make dev` or anything else run here. The role
+      # is $DEPLOY, home by default, as for `make up`; a variable this shell
+      # sets itself wins (`DATABASE_URL=sqlite://x.db tool sqlx ...`).
+      tool() {
+        local repo
+        repo="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "tool: not in a checkout" >&2; return 2; }
+        cargo run -q --manifest-path "$repo/Cargo.toml" -p envctl -- --repo "$repo" run --role "''${DEPLOY:-home}" --app tools -- "$@"
+      }
     '';
 in {
   inherit buildInputs shellHook;

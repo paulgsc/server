@@ -22,6 +22,11 @@ pub(crate) const DEPLOY: &str = "deploy";
 /// The file of compose's own `${...}` variables in each role's directory.
 pub(crate) const COMPOSE: &str = "compose";
 
+/// The file of host-side values for commands run by hand (`sqlx migrate`,
+/// say) in each role's directory (#634): `make run` and the rust shell
+/// export it. Its names are free; like every file here, it is encrypted.
+pub(crate) const TOOLS: &str = "tools";
+
 /// The suffix every deployment file carries, which `.sops.yaml`'s rule
 /// matches.
 pub(crate) const SUFFIX: &str = ".sops.env";
