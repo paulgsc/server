@@ -144,6 +144,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
 	),
 	(
+		"voice_note_set_aside",
+		"each of the owner's voice notes the owner let go of on the phone (paulgsc/some-ui#2372, D3): the note's id, when it was let go and when home recorded it; the note itself is kept; see docs/identity.md invariant 23",
+	),
+	(
 		"drama_prompt",
 		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
 	),

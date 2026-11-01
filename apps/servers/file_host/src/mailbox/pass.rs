@@ -575,11 +575,13 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	};
 	for transcript in &heard {
 		match file_transcript(db, deletion, subject, transcript, &now()).await.map_err(storage)? {
-			Change::NoAccount => {
+			// Set aside since it was read above: filed for no routine.
+			None => {}
+			Some(Change::NoAccount) => {
 				outcome.no_account = true;
 				return Ok(());
 			}
-			Change::Added | Change::Unchanged => outcome.filed += 1,
+			Some(Change::Added | Change::Unchanged) => outcome.filed += 1,
 		}
 	}
 	Ok(())
@@ -993,10 +995,16 @@ async fn record_archive_answer(
 }
 
 /// As [`keep`], for a transcript filed under its note's next number, which
-/// is read in the same transaction.
-async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+/// is read in the same transaction; `None`, filing nothing, when the owner
+/// set the note aside since [`mailbox_repo::unfiled_transcripts`] read it
+/// (`mailbox_repo::set_aside_from_routines`, checked in that transaction, so
+/// a mark committed between the read and this write is seen).
+async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Option<Change>, mailbox_repo::MailboxError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	if mailbox_repo::set_aside_from_routines(&mut tx, subject, &heard.note_id).await? {
+		return Ok(None);
+	}
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
 		.await
 		.map_err(mailbox_repo::MailboxError::Storage)?;
@@ -1005,7 +1013,7 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
 	tx.commit().await?;
-	Ok(change)
+	Ok(Some(change))
 }
 
 /// As [`keep`], for a `LeetType` session's log, built from the session's
@@ -1063,7 +1071,7 @@ async fn record(
 
 #[cfg(test)]
 mod tests {
-	use super::{run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
+	use super::{file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
 	use crate::mailbox::index::LastIndexes;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
@@ -1733,6 +1741,32 @@ mod tests {
 		heard(&pool, "note:1", "ggml-small-q5_1.bin", "하나").await;
 		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-note:1-1.json"]);
+	}
+
+	/// D3 (paulgsc/some-ui epic #2368): a mark that lands between the read
+	/// of what waits to be filed and the write that files it is seen in the
+	/// write's transaction, and nothing is filed or handed.
+	#[tokio::test]
+	async fn a_note_set_aside_after_it_was_read_is_not_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "하나").await;
+		let waiting = mailbox_repo::unfiled_transcripts(&mut pool.acquire().await.unwrap(), OWNER, 10).await.unwrap();
+		assert_eq!(waiting.len(), 1);
+		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n1', 'then', 'now')")
+			.bind(OWNER)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let filed = file_transcript(&pool, &DeletionLock::default(), OWNER, &waiting[0], "2026-10-25T04:00:00.000Z")
+			.await
+			.unwrap();
+		assert_eq!(filed, None);
+		assert!(outgoing_transcripts(&pool).await.is_empty());
+		let numbered: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_transcript").fetch_one(&pool).await.unwrap();
+		assert_eq!(numbered, 0, "no number taken either");
+		let later = pass(&pool, &fake).await.unwrap();
+		assert_eq!((later.filed, later.handed), (0, Vec::<&str>::new()), "and no later pass files it");
+		assert!(!fake.puts.lock().unwrap().iter().any(|put| put.contains("/transcript/")), "nor hands it");
 	}
 
 	#[tokio::test]

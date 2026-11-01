@@ -1200,6 +1200,7 @@ mod tests {
 				"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
 				"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
 				"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
+				"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

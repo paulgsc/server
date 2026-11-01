@@ -48,8 +48,19 @@
 //! only by `file_host`'s `transcribe` worker, which reads a note's audio and
 //! never writes it. The phone reads a note's text back through
 //! [`transcript::heard`] (paulgsc/some-ui#2428).
+//!
+//! Which notes the owner let go of on the phone is [`set_aside`]'s:
+//! `voice_note_set_aside`, one mark per note, the first standing, written
+//! only by `file_host`'s `handlers::voice` (`PUT
+//! /api/v1/voice-notes/:id/set-aside`; the owner's D3 on paulgsc/some-ui
+//! epic #2368). A note set aside is kept, its audio and transcripts with
+//! it; the transcriber's queue, the transcripts filed for the mailbox and
+//! the reflections index skip it, unless it is a Jobs note: a decisions or
+//! scouts file naming it is what puts it in front of the routine, and a
+//! mark does not unname it.
 
 pub mod on_drive;
+pub mod set_aside;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
