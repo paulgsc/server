@@ -71,8 +71,9 @@ pub(crate) struct Model {
 	/// The terminal's width, to cut each line to; 0 for no limit.
 	width: usize,
 	reviewing: bool,
-	/// The review's page, and the furthest page of it shown: `y` writes only
-	/// once every page has been (Codex on #629).
+	/// The review's page, and how many of the ticked names it has shown so
+	/// far: `y` writes only once every one has been (Codex on #629). Counted
+	/// in names, not pages, so a resize cannot make an unseen one count.
 	review_page: usize,
 	review_seen: usize,
 }
@@ -138,9 +139,21 @@ impl Model {
 		let rows = self.wanted.min(height.saturating_sub(5)).max(1);
 		if rows != self.page_size {
 			let at = self.page * self.page_size + self.row;
+			let first_reviewed = self.review_page * self.page_size;
 			self.page_size = rows;
 			self.page = at / rows;
 			self.row = at % rows;
+			// The review keeps its first name on screen.
+			self.review_page = first_reviewed / rows;
+			self.mark_seen();
+		}
+	}
+
+	/// Count the names the review's page shows as seen.
+	fn mark_seen(&mut self) {
+		if self.reviewing {
+			let shown = ((self.review_page + 1) * self.page_size).min(self.ticked().len());
+			self.review_seen = self.review_seen.max(shown);
 		}
 	}
 
@@ -178,18 +191,19 @@ impl Model {
 	pub(crate) fn key(&mut self, key: Key) -> Step {
 		if self.reviewing {
 			let pages = self.review_pages();
+			let all_seen = self.review_seen >= self.ticked().len();
 			return match key {
-				Key::Yes if self.review_seen + 1 >= pages => Step::Write,
+				Key::Yes if all_seen => Step::Write,
 				Key::Right | Key::Down if self.review_page + 1 < pages => {
 					self.review_page += 1;
-					self.review_seen = self.review_seen.max(self.review_page);
+					self.mark_seen();
 					Step::Continue
 				}
 				Key::Left | Key::Up => {
 					self.review_page = self.review_page.saturating_sub(1);
 					Step::Continue
 				}
-				// A y before every page is seen, or paging past the last, stays.
+				// A y before every name is seen, or paging past the last, stays.
 				Key::Yes | Key::Right | Key::Down => Step::Continue,
 				Key::Quit => Step::Quit,
 				_ => {
@@ -233,6 +247,7 @@ impl Model {
 				self.reviewing = true;
 				self.review_page = 0;
 				self.review_seen = 0;
+				self.mark_seen();
 			}
 			Key::Quit => return Step::Quit,
 			_ => {}
@@ -264,7 +279,7 @@ impl Model {
 				};
 				let _ = writeln!(out, "  {:<36} {what}", item.name);
 			}
-			if self.review_seen + 1 >= pages {
+			if self.review_seen >= ticked.len() {
 				out.push_str("\n  y  write, through sops   left/right page   any other key  back   q  leave, nothing written\n");
 			} else {
 				out.push_str("\n  right  the next page (y writes once every page is seen)   any other key  back   q  leave\n");
@@ -537,6 +552,40 @@ mod tests {
 		assert!(model.render("f").contains("page 2/2") && model.render("f").contains("B1"));
 		model.key(Key::Left);
 		assert_eq!(model.key(Key::Yes), Step::Write, "every page has been shown");
+	}
+
+	#[test]
+	fn a_resize_during_the_review_never_counts_an_unseen_name_as_seen() {
+		let mut variables = Vec::new();
+		for at in 0..10 {
+			let mut variable = var(&format!("V{at}"), Kind::String);
+			variable.group = Some("G".into());
+			variables.push(variable);
+		}
+		let file: Plain = (0..10).map(|at| (format!("V{at}"), "x".to_owned())).collect();
+		let mut model = Model::new(&schema("probe", variables), &file, 10);
+		model.fit(80, 7);
+		for _ in 0..10 {
+			model.key(Key::Toggle);
+			model.key(Key::Down);
+		}
+		model.key(Key::Enter);
+		model.key(Key::Right);
+		assert!(model.render("f").contains("page 2/5"), "{}", model.render("f"));
+		// Codex on #629: grown to 24 rows, the review showed "page 2/1" and y
+		// wrote with V4 to V9 never shown.
+		model.fit(80, 24);
+		let grown = model.render("f");
+		assert!(grown.contains("page 1/1") && grown.contains("V9"), "{grown}");
+		assert_eq!(model.key(Key::Yes), Step::Write, "every name is on screen now");
+		let mut shrunk = Model::new(&schema("probe", (0..10).map(|at| var(&format!("V{at}"), Kind::String)).collect()), &file, 10);
+		for _ in 0..10 {
+			shrunk.key(Key::Toggle);
+			shrunk.key(Key::Down);
+		}
+		shrunk.key(Key::Enter);
+		shrunk.fit(80, 7);
+		assert_eq!(shrunk.key(Key::Yes), Step::Write, "names seen before a shrink stay seen");
 	}
 
 	#[test]
