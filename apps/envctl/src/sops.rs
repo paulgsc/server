@@ -137,6 +137,22 @@ pub(crate) fn plain_values(encrypted: &str) -> Result<(), Vec<String>> {
 	}
 }
 
+/// The names whose value is wrapped in a matching pair of quotes. sops'
+/// dotenv does no quoting, so `NAME="v"` hands a binary `"v"`, quotes and
+/// all: almost always a slip, which a tool then reads as a malformed value
+/// (`sqlx`: "relative URL without a base"). Named, never refused: a value
+/// may mean them.
+pub(crate) fn quoted(file: &Plain) -> Vec<&str> {
+	file
+		.iter()
+		.filter(|(_, value)| {
+			let bytes = value.as_bytes();
+			bytes.len() >= 2 && (bytes[0] == b'"' || bytes[0] == b'\'') && bytes[bytes.len() - 1] == bytes[0]
+		})
+		.map(|(name, _)| name.as_str())
+		.collect()
+}
+
 /// `file` without its empty values. An empty value is how a deployment file
 /// says "decided: unset" (#616), since sops' dotenv has no other way to, so
 /// a binary is given it unset, never set to nothing.
@@ -243,7 +259,18 @@ pub(crate) fn decrypt(sops: &[String], repo: &Path, file: &Path) -> Result<Plain
 		);
 	}
 	let text = String::from_utf8(output.stdout).with_context(|| format!("{} decrypts to text that is not UTF-8", file.display()))?;
-	Ok(parse(&text))
+	let plain = parse(&text);
+	let quoted = quoted(&plain);
+	if !quoted.is_empty() {
+		// Names only: a value is never shown.
+		eprintln!(
+			"envctl: {}: {} wrapped in quotes, which sops keeps as part of the value; write NAME=value (sops edit {})",
+			file.display(),
+			quoted.join(", "),
+			file.display()
+		);
+	}
+	Ok(plain)
 }
 
 /// `entries` encrypted by sops for `target` (repo-relative, so
@@ -299,6 +326,18 @@ mod tests {
 		assert!(version("sops 3.13.3").is_some_and(|found| found >= SUBCOMMANDS_SINCE));
 		assert!(version("sops 4.0.0").is_some_and(|found| found >= SUBCOMMANDS_SINCE));
 		assert_eq!(version("stand-in"), None, "a sops that prints no version is not called old");
+	}
+
+	#[test]
+	fn a_value_wrapped_in_quotes_is_named() {
+		let file = Plain::from([
+			("URL".to_owned(), "\"sqlite:///x.db\"".to_owned()),
+			("ONE".to_owned(), "'v'".to_owned()),
+			("MIXED".to_owned(), "\"v'".to_owned()),
+			("LONE".to_owned(), "\"".to_owned()),
+			("PLAIN".to_owned(), "sqlite:///x.db".to_owned()),
+		]);
+		assert_eq!(super::quoted(&file), ["URL", "ONE"]);
 	}
 
 	#[test]
