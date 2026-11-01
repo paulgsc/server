@@ -244,6 +244,20 @@ To add a machine: add its recipient to
 `.sops.yaml` here and in `paulgsc/dotfiles`, then `sops updatekeys` each
 file.
 
+**Commands run by hand (#634).** A tool run on the box, `sqlx migrate run`
+say, reads host-side values no app file holds: compose gives file-host
+`DATABASE_URL` as a path inside the container. Those go in
+`deploy/<role>/tools.sops.env` (`sops edit` it; on home,
+`DATABASE_URL=sqlite:///<STORAGE>/hopium.db`), whose names are free.
+`nix develop .#rust` gives the shell a `tool` command:
+`tool sqlx migrate run --dry-run` runs that one command with the file
+decrypted into its environment only, for the role in `$DEPLOY` (home by
+default, as for `make up`; `DEPLOY=dev tool …` for a scratch database). A
+variable the shell sets itself wins. From any other shell,
+`make tool ARGS="sqlx migrate run --dry-run"` does the same. Nothing is
+exported into a shell, so no role's value reaches `make dev` or anything
+else run there.
+
 **Moving the box onto them, once (ENV2, #615).** The values exist today only
 in the running containers and the box's plain-text `.env`. `make import`
 (`DRY=1` to only name what would change) reads each running container with

@@ -561,3 +561,23 @@ fn import_takes_out_what_an_app_file_holds_and_its_container_does_not_carry() {
 	let written = fs::read_to_string(deploy.join("probe.sops.env")).unwrap();
 	assert!(!written.contains("OTEL_EXPORTER_OTLP_HEADERS=") && !written.contains("NO_BINARY_READS="), "{written}");
 }
+
+#[test]
+fn a_tools_file_runs_one_command_and_make_up_never_reads_it() {
+	let fixture = Fixture::new("tools").unwrap();
+	imported(&fixture).unwrap();
+	let deploy = fixture.repo.join("deploy/home");
+	// DATABASE_URL=sqlite:///srv/a b/x.db, QUOTE=it's $HOME `x` (base64 inside ENC[]).
+	let tools = "DATABASE_URL=ENC[c3FsaXRlOi8vL3Nydi9hIGIveC5kYg==]\nQUOTE=ENC[aXQncyAkSE9NRSBgeGA=]\nEMPTY=\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n";
+	fs::write(deploy.join("tools.sops.env"), tools).unwrap();
+	// What `make tool` and the rust shell's `tool` run (#634): the values
+	// reach the one command whole, an empty one unset.
+	let check = r#"[ "$DATABASE_URL" = 'sqlite:///srv/a b/x.db' ] && [ "$QUOTE" = "it's \$HOME \`x\`" ] && [ -z "${EMPTY+set}" ]"#;
+	let run = fixture.envctl(&["run", "--role", "home", "--app", "tools", "--", "sh", "-c", check]).output().unwrap();
+	assert!(run.status.success(), "{}", printed(&run));
+	no_secret_in(&printed(&run), "run's output");
+	// make up's files are the apps' and compose's: the preflight neither
+	// checks the tools file nor mentions it.
+	let preflight = fixture.envctl(&["preflight", "--role", "home"]).output().unwrap();
+	assert!(preflight.status.success() && !printed(&preflight).contains("tools"), "{}", printed(&preflight));
+}

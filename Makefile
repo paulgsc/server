@@ -168,7 +168,7 @@ IN_RUST_SHELL := $(if $(shell command -v cargo 2>/dev/null),,nix develop $(CURDI
 ENVCTL ?= $(TARGET_DIR)/debug/envctl
 ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
-.PHONY: envctl dev env-schema env preflight up compose import prune deploy-check
+.PHONY: envctl dev env-schema env preflight up compose import prune tool deploy-check
 
 # Cargo's own progress on stderr: the first build takes a minute, and a cargo
 # blocked on another one's lock (rust-analyzer, say) says so instead of
@@ -209,5 +209,12 @@ import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sop
 # Prune variables of one app's file (ENV2b, #628): a checklist grouped by the
 # schema's sections, PAGE rows at a time; a declared variable is stated unset,
 # an undeclared one removed, written through sops. NAMES=A,B prunes without it.
+# A command run by hand on the box (`sqlx migrate run`, say) gets the role's
+# host-side values from deploy/$(ROLE)/tools.sops.env (#634), decrypted into
+# its environment only. In `nix develop .#rust`, `tool <command>` does the
+# same; this is the form for any other shell.
+tool: envctl ## Run one command with deploy/$(ROLE)/tools.sops.env in its environment: make tool ARGS="sqlx migrate run --dry-run"
+	@$(ENVCTL_RUN) run --role $(ROLE) --app tools -- $(IN_RUST_SHELL) $(ARGS)
+
 prune: envctl ## Prune deploy/$(ROLE)/$(APP).sops.env's variables in a checklist (APP=file_host, NAMES=A,B to skip it)
 	@$(ENVCTL_RUN) prune --role $(ROLE) --app $(or $(APP),file_host) $(if $(PAGE),--page $(PAGE)) $(if $(NAMES),--prune $(NAMES))

@@ -189,14 +189,15 @@ fn labelled(raw: &Value) -> Vec<String> {
 	binaries
 }
 
-/// Each `<app>.sops.env` in deploy/<role>/ but compose's own.
+/// Each `<app>.sops.env` in deploy/<role>/ but compose's own and the tools
+/// file, which no service reads (#634).
 fn files_of(repo: &Path, role: &str) -> Vec<String> {
 	let mut apps: Vec<String> = std::fs::read_dir(repo.join(sops::DEPLOY).join(role))
 		.into_iter()
 		.flatten()
 		.filter_map(|entry| entry.ok()?.file_name().into_string().ok())
 		.filter_map(|name| name.strip_suffix(sops::SUFFIX).map(str::to_owned))
-		.filter(|app| app != sops::COMPOSE)
+		.filter(|app| app != sops::COMPOSE && app != sops::TOOLS)
 		.collect();
 	apps.sort();
 	apps
