@@ -11,7 +11,8 @@
 //! reflection it sent home (`PUT /routine/reflections/:id`, text only), each
 //! drama prompt it asked for (`PUT /routine/prompts/:stamp`, text only), those
 //! transcripts and those logs. Last of the handing, it puts the Jobs
-//! routine's index when what it counts has moved ([`super::index`]), so the
+//! routine's index and the reflections routine's, each when what it counts
+//! has moved ([`super::index`], [`super::index::reflections`]), so each
 //! index counts what this pass handed. The index is a view home recomputes,
 //! not a record: home keeps no copy, archiving never walks its folder, and
 //! the routine cannot ask for an old one ([`ARCHIVES`]).
@@ -352,7 +353,7 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 ///
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then puts
-/// the Jobs index if what it counts moved since `last_index`, then, with
+/// each routine's index if what it counts moved since `last_index`, then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
@@ -372,7 +373,7 @@ pub async fn run_once<T: MailboxTransport>(
 	subject: &str,
 	deletion: &DeletionLock,
 	settle: std::time::Duration,
-	last_index: &super::index::LastIndex,
+	last_index: &super::index::LastIndexes,
 	now: &(impl Fn() -> String + Sync),
 ) -> Result<Outcome, PassError> {
 	let mut outcome = Outcome::default();
@@ -399,11 +400,13 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		hand_over(db, mailbox, subject, deletion, now, &mut outcome).await
 	};
-	// After outbound, so the index counts what this pass handed.
+	// After outbound, so each index counts what this pass handed.
 	let index = if outcome.no_account {
 		Ok(())
 	} else {
-		super::index::put_jobs_index(db, mailbox, subject, last_index, now, &mut outcome).await
+		let jobs = super::index::put_jobs_index(db, mailbox, subject, &last_index.jobs, now, &mut outcome).await;
+		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
+		jobs.and(reflections)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
@@ -1017,7 +1020,7 @@ async fn record(
 mod tests {
 	use super::{run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
-	use crate::mailbox::index::LastIndex;
+	use crate::mailbox::index::LastIndexes;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
 	use sha2::{Digest, Sha256};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -1053,7 +1056,7 @@ mod tests {
 		index_fails: Mutex<bool>,
 		/// Home's memory of the last index it put, kept across this fake's
 		/// passes as the poller keeps it across ticks.
-		last_index: LastIndex,
+		last_index: LastIndexes,
 	}
 
 	impl Fake {
@@ -1661,6 +1664,8 @@ mod tests {
 		deletes_reach: Mutex<Option<Reach>>,
 		/// Every request, as `<METHOD> <path>`, either token's.
 		seen: Mutex<Vec<String>>,
+		/// Home's memory of each routine's last index, kept across passes.
+		last_index: LastIndexes,
 	}
 
 	fn sha(body: &str) -> String {
@@ -1823,7 +1828,7 @@ mod tests {
 			mailbox: &archive,
 			after_days: 90,
 		};
-		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), SETTLE, &LastIndex::default(), &|| {
+		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), SETTLE, &vault.last_index, &|| {
 			String::from("2026-10-23T15:00:00.000Z")
 		})
 		.await
@@ -2051,6 +2056,8 @@ mod tests {
 
 		let (name, body) = reflection_handed(&pool, "r-young", YOUNG).await;
 		vault.add("reflection", 1, &name, &body, YOUNG);
+		// Its arrival moves the reflections index once: work, not idle.
+		assert_eq!(archive_pass(&pool, &vault).await.indexed, ["added"]);
 		vault.seen.lock().unwrap().clear();
 		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 		let requests = vault.seen.lock().unwrap().clone();
@@ -2210,6 +2217,9 @@ mod tests {
 		let (pool, vault) = (pool().await, Vault::default());
 		let (name, body) = prompt_handed(&pool, "drama-20261031T071503120Z", YOUNG).await;
 		vault.add("prompt", 1, &name, &body, YOUNG);
+		// Its arrival moves the reflections index once: work, not idle.
+		assert_eq!(archive_pass(&pool, &vault).await.indexed, ["added"]);
+		vault.seen.lock().unwrap().clear();
 		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 		let requests = vault.seen.lock().unwrap().clone();
 		assert_eq!(requests.len(), 25, "a prompt too young to archive costs no request: {requests:?}");
@@ -2718,12 +2728,13 @@ mod tests {
 	/// MI6 (paulgsc/some-ui `packages/assurance`): with archiving, a pass with
 	/// nothing to do lists five folders it reads, ten folders' asks and ten
 	/// folders' live files, 25 requests, and never the index; once home holds
-	/// a file, a pass where nothing arrived and no pick lapsed, on a later
-	/// day included, makes the same 25.
+	/// a file, a pass where nothing arrived, no pick lapsed and no moment the
+	/// reflections index carries passed, on a later day included, makes the
+	/// same 25.
 	#[tokio::test]
 	async fn an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index() {
 		let (pool, vault) = (pool().await, Vault::default());
-		let last = LastIndex::default();
+		let last = LastIndexes::default();
 		let pass = |now: &'static str| {
 			let (pool, vault, last) = (&pool, &vault, &last);
 			async move {
@@ -2756,6 +2767,40 @@ mod tests {
 			assert!(idle.indexed.is_empty(), "{now}");
 			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
 			assert!(seen.iter().all(|request| !request.contains("/v1/index/")), "{seen:?}");
+		}
+
+		// The reflections index (HF7) adds no listing either: a written
+		// reflection waiting on a voice note home holds and has not heard puts
+		// one when it arrives and one when its two-day wait ends, and nothing
+		// on the passes between.
+		let (name, body) = reflection_handed(&pool, "r-waits", "2026-10-25T15:40:00.000Z").await;
+		vault.add("reflection", 2, &name, &body, "2026-10-25T15:40:00.000Z");
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'said-1', 'reflection', 's-7f3a91c2', '2026-06-30T20:00:00.000Z', 'audio/webm', 1, 's', '2026-10-25T15:41:00.000Z')",
+		)
+		.bind(OWNER)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let reflections_put = |seen: &[String]| seen.iter().filter(|request| request.starts_with("Put /v1/index/items/index-reflections-")).count();
+		let (arrived, seen) = pass("2026-10-25T15:45:00.000Z").await;
+		assert_eq!((arrived.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "{seen:?}");
+		// The 26th in Los Angeles: the Jobs pick lapses, which is the Jobs
+		// index's one put, not the reflections index's.
+		let (lapsed, seen) = pass("2026-10-26T15:00:00.000Z").await;
+		assert_eq!((lapsed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 0, 26), "{seen:?}");
+		for now in ["2026-10-26T15:30:00.000Z", "2026-10-27T15:39:59.999Z"] {
+			let (idle, seen) = pass(now).await;
+			assert!(idle.indexed.is_empty(), "{now}");
+			assert_eq!(seen.len(), 25, "still waiting on {now}: {seen:?}");
+		}
+		let (missed, seen) = pass("2026-10-27T15:40:00.000Z").await;
+		assert_eq!((missed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "the wait ends: {seen:?}");
+		for now in ["2026-10-27T15:55:00.000Z", "2026-10-28T15:30:00.000Z", "2026-11-30T15:30:00.000Z"] {
+			let (idle, seen) = pass(now).await;
+			assert!(idle.indexed.is_empty(), "{now}");
+			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
 		}
 	}
 }
