@@ -110,7 +110,7 @@ The analogy stops at the leaky bucket, and this is the part worth understanding:
   `WHERE eligible_at <= now`. On a day when nobody has drifted it returns
   nothing.
 
-Work is O(1) per signal and zero per idle subject. `NUDGE_WAKER_SECONDS` is not a
+Work is O(1) per signal and zero per idle subject. `nudge::WAKER_INTERVAL` is not a
 schedule; it is the resolution at which already-decided work is picked up.
 
 ### Why a vector and not one number
@@ -1705,7 +1705,7 @@ suppress a notification about this one, and `GetStarted` (no session to point
 at) is never suppressible by presence at all.
 
 Freshness is derived lazily rather than maintained: `now - observed_at < ttl`
-(`NUDGE_PRESENCE_LEASE_TTL_SECONDS`, default 75s), computed at the moment
+(`nudge::PRESENCE_LEASE_TTL`, default 75s), computed at the moment
 `admit` asks. A lease six months stale reads exactly like no lease — there is
 no expiry job, and none is needed for correctness.
 
@@ -1886,10 +1886,10 @@ serial also meant *unbounded*: one push provider that stopped answering held
 every later subject in the batch for as long as it stayed silent. Two bounds
 now, at the two levels where running out means something different:
 
-- **Per delivery — `PUSH_DELIVERY_TIMEOUT_MS` (default 10s).** A provider that
+- **Per delivery — `nudge::DELIVERY_TIMEOUT` (default 10s).** A provider that
   has not answered is a failure against that device (above), and the loop moves
   on to the next device and the next subject.
-- **Per pass — `WAKER_PASS_DEADLINE_MS` (default 2 min, inside the 5-minute
+- **Per pass — `nudge::PASS_DEADLINE` (default 2 min, inside the 5-minute
   interval).** Checked between subjects *and* between one subject's devices:
   each delivery's timeout is the lesser of the delivery timeout and what the
   pass has left, and a device reached after the deadline is not tried (a
@@ -1908,7 +1908,7 @@ now, at the two levels where running out means something different:
   `deferred` with the rest the pass did not reach. This reads the same
   deadline once more, at the one place it can strike inside a subject; it is
   not a second bound, so invariant 4 holds. Reserving a whole
-  `PUSH_DELIVERY_TIMEOUT_MS` before each subject was the other shape
+  `nudge::DELIVERY_TIMEOUT` before each subject was the other shape
   considered, and was turned down: with a delivery timeout longer than the
   pass deadline, no subject would ever be reached.
 - **The deadline is read through a clock the tests can step (`PassClock`).**

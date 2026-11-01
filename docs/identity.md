@@ -649,7 +649,7 @@ nowhere is marked as such and belongs to review.
     `apps/www/src/lib/home-link/send.ts`, `logGoing`, which sends only
     `finishedSessions`), so home applies no rule of its own beyond waiting
     out a send in flight. The poller files a session's log once its newest
-    event has been home for a poll interval (`MAILBOX_SECONDS`), and again,
+    event has been home for a poll interval (`mailbox::INTERVAL`), and again,
     as `.r<n>`, only once an event of it arrives after that copy. A session
     it cannot file is recorded as refused, and is decided again the same way;
     its events stay here, whatever the mailbox copy came to. Which
@@ -1628,7 +1628,7 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and
-  sees the access pattern: home asking every `MAILBOX_SECONDS` from the home
+  sees the access pattern: home asking every `mailbox::INTERVAL` from the home
   connection's address, and the routine putting a file each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
   account removes home's copy and its archive; the mailbox's live files and

@@ -39,12 +39,12 @@ services:
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/logs:/app/logs:rw
       # The voice-note transcriber's models, read-only: the multilingual
       # Whisper model and the Silero VAD model `nix/whisper-manager`'s
-      # `whisper fetch` downloads. TRANSCRIBE_MODEL and TRANSCRIBE_VAD_MODEL
-      # default to these under /models. TRANSCRIBE_MODELS_DIR: that
+      # `whisper fetch` downloads. transcribe::MODEL and transcribe::VAD_MODEL
+      # name these under /models. TRANSCRIBE_MODELS_DIR: that
       # directory on the host, set in each role's compose.sops.env (#614).
       - ${TRANSCRIBE_MODELS_DIR:?set TRANSCRIBE_MODELS_DIR in deploy/<role>/compose.sops.env}:/models:ro
       # The rust-runner's socket (infra/compose/rust_runner.yml), where
-      # RUST_ROUNDS_SOCKET defaults to: Rust Rounds' recording pass asks the
+      # rust_rounds::SOCKET names: Rust Rounds' recording pass asks the
       # runner there, as uid 10000, the one client uid it serves. Read-only:
       # connecting needs no write to the volume, and file-host may put
       # nothing beside the socket (RX2 checks the directory holds only it).

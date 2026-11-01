@@ -43,15 +43,16 @@
     services.orchestrator.enable = true;
   };
   container = complete.config.virtualisation.oci-containers.containers.file-host;
-  # The mailbox on, with neither its URL nor a secrets file, and a cadence
-  # below its floor.
+  # The mailbox on, with neither its URL nor a secrets file. (No numeric
+  # bound is left to test here: since #617 the one file_host keeps,
+  # MAILBOX_ARCHIVE_DAYS, holds only while a secret is set, which settings
+  # cannot say. app_config's own tests cover bounds.)
   mailbox = failed (eval {
     services.file-host = {
       enable = true;
       settings = {
         AUTH_ENABLED = false;
         MAILBOX_ENABLED = true;
-        MAILBOX_SECONDS = 30;
       };
     };
   });
@@ -77,32 +78,4 @@ in
     (expect "orchestrator publishes no port" (complete.config.virtualisation.oci-containers.containers.orchestrator.ports == []))
     (expect "the mailbox's own requirements are named while it is on" (builtins.any (lib.hasInfix "MAILBOX_URL is required while MAILBOX_ENABLED is true") mailbox
         && builtins.any (lib.hasInfix "MAILBOX_TOKEN is required while MAILBOX_ENABLED is true (a secret") mailbox))
-    (expect "a small float reaches the container whole, not as 0.000000" ((eval {
-        services.file-host = {
-          enable = true;
-          settings.OTEL_TRACES_SAMPLER_ARG = 0.0000001;
-        };
-      })
-      .config
-      .virtualisation
-      .oci-containers
-      .containers
-      .file-host
-      .environment
-      .OTEL_TRACES_SAMPLER_ARG
-      == "1e-07"))
-    (expect "a number below its limit is named while its feature is on" (builtins.any (lib.hasInfix "settings.MAILBOX_SECONDS must be at least 60") mailbox))
-    (expect "and not while it is off" (failed (eval {
-        services.file-host = {
-          enable = true;
-          environmentFiles = ["/run/secrets/file-host.env"];
-          settings = {
-            AUTH_ENABLED = false;
-            ALLOWED_ORIGINS = ["https://a.example"];
-            APP_BASE_URL = "https://a.example/";
-            MAILBOX_SECONDS = 30;
-          };
-        };
-      })
-      == []))
   ]

@@ -3,45 +3,6 @@
   "about": "File hosting server",
   "variables": [
     {
-      "name": "MAX_IN_FLIGHT",
-      "group": "Server",
-      "required": false,
-      "default": "256",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "FILE_HOST_BIND",
-      "group": "Server",
-      "required": false,
-      "default": "0.0.0.0",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Address to listen on.\n\n`FILE_HOST_BIND`, not `HOST`: zsh exports `HOST` as the machine's name. These two were once `HOST`/`PORT` and read by nothing (the listener was hard-coded to `0.0.0.0:3000`); the defaults are that address, so honouring them changes nothing for a server started without them.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "FILE_HOST_PORT",
-      "group": "Server",
-      "required": false,
-      "default": "3000",
-      "kind": "u16",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Port to listen on.\n\n`FILE_HOST_PORT`, not `PORT`: the container reads the repo's `.env`, and a bare `PORT` there meant for another service would move this one.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "FILE_HOST_PORT_FALLBACK",
       "group": "Server",
       "required": false,
@@ -50,7 +11,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "Dev only: when the port is taken, listen on the next free one instead of failing (`listen::bind`). `make dev` sets it, so a server run from source can sit beside the production container. Never set it in production: its published port and healthcheck assume `FILE_HOST_PORT`",
+      "help": "Dev only: when the port is taken, listen on the next free one instead of failing (`listen::bind`). `make dev` sets it, so a server run from source can sit beside the production container. Never set it in production: its published port and healthcheck assume `listen::PORT`",
       "required_when": null,
       "bounds": null
     },
@@ -103,58 +64,6 @@
       "delimiter": null,
       "secret": false,
       "help": "Redis URL for caching.\n\nUnset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "CACHE_TTL",
-      "group": "Server",
-      "required": false,
-      "default": "600",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Cache TTL in seconds",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "MAX_REQUEST_SIZE_MB",
-      "group": "Server",
-      "required": false,
-      "default": "10",
-      "kind": "usize",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Individual request payload lmit in MB",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "MAX_CONCURRENT_REQUESTS",
-      "group": "Server",
-      "required": false,
-      "default": "100",
-      "kind": "usize",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Active request limit",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "TASK_TIMEOUT_MS",
-      "group": "Server",
-      "required": false,
-      "default": "15000",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Hard timeout for any operation",
       "required_when": null,
       "bounds": null
     },
@@ -217,19 +126,6 @@
       "bounds": null
     },
     {
-      "name": "VAPID_SUBJECT",
-      "group": "Study nudge",
-      "required": false,
-      "default": "mailto:admin@maishatu.com",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender. Push services reject or deprioritise senders without one",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "NUDGE_TIMEZONE",
       "group": "Study nudge",
       "required": false,
@@ -269,45 +165,6 @@
       "bounds": null
     },
     {
-      "name": "NUDGE_WAKER_SECONDS",
-      "group": "Study nudge",
-      "required": false,
-      "default": "300",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "How often the waker picks up work the engine already decided.\n\nNot a schedule. Eligibility instants are solved when signals arrive and written to an index; this is the resolution at which they are noticed, so shortening it lands interventions closer to their computed instant without changing which ones happen.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "PUSH_DELIVERY_TIMEOUT_MS",
-      "group": "Study nudge",
-      "required": false,
-      "default": "10000",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "How long one push delivery may take before it counts as a failure (#264, SLI3).\n\nA push service that accepts answers in well under a second; one that has not answered in ten is not going to, and every second past that is a second the rest of the batch waits in the serial loop. Long enough that a slow-but-working provider on a bad day is not misread as down, short enough that one black-holed endpoint costs a pass seconds rather than the transport's own (unbounded) patience. A timed-out delivery is recorded as a failure — never a prune, never `Accepted` — and does not hand the claim back: see `nudge::waker::actuate`.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "WAKER_PASS_DEADLINE_MS",
-      "group": "Study nudge",
-      "required": false,
-      "default": "120000",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "How long one waker pass may run before it stops taking on new subjects (#264, SLI3).\n\nTwo minutes: well inside `NUDGE_WAKER_SECONDS`' default of five, so a pass that hits it still leaves the next tick to start on time rather than be delayed by `MissedTickBehavior::Delay`, and long enough for a full `BATCH` of 32 subjects at typical sub-second delivery latency to finish many times over. A pass that runs out starts no further subject and tries no further device — each delivery's timeout is also capped at what the pass has left — but never cancels a subject part-way, so a claim already written stands. Subjects it did not reach are still due on the next pass, the property `BATCH` already relies on.",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "RECOMMENDER_USES_OUTCOMES",
       "group": "Study nudge",
       "required": false,
@@ -317,19 +174,6 @@
       "delimiter": null,
       "secret": false,
       "help": "Whether the recommender ranks a provisioned session with this subject's outcome history (#289, TEL4). **Off by default, and meant to stay off until someone has looked at real data** — see `docs/study-nudge.md`, \"Outcome stats and the flag that gates them\", for what would justify turning it on. Off, the recommender sees every activity as unplayed, exactly as it did before `activity_outcome` existed",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "NUDGE_PRESENCE_LEASE_TTL_SECONDS",
-      "group": "Study nudge",
-      "required": false,
-      "default": "75",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "How long a client-written presence lease stays fresh before a due subject's notification is sent as though nobody were looking.\n\nRenamed from `NUDGE_PRESENCE_FRESHNESS_SECONDS` (default `120`) when presence stopped being a WebSocket connection's staleness window and became a lease TTL: same shape of question, a different mechanism underneath, and a smaller default — a client renewing roughly every 45s while visible only needs a TTL wide enough to absorb timer throttling and scheduling jitter, not two minutes of slack.",
       "required_when": null,
       "bounds": null
     },
@@ -502,28 +346,6 @@
       "bounds": null
     },
     {
-      "name": "MAILBOX_SECONDS",
-      "group": "Jobs mailbox",
-      "required": false,
-      "default": "900",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds between reads of the mailbox. At least 60",
-      "required_when": null,
-      "bounds": {
-        "min": 60.0,
-        "max": null,
-        "when": [
-          {
-            "variable": "MAILBOX_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
       "name": "ROUTINE_SCHEDULE",
       "group": "Jobs mailbox",
       "required": false,
@@ -602,98 +424,6 @@
       "bounds": null
     },
     {
-      "name": "TRANSCRIBE_MODEL",
-      "group": "Voice-note transcription",
-      "required": false,
-      "default": "/models/ggml-small-q5_1.bin",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The multilingual whisper.cpp model, as a path inside the container. The default is where `infra/compose/file_host.yml` mounts the host's models directory (HOST-SPECIFIC there), with the model `nix/whisper-manager` downloads",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "TRANSCRIBE_VAD_MODEL",
-      "group": "Voice-note transcription",
-      "required": false,
-      "default": "/models/ggml-silero-v5.1.2.bin",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The Silero VAD model that finds a note's speech, mounted beside it",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "TRANSCRIBE_THREADS",
-      "group": "Voice-note transcription",
-      "required": false,
-      "default": null,
-      "kind": "usize",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Threads one note is heard with. Unset, one fewer than the cores the container may use, and at least one",
-      "required_when": null,
-      "bounds": {
-        "min": 1.0,
-        "max": null,
-        "when": [
-          {
-            "variable": "TRANSCRIBE_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
-      "name": "TRANSCRIBE_DEADLINE_SECONDS",
-      "group": "Voice-note transcription",
-      "required": false,
-      "default": "600",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds one note may take, decoding included. At least 60",
-      "required_when": null,
-      "bounds": {
-        "min": 60.0,
-        "max": null,
-        "when": [
-          {
-            "variable": "TRANSCRIBE_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
-      "name": "TRANSCRIBE_SECONDS",
-      "group": "Voice-note transcription",
-      "required": false,
-      "default": "60",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds between looks for notes to hear. At least 10",
-      "required_when": null,
-      "bounds": {
-        "min": 10.0,
-        "max": null,
-        "when": [
-          {
-            "variable": "TRANSCRIBE_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
       "name": "RUST_ROUNDS_ENABLED",
       "group": "Rust Rounds recording",
       "required": false,
@@ -702,46 +432,7 @@
       "values": [],
       "delimiter": null,
       "secret": false,
-      "help": "Whether home records Rust Rounds' programs. On, the rust-runner's socket must be mounted at `RUST_ROUNDS_SOCKET`; a runner that is not there is reported each pass, and nothing is recorded until it is",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "RUST_ROUNDS_SOCKET",
-      "group": "Rust Rounds recording",
-      "required": false,
-      "default": "/run/rust-runner/runner.sock",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The rust-runner's socket, as a path inside the container: where `infra/compose/rust_runner.yml`'s socket volume is mounted",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "RUST_ROUNDS_SECONDS",
-      "group": "Rust Rounds recording",
-      "required": false,
-      "default": "60",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds between looks for programs to record. At least 10",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "RUST_ROUNDS_PASS_DEADLINE_SECONDS",
-      "group": "Rust Rounds recording",
-      "required": false,
-      "default": "600",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds one pass may take, every program it records included. At least 142: the toolchain ask's wait and one program's, which outlasts the runner's job deadline",
+      "help": "Whether home records Rust Rounds' programs. On, the rust-runner's socket must be mounted at `rust_rounds::SOCKET`; a runner that is not there is reported each pass, and nothing is recorded until it is",
       "required_when": null,
       "bounds": null
     },
@@ -757,72 +448,6 @@
       "help": "Whether home follows the games of the week at all",
       "required_when": null,
       "bounds": null
-    },
-    {
-      "name": "GAME_FEED_SCOREBOARD_SECONDS",
-      "group": "NFL game feed",
-      "required": false,
-      "default": "600",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds between reads of the week's scoreboard. At least 60",
-      "required_when": null,
-      "bounds": {
-        "min": 60.0,
-        "max": 86400.0,
-        "when": [
-          {
-            "variable": "GAME_FEED_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
-      "name": "GAME_FEED_LIVE_SECONDS",
-      "group": "NFL game feed",
-      "required": false,
-      "default": "15",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Seconds between reads of a live game's play-by-play. At least 5",
-      "required_when": null,
-      "bounds": {
-        "min": 5.0,
-        "max": 86400.0,
-        "when": [
-          {
-            "variable": "GAME_FEED_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
-    },
-    {
-      "name": "GAME_FEED_BACKOFF_CAP_SECONDS",
-      "group": "NFL game feed",
-      "required": false,
-      "default": "900",
-      "kind": "u64",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The longest a refused or failed fetch waits before the next try. At least both cadences above, and at most 86400 (a day)",
-      "required_when": null,
-      "bounds": {
-        "min": null,
-        "max": 86400.0,
-        "when": [
-          {
-            "variable": "GAME_FEED_ENABLED",
-            "value": "true"
-          }
-        ]
-      }
     },
     {
       "name": "NATS_URL",
@@ -864,40 +489,6 @@
       "bounds": null
     },
     {
-      "name": "OTEL_TRACES_SAMPLER",
-      "group": "Tracing",
-      "required": false,
-      "default": "traceidratio",
-      "kind": "enum",
-      "values": [
-        "always_on",
-        "always_off",
-        "traceidratio"
-      ],
-      "delimiter": null,
-      "secret": false,
-      "help": "Which traces are kept: all (`always_on`), none (`always_off`), or the share `OTEL_TRACES_SAMPLER_ARG` names (`traceidratio`)",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "OTEL_TRACES_SAMPLER_ARG",
-      "group": "Tracing",
-      "required": false,
-      "default": "1",
-      "kind": "number",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "With `traceidratio`, the share of traces kept, from 0 to 1",
-      "required_when": null,
-      "bounds": {
-        "min": 0.0,
-        "max": 1.0,
-        "when": []
-      }
-    },
-    {
       "name": "ENVIRONMENT",
       "group": "Tracing",
       "required": false,
@@ -907,19 +498,6 @@
       "delimiter": null,
       "secret": false,
       "help": "The `service.environment` traces carry",
-      "required_when": null,
-      "bounds": null
-    },
-    {
-      "name": "OTEL_SERVICE_NAME",
-      "group": "Tracing",
-      "required": false,
-      "default": "file_host",
-      "kind": "string",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "The `service.name` traces are exported under. Leave it unset: it defaults to the binary's own name, and a value in a `.env` that more than one binary loads renames all of their traces",
       "required_when": null,
       "bounds": null
     }

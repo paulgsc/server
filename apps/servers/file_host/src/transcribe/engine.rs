@@ -25,7 +25,7 @@
 //! inside one, so a run ends up to one pass late (about 9 seconds on two
 //! threads). Language detection, one pass per cut, is not interruptible
 //! inside a pass, so the deadline and the shutdown are checked before each
-//! detection as they are before each run is heard. Against `TRANSCRIBE_DEADLINE_SECONDS`' default of ten minutes, that is
+//! detection as they are before each run is heard. Against `transcribe::DEADLINE`'s ten minutes, that is
 //! noise.
 //!
 //! **Each piece of speech is heard in its own language** (paulgsc/server#578,
@@ -139,24 +139,24 @@ impl Whisper {
 	/// UTF-8, no ffmpeg, or no threads.
 	pub fn load(model: &Path, vad_model: &Path, threads: usize) -> anyhow::Result<Self> {
 		whisper_rs::install_logging_hooks();
-		anyhow::ensure!(threads > 0, "TRANSCRIBE_THREADS must be at least 1");
+		anyhow::ensure!(threads > 0, "the thread count must be at least 1");
 		let Some(model_path) = model.to_str() else {
-			anyhow::bail!("TRANSCRIBE_MODEL is not a UTF-8 path");
+			anyhow::bail!("transcribe::MODEL is not a UTF-8 path");
 		};
 		let Some(vad_path) = vad_model.to_str() else {
-			anyhow::bail!("TRANSCRIBE_VAD_MODEL is not a UTF-8 path");
+			anyhow::bail!("transcribe::VAD_MODEL is not a UTF-8 path");
 		};
 		// Both, before either loads: whisper.cpp refuses a missing file as it
 		// does a corrupt one, and a box that never fetched the models should
 		// hear how to get them (#476).
-		model_file(model, "TRANSCRIBE_MODEL")?;
-		model_file(vad_model, "TRANSCRIBE_VAD_MODEL")?;
+		model_file(model, "transcribe::MODEL")?;
+		model_file(vad_model, "transcribe::VAD_MODEL")?;
 		let mut parameters = WhisperContextParameters::default();
 		parameters.use_gpu(false);
-		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("TRANSCRIBE_MODEL does not load as a whisper.cpp model"))?;
+		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("transcribe::MODEL does not load as a whisper.cpp model"))?;
 		// The notes mix Korean into English, and an `.en` model garbles it.
-		anyhow::ensure!(context.is_multilingual(), "TRANSCRIBE_MODEL is an English-only model; it must be multilingual (no `.en`)");
-		WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!("TRANSCRIBE_VAD_MODEL does not load as a whisper.cpp VAD model"))?;
+		anyhow::ensure!(context.is_multilingual(), "transcribe::MODEL is an English-only model; it must be multilingual (no `.en`)");
+		WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!("transcribe::VAD_MODEL does not load as a whisper.cpp VAD model"))?;
 		let ffmpeg = Command::new(FFMPEG)
 			.arg("-version")
 			.stdin(Stdio::null())
@@ -842,9 +842,9 @@ mod tests {
 	fn a_model_that_is_not_there_says_so_and_how_to_get_it() {
 		let dir = tempfile::tempdir().unwrap();
 		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
+		assert_eq!(refusal(&model, &vad), "transcribe::MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
 		std::fs::write(&model, b"not a model").unwrap();
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_VAD_MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
+		assert_eq!(refusal(&model, &vad), "transcribe::VAD_MODEL is not there: run `nix develop .#whisper -c whisper fetch`");
 	}
 
 	#[test]
@@ -852,7 +852,7 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
 		std::fs::create_dir(&model).unwrap();
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL is not a file: it must name the model file itself");
+		assert_eq!(refusal(&model, &vad), "transcribe::MODEL is not a file: it must name the model file itself");
 	}
 
 	/// A model behind a directory nobody may enter is not called missing, and
@@ -874,8 +874,8 @@ mod tests {
 		let Some((model_refused, vad_refused)) = refused else {
 			return;
 		};
-		assert_eq!(model_refused, "TRANSCRIBE_MODEL cannot be looked at: check its directory's permissions");
-		assert_eq!(vad_refused, "TRANSCRIBE_VAD_MODEL cannot be looked at: check its directory's permissions");
+		assert_eq!(model_refused, "transcribe::MODEL cannot be looked at: check its directory's permissions");
+		assert_eq!(vad_refused, "transcribe::VAD_MODEL cannot be looked at: check its directory's permissions");
 	}
 
 	#[test]
@@ -884,7 +884,7 @@ mod tests {
 		let (model, vad) = (dir.path().join("ggml-small-q5_1.bin"), dir.path().join("ggml-silero-v5.1.2.bin"));
 		std::fs::write(&model, b"not a model").unwrap();
 		std::fs::write(&vad, b"not a model either").unwrap();
-		assert_eq!(refusal(&model, &vad), "TRANSCRIBE_MODEL does not load as a whisper.cpp model");
+		assert_eq!(refusal(&model, &vad), "transcribe::MODEL does not load as a whisper.cpp model");
 	}
 
 	#[test]

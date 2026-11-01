@@ -10,8 +10,7 @@
 //!
 //! **Why this is a poll,** as the transcriber is: a round can arrive while
 //! the runner is busy or down, and a restart must pick up whatever was left,
-//! so the worker asks the database every `RUST_ROUNDS_SECONDS` (60 by
-//! default) for the programs the runner's toolchain has not recorded. An
+//! so the worker asks the database every [`INTERVAL`] (a minute) for the programs the runner's toolchain has not recorded. An
 //! idle pass is the runner's toolchain and one indexed read. No request
 //! waits on it.
 //!
@@ -20,7 +19,7 @@
 //! counts and the kind of stop, never a source, a recording or a round.
 //!
 //! Off unless `RUST_ROUNDS_ENABLED`. On, the runner's socket must be mounted
-//! where `RUST_ROUNDS_SOCKET` says; a runner that is not there is not a
+//! at [`SOCKET`]; a runner that is not there is not a
 //! startup failure but an outage each pass reports, since the runner
 //! restarts on its own.
 
@@ -33,17 +32,34 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// The shortest interval `RUST_ROUNDS_SECONDS` may set.
+// The recorder's engineering values: source constants, not variables
+// (#617). Each was its variable's default.
+
+/// The runner's socket: the volume compose shares between the two
+/// containers (`infra/compose/rust_runner.yml`), and the runner's own
+/// default (`rust-runner`'s `SOCKET`) (`RUST_ROUNDS_SOCKET`).
+pub const SOCKET: &str = "/run/rust-runner/runner.sock";
+
+/// The shortest interval a pass may run at.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// The shortest pass deadline `RUST_ROUNDS_PASS_DEADLINE_SECONDS` may set:
-/// the toolchain ask's wait and one program's (142 s).
+/// How often the worker looks for rounds to record (`RUST_ROUNDS_SECONDS`).
+pub const INTERVAL: Duration = Duration::from_secs(60);
+
+/// The shortest deadline a pass may get: the toolchain ask's wait and one
+/// program's (142 s).
 ///
 /// A program's ask waits `ASK_TIMEOUT`, past the runner's watchdog deadline
 /// for one job (its ceilings, clean-up, client deadlines and sweep
 /// allowance, 132 s), so a job the watchdog ends is seen as lost (RP3); the
 /// toolchain ask, `CLIENT_TIMEOUT`, comes first.
 pub const MIN_DEADLINE: Duration = pass::Waits::SERVER.least_deadline();
+
+/// How long one pass may take, every ask included
+/// (`RUST_ROUNDS_PASS_DEADLINE_SECONDS`).
+pub const PASS_DEADLINE: Duration = Duration::from_secs(600);
+
+const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && PASS_DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
 
 /// Everything the worker needs, or `None` when the deployment has not turned
 /// it on.
@@ -56,29 +72,19 @@ pub struct RustRoundsContext {
 }
 
 impl RustRoundsContext {
-	/// Validate the recorder's configuration once, at startup. Off is fine
-	/// and logged.
-	///
-	/// # Errors
-	/// `RUST_ROUNDS_ENABLED` with `RUST_ROUNDS_SECONDS` below 10 or
-	/// `RUST_ROUNDS_PASS_DEADLINE_SECONDS` below [`MIN_DEADLINE`].
-	pub fn from_config(config: &Config) -> anyhow::Result<Option<Self>> {
+	/// The recorder's context once, at startup. Off is fine and logged. Its
+	/// values are constants, held to their floors at compile time.
+	#[must_use]
+	pub fn from_config(config: &Config) -> Option<Self> {
 		if !config.rust_rounds_enabled {
 			info!("Rust Rounds recording is not enabled; home keeps rounds without recording their programs");
-			return Ok(None);
+			return None;
 		}
-		let interval = Duration::from_secs(config.rust_rounds_seconds);
-		anyhow::ensure!(interval >= MIN_INTERVAL, "RUST_ROUNDS_SECONDS must be at least 10");
-		let deadline = Duration::from_secs(config.rust_rounds_pass_deadline_seconds);
-		anyhow::ensure!(
-			deadline >= MIN_DEADLINE,
-			"RUST_ROUNDS_PASS_DEADLINE_SECONDS must be at least 142: the toolchain's wait and one program's"
-		);
-		Ok(Some(Self {
-			runner: Arc::new(Socket(PathBuf::from(&config.rust_rounds_socket))),
-			interval,
-			deadline,
-		}))
+		Some(Self {
+			runner: Arc::new(Socket(PathBuf::from(SOCKET))),
+			interval: INTERVAL,
+			deadline: PASS_DEADLINE,
+		})
 	}
 }
 

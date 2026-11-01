@@ -25,9 +25,9 @@ Off unless `GAME_FEED_ENABLED=true`. It wakes every 5 s and fetches only what
 its schedule says is due, so an idle wake does no I/O:
 
 - **The scoreboard** (`/scoreboard`, the current week) every
-  `GAME_FEED_SCOREBOARD_SECONDS` (600), to learn the week's games, their
+  `game_feed::CADENCE.scoreboard` (600), to learn the week's games, their
   kickoffs and their states. Due at once on start, so a restart catches up.
-- **A game's summary** (`/summary?event=<id>`) every `GAME_FEED_LIVE_SECONDS`
+- **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A
   game still `pre` four hours after kickoff (delayed, postponed) waits for the
@@ -38,7 +38,7 @@ its schedule says is due, so an idle wake does no I/O:
   the week's finished games again.
 - **Backoff.** A 429, any other non-200, a body that does not read, or no
   answer pushes that one target out by its own cadence doubled per failure in
-  a row, to at most `GAME_FEED_BACKOFF_CAP_SECONDS` (900). Its next good
+  a row, to at most `game_feed::CADENCE.backoff_cap` (900). Its next good
   answer resets it.
 
 GW6 asks that a play show up within a minute, 8 times in 10, while a game of
