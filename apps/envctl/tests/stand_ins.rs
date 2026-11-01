@@ -473,7 +473,7 @@ fn import_takes_out_an_override_of_what_runs_on_its_default() {
 	let output = fixture.envctl(&["import", "--role", "home"]).output().unwrap();
 	let shown = printed(&output);
 	assert!(output.status.success(), "{shown}");
-	assert!(shown.contains("removed (what runs takes its default): 1\n    STRAY"), "{shown}");
+	assert!(shown.contains("removed (what runs does not set it): 1\n    STRAY"), "{shown}");
 	let written = fs::read_to_string(deploy.join("compose.sops.env")).unwrap();
 	assert!(!written.contains("STRAY="), "the override would change what runs at the next make up");
 }
@@ -518,4 +518,24 @@ fn import_replaces_an_override_of_what_the_container_does_not_carry() {
 	assert!(shown.contains("at the binary's default (nothing set them): 1\n    EXTRA"), "{shown}");
 	let written = fs::read_to_string(deploy.join("probe.sops.env")).unwrap();
 	assert!(written.contains("EXTRA=ENC[ZA==]"), "the stale override is replaced by the default: {written}");
+}
+
+#[test]
+fn import_takes_out_what_an_app_file_holds_and_its_container_does_not_carry() {
+	let fixture = Fixture::new("gone").unwrap();
+	// The file holds OTLP headers and a name no binary reads; the container
+	// carries neither, so the next make up would restore them (Codex on #622).
+	let deploy = fixture.repo.join("deploy/home");
+	fs::create_dir_all(&deploy).unwrap();
+	let old = "OTEL_EXPORTER_OTLP_HEADERS=ENC[b2xk]\nNO_BINARY_READS=ENC[eA==]\nsops_mac=ENC[stand-in]\nsops_version=stand-in\n";
+	fs::write(deploy.join("probe.sops.env"), old).unwrap();
+	let output = fixture.envctl(&["import", "--role", "home"]).output().unwrap();
+	let shown = printed(&output);
+	assert!(output.status.success(), "{shown}");
+	assert!(
+		shown.contains("removed (what runs does not set it): 2\n") && shown.contains("OTEL_EXPORTER_OTLP_HEADERS") && shown.contains("NO_BINARY_READS"),
+		"{shown}"
+	);
+	let written = fs::read_to_string(deploy.join("probe.sops.env")).unwrap();
+	assert!(!written.contains("OTEL_EXPORTER_OTLP_HEADERS=") && !written.contains("NO_BINARY_READS="), "{written}");
 }

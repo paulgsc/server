@@ -213,7 +213,8 @@ pub(crate) struct Change {
 	pub(crate) unset: Vec<String>,
 	/// How many variables the file states once written.
 	pub(crate) total: usize,
-	/// Taken out: what runs takes them by default, so a value the file held
+	/// Taken out: what runs does not set them (an app's container does not
+	/// carry them, or compose runs on its default), so a value the file held
 	/// would change what runs.
 	pub(crate) removed: Vec<String>,
 }
@@ -320,7 +321,7 @@ pub(crate) fn report(file: &str, existed: bool, change: &Change) -> String {
 		("changed, to what runs now", &change.changed),
 		("at the binary's default (nothing set them)", &change.defaulted),
 		("unset (an empty value; no default)", &change.unset),
-		("removed (what runs takes its default)", &change.removed),
+		("removed (what runs does not set it)", &change.removed),
 	] {
 		if !names.is_empty() {
 			let _ = writeln!(out, "  {label}: {}", names.len());
@@ -406,11 +407,21 @@ fn write(
 		// does not carry runs on its default (or unset), so a value the file
 		// still holds for it is replaced, not kept (Codex on #622).
 		let mut what_runs = imported.clone();
-		let (filled_default, filled_unset) = schemas
-			.iter()
-			.find(|schema| schema.binary == app)
-			.map_or_else(Default::default, |schema| complete(schema, &wired(raw, app), &mut what_runs));
+		let schema = schemas.iter().find(|schema| schema.binary == app);
+		let (filled_default, filled_unset) = schema.map_or_else(Default::default, |schema| complete(schema, &wired(raw, app), &mut what_runs));
 		let (mut merged, mut change) = merge(&existing, &what_runs);
+		// An app's file is what runs, whole: completed, it states every
+		// variable its binary reads, so a name only the old file holds (a
+		// dependency's variable the container no longer carries, or one no
+		// binary reads) would change what runs at the next make up. It goes
+		// (Codex on #622). compose's own file keeps what import cannot read
+		// back, which next_steps names to check by hand.
+		if schema.is_some() {
+			for name in existing.keys().filter(|name| !what_runs.contains_key(*name)) {
+				merged.shift_remove(name);
+				change.removed.push(name.clone());
+			}
+		}
 		// Names the completion filled are reported as such, not as values the
 		// containers gave.
 		for list in [&mut change.added, &mut change.changed] {
