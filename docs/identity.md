@@ -1118,7 +1118,9 @@ nowhere is marked as such and belongs to review.
     build-journal session lists Drive's takes folder and puts the SHA-256 of
     each recording there in the Jobs mailbox (invariant 19); the poller, in
     the transaction that keeps that list, records each `studio` note the
-    subject holds whose `voice_note.sha256` the list names: the note's id,
+    subject holds whose `voice_note.sha256` the list names, and
+    `PUT /voice-notes/:id`, in the transaction that stores a `studio` note
+    arriving after a list naming it, records that note: the note's id,
     when the session looked, the list's mailbox name and when home recorded
     it. A hash naming nothing home holds, or a note said for anything but
     `studio`, is dropped, never kept. Whichever of a take and a list naming
@@ -1129,11 +1131,14 @@ nowhere is marked as such and belongs to review.
     transaction that stores it, against the subject's lists of Drive's takes
     that `mailbox_item` holds and that were made no earlier than a day (the
     most a phone's clock may be off home's) before the take was recorded. A
-    list's mailbox name is its stamp, so that is one range read over
-    `mailbox_item`'s key, whose work is the lists made while the take was on
-    its way home, never every list home holds; a list made earlier than
-    that is not read, and a take it names is recorded only once a later
-    list names it too (the phone keeps it until "Drive has it" meanwhile).
+    list's mailbox name is its stamp, so that is one indexed range read over
+    `mailbox_item`'s key, from a day before the take was recorded onward,
+    with the body filter in SQL: SQLite returns only the first list in that
+    range whose bytes contain the take's SHA-256, only that list is parsed,
+    and the read moves past it to the next only when it contains the hash
+    without naming it. A list made earlier than that is not read, and a
+    take it names is recorded only once a later list names it too (the
+    phone keeps it until "Drive has it" meanwhile).
     A take is recorded once, by the first
     list that names it, and never updated (the trigger aborts an `UPDATE`);
     a later list that no longer names it takes nothing away, and it leaves
@@ -1253,7 +1258,6 @@ nowhere is marked as such and belongs to review.
     `no_row_is_ever_updated_and_rows_leave_with_the_account`,
     `an_empty_list_records_nothing_and_a_read_stops_at_its_cap`,
     `a_take_that_reaches_home_after_its_list_is_recorded_when_it_arrives`,
-    `a_list_that_reaches_home_after_its_take_is_recorded_when_it_arrives`,
     `a_take_named_by_many_lists_is_recorded_once_by_the_first` and
     `a_list_made_more_than_a_day_before_the_take_was_recorded_is_not_read`,
     `mailbox::pass`'s

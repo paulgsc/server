@@ -15,8 +15,9 @@
 //!   list naming it is matched when it arrives ([`match_take`], from
 //!   `voice_repo::put_note`, in the transaction that stores it), against the
 //!   subject's lists made no earlier than [`SKEW`] before the take was
-//!   recorded: one range read over `mailbox_item`'s key, since a list's name
-//!   is its stamp. These two are the table's only writers, both here.
+//!   recorded and containing its SHA-256: one range read over
+//!   `mailbox_item`'s key, since a list's name is its stamp. These two are
+//!   the table's only writers, both here.
 //! - **Only takes home holds.** A list is matched against the subject's
 //!   `studio` voice notes by their SHA-256 (`voice_note.sha256`), and only
 //!   those are recorded; a hash naming nothing home holds is dropped, never
@@ -56,19 +57,19 @@ const PAST_DRIVE_TAKES: &str = "drive-takes.";
 /// How long before a take was recorded a list naming it may say it was
 /// made.
 ///
-/// A day, the most a phone's clock may be off home's (as for a bite's
-/// offset). A list made earlier than that cannot name the take, since the
-/// phone had not recorded it yet, so [`match_take`] does not read it.
-pub const SKEW: TimeDelta = TimeDelta::days(1);
+/// The most a phone's clock may be off home's (`MAX_OFFSET_MS`, as for a
+/// bite's offset). A list made earlier than that cannot name the take, since
+/// the phone had not recorded it yet, so [`match_take`] does not read it.
+pub const SKEW: TimeDelta = TimeDelta::milliseconds(super::MAX_OFFSET_MS);
 
-/// A list of the takes Drive holds, from a file the mailbox held as `name`
-/// in `folder`.
+/// A list of the takes Drive holds, from the bytes of a `brief` file named
+/// `drive-takes-*` ([`DRIVE_TAKES_PREFIX`]).
 ///
 /// When the session looked, and each recording's SHA-256 that reads as
-/// lower-case hex. `None` for any other file, or one that does not
-/// read as a list of the schema [`DRIVE_TAKES_SCHEMA`].
+/// lower-case hex. `None` for bytes that do not read as a list of the schema
+/// [`DRIVE_TAKES_SCHEMA`]. Which file is one is the caller's to check.
 #[must_use]
-pub fn listed_in(folder: &str, name: &str, body: &[u8]) -> Option<(String, Vec<String>)> {
+pub fn listed_in(body: &[u8]) -> Option<(String, Vec<String>)> {
 	#[derive(Deserialize)]
 	struct Take {
 		sha256: String,
@@ -78,9 +79,6 @@ pub fn listed_in(folder: &str, name: &str, body: &[u8]) -> Option<(String, Vec<S
 		schema: String,
 		at: String,
 		takes: Vec<Take>,
-	}
-	if folder != "brief" || !name.starts_with(DRIVE_TAKES_PREFIX) {
-		return None;
 	}
 	let list: List = serde_json::from_slice(body).ok()?;
 	if list.schema != DRIVE_TAKES_SCHEMA {
@@ -165,8 +163,12 @@ pub async fn record(conn: &mut SqliteConnection, subject: &str, listed: Listed<'
 ///
 /// The earliest such list naming it records it, as [`record`] would have had
 /// the list come second. The read is one range over `mailbox_item`'s key
-/// `(subject_id, folder, name)`, so its work is the lists made while the take
-/// was on its way home, never every list home holds.
+/// `(subject_id, folder, name)`, from the lists made a day before the take
+/// was recorded onward, with the body filter in SQL: the query returns only
+/// the first list whose bytes contain the take's SHA-256, and only that list
+/// is parsed. A list that contains it but does not name it (another schema, or
+/// the hash in another field) moves the read past it, to the next that
+/// contains it.
 ///
 /// Run it in the transaction that stores the take, so the take and its
 /// record land together or not at all.
@@ -182,23 +184,33 @@ pub async fn match_take(conn: &mut SqliteConnection, subject: &str, note_id: &st
 	else {
 		return Ok(0);
 	};
-	let lists = sqlx::query!(
-		r#"SELECT name AS "name!: String", body AS "body!: Vec<u8>"
-		   FROM mailbox_item
-		   WHERE subject_id = ?1 AND folder = 'brief' AND name >= ?2 AND name < ?3
-		   ORDER BY name"#,
-		subject,
-		from,
-		PAST_DRIVE_TAKES
-	)
-	.fetch_all(&mut *conn)
-	.await?;
-	let first = lists.iter().find_map(|list| {
-		let (at, named) = listed_in("brief", &list.name, &list.body)?;
-		named.iter().any(|named| named == sha256).then_some((at, list.name.as_str()))
-	});
-	let Some((at, name)) = first else {
-		return Ok(0);
+	// Every list's name goes on past its stamp (`.json`), so `name > after`
+	// takes in a list stamped `from` itself.
+	let mut after = from;
+	let needle = sha256.as_bytes();
+	let (at, name) = loop {
+		let Some(list) = sqlx::query!(
+			r#"SELECT name AS "name!: String", body AS "body!: Vec<u8>"
+			   FROM mailbox_item
+			   WHERE subject_id = ?1 AND folder = 'brief' AND name > ?2 AND name < ?3 AND instr(body, ?4) > 0
+			   ORDER BY name
+			   LIMIT 1"#,
+			subject,
+			after,
+			PAST_DRIVE_TAKES,
+			needle
+		)
+		.fetch_optional(&mut *conn)
+		.await?
+		else {
+			return Ok(0);
+		};
+		if let Some((at, named)) = listed_in(&list.body) {
+			if named.iter().any(|named| named == sha256) {
+				break (at, list.name);
+			}
+		}
+		after = list.name;
 	};
 	Ok(
 		sqlx::query!(
@@ -402,14 +414,20 @@ mod tests {
 
 	/// The mailbox name of a list made at `stamp` (`YYYYMMDDTHHMMSSZ`).
 	fn list_name(stamp: &str) -> String {
-		String::from("drive-takes-") + stamp + ".json"
+		String::from(super::DRIVE_TAKES_PREFIX) + stamp + ".json"
 	}
 
-	/// Keeps a list made at `at` (stamped `stamp`) naming `sha256` in
-	/// `subject`'s `brief`, as the poller keeps one.
-	async fn hold_list(pool: &SqlitePool, subject: &str, stamp: &str, at: &str, sha256: &[&str]) {
+	/// The bytes of a list made at `at` naming `sha256`.
+	fn list(at: &str, sha256: &[&str]) -> Vec<u8> {
 		let takes: Vec<serde_json::Value> = sha256.iter().map(|sha256| serde_json::json!({ "sha256": sha256 })).collect();
-		let body = serde_json::json!({ "schema": super::DRIVE_TAKES_SCHEMA, "at": at, "takes": takes }).to_string();
+		serde_json::json!({ "schema": super::DRIVE_TAKES_SCHEMA, "at": at, "takes": takes })
+			.to_string()
+			.into_bytes()
+	}
+
+	/// Keeps `body` in `subject`'s `brief` as the list stamped `stamp`, as the
+	/// poller keeps one.
+	async fn hold_list(pool: &SqlitePool, subject: &str, stamp: &str, body: &[u8]) {
 		sqlx::query(
 			"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at)
 			 VALUES (?1, 'brief', ?2, 1, ?3, ?4, ?5, ?6)",
@@ -418,7 +436,7 @@ mod tests {
 		.bind(list_name(stamp))
 		.bind("f".repeat(64))
 		.bind(i64::try_from(body.len()).unwrap())
-		.bind(body.as_bytes())
+		.bind(body)
 		.bind(NOW)
 		.execute(pool)
 		.await
@@ -442,38 +460,21 @@ mod tests {
 	async fn a_take_that_reaches_home_after_its_list_is_recorded_when_it_arrives() {
 		let pool = pool().await;
 		let t1 = take("t1", "studio", b"take one");
-		// The same bytes said for a reflection, and the list in another
-		// subject's mailbox: neither is a match.
+		let t2 = take("t2", "studio", b"take two");
+		// A list naming t2 in another subject's mailbox only: never read for A,
+		// so t2 reaches A with no list naming it, and records nothing.
+		hold_list(&pool, B, "20261101T093000Z", &list("2026-11-01T09:30:00.000Z", &[&t2.sha256])).await;
+		assert_eq!(send(&pool, A, &t2, b"take two").await, Change::Added);
+		assert_eq!(recorded(&pool, A, "t2").await, None);
+		assert_eq!(rows(&pool).await, 0);
+		// A's own list names t1; the same bytes said for a reflection are no match.
 		let r1 = take("r1", "reflection", b"take one");
-		hold_list(&pool, A, "20261101T091500Z", AT, &[&t1.sha256, &"d".repeat(64)]).await;
-		hold_list(&pool, B, "20261101T091500Z", AT, &[&t1.sha256]).await;
+		hold_list(&pool, A, "20261101T091500Z", &list(AT, &[&t1.sha256, &"d".repeat(64)])).await;
 		assert_eq!(send(&pool, A, &t1, b"take one").await, Change::Added);
 		assert_eq!(send(&pool, A, &r1, b"take one").await, Change::Added);
 		assert_eq!(recorded(&pool, A, "t1").await, Some((AT.to_owned(), LIST.to_owned())));
-		assert_eq!(read(&pool, A, &["t1", "r1"]).await, vec!["t1"]);
-		// Another subject's take with the same bytes matches only its own lists.
-		let t9 = take("t9", "studio", b"take nine");
-		assert_eq!(send(&pool, B, &t9, b"take nine").await, Change::Added);
-		assert_eq!(read(&pool, B, &["t9", "t1"]).await, Vec::<String>::new());
+		assert_eq!(read(&pool, A, &["t1", "r1", "t2"]).await, vec!["t1"]);
 		assert_eq!(rows(&pool).await, 1);
-	}
-
-	#[tokio::test]
-	async fn a_list_that_reaches_home_after_its_take_is_recorded_when_it_arrives() {
-		let pool = pool().await;
-		let t1 = take("t1", "studio", b"take one");
-		assert_eq!(send(&pool, A, &t1, b"take one").await, Change::Added);
-		assert_eq!(rows(&pool).await, 0, "no list names it yet");
-		let sha256 = vec![t1.sha256.clone()];
-		let mut conn = pool.acquire().await.unwrap();
-		let listed = Listed {
-			at: AT,
-			name: LIST,
-			sha256: &sha256,
-		};
-		assert_eq!(record(&mut conn, A, listed, NOW).await.unwrap(), 1);
-		drop(conn);
-		assert_eq!(recorded(&pool, A, "t1").await, Some((AT.to_owned(), LIST.to_owned())));
 	}
 
 	#[tokio::test]
@@ -481,8 +482,8 @@ mod tests {
 		let pool = pool().await;
 		let t1 = take("t1", "studio", b"take one");
 		let later = "2026-11-02T09:00:00.000Z";
-		hold_list(&pool, A, "20261102T090000Z", later, &[&t1.sha256]).await;
-		hold_list(&pool, A, "20261101T091500Z", AT, &[&t1.sha256]).await;
+		hold_list(&pool, A, "20261102T090000Z", &list(later, &[&t1.sha256])).await;
+		hold_list(&pool, A, "20261101T091500Z", &list(AT, &[&t1.sha256])).await;
 		assert_eq!(send(&pool, A, &t1, b"take one").await, Change::Added);
 		assert_eq!(recorded(&pool, A, "t1").await, Some((AT.to_owned(), LIST.to_owned())));
 		// Sent again, it is the same note, and nothing more is recorded.
@@ -506,29 +507,21 @@ mod tests {
 		let pool = pool().await;
 		let t1 = take("t1", "studio", b"take one");
 		let t2 = take("t2", "studio", b"take two");
+		let t3 = take("t3", "studio", b"take three");
 		// A day and a second before the takes were recorded: past the bound.
-		hold_list(&pool, A, "20261031T075959Z", "2026-10-31T07:59:59.000Z", &[&t1.sha256]).await;
+		hold_list(&pool, A, "20261031T075959Z", &list("2026-10-31T07:59:59.000Z", &[&t1.sha256])).await;
 		// Twelve hours before: a phone's clock may be that far off, so it is read.
-		hold_list(&pool, A, "20261031T200000Z", "2026-10-31T20:00:00.000Z", &[&t2.sha256]).await;
-		// Not a list of Drive's takes, though it names the take and sorts in range.
-		sqlx::query(
-			"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at)
-			 VALUES (?1, 'brief', 'drive-takes-20261101T100000Z.json', 2, ?2, 2, ?3, ?4)",
-		)
-		.bind(A)
-		.bind("f".repeat(64))
-		.bind(
-			serde_json::json!({ "schema": "other", "at": "x", "takes": [{ "sha256": t1.sha256 }] })
-				.to_string()
-				.into_bytes(),
-		)
-		.bind(NOW)
-		.execute(&pool)
-		.await
-		.unwrap();
+		hold_list(&pool, A, "20261031T200000Z", &list("2026-10-31T20:00:00.000Z", &[&t2.sha256])).await;
+		// Not a list of Drive's takes, though it contains t1's and t3's hashes
+		// and sorts in range: read past, not matched, to the list after it.
+		let other = serde_json::json!({ "schema": "other", "at": "x", "takes": [{ "sha256": t1.sha256 }, { "sha256": t3.sha256 }] });
+		hold_list(&pool, A, "20261101T100000Z", other.to_string().as_bytes()).await;
+		hold_list(&pool, A, "20261101T110000Z", &list("2026-11-01T11:00:00.000Z", &[&t3.sha256])).await;
 		send(&pool, A, &t1, b"take one").await;
 		send(&pool, A, &t2, b"take two").await;
+		send(&pool, A, &t3, b"take three").await;
 		assert_eq!(recorded(&pool, A, "t1").await, None);
 		assert_eq!(recorded(&pool, A, "t2").await, Some(("2026-10-31T20:00:00.000Z".to_owned(), list_name("20261031T200000Z"))));
+		assert_eq!(recorded(&pool, A, "t3").await, Some(("2026-11-01T11:00:00.000Z".to_owned(), list_name("20261101T110000Z"))));
 	}
 }

@@ -918,11 +918,16 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// statement that writes, and the hold keeps a deletion from landing between
 /// them. Held for this write only, never across a request to the mailbox.
 ///
-/// A list of the takes Drive holds, new in `brief` ([`drive_takes`]), has
-/// its takes home holds recorded as on Drive in the same transaction
-/// (`voice_repo::on_drive`, paulgsc/some-ui#2401).
+/// A list of the takes Drive holds, new in `brief` as `drive-takes-*`
+/// (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`), has its takes
+/// home holds recorded as on Drive in the same transaction
+/// (`voice_repo::on_drive`, paulgsc/some-ui#2401). Any other file, or one
+/// that does not read as a list, is kept as every `brief` file is, and
+/// records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
-	let listed = drive_takes(&item);
+	let listed = (item.folder == Folder::Brief.as_str() && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
+		.then(|| voice_repo::on_drive::listed_in(item.body))
+		.flatten();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
@@ -932,16 +937,6 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	}
 	tx.commit().await?;
 	Ok(change)
-}
-
-/// A list of the takes Drive holds, as the build-journal session put it in
-/// `brief` (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`):
-/// `voice_repo::on_drive::listed_in`, which [`voice_repo::put_note`] reads
-/// held lists with too. `None` for any other file, or one that does not read
-/// as a list; such a file is kept as every `brief` file is, and records
-/// nothing.
-fn drive_takes(item: &ItemIn<'_>) -> Option<(String, Vec<String>)> {
-	voice_repo::on_drive::listed_in(item.folder, item.name, item.body)
 }
 
 /// As [`keep`], for a file about to be archived.

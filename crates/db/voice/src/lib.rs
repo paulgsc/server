@@ -695,7 +695,6 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 		.await?;
 	}
 	if note.of == Of::Studio {
-		// A take that reaches home after a list naming it (paulgsc/some-ui#2416).
 		on_drive::match_take(conn, subject, &note.id, &note.sha256, &note.at, now).await?;
 	}
 	Ok(Change::Added)
