@@ -23,6 +23,7 @@ pub mod rust_rounds;
 pub mod shelf;
 pub mod signals;
 pub mod studio_log;
+pub mod study_note;
 pub mod subjects;
 pub mod sync;
 pub mod tab_metadata;

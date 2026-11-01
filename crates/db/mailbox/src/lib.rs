@@ -628,10 +628,13 @@ pub struct Heard {
 /// `subject`'s transcripts that heard something and are not filed yet.
 ///
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
-/// not heard, is never one: the routine reads that from the absence. A game
-/// bite is never one either: bites leave home only inside the weekly bundle
-/// (paulgsc/some-ui#2074, GWB8), and the mailbox's `transcript` folder
-/// refuses `of: game`.
+/// not heard, is never one: the routine reads that from the absence. Only
+/// a note said for a kind a routine reads is one (`reflection`, `jobs`,
+/// `scene`, `studio`), as the mailbox's `transcript` folder takes no other
+/// `of`: a game bite leaves home only inside the weekly bundle
+/// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
+/// `LeetType` spoken answer never does, since no routine reads them
+/// (paulgsc/some-ui#2180, HF5; docs/identity.md invariant 19).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -645,7 +648,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind <> 'game'
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -1484,23 +1487,36 @@ mod tests {
 		assert_eq!(unfiled(&pool, A).await, [(String::from("n2"), String::from("small"))], "a filed one waits no more");
 	}
 
+	/// A game bite leaves home only in the weekly bundle, and a soundbite, a
+	/// grammar-lens take and a `LeetType` answer never do (HF5): no routine
+	/// reads them, and the mailbox's `transcript` folder takes none of them.
 	#[tokio::test]
-	async fn a_game_bite_is_never_filed_on_its_own() {
+	async fn a_game_bite_or_a_study_take_is_never_filed_on_its_own() {
 		let pool = pool().await;
-		sqlx::query(
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, 'bite', 'game', '401772001', '2026-10-25T20:00:00.000Z', 'audio/webm', 1, 's', 'now')",
-		)
-		.bind(A)
-		.execute(&pool)
-		.await
-		.unwrap();
-		heard(&pool, A, ("bite", "small", 1), "heard", Some("third and long"), "2026-10-25T20:01:00.000Z").await;
+		for (id, of_kind, of_ref) in [
+			("bite", "game", "401772001"),
+			("said", "soundbite", "direct"),
+			("read", "lens", "two-cups"),
+			("told", "leetype", "f.json:s1"),
+		] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, '2026-10-25T20:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(of_kind)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			heard(&pool, A, (id, "small", 1), "heard", Some("something said"), "2026-10-25T20:01:00.000Z").await;
+		}
 		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-10-25T20:02:00.000Z").await;
 		assert_eq!(
 			unfiled(&pool, A).await,
 			[(String::from("n1"), String::from("small"))],
-			"bites leave home only in the weekly bundle"
+			"only a kind a routine reads is filed"
 		);
 	}
 

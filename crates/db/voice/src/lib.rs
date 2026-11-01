@@ -27,6 +27,11 @@
 //!   ST12). Said for [`Of::Studio`], its `ref` is the take,
 //!   `<project>:<shot>:<take>`, and it carries nothing beside the note: no
 //!   side table, no fields of its own. A redo is a new take under a new id.
+//! - **A soundbite, a grammar-lens take and a `LeetType` spoken answer are
+//!   voice notes** (paulgsc/some-ui#2180, HF5). Said for [`Of::Soundbite`],
+//!   [`Of::Lens`] or [`Of::Leetype`], each carries nothing beside the note,
+//!   as a Studio take does; what the phone wrote beside a soundbite or an
+//!   answer is `study_note_repo`'s, keyed by the phone's ids.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -79,10 +84,34 @@ pub enum Of {
 	/// every `ref` meets and checked no further, as no other kind's `ref` is.
 	/// A redo is a new take, so a new note: nothing is ever rewritten.
 	Studio,
+	/// A soundbite (paulgsc/some-ui#2180, HF5): something the owner said on
+	/// the phone's soundbites page. Its `ref` is how it came to be recorded
+	/// (`direct`, `sessions`, `reminder`, or the retired `capture` and
+	/// `wrap`), checked no further. What the phone noted around it is the
+	/// soundbite's `study_note`.
+	Soundbite,
+	/// The owner reading a grammar-lens line aloud after its reveal
+	/// (paulgsc/some-ui#2180, HF5). Its `ref` is the line, as the phone names
+	/// it.
+	Lens,
+	/// A spoken answer in a `LeetType` phone session (paulgsc/some-ui#2180,
+	/// HF5). Its `ref` is the session file and its screen, `<file>:<screen>`.
+	/// What it answered and the points ticked are the answer's `study_note`,
+	/// which names the take by this note's id.
+	Leetype,
 }
 
 impl Of {
-	const ALL: [Self; 5] = [Self::Reflection, Self::Jobs, Self::Scene, Self::Game, Self::Studio];
+	const ALL: [Self; 8] = [
+		Self::Reflection,
+		Self::Jobs,
+		Self::Scene,
+		Self::Game,
+		Self::Studio,
+		Self::Soundbite,
+		Self::Lens,
+		Self::Leetype,
+	];
 
 	/// The wire and stored name.
 	#[must_use]
@@ -93,6 +122,9 @@ impl Of {
 			Self::Scene => "scene",
 			Self::Game => "game",
 			Self::Studio => "studio",
+			Self::Soundbite => "soundbite",
+			Self::Lens => "lens",
+			Self::Leetype => "leetype",
 		}
 	}
 
@@ -449,7 +481,7 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
-		problems.push(("of", "not what a note is said for: reflection, jobs, scene, game or studio"));
+		problems.push(("of", "not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens or leetype"));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
 	if of_ref.is_none() {
@@ -677,6 +709,9 @@ mod tests {
 	const BEFORE_SAID_FIRST_SCENARIO: i64 = 20_261_028_000_200;
 	/// The migration before `studio` was a note's kind.
 	const BEFORE_STUDIO: i64 = 20_261_029_000_200;
+	/// The migration before `soundbite`, `lens` and `leetype` were a note's
+	/// kinds: the last before HF5's, whichever story's it is.
+	const BEFORE_TAKES: i64 = 20_261_101_000_400;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
@@ -1040,7 +1075,7 @@ mod tests {
 
 	#[test]
 	fn a_note_said_for_anything_else_carries_no_bite() {
-		for of in ["reflection", "jobs", "scene", "studio"] {
+		for of in ["reflection", "jobs", "scene", "studio", "soundbite", "lens", "leetype"] {
 			let mut with_bite = said("2026-10-25T03:10:00Z");
 			with_bite.of = Some(of);
 			with_bite.bite = said_bite();
@@ -1530,6 +1565,101 @@ mod tests {
 			0,
 			"still leaves with the account"
 		);
+	}
+
+	/// What the phone says about a soundbite, a lens take or a `LeetType`
+	/// answer: `of` and `ref` as the phone sends them.
+	fn said_take<'a>(of: &'a str, of_ref: &'a str) -> Said<'a> {
+		Said {
+			of: Some(of),
+			of_ref: Some(of_ref),
+			at: Some("2026-11-01T09:12:00Z"),
+			content_type: Some("audio/webm;codecs=opus"),
+			bite: SaidBite::default(),
+		}
+	}
+
+	/// A soundbite, a lens take and a `LeetType` answer are notes like any
+	/// other: each described for its kind, kept with its audio, carrying
+	/// nothing beside it, and never replaced.
+	#[tokio::test]
+	async fn a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes() {
+		let pool = pool().await;
+		let cases = [
+			("s1", Of::Soundbite, "soundbite", "reminder"),
+			("l1", Of::Lens, "lens", "two-cups"),
+			("y1", Of::Leetype, "leetype", "two-sum.json:explain-1"),
+		];
+		for (id, of, name, of_ref) in cases {
+			let said = describe(id, said_take(name, of_ref), b"said").unwrap();
+			assert_eq!((said.of, said.of_ref.as_str(), said.bite.as_ref()), (of, of_ref, None), "{name}");
+			assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Added, "{name}");
+			assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Unchanged, "{name}: a retry writes nothing");
+			let other = describe(id, said_take(name, of_ref), b"other").unwrap();
+			assert!(matches!(put(&pool, A, &other, b"other").await, Err(VoiceError::Rewritten)), "{name}: never replaced");
+		}
+		let held: Vec<(String, String)> = sqlx::query_as("SELECT note_id, of_kind FROM voice_note ORDER BY note_id").fetch_all(&pool).await.unwrap();
+		assert_eq!(held, [("l1".into(), "lens".into()), ("s1".into(), "soundbite".into()), ("y1".into(), "leetype".into())]);
+		assert_eq!(rows(&pool, "voice_note_audio").await, 3);
+		assert_eq!(rows(&pool, "game_bite").await, 0, "none carries a bite");
+	}
+
+	/// The rebuild that widened `voice_note` for HF5's kinds keeps every note
+	/// held before it, still append-only, still indexed for the transcriber,
+	/// and still leaving with the account; going back refuses once one of
+	/// the new kinds is held.
+	#[tokio::test]
+	async fn the_notes_rebuilt_for_takes_keep_what_was_held_before() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_TAKES).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'early', 'soundbite', 'direct', 'then', 'audio/webm', 1, 'abc', 'now')",
+			)
+			.bind(A)
+			.execute(&pool)
+			.await
+			.is_err(),
+			"before the rebuild a soundbite is refused"
+		);
+		put(&pool, A, &note("n1", b"take"), b"take").await.unwrap();
+		put(&pool, A, &take("t1", b"shot"), b"shot").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let held: Vec<(String, String, String)> = sqlx::query_as("SELECT note_id, of_kind, sha256 FROM voice_note ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			held,
+			[
+				("n1".into(), "reflection".into(), note("n1", b"take").sha256),
+				("t1".into(), "studio".into(), take("t1", b"shot").sha256)
+			]
+		);
+		let refused = sqlx::query("UPDATE voice_note SET of_ref = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+		let index: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'voice_note_by_stored_at'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(index, 1, "the transcriber's index is back");
+
+		let bite = describe("s1", said_take("soundbite", "direct"), b"said").unwrap();
+		put(&pool, A, &bite, b"said").await.unwrap();
+		assert!(MIGRATOR.undo(&pool, BEFORE_TAKES).await.is_err(), "a held soundbite refuses the rollback");
+		assert_eq!(rows(&pool, "voice_note").await, 3, "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
 	}
 
 	#[test]
