@@ -1279,12 +1279,14 @@ nowhere is marked as such and belongs to review.
     `a_note_said_for_anything_else_carries_no_bite`,
     `the_schema_refuses_a_bite_that_breaks_its_rules` and
     `the_rebuilt_notes_keep_what_was_held_before`, and for HF5's kinds
-    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` and
+    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` (a Rust
+    Rounds note among them) and
     `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Rust
     Rounds notes `a_rust_round_note_names_its_card_and_what_it_refines`,
-    `a_rust_round_note_is_kept_and_its_audio_read_back_by_its_subject_only`
+    `a_rust_round_notes_audio_is_read_back_by_its_subject_only`
     and `the_notes_rebuilt_for_rust_rounds_keep_what_was_held_before`,
-    `mailbox_repo`'s `a_rust_round_notes_transcript_is_filed_like_any_note`
+    `mailbox_repo`'s
+    `a_studio_take_or_a_rust_round_notes_transcript_is_filed_like_any_note`
     and `handlers::voice`'s
     `a_paired_phone_reads_its_own_rust_round_notes_audio_back`, and for Drive's
     word `voice_repo::on_drive`'s

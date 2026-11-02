@@ -1,16 +1,12 @@
--- Rust Rounds' voice notes are voice notes (paulgsc/some-ui#2237, RR6, part
--- of the Rust Rounds epic paulgsc/some-ui#2231). Until now each lived only on
--- the phone, on a takes desk of its own with no count, so the phone's room
--- for them ran out after about a hundred. HOME-FIRST (paulgsc/some-ui#2174,
--- the owner's D1: home is the record, and the phone lets go only what home
--- has read back) applies: each note goes home like any other, kept as
--- `voice_note` and `voice_note_audio` keep every note (append-only, kept for
--- good, docs/identity.md invariant 23), said for one new kind:
+-- Rust Rounds' voice notes are voice notes (paulgsc/some-ui#2237, RR6, epic
+-- paulgsc/some-ui#2231), under HOME-FIRST (paulgsc/some-ui#2174, D1): each
+-- goes home like any other, kept as `voice_note` and `voice_note_audio` keep
+-- every note (append-only, kept for good, docs/identity.md invariant 23),
+-- said for one new kind:
 --
---   rust-round -- a note said on a Rust Rounds card; `ref` is the card as
---                 `<round>:<card>`, or, on a refine card, the card and the
---                 earlier note it brings back as `<round>:<card>:<note>`, so
---                 the pair is home's record (`voice_repo::rust_round_ref`).
+--   rust-round -- a note said on a Rust Rounds card; its `ref` names the
+--                 card, and on a refine card the note it refines
+--                 (`voice_repo::is_rust_round_ref`).
 --
 -- Nothing sits beside the note in this table's family: no side table, as for
 -- `studio`. A new take is a new note under a new id; nothing is rewritten.

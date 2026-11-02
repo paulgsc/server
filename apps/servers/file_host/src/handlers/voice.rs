@@ -17,11 +17,9 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
-//! **The one way audio leaves home** (docs/identity.md invariant 23, the
-//! owner's D4 on paulgsc/some-ui#2237): [`get_audio`] is the only caller of
-//! `voice_repo::audio`, and serves a Rust Rounds note's audio, and no other
-//! kind's, to a [`Paired`] phone of the subject that holds it. Neither the
-//! audio nor its hash reaches a log line: its span skips every argument.
+//! **The one way audio leaves home** (docs/identity.md invariant 23):
+//! [`get_audio`] is the only caller of `voice_repo::audio`, and its span
+//! skips every argument.
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
@@ -263,10 +261,8 @@ pub struct NoteAudio {
 
 /// `GET /voice-notes/:id/audio`
 ///
-/// The caller's Rust Rounds note `id` back from home (paulgsc/some-ui#2237,
-/// RR6; the owner's D4, 2026-10-29: home gives a note's audio back to the
-/// phone, for refine cards and replay), so a refine card can play an earlier
-/// note the phone has let go once home held it.
+/// The caller's Rust Rounds note `id` back from home, for the reason
+/// `voice_repo::audio` gives.
 ///
 /// The audio comes inside JSON, as base64 beside its container and SHA-256,
 /// because the phone reads every answer from home as text
@@ -787,15 +783,14 @@ mod tests {
 
 	/// RR6 (paulgsc/some-ui#2237, D4): a paired phone reads its own Rust
 	/// Rounds note's audio back, byte for byte, with the note's SHA-256 as the
-	/// `ETag` and a `304` for it; a refine's note names the one it refines. No
-	/// session is a 401, a browser's a 403, and another subject's note, an
-	/// unknown one and a note of another kind are each a 404.
+	/// `ETag` and a `304` for it. No session is a 401, a browser's a 403, and
+	/// another subject's note a 404. Which notes are read is `voice_repo`'s
+	/// tests.
 	#[tokio::test]
 	async fn a_paired_phone_reads_its_own_rust_round_notes_audio_back() {
 		use axum::http::header::{ETAG, IF_NONE_MATCH};
 		use base64::{engine::general_purpose::STANDARD, Engine};
 		const ROUND_NOTE: &str = "/voice-notes/r1?of=rust-round&ref=indexing-01:a&at=2026-11-02T18:20:00Z";
-		const REFINE_NOTE: &str = "/voice-notes/r2?of=rust-round&ref=indexing-01:refine-a:r1&at=2026-11-02T18:30:00Z";
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let browser = session(&state, A, Carrier::Cookie).await;
@@ -803,19 +798,6 @@ mod tests {
 		let app = app(state);
 		let (status, answer) = put(&app, ROUND_NOTE, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
 		assert_eq!(status, StatusCode::OK, "{answer}");
-		assert_eq!(answer["note"]["of"], "rust-round");
-		let (status, answer) = put(&app, REFINE_NOTE, Some(&phone), "audio/webm", b"again").await;
-		assert_eq!((status, &answer["note"]["ref"]), (StatusCode::OK, &json!("indexing-01:refine-a:r1")), "{answer}");
-		let (status, refused) = put(
-			&app,
-			"/voice-notes/r3?of=rust-round&ref=indexing-01&at=2026-11-02T18:30:00Z",
-			Some(&phone),
-			"audio/webm",
-			TAKE,
-		)
-		.await;
-		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a ref that names no card: {refused}");
-		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
 
 		let (status, body) = get(&app, "/voice-notes/r1/audio", Some(&phone)).await;
 		assert_eq!(status, StatusCode::OK, "{body}");
@@ -845,13 +827,6 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/r1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 		let (status, hidden) = get(&app, "/voice-notes/r1/audio", Some(&other)).await;
 		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to hear: {hidden}");
-		assert_eq!(get(&app, "/voice-notes/r9/audio", Some(&phone)).await.0, StatusCode::NOT_FOUND);
-		assert_eq!(
-			get(&app, "/voice-notes/n1/audio", Some(&phone)).await.0,
-			StatusCode::NOT_FOUND,
-			"a reflection's audio stays home"
-		);
-		assert_eq!(get(&app, "/voice-notes/r2/audio", Some(&phone)).await.1["audio"], STANDARD.encode(b"again"));
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

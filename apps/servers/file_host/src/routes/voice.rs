@@ -34,10 +34,8 @@
 //! Let go sets a take aside and keeps it) is `voice_repo::set_aside`'s, its
 //! own table beside the note, so no note is rewritten.
 //!
-//! The audio read (paulgsc/some-ui#2237, RR6; the owner's D4) is the one
-//! route that gives a note's bytes back: for a `rust-round` note only, so a
-//! refine card can play an earlier note the phone let go once home held it
-//! (`voice_repo::audio`).
+//! The audio read is the one route that gives a note's bytes back, for a
+//! `rust-round` note only (`voice_repo::audio` says why).
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),

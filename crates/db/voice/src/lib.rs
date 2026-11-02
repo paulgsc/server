@@ -32,17 +32,9 @@
 //!   [`Of::Lens`] or [`Of::Leetype`], each carries nothing beside the note,
 //!   as a Studio take does; what the phone wrote beside a soundbite or an
 //!   answer is `study_note_repo`'s, keyed by the phone's ids.
-//! - **A Rust Rounds note is a voice note** (paulgsc/some-ui#2237, RR6).
-//!   Said for [`Of::RustRound`], its `ref` is the card, `<round>:<card>`, and
-//!   on a refine card also the earlier note it brings back,
-//!   `<round>:<card>:<note>` ([`is_rust_round_ref`]): a refine's new take
-//!   names the note it refines, so the pair is home's record. It carries
-//!   nothing beside the note.
-//! - **One note's audio is read back for Rust Rounds only** (the owner's D4
-//!   on paulgsc/some-ui#2237, 2026-10-29). [`audio`] reads a note's bytes
-//!   for its own subject and one kind; its one caller serves
-//!   [`Of::RustRound`] notes to a paired phone, so a refine card can play an
-//!   earlier note the phone has let go.
+//! - **A Rust Rounds note is a voice note** (paulgsc/some-ui#2237, RR6),
+//!   said for [`Of::RustRound`], its `ref` as [`is_rust_round_ref`] says,
+//!   and nothing beside it. Its audio is the one read back ([`audio`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -77,6 +69,7 @@ pub mod set_aside;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use rust_round_repo::round::is_slug;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use sqlx::SqliteConnection;
@@ -129,11 +122,8 @@ pub enum Of {
 	/// What it answered and the points ticked are the answer's `study_note`,
 	/// which names the take by this note's id.
 	Leetype,
-	/// A note said on a Rust Rounds card (paulgsc/some-ui#2237, RR6). Its
-	/// `ref` is the card as `<round>:<card>`, or on a refine card the card
-	/// and the earlier note it brings back as `<round>:<card>:<note>`
-	/// ([`is_rust_round_ref`]), so the pair is home's record. The only kind a
-	/// paired phone may read its audio back for (`audio`).
+	/// A note said on a Rust Rounds card (paulgsc/some-ui#2237, RR6), its
+	/// `ref` as [`is_rust_round_ref`] says.
 	#[serde(rename = "rust-round")]
 	RustRound,
 }
@@ -412,21 +402,13 @@ pub fn is_note_id(id: &str) -> bool {
 	is_name(id, MAX_ID_CHARS) && !ROUTE_NAMES.contains(&id)
 }
 
-/// Whether `text` is a Rust Rounds round's or card's id: lower-case words of
-/// letters and digits joined by single `-`, as the phone's round format
-/// (`some-ui.rust-round/1`) has them.
-fn is_slug(text: &str) -> bool {
-	!text.is_empty()
-		&& text
-			.split('-')
-			.all(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()))
-}
-
 /// Whether `of_ref` names a Rust Rounds card, as a [`Of::RustRound`] note's does.
 ///
 /// That is `<round>:<card>`, or `<round>:<card>:<note>` on a refine card,
-/// `<note>` the earlier note's id (which may itself hold `:`). Within the
-/// rule every `ref` meets, which [`describe`] checks too.
+/// `<note>` the earlier note's id (which may itself hold `:`): a refine's new
+/// take names the note it refines, so the pair is home's record. The round
+/// and card are ids as a round has them (`rust_round_repo::round::is_slug`),
+/// within the rule every `ref` meets, which [`describe`] checks too.
 #[must_use]
 pub fn is_rust_round_ref(of_ref: &str) -> bool {
 	let mut parts = of_ref.splitn(3, ':');
@@ -770,8 +752,10 @@ pub struct Audio {
 /// one said for anything else.
 ///
 /// Reads only. Its one caller is `file_host`'s `handlers::voice`
-/// (`GET /api/v1/voice-notes/:id/audio`), for [`Of::RustRound`] notes only
-/// (docs/identity.md invariant 23).
+/// (`GET /api/v1/voice-notes/:id/audio`), which serves [`Of::RustRound`]
+/// notes only, to a paired phone, so a refine card can play an earlier note
+/// the phone let go once home held it (the owner's D4 on
+/// paulgsc/some-ui#2237, 2026-10-29; docs/identity.md invariant 23).
 ///
 /// # Errors
 /// [`VoiceError::Unreadable`] for a held container this crate would not have
@@ -1725,9 +1709,9 @@ mod tests {
 		}
 	}
 
-	/// A soundbite, a lens take and a `LeetType` answer are notes like any
-	/// other: each described for its kind, kept with its audio, carrying
-	/// nothing beside it, and never replaced.
+	/// A soundbite, a lens take, a `LeetType` answer and a Rust Rounds note
+	/// (RR6) are notes like any other: each described for its kind, kept with
+	/// its audio, carrying nothing beside it, and never replaced.
 	#[tokio::test]
 	async fn a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes() {
 		let pool = pool().await;
@@ -1735,6 +1719,7 @@ mod tests {
 			("s1", Of::Soundbite, "soundbite", "reminder"),
 			("l1", Of::Lens, "lens", "two-cups"),
 			("y1", Of::Leetype, "leetype", "two-sum.json:explain-1"),
+			("r1", Of::RustRound, "rust-round", "indexing-01:a"),
 		];
 		for (id, of, name, of_ref) in cases {
 			let said = describe(id, said_take(name, of_ref), b"said").unwrap();
@@ -1745,8 +1730,16 @@ mod tests {
 			assert!(matches!(put(&pool, A, &other, b"other").await, Err(VoiceError::Rewritten)), "{name}: never replaced");
 		}
 		let held: Vec<(String, String)> = sqlx::query_as("SELECT note_id, of_kind FROM voice_note ORDER BY note_id").fetch_all(&pool).await.unwrap();
-		assert_eq!(held, [("l1".into(), "lens".into()), ("s1".into(), "soundbite".into()), ("y1".into(), "leetype".into())]);
-		assert_eq!(rows(&pool, "voice_note_audio").await, 3);
+		assert_eq!(
+			held,
+			[
+				("l1".into(), "lens".into()),
+				("r1".into(), "rust-round".into()),
+				("s1".into(), "soundbite".into()),
+				("y1".into(), "leetype".into())
+			]
+		);
+		assert_eq!(rows(&pool, "voice_note_audio").await, 4);
 		assert_eq!(rows(&pool, "game_bite").await, 0, "none carries a bite");
 	}
 
@@ -1835,14 +1828,13 @@ mod tests {
 		assert!(describe("l1", said_take("lens", "two-cups"), b"said").is_ok(), "the rule is Rust Rounds' alone");
 	}
 
-	/// A Rust Rounds note is kept as every note is, and its audio is read
-	/// back for its own subject only, and only for that kind.
+	/// A Rust Rounds note's audio is read back for its own subject only, and
+	/// only for that kind.
 	#[tokio::test]
-	async fn a_rust_round_note_is_kept_and_its_audio_read_back_by_its_subject_only() {
+	async fn a_rust_round_notes_audio_is_read_back_by_its_subject_only() {
 		let pool = pool().await;
 		let said = describe("r1", said_take("rust-round", "indexing-01:a"), b"said").unwrap();
-		assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Added);
-		assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Unchanged);
+		put(&pool, A, &said, b"said").await.unwrap();
 		let lens = describe("l1", said_take("lens", "two-cups"), b"lens").unwrap();
 		put(&pool, A, &lens, b"lens").await.unwrap();
 
