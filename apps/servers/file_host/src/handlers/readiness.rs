@@ -40,7 +40,7 @@ use std::time::Duration;
 use tracing::instrument;
 
 /// Bounds each check that can actually block (`SQLite`, schema, Redis).
-/// Well under the 15s `TASK_TIMEOUT_MS` request timeout even run
+/// Well under the 15s request timeout (`main.rs`'s `REQUEST_TIMEOUT`) even run
 /// sequentially — run concurrently (as they are here) the whole handler
 /// resolves in one dependency's worth of this budget, not the sum of three.
 const DEPENDENCY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);

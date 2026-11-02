@@ -18,7 +18,9 @@
 //! - **One writer per table.** `file_host`'s `mailbox` poller is the only
 //!   caller of [`keep_item`], [`record_handed`], [`keep_archived`],
 //!   [`file_transcript`] and [`file_leetype_log`], and
-//!   `PUT /api/v1/jobs/files/:name` and `PUT /api/v1/routine/opened` the only
+//!   `PUT /api/v1/jobs/files/:name`, `PUT /api/v1/routine/opened`,
+//!   `PUT /api/v1/routine/reflections/:id` and
+//!   `PUT /api/v1/routine/prompts/:stamp` the only
 //!   callers of [`file_outgoing`] besides it;
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
@@ -37,9 +39,22 @@
 //! - **Archived here first** (docs/identity.md invariant 21): see
 //!   [`keep_archived`].
 //! - **An index is read from these tables, and kept in none.** [`jobs_inputs`]
-//!   and [`jobs_as_of`] read what the Jobs index counts. The index is a view
-//!   home recomputes from these records, not a record, so no table holds it
-//!   (owner, paulgsc/server#509).
+//!   and [`jobs_as_of`] read what the Jobs index counts, and
+//!   [`reflections_inputs`] and [`reflections_as_of`] what the reflections
+//!   index counts (with `voice_note`'s reflection and scene notes). An index
+//!   is a view home recomputes from these records, not a record, so no table
+//!   holds it (owner, paulgsc/server#509).
+//! - **A note the owner set aside is out of what the routines read** (the
+//!   owner's D3 on paulgsc/some-ui epic #2368; `voice_note_set_aside`): no
+//!   transcript of it is filed ([`unfiled_transcripts`], rechecked by
+//!   [`set_aside_from_routines`] where it is filed), and the reflections
+//!   index counts neither it nor a transcript of it already filed; setting
+//!   one aside moves that index's time ([`reflections_as_of`]), so the next
+//!   pass puts one without it. A Jobs note is the exception: the notes the
+//!   Jobs index waits on are the ones a decisions or scouts file names, and
+//!   a mark does not unname one, so a Jobs note set aside is still heard
+//!   and filed, and the Jobs index is left as it is. The note, its audio and
+//!   every file already filed are kept.
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
@@ -491,6 +506,119 @@ pub async fn record_handed(conn: &mut SqliteConnection, subject: &str, folder: &
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
+/// The folder home's written reflections go to.
+pub const REFLECTION: &str = "reflection";
+
+/// The folder home's drama prompts go to.
+pub const PROMPT: &str = "prompt";
+
+/// Whether one of the files `subject`'s home filed itself in `folder` is due
+/// to be archived: the [`REFLECTION`] and [`PROMPT`] folders, whose files the
+/// routine cannot ask back.
+///
+/// That is one home filed, which the mailbox took (or already held) at
+/// `cutoff` or before, and which home has not archived: the one reason a
+/// pass lists the folder to archive it. One home archived whose ask heard no
+/// answer is not due here: it is asked for again by name
+/// ([`unanswered_archives`]), since it may no longer be listed.
+///
+/// Home reads only its own tables here, so a pass with nothing due makes no
+/// request for the folder (paulgsc/some-ui's assurance ledger, MI6). It
+/// probes the files filed, by `mailbox_outgoing`'s key, each one's answer by
+/// `mailbox_handed_file` and its archive by `mailbox_archive`'s key.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn filed_due(conn: &mut SqliteConnection, subject: &str, folder: &str, cutoff: &str) -> Result<bool, MailboxError> {
+	let due = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM mailbox_outgoing AS filed
+		     JOIN mailbox_handed AS handed
+		       ON handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		     WHERE filed.subject_id = ?1 AND filed.folder = ?2
+		       AND handed.answer IN ('added', 'unchanged') AND handed.handed_at <= ?3
+		       AND NOT EXISTS (
+		         SELECT 1 FROM mailbox_archive AS archived
+		         WHERE archived.subject_id = filed.subject_id AND archived.folder = filed.folder AND archived.name = filed.name
+		       )
+		   ) AS "due!: bool""#,
+		subject,
+		folder,
+		cutoff
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(due)
+}
+
+/// One file `subject`'s archive holds, as the mailbox listed it when home
+/// archived it: what an ask to archive it again names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+	pub name: String,
+	pub seq: i64,
+	/// Lowercase hex SHA-256 of the bytes home holds.
+	pub sha256: String,
+	pub size: i64,
+	pub put_at: String,
+}
+
+/// The files of `subject`'s `folder` home archived whose ask heard no answer.
+///
+/// None is in `mailbox_archive_answer`: each ask failed to reach the mailbox,
+/// or its answer was lost, so its bytes may still be live there. Oldest kept
+/// first, at most `limit`.
+///
+/// Home reads only its own tables here, so with nothing owed a pass makes no
+/// request for them (paulgsc/some-ui's assurance ledger, MI6). It probes each
+/// archived file by `mailbox_archive`'s key and its answers by
+/// `mailbox_archive_answer_file`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn unanswered_archives(conn: &mut SqliteConnection, subject: &str, folder: &str, limit: i64) -> Result<Vec<Archived>, MailboxError> {
+	let owed = sqlx::query_as!(
+		Archived,
+		"SELECT kept.name, kept.seq, kept.sha256, kept.size, kept.put_at FROM mailbox_archive AS kept
+		 WHERE kept.subject_id = ?1 AND kept.folder = ?2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM mailbox_archive_answer AS answered
+		     WHERE answered.subject_id = kept.subject_id AND answered.folder = kept.folder AND answered.name = kept.name
+		   )
+		 ORDER BY kept.kept_at, kept.name
+		 LIMIT ?3",
+		subject,
+		folder,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(owed)
+}
+
+/// Records the mailbox's `answer` to home's ask to archive a file.
+///
+/// That is `subject`'s (`folder`, `name`), and `answer` is `archived`,
+/// `unchanged`, `mismatch`, `refused` or `gone`. Any answer is final; only an
+/// ask that never heard one is made again ([`unanswered_archives`]).
+///
+/// # Errors
+/// Any `sqlx` failure, an `answer` the table does not take among them.
+pub async fn record_archive_answer(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str, answer: &str, now: &str) -> Result<Change, MailboxError> {
+	let written = sqlx::query!(
+		"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at)
+		 SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?1)",
+		subject,
+		folder,
+		name,
+		answer,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
+}
+
 /// The folder home's transcripts go to.
 pub const TRANSCRIPT: &str = "transcript";
 
@@ -513,10 +641,21 @@ pub struct Heard {
 /// `subject`'s transcripts that heard something and are not filed yet.
 ///
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
-/// not heard, is never one: the routine reads that from the absence. A game
-/// bite is never one either: bites leave home only inside the weekly bundle
-/// (paulgsc/some-ui#2074, GWB8), and the mailbox's `transcript` folder
-/// refuses `of: game`.
+/// not heard, is never one: the routine reads that from the absence. Only
+/// a note said for a kind a routine reads is one (`reflection`, `jobs`,
+/// `scene`, `studio`), as the mailbox's `transcript` folder takes no other
+/// `of`: a game bite leaves home only inside the weekly bundle
+/// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
+/// `LeetType` spoken answer never does, since no routine reads them
+/// (paulgsc/some-ui#2180, HF5; docs/identity.md invariant 19). Nor is a
+/// note the owner set aside ([`set_aside_from_routines`]): it is out of what
+/// the routines read (D3, paulgsc/some-ui epic #2368), and a transcript filed
+/// before the mark stays filed. A Jobs note is the exception, filed though
+/// set aside: a decisions or scouts file naming it is what puts it in front
+/// of the routine, and a mark does not unname it, so the Jobs index would
+/// otherwise wait on a transcript that never comes. The filer checks the
+/// mark again in the transaction that files ([`set_aside_from_routines`]),
+/// since one can land after this read.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -530,7 +669,11 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind <> 'game'
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
+		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
+		       SELECT 1 FROM voice_note_set_aside AS aside
+		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
+		     ))
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -543,6 +686,32 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 	.fetch_all(&mut *conn)
 	.await?;
 	Ok(heard)
+}
+
+/// Whether the owner set `subject`'s note `note_id` aside from the routines.
+///
+/// That is a note set aside (`voice_note_set_aside`) and said for anything
+/// but `jobs`, which [`unfiled_transcripts`] files though set aside.
+///
+/// Read it in the transaction that files the note's transcript, so a mark
+/// committed after [`unfiled_transcripts`] read the note still keeps it from
+/// being filed.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn set_aside_from_routines(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, MailboxError> {
+	let set_aside = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM voice_note_set_aside AS aside
+		     JOIN voice_note AS note ON note.subject_id = aside.subject_id AND note.note_id = aside.note_id
+		     WHERE aside.subject_id = ?1 AND aside.note_id = ?2 AND note.of_kind <> 'jobs'
+		   ) AS "set_aside!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(set_aside)
 }
 
 /// The number `subject`'s next filed transcript of `note_id` takes, from 1.
@@ -855,11 +1024,12 @@ pub struct JobsInputs {
 	pub scouts: Vec<HeldFile>,
 	/// Every transcript of a Jobs voice note the mailbox took, likewise.
 	pub transcripts: Vec<HeldTranscript>,
-	/// Every pre-mailbox decisions file the routine put back in `brief`
-	/// once (`decisions-*.json`; MB2's backfill, paulgsc/server#509). The
-	/// mailbox takes only a name dated before 2026-10-23 there.
+	/// Every decisions file only Drive held that the routine put back in
+	/// `brief` once (`decisions-*.json`; MB2's backfill, paulgsc/server#509).
+	/// The mailbox takes only a name dated before 2026-11-04 there
+	/// (`DRIVE_ONLY_ENDED`, paulgsc/some-ui#2393).
 	pub backfill_decisions: Vec<HeldFile>,
-	/// Every pre-mailbox scouts file put back likewise (`scouts-*.json`).
+	/// Every scouts file only Drive held, put back likewise (`scouts-*.json`).
 	pub backfill_scouts: Vec<HeldFile>,
 }
 
@@ -943,7 +1113,9 @@ async fn taken_files(conn: &mut SqliteConnection, subject: &str, folder: &str) -
 
 /// When home last took in something the Jobs index counts, or `None`.
 ///
-/// That is a digest it read, or the mailbox's answer taking a decisions
+/// That is a digest it read (or a decisions or scouts file the routine's
+/// backfill put in `brief`; never another kind of file there, such as a
+/// list of the takes Drive holds, which the index does not count), or the mailbox's answer taking a decisions
 /// file, a scouts file or a Jobs note's transcript home handed it. Every
 /// input [`jobs_inputs`] reads arrives with a time at least this, so an index
 /// stamped with it (`asOf`) is out of date exactly when this moves.
@@ -954,6 +1126,7 @@ pub async fn jobs_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Op
 	let at = sqlx::query_scalar!(
 		r#"SELECT MAX(at) AS "at?: String" FROM (
 		     SELECT pulled_at AS at FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief'
+		       AND (substr(name, 1, 7) = 'digest-' OR substr(name, 1, 10) = 'decisions-' OR substr(name, 1, 7) = 'scouts-')
 		     UNION ALL
 		     SELECT handed_at AS at FROM mailbox_handed
 		     WHERE subject_id = ?1 AND folder IN ('decisions', 'scout') AND answer IN ('added', 'unchanged')
@@ -974,14 +1147,227 @@ pub async fn jobs_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Op
 	Ok(at)
 }
 
+/// One lesson home kept from the reflections routine: a word set or a drama.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldLesson {
+	pub name: String,
+	/// The mailbox's sequence number for it.
+	pub seq: i64,
+	/// When home took it in, within a pass of the routine's put.
+	pub pulled_at: String,
+	pub body: Vec<u8>,
+}
+
+/// One file home filed and the mailbox took, with when it took it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenFile {
+	pub name: String,
+	pub body: Vec<u8>,
+	/// When the mailbox answered taking it: its `putAt` there, within a
+	/// request's time.
+	pub handed_at: String,
+}
+
+/// One voice note said for a reflection or a drama prompt that home holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldNote {
+	pub note_id: String,
+	/// `reflection` or `scene`.
+	pub of_kind: String,
+	/// A reflection's session, or what a scene note was said for.
+	pub of_ref: String,
+	pub recorded_at: String,
+}
+
+/// Everything the reflections index is computed from, each list in a fixed
+/// order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReflectionsInputs {
+	/// Every word set home kept from `scene`, by `seq`.
+	pub scenes: Vec<HeldLesson>,
+	/// Every drama home kept from `drama`, by `seq`.
+	pub dramas: Vec<HeldLesson>,
+	/// Every written reflection the mailbox took as home filed it and home
+	/// has not archived, by name.
+	pub reflections: Vec<TakenFile>,
+	/// Every drama prompt the mailbox took likewise, by name.
+	pub prompts: Vec<TakenFile>,
+	/// The newest list of opened lessons the mailbox took and home has not
+	/// archived, by name (each is named for when home filed it).
+	pub opened: Option<TakenFile>,
+	/// Every reflection or scene voice note home holds and the owner has not
+	/// set aside, by when it was recorded and its id.
+	pub notes: Vec<HeldNote>,
+	/// Every transcript of one of those notes the mailbox took, by name.
+	pub transcripts: Vec<HeldTranscript>,
+	/// Every reflection or scene note the owner set aside, by id: out of
+	/// `notes` and `transcripts`, and out of what a prompt waits on.
+	pub set_aside: Vec<String>,
+}
+
+/// What the reflections index for `subject` is computed from.
+///
+/// Read it in one transaction with [`reflections_as_of`], so both see one
+/// snapshot.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn reflections_inputs(conn: &mut SqliteConnection, subject: &str) -> Result<ReflectionsInputs, MailboxError> {
+	let scenes = held_lessons(conn, subject, "scene").await?;
+	let dramas = held_lessons(conn, subject, "drama").await?;
+	let reflections = taken_live(conn, subject, "reflection").await?;
+	let prompts = taken_live(conn, subject, "prompt").await?;
+	let opened = taken_live(conn, subject, "opened").await?.pop();
+	let notes = sqlx::query_as!(
+		HeldNote,
+		"SELECT note_id, of_kind, of_ref, recorded_at FROM voice_note AS note
+		 WHERE subject_id = ?1 AND of_kind IN ('reflection', 'scene')
+		   AND NOT EXISTS (
+		     SELECT 1 FROM voice_note_set_aside AS aside
+		     WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id
+		   )
+		 ORDER BY recorded_at, note_id",
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let set_aside = sqlx::query_scalar!(
+		"SELECT aside.note_id FROM voice_note_set_aside AS aside
+		 JOIN voice_note AS note ON note.subject_id = aside.subject_id AND note.note_id = aside.note_id
+		 WHERE aside.subject_id = ?1 AND note.of_kind IN ('reflection', 'scene')
+		 ORDER BY aside.note_id",
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let transcripts = sqlx::query_as!(
+		HeldTranscript,
+		r#"SELECT filed.name AS "name!: String", filed.sha256 AS "sha256!: String"
+		   FROM mailbox_transcript AS heard
+		   JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
+		   JOIN mailbox_outgoing AS filed
+		     ON filed.subject_id = heard.subject_id AND filed.folder = 'transcript'
+		    AND filed.name = 'transcript-' || heard.note_id || '-' || heard.n || '.json'
+		   WHERE heard.subject_id = ?1 AND note.of_kind IN ('reflection', 'scene')
+		     AND NOT EXISTS (
+		       SELECT 1 FROM voice_note_set_aside AS aside
+		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
+		     )
+		     AND EXISTS (
+		       SELECT 1 FROM mailbox_handed AS handed
+		       WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		         AND handed.answer IN ('added', 'unchanged')
+		     )
+		   ORDER BY filed.name"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(ReflectionsInputs {
+		scenes,
+		dramas,
+		reflections,
+		prompts,
+		opened,
+		notes,
+		transcripts,
+		set_aside,
+	})
+}
+
+/// `subject`'s lessons kept from `folder` (`scene` or `drama`), by `seq`.
+async fn held_lessons(conn: &mut SqliteConnection, subject: &str, folder: &str) -> Result<Vec<HeldLesson>, MailboxError> {
+	let lessons = sqlx::query_as!(
+		HeldLesson,
+		"SELECT name, seq, pulled_at, body FROM mailbox_item WHERE subject_id = ?1 AND folder = ?2 ORDER BY seq",
+		subject,
+		folder
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(lessons)
+}
+
+/// `subject`'s files filed in `folder` that the mailbox took as home filed
+/// them (`added` or `unchanged`) and home has not archived, by name, each
+/// with when the mailbox first took it.
+async fn taken_live(conn: &mut SqliteConnection, subject: &str, folder: &str) -> Result<Vec<TakenFile>, MailboxError> {
+	let files = sqlx::query_as!(
+		TakenFile,
+		r#"SELECT filed.name, filed.body, MIN(handed.handed_at) AS "handed_at!: String"
+		   FROM mailbox_outgoing AS filed
+		   JOIN mailbox_handed AS handed
+		     ON handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		    AND handed.answer IN ('added', 'unchanged')
+		   WHERE filed.subject_id = ?1 AND filed.folder = ?2
+		     AND NOT EXISTS (
+		       SELECT 1 FROM mailbox_archive AS archived
+		       WHERE archived.subject_id = filed.subject_id AND archived.folder = filed.folder AND archived.name = filed.name
+		     )
+		   GROUP BY filed.name, filed.body
+		   ORDER BY filed.name"#,
+		subject,
+		folder
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(files)
+}
+
+/// When home last took in something the reflections index counts, or `None`.
+///
+/// That is a word set or a drama it read; the mailbox's answer taking a
+/// written reflection, a drama prompt or a list of opened lessons home handed
+/// it, or home archiving one of those; a reflection or scene voice note
+/// reaching home, or home recording that the owner set one aside; or the
+/// mailbox's answer taking one's transcript. Every input
+/// [`reflections_inputs`] reads arrives (or, archived or set aside, leaves)
+/// with a time at least this, so an index stamped with it (`asOf`) is out of
+/// date exactly when this moves.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn reflections_as_of(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, MailboxError> {
+	let at = sqlx::query_scalar!(
+		r#"SELECT MAX(at) AS "at?: String" FROM (
+		     SELECT pulled_at AS at FROM mailbox_item WHERE subject_id = ?1 AND folder IN ('scene', 'drama')
+		     UNION ALL
+		     SELECT handed_at AS at FROM mailbox_handed
+		     WHERE subject_id = ?1 AND folder IN ('reflection', 'prompt', 'opened') AND answer IN ('added', 'unchanged')
+		     UNION ALL
+		     SELECT kept_at AS at FROM mailbox_archive WHERE subject_id = ?1 AND folder IN ('reflection', 'prompt', 'opened')
+		     UNION ALL
+		     SELECT stored_at AS at FROM voice_note WHERE subject_id = ?1 AND of_kind IN ('reflection', 'scene')
+		     UNION ALL
+		     SELECT handed.handed_at AS at
+		     FROM mailbox_transcript AS heard
+		     JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
+		     JOIN mailbox_handed AS handed
+		       ON handed.subject_id = heard.subject_id AND handed.folder = 'transcript'
+		      AND handed.name = 'transcript-' || heard.note_id || '-' || heard.n || '.json'
+		      AND handed.answer IN ('added', 'unchanged')
+		     WHERE heard.subject_id = ?1 AND note.of_kind IN ('reflection', 'scene')
+		     UNION ALL
+		     SELECT aside.stored_at AS at
+		     FROM voice_note_set_aside AS aside
+		     JOIN voice_note AS note ON note.subject_id = aside.subject_id AND note.note_id = aside.note_id
+		     WHERE aside.subject_id = ?1 AND note.of_kind IN ('reflection', 'scene')
+		   )"#,
+		subject
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(at)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
 		archived_body, cursor, digests_after, file_leetype_log, file_outgoing, file_transcript, keep_archived, keep_item, leetype_files, leetype_log_name,
-		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, unfiled_leetype_logs, unfiled_transcripts, Answer, ArchiveIn,
-		Change, ItemIn, MailboxError, BRIEF, LEETYPE,
+		next_leetype_log_number, next_transcript_number, pending_outgoing, record_handed, refuse_leetype_log, set_aside_from_routines, unfiled_leetype_logs, unfiled_transcripts,
+		Answer, ArchiveIn, Change, ItemIn, MailboxError, BRIEF, LEETYPE,
 	};
-	use super::{jobs_as_of, jobs_inputs};
+	use super::{jobs_as_of, jobs_inputs, reflections_as_of, reflections_inputs};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -1033,12 +1419,12 @@ mod tests {
 	async fn the_migration_round_trips() {
 		let pool = pool().await;
 		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mailbox_%'");
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6);
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 7);
 		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops them");
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
-		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 6, "up recreates them");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 7, "up recreates them");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
@@ -1056,6 +1442,7 @@ mod tests {
 			),
 			("mailbox_transcript", &["subject_id", "note_id", "model", "n", "filed_at"][..]),
 			("mailbox_leetype_log", &["subject_id", "session_id", "through", "n", "refused", "decided_at"][..]),
+			("mailbox_archive_answer", &["subject_id", "folder", "name", "answer", "answered_at"][..]),
 		] {
 			let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
 				.bind(table)
@@ -1094,6 +1481,7 @@ mod tests {
 			"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'b', 1, 's', 1, 'then', x'00', 'now')",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
 			"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
+			"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'r', 'archived', 'now')",
 		] {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
@@ -1104,6 +1492,7 @@ mod tests {
 			("mailbox_archive", "name"),
 			("mailbox_transcript", "n"),
 			("mailbox_leetype_log", "n"),
+			("mailbox_archive_answer", "name"),
 		] {
 			let update = sqlx::query(&(String::from("UPDATE ") + table + " SET " + column + " = 2")).execute(&pool).await;
 			assert!(update.unwrap_err().to_string().contains("append-only"), "{table}");
@@ -1366,23 +1755,36 @@ mod tests {
 		assert_eq!(unfiled(&pool, A).await, [(String::from("n2"), String::from("small"))], "a filed one waits no more");
 	}
 
+	/// A game bite leaves home only in the weekly bundle, and a soundbite, a
+	/// grammar-lens take and a `LeetType` answer never do (HF5): no routine
+	/// reads them, and the mailbox's `transcript` folder takes none of them.
 	#[tokio::test]
-	async fn a_game_bite_is_never_filed_on_its_own() {
+	async fn a_game_bite_or_a_study_take_is_never_filed_on_its_own() {
 		let pool = pool().await;
-		sqlx::query(
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, 'bite', 'game', '401772001', '2026-10-25T20:00:00.000Z', 'audio/webm', 1, 's', 'now')",
-		)
-		.bind(A)
-		.execute(&pool)
-		.await
-		.unwrap();
-		heard(&pool, A, ("bite", "small", 1), "heard", Some("third and long"), "2026-10-25T20:01:00.000Z").await;
+		for (id, of_kind, of_ref) in [
+			("bite", "game", "401772001"),
+			("said", "soundbite", "direct"),
+			("read", "lens", "two-cups"),
+			("told", "leetype", "f.json:s1"),
+		] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, '2026-10-25T20:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(of_kind)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			heard(&pool, A, (id, "small", 1), "heard", Some("something said"), "2026-10-25T20:01:00.000Z").await;
+		}
 		heard(&pool, A, ("n1", "small", 1), "heard", Some("하나"), "2026-10-25T20:02:00.000Z").await;
 		assert_eq!(
 			unfiled(&pool, A).await,
 			[(String::from("n1"), String::from("small"))],
-			"bites leave home only in the weekly bundle"
+			"only a kind a routine reads is filed"
 		);
 	}
 
@@ -1591,7 +1993,7 @@ mod tests {
 		assert_eq!(jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap(), None, "nothing yet");
 		keep(&pool, A, &digest("2026-10-22"), 1, "d22").await.unwrap();
 		keep(&pool, B, &digest("2026-10-23"), 2, "theirs").await.unwrap();
-		// MB2's backfill: pre-mailbox files the routine put back in `brief`.
+		// MB2's backfill: files only Drive held that the routine put back in `brief`.
 		keep(&pool, A, "decisions-2026-10-20.json", 3, "back-d").await.unwrap();
 		keep(&pool, A, "scouts-20261020T101500.json", 4, "back-s").await.unwrap();
 		keep(&pool, B, "decisions-2026-10-19.json", 5, "theirs-d").await.unwrap();
@@ -1666,5 +2068,250 @@ mod tests {
 			Some("2026-10-25T09:15:00.000Z"),
 			"the newest of what it counts: not the conflict, the opened filing or the reflection's transcript"
 		);
+	}
+
+	/// HF11 (paulgsc/some-ui#2401): a list of the takes Drive holds, kept
+	/// from `brief` after the digest, leaves the Jobs index's time where it
+	/// was; a backfilled file kept as late moves it.
+	#[tokio::test]
+	async fn a_list_of_drives_takes_leaves_the_jobs_index_time_where_it_was() {
+		let pool = pool().await;
+		keep(&pool, A, &digest("2026-10-22"), 1, "d22").await.unwrap();
+		let later = |name: &'static str, seq: i64, at: &'static str| {
+			let pool = pool.clone();
+			async move {
+				let item = ItemIn {
+					folder: BRIEF,
+					name,
+					seq,
+					sha256: name,
+					body: b"{}",
+				};
+				keep_item(&mut pool.acquire().await.unwrap(), A, item, at).await.unwrap();
+			}
+		};
+		later("drive-takes-20261101T091500Z.json", 2, "2026-11-01T09:20:00.000Z").await;
+		assert_eq!(jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(), Some(NOW));
+		later("decisions-2026-10-20.json", 3, "2026-11-01T09:30:00.000Z").await;
+		assert_eq!(
+			jobs_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(),
+			Some("2026-11-01T09:30:00.000Z")
+		);
+	}
+
+	/// A note for the reflections index's fixtures: `of_kind`'s, recorded at
+	/// `recorded_at`, reaching home at `stored_at`.
+	async fn note(pool: &SqlitePool, subject: &str, (note, of_kind, of_ref): (&str, &str, &str), recorded_at: &str, stored_at: &str) {
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, 'audio/webm', 1, 's', ?6)",
+		)
+		.bind(subject)
+		.bind(note)
+		.bind(of_kind)
+		.bind(of_ref)
+		.bind(recorded_at)
+		.bind(stored_at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	#[tokio::test]
+	async fn the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those() {
+		let pool = pool().await;
+		assert_eq!(reflections_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap(), None, "nothing yet");
+		let lesson = |folder: &'static str, name: &'static str, seq: i64, at: &'static str| (folder, name, seq, at);
+		for (folder, name, seq, at) in [
+			lesson("scene", "scene-b.json", 7, "2026-10-24T10:00:00.000Z"),
+			lesson("scene", "scene-a.json", 3, "2026-10-23T10:00:00.000Z"),
+			lesson("drama", "drama-1.json", 4, "2026-10-23T11:00:00.000Z"),
+			lesson("brief", "digest-2026-10-30.json", 9, "2026-10-30T10:00:00.000Z"),
+		] {
+			let sha = String::from("sha-of-") + name;
+			let item = ItemIn {
+				folder,
+				name,
+				seq,
+				sha256: &sha,
+				body: name.as_bytes(),
+			};
+			keep_item(&mut pool.acquire().await.unwrap(), A, item, at).await.unwrap();
+		}
+		for (folder, name, answer, at) in [
+			("reflection", "reflection-r1.json", Some(Answer::Added), "2026-10-25T10:00:00.000Z"),
+			("reflection", "reflection-r2.json", Some(Answer::Conflict), "2026-10-29T10:00:00.000Z"),
+			("reflection", "reflection-r3.json", None, ""),
+			("reflection", "reflection-r4.json", Some(Answer::Added), "2026-10-25T11:00:00.000Z"),
+			("prompt", "drama-1.prompt.json", Some(Answer::Unchanged), "2026-10-25T12:00:00.000Z"),
+			("opened", "opened-20261024T000000000Z.json", Some(Answer::Added), "2026-10-24T00:00:01.000Z"),
+			("opened", "opened-20261025T000000000Z.json", Some(Answer::Added), "2026-10-25T00:00:01.000Z"),
+			("decisions", "decisions-2026-10-31.json", Some(Answer::Added), "2026-10-31T10:00:00.000Z"),
+		] {
+			file_outgoing(&mut pool.acquire().await.unwrap(), A, folder, name, "sha", name.as_bytes(), NOW)
+				.await
+				.unwrap();
+			if let Some(answer) = answer {
+				record_handed(&mut pool.acquire().await.unwrap(), A, folder, name, answer, at).await.unwrap();
+			}
+		}
+		// Home archived r4: the routine can no longer read it.
+		let r4 = ArchiveIn {
+			folder: "reflection",
+			name: "reflection-r4.json",
+			seq: 5,
+			sha256: "sha",
+			put_at: "2026-10-25T11:00:00.000Z",
+			body: b"reflection-r4.json",
+		};
+		keep_archived(&mut pool.acquire().await.unwrap(), A, r4, "2026-10-26T09:00:00.000Z").await.unwrap();
+		note(&pool, A, ("v2", "reflection", "s1"), "2026-10-25T09:00:00.000Z", "2026-10-25T09:30:00.000Z").await;
+		note(&pool, A, ("v1", "scene", "next-scene"), "2026-10-25T08:00:00.000Z", "2026-10-25T08:30:00.000Z").await;
+		note(&pool, A, ("j1", "jobs", "2026-10-25:acme"), "2026-10-25T07:00:00.000Z", "2026-11-02T00:00:00.000Z").await;
+		note(&pool, B, ("b1", "reflection", "s9"), "2026-10-25T07:00:00.000Z", "2026-11-03T00:00:00.000Z").await;
+		heard(&pool, A, ("v2", "small", 1), "heard", Some("하나"), "2026-10-25T09:40:00.000Z").await;
+		file_next(&pool, A, "v2", "small").await.unwrap();
+		record_handed(
+			&mut pool.acquire().await.unwrap(),
+			A,
+			"transcript",
+			"transcript-v2-1.json",
+			Answer::Added,
+			"2026-10-27T09:15:00.000Z",
+		)
+		.await
+		.unwrap();
+
+		let inputs = reflections_inputs(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+		let names = |lessons: &[super::HeldLesson]| lessons.iter().map(|lesson| (lesson.name.clone(), lesson.seq)).collect::<Vec<_>>();
+		assert_eq!(names(&inputs.scenes), [(String::from("scene-a.json"), 3), (String::from("scene-b.json"), 7)], "by seq");
+		assert_eq!(inputs.scenes[0].pulled_at, "2026-10-23T10:00:00.000Z");
+		assert_eq!(names(&inputs.dramas), [(String::from("drama-1.json"), 4)]);
+		let taken = |files: &[super::TakenFile]| files.iter().map(|file| (file.name.clone(), file.handed_at.clone())).collect::<Vec<_>>();
+		assert_eq!(
+			taken(&inputs.reflections),
+			[(String::from("reflection-r1.json"), String::from("2026-10-25T10:00:00.000Z"))],
+			"not a conflict, one never handed, or one home archived"
+		);
+		assert_eq!(taken(&inputs.prompts), [(String::from("drama-1.prompt.json"), String::from("2026-10-25T12:00:00.000Z"))]);
+		assert_eq!(inputs.opened.map(|file| file.name).as_deref(), Some("opened-20261025T000000000Z.json"), "the newest");
+		let notes: Vec<&str> = inputs.notes.iter().map(|held| held.note_id.as_str()).collect();
+		assert_eq!(notes, ["v1", "v2"], "a reflection's and a scene's, by when recorded: not a Jobs note or another subject's");
+		let transcripts: Vec<&str> = inputs.transcripts.iter().map(|held| held.name.as_str()).collect();
+		assert_eq!(transcripts, ["transcript-v2-1.json"]);
+		assert_eq!(
+			reflections_as_of(&mut pool.acquire().await.unwrap(), A).await.unwrap().as_deref(),
+			Some("2026-10-27T09:15:00.000Z"),
+			"the newest of what it counts: not a digest, a decisions file, a Jobs note or another subject's note"
+		);
+	}
+
+	/// One mark: `subject` set its note `note` aside, home recording it at
+	/// `stored_at`.
+	async fn set_aside(pool: &SqlitePool, subject: &str, note: &str, stored_at: &str) {
+		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, '2026-10-27T07:59:00.000Z', ?3)")
+			.bind(subject)
+			.bind(note)
+			.bind(stored_at)
+			.execute(pool)
+			.await
+			.unwrap();
+	}
+
+	/// D3 (paulgsc/some-ui epic #2368): a note the owner set aside leaves
+	/// what the routines read. No transcript of it is filed, the reflections
+	/// index counts neither it nor a transcript of it already filed, and the
+	/// mark moves that index's time. A Jobs note is the exception: one set
+	/// aside before it was heard is still filed, and the Jobs index, whose
+	/// notes are the ones a file names, is as it was. Another subject's mark
+	/// moves nothing of A's, and the notes and what was filed stay.
+	#[tokio::test]
+	async fn a_note_set_aside_leaves_what_the_routines_read() {
+		let pool = pool().await;
+		note(&pool, A, ("v1", "reflection", "s1"), "2026-10-25T09:00:00.000Z", "2026-10-25T09:30:00.000Z").await;
+		note(&pool, A, ("v2", "scene", "next-scene"), "2026-10-25T10:00:00.000Z", "2026-10-25T10:30:00.000Z").await;
+		note(&pool, A, ("v3", "reflection", "s1"), "2026-10-25T12:00:00.000Z", "2026-10-25T12:30:00.000Z").await;
+		note(&pool, A, ("j2", "jobs", "2026-10-25:acme"), "2026-10-25T11:00:00.000Z", "2026-10-25T11:30:00.000Z").await;
+		note(&pool, B, ("v3", "reflection", "s9"), "2026-10-25T12:00:00.000Z", "2026-10-25T12:30:00.000Z").await;
+		for (id, at) in [
+			("v1", "2026-10-25T09:40:00.000Z"),
+			("v2", "2026-10-25T10:40:00.000Z"),
+			("j1", "2026-10-25T11:40:00.000Z"),
+			("v3", "2026-10-25T12:40:00.000Z"),
+		] {
+			heard(&pool, A, (id, "small", 1), "heard", Some("하나"), at).await;
+		}
+		for (id, at) in [("v1", "2026-10-26T09:00:00.000Z"), ("j1", "2026-10-26T10:00:00.000Z")] {
+			file_next(&pool, A, id, "small").await.unwrap();
+			let name = String::from("transcript-") + id + "-1.json";
+			record_handed(&mut pool.acquire().await.unwrap(), A, "transcript", &name, Answer::Added, at).await.unwrap();
+		}
+		let read = |pool: SqlitePool| async move {
+			let mut conn = pool.acquire().await.unwrap();
+			let unfiled: Vec<String> = unfiled_transcripts(&mut conn, A, 10).await.unwrap().into_iter().map(|heard| heard.note_id).collect();
+			let reflections = reflections_inputs(&mut conn, A).await.unwrap();
+			let notes: Vec<String> = reflections.notes.into_iter().map(|held| held.note_id).collect();
+			let heard: Vec<String> = reflections.transcripts.into_iter().map(|held| held.name).collect();
+			let jobs: Vec<String> = jobs_inputs(&mut conn, A).await.unwrap().transcripts.into_iter().map(|held| held.name).collect();
+			let at = (reflections_as_of(&mut conn, A).await.unwrap(), jobs_as_of(&mut conn, A).await.unwrap());
+			(unfiled, notes, heard, jobs, reflections.set_aside, at)
+		};
+		let (unfiled, notes, heard_before, jobs, marked, at) = read(pool.clone()).await;
+		assert_eq!(unfiled, ["v2", "v3"]);
+		assert_eq!(notes, ["v1", "v2", "v3"]);
+		assert_eq!(heard_before, ["transcript-v1-1.json"]);
+		assert_eq!(jobs, ["transcript-j1-1.json"]);
+		assert!(marked.is_empty());
+		assert_eq!(at.0.as_deref(), Some("2026-10-26T09:00:00.000Z"));
+		assert_eq!(at.1.as_deref(), Some("2026-10-26T10:00:00.000Z"));
+
+		// B sets aside its own v3, an id A holds too and has not set aside.
+		set_aside(&pool, B, "v3", "2026-12-01T00:00:00.000Z").await;
+		let (unfiled, notes, _, _, set_aside_ids, at) = read(pool.clone()).await;
+		assert_eq!(
+			(unfiled, notes),
+			(
+				vec![String::from("v2"), String::from("v3")],
+				vec![String::from("v1"), String::from("v2"), String::from("v3")]
+			)
+		);
+		assert!(set_aside_ids.is_empty(), "B's mark is not A's");
+		assert_eq!(at.0.as_deref(), Some("2026-10-26T09:00:00.000Z"), "B's mark moves no index of A's");
+
+		for (id, stored_at) in [("v1", "2026-10-27T08:00:00.000Z"), ("v2", "2026-10-27T08:01:00.000Z"), ("j2", "2026-10-27T08:02:00.000Z")] {
+			set_aside(&pool, A, id, stored_at).await;
+		}
+		// A Jobs note set aside before it was heard: heard now, by hand.
+		heard(&pool, A, ("j2", "small", 1), "heard", Some("둘"), "2026-10-27T09:00:00.000Z").await;
+		let (unfiled, notes, heard, jobs, set_aside_ids, at) = read(pool.clone()).await;
+		assert_eq!(unfiled, ["v3", "j2"], "no transcript of a note set aside is filed, but a Jobs note's is");
+		assert_eq!(notes, ["v3"], "the reflections index counts no note set aside");
+		assert!(heard.is_empty(), "nor a transcript of one already filed: {heard:?}");
+		assert_eq!(jobs, ["transcript-j1-1.json"], "the Jobs index still names what a file names");
+		assert_eq!(set_aside_ids, ["v1", "v2"], "a Jobs note is not the reflections index's");
+		assert_eq!(at.0.as_deref(), Some("2026-10-27T08:01:00.000Z"), "the reflections index moves with its own notes' marks");
+		assert_eq!(at.1.as_deref(), Some("2026-10-26T10:00:00.000Z"), "the Jobs index does not move");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let rechecked = [
+			set_aside_from_routines(&mut conn, A, "v1").await.unwrap(),
+			set_aside_from_routines(&mut conn, A, "j2").await.unwrap(),
+			set_aside_from_routines(&mut conn, A, "v3").await.unwrap(),
+			set_aside_from_routines(&mut conn, B, "v3").await.unwrap(),
+		];
+		drop(conn);
+		assert_eq!(rechecked, [true, false, false, true], "the filer's recheck: set aside, and not a Jobs note");
+		assert_eq!(file_next(&pool, A, "j2", "small").await.unwrap(), (1, Change::Added), "the Jobs note is filed");
+		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note WHERE subject_id = ?1")
+			.bind(A)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		let filed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_transcript WHERE subject_id = ?1")
+			.bind(A)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!((kept, filed), (5, 3), "the notes and what was filed stay");
 	}
 }

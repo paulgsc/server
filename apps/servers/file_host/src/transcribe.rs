@@ -10,15 +10,15 @@
 //!
 //! **Why this is a poll.** A note can arrive while the worker is busy, and a
 //! restart must pick up whatever was left, so the worker asks the database
-//! every `TRANSCRIBE_SECONDS` (60 by default) for the notes its model has not
+//! every [`INTERVAL`] (a minute) for the notes its model has not
 //! heard. An idle pass is that one indexed read. A note waits at most an
 //! interval before it is heard, which nothing reading transcripts notices.
 //!
 //! What this module promises, as docs/identity.md invariant 23 states:
 //!
 //! - **Never on a request's path.** Notes are heard one at a time, on a
-//!   blocking thread with `TRANSCRIBE_THREADS` threads, each by
-//!   `TRANSCRIBE_DEADLINE_SECONDS`.
+//!   blocking thread with one fewer threads than the container's cores,
+//!   each by [`DEADLINE`].
 //! - **Append-only.** Each attempt is a new row; nothing is updated, and a
 //!   note's audio is read, never written or deleted (`pass`).
 //! - **Nothing heard reaches a log line.** A pass logs the kind of each
@@ -41,12 +41,33 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 
-/// The shortest interval `TRANSCRIBE_SECONDS` may set.
+// The transcriber's engineering values: source constants, not variables
+// (#617). Each was its variable's default.
+
+/// The shortest interval a pass may run at.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// The shortest deadline `TRANSCRIBE_DEADLINE_SECONDS` may set: a
-/// minute-long note needs about a minute on two threads.
+/// How often the worker looks for notes to hear (`TRANSCRIBE_SECONDS`).
+pub const INTERVAL: Duration = Duration::from_secs(60);
+
+/// The shortest deadline one note may get: a minute-long note needs about a
+/// minute on two threads.
 pub const MIN_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long one note may take, decoding included: `engine::MAX_SECONDS`'
+/// worth (`TRANSCRIBE_DEADLINE_SECONDS`).
+pub const DEADLINE: Duration = Duration::from_secs(600);
+
+const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
+
+/// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
+/// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
+/// (`TRANSCRIBE_MODEL`).
+pub const MODEL: &str = "/models/ggml-small-q5_1.bin";
+
+/// The Silero VAD model that finds a note's speech, mounted beside it
+/// (`TRANSCRIBE_VAD_MODEL`).
+pub const VAD_MODEL: &str = "/models/ggml-silero-v5.1.2.bin";
 
 /// Everything the worker needs, or `None` when the deployment has not turned
 /// transcription on.
@@ -69,24 +90,18 @@ impl TranscribeContext {
 	/// transcriber that never runs is a routine that never gets its text.
 	///
 	/// # Errors
-	/// `TRANSCRIBE_ENABLED` with `TRANSCRIBE_SECONDS` below 10,
-	/// `TRANSCRIBE_DEADLINE_SECONDS` below 60, or an engine that does not load
+	/// `TRANSCRIBE_ENABLED` with an engine that does not load
 	/// (`engine::Whisper::load`).
 	pub fn from_config(config: &Config, deletion: DeletionLock) -> anyhow::Result<Option<Self>> {
 		if !config.transcribe_enabled {
 			info!("voice-note transcription is not enabled; home keeps notes without hearing them");
 			return Ok(None);
 		}
-		let interval = Duration::from_secs(config.transcribe_seconds);
-		anyhow::ensure!(interval >= MIN_INTERVAL, "TRANSCRIBE_SECONDS must be at least 10");
-		let deadline = Duration::from_secs(config.transcribe_deadline_seconds);
-		anyhow::ensure!(deadline >= MIN_DEADLINE, "TRANSCRIBE_DEADLINE_SECONDS must be at least 60");
-		let threads = config.transcribe_threads.unwrap_or_else(default_threads);
-		let engine = Whisper::load(&PathBuf::from(&config.transcribe_model), &PathBuf::from(&config.transcribe_vad_model), threads)?;
+		let engine = Whisper::load(&PathBuf::from(MODEL), &PathBuf::from(VAD_MODEL), default_threads())?;
 		Ok(Some(Self {
 			engine: Arc::new(engine),
-			interval,
-			deadline,
+			interval: INTERVAL,
+			deadline: DEADLINE,
 			deletion,
 		}))
 	}

@@ -1,0 +1,20 @@
+# Who can decrypt deploy/<role>/<app>.sops.env (#613, ENV1 #614). The same
+# recipients as paulgsc/dotfiles' .sops.yaml, where docs/secrets.md says how
+# each was made; change them there and here together.
+#
+# - admin: the owner's own age key (~/.config/sops/age/keys.txt), the one key
+#   that is backed up. It edits every file, on any machine.
+# - nixos: the box's SSH host key, converted with ssh-to-age. A reinstall
+#   makes a new host key: replace the entry, then `sops updatekeys` each file.
+#
+# Every deployment file is encrypted, with no exception: a value that is not
+# a secret is a constant in the source, not a variable (#613, principle 1).
+keys:
+  - &admin age1jj0m6zk3832ewsgtu59pzzhskme23yw0tuddjpn7u9nmqtqr3fyqr2gkna
+  - &nixos age1sw59jghnkj57nc7xe4lwhryd0evrwqgrekxac9pf80xxdp9eesks2ykmam
+creation_rules:
+  - path_regex: (^|/)deploy/[^/]+/[^/]+\.sops\.env$
+    key_groups:
+      - age:
+          - *admin
+          - *nixos

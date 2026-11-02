@@ -1178,10 +1178,12 @@ mod tests {
 				"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
 				"INSERT INTO studio_sitting_event (subject_id, sitting_id, event_id, at, type, kind, body, written_at) VALUES (?1, 's', 'e', 'now', 'page_hidden', 'record', '{}', 'now')",
 				"INSERT INTO studio_friction (subject_id, report_id, sitting_id, at, how, body, written_at) VALUES (?1, 'f', 's', 'now', 'smooth', '{}', 'now')",
+				"INSERT INTO study_note (subject_id, kind, note_id, body, sha256, stored_at) VALUES (?1, 'leetype', 'n', '{}', 's', 'now')",
 				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
 				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
 				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
+				"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'n', 'archived', 'now')",
 				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
 				"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
@@ -1195,6 +1197,15 @@ mod tests {
 				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
 				"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
+				"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
+				"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
+				"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
+				"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
+				"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+				"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'n', NULL)",
+				"INSERT INTO idea_furnishing (subject_id, idea_id, seq, furnishing, stored_at) VALUES (?1, 'i', 1, 1, 'now')",
+				"INSERT INTO idea_set_aside (subject_id, idea_id, stored_at) VALUES (?1, 'i', 'now')",
+				"INSERT INTO idea_list_mark (subject_id, list, entry, seq, listed, stored_at) VALUES (?1, 'topic', 'Cooking', 1, 1, 'now')",
 			] {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}

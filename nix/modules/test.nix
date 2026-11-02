@@ -34,80 +34,60 @@
       enable = true;
       environmentFiles = ["/run/secrets/file-host.env"];
       settings = {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = false;
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = ["https://a.example" "https://b.example"];
         APP_BASE_URL = "https://a.example/";
+        NATS_URL = "nats://nats:4222";
+        REDIS_URL = "redis://redis:6379";
       };
     };
-    services.orchestrator.enable = true;
+    services.orchestrator = {
+      enable = true;
+      settings.NATS_URL = "nats://nats:4222";
+    };
   };
+  # On, with nothing set: since #617 no NATS is assumed.
+  bareOrchestrator = failed (eval {services.orchestrator.enable = true;});
   container = complete.config.virtualisation.oci-containers.containers.file-host;
-  # The mailbox on, with neither its URL nor a secrets file, and a cadence
-  # below its floor.
+  # The mailbox on, with neither its URL nor a secrets file. (No numeric
+  # bound is left to test here: since #617 the one file_host keeps,
+  # MAILBOX_ARCHIVE_DAYS, holds only while a secret is set, which settings
+  # cannot say. app_config's own tests cover bounds.)
   mailbox = failed (eval {
     services.file-host = {
       enable = true;
       settings = {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = false;
         MAILBOX_ENABLED = true;
-        MAILBOX_SECONDS = 30;
       };
     };
   });
 in
   lib.all (x: x) [
     (expect "a bare file-host names its required settings and secrets" (lib.all (gap: builtins.any (lib.hasInfix gap) bare) [
-      "settings.OBS_WEBSOCKET_IP is required"
-      "settings.OBS_WEBSOCKET_PWD is required (a secret"
+      "settings.DATABASE_URL is required (a secret"
       "settings.WEBAUTHN_RP_ID is required while AUTH_ENABLED is true"
       "settings.ALLOWED_ORIGINS is required"
       "settings.APP_BASE_URL is required"
+      "settings.NATS_URL is required"
+      "settings.REDIS_URL is required"
     ]))
+    (expect "a bare orchestrator names NATS_URL" (builtins.any (lib.hasInfix "services.orchestrator.settings.NATS_URL is required") bareOrchestrator))
     (expect "an off module asks for nothing and runs nothing" (failed off == [] && off.config.virtualisation.oci-containers.containers == {}))
     (expect "a complete file-host asserts nothing" (failed complete == []))
     (expect "set settings reach the container as strings, unset ones not at all" (container.environment
       == {
-        OBS_WEBSOCKET_IP = "127.0.0.1";
         AUTH_ENABLED = "false";
         NUDGE_TIMEZONE = "America/Denver";
         ALLOWED_ORIGINS = "https://a.example,https://b.example";
         APP_BASE_URL = "https://a.example/";
+        NATS_URL = "nats://nats:4222";
+        REDIS_URL = "redis://redis:6379";
       }))
     (expect "secrets reach the container through its files" (container.environmentFiles == ["/run/secrets/file-host.env"]))
     (expect "file-host publishes what compose does" (container.ports == ["127.0.0.1:3000:3000"] && container.image == "pgathondu/server:latest"))
     (expect "orchestrator publishes no port" (complete.config.virtualisation.oci-containers.containers.orchestrator.ports == []))
     (expect "the mailbox's own requirements are named while it is on" (builtins.any (lib.hasInfix "MAILBOX_URL is required while MAILBOX_ENABLED is true") mailbox
         && builtins.any (lib.hasInfix "MAILBOX_TOKEN is required while MAILBOX_ENABLED is true (a secret") mailbox))
-    (expect "a small float reaches the container whole, not as 0.000000" ((eval {
-        services.file-host = {
-          enable = true;
-          settings.OTEL_TRACES_SAMPLER_ARG = 0.0000001;
-        };
-      })
-      .config
-      .virtualisation
-      .oci-containers
-      .containers
-      .file-host
-      .environment
-      .OTEL_TRACES_SAMPLER_ARG
-      == "1e-07"))
-    (expect "a number below its limit is named while its feature is on" (builtins.any (lib.hasInfix "settings.MAILBOX_SECONDS must be at least 60") mailbox))
-    (expect "and not while it is off" (failed (eval {
-        services.file-host = {
-          enable = true;
-          environmentFiles = ["/run/secrets/file-host.env"];
-          settings = {
-            OBS_WEBSOCKET_IP = "127.0.0.1";
-            AUTH_ENABLED = false;
-            ALLOWED_ORIGINS = ["https://a.example"];
-            APP_BASE_URL = "https://a.example/";
-            MAILBOX_SECONDS = 30;
-          };
-        };
-      })
-      == []))
   ]

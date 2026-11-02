@@ -1,4 +1,4 @@
-use app_config::{OtelArgs, TraceSampler};
+use app_config::OtelArgs;
 use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -79,10 +79,10 @@ impl OtelGuard {
 	/// `OTEL_EXPORTER_OTLP_ENDPOINT`, spans are still made, for the log lines
 	/// that carry them, but exported nowhere (#407).
 	pub fn new(config: &OtelArgs, rust_log: &str) -> Result<Self, ObservabilityError> {
-		let sampler = sampler(config);
+		let sampler = sampler();
 
 		let resource = Resource::builder()
-			.with_service_name(config.otel_service_name.clone())
+			.with_service_name(SERVICE_NAME)
 			.with_attributes(vec![
 				KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
 				KeyValue::new("service.environment", config.environment.clone()),
@@ -105,7 +105,7 @@ impl OtelGuard {
 			None => builder.build(),
 		};
 
-		let tracer = tracer_provider.tracer(config.otel_service_name.clone());
+		let tracer = tracer_provider.tracer(SERVICE_NAME);
 
 		global::set_tracer_provider(tracer_provider.clone());
 
@@ -123,7 +123,7 @@ impl OtelGuard {
 			.init();
 
 		tracing::info!(
-			service_name = %config.otel_service_name,
+			service_name = SERVICE_NAME,
 			otlp_endpoint = config.otel_exporter_otlp_endpoint.as_deref().unwrap_or("none: traces are not exported"),
 			sampler = ?sampler,
 			"OpenTelemetry tracing initialized"
@@ -146,11 +146,17 @@ impl Drop for OtelGuard {
 	}
 }
 
-/// The sampler `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` name.
-const fn sampler(config: &OtelArgs) -> Sampler {
-	match config.otel_traces_sampler {
-		TraceSampler::AlwaysOn => Sampler::AlwaysOn,
-		TraceSampler::AlwaysOff => Sampler::AlwaysOff,
-		TraceSampler::Traceidratio => Sampler::TraceIdRatioBased(config.otel_traces_sampler_arg),
-	}
+/// The `service.name` traces are exported under: the binary's own, so no
+/// two binaries' traces share one (#617; it was `OTEL_SERVICE_NAME`, which
+/// said to leave it unset).
+pub const SERVICE_NAME: &str = "file_host";
+
+/// The share of traces kept: all of them. A source constant (#617), as
+/// `OTEL_TRACES_SAMPLER=traceidratio` and `OTEL_TRACES_SAMPLER_ARG=1` were
+/// by default.
+const TRACE_RATIO: f64 = 1.0;
+
+/// Every trace, by trace id at [`TRACE_RATIO`].
+const fn sampler() -> Sampler {
+	Sampler::TraceIdRatioBased(TRACE_RATIO)
 }

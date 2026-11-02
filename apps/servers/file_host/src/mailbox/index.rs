@@ -12,7 +12,7 @@
 //! **What it is computed from** ([`mailbox_repo::jobs_inputs`]): every
 //! digest home kept from `brief`, every decisions file, scouts file and Jobs
 //! note's transcript the mailbox took from home as home filed it, and every
-//! pre-mailbox decisions or scouts file the routine put back in `brief` once
+//! decisions or scouts file only Drive held that the routine put back in `brief` once
 //! (the backfill, below). No new table: those are home's own rows.
 //!
 //! **A view, not a record** (owner, 2026-10-31, paulgsc/server#509). Home
@@ -24,11 +24,12 @@
 //! What home remembers is in memory, [`LastIndex`]: what the last index the
 //! mailbox answered was computed from, so a restart costs one put.
 //!
-//! **The backfill** (MB2's amendment, the same decision). Drive holds Jobs
-//! decisions and scouts files from before the mailbox (before 2026-10-23)
-//! that home never saw. The routine puts each once in `brief`, under its
-//! Drive name, which the mailbox takes only for a name dated before that
-//! day, so the set is closed. Home keeps it as any `brief` file, and the
+//! **The backfill** (MB2's amendment, the same decision, widened by
+//! paulgsc/some-ui#2393). Drive holds Jobs decisions and scouts files home
+//! never saw, from before the phone filed every one home. The routine puts
+//! each once in `brief`, under its Drive name, which the mailbox takes only
+//! for a name dated before 2026-11-04 (the Worker's `DRIVE_ONLY_ENDED`), so the set is
+//! closed. Home keeps it as any `brief` file, and the
 //! index counts it with the phone's files and names it in `from.backfill`.
 //! It adds no listing: `brief` is read every pass anyway.
 //!
@@ -68,6 +69,10 @@
 //! port `queueOf` and `freeSlots` (`packages/job-desk/src/queue.ts`), and
 //! [`LAPSE_DAYS`] and [`MAX_OPEN_PICKS`] its policy; a change to either there
 //! is a change here. The tests port `queue.test.ts`'s cases.
+//!
+//! **The reflections routine's index** is [`reflections`]'s, built the same
+//! way: a pure function of home's rows and the moment, put only when what it
+//! counts moves or a moment it carries (`validUntil`) passes.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
@@ -78,6 +83,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
+
+pub mod reflections;
+
+pub(super) use reflections::put_reflections_index;
 
 /// What an index put to the mailbox's `index` folder is (paulgsc/some-ui
 /// `apps/mailbox/README.md`, "What a put must satisfy").
@@ -324,7 +333,7 @@ struct From {
 	/// Every scouts file counted, likewise.
 	scout: Vec<String>,
 	/// Those of `decisions` and `scout` that came from the routine's one-time
-	/// backfill of pre-mailbox files (`brief`), not from the phone.
+	/// backfill of files only Drive held (`brief`), not from the phone.
 	backfill: Vec<String>,
 }
 
@@ -733,45 +742,54 @@ fn stamp_of(now: &str) -> Option<String> {
 }
 
 /// What an index was computed from, and how long it holds: whose, `asOf`,
-/// and `validThrough`.
+/// and the last day (`validThrough`) or the moment (`validUntil`) it says
+/// the same.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Computed {
 	subject: String,
 	as_of: Option<String>,
-	valid_through: Option<String>,
+	valid: Option<String>,
 }
 
 impl Computed {
-	/// Whether a fresh index for `subject` on `day`, with home's newest
-	/// arrival at `as_of`, would say what this one says but its `day`: the
-	/// same subject, nothing arrived since, and no open pick lapsed yet.
-	fn holds(&self, subject: &str, as_of: Option<&str>, day: &str) -> bool {
-		self.subject == subject && self.as_of.as_deref() == as_of && self.valid_through.as_deref().is_none_or(|through| day <= through)
+	/// Whether a fresh index for `subject`, with home's newest arrival at
+	/// `as_of`, would say what this one says (its `day` aside): the same
+	/// subject, nothing arrived since, and `within` its `valid` (`None` is
+	/// valid for good).
+	fn holds(&self, subject: &str, as_of: Option<&str>, within: impl FnOnce(&str) -> bool) -> bool {
+		self.subject == subject && self.as_of.as_deref() == as_of && self.valid.as_deref().is_none_or(within)
 	}
 }
 
-/// What the last Jobs index the mailbox answered was computed from.
+/// What the last index of one routine the mailbox answered was computed from.
 ///
 /// It is kept in memory for as long as the poller runs, never in the
-/// database: the index is a view, and home keeps no copy of it (the module
+/// database: an index is a view, and home keeps no copy of it (the module
 /// doc). After a restart it is empty, so the first pass puts one again, and
 /// the mailbox drops the one before it.
 #[derive(Debug, Default)]
 pub struct LastIndex(Mutex<Option<Computed>>);
 
 impl LastIndex {
-	fn holds(&self, subject: &str, as_of: Option<&str>, day: &str) -> bool {
+	fn holds(&self, subject: &str, as_of: Option<&str>, within: impl FnOnce(&str) -> bool) -> bool {
 		self
 			.0
 			.lock()
 			.unwrap_or_else(PoisonError::into_inner)
 			.as_ref()
-			.is_some_and(|last| last.holds(subject, as_of, day))
+			.is_some_and(|last| last.holds(subject, as_of, within))
 	}
 
 	fn remember(&self, computed: Computed) {
 		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);
 	}
+}
+
+/// Home's memory of each routine's last index: one [`LastIndex`] each.
+#[derive(Debug, Default)]
+pub struct LastIndexes {
+	pub jobs: LastIndex,
+	pub reflections: LastIndex,
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
@@ -808,7 +826,7 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 		}
 		// A new day alone is no reason: the last index still says what a
 		// fresh one would, `day` aside, until an open pick lapses.
-		if last.holds(subject, as_of.as_deref(), &day) {
+		if last.holds(subject, as_of.as_deref(), |through| day.as_str() <= through) {
 			return Ok(());
 		}
 		let inputs = mailbox_repo::jobs_inputs(&mut tx, subject).await.map_err(super::pass::storage)?;
@@ -819,14 +837,31 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 	let computed = Computed {
 		subject: subject.to_owned(),
 		as_of,
-		valid_through,
+		valid: valid_through,
 	};
+	put_index(mailbox, &index_name(JOBS, &stamp), body, (last, computed), outcome).await
+}
+
+/// Puts one routine's index under `name`, unless it is over the mailbox's
+/// ceiling, and remembers what it was computed from once the mailbox has
+/// answered (a refusal is final too).
+///
+/// # Errors
+/// A [`Failure`] when the mailbox cannot be reached; nothing is remembered,
+/// so the next pass computes and puts it again.
+async fn put_index<T: MailboxTransport>(
+	mailbox: &Mailbox<T>,
+	name: &str,
+	body: Vec<u8>,
+	(last, computed): (&LastIndex, Computed),
+	outcome: &mut Outcome,
+) -> Result<(), Failure> {
 	if body.len() > MAILBOX_BODY_CEILING {
 		outcome.refused.push("too_big");
 		last.remember(computed);
 		return Ok(());
 	}
-	let answer = match mailbox.put(Folder::Index, &index_name(JOBS, &stamp), body).await {
+	let answer = match mailbox.put(Folder::Index, name, body).await {
 		Ok(Put::Added { .. }) => "added",
 		Ok(Put::Unchanged { .. }) => "unchanged",
 		Ok(Put::Conflict) => "conflict",
@@ -1278,7 +1313,7 @@ mod tests {
 		assert_eq!(index(&done, "2026-10-18")["validThrough"], Value::Null, "no open pick");
 	}
 
-	/// MB2's backfill (owner, #509): a pre-mailbox file the routine put back is
+	/// MB2's backfill (owner, #509): a file only Drive held that the routine put back is
 	/// counted as the phone's would be, named in `from.backfill`, and loses to
 	/// the phone's copy of the same name.
 	#[test]

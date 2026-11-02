@@ -393,13 +393,11 @@
   "apps/servers/file_host/src/handlers/tab_metadata.rs": {
     "clippy::ignored_unit_patterns": {
       "fn now_playing": {
-        "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1,
         "let _ = state.realtime.ws.broadcast_event(transport, event).await?;": 1
       }
     },
     "clippy::let_unit_value": {
       "fn now_playing": {
-        "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1,
         "let _ = state.realtime.ws.broadcast_event(transport, event).await?;": 1
       }
     },
@@ -407,19 +405,9 @@
       "fn now_playing": {
         "pub async fn now_playing(State(state): State<AppState>, Json(payload): Json<NowPlaying>) -> Result<StatusCode, FileHostError> {": 1
       }
-    },
-    "clippy::redundant_closure": {
-      "fn now_playing": {
-        "let _ = redis.set(key, &event, Some(state.core.config.cache_ttl)).await.map_err(|e| FileHostError::upstream(e))?;": 1
-      }
     }
   },
   "apps/servers/file_host/src/lib.rs": {
-    "clippy::clone_on_copy": {
-      "fn build": {
-        "let dedup_cache = Arc::new(DedupCache::new(cache_store.into(), config.max_in_flight.clone()));": 1
-      }
-    },
     "clippy::missing_errors_doc": {
       "fn build": {
         "pub async fn build(config: Arc<Config>, pool: SqlitePool, cancel_token: CancellationToken) -> anyhow::Result<Self> {": 1
@@ -2187,11 +2175,6 @@
     "clippy::must_use_candidate": {
       "fn from_client": {
         "pub fn from_client(client: Client) -> Self {": 1
-      }
-    },
-    "clippy::too_long_first_doc_paragraph": {
-      "fn default": {
-        "/// Invariant: exactly one of `ack`, `nak`, `term` must be called per handle. /// For stages that may exceed `ack_wait`, call `heartbeat` at intervals /// shorter than `ack_wait` to prevent server-side lease expiration and /// concurrent redelivery. /// /// Failure: dropping without settling is treated as NAK by the server": 1
       }
     }
   },

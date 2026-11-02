@@ -13,6 +13,6 @@ services:
       - '0.0.0.0:443:443'
       - '0.0.0.0:443:443/udp' # HTTP/3
     volumes:
-      - ${REPO_ROOT}/infra/Caddyfile:/etc/caddy/Caddyfile
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config

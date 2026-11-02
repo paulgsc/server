@@ -559,7 +559,7 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
 | `PUT /api/v1/rust-rounds/:id` (`routes::rust_rounds`, `handlers::rust_rounds`) | A paired phone puts a round as the tutor wrote it (`some-ui.rust-round/1`). Home checks what it needs (`rust_round_repo::round::read`: at most 32 KiB, the tag, the id, each card's kind and id, and every program: a read card's, and a variant card's built as the format builds it) and, in one transaction, keeps the round and queues each program it does not hold yet. `201` new, `200` the same bytes again, `409` another body under an id the subject holds, `422` naming each field, `413` for a body past one byte over the ceiling, before it is buffered. |
 | `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The caller's subject's newest rounds; one of its rounds, byte for byte, with each read and variant card's program and every run kept for it (`toolchain`, `ended`, `refusal`, and `rustc`, some-ui's `RustcRunSchema`; never when it was kept, since a run is shared across subjects). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. Another subject's id is a `404`. |
 | `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain (`recorded`, `refused` or `runner-lost`, RP3); and each time the runner was lost holding a program. None is ever updated. `rust_round` is subject-scoped, read only by its subject and deleted only with its account; the other three name no subject, are never deleted, and are shared by every round holding the program (docs/identity.md invariant 28). |
-| `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `RUST_ROUNDS_SECONDS`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
+| `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `rust_rounds::INTERVAL`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
 
 **A round's id is never reused, so another body under it is refused.** The
 format says ids are "unique across rounds, never reused", so a second body
@@ -684,10 +684,10 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     that wait is left before it. The wait is for the answer; before it, the
     request's write has its own `CLIENT_TIMEOUT`, so an ask ends at most
     `CLIENT_TIMEOUT` (5 s) past the deadline, and a pass at most that past
-    `RUST_ROUNDS_PASS_DEADLINE_SECONDS`. (A request is at most 64 KiB to a
+    `rust_rounds::PASS_DEADLINE`. (A request is at most 64 KiB to a
     socket on the same host, so the write is short unless the runner is
     wedged; the text says what holds rather than widening every wait.)
-    `RUST_ROUNDS_PASS_DEADLINE_SECONDS` is at least both waits together
+    `rust_rounds::PASS_DEADLINE` is at least both waits together
     (142 s, `rust_rounds::MIN_DEADLINE`, `Waits::least_deadline`), so a
     pass at the minimum asks at least one program. A recorded or refused
     program lets the pass go on; anything else ends it, and the next starts

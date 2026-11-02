@@ -47,6 +47,26 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"game_bite",
 		"what each of the owner's game bites (a voice note said while watching a game) was said about and what the screen showed: the scenario and how it came to be said, the offer, the live strip and context line, whether they were watching, when they started saying it, the phone's clock offset, the mode and the scenario set's version; see docs/identity.md invariant 23",
 	),
+	(
+		"idea_answer",
+		"each answer of each revision of the owner's ideas (STUDIO ST26): the question it answers and either the studio voice note that answers it, by id, or the words the owner typed when voice failed (at most 1,000 characters); see docs/identity.md invariant 32",
+	),
+	(
+		"idea_furnishing",
+		"each time the owner marked one of their ideas as still being furnished or not (STUDIO ST26), and when home recorded it; the owner's alone, read for no routine; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_list_mark",
+		"each entry the owner added to or took off the topics and keywords lists their ideas pick from (STUDIO ST26), and when; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_revision",
+		"every revision of the owner's ideas sent home (STUDIO ST26): the title they typed, the topic, the format (short or video), the keywords, the question set's version, when the idea was begun and the revision sent, and when it reached home; see docs/identity.md invariant 32",
+	),
+	(
+		"idea_set_aside",
+		"each of the owner's ideas the owner set aside (STUDIO ST26), and when home recorded it; the idea itself is kept; see docs/identity.md invariant 32",
+	),
 	("intervention_log", "what the waker decided and when"),
 	(
 		"jobs_event",
@@ -77,6 +97,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's files home archived from the Jobs mailbox, from any folder: their bytes as the mailbox held them, hash, size, sequence number, when each was first put and when home stored it; see docs/identity.md invariants 19 and 21",
 	),
 	(
+		"mailbox_archive_answer",
+		"each answer the Jobs mailbox gave when home asked it to drop one of the owner's written reflections or drama prompts home had archived, and when; see docs/identity.md invariant 21",
+	),
+	(
 		"mailbox_handed",
 		"each answer the Jobs mailbox gave when home handed it one of the owner's files, and when; see docs/identity.md invariant 19",
 	),
@@ -90,7 +114,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"mailbox_outgoing",
-		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), and how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
+		"the owner's Jobs decisions and scouts (voice notes named by id only), which of the reflections routine's lessons they opened (names only), what home heard in their voice notes (text only), how each of their finished LeetType sessions went (every event home holds of it, never what was said, typed or ticked), their written reflections (the typed line, its session and when), and the drama prompts they asked for (the prompt's stamp and markdown), filed with home for the mailbox: their bytes and hash, and when each was filed; see docs/identity.md invariant 19",
 	),
 	(
 		"mailbox_transcript",
@@ -116,8 +140,12 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's Studio time log (paulgsc/some-ui ST9), every event of every sitting sent home: the sitting and its kind, each screen entered and left by name, the page hidden and shown, the sitting opened and closed, and when each was recorded and reached home; see docs/identity.md invariant 26",
 	),
 	(
+		"study_note",
+		"the text the owner's phone keeps beside a soundbite or a LeetType spoken answer (paulgsc/some-ui#2180), as the phone sent it: a soundbite's record (when it was recorded, how long it ran, how it came to be recorded, the sessions the phone knew of and its time zone), and an answer's note (the session file and screen, the prompt, the rubric, the points ticked, the answer typed and the take it notes), and when each reached home; see docs/identity.md invariant 30",
+	),
+	(
 		"voice_note",
-		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites and Studio takes included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
+		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites, Studio takes, soundbites, grammar-lens takes and LeetType spoken answers included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
 	),
 	(
 		"voice_note_audio",
@@ -130,6 +158,22 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	(
 		"voice_transcript_word",
 		"each word home heard in the owner's voice notes (paulgsc/some-ui GWB11), per transcript that heard something: the word as heard, its place, and when it began and ended in the note; see docs/identity.md invariant 23",
+	),
+	(
+		"studio_take_on_drive",
+		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
+	),
+	(
+		"voice_note_set_aside",
+		"each of the owner's voice notes the owner let go of on the phone (paulgsc/some-ui#2372, D3): the note's id, when it was let go and when home recorded it; the note itself is kept; see docs/identity.md invariant 23",
+	),
+	(
+		"drama_prompt",
+		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
+	),
+	(
+		"written_reflection",
+		"each written reflection the owner's phone sent home (paulgsc/some-ui#2178): the typed line as typed, the session it is about, when it was written and how far into the session, and when it reached home; see docs/identity.md invariant 29",
 	),
 ];
 

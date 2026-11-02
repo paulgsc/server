@@ -22,6 +22,19 @@ use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 
+/// The largest request body any route takes, in bytes: 10 MiB. A voice
+/// note is at most 1 MiB (`voice_repo::NOTE_CEILING`). A source constant
+/// (#617), as `MAX_REQUEST_SIZE_MB` was by default.
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+
+/// How many requests are served at once before more are shed. A source
+/// constant (#617), as `MAX_CONCURRENT_REQUESTS` was by default.
+const MAX_CONCURRENT_REQUESTS: usize = 100;
+
+/// The hard timeout on any request. A source constant (#617), as
+/// `TASK_TIMEOUT_MS` was by default.
+const REQUEST_TIMEOUT: Duration = Duration::from_millis(15_000);
+
 async fn handle_tower_error(error: BoxError) -> FileHostError {
 	if error.is::<tower::timeout::error::Elapsed>() {
 		tracing::warn!("Request timeout: {}", error);
@@ -52,9 +65,14 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 	response
 }
 
-#[tokio::main]
+// Worker threads are a source constant (#617), not tokio's own
+// TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
+// and nothing about how it runs changes.
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
-	dotenvy::dotenv().ok();
+	// Its whole environment is what it was started with: compose's env_file
+	// for the container, or `make dev`'s decrypted deploy/dev/ file. No
+	// `.env` is read (#614): every value lives encrypted (#613).
 	let (config, held): (Config, _) = app_config::schema::parse_then_hold(&file_host::RULES);
 
 	// Before the rules: a health check is a separate process, run by the
@@ -70,7 +88,7 @@ async fn main() -> Result<()> {
 	// on; the handle below is what turns its state into a scrape payload.
 	//
 	// `install_with` rather than `install`: the request-duration histogram
-	// (#213/F2) needs a bucket above `TASK_TIMEOUT_MS`'s 15s, and the
+	// (#213/F2) needs a bucket above `main.rs's REQUEST_TIMEOUT`'s 15s, and the
 	// exporter's default buckets top out at 10s — see
 	// `metrics::http::HTTP_DURATION_BUCKETS`'s own doc comment.
 	let metrics_builder = some_metrics::PrometheusBuilder::new().set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?;
@@ -152,9 +170,9 @@ async fn main() -> Result<()> {
 			// string included (docs/identity.md, invariant 13).
 			.layer(TraceLayer::new_for_http().make_span_with(RouteSpan))
 			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
-			.layer(RequestBodyLimitLayer::new(config.clone().max_request_size * 1024 * 1024))
-			.layer(ConcurrencyLimitLayer::new(config.clone().max_concurrent_req))
-			.layer(TimeoutLayer::new(Duration::from_millis(config.clone().task_timeout_ms)))
+			.layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
+			.layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
+			.layer(TimeoutLayer::new(REQUEST_TIMEOUT))
 			.layer(LoadShedLayer::new())
 			.layer(AddExtensionLayer::new(config.clone())),
 	);
@@ -185,7 +203,7 @@ async fn main() -> Result<()> {
 			Ok(seeded) => tracing::info!(seeded, "first-contact backfill complete"),
 			Err(err) => tracing::error!(error = %err, "first-contact backfill failed; existing subscribers may stay ungated until next boot"),
 		}
-		nudge::waker::spawn(&app_state, Duration::from_secs(config.nudge_waker_seconds.max(30)));
+		nudge::waker::spawn(&app_state, nudge::WAKER_INTERVAL);
 		file_host::metrics::waker::record_enabled(true);
 	} else {
 		file_host::metrics::waker::record_enabled(false);

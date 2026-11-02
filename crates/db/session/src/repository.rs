@@ -706,6 +706,25 @@ impl SessionRepository {
 		Ok(())
 	}
 
+	/// Date one session **owned by this subject** by when it was made where
+	/// it was made, for a copy whose patch carries it
+	/// (`handlers::db::session::update_session`). The one write that moves
+	/// `created_at`: [`Self::upsert`] never does. Returns whether a row
+	/// matched.
+	///
+	/// It leaves `updated_at` alone: the patch that calls it has just set
+	/// that to home's now, which is what `refresh_if_untouched`'s
+	/// `created_at = updated_at` gate reads as an edit.
+	///
+	/// # Errors
+	/// Fails on any `sqlx` error.
+	pub async fn set_created_at(&self, subject_id: &str, id: &str, created_at: &str) -> Result<bool, SessionRepoError> {
+		let result = sqlx::query!("UPDATE sessions SET created_at = ? WHERE id = ? AND subject_id = ?", created_at, id, subject_id)
+			.execute(&self.pool)
+			.await?;
+		Ok(result.rows_affected() > 0)
+	}
+
 	/// Write a new record under its id, once: a repeated create (a send
 	/// whose answer was lost, sent again) finds the record the first one made
 	/// and changes nothing. Once only while that record stands: a create
@@ -969,6 +988,29 @@ mod tests {
 
 		assert!(matches!(repo.insert_if_absent("subject-b", &again).await.unwrap(), Created::Taken));
 		assert!(repo.list("subject-b").await.unwrap().is_empty());
+	}
+
+	/// A copy is dated by when it was made, and listed by it; nothing else on
+	/// the row moves, and another subject's id is not dated.
+	#[tokio::test]
+	async fn a_copy_is_dated_by_when_it_was_made_and_listed_by_it() {
+		let repo = SessionRepository::new(pool().await);
+		let mut copy = fixture("session-copy");
+		copy.created_at = String::from("2026-03-01T00:00:00+00:00");
+		copy.updated_at = copy.created_at.clone();
+		repo.upsert("subject-a", &copy).await.unwrap();
+		let mut older = fixture("session-older");
+		older.created_at = String::from("2026-02-01T00:00:00+00:00");
+		repo.upsert("subject-a", &older).await.unwrap();
+
+		assert!(repo.set_created_at("subject-a", "session-copy", "2026-01-15T09:00:00+00:00").await.unwrap());
+		assert!(!repo.set_created_at("subject-b", "session-older", "2020-01-01T00:00:00+00:00").await.unwrap());
+
+		let listed = repo.list("subject-a").await.unwrap();
+		assert_eq!(listed.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["session-older", "session-copy"]);
+		assert_eq!(listed[0].created_at, "2026-02-01T00:00:00+00:00", "another subject's write moved nothing");
+		assert_eq!(listed[1].created_at, "2026-01-15T09:00:00+00:00");
+		assert_eq!(listed[1].updated_at, "2026-03-01T00:00:00+00:00", "dating a copy is no edit of it");
 	}
 
 	#[tokio::test]

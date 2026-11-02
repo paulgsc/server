@@ -7,12 +7,12 @@ services:
     labels:
       env-schema: file_host
     env_file:
-      # REPO_ROOT: this checkout's absolute path. Every service mounts files
-      # from under it. The repo's .env, all of it, reaches the container;
-      # required, because without it the container used to start on none of
-      # it, and with REPO_ROOT unset it bind-mounted /data, /config and /logs
-      # from the host's root (#407). HOST-SPECIFIC: wherever the checkout is.
-      - path: ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/.env
+      # file_host's own variables and nothing else: deploy/<role>/file_host.sops.env,
+      # decrypted by `make up` (or `make compose`) to tmpfs, mode 600, and
+      # removed once compose has read it (#614). ENV_DIR is where: envctl
+      # sets it to its run's own $XDG_RUNTIME_DIR/server/<pid>. Required,
+      # because without it the container would start on none of its variables.
+      - path: ${ENV_DIR:?make sets ENV_DIR, so run compose through make up or make compose}/file_host.env
         required: true
     ports:
       # Box only: Caddy on the host serves it to the LAN, the phone included,
@@ -24,33 +24,26 @@ services:
       # ahead of the INPUT chain that firewall filters.
       - '127.0.0.1:3000:3000'
     environment:
-      - RUST_LOG=${RUST_LOG:-info,async_nats=warn}
       - RUST_BACKTRACE=1
-      - TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-4}
-      - POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-4}
       - REDIS_URL=redis://redis:6379
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db
-      - SQLX_OFFLINE=false
-      - DATA_DIR=/app/data
-      - CONFIG_DIR=/app/config
     volumes:
       # STORAGE: the host directory holding file_host's SQLite database, mounted
-      # at /app/dbs (DATABASE_URL above). HOST-SPECIFIC default: the nixos.local
-      # dev host's storage mount (#406); another host sets STORAGE.
-      - ${STORAGE:-/mnt/storage/users/dev/databases/hopium}:/app/dbs
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/data:/app/data:rw
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/config:/app/config:ro
-      - ${REPO_ROOT:?set REPO_ROOT in .env to this checkout's absolute path}/logs:/app/logs:rw
+      # at /app/dbs (DATABASE_URL above). A deployment constant, so it has no
+      # default here: each role's compose.sops.env sets it (#614).
+      - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}:/app/dbs
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data:/app/data:rw
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/config:/app/config:ro
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/logs:/app/logs:rw
       # The voice-note transcriber's models, read-only: the multilingual
       # Whisper model and the Silero VAD model `nix/whisper-manager`'s
-      # `whisper fetch` downloads. TRANSCRIBE_MODEL and TRANSCRIBE_VAD_MODEL
-      # default to these under /models. HOST-SPECIFIC default: the
-      # nixos.local dev host's models directory (#406); another host sets
-      # TRANSCRIBE_MODELS_DIR.
-      - ${TRANSCRIBE_MODELS_DIR:-/mnt/storage/users/dev/models/whisper-models}:/models:ro
+      # `whisper fetch` downloads. transcribe::MODEL and transcribe::VAD_MODEL
+      # name these under /models. TRANSCRIBE_MODELS_DIR: that
+      # directory on the host, set in each role's compose.sops.env (#614).
+      - ${TRANSCRIBE_MODELS_DIR:?set TRANSCRIBE_MODELS_DIR in deploy/<role>/compose.sops.env}:/models:ro
       # The rust-runner's socket (infra/compose/rust_runner.yml), where
-      # RUST_ROUNDS_SOCKET defaults to: Rust Rounds' recording pass asks the
+      # rust_rounds::SOCKET names: Rust Rounds' recording pass asks the
       # runner there, as uid 10000, the one client uid it serves. Read-only:
       # connecting needs no write to the volume, and file-host may put
       # nothing beside the socket (RX2 checks the directory holds only it).

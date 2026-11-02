@@ -21,18 +21,15 @@ use serde::{Deserialize, Serialize};
 pub mod env1;
 pub mod schema;
 
-pub use some_transport::DEV_HOST_NATS_URL;
-
 /// Where a binary reaches NATS.
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
 #[command(next_help_heading = "NATS")]
 pub struct NatsArgs {
 	/// The NATS server to connect to.
 	///
-	/// The default only works beside a NATS that publishes 4222 on the same
-	/// machine (a `cargo run` next to the compose stack). HOST-SPECIFIC: see
-	/// `some_transport::DEV_HOST_NATS_URL`. Every container sets it.
-	#[arg(long, env = "NATS_URL", default_value = DEV_HOST_NATS_URL)]
+	/// Required: no address is right on every host (#617). Compose's services
+	/// set theirs; `make dev` takes its role's.
+	#[arg(long, env = "NATS_URL", required = true)]
 	pub nats_url: String,
 }
 
@@ -47,20 +44,13 @@ pub struct LogArgs {
 	pub rust_log: String,
 }
 
-/// Where a binary's traces go and how many are kept.
+/// Where a binary's traces go.
 ///
-/// `OTEL_SERVICE_NAME` has no default here: each binary names itself with
-/// [`default_service_name`], so no two binaries' traces share a name by
-/// accident.
+/// The `service.name` traces carry is the binary's own name, and every trace
+/// is kept: both are constants of the binary, not variables (#617).
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
 #[command(next_help_heading = "Tracing")]
 pub struct OtelArgs {
-	/// The `service.name` traces are exported under. Leave it unset: it
-	/// defaults to the binary's own name, and a value in a `.env` that more
-	/// than one binary loads renames all of their traces.
-	#[arg(long, env = "OTEL_SERVICE_NAME")]
-	pub otel_service_name: String,
-
 	/// The OTLP (gRPC) collector traces are exported to, e.g.
 	/// `http://otel-collector:4317`. Unset, they are not exported at all:
 	/// nothing in the compose stack runs a collector, and metrics go through
@@ -68,34 +58,9 @@ pub struct OtelArgs {
 	#[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
 	pub otel_exporter_otlp_endpoint: Option<String>,
 
-	/// Which traces are kept: all (`always_on`), none (`always_off`), or the
-	/// share `OTEL_TRACES_SAMPLER_ARG` names (`traceidratio`).
-	#[arg(long, env = "OTEL_TRACES_SAMPLER", value_enum, default_value = "traceidratio")]
-	pub otel_traces_sampler: TraceSampler,
-
-	/// With `traceidratio`, the share of traces kept, from 0 to 1.
-	#[arg(long, env = "OTEL_TRACES_SAMPLER_ARG", default_value = "1", value_parser = parse_ratio)]
-	pub otel_traces_sampler_arg: f64,
-
 	/// The `service.environment` traces carry.
 	#[arg(long, env = "ENVIRONMENT", default_value = "development")]
 	pub environment: String,
-}
-
-/// `OTEL_TRACES_SAMPLER`'s values that are implemented, spelled as the
-/// OpenTelemetry spec spells them.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Serialize, Deserialize)]
-#[value(rename_all = "snake_case")]
-pub enum TraceSampler {
-	AlwaysOn,
-	AlwaysOff,
-	Traceidratio,
-}
-
-/// Gives [`OtelArgs`]' `OTEL_SERVICE_NAME` the binary's own name as its
-/// default, for `#[command(mut_arg("otel_service_name", default_service_name("file_host")))]`.
-pub fn default_service_name(name: &'static str) -> impl FnOnce(clap::Arg) -> clap::Arg {
-	move |arg| arg.default_value(name).required(false)
 }
 
 /// Rejects a filter `EnvFilter` can't parse, so a bad `RUST_LOG` is a clap
@@ -108,26 +73,13 @@ pub fn parse_filter(directives: &str) -> Result<String, tracing_subscriber::filt
 	tracing_subscriber::EnvFilter::try_new(directives).map(|_| directives.to_owned())
 }
 
-/// `OTEL_TRACES_SAMPLER_ARG`'s least value, for a binary's `schema::Bound`.
-pub const SAMPLER_ARG_MIN: f64 = 0.0;
-/// `OTEL_TRACES_SAMPLER_ARG`'s greatest value.
-pub const SAMPLER_ARG_MAX: f64 = 1.0;
-
-fn parse_ratio(ratio: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-	let ratio: f64 = ratio.parse()?;
-	if !(SAMPLER_ARG_MIN..=SAMPLER_ARG_MAX).contains(&ratio) {
-		return Err("must be from 0 to 1".into());
-	}
-	Ok(ratio)
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{default_service_name, LogArgs, NatsArgs, OtelArgs, DEV_HOST_NATS_URL};
+	use super::{LogArgs, NatsArgs, OtelArgs};
 	use clap::{CommandFactory, Parser};
 
 	#[derive(Parser)]
-	#[command(mut_arg("otel_service_name", default_service_name("probe")), mut_arg("rust_log", |arg| arg.default_value("probe=debug")))]
+	#[command(mut_arg("rust_log", |arg| arg.default_value("probe=debug")))]
 	struct Probe {
 		#[command(flatten)]
 		nats: NatsArgs,
@@ -143,11 +95,19 @@ mod tests {
 	}
 
 	#[test]
-	fn a_binary_names_itself_and_keeps_the_shared_defaults() {
-		let probe = Probe::try_parse_from(["probe"]).unwrap();
-		assert_eq!(probe.otel.otel_service_name, "probe");
+	fn a_binary_keeps_the_shared_defaults_and_sets_its_own() {
+		let probe = Probe::try_parse_from(["probe", "--nats-url", "nats://nats:4222"]).unwrap();
 		assert_eq!(probe.log.rust_log, "probe=debug");
-		assert_eq!(probe.nats.nats_url, DEV_HOST_NATS_URL);
+		assert_eq!(probe.nats.nats_url, "nats://nats:4222");
+	}
+
+	/// #617: no NATS is right on every host, so none is assumed.
+	#[test]
+	fn nats_url_is_required_and_has_no_default() {
+		let command = Probe::command();
+		let nats_url = command.get_arguments().find(|arg| arg.get_id() == "nats_url").unwrap();
+		assert!(nats_url.is_required_set());
+		assert!(nats_url.get_default_values().is_empty());
 	}
 
 	#[derive(Parser)]
@@ -251,15 +211,6 @@ mod tests {
 	/// again as part of its `Config`.
 	#[test]
 	fn every_variable_that_does_not_parse_is_refused_by_name() {
-		crate::env1::assert_every_variable_is_refused_by_name::<Probe>(
-			"probe",
-			&[
-				("RUST_LOG", "info,=[bad"),
-				("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
-				("OTEL_TRACES_SAMPLER_ARG", "half"),
-				("OTEL_TRACES_SAMPLER_ARG", "2"),
-			],
-			&["NATS_URL", "OTEL_SERVICE_NAME", "OTEL_EXPORTER_OTLP_ENDPOINT", "ENVIRONMENT"],
-		);
+		crate::env1::assert_every_variable_is_refused_by_name::<Probe>("probe", &[("RUST_LOG", "info,=[bad")], &["NATS_URL", "OTEL_EXPORTER_OTLP_ENDPOINT", "ENVIRONMENT"]);
 	}
 }
