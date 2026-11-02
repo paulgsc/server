@@ -14,6 +14,9 @@
 # `*_enabled` gauge at 1, and its value is the age of its last stamp. A
 # mailbox poller or nudge waker that is on with its stamp gone is its own
 # alert, and so is file_host itself not answering a scrape.
+#
+# home-health holds what /ready finds wrong with a file_host that is
+# answering: a degraded home serves, so the container healthcheck never says.
 groups:
   - name: home-watchers
     rules:
@@ -108,3 +111,27 @@ groups:
         labels:
           objective: RR2
           says: "A routine was due more than 30 minutes ago, and home has no record of its run."
+
+  - name: home-health
+    rules:
+      - alert: DatabaseBehindBuild
+        # AV2 (AS19, #565): the database is missing migrations this build's
+        # queries need. /ready is then degraded, not unavailable (AS15,
+        # #560), so the container stays healthy and only the queries that
+        # touch what the pending migrations add fail. A database never
+        # migrated at all trips this too; /ready's body says which it is.
+        #
+        # dependency_up is fresh without anyone asking /ready:
+        # metrics::periodic re-checks every dependency every 10 s. When
+        # sqlite itself is down, schema reads 0 as "not checked", so that
+        # case is left to sqlite's own answer rather than sent here as a
+        # migration to run. 5 minutes is past a deploy that applies the
+        # migrations and restarts (#563); a failed migrate that leaves the
+        # new binary serving is what this is for.
+        expr: |
+          max(dependency_up{dependency="schema"}) == 0
+          unless on() max(dependency_up{dependency="sqlite"}) == 0
+        for: 5m
+        labels:
+          objective: AV2
+          says: "Home's database has been behind this build for 5 minutes: /ready names the migrations to run."

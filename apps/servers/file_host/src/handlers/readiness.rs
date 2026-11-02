@@ -142,12 +142,48 @@ pub struct ReadinessResponse {
 #[axum::debug_handler]
 #[instrument(name = "readiness", skip_all)]
 pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<ReadinessResponse>) {
+	let dependencies = check_every_dependency(&state).await;
+	let verdict = Verdict::of(&dependencies);
+	let ready = verdict == Verdict::Ready;
+	let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+
+	(
+		status,
+		Json(ReadinessResponse {
+			ready,
+			status: verdict,
+			service: build_info::SERVICE,
+			version: env!("CARGO_PKG_VERSION"),
+			git_sha: build_info::git_sha_with_dirty_marker(),
+			built_at: build_info::BUILT_AT,
+			rust: build_info::RUSTC_VERSION,
+			dependencies,
+		}),
+	)
+}
+
+/// Sets `dependency_up` from a fresh check of every dependency, whether or not
+/// anyone asks `/ready`: `metrics::periodic` calls this on its sweep.
+///
+/// Before AS19 (#565) the gauges moved only when `/ready` was asked, which is
+/// the container healthcheck's doing and nothing this process controls: run
+/// without that healthcheck (`cargo run`, another compose file), the gauges
+/// held whatever the last ask found, or were never set, and
+/// `DatabaseBehindBuild` in `infra/prometheus/rules/home.yml` read that as
+/// the truth.
+pub async fn refresh_gauges(state: &AppState) {
+	check_every_dependency(state).await;
+}
+
+/// Every dependency's status, in the order `/ready` lists them, with each one's
+/// `dependency_up` gauge set from it.
+async fn check_every_dependency(state: &AppState) -> Vec<DependencyStatus> {
 	// `check_nats` is synchronous (a non-blocking state read, not a
 	// round-trip — see its own doc comment), so it isn't part of the join;
 	// only the three checks that can actually await something are run
 	// concurrently.
-	let nats = check_nats(&state);
-	let (sqlite, mut schema, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_schema(&state.core.shared_db), check_redis(&state));
+	let nats = check_nats(state);
+	let (sqlite, mut schema, redis) = tokio::join!(check_sqlite(&state.core.shared_db), check_schema(&state.core.shared_db), check_redis(state));
 
 	// An unreadable database can't have its migrations read either, and
 	// "schema: disk I/O error" next to "sqlite: disk I/O error" points at
@@ -168,24 +204,7 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readi
 	gauge!("dependency_up", "dependency" => "redis").set(f64::from(redis.healthy));
 	gauge!("dependency_up", "dependency" => "schema").set(f64::from(schema.healthy));
 
-	let dependencies = vec![sqlite, nats, redis, schema];
-	let verdict = Verdict::of(&dependencies);
-	let ready = verdict == Verdict::Ready;
-	let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-
-	(
-		status,
-		Json(ReadinessResponse {
-			ready,
-			status: verdict,
-			service: build_info::SERVICE,
-			version: env!("CARGO_PKG_VERSION"),
-			git_sha: build_info::git_sha_with_dirty_marker(),
-			built_at: build_info::BUILT_AT,
-			rust: build_info::RUSTC_VERSION,
-			dependencies,
-		}),
-	)
+	vec![sqlite, nats, redis, schema]
 }
 
 async fn check_sqlite(pool: &SqlitePool) -> DependencyStatus {
