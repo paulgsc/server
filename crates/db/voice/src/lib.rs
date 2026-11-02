@@ -32,6 +32,10 @@
 //!   [`Of::Lens`] or [`Of::Leetype`], each carries nothing beside the note,
 //!   as a Studio take does; what the phone wrote beside a soundbite or an
 //!   answer is `study_note_repo`'s, keyed by the phone's ids.
+//! - **A Rust Rounds note is a voice note** (paulgsc/some-ui#2237, RR6),
+//!   said for [`Of::RustRound`], its `ref` as [`is_rust_round_ref`] says,
+//!   and nothing beside it. Its audio is the one read back ([`audio_head`],
+//!   [`audio_body`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -66,6 +70,7 @@ pub mod set_aside;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use rust_round_repo::round::is_slug;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use sqlx::SqliteConnection;
@@ -118,10 +123,14 @@ pub enum Of {
 	/// What it answered and the points ticked are the answer's `study_note`,
 	/// which names the take by this note's id.
 	Leetype,
+	/// A note said on a Rust Rounds card (paulgsc/some-ui#2237, RR6), its
+	/// `ref` as [`is_rust_round_ref`] says.
+	#[serde(rename = "rust-round")]
+	RustRound,
 }
 
 impl Of {
-	const ALL: [Self; 8] = [
+	const ALL: [Self; 9] = [
 		Self::Reflection,
 		Self::Jobs,
 		Self::Scene,
@@ -130,6 +139,7 @@ impl Of {
 		Self::Soundbite,
 		Self::Lens,
 		Self::Leetype,
+		Self::RustRound,
 	];
 
 	/// The wire and stored name.
@@ -144,6 +154,7 @@ impl Of {
 			Self::Soundbite => "soundbite",
 			Self::Lens => "lens",
 			Self::Leetype => "leetype",
+			Self::RustRound => "rust-round",
 		}
 	}
 
@@ -392,6 +403,22 @@ pub fn is_note_id(id: &str) -> bool {
 	is_name(id, MAX_ID_CHARS) && !ROUTE_NAMES.contains(&id)
 }
 
+/// Whether `of_ref` names a Rust Rounds card, as a [`Of::RustRound`] note's does.
+///
+/// That is `<round>:<card>`, or `<round>:<card>:<note>` on a refine card,
+/// `<note>` the earlier note's id (which may itself hold `:`): a refine's new
+/// take names the note it refines, so the pair is home's record. The round
+/// and card are ids as a round has them (`rust_round_repo::round::is_slug`),
+/// within the rule every `ref` meets, which [`describe`] checks too.
+#[must_use]
+pub fn is_rust_round_ref(of_ref: &str) -> bool {
+	let mut parts = of_ref.splitn(3, ':');
+	let (Some(round), Some(card)) = (parts.next(), parts.next()) else {
+		return false;
+	};
+	is_slug(round) && is_slug(card) && parts.next().is_none_or(is_note_id)
+}
+
 /// Whether `text` is a non-empty name of at most `max` characters, each a
 /// letter, digit, `-`, `_`, `.` or `:`, as the phone's ids and stamps are.
 fn is_name(text: &str, max: usize) -> bool {
@@ -512,12 +539,22 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
-		problems.push(("of", "not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens or leetype"));
+		problems.push((
+			"of",
+			"not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens, leetype or rust-round",
+		));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
 	if of_ref.is_none() {
 		problems.push(("ref", "not which one: 1 to 200 letters, digits, '-', '_', '.' or ':'"));
 	}
+	let of_ref = match (of, of_ref) {
+		(Some(Of::RustRound), Some(of_ref)) if !is_rust_round_ref(of_ref) => {
+			problems.push(("ref", "not a Rust Rounds card: <round>:<card>, or <round>:<card>:<note> on a refine card"));
+			None
+		}
+		(_, of_ref) => of_ref,
+	};
 	let at = said.at.and_then(instant);
 	if at.is_none() {
 		problems.push(("at", "not an RFC 3339 instant"));
@@ -700,6 +737,72 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	Ok(Change::Added)
 }
 
+/// What home holds of a note's audio short of its bytes: its container and
+/// their SHA-256, enough to answer a read that already has them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioHead {
+	/// One of [`CONTENT_TYPES`].
+	pub content_type: &'static str,
+	/// The lowercase hex SHA-256 of its bytes, as [`Note::sha256`] has it.
+	pub sha256: String,
+}
+
+/// The head of `subject`'s note `note_id`'s audio when it is said for `of`.
+///
+/// `None` for a note the subject does not hold, another subject's included,
+/// and for one said for anything else. It reads no audio: [`audio_body`]
+/// does, under the same filter, only when the bytes are wanted.
+///
+/// Reads only. With [`audio_body`], its one caller is `file_host`'s
+/// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves
+/// [`Of::RustRound`] notes only, to a paired phone, so a refine card can play
+/// an earlier note the phone let go once home held it (the owner's D4 on
+/// paulgsc/some-ui#2237, 2026-10-29; docs/identity.md invariant 23).
+///
+/// # Errors
+/// [`VoiceError::Unreadable`] for a held container this crate would not have
+/// written, and [`VoiceError::Storage`] for any `sqlx` failure.
+pub async fn audio_head(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<AudioHead>, VoiceError> {
+	let of = of.as_str();
+	let row = sqlx::query!(
+		"SELECT content_type, sha256 FROM voice_note WHERE subject_id = ?1 AND note_id = ?2 AND of_kind = ?3",
+		subject,
+		note_id,
+		of
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	row
+		.map(|row| {
+			Ok(AudioHead {
+				content_type: container(&row.content_type).ok_or(VoiceError::Unreadable)?,
+				sha256: row.sha256,
+			})
+		})
+		.transpose()
+}
+
+/// The bytes of `subject`'s note `note_id`'s audio as the phone sent them,
+/// when it is said for `of`; `None` as [`audio_head`] has it.
+///
+/// # Errors
+/// [`VoiceError::Storage`] for any `sqlx` failure.
+pub async fn audio_body(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<Vec<u8>>, VoiceError> {
+	let of = of.as_str();
+	let body = sqlx::query_scalar!(
+		r#"SELECT audio.body
+		   FROM voice_note AS note
+		   JOIN voice_note_audio AS audio ON audio.subject_id = note.subject_id AND audio.note_id = note.note_id
+		   WHERE note.subject_id = ?1 AND note.note_id = ?2 AND note.of_kind = ?3"#,
+		subject,
+		note_id,
+		of
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(body)
+}
+
 /// The bite held beside `subject`'s game note `note_id`.
 ///
 /// # Errors
@@ -732,7 +835,9 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 
 #[cfg(test)]
 mod tests {
-	use super::{describe, is_note_id, put_note, whole, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
+	use super::{
+		audio_body, audio_head, describe, is_note_id, is_rust_round_ref, put_note, whole, AudioHead, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING,
+	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -746,6 +851,8 @@ mod tests {
 	/// The migration before `soundbite`, `lens` and `leetype` were a note's
 	/// kinds: the last before HF5's, whichever story's it is.
 	const BEFORE_TAKES: i64 = 20_261_101_000_400;
+	/// The migration before `rust-round` was a note's kind.
+	const BEFORE_RUST_ROUND: i64 = 20_261_101_002_600;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
@@ -1623,9 +1730,9 @@ mod tests {
 		}
 	}
 
-	/// A soundbite, a lens take and a `LeetType` answer are notes like any
-	/// other: each described for its kind, kept with its audio, carrying
-	/// nothing beside it, and never replaced.
+	/// A soundbite, a lens take, a `LeetType` answer and a Rust Rounds note
+	/// (RR6) are notes like any other: each described for its kind, kept with
+	/// its audio, carrying nothing beside it, and never replaced.
 	#[tokio::test]
 	async fn a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes() {
 		let pool = pool().await;
@@ -1633,6 +1740,7 @@ mod tests {
 			("s1", Of::Soundbite, "soundbite", "reminder"),
 			("l1", Of::Lens, "lens", "two-cups"),
 			("y1", Of::Leetype, "leetype", "two-sum.json:explain-1"),
+			("r1", Of::RustRound, "rust-round", "indexing-01:a"),
 		];
 		for (id, of, name, of_ref) in cases {
 			let said = describe(id, said_take(name, of_ref), b"said").unwrap();
@@ -1643,8 +1751,16 @@ mod tests {
 			assert!(matches!(put(&pool, A, &other, b"other").await, Err(VoiceError::Rewritten)), "{name}: never replaced");
 		}
 		let held: Vec<(String, String)> = sqlx::query_as("SELECT note_id, of_kind FROM voice_note ORDER BY note_id").fetch_all(&pool).await.unwrap();
-		assert_eq!(held, [("l1".into(), "lens".into()), ("s1".into(), "soundbite".into()), ("y1".into(), "leetype".into())]);
-		assert_eq!(rows(&pool, "voice_note_audio").await, 3);
+		assert_eq!(
+			held,
+			[
+				("l1".into(), "lens".into()),
+				("r1".into(), "rust-round".into()),
+				("s1".into(), "soundbite".into()),
+				("y1".into(), "leetype".into())
+			]
+		);
+		assert_eq!(rows(&pool, "voice_note_audio").await, 4);
 		assert_eq!(rows(&pool, "game_bite").await, 0, "none carries a bite");
 	}
 
@@ -1701,6 +1817,114 @@ mod tests {
 		put(&pool, A, &bite, b"said").await.unwrap();
 		assert!(MIGRATOR.undo(&pool, BEFORE_TAKES).await.is_err(), "a held soundbite refuses the rollback");
 		assert_eq!(rows(&pool, "voice_note").await, 3, "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
+	}
+
+	/// RR6 (paulgsc/some-ui#2237): a Rust Rounds note names its card, and on
+	/// a refine card the earlier note too; any other `ref` is refused for it,
+	/// and its rule binds no other kind.
+	#[test]
+	fn a_rust_round_note_names_its_card_and_what_it_refines() {
+		for good in ["indexing-01:a", "indexing-01:b-2:9f1c2d3e-0000-4000-8000-000000000001", "r:c:note:with:colons"] {
+			assert!(is_rust_round_ref(good), "{good}");
+			let note = describe("r1", said_take("rust-round", good), b"said").unwrap();
+			assert_eq!((note.of, note.of_ref.as_str()), (Of::RustRound, good));
+		}
+		for bad in [
+			"indexing-01",
+			"Indexing-01:a",
+			"indexing--01:a",
+			"indexing-01:",
+			":a",
+			"indexing-01:a:",
+			"indexing-01:a:on-drive",
+			"r/c",
+		] {
+			assert!(!is_rust_round_ref(bad), "{bad}");
+			let refused = describe("r1", said_take("rust-round", bad), b"said").unwrap_err();
+			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["ref"], "{bad}");
+		}
+		assert!(describe("l1", said_take("lens", "two-cups"), b"said").is_ok(), "the rule is Rust Rounds' alone");
+	}
+
+	/// A Rust Rounds note's audio is read back for its own subject only, and
+	/// only for that kind.
+	#[tokio::test]
+	async fn a_rust_round_notes_audio_is_read_back_by_its_subject_only() {
+		let pool = pool().await;
+		let said = describe("r1", said_take("rust-round", "indexing-01:a"), b"said").unwrap();
+		put(&pool, A, &said, b"said").await.unwrap();
+		let lens = describe("l1", said_take("lens", "two-cups"), b"lens").unwrap();
+		put(&pool, A, &lens, b"lens").await.unwrap();
+
+		let mut conn = pool.acquire().await.unwrap();
+		let head = audio_head(&mut conn, A, "r1", Of::RustRound).await.unwrap();
+		assert_eq!(
+			head,
+			Some(AudioHead {
+				content_type: "audio/webm",
+				sha256: said.sha256.clone()
+			})
+		);
+		assert_eq!(audio_body(&mut conn, A, "r1", Of::RustRound).await.unwrap(), Some(b"said".to_vec()));
+		for (subject, id, why) in [
+			(B, "r1", "another subject's note is not theirs"),
+			(A, "nope", "an unknown note"),
+			(A, "l1", "a note of another kind is not read"),
+		] {
+			assert_eq!(audio_head(&mut conn, subject, id, Of::RustRound).await.unwrap(), None, "{why}");
+			assert_eq!(audio_body(&mut conn, subject, id, Of::RustRound).await.unwrap(), None, "{why}");
+		}
+	}
+
+	/// The rebuild that widened `voice_note` for `rust-round` keeps every note
+	/// held before it, still append-only, still indexed, still leaving with
+	/// the account; going back refuses once a Rust Rounds note is held.
+	#[tokio::test]
+	async fn the_notes_rebuilt_for_rust_rounds_keep_what_was_held_before() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_RUST_ROUND).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'early', 'rust-round', 'r:c', 'then', 'audio/webm', 1, 'abc', 'now')",
+			)
+			.bind(A)
+			.execute(&pool)
+			.await
+			.is_err(),
+			"before the rebuild a Rust Rounds note is refused"
+		);
+		let lens = describe("l1", said_take("lens", "two-cups"), b"lens").unwrap();
+		put(&pool, A, &lens, b"lens").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let held: Vec<(String, String, String)> = sqlx::query_as("SELECT note_id, of_kind, sha256 FROM voice_note ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(held, [("l1".into(), "lens".into(), lens.sha256.clone())]);
+		let refused = sqlx::query("UPDATE voice_note SET of_ref = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+		let index: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'voice_note_by_stored_at'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(index, 1, "the transcriber's index is back");
+
+		let said = describe("r1", said_take("rust-round", "indexing-01:a"), b"said").unwrap();
+		put(&pool, A, &said, b"said").await.unwrap();
+		assert!(MIGRATOR.undo(&pool, BEFORE_RUST_ROUND).await.is_err(), "a held Rust Rounds note refuses the rollback");
+		assert_eq!(rows(&pool, "voice_note").await, 2, "and nothing went");
 
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");

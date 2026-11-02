@@ -17,18 +17,29 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
+//! **The one way audio leaves home** (docs/identity.md invariant 23):
+//! [`get_audio`] is the only caller of `voice_repo::audio_head` and
+//! `voice_repo::audio_body`, and its span
+//! skips every argument.
+//!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 
-use crate::subject::SubjectId;
+use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
+use crate::subject::{Paired, SubjectId};
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
 	extract::{Path, Query, State},
-	http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
+	http::{
+		header::{CONTENT_TYPE, ETAG},
+		HeaderMap, StatusCode,
+	},
+	response::{IntoResponse, Response},
 	Json,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -36,7 +47,7 @@ use tracing::instrument;
 use voice_repo::{
 	set_aside::SetAside,
 	transcript::{Hearing, Transcript},
-	Note, Said, SaidBite, VoiceError, REWRITTEN,
+	Note, Of, Said, SaidBite, VoiceError, REWRITTEN,
 };
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
@@ -234,6 +245,70 @@ pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id
 	Ok(Json(NoteHeard { heard }))
 }
 
+/// `GET /voice-notes/:id/audio`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAudio {
+	/// The phone's id for the note.
+	pub id: String,
+	/// Its container, one of `voice_repo::CONTENT_TYPES`.
+	pub content_type: &'static str,
+	/// The lowercase hex SHA-256 of its bytes, which the phone checks before
+	/// it plays or keeps them.
+	pub sha256: String,
+	/// Its bytes as the phone sent them, as standard base64.
+	pub audio: String,
+}
+
+/// `GET /voice-notes/:id/audio`
+///
+/// The caller's Rust Rounds note `id` back from home, for the reason
+/// `voice_repo::audio_head` gives.
+///
+/// The audio comes inside JSON, as base64 beside its container and SHA-256,
+/// because the phone reads every answer from home as text
+/// (paulgsc/some-ui `lib/device-backend/native-http`). Its `ETag` is the
+/// note's SHA-256: a note is never rewritten, so the tag never changes, and
+/// `If-None-Match` naming it answers `304`.
+///
+/// Reads only; it writes nothing and sends nothing elsewhere.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's (only a paired phone reads a
+/// note's audio), 404 for a note the caller's subject does not hold
+/// (another subject's included) and for one said for anything but
+/// `rust-round`, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_audio_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let subject = paired.subject.as_str();
+	let head = voice_repo::audio_head(&mut conn, subject, &id, Of::RustRound)
+		.await
+		.map_err(refusal)?
+		.ok_or(FileHostError::NotFound)?;
+	let etag = etag_value(&head.sha256)?;
+	// Decided from the head, so a 304 reads no audio.
+	if if_none_match_hits(&headers, &etag) {
+		return Ok(not_modified(etag));
+	}
+	// The note is append-only, so a body missing here is a store that does
+	// not read back, not a race.
+	let body = voice_repo::audio_body(&mut conn, subject, &id, Of::RustRound)
+		.await
+		.map_err(refusal)?
+		.ok_or(FileHostError::OperationError("a stored voice note does not read back".to_owned()))?;
+	let mut response = Json(NoteAudio {
+		id,
+		content_type: head.content_type,
+		sha256: head.sha256,
+		audio: STANDARD.encode(&body),
+	})
+	.into_response();
+	response.headers_mut().insert(ETAG, etag);
+	Ok(response)
+}
+
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
 #[derive(Debug, Deserialize)]
 pub struct SetAsideQuery {
@@ -386,7 +461,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 4);
+		assert_eq!(module().descriptors().count(), 5);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -713,6 +788,54 @@ mod tests {
 		assert_eq!(audio, TAKE);
 		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, heard), "its transcript is kept");
 		assert_eq!(put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await.1["change"], "unchanged");
+	}
+
+	/// RR6 (paulgsc/some-ui#2237, D4): a paired phone reads its own Rust
+	/// Rounds note's audio back, byte for byte, with the note's SHA-256 as the
+	/// `ETag` and a `304` for it. No session is a 401, a browser's a 403, and
+	/// another subject's note a 404. Which notes are read is `voice_repo`'s
+	/// tests.
+	#[tokio::test]
+	async fn a_paired_phone_reads_its_own_rust_round_notes_audio_back() {
+		use axum::http::header::{ETAG, IF_NONE_MATCH};
+		use base64::{engine::general_purpose::STANDARD, Engine};
+		const ROUND_NOTE: &str = "/voice-notes/r1?of=rust-round&ref=indexing-01:a&at=2026-11-02T18:20:00Z";
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let (status, answer) = put(&app, ROUND_NOTE, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+
+		let (status, body) = get(&app, "/voice-notes/r1/audio", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(
+			body,
+			json!({ "id": "r1", "contentType": "audio/webm", "sha256": TAKE_SHA256, "audio": STANDARD.encode(TAKE) })
+		);
+		let request = |headers: &[(HeaderName, &str)]| {
+			let mut request = Request::builder().method(Method::GET).uri("/voice-notes/r1/audio");
+			for (name, value) in headers {
+				request = request.header(name, *value);
+			}
+			request.body(Body::empty()).unwrap()
+		};
+		let response = app.clone().oneshot(request(&[(phone.0.clone(), phone.1.as_str())])).await.unwrap();
+		let etag = String::from("\"") + TAKE_SHA256 + "\"";
+		assert_eq!(response.headers()[ETAG], etag.as_str());
+		let response = app
+			.clone()
+			.oneshot(request(&[(phone.0.clone(), phone.1.as_str()), (IF_NONE_MATCH, etag.as_str())]))
+			.await
+			.unwrap();
+		assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+		assert_eq!(response.headers()[ETAG], etag.as_str());
+
+		assert_eq!(get(&app, "/voice-notes/r1/audio", None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, "/voice-notes/r1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		let (status, hidden) = get(&app, "/voice-notes/r1/audio", Some(&other)).await;
+		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to hear: {hidden}");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

@@ -643,8 +643,9 @@ pub struct Heard {
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
 /// not heard, is never one: the routine reads that from the absence. Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
-/// `scene`, `studio`), as the mailbox's `transcript` folder takes no other
-/// `of`: a game bite leaves home only inside the weekly bundle
+/// `scene`, `studio`, and `rust-round`, which a Rust Rounds tutor reads:
+/// paulgsc/some-ui#2237, RR6), as the mailbox's `transcript` folder takes no
+/// other `of`: a game bite leaves home only inside the weekly bundle
 /// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
 /// `LeetType` spoken answer never does, since no routine reads them
 /// (paulgsc/some-ui#2180, HF5; docs/identity.md invariant 19). Nor is a
@@ -669,7 +670,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round')
 		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
@@ -1788,28 +1789,34 @@ mod tests {
 		);
 	}
 
-	/// A Studio take's transcript is filed as any note's is, said for
-	/// `studio` (paulgsc/server#552).
+	/// A Studio take's transcript (paulgsc/server#552) and a Rust Rounds
+	/// note's (paulgsc/some-ui#2237, RR6: the tutor reads what was said on
+	/// each card) are filed as any note's is, said for their kind and `ref`.
 	#[tokio::test]
-	async fn a_studio_takes_transcript_is_filed_like_any_note() {
-		let pool = pool().await;
-		sqlx::query(
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, 't1', 'studio', 'build-journal-ep04:s3:2', '2026-10-30T18:20:00.000Z', 'audio/mp4', 1, 's', 'now')",
-		)
-		.bind(A)
-		.execute(&pool)
-		.await
-		.unwrap();
-		heard(&pool, A, ("t1", "small", 1), "heard", Some("shot three, take two"), "2026-10-30T18:22:00.000Z").await;
-		let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
-		assert_eq!(
-			all
-				.iter()
-				.map(|heard| (heard.note_id.as_str(), heard.of_kind.as_str(), heard.of_ref.as_str()))
-				.collect::<Vec<_>>(),
-			[("t1", "studio", "build-journal-ep04:s3:2")]
-		);
+	async fn a_studio_take_or_a_rust_round_notes_transcript_is_filed_like_any_note() {
+		for (id, of_kind, of_ref) in [("t1", "studio", "build-journal-ep04:s3:2"), ("r1", "rust-round", "indexing-01:refine-a:n0")] {
+			let pool = pool().await;
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, '2026-10-30T18:20:00.000Z', 'audio/mp4', 1, 's', 'now')",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(of_kind)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			heard(&pool, A, (id, "small", 1), "heard", Some("something said"), "2026-10-30T18:22:00.000Z").await;
+			let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
+			assert_eq!(
+				all
+					.iter()
+					.map(|heard| (heard.note_id.as_str(), heard.of_kind.as_str(), heard.of_ref.as_str()))
+					.collect::<Vec<_>>(),
+				[(id, of_kind, of_ref)]
+			);
+		}
 	}
 
 	#[tokio::test]

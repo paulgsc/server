@@ -192,8 +192,9 @@ fn lines(program: &str) -> Vec<&str> {
 }
 
 /// Lower-case letters and digits in words joined by single hyphens, as the
-/// format's ids are.
-fn is_slug(id: &str) -> bool {
+/// format's ids are. `voice_repo` names a Rust Rounds note's card by it too.
+#[must_use]
+pub fn is_slug(id: &str) -> bool {
 	!id.is_empty()
 		&& id.chars().count() <= MAX_ID_CHARS
 		&& id

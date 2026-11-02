@@ -765,8 +765,9 @@ nowhere is marked as such and belongs to review.
       files nothing.
       The poller files each `voice_transcript` row that heard something
       (never a failure or a silence) of a note said for `reflection`, `jobs`,
-      `scene` or `studio`, the kinds a routine reads and the mailbox's
-      `transcript` folder takes (never a game bite, a soundbite, a
+      `scene`, `studio` or `rust-round` (a Rust Rounds tutor reads what was
+      said on each card; paulgsc/some-ui#2237), the kinds a routine reads and
+      the mailbox's `transcript` folder takes (never a game bite, a soundbite, a
       grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
       and never of a note but a Jobs note the owner set aside before it was
       filed (`voice_note_set_aside`, invariant 23, read again in the
@@ -1048,7 +1049,8 @@ nowhere is marked as such and belongs to review.
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
-    `scene`, `game`, `studio`, `soundbite`, `lens` or `leetype`) and which one, when the phone recorded it and when it reached
+    `scene`, `game`, `studio`, `soundbite`, `lens`, `leetype` or
+    `rust-round`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -1097,7 +1099,15 @@ nowhere is marked as such and belongs to review.
     tables (`20261101000500_add_takes_to_voice_note`); what the phone wrote
     beside a soundbite or an answer is `study_note`'s (invariant 30). Each is
     heard by the transcriber like every note, and none has its transcript
-    filed for the mailbox: no routine reads them (invariant 19). `voice_note` and `voice_note_audio` are the only place home
+    filed for the mailbox: no routine reads them (invariant 19). **A Rust
+    Rounds note is a voice note** too (paulgsc/some-ui#2237, RR6, under
+    HOME-FIRST's D1): said for `rust-round`, its `ref` the card as
+    `<round>:<card>`, or on a refine card `<round>:<card>:<note>`, naming the
+    earlier note it brings back, so the pair is home's record
+    (`voice_repo::is_rust_round_ref`; any other `ref` is a `422`). It
+    carries nothing beside it (`20261102000100_add_rust_round_to_voice_note`),
+    is heard by the transcriber like every note, and has its transcript
+    filed for the mailbox like a Studio take's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -1106,8 +1116,19 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line; its audio is
-    readable by no route yet, and the routes that read its row,
+    so neither the audio nor its hash reaches a log line. **Its audio is
+    read back by one route, for Rust Rounds notes only** (the owner's D4 on
+    paulgsc/some-ui#2237, 2026-10-29: home gives a note's audio back to the
+    phone, for refine cards and replay): `GET /voice-notes/:id/audio`, a
+    `Paired` phone's (a browser's session is a `403`), answers the caller's
+    own subject's `rust-round` note `id` with its container, SHA-256 and
+    bytes as base64, the SHA-256 its `ETag`; another subject's note, one
+    home does not hold and a note said for any other kind are each a `404`,
+    so no other kind's audio leaves home. It reads only, its span skips every
+    argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
+    no other caller; a `304` is decided from the head, so it reads no audio.
+    The routes that
+    read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
     (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
     (invariant 32), read only whether the caller's subject holds it, and,
@@ -1244,8 +1265,9 @@ nowhere is marked as such and belongs to review.
     reading of each `studio` note an idea's answer names, inside
     `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
     subject only, by the same `voice_repo::transcript::heard`. The words
-    are readable by no route yet, and the audio never
-    leaves. A probability is not text, so
+    are readable by no route yet, and the audio leaves home only through
+    `GET /voice-notes/:id/audio`, to its own subject's paired phone, for a
+    `rust-round` note (above). A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
@@ -1259,8 +1281,16 @@ nowhere is marked as such and belongs to review.
     `a_note_said_for_anything_else_carries_no_bite`,
     `the_schema_refuses_a_bite_that_breaks_its_rules` and
     `the_rebuilt_notes_keep_what_was_held_before`, and for HF5's kinds
-    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` and
-    `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Drive's
+    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` (a Rust
+    Rounds note among them) and
+    `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Rust
+    Rounds notes `a_rust_round_note_names_its_card_and_what_it_refines`,
+    `a_rust_round_notes_audio_is_read_back_by_its_subject_only`
+    and `the_notes_rebuilt_for_rust_rounds_keep_what_was_held_before`,
+    `mailbox_repo`'s
+    `a_studio_take_or_a_rust_round_notes_transcript_is_filed_like_any_note`
+    and `handlers::voice`'s
+    `a_paired_phone_reads_its_own_rust_round_notes_audio_back`, and for Drive's
     word `voice_repo::on_drive`'s
     `only_the_subjects_own_studio_takes_a_list_names_are_recorded_once`,
     `no_row_is_ever_updated_and_rows_leave_with_the_account`,
