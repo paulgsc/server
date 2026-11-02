@@ -1134,7 +1134,18 @@ nowhere is marked as such and belongs to review.
     (invariant 32), read only whether the caller's subject holds it, and,
     for an idea, whether it is a `studio` note and whether it was set aside;
     and it is deleted with the account by both the sweep and
-    the migration's trigger (invariant 12).
+    the migration's trigger (invariant 12). `GET /voice-notes/kept`
+    (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's
+    session is a `403`), reads the caller's own subject's rows and
+    set-aside marks for the phone's My data page: how many notes of each
+    kind, their summed `size`, how many were set aside and the earliest
+    `recorded_at`; what reached home each week, by `stored_at`; and, with
+    `of`, that kind's newest notes (at most 50), each with its id,
+    `recorded_at`, `stored_at`, `size` and set-aside time
+    (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
+    audio, no `ref`, no bite and no transcript, and its span skips every
+    argument. Its name, like `on-drive`'s, is never a note's id
+    (`voice_repo::is_note_id`).
 
     **Home's word that Drive holds a Studio take too is
     `studio_take_on_drive`, append-only, and comes from the mailbox, never
@@ -1313,7 +1324,13 @@ nowhere is marked as such and belongs to review.
     and `handlers::voice`'s
     `the_phone_sets_its_own_note_aside_once_and_home_keeps_it`, and for
     the text read back `handlers::voice`'s
-    `the_phone_reads_back_what_home_heard_in_its_note`; `voice_repo::transcript`'s
+    `the_phone_reads_back_what_home_heard_in_its_note`, and for what home
+    keeps `voice_repo::kept`'s
+    `home_counts_each_kind_its_room_and_what_was_set_aside_for_its_subject_only`,
+    `what_reached_home_is_summed_by_the_week_it_arrived` and
+    `a_kinds_newest_notes_come_first_and_stop_at_the_cap`, and
+    `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`;
+    `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
