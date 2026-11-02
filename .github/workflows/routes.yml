@@ -241,10 +241,10 @@ jobs:
       # routes), which the harness sends as a bearer for its `paired`
       # contracts; and a held LeetType session file for that subject and one
       # for another subject, so a contract can fetch a file, its ETag and
-      # the 304, and another subject's file is a 404 (#590). It exports both
-      # sessions (CONTRACT_SESSION_COOKIE, CONTRACT_PHONE_TOKEN) and the
-      # files' names to the harness step, masking each session before it is
-      # written anywhere. AUTH_OPEN_SIGNUP is on because sign-up closes once an
+      # the 304, and another subject's file is a 404 (#590). The step makes
+      # both sessions' tokens and masks them before anything else runs, then
+      # exports them (CONTRACT_SESSION_COOKIE, CONTRACT_PHONE_TOKEN) beside the
+      # files' names the seed exports. AUTH_OPEN_SIGNUP is on because sign-up closes once an
       # account exists, and the `auth.register_start` contract expects an
       # open server's options. RATE_LIMIT is per client per minute, and the
       # harness is one client making about sixty requests in a few seconds.
@@ -256,7 +256,19 @@ jobs:
           db="$RUNNER_TEMP/file_host.db"
           cp contract-run/file_host.db "$db"
           python3 server/scripts/seed_contract_run.py --self-test
-          python3 server/scripts/seed_contract_run.py "$db" --subject "$SUBJECT"
+          # The two credentials are made and masked here, before anything
+          # can print them; the seed only stores their digests.
+          token() { head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='; }
+          cookie=$(token)
+          phone=$(token)
+          echo "::add-mask::$cookie"
+          echo "::add-mask::$phone"
+          CONTRACT_SESSION_COOKIE="$cookie" CONTRACT_PHONE_TOKEN="$phone" \
+            python3 server/scripts/seed_contract_run.py "$db" --subject "$SUBJECT"
+          {
+            echo "CONTRACT_SESSION_COOKIE=$cookie"
+            echo "CONTRACT_PHONE_TOKEN=$phone"
+          } >> "$GITHUB_ENV"
 
           chmod +x contract-run/file_host
           env DATABASE_URL="sqlite://$db" NATS_URL=nats://127.0.0.1:4222 REDIS_URL=redis://127.0.0.1:6379 \

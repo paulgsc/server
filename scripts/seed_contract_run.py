@@ -28,13 +28,13 @@ per-person contracts need in it, the same rows the server would write:
   cross-subject `404`. Every value is fixed, so a contract may name them
   literally; they are also exported (below).
 
-What it exports, to `$GITHUB_ENV` (or `--github-env`), for the harness step:
-`CONTRACT_SESSION_COOKIE`, `CONTRACT_PHONE_TOKEN`, and
-`CONTRACT_LEETYPE_FILE`, `CONTRACT_LEETYPE_FILE_SHA256` and
-`CONTRACT_LEETYPE_OTHER_FILE`. The cookie and the phone's token are
-credentials: neither is printed, and an `::add-mask::` for each is written to
-stdout before it is written anywhere, so a later step that echoes one shows
-`***`.
+The two credentials, the browser's cookie and the phone's token, are made
+and masked by the workflow step and handed in as `CONTRACT_SESSION_COOKIE`
+and `CONTRACT_PHONE_TOKEN` (base64url, as a client holds them). This only
+stores their digests, so it never prints, logs or writes either one. What
+it exports, to `$GITHUB_ENV` (or `--github-env`), for the harness step is
+what is not a secret: `CONTRACT_LEETYPE_FILE`, `CONTRACT_LEETYPE_FILE_SHA256`
+and `CONTRACT_LEETYPE_OTHER_FILE`.
 
 `--self-test` seeds a database built from `migrations/*.up.sql` and checks
 each row reads back the way the server reads it (the same SQL for the
@@ -57,9 +57,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS = REPO_ROOT / "migrations"
@@ -121,9 +119,12 @@ OTHER_BODY = wrapped(session_file("Contract harness: another subject's file"))
 HELD_SHA256 = hashlib.sha256(HELD_BODY).hexdigest()
 
 
-def encoded(token: bytes) -> str:
-	"""A token as the client holds it (`SessionToken::encoded`)."""
-	return base64.urlsafe_b64encode(token).rstrip(b"=").decode()
+def decoded(token: str) -> bytes:
+	"""A 32-byte token from the base64url a client holds (`SessionToken::encoded`)."""
+	raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+	if len(raw) != 32:
+		raise ValueError("a session token is 32 bytes")
+	return raw
 
 
 def browser_hash(token: bytes) -> bytes:
@@ -136,22 +137,12 @@ def phone_hash(token: bytes) -> bytes:
 	return hashlib.sha256(PHONE_DOMAIN + token).digest()
 
 
-@dataclass(frozen=True)
-class Seeded:
-	cookie: str
-	phone_token: str
-
-	def secrets(self) -> list[str]:
-		return [self.cookie, self.phone_token]
-
-	def env(self) -> dict[str, str]:
-		return {
-			"CONTRACT_SESSION_COOKIE": self.cookie,
-			"CONTRACT_PHONE_TOKEN": self.phone_token,
-			"CONTRACT_LEETYPE_FILE": HELD_FILE,
-			"CONTRACT_LEETYPE_FILE_SHA256": HELD_SHA256,
-			"CONTRACT_LEETYPE_OTHER_FILE": OTHER_FILE,
-		}
+# What the harness step reads besides the two credentials: none is a secret.
+EXPORTS = {
+	"CONTRACT_LEETYPE_FILE": HELD_FILE,
+	"CONTRACT_LEETYPE_FILE_SHA256": HELD_SHA256,
+	"CONTRACT_LEETYPE_OTHER_FILE": OTHER_FILE,
+}
 
 
 def hold(db: sqlite3.Connection, subject: str, name: str, seq: int, body: bytes) -> None:
@@ -163,12 +154,12 @@ def hold(db: sqlite3.Connection, subject: str, name: str, seq: int, body: bytes)
 	)
 
 
-def seed(db: sqlite3.Connection, subject: str, now: int, random: Callable[[int], bytes] = os.urandom) -> Seeded:
+def seed(db: sqlite3.Connection, subject: str, now: int, cookie: bytes, phone: bytes, random: Callable[[int], bytes] = os.urandom) -> None:
 	"""Write every seeded row for `subject` in one transaction."""
 	if subject == OTHER_SUBJECT:
 		raise ValueError("the subject must not be OTHER_SUBJECT, whose file is the cross-subject 404")
-	cookie = random(32)
-	phone = random(32)
+	if cookie == phone:
+		raise ValueError("the cookie and the phone's token must differ")
 	expires_at = now + SESSION_SECONDS
 	with db:
 		db.execute("INSERT INTO account (subject_id, user_handle) VALUES (?, ?)", (subject, random(16)))
@@ -182,15 +173,12 @@ def seed(db: sqlite3.Connection, subject: str, now: int, random: Callable[[int],
 		)
 		hold(db, subject, HELD_FILE, 1, HELD_BODY)
 		hold(db, OTHER_SUBJECT, OTHER_FILE, 1, OTHER_BODY)
-	return Seeded(cookie=encoded(cookie), phone_token=encoded(phone))
 
 
-def export(seeded: Seeded, github_env: Path, out: TextIO) -> None:
-	"""Mask every secret on `out`, then append the env lines to `github_env`."""
-	for secret in seeded.secrets():
-		print("::add-mask::" + secret, file=out, flush=True)
+def export(github_env: Path) -> None:
+	"""Append `EXPORTS` to `github_env`."""
 	with github_env.open("a", encoding="utf-8") as env:
-		for key, value in seeded.env().items():
+		for key, value in EXPORTS.items():
 			env.write(key + "=" + value + "\n")
 
 
@@ -270,22 +258,22 @@ def self_test() -> None:
 	now = 1_800_000_000
 	with tempfile.TemporaryDirectory() as tmp:
 		db = migrated(Path(tmp) / "seed.db")
-		seeded = seed(db, subject, now, counter())
+		# As the workflow hands them in: base64url, as a client holds them.
+		cookie_text = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
+		phone_text = base64.urlsafe_b64encode(bytes(range(32, 64))).rstrip(b"=").decode()
+		cookie, phone = decoded(cookie_text), decoded(phone_text)
+		seed(db, subject, now, cookie, phone, counter())
 
 		# The only account is the subject's: the owner, and nobody else.
 		assert db.execute("SELECT subject_id FROM account").fetchall() == [(subject,)]
 
 		# The browser session opens with the cookie, as `live_session` reads it.
-		cookie = base64.urlsafe_b64decode(seeded.cookie + "=" * (-len(seeded.cookie) % 4))
-		assert len(cookie) == 32
 		live = "SELECT subject_id FROM auth_session WHERE token_hash = ? AND expires_at > ?"
 		assert db.execute(live, (hashlib.sha256(cookie).digest(), now)).fetchall() == [(subject,)]
 
 		# The phone's session opens with its token as a bearer, for the same
 		# subject, and its token as a cookie opens nothing: what lets
 		# `subject::Paired` tell a phone from a browser.
-		phone = base64.urlsafe_b64decode(seeded.phone_token + "=" * (-len(seeded.phone_token) % 4))
-		assert len(phone) == 32 and phone != cookie
 		assert db.execute(live, (hashlib.sha256(b"some-ui paired phone session\x00" + phone).digest(), now)).fetchall() == [(subject,)]
 		assert db.execute(live, (hashlib.sha256(phone).digest(), now)).fetchall() == []
 		assert db.execute(live, (phone_hash(cookie), now)).fetchall() == []
@@ -313,33 +301,26 @@ def self_test() -> None:
 
 		# A second seed meets the first's rows and fails, never replaces them.
 		try:
-			seed(db, subject, now, counter(100))
+			seed(db, subject, now, cookie, phone, counter(100))
 		except sqlite3.IntegrityError:
 			pass
 		else:
 			raise AssertionError("a second seed replaced the first")
 
-		# Exports: each secret masked on stdout before it is in the env file,
-		# and never printed otherwise.
+		# A token that is not 32 bytes is refused before anything is written.
+		try:
+			decoded("c2hvcnQ")
+		except ValueError:
+			pass
+		else:
+			raise AssertionError("a short token was taken")
+
+		# Exports: only what is not a secret, never a credential.
 		env_file = Path(tmp) / "github_env"
-
-		class Out:
-			def __init__(self) -> None:
-				self.lines: list[str] = []
-
-			def write(self, text: str) -> int:
-				assert not env_file.exists(), "a secret reached the env file before its mask"
-				self.lines.append(text)
-				return len(text)
-
-			def flush(self) -> None:
-				pass
-
-		out = Out()
-		export(seeded, env_file, out)  # type: ignore[arg-type]
-		printed = "".join(out.lines).splitlines()
-		assert printed == ["::add-mask::" + secret for secret in seeded.secrets()], printed
-		assert env_file.read_text(encoding="utf-8").splitlines() == [key + "=" + value for key, value in seeded.env().items()]
+		export(env_file)
+		written = env_file.read_text(encoding="utf-8")
+		assert written.splitlines() == [key + "=" + value for key, value in EXPORTS.items()]
+		assert cookie_text not in written and phone_text not in written
 		db.close()
 	print("self-test passed")
 
@@ -357,13 +338,17 @@ def main() -> int:
 	if args.db is None or args.subject is None:
 		parser.error("give the database and --subject, or --self-test")
 	if args.github_env is None:
-		parser.error("no $GITHUB_ENV: pass --github-env, so no credential is printed")
+		parser.error("no $GITHUB_ENV: pass --github-env")
 	if not args.db.is_file():
 		parser.error(f"{args.db} does not exist")
+	tokens = [os.environ.get(name) for name in ("CONTRACT_SESSION_COOKIE", "CONTRACT_PHONE_TOKEN")]
+	if None in tokens:
+		parser.error("set CONTRACT_SESSION_COOKIE and CONTRACT_PHONE_TOKEN (the workflow step makes and masks them)")
+	cookie, phone = (decoded(token) for token in tokens if token is not None)
 	db = sqlite3.connect(args.db)
-	seeded = seed(db, args.subject, int(time.time()))
+	seed(db, args.subject, int(time.time()), cookie, phone)
 	db.close()
-	export(seeded, args.github_env, sys.stdout)
+	export(args.github_env)
 	print(f"seeded {args.subject} with a browser and a phone session and {HELD_FILE}, and {OTHER_SUBJECT} with {OTHER_FILE}")
 	return 0
 
