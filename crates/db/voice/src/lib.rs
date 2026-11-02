@@ -34,7 +34,8 @@
 //!   answer is `study_note_repo`'s, keyed by the phone's ids.
 //! - **A Rust Rounds note is a voice note** (paulgsc/some-ui#2237, RR6),
 //!   said for [`Of::RustRound`], its `ref` as [`is_rust_round_ref`] says,
-//!   and nothing beside it. Its audio is the one read back ([`audio`]).
+//!   and nothing beside it. Its audio is the one read back ([`audio_head`],
+//!   [`audio_body`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -736,34 +737,60 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	Ok(Change::Added)
 }
 
-/// A note's audio as home holds it: its container, the SHA-256 of its
-/// bytes, and the bytes as the phone sent them.
+/// What home holds of a note's audio short of its bytes: its container and
+/// their SHA-256, enough to answer a read that already has them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Audio {
+pub struct AudioHead {
 	/// One of [`CONTENT_TYPES`].
 	pub content_type: &'static str,
-	/// The lowercase hex SHA-256 of `body`, as [`Note::sha256`] has it.
+	/// The lowercase hex SHA-256 of its bytes, as [`Note::sha256`] has it.
 	pub sha256: String,
-	pub body: Vec<u8>,
 }
 
-/// The audio of `subject`'s note `note_id` when it is said for `of`; `None`
-/// for a note the subject does not hold, another subject's included, and for
-/// one said for anything else.
+/// The head of `subject`'s note `note_id`'s audio when it is said for `of`.
 ///
-/// Reads only. Its one caller is `file_host`'s `handlers::voice`
-/// (`GET /api/v1/voice-notes/:id/audio`), which serves [`Of::RustRound`]
-/// notes only, to a paired phone, so a refine card can play an earlier note
-/// the phone let go once home held it (the owner's D4 on
+/// `None` for a note the subject does not hold, another subject's included,
+/// and for one said for anything else. It reads no audio: [`audio_body`]
+/// does, under the same filter, only when the bytes are wanted.
+///
+/// Reads only. With [`audio_body`], its one caller is `file_host`'s
+/// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves
+/// [`Of::RustRound`] notes only, to a paired phone, so a refine card can play
+/// an earlier note the phone let go once home held it (the owner's D4 on
 /// paulgsc/some-ui#2237, 2026-10-29; docs/identity.md invariant 23).
 ///
 /// # Errors
 /// [`VoiceError::Unreadable`] for a held container this crate would not have
 /// written, and [`VoiceError::Storage`] for any `sqlx` failure.
-pub async fn audio(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<Audio>, VoiceError> {
+pub async fn audio_head(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<AudioHead>, VoiceError> {
 	let of = of.as_str();
 	let row = sqlx::query!(
-		r#"SELECT note.content_type, note.sha256, audio.body
+		"SELECT content_type, sha256 FROM voice_note WHERE subject_id = ?1 AND note_id = ?2 AND of_kind = ?3",
+		subject,
+		note_id,
+		of
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	row
+		.map(|row| {
+			Ok(AudioHead {
+				content_type: container(&row.content_type).ok_or(VoiceError::Unreadable)?,
+				sha256: row.sha256,
+			})
+		})
+		.transpose()
+}
+
+/// The bytes of `subject`'s note `note_id`'s audio as the phone sent them,
+/// when it is said for `of`; `None` as [`audio_head`] has it.
+///
+/// # Errors
+/// [`VoiceError::Storage`] for any `sqlx` failure.
+pub async fn audio_body(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<Vec<u8>>, VoiceError> {
+	let of = of.as_str();
+	let body = sqlx::query_scalar!(
+		r#"SELECT audio.body
 		   FROM voice_note AS note
 		   JOIN voice_note_audio AS audio ON audio.subject_id = note.subject_id AND audio.note_id = note.note_id
 		   WHERE note.subject_id = ?1 AND note.note_id = ?2 AND note.of_kind = ?3"#,
@@ -773,15 +800,7 @@ pub async fn audio(conn: &mut SqliteConnection, subject: &str, note_id: &str, of
 	)
 	.fetch_optional(&mut *conn)
 	.await?;
-	row
-		.map(|row| {
-			Ok(Audio {
-				content_type: container(&row.content_type).ok_or(VoiceError::Unreadable)?,
-				sha256: row.sha256,
-				body: row.body,
-			})
-		})
-		.transpose()
+	Ok(body)
 }
 
 /// The bite held beside `subject`'s game note `note_id`.
@@ -816,7 +835,9 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, describe, is_note_id, is_rust_round_ref, put_note, whole, Audio, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING};
+	use super::{
+		audio_body, audio_head, describe, is_note_id, is_rust_round_ref, put_note, whole, AudioHead, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING,
+	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -1839,18 +1860,23 @@ mod tests {
 		put(&pool, A, &lens, b"lens").await.unwrap();
 
 		let mut conn = pool.acquire().await.unwrap();
-		let held = audio(&mut conn, A, "r1", Of::RustRound).await.unwrap();
+		let head = audio_head(&mut conn, A, "r1", Of::RustRound).await.unwrap();
 		assert_eq!(
-			held,
-			Some(Audio {
+			head,
+			Some(AudioHead {
 				content_type: "audio/webm",
-				sha256: said.sha256.clone(),
-				body: b"said".to_vec()
+				sha256: said.sha256.clone()
 			})
 		);
-		assert_eq!(audio(&mut conn, B, "r1", Of::RustRound).await.unwrap(), None, "another subject's note is not theirs");
-		assert_eq!(audio(&mut conn, A, "nope", Of::RustRound).await.unwrap(), None);
-		assert_eq!(audio(&mut conn, A, "l1", Of::RustRound).await.unwrap(), None, "a note of another kind is not read");
+		assert_eq!(audio_body(&mut conn, A, "r1", Of::RustRound).await.unwrap(), Some(b"said".to_vec()));
+		for (subject, id, why) in [
+			(B, "r1", "another subject's note is not theirs"),
+			(A, "nope", "an unknown note"),
+			(A, "l1", "a note of another kind is not read"),
+		] {
+			assert_eq!(audio_head(&mut conn, subject, id, Of::RustRound).await.unwrap(), None, "{why}");
+			assert_eq!(audio_body(&mut conn, subject, id, Of::RustRound).await.unwrap(), None, "{why}");
+		}
 	}
 
 	/// The rebuild that widened `voice_note` for `rust-round` keeps every note

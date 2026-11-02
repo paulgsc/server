@@ -18,7 +18,8 @@
 //! fields with fixed words, never what was said.
 //!
 //! **The one way audio leaves home** (docs/identity.md invariant 23):
-//! [`get_audio`] is the only caller of `voice_repo::audio`, and its span
+//! [`get_audio`] is the only caller of `voice_repo::audio_head` and
+//! `voice_repo::audio_body`, and its span
 //! skips every argument.
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
@@ -262,7 +263,7 @@ pub struct NoteAudio {
 /// `GET /voice-notes/:id/audio`
 ///
 /// The caller's Rust Rounds note `id` back from home, for the reason
-/// `voice_repo::audio` gives.
+/// `voice_repo::audio_head` gives.
 ///
 /// The audio comes inside JSON, as base64 beside its container and SHA-256,
 /// because the phone reads every answer from home as text
@@ -281,19 +282,27 @@ pub struct NoteAudio {
 #[instrument(name = "voice_audio_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = voice_repo::audio(&mut conn, paired.subject.as_str(), &id, Of::RustRound)
+	let subject = paired.subject.as_str();
+	let head = voice_repo::audio_head(&mut conn, subject, &id, Of::RustRound)
 		.await
 		.map_err(refusal)?
 		.ok_or(FileHostError::NotFound)?;
-	let etag = etag_value(&held.sha256)?;
+	let etag = etag_value(&head.sha256)?;
+	// Decided from the head, so a 304 reads no audio.
 	if if_none_match_hits(&headers, &etag) {
 		return Ok(not_modified(etag));
 	}
+	// The note is append-only, so a body missing here is a store that does
+	// not read back, not a race.
+	let body = voice_repo::audio_body(&mut conn, subject, &id, Of::RustRound)
+		.await
+		.map_err(refusal)?
+		.ok_or(FileHostError::OperationError("a stored voice note does not read back".to_owned()))?;
 	let mut response = Json(NoteAudio {
 		id,
-		content_type: held.content_type,
-		sha256: held.sha256,
-		audio: STANDARD.encode(&held.body),
+		content_type: head.content_type,
+		sha256: head.sha256,
+		audio: STANDARD.encode(&body),
 	})
 	.into_response();
 	response.headers_mut().insert(ETAG, etag);

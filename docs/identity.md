@@ -1125,7 +1125,9 @@ nowhere is marked as such and belongs to review.
     bytes as base64, the SHA-256 its `ETag`; another subject's note, one
     home does not hold and a note said for any other kind are each a `404`,
     so no other kind's audio leaves home. It reads only, its span skips every
-    argument, and `voice_repo::audio` has no other caller. The routes that
+    argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
+    no other caller; a `304` is decided from the head, so it reads no audio.
+    The routes that
     read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
     (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`

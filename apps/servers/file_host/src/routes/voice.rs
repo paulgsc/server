@@ -35,7 +35,7 @@
 //! own table beside the note, so no note is rewritten.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
-//! `rust-round` note only (`voice_repo::audio` says why).
+//! `rust-round` note only (`voice_repo::audio_head` says why).
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
