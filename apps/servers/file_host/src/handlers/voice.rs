@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
 use voice_repo::{
+	kept::{KindKept, NoteKept, WeekKept},
 	set_aside::SetAside,
 	transcript::{Hearing, Transcript},
 	Note, Of, Said, SaidBite, VoiceError, REWRITTEN,
@@ -309,6 +310,58 @@ pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: He
 	Ok(response)
 }
 
+/// `GET /voice-notes/kept`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Kept {
+	/// What home keeps of each kind, in `voice_repo::Of`'s order; a kind it
+	/// holds none of is not listed.
+	pub kinds: Vec<KindKept>,
+	/// What reached home week by week, oldest first.
+	pub weeks: Vec<WeekKept>,
+	/// With `of`, that kind's newest notes, at most
+	/// `voice_repo::kept::NEWEST`; null without it.
+	pub notes: Option<Vec<NoteKept>>,
+}
+
+/// `GET /voice-notes/kept[?of=<kind>]`
+///
+/// What home keeps of the caller's voice notes, for the phone's My data
+/// page (paulgsc/some-ui#2476, MY-DATA MD2): how many of each kind, their
+/// room, how many were set aside and since when, what reached home each
+/// week, and, when `of` names a kind, that kind's newest notes
+/// (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
+/// nothing said.
+///
+/// Reads only, in one transaction, so its parts agree; it writes nothing and
+/// sends nothing. The query is read as its pairs, so `of` said twice is
+/// refused as an unknown kind is; other keys are ignored.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's (only a paired phone reads
+/// it), 422 for an `of` that names no kind or is said more than once, and
+/// 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_kept_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<Kept>, FileHostError> {
+	let refused = || FileHostError::unprocessable_entity([("of", "a kind of voice note, said once")]);
+	let asked: Vec<&str> = query.iter().filter(|(key, _)| key == "of").map(|(_, value)| value.as_str()).collect();
+	let of = match asked.as_slice() {
+		[] => None,
+		[name] => Some(Of::named(name).ok_or_else(refused)?),
+		_ => return Err(refused()),
+	};
+	let subject = paired.subject.as_str();
+	let mut tx = db.begin().await?;
+	let kinds = voice_repo::kept::kinds(&mut tx, subject).await.map_err(refusal)?;
+	let weeks = voice_repo::kept::weeks(&mut tx, subject).await.map_err(refusal)?;
+	let notes = match of {
+		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of).await.map_err(refusal)?),
+		None => None,
+	};
+	tx.commit().await?;
+	Ok(Json(Kept { kinds, weeks, notes }))
+}
+
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
 #[derive(Debug, Deserialize)]
 pub struct SetAsideQuery {
@@ -461,7 +514,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 5);
+		assert_eq!(module().descriptors().count(), 6);
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)
@@ -836,6 +889,49 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/r1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 		let (status, hidden) = get(&app, "/voice-notes/r1/audio", Some(&other)).await;
 		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to hear: {hidden}");
+	}
+
+	/// The kept read answers the caller's own notes, by kind and week, and a
+	/// kind's newest with `of`; descriptions only. Counting is
+	/// `voice_repo::kept`'s tests.
+	#[tokio::test]
+	async fn a_paired_phone_reads_what_home_keeps_of_its_own_notes() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let (status, answer) = put(&app, NOTE, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+
+		let (status, body) = get(&app, "/voice-notes/kept", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(
+			body["kinds"],
+			json!([{ "of": "reflection", "notes": 1, "bytes": TAKE.len(), "setAside": 0, "since": "2026-10-25T03:10:00.000Z" }])
+		);
+		assert_eq!(body["weeks"].as_array().map(Vec::len), Some(1));
+		assert_eq!(body["notes"], Value::Null);
+
+		let (status, body) = get(&app, "/voice-notes/kept?of=reflection", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		let notes = body["notes"].as_array().cloned().unwrap_or_default();
+		assert_eq!(notes.len(), 1, "{body}");
+		assert!(notes[0]["storedAt"].is_string(), "{body}");
+		let mut listed = notes[0].clone();
+		listed.as_object_mut().unwrap().remove("storedAt");
+		assert_eq!(
+			listed,
+			json!({ "id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null })
+		);
+
+		let (status, body) = get(&app, "/voice-notes/kept", Some(&other)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(body["kinds"], json!([]), "another subject's notes are not counted");
+		assert_eq!(get(&app, "/voice-notes/kept?of=diary", Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		assert_eq!(get(&app, "/voice-notes/kept?of=lens&of=studio", Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		assert_eq!(get(&app, "/voice-notes/kept", None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, "/voice-notes/kept", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 	}
 
 	/// A game bite's fields reach the repo from the query, percent-encoding

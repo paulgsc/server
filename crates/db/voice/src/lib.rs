@@ -55,6 +55,10 @@
 //! never writes it. The phone reads a note's text back through
 //! [`transcript::heard`] (paulgsc/some-ui#2428).
 //!
+//! How many notes of each kind home keeps, their room and how it grew week
+//! by week is [`kept`]'s (paulgsc/some-ui#2476, MY-DATA MD2): descriptions
+//! only, never audio, a `ref` or what was said.
+//!
 //! Which notes the owner let go of on the phone is [`set_aside`]'s:
 //! `voice_note_set_aside`, one mark per note, the first standing, written
 //! only by `file_host`'s `handlers::voice` (`PUT
@@ -65,6 +69,7 @@
 //! scouts file naming it is what puts it in front of the routine, and a
 //! mark does not unname it.
 
+pub mod kept;
 pub mod on_drive;
 pub mod set_aside;
 pub mod transcript;

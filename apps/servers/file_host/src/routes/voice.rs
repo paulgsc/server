@@ -22,6 +22,13 @@
 //!                                      base64, to a paired phone, with its
 //!                                      SHA-256 as the ETag (`304` on
 //!                                      `If-None-Match`), or a JSON 404
+//! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
+//!                                      notes of each kind home keeps,
+//!                                      their bytes, how many were set
+//!                                      aside and since when, what reached
+//!                                      home each week, and with `of` that
+//!                                      kind's newest notes, to a paired
+//!                                      phone (paulgsc/some-ui#2476)
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -80,7 +87,8 @@ where
 		.get("/voice-notes/on-drive", handlers::get_on_drive)
 		.get("/voice-notes/:id/heard", handlers::get_heard)
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
-		.get("/voice-notes/:id/audio", handlers::get_audio);
+		.get("/voice-notes/:id/audio", handlers::get_audio)
+		.get("/voice-notes/kept", handlers::get_kept);
 
 	Module::versioned("voice", table).with_cors(cors)
 }
