@@ -643,8 +643,9 @@ pub struct Heard {
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
 /// not heard, is never one: the routine reads that from the absence. Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
-/// `scene`, `studio`), as the mailbox's `transcript` folder takes no other
-/// `of`: a game bite leaves home only inside the weekly bundle
+/// `scene`, `studio`, and `rust-round`, which a Rust Rounds tutor reads:
+/// paulgsc/some-ui#2237, RR6), as the mailbox's `transcript` folder takes no
+/// other `of`: a game bite leaves home only inside the weekly bundle
 /// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
 /// `LeetType` spoken answer never does, since no routine reads them
 /// (paulgsc/some-ui#2180, HF5; docs/identity.md invariant 19). Nor is a
@@ -669,7 +670,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio')
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round')
 		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
@@ -1785,6 +1786,31 @@ mod tests {
 			unfiled(&pool, A).await,
 			[(String::from("n1"), String::from("small"))],
 			"only a kind a routine reads is filed"
+		);
+	}
+
+	/// A Rust Rounds note's transcript is filed as any note's is, said for
+	/// `rust-round`, its `ref` the card (paulgsc/some-ui#2237, RR6): the
+	/// tutor reads what was said on each card.
+	#[tokio::test]
+	async fn a_rust_round_notes_transcript_is_filed_like_any_note() {
+		let pool = pool().await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'r1', 'rust-round', 'indexing-01:refine-a:n0', '2026-11-02T18:20:00.000Z', 'audio/webm', 1, 's', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		heard(&pool, A, ("r1", "small", 1), "heard", Some("it panics at index four"), "2026-11-02T18:22:00.000Z").await;
+		let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
+		assert_eq!(
+			all
+				.iter()
+				.map(|heard| (heard.note_id.as_str(), heard.of_kind.as_str(), heard.of_ref.as_str()))
+				.collect::<Vec<_>>(),
+			[("r1", "rust-round", "indexing-01:refine-a:n0")]
 		);
 	}
 

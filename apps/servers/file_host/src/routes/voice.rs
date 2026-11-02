@@ -17,6 +17,11 @@
 //!                                      note go; home sets it aside and
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
+//! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
+//!                                      a Rust Rounds note's audio as
+//!                                      base64, to a paired phone, with its
+//!                                      SHA-256 as the ETag (`304` on
+//!                                      `If-None-Match`), or a JSON 404
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -29,6 +34,11 @@
 //! Let go sets a take aside and keeps it) is `voice_repo::set_aside`'s, its
 //! own table beside the note, so no note is rewritten.
 //!
+//! The audio read (paulgsc/some-ui#2237, RR6; the owner's D4) is the one
+//! route that gives a note's bytes back: for a `rust-round` note only, so a
+//! refine card can play an earlier note the phone let go once home held it
+//! (`voice_repo::audio`).
+//!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
 //! and whose answer's `note` carries it as `bite`.
@@ -38,7 +48,8 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token.
+//! token. The audio read takes a `Paired` phone, as `routes::rust_rounds`
+//! does, so a browser's cookie session is a `403` there too.
 //!
 //! **Append-only, and kept for good.** A `PUT` adds a note or changes
 //! nothing, and other bytes or another description under a held id are a
@@ -53,7 +64,7 @@ use crate::Config;
 use axum::{
 	extract::FromRef,
 	http::{
-		header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+		header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
 		Method,
 	},
 };
@@ -70,11 +81,17 @@ where
 		.put("/voice-notes/:id", handlers::put_note)
 		.get("/voice-notes/on-drive", handlers::get_on_drive)
 		.get("/voice-notes/:id/heard", handlers::get_heard)
-		.put("/voice-notes/:id/set-aside", handlers::put_set_aside);
+		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
+		.get("/voice-notes/:id/audio", handlers::get_audio);
 
 	Module::versioned("voice", table).with_cors(cors)
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::PUT, Method::OPTIONS], vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION])
+	allowlisted_cors_with_credentials(
+		config,
+		vec![Method::GET, Method::PUT, Method::OPTIONS],
+		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, IF_NONE_MATCH],
+	)
+	.expose_headers([ETAG])
 }
