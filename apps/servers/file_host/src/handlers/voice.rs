@@ -332,8 +332,7 @@ pub struct Kept {
 /// (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
 /// nothing said.
 ///
-/// Reads only, in one transaction, so its parts agree; it writes nothing and
-/// sends nothing. The query is read as its pairs, so `of` said twice is
+/// Read in one transaction, so its parts agree. The query is read as its pairs, so `of` said twice is
 /// refused as an unknown kind is; other keys are ignored.
 ///
 /// # Errors
@@ -515,6 +514,14 @@ mod tests {
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
 		assert_eq!(module().descriptors().count(), 6);
+		// A route named under `/voice-notes/` takes that name from the notes'
+		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
+		for route in module().descriptors() {
+			let name = route.path.strip_prefix("/voice-notes/").unwrap();
+			if !name.contains('/') && !name.starts_with(':') {
+				assert!(!voice_repo::is_note_id(name), "{name} is a route and must not be a note's id");
+			}
+		}
 		assert_eq!(put(&app, NOTE, None, "audio/webm", TAKE).await.0, StatusCode::UNAUTHORIZED);
 		let request = Request::builder()
 			.method(Method::PUT)

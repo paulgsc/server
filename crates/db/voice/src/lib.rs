@@ -55,9 +55,7 @@
 //! never writes it. The phone reads a note's text back through
 //! [`transcript::heard`] (paulgsc/some-ui#2428).
 //!
-//! How many notes of each kind home keeps, their room and how it grew week
-//! by week is [`kept`]'s (paulgsc/some-ui#2476, MY-DATA MD2): descriptions
-//! only, never audio, a `ref` or what was said.
+//! What home keeps, counted for the phone's My data page, is [`kept`]'s.
 //!
 //! Which notes the owner let go of on the phone is [`set_aside`]'s:
 //! `voice_note_set_aside`, one mark per note, the first standing, written
@@ -398,8 +396,9 @@ fn container(content_type: &str) -> Option<&'static str> {
 
 /// The names under `/voice-notes/` that are routes of their own, never a
 /// note's id: `PUT /voice-notes/on-drive` reaches the `GET` route of that
-/// name, not a note's.
-const ROUTE_NAMES: [&str; 1] = ["on-drive"];
+/// name, not a note's, and so does `PUT /voice-notes/kept`. `file_host`'s
+/// `handlers::voice` tests that every such route is named here.
+const ROUTE_NAMES: [&str; 2] = ["on-drive", "kept"];
 
 /// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
 /// not one of [`ROUTE_NAMES`].
@@ -540,7 +539,7 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Problem>> {
 	let mut problems: Vec<Problem> = Vec::new();
 	if !is_note_id(id) {
-		problems.push(("id", "not a note id: 1 to 64 letters, digits, '-', '_', '.' or ':', and not on-drive"));
+		problems.push(("id", "not a note id: 1 to 64 letters, digits, '-', '_', '.' or ':', and not on-drive or kept"));
 	}
 	let of = said.of.and_then(Of::named);
 	if of.is_none() {
@@ -868,14 +867,17 @@ mod tests {
 		pool
 	}
 
-	/// `on-drive` is a route's name under `/voice-notes/`, so never a note's
-	/// id, though it reads as one; a name that only starts with it is one.
+	/// `on-drive` and `kept` are routes' names under `/voice-notes/`, so
+	/// never a note's id, though each reads as one; a name that only starts
+	/// with one is one.
 	#[test]
 	fn a_route_name_is_not_a_note_id() {
-		assert!(!is_note_id("on-drive"));
-		assert!(is_note_id("on-drive-2") && is_note_id("t1"));
-		let refused = describe("on-drive", said(NOW), b"frames").unwrap_err();
-		assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["id"]);
+		for name in ["on-drive", "kept"] {
+			assert!(!is_note_id(name), "{name}");
+			let refused = describe(name, said(NOW), b"frames").unwrap_err();
+			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["id"]);
+		}
+		assert!(is_note_id("on-drive-2") && is_note_id("kept-1") && is_note_id("t1"));
 	}
 
 	fn said(at: &str) -> Said<'_> {

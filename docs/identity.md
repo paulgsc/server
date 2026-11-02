@@ -1132,19 +1132,20 @@ nowhere is marked as such and belongs to review.
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
     (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
     (invariant 32), read only whether the caller's subject holds it, and,
-    for an idea, whether it is a `studio` note and whether it was set aside.
-    `GET /voice-notes/kept` (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired`
-    phone's (a browser's session is a `403`), reads the caller's own
-    subject's rows and set-aside marks for the phone's My data page: how
-    many notes of each kind, their summed `size`, how many were set aside
-    and the earliest `recorded_at`; what reached home each week, by
-    `stored_at`; and, with `of`, that kind's newest notes (at most 50), each
-    with its id, `recorded_at`, `stored_at`, `size` and set-aside time
+    for an idea, whether it is a `studio` note and whether it was set aside;
+    and it is deleted with the account by both the sweep and
+    the migration's trigger (invariant 12). `GET /voice-notes/kept`
+    (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's
+    session is a `403`), reads the caller's own subject's rows and
+    set-aside marks for the phone's My data page: how many notes of each
+    kind, their summed `size`, how many were set aside and the earliest
+    `recorded_at`; what reached home each week, by `stored_at`; and, with
+    `of`, that kind's newest notes (at most 50), each with its id,
+    `recorded_at`, `stored_at`, `size` and set-aside time
     (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
     audio, no `ref`, no bite and no transcript, and its span skips every
-    argument;
-    and it is deleted with the account by both the sweep and
-    the migration's trigger (invariant 12).
+    argument. Its name, like `on-drive`'s, is never a note's id
+    (`voice_repo::is_note_id`).
 
     **Home's word that Drive holds a Studio take too is
     `studio_take_on_drive`, append-only, and comes from the mailbox, never
