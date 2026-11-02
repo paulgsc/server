@@ -45,8 +45,8 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - main
-    # Everything file_host is built from, since `client` runs it, and the
-    # fixtures the check compares.
+    # Everything file_host is built from, since `client` runs it, the
+    # fixtures the check compares, and the script that seeds its database.
     paths:
       - 'apps/servers/file_host/**'
       - 'crates/**'
@@ -54,6 +54,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/check_client_fixtures.py'
+      - 'scripts/seed_contract_run.py'
       - '.github/workflows/routes.yml'
   push:
     branches:
@@ -233,13 +234,19 @@ jobs:
           bash "$script" route-snapshot/routes.server.json route-snapshot/routes.server.ts --verify
 
       # A throwaway database, so every contract runs, mutating ones included,
-      # and one signed-in session for the per-person routes. A session is
-      # stored as the SHA-256 of the cookie's 32 bytes (`auth/cookie.rs`), so
-      # writing that row is signing in; that account is the only one, so it
-      # is the owner's and runs the operator routes with no OPERATOR_SUBJECTS
-      # (#510). AUTH_OPEN_SIGNUP is on because sign-up closes once an account
-      # exists, and the `auth.register_start` contract expects an open
-      # server's options. RATE_LIMIT is per client per minute, and the
+      # seeded by scripts/seed_contract_run.py (its docstring says what and
+      # why): the owner's account and a signed-in browser session for the
+      # per-person routes; a paired phone's session for the same subject, for
+      # the routes only a phone may call (`subject::Paired`, the rust_rounds
+      # routes), which the harness sends as a bearer for its `paired`
+      # contracts; and a held LeetType session file for that subject and one
+      # for another subject, so a contract can fetch a file, its ETag and
+      # the 304, and another subject's file is a 404 (#590). The step makes
+      # both sessions' tokens and masks them before anything else runs, then
+      # exports them (CONTRACT_SESSION_COOKIE, CONTRACT_PHONE_TOKEN) beside the
+      # files' names the seed exports. AUTH_OPEN_SIGNUP is on because sign-up closes once an
+      # account exists, and the `auth.register_start` contract expects an
+      # open server's options. RATE_LIMIT is per client per minute, and the
       # harness is one client making about sixty requests in a few seconds.
       - name: Start this PR's file_host
         env:
@@ -248,21 +255,20 @@ jobs:
           set -euo pipefail
           db="$RUNNER_TEMP/file_host.db"
           cp contract-run/file_host.db "$db"
-          cookie=$(python3 - "$db" <<'EOF'
-          import base64, hashlib, os, sqlite3, sys, time
-          token = os.urandom(32)
-          db = sqlite3.connect(sys.argv[1])
-          db.execute("INSERT INTO account (subject_id, user_handle) VALUES (?, ?)", (os.environ["SUBJECT"], os.urandom(16)))
-          db.execute(
-              "INSERT INTO auth_session (token_hash, subject_id, expires_at) VALUES (?, ?, ?)",
-              (hashlib.sha256(token).digest(), os.environ["SUBJECT"], int(time.time()) + 3600),
-          )
-          db.commit()
-          print(base64.urlsafe_b64encode(token).rstrip(b"=").decode())
-          EOF
-          )
+          python3 server/scripts/seed_contract_run.py --self-test
+          # The two credentials are made and masked here, before anything
+          # can print them; the seed only stores their digests.
+          token() { head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='; }
+          cookie=$(token)
+          phone=$(token)
           echo "::add-mask::$cookie"
-          echo "CONTRACT_SESSION_COOKIE=$cookie" >> "$GITHUB_ENV"
+          echo "::add-mask::$phone"
+          CONTRACT_SESSION_COOKIE="$cookie" CONTRACT_PHONE_TOKEN="$phone" \
+            python3 server/scripts/seed_contract_run.py "$db" --subject "$SUBJECT"
+          {
+            echo "CONTRACT_SESSION_COOKIE=$cookie"
+            echo "CONTRACT_PHONE_TOKEN=$phone"
+          } >> "$GITHUB_ENV"
 
           chmod +x contract-run/file_host
           env DATABASE_URL="sqlite://$db" NATS_URL=nats://127.0.0.1:4222 REDIS_URL=redis://127.0.0.1:6379 \
