@@ -17,7 +17,14 @@ defaults:
 permissions:
   contents: read
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# A newer push to the same pull request cancels this run instead of queueing
+# behind it: without `cancel-in-progress` the new head's run waited for the
+# superseded one to finish (up to 18 min measured), and the superseded run's
+# verdict is read by nothing, since PR gate judges only the current head.
+# A release run is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   determine_jobs:
