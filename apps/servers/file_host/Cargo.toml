@@ -74,7 +74,6 @@ tungstenite = { version = "0.24", default-features = false }
 anyhow = { workspace = true }
 app-config = { workspace = true }
 clap = { workspace = true }
-dotenvy = { workspace = true }
 lazy_static = { workspace = true }
 futures = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
@@ -123,6 +122,7 @@ curriculum_repo = { workspace = true }
 game_feed_repo = { workspace = true }
 jobs_repo = { workspace = true }
 korean_repo = { workspace = true }
+study_note_repo = { workspace = true }
 mailbox_kit = { workspace = true, features = ["reqwest-transport"] }
 mailbox_repo = { workspace = true }
 nfl_feed = { workspace = true }
@@ -131,6 +131,9 @@ notice_repo = { workspace = true }
 storage_repo = { workspace = true }
 leetype_log_repo = { workspace = true }
 studio_log_repo = { workspace = true }
+idea_repo = { workspace = true }
+reflection_repo = { workspace = true }
+drama_prompt_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
 learner_shelf_repo = { workspace = true }
 # Only `src/bin/record_leetype_runs.rs` uses it; `tests/leetype_runs.rs`

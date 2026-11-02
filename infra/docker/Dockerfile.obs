@@ -74,9 +74,6 @@ ENV RUST_BACKTRACE=1
 ENV OBS_HOST=obs
 ENV OBS_PORT=4455
 ENV NATS_URL=nats://nats:4222
-ENV HEALTH_CHECK_INTERVAL_SECS=30
-ENV SHUTDOWN_TIMEOUT_SECS=10
-ENV RUST_LOG=some_obs=info,obs_websocket=info,some_shutdown=info
 
 # Entry point
 ENTRYPOINT ["/usr/local/bin/some-obs"]

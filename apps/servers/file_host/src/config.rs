@@ -1,22 +1,7 @@
 use app_config::schema::{Bound, RequiredWhen, Rules, When, SET};
-pub use app_config::{LogArgs, NatsArgs, OtelArgs, TraceSampler, DEV_HOST_NATS_URL};
+pub use app_config::{LogArgs, NatsArgs, OtelArgs};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-
-// HOST-SPECIFIC values (#406). Each one is right on the dev host this server
-// grew up on (`nixos.local`, with NATS and Redis on the same machine) and wrong
-// on any other. `ALLOWED_ORIGINS` and `APP_BASE_URL` are required, so a host
-// sets its own; the NATS and Redis URLs stay defaults, for a `cargo run` beside
-// the compose stack, which sets its own. Running on any of them is announced
-// at startup (`Config::host_specific_defaults_in_use`).
-
-/// The dev host's `ALLOWED_ORIGINS`, which it sets in its `.env`; startup warns
-/// while it is in use elsewhere. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_ALLOWED_ORIGINS: &str = "https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006";
-/// The dev host's `APP_BASE_URL`. HOST-SPECIFIC: the `nixos.local` dev host.
-pub const DEV_HOST_APP_BASE_URL: &str = "https://nixos.local:5173/";
-/// Used when `REDIS_URL` is unset. HOST-SPECIFIC: a Redis on this machine.
-pub const DEV_HOST_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
 /// What `Config` requires only while another variable is on.
 ///
@@ -62,96 +47,25 @@ pub const REQUIRED_WHEN: &[RequiredWhen] = &[
 /// The limits `Config`'s numbers are held to at start, while their feature is on.
 ///
 /// Built from the same constants the feature code checks, so the two cannot
-/// disagree (#580). The relation `GAME_FEED_BACKOFF_CAP_SECONDS` has to
+/// disagree (#580). The relation `game_feed::CADENCE.backoff_cap` has to
 /// the cadences, and the mailbox's URL shape, stay the feature code's alone.
 // The limits are small whole numbers, which an f64 holds exactly.
 #[allow(clippy::cast_precision_loss)]
-pub const BOUNDS: &[Bound] = &[
-	Bound {
-		variable: "OTEL_TRACES_SAMPLER_ARG",
-		min: Some(app_config::SAMPLER_ARG_MIN),
-		max: Some(app_config::SAMPLER_ARG_MAX),
-		when: &[],
-	},
-	Bound {
-		variable: "MAILBOX_SECONDS",
-		min: Some(crate::mailbox::MIN_INTERVAL.as_secs() as f64),
-		max: None,
-		when: &[When {
+pub const BOUNDS: &[Bound] = &[Bound {
+	variable: "MAILBOX_ARCHIVE_DAYS",
+	min: Some(crate::mailbox::MIN_ARCHIVE_DAYS as f64),
+	max: Some(crate::mailbox::MAX_ARCHIVE_DAYS as f64),
+	when: &[
+		When {
 			variable: "MAILBOX_ENABLED",
 			is: "true",
-		}],
-	},
-	Bound {
-		variable: "MAILBOX_ARCHIVE_DAYS",
-		min: Some(crate::mailbox::MIN_ARCHIVE_DAYS as f64),
-		max: Some(crate::mailbox::MAX_ARCHIVE_DAYS as f64),
-		when: &[
-			When {
-				variable: "MAILBOX_ENABLED",
-				is: "true",
-			},
-			When {
-				variable: "MAILBOX_ARCHIVE_TOKEN",
-				is: SET,
-			},
-		],
-	},
-	Bound {
-		variable: "TRANSCRIBE_SECONDS",
-		min: Some(crate::transcribe::MIN_INTERVAL.as_secs() as f64),
-		max: None,
-		when: &[When {
-			variable: "TRANSCRIBE_ENABLED",
-			is: "true",
-		}],
-	},
-	Bound {
-		variable: "TRANSCRIBE_DEADLINE_SECONDS",
-		min: Some(crate::transcribe::MIN_DEADLINE.as_secs() as f64),
-		max: None,
-		when: &[When {
-			variable: "TRANSCRIBE_ENABLED",
-			is: "true",
-		}],
-	},
-	Bound {
-		variable: "TRANSCRIBE_THREADS",
-		min: Some(1.0),
-		max: None,
-		when: &[When {
-			variable: "TRANSCRIBE_ENABLED",
-			is: "true",
-		}],
-	},
-	Bound {
-		variable: "GAME_FEED_SCOREBOARD_SECONDS",
-		min: Some(crate::game_feed::MIN_SCOREBOARD.as_secs() as f64),
-		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
-		when: &[When {
-			variable: "GAME_FEED_ENABLED",
-			is: "true",
-		}],
-	},
-	Bound {
-		variable: "GAME_FEED_LIVE_SECONDS",
-		min: Some(crate::game_feed::MIN_LIVE.as_secs() as f64),
-		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
-		when: &[When {
-			variable: "GAME_FEED_ENABLED",
-			is: "true",
-		}],
-	},
-	Bound {
-		variable: "GAME_FEED_BACKOFF_CAP_SECONDS",
-		min: None,
-		max: Some(crate::game_feed::MAX_CADENCE.as_secs() as f64),
-		when: &[When {
-			variable: "GAME_FEED_ENABLED",
-			is: "true",
-		}],
-	},
-];
+		},
+		When {
+			variable: "MAILBOX_ARCHIVE_TOKEN",
+			is: SET,
+		},
+	],
+}];
 
 /// What `file_host` holds its `Config` to at start beyond what clap parses.
 pub const RULES: Rules = Rules {
@@ -168,43 +82,22 @@ pub const DEFAULT_ROUTINE_SCHEDULE: &str = "jobs 07:52 America/Los_Angeles; refl
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
-#[command(mut_arg("otel_service_name", app_config::default_service_name("file_host")))]
+// Its own filter, which compose used to supply (#617): `async_nats` logs
+// every reconnect attempt at info.
+#[command(mut_arg("rust_log", |arg| arg.default_value("info,async_nats=warn")))]
 pub struct Config {
-	/// Database connection timeout in seconds
-	#[arg(long, env = "CONNECTION_TIMEOUT", default_value = "30", help_heading = "Server")]
-	pub connection_timeout: u64,
-
-	/// Max number of concurrent fetches to deduplicate. Older entries are evicted when exceeded.
-	#[arg(long, env = "MAX_IN_FLIGHT", default_value = "256", help_heading = "Server")]
-	pub max_in_flight: u64,
-
-	/// Address to listen on.
-	///
-	/// `FILE_HOST_BIND`, not `HOST`: zsh exports `HOST` as the machine's name.
-	/// These two were once `HOST`/`PORT` and read by nothing (the listener was
-	/// hard-coded to `0.0.0.0:3000`); the defaults are that address, so honouring
-	/// them changes nothing for a server started without them.
-	#[arg(long = "bind", env = "FILE_HOST_BIND", value_name = "FILE_HOST_BIND", default_value = "0.0.0.0", help_heading = "Server")]
-	pub host: String,
-
-	/// Port to listen on.
-	///
-	/// `FILE_HOST_PORT`, not `PORT`: the container reads the repo's `.env`, and
-	/// a bare `PORT` there meant for another service would move this one.
-	#[arg(long, env = "FILE_HOST_PORT", value_name = "FILE_HOST_PORT", default_value = "3000", help_heading = "Server")]
-	pub port: u16,
-
 	/// Dev only: when the port is taken, listen on the next free one instead
-	/// of failing (`listen::bind`). `make dev` sets it, so a server run from
-	/// source can sit beside the production container. Never set it in
-	/// production: its published port and healthcheck assume `FILE_HOST_PORT`.
-	#[arg(long, env = "FILE_HOST_PORT_FALLBACK", value_name = "FILE_HOST_PORT_FALLBACK", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Server")]
+	/// of failing (`listen::bind`). A flag, not a variable (#617): `make dev`
+	/// passes it, so a server run from source can sit beside the production
+	/// container, and no deployment file can set it. Its published port and
+	/// healthcheck assume `listen::PORT`.
+	#[arg(long, default_value_t = false, action = clap::ArgAction::Set, help_heading = "Server")]
 	pub port_fallback: bool,
 
 	/// Where to record the port actually listened on, as `{ port, pid }`, for
 	/// `paulgsc/some-ui`'s `vite dev` to find (`listen::PortFile`). Removed on
-	/// shutdown. `make dev` sets it.
-	#[arg(long, env = "FILE_HOST_PORT_FILE", value_name = "FILE_HOST_PORT_FILE", help_heading = "Server")]
+	/// shutdown. A flag `make dev` passes, like `--port-fallback`.
+	#[arg(long, help_heading = "Server")]
 	pub port_file: Option<std::path::PathBuf>,
 
 	/// Rate limit, in requests per minute, per client (`main.rs`'s
@@ -222,52 +115,15 @@ pub struct Config {
 	/// Required: no list is right on every host (#406). Include the HTTPS origin
 	/// the study app is served from, not only Storybook's `:6006`: service
 	/// workers, `Notification`, and `PushManager` are all gated on a secure
-	/// context, so a subscription is posted from an HTTPS origin. The dev host
-	/// sets `https://nixos.local:5173,https://localhost:5173,http://nixos.local:6006`.
+	/// context, so a subscription is posted from an HTTPS origin.
 	#[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',', required = true, help_heading = "Server")]
 	pub allowed_origins: Vec<String>,
 
 	/// Redis URL for caching.
 	///
-	/// Unset, a Redis on this machine (HOST-SPECIFIC; see `DEV_HOST_REDIS_URL`).
-	#[arg(long, env = "REDIS_URL", help_heading = "Server")]
-	pub redis_url: Option<String>,
-
-	/// Cache TTL in seconds
-	#[arg(long, env = "CACHE_TTL", default_value = "600", help_heading = "Server")]
-	pub cache_ttl: u64,
-
-	/// Prometheus metrics port
-	#[arg(long, env = "PROMETHEUS_PORT", default_value = "9090", help_heading = "Server")]
-	pub prometheus_port: u16,
-
-	/// Streaming Chunk Size
-	#[arg(long, env = "BUFFER_SIZE", value_name = "BUFFER_SIZE", default_value = "65536", help_heading = "Server")]
-	pub chunk_size: usize,
-
-	/// Individual request payload lmit in MB
-	#[arg(long, env = "MAX_REQUEST_SIZE_MB", value_name = "MAX_REQUEST_SIZE_MB", default_value = "10", help_heading = "Server")]
-	pub max_request_size: usize,
-
-	/// Active request limit
-	#[arg(long, env = "MAX_CONCURRENT_REQUESTS", value_name = "MAX_CONCURRENT_REQUESTS", default_value = "100", help_heading = "Server")]
-	pub max_concurrent_req: usize,
-
-	/// Hard timeout for any operation
-	#[arg(long, env = "TASK_TIMEOUT_MS", default_value = "15000", help_heading = "Server")]
-	pub task_timeout_ms: u64,
-
-	/// Streaming Max Chunk Size
-	#[arg(long, env = "MAX_CHUNKS_IN_FLIGHT", value_name = "MAX_CHUNKS_IN_FLIGHT", default_value = "5", help_heading = "Server")]
-	pub max_chunks: usize,
-
-	/// OBS Websocket Server IP Address
-	#[arg(long, env = "OBS_WEBSOCKET_IP", value_name = "OBS_WEBSOCKET_IP", help_heading = "Server")]
-	pub obs_host: String,
-
-	/// OBS Websocket Server Password
-	#[arg(long, env = "OBS_WEBSOCKET_PWD", value_name = "OBS_WEBSOCKET_PWD", hide_env_values = true, help_heading = "Server")]
-	pub obs_password: String,
+	/// Required: no address is right on every host (#617).
+	#[arg(long, env = "REDIS_URL", required = true, help_heading = "Server")]
+	pub redis_url: String,
 
 	/// The `SQLite` database, as `sqlite://<path>`.
 	///
@@ -305,11 +161,6 @@ pub struct Config {
 	#[arg(long, env = "VAPID_PRIVATE_KEY", hide_env_values = true, help_heading = "Study nudge")]
 	pub vapid_private_key: Option<String>,
 
-	/// The VAPID `sub` claim: a `mailto:` or an origin URL identifying the sender.
-	/// Push services reject or deprioritise senders without one.
-	#[arg(long, env = "VAPID_SUBJECT", default_value = "mailto:admin@maishatu.com", help_heading = "Study nudge")]
-	pub vapid_subject: String,
-
 	/// IANA timezone name deciding when a day starts and when quiet hours apply.
 	///
 	/// Deliberately an `Option` with no default. A container is UTC unless told
@@ -329,44 +180,6 @@ pub struct Config {
 	#[arg(long, env = "NUDGE_QUIET_HOURS_END", default_value = "8", help_heading = "Study nudge")]
 	pub nudge_quiet_hours_end: u32,
 
-	/// How often the waker picks up work the engine already decided.
-	///
-	/// Not a schedule. Eligibility instants are solved when signals arrive and
-	/// written to an index; this is the resolution at which they are noticed, so
-	/// shortening it lands interventions closer to their computed instant
-	/// without changing which ones happen.
-	#[arg(long, env = "NUDGE_WAKER_SECONDS", default_value = "300", help_heading = "Study nudge")]
-	pub nudge_waker_seconds: u64,
-
-	/// How long one push delivery may take before it counts as a failure
-	/// (#264, SLI3).
-	///
-	/// A push service that accepts answers in well under a second; one that
-	/// has not answered in ten is not going to, and every second past that is
-	/// a second the rest of the batch waits in the serial loop. Long enough
-	/// that a slow-but-working provider on a bad day is not misread as down,
-	/// short enough that one black-holed endpoint costs a pass seconds rather
-	/// than the transport's own (unbounded) patience. A timed-out delivery is
-	/// recorded as a failure — never a prune, never `Accepted` — and does not
-	/// hand the claim back: see `nudge::waker::actuate`.
-	#[arg(long, env = "PUSH_DELIVERY_TIMEOUT_MS", default_value = "10000", help_heading = "Study nudge")]
-	pub push_delivery_timeout_ms: u64,
-
-	/// How long one waker pass may run before it stops taking on new subjects
-	/// (#264, SLI3).
-	///
-	/// Two minutes: well inside `NUDGE_WAKER_SECONDS`' default of five, so a
-	/// pass that hits it still leaves the next tick to start on time rather
-	/// than be delayed by `MissedTickBehavior::Delay`, and long enough for a
-	/// full `BATCH` of 32 subjects at typical sub-second delivery latency to
-	/// finish many times over. A pass that runs out starts no further subject
-	/// and tries no further device — each delivery's timeout is also capped at
-	/// what the pass has left — but never cancels a subject part-way, so a
-	/// claim already written stands. Subjects it did not reach are still due on
-	/// the next pass, the property `BATCH` already relies on.
-	#[arg(long, env = "WAKER_PASS_DEADLINE_MS", default_value = "120000", help_heading = "Study nudge")]
-	pub waker_pass_deadline_ms: u64,
-
 	/// Whether the recommender ranks a provisioned session with this subject's
 	/// outcome history (#289, TEL4). **Off by default, and meant to stay off
 	/// until someone has looked at real data** — see `docs/study-nudge.md`,
@@ -375,18 +188,6 @@ pub struct Config {
 	/// exactly as it did before `activity_outcome` existed.
 	#[arg(long, env = "RECOMMENDER_USES_OUTCOMES", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Study nudge")]
 	pub recommender_uses_outcomes: bool,
-
-	/// How long a client-written presence lease stays fresh before a due
-	/// subject's notification is sent as though nobody were looking.
-	///
-	/// Renamed from `NUDGE_PRESENCE_FRESHNESS_SECONDS` (default `120`) when
-	/// presence stopped being a WebSocket connection's staleness window and
-	/// became a lease TTL: same shape of question, a different mechanism
-	/// underneath, and a smaller default — a client renewing roughly every
-	/// 45s while visible only needs a TTL wide enough to absorb timer
-	/// throttling and scheduling jitter, not two minutes of slack.
-	#[arg(long, env = "NUDGE_PRESENCE_LEASE_TTL_SECONDS", default_value = "75", help_heading = "Study nudge")]
-	pub nudge_presence_lease_ttl_seconds: u64,
 
 	/// Base URL of the study app, used to build the notification's deep link.
 	/// Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and
@@ -494,10 +295,6 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_SUBJECT", help_heading = "Jobs mailbox")]
 	pub mailbox_subject: Option<String>,
 
-	/// Seconds between reads of the mailbox. At least 60.
-	#[arg(long, env = "MAILBOX_SECONDS", default_value = "900", help_heading = "Jobs mailbox")]
-	pub mailbox_seconds: u64,
-
 	/// When each routine that leaves run records in the mailbox is due:
 	/// `<routine> <HH:MM> <IANA zone>` entries separated by `;`, the routine
 	/// `jobs` or `reflections`. Empty expects no run. Read only with the
@@ -537,42 +334,13 @@ pub struct Config {
 	// See `transcribe`. Home hears each voice note the phone sends it with
 	// whisper.cpp on its CPU. Off unless `TRANSCRIBE_ENABLED`; on, the server
 	// refuses to start unless both models load and ffmpeg runs. Not the
-	// `WHISPER_*` variables an older `example.env` set, which named an
+	// `WHISPER_*` variables an older `.env` set, which named an
 	// English-only model and nothing read.
 	/// Whether home transcribes voice notes at all. On, the server refuses to
 	/// start unless both models load and ffmpeg runs. Get the models with
 	/// `nix develop .#whisper -c whisper fetch`.
 	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Voice-note transcription")]
 	pub transcribe_enabled: bool,
-
-	/// The multilingual whisper.cpp model, as a path inside the container.
-	/// The default is where `infra/compose/file_host.yml` mounts the host's
-	/// models directory (HOST-SPECIFIC there), with the model `nix/whisper-manager`
-	/// downloads.
-	#[arg(long, env = "TRANSCRIBE_MODEL", default_value = "/models/ggml-small-q5_1.bin", help_heading = "Voice-note transcription")]
-	pub transcribe_model: String,
-
-	/// The Silero VAD model that finds a note's speech, mounted beside it.
-	#[arg(
-		long,
-		env = "TRANSCRIBE_VAD_MODEL",
-		default_value = "/models/ggml-silero-v5.1.2.bin",
-		help_heading = "Voice-note transcription"
-	)]
-	pub transcribe_vad_model: String,
-
-	/// Threads one note is heard with. Unset, one fewer than the cores the
-	/// container may use, and at least one.
-	#[arg(long, env = "TRANSCRIBE_THREADS", help_heading = "Voice-note transcription")]
-	pub transcribe_threads: Option<usize>,
-
-	/// Seconds one note may take, decoding included. At least 60.
-	#[arg(long, env = "TRANSCRIBE_DEADLINE_SECONDS", default_value = "600", help_heading = "Voice-note transcription")]
-	pub transcribe_deadline_seconds: u64,
-
-	/// Seconds between looks for notes to hear. At least 10.
-	#[arg(long, env = "TRANSCRIBE_SECONDS", default_value = "60", help_heading = "Voice-note transcription")]
-	pub transcribe_seconds: u64,
 
 	// ── Rust Rounds recording ─────────────────────────────────────────────────
 	//
@@ -581,25 +349,10 @@ pub struct Config {
 	// a Unix socket on a volume both mount, and keeps how each ended. Off
 	// unless `RUST_ROUNDS_ENABLED`.
 	/// Whether home records Rust Rounds' programs. On, the rust-runner's
-	/// socket must be mounted at `RUST_ROUNDS_SOCKET`; a runner that is not
+	/// socket must be mounted at `rust_rounds::SOCKET`; a runner that is not
 	/// there is reported each pass, and nothing is recorded until it is.
 	#[arg(long, env = "RUST_ROUNDS_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Rust Rounds recording")]
 	pub rust_rounds_enabled: bool,
-
-	/// The rust-runner's socket, as a path inside the container: where
-	/// `infra/compose/rust_runner.yml`'s socket volume is mounted.
-	#[arg(long, env = "RUST_ROUNDS_SOCKET", default_value = "/run/rust-runner/runner.sock", help_heading = "Rust Rounds recording")]
-	pub rust_rounds_socket: String,
-
-	/// Seconds between looks for programs to record. At least 10.
-	#[arg(long, env = "RUST_ROUNDS_SECONDS", default_value = "60", help_heading = "Rust Rounds recording")]
-	pub rust_rounds_seconds: u64,
-
-	/// Seconds one pass may take, every program it records included. At
-	/// least 142: the toolchain ask's wait and one program's, which outlasts
-	/// the runner's job deadline.
-	#[arg(long, env = "RUST_ROUNDS_PASS_DEADLINE_SECONDS", default_value = "600", help_heading = "Rust Rounds recording")]
-	pub rust_rounds_pass_deadline_seconds: u64,
 
 	// ── The NFL game feed ─────────────────────────────────────────────────────
 	//
@@ -610,19 +363,6 @@ pub struct Config {
 	/// Whether home follows the games of the week at all.
 	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "NFL game feed")]
 	pub game_feed_enabled: bool,
-
-	/// Seconds between reads of the week's scoreboard. At least 60.
-	#[arg(long, env = "GAME_FEED_SCOREBOARD_SECONDS", default_value = "600", help_heading = "NFL game feed")]
-	pub game_feed_scoreboard_seconds: u64,
-
-	/// Seconds between reads of a live game's play-by-play. At least 5.
-	#[arg(long, env = "GAME_FEED_LIVE_SECONDS", default_value = "15", help_heading = "NFL game feed")]
-	pub game_feed_live_seconds: u64,
-
-	/// The longest a refused or failed fetch waits before the next try. At
-	/// least both cadences above, and at most 86400 (a day).
-	#[arg(long, env = "GAME_FEED_BACKOFF_CAP_SECONDS", default_value = "900", help_heading = "NFL game feed")]
-	pub game_feed_backoff_cap_seconds: u64,
 
 	// ── Shared with the other binaries (`app_config`) ─────────────────────────
 	/// `NATS_URL`. The container sets it (`infra/compose/file_host.yml`).
@@ -639,8 +379,8 @@ pub struct Config {
 	#[arg(long, help = "Perform health check against running server", help_heading = "Health check")]
 	pub health_check: bool,
 
-	/// Port for health check (defaults to 3000)
-	#[arg(long, default_value = "3000", help = "Port to check for health endpoint", help_heading = "Health check")]
+	/// Port for health check (defaults to `listen::PORT`)
+	#[arg(long, default_value_t = crate::listen::PORT, help = "Port to check for health endpoint", help_heading = "Health check")]
 	pub health_check_port: u16,
 
 	/// Loopback host for the health check (defaults to 127.0.0.1); any other
@@ -661,15 +401,7 @@ impl Config {
 	}
 
 	pub fn as_cache_config(&self) -> some_cache::CacheConfig {
-		some_cache::CacheConfig::new(self.redis_url.clone().unwrap_or_else(|| DEV_HOST_REDIS_URL.into())).with_ttl(self.cache_ttl)
-	}
-
-	/// The variables this run is taking from a HOST-SPECIFIC default (#406):
-	/// values that are right on the `nixos.local` dev host and wrong anywhere
-	/// else. Startup logs them, so running on them is never silent.
-	#[must_use]
-	pub fn host_specific_defaults_in_use(&self) -> Vec<&'static str> {
-		host_specific_defaults_in_use(&self.allowed_origins, &self.app_base_url, &self.nats.nats_url, self.redis_url.as_deref())
+		some_cache::CacheConfig::new(self.redis_url.clone()).with_ttl(crate::cache::CACHE_TTL)
 	}
 }
 
@@ -683,56 +415,32 @@ fn parse_timezone(name: &str) -> Result<String, Box<dyn std::error::Error + Send
 		.map_err(|_| "not an IANA zone name, e.g. America/Denver".into())
 }
 
-/// Variables the retired transcriber's setup (#407) left set in `.env`.
+/// Variables a retired setup left set that nothing reads any more.
 ///
-/// The `WHISPER_*` three, which nothing reads, and `OTEL_SERVICE_NAME` set to
-/// `transcriber`, which renames `file_host`'s traces. Startup warns with
-/// their names, so a stale `.env` is never silent (#476).
+/// The retired transcriber's `WHISPER_*` three (#407), and
+/// `OTEL_SERVICE_NAME`, which the binary's own name replaced (#617). Startup
+/// warns with their names, so a stale deployment file is never silent
+/// (#476).
 ///
-/// The one read around clap (#484): the `WHISPER_*` three are declared
-/// nowhere, and are looked for only so a stale `.env` is named.
-/// `otel_service_name` is the `Config`'s.
+/// The one read around clap (#484): these are declared nowhere, and are
+/// looked for only so a stale file is named.
 #[must_use]
 #[allow(clippy::disallowed_methods)]
-pub fn retired_variables_set(otel_service_name: &str) -> Vec<&'static str> {
-	retired_variables_in(|name| std::env::var(name).ok(), otel_service_name)
+pub fn retired_variables_set() -> Vec<&'static str> {
+	retired_variables_in(|name| std::env::var(name).ok())
 }
 
 /// [`retired_variables_set`] over `var`, which reads one variable.
-fn retired_variables_in(var: impl Fn(&str) -> Option<String>, otel_service_name: &str) -> Vec<&'static str> {
-	let mut set: Vec<&'static str> = ["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS"]
+fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
+	["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
 		.into_iter()
 		.filter(|name| var(name).is_some())
-		.collect();
-	if otel_service_name == "transcriber" {
-		set.push("OTEL_SERVICE_NAME");
-	}
-	set
-}
-
-/// Compares values, not where they came from: setting a variable to the dev
-/// host's value explicitly is still running on the dev host's value.
-fn host_specific_defaults_in_use(allowed_origins: &[String], app_base_url: &str, nats_url: &str, redis_url: Option<&str>) -> Vec<&'static str> {
-	let mut in_use = Vec::new();
-	if allowed_origins.join(",") == DEV_HOST_ALLOWED_ORIGINS {
-		in_use.push("ALLOWED_ORIGINS");
-	}
-	if app_base_url == DEV_HOST_APP_BASE_URL {
-		in_use.push("APP_BASE_URL");
-	}
-	if nats_url == DEV_HOST_NATS_URL {
-		in_use.push("NATS_URL");
-	}
-	// Unset falls back to the dev-host value; set to it is the same value.
-	if redis_url.is_none_or(|url| url == DEV_HOST_REDIS_URL) {
-		in_use.push("REDIS_URL");
-	}
-	in_use
+		.collect()
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{host_specific_defaults_in_use, retired_variables_in, Config, DEV_HOST_ALLOWED_ORIGINS, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, DEV_HOST_REDIS_URL};
+	use super::{retired_variables_in, Config};
 	use clap::{CommandFactory, Parser};
 
 	#[test]
@@ -740,65 +448,33 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 43] = [
+	const REFUSED: [(&str, &str); 16] = [
 		("RUST_LOG", "info,=[bad"),
-		("CONNECTION_TIMEOUT", "soon"),
-		("MAX_IN_FLIGHT", "-1"),
-		("FILE_HOST_PORT", "70000"),
-		("FILE_HOST_PORT_FALLBACK", "1"),
 		("RATE_LIMIT", "-1"),
-		("CACHE_TTL", "1.5"),
-		("PROMETHEUS_PORT", "70000"),
-		("BUFFER_SIZE", "64k"),
-		("MAX_REQUEST_SIZE_MB", "10MB"),
-		("MAX_CONCURRENT_REQUESTS", "many"),
-		("TASK_TIMEOUT_MS", "15s"),
-		("MAX_CHUNKS_IN_FLIGHT", "-5"),
 		("NUDGE_ENABLED", "on"),
 		("NUDGE_QUIET_HOURS_START", "10pm"),
 		("NUDGE_QUIET_HOURS_END", "8am"),
-		("NUDGE_WAKER_SECONDS", "5m"),
-		("PUSH_DELIVERY_TIMEOUT_MS", "10s"),
-		("WAKER_PASS_DEADLINE_MS", "2m"),
 		("RECOMMENDER_USES_OUTCOMES", "on"),
-		("NUDGE_PRESENCE_LEASE_TTL_SECONDS", "75s"),
 		("AUTH_ENABLED", "off"),
 		("AUTH_OPEN_SIGNUP", "on"),
 		("AUTH_SESSION_DAYS", "a month"),
 		("AUTH_NEW_ACCOUNTS_PER_DAY", "-1"),
 		("MAILBOX_ENABLED", "on"),
-		("MAILBOX_SECONDS", "15m"),
 		("MAILBOX_ARCHIVE_DAYS", "90d"),
 		("TRANSCRIBE_ENABLED", "on"),
-		("TRANSCRIBE_THREADS", "all"),
-		("TRANSCRIBE_DEADLINE_SECONDS", "10m"),
-		("TRANSCRIBE_SECONDS", "1m"),
 		("RUST_ROUNDS_ENABLED", "on"),
-		("RUST_ROUNDS_SECONDS", "1m"),
-		("RUST_ROUNDS_PASS_DEADLINE_SECONDS", "10m"),
 		("GAME_FEED_ENABLED", "on"),
-		("GAME_FEED_SCOREBOARD_SECONDS", "10m"),
-		("GAME_FEED_LIVE_SECONDS", "15s"),
-		("GAME_FEED_BACKOFF_CAP_SECONDS", "-1"),
-		("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
-		("OTEL_TRACES_SAMPLER_ARG", "half"),
-		("OTEL_TRACES_SAMPLER_ARG", "2"),
 		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
 	// to start on a bad one, as the mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 27] = [
-		"FILE_HOST_BIND",
-		"FILE_HOST_PORT_FILE",
+	const FREE_TEXT: [&str; 18] = [
 		"ALLOWED_ORIGINS",
 		"REDIS_URL",
 		"NATS_URL",
-		"OBS_WEBSOCKET_IP",
-		"OBS_WEBSOCKET_PWD",
 		"DATABASE_URL",
 		"VAPID_PUBLIC_KEY",
 		"VAPID_PRIVATE_KEY",
-		"VAPID_SUBJECT",
 		"APP_BASE_URL",
 		"WEBAUTHN_RP_ID",
 		"WEBAUTHN_ORIGINS",
@@ -809,10 +485,6 @@ mod tests {
 		"MAILBOX_ARCHIVE_TOKEN",
 		"ROUTINE_SCHEDULE",
 		"FCM_SERVICE_ACCOUNT_FILE",
-		"TRANSCRIBE_MODEL",
-		"TRANSCRIBE_VAD_MODEL",
-		"RUST_ROUNDS_SOCKET",
-		"OTEL_SERVICE_NAME",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"ENVIRONMENT",
 	];
@@ -831,46 +503,19 @@ mod tests {
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 
-	#[test]
-	fn every_dev_host_default_in_use_is_named() {
-		let dev_origins: Vec<String> = DEV_HOST_ALLOWED_ORIGINS.split(',').map(String::from).collect();
-		assert_eq!(
-			host_specific_defaults_in_use(&dev_origins, DEV_HOST_APP_BASE_URL, DEV_HOST_NATS_URL, None),
-			["ALLOWED_ORIGINS", "APP_BASE_URL", "NATS_URL", "REDIS_URL"]
-		);
-	}
-
-	/// `example.env` sets `NATS_URL` to the dev host's value explicitly, for
-	/// `make dev`; that is still running on it.
-	#[test]
-	fn a_dev_host_value_set_explicitly_is_still_named() {
-		let origins = [String::from("https://app.example.com")];
-		assert_eq!(
-			host_specific_defaults_in_use(&origins, "https://app.example.com/", DEV_HOST_NATS_URL, Some(DEV_HOST_REDIS_URL)),
-			["NATS_URL", "REDIS_URL"]
-		);
-	}
-
-	#[test]
-	fn a_host_that_sets_its_own_values_runs_on_none() {
-		let origins = [String::from("https://app.example.com")];
-		assert!(host_specific_defaults_in_use(&origins, "https://app.example.com/", "nats://nats:4222", Some("redis://redis:6379")).is_empty());
-	}
-
 	/// The `.env` #476 met: every retired variable left set is named.
 	#[test]
 	fn a_retired_transcriber_variable_left_set_is_named() {
-		let stale = |name: &str| matches!(name, "WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS").then(String::new);
+		let stale = |name: &str| matches!(name, "WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME").then(String::new);
 		assert_eq!(
-			retired_variables_in(stale, "transcriber"),
+			retired_variables_in(stale),
 			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
 		);
 	}
 
-	/// `OTEL_SERVICE_NAME` is still read, so only the retired value is named.
 	#[test]
 	fn a_current_env_names_no_retired_variable() {
-		assert!(retired_variables_in(|_| None, "file_host").is_empty());
+		assert!(retired_variables_in(|_| None).is_empty());
 	}
 
 	/// `AUTH_ENABLED` is on by default, so turning it off has to be possible by
@@ -879,16 +524,16 @@ mod tests {
 	fn auth_enabled_can_be_turned_off_by_value() {
 		let required = [
 			"file_host",
-			"--obs-host",
-			"h",
-			"--obs-password",
-			"p",
 			"--database-url",
 			"sqlite::memory:",
 			"--allowed-origins",
 			"https://app.example",
 			"--app-base-url",
 			"https://app.example/",
+			"--nats-url",
+			"nats://nats:4222",
+			"--redis-url",
+			"redis://redis:6379",
 		];
 		let off = Config::try_parse_from(required.iter().copied().chain(["--auth-enabled", "false"])).unwrap();
 		assert!(!off.auth_enabled);

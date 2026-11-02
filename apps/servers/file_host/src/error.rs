@@ -76,6 +76,15 @@ pub enum FileHostError {
 	#[error("conflicts with an existing record: {0}")]
 	Conflict(&'static str),
 
+	// A 409 that names what it conflicts with, by field, as a 422 names its
+	// fields: an idea's send naming voice notes home does not hold
+	// (`handlers::ideas`). Only ids go in `details`, never what a person said.
+	#[error("conflicts with what home holds: {reason}")]
+	ConflictNaming {
+		reason: &'static str,
+		details: HashMap<Cow<'static, str>, Vec<Cow<'static, str>>>,
+	},
+
 	// ---- transparent from-conversions ----
 	#[error("serialization error: {0}")]
 	NonSerializableData(#[from] serde_json::Error),
@@ -195,7 +204,7 @@ impl FileHostError {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden | Self::SignupClosed | Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
-			Self::Conflict(_) => StatusCode::CONFLICT,
+			Self::Conflict(_) | Self::ConflictNaming { .. } => StatusCode::CONFLICT,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -227,7 +236,7 @@ impl FileHostError {
 			Self::InvalidEncodedDate(_) => "invalid_encoded_date",
 			Self::UnprocessableEntity { .. } => "unprocessable_entity",
 			Self::MaxRecordLimitExceeded => "max_record_limit_exceeded",
-			Self::Conflict(_) => "conflict",
+			Self::Conflict(_) | Self::ConflictNaming { .. } => "conflict",
 			Self::NonSerializableData(_) => "serialization_error",
 			Self::IntegerConversionError(_) => "integer_conversion_error",
 			Self::ResponseBuildError(_) => "response_build_error",
@@ -262,7 +271,7 @@ impl FileHostError {
 			Self::MaxRecordLimitExceeded => "maximum record limit exceeded",
 			Self::IntegerConversionError(_) => "integer out of range",
 			Self::UnexpectedSinglePair => "expected exactly one key-value pair",
-			Self::Conflict(reason) => reason,
+			Self::Conflict(reason) | Self::ConflictNaming { reason, .. } => reason,
 			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
@@ -303,9 +312,13 @@ impl IntoResponse for FileHostError {
 		let code = self.code();
 		let message = self.message();
 		let is_unauthorized = matches!(&self, Self::Unauthorized);
-		// Only `UnprocessableEntity` carries details; every other variant's
-		// answer is its `code` and `message` alone.
-		let details = if let Self::UnprocessableEntity { errors } = self { Some(errors) } else { None };
+		// Only `UnprocessableEntity` and `ConflictNaming` carry details; every
+		// other variant's answer is its `code` and `message` alone.
+		let details = if let Self::UnprocessableEntity { errors } | Self::ConflictNaming { details: errors, .. } = self {
+			Some(errors)
+		} else {
+			None
+		};
 
 		let mut response = (
 			status,

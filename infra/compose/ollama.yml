@@ -24,12 +24,11 @@ services:
       # - OLLAMA_NUM_THREAD=4
     # Box only: no auth. Containers use http://ollama:11434.
     ports:
-      - '127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434'
+      - '127.0.0.1:11434:11434'
     volumes:
       # OLLAMA_MODELS_PATH: the host directory of Ollama's models, mounted
-      # here (e.g. /mnt/ssd/ollama-models). HOST-SPECIFIC default: the
-      # nixos.local dev host's storage mount (#406); another host sets it.
-      - ${OLLAMA_MODELS_PATH:-/mnt/storage/users/dev/models/ollama-models}:/root/.ollama/models
+      # here, set in each role's compose.sops.env (#614).
+      - ${OLLAMA_MODELS_PATH:?set OLLAMA_MODELS_PATH in deploy/<role>/compose.sops.env}:/root/.ollama/models
     networks:
       - monitoring-network
     mem_limit: 8G

@@ -14,6 +14,9 @@
 //! - **Bounded retries.** [`waiting`] names only the notes a model has not
 //!   ended and has failed on fewer than `attempts` times, so one note whose
 //!   audio cannot be heard is never retried forever.
+//! - **A note set aside waits on no model** ([`crate::set_aside`]): [`waiting`]
+//!   skips it, and whatever was heard in it before stays. A Jobs note is the
+//!   exception: a file naming it still waits on its transcript.
 //! - **Per subject.** A row is written only for a note the subject holds, in
 //!   the statement that writes it, so nothing outlives its note or account.
 //! - **Each heard word keeps its time** (paulgsc/some-ui#2085, GWB11;
@@ -21,6 +24,9 @@
 //!   [`Word`]s go to `voice_transcript_word` in the transaction that writes
 //!   its row, append-only too, and [`words`] reads back those of the newest
 //!   transcript that heard something, for the captions burned into a short.
+//! - **The phone reads the text back** (paulgsc/some-ui#2428, MIC10).
+//!   [`heard`] takes the same transcript [`words`] does, for the subject's
+//!   own note, and is `file_host`'s `GET /voice-notes/:id/heard`'s only read.
 
 use crate::VoiceError;
 use sqlx::SqliteConnection;
@@ -116,6 +122,13 @@ pub struct Waiting {
 /// The notes `model` has not ended (heard, or found silent) and has failed on
 /// fewer than `attempts` times, oldest first, at most `limit`.
 ///
+/// A note the owner set aside ([`crate::set_aside`]) is not one: hearing it
+/// is work nothing wants, since its transcript is filed for no routine and
+/// the phone has let it go. One it had already heard keeps its transcripts.
+/// A Jobs note is the exception, heard though set aside: a decisions or
+/// scouts file naming it is what puts it in front of the routine, and a mark
+/// does not unname it (`mailbox_repo::unfiled_transcripts` files it too).
+///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn waiting(conn: &mut SqliteConnection, model: &str, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
@@ -126,6 +139,8 @@ pub async fn waiting(conn: &mut SqliteConnection, model: &str, attempts: i64, li
 		                     AND t.outcome IN ('heard', 'silent'))
 		   AND (SELECT COUNT(*) FROM voice_transcript t
 		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.model = ?1) < ?2
+		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		 ORDER BY n.stored_at, n.subject_id, n.note_id
 		 LIMIT ?3"#,
 		model,
@@ -295,6 +310,76 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		.fetch_all(&mut *conn)
 		.await?,
 	)
+}
+
+/// What home heard in a note, as the phone reads it back
+/// (`GET /voice-notes/:id/heard`, paulgsc/some-ui#2428, MIC10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hearing {
+	/// The subject holds no note under that id.
+	NotHeld,
+	/// The note is held, and no model has heard it or found it silent yet. A
+	/// note every model failed on stays here: a failure is an attempt, not an
+	/// ending.
+	Waiting,
+	/// The note's transcript, as [`heard`] takes it.
+	Heard(Transcript),
+}
+
+/// One ended transcript of a note. Serialized as `GET /voice-notes/:id/heard`
+/// and `GET /ideas` answer it, keys in `camelCase`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transcript {
+	/// What was heard; empty when the model found the note silent. Never
+	/// logged.
+	pub text: String,
+	/// Whisper's code for the language detected; none for a silent note.
+	pub language: Option<String>,
+	/// The model file it was heard with.
+	pub model: String,
+	/// When that attempt ended, as stored: ISO-8601 UTC.
+	pub heard_at: String,
+}
+
+/// What home heard in `subject`'s note `note_id`.
+///
+/// The newest transcript that heard something, as [`words`] takes it (by
+/// `heard_at`, then model, newest first), so the text and the words always
+/// match. Only when no model heard any speech is the note's newest silent
+/// ending read, as empty text: home heard it, and nothing was said. One
+/// statement, by the two tables' primary keys.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn heard(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Hearing, VoiceError> {
+	let row = sqlx::query!(
+		r#"SELECT t.outcome AS "outcome?: String", t.text AS "text?: String", t.language AS "language?: String",
+		          t.model AS "model?: String", t.heard_at AS "heard_at?: String"
+		   FROM voice_note n
+		   LEFT JOIN voice_transcript t
+		     ON t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
+		   WHERE n.subject_id = ?1 AND n.note_id = ?2
+		   ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
+		   LIMIT 1"#,
+		subject,
+		note_id
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	let Some(row) = row else {
+		return Ok(Hearing::NotHeld);
+	};
+	let (Some(outcome), Some(model), Some(heard_at)) = (row.outcome, row.model, row.heard_at) else {
+		return Ok(Hearing::Waiting);
+	};
+	let text = if outcome == "heard" { row.text.ok_or(VoiceError::Unreadable)? } else { String::new() };
+	Ok(Hearing::Heard(Transcript {
+		text,
+		language: row.language,
+		model,
+		heard_at,
+	}))
 }
 
 /// The words `model` heard in `subject`'s note `note_id`, in the order said.

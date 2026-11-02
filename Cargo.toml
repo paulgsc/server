@@ -10,6 +10,7 @@ members = [
   "apps/orchestrator",
   "apps/some-obs",
   "apps/playoff_delta_job",
+  "apps/envctl",
 
   # crates (transitive deps of the apps above)
   "crates/app-config",
@@ -22,11 +23,15 @@ members = [
   "crates/db/jobs",
   "crates/db/game_feed",
   "crates/db/korean",
+  "crates/db/study_note",
   "crates/db/mailbox",
   "crates/db/notice",
   "crates/db/storage",
   "crates/db/leetype_log",
   "crates/db/studio_log",
+  "crates/db/idea",
+  "crates/db/reflection",
+  "crates/db/drama_prompt",
   "crates/db/leetype_round",
   "crates/db/learner_shelf",
   "crates/db/mood_event",
@@ -157,6 +162,7 @@ curriculum_repo = { path = "crates/db/curriculum" }
 game_feed_repo = { path = "crates/db/game_feed" }
 jobs_repo = { path = "crates/db/jobs" }
 korean_repo = { path = "crates/db/korean" }
+study_note_repo = { path = "crates/db/study_note" }
 mailbox_kit = { path = "crates/mailbox_kit" }
 notice_repo = { path = "crates/db/notice" }
 fcm_kit = { path = "crates/fcm_kit" }
@@ -164,6 +170,9 @@ mailbox_repo = { path = "crates/db/mailbox" }
 storage_repo = { path = "crates/db/storage" }
 leetype_log_repo = { path = "crates/db/leetype_log" }
 studio_log_repo = { path = "crates/db/studio_log" }
+idea_repo = { path = "crates/db/idea" }
+reflection_repo = { path = "crates/db/reflection" }
+drama_prompt_repo = { path = "crates/db/drama_prompt" }
 leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }
@@ -189,7 +198,6 @@ async-trait = "0.1.64"
 axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
 clap = { version = "4.5.8", features = ["derive", "env"] }
 chrono = "0.4.23"
-dotenvy = "0.15.7"
 futures = "0.3.26"
 lazy_static = "1.4.0"
 metrics = "0.24.6"

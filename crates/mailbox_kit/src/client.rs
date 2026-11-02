@@ -33,13 +33,19 @@ pub enum Folder {
 	/// Home's bookkeeping for one routine, `index-<routine>-<stamp>.json`:
 	/// the latest only, never archived or asked for.
 	Index,
+	/// A written reflection home keeps, its text only,
+	/// `reflection-<id>.json`: archived, never asked for.
+	Reflection,
+	/// A drama prompt home keeps, its stamp and markdown only,
+	/// `drama-<stamp>.prompt.json`: archived, never asked for.
+	Prompt,
 }
 
 impl Folder {
 	/// Every folder. A pass's archiving walks all of them but [`Self::Index`],
 	/// home's index, a view the mailbox keeps only the latest of
 	/// (`file_host`'s `mailbox::pass::ARCHIVES`).
-	pub const ALL: [Self; 11] = [
+	pub const ALL: [Self; 13] = [
 		Self::Brief,
 		Self::Decisions,
 		Self::Scout,
@@ -51,6 +57,8 @@ impl Folder {
 		Self::Leetype,
 		Self::LeetypeLog,
 		Self::Index,
+		Self::Reflection,
+		Self::Prompt,
 	];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
@@ -68,6 +76,8 @@ impl Folder {
 			Self::Leetype => "leetype",
 			Self::LeetypeLog => "leetype-log",
 			Self::Index => "index",
+			Self::Reflection => "reflection",
+			Self::Prompt => "prompt",
 		}
 	}
 }

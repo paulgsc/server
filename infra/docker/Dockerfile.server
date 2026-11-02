@@ -96,7 +96,6 @@ COPY migrations/ migrations/
 # fingerprint, so setting it only after cook made the final build recompile
 # every dependency cook had just compiled.
 ENV RUST_BACKTRACE=1
-ENV RUST_LOG=info
 ENV SQLX_OFFLINE=true
 
 # Populated by CI via --build-arg (see .github/actions/docker-build). Not
@@ -169,9 +168,7 @@ RUN chmod +x /usr/local/bin/file_host \
 USER nonroot:nonroot
 
 # Runtime configuration
-ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
-ENV DATA_DIR=/app/data
 
 # Healthcheck endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

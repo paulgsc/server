@@ -224,8 +224,16 @@ fn the_runner_reaches_file_host_only_through_leetype_runner() {
 	// Set by cargo for the test it runs: the toolchain's own `cargo`.
 	#[allow(clippy::disallowed_methods)]
 	let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+	// The graph built for this host. Unfiltered, `--offline` needs every
+	// platform's crates downloaded (crossterm's Windows-only one, via envctl),
+	// though nothing here builds them.
+	let version = std::process::Command::new(&cargo).arg("-vV").output().unwrap();
+	let host = String::from_utf8_lossy(&version.stdout)
+		.lines()
+		.find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
+		.unwrap();
 	let metadata = std::process::Command::new(cargo)
-		.args(["metadata", "--format-version", "1", "--offline", "--manifest-path"])
+		.args(["metadata", "--format-version", "1", "--offline", "--filter-platform", &host, "--manifest-path"])
 		.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
 		.output()
 		.unwrap();

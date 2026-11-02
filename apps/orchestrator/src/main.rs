@@ -5,7 +5,10 @@ use some_transport::NatsTransport;
 use tracing_subscriber::EnvFilter;
 use ws_events::events::UnifiedEvent;
 
-#[tokio::main]
+// Worker threads are a source constant (#617), not tokio's own
+// TOKIO_WORKER_THREADS: compose gave this 1-CPU container 4, so 4 it is,
+// and nothing about how it runs changes.
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
 	let config = Config::parse();
 
@@ -18,7 +21,7 @@ async fn main() -> Result<()> {
 	tracing::info!("🎬 Starting NATS Orchestrator Service");
 
 	let metrics_handle = some_metrics::install()?;
-	let metrics_addr = config.metrics_addr;
+	let metrics_addr = orchestrator::config::METRICS_ADDR;
 	tokio::spawn(async move {
 		if let Err(error) = some_metrics::serve(metrics_addr, metrics_handle).await {
 			tracing::error!(%error, "metrics listener exited");

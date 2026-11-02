@@ -1,15 +1,15 @@
 //! Where `file_host` listens, and the dev-only port juggle.
 //!
-//! Production listens on exactly the port it is given (`FILE_HOST_PORT`,
+//! Production listens on exactly the port it is given (`listen::PORT`,
 //! 3000 by default) or fails to start: its container publishes
 //! `127.0.0.1:3000:3000` and its healthcheck asks 3000, so a server that
 //! quietly moved would be up, unreachable, and marked unhealthy for a reason
 //! nobody could see.
 //!
 //! A server run from source beside that container opts into the juggle
-//! (`make dev`): `FILE_HOST_PORT_FALLBACK` takes the next free port when the
-//! asked-for one is taken, and `FILE_HOST_PORT_FILE` records the port it
-//! actually got, so `paulgsc/some-ui`'s `vite dev` can find it without anyone
+//! (`make dev`): `--port-fallback true` takes the next free port when the
+//! asked-for one is taken, and `--port-file` records the port it actually
+//! got, so `paulgsc/some-ui`'s `vite dev` can find it without anyone
 //! choosing a port. The file is JSON, `{ "port": 3001, "pid": 12345 }`: the
 //! pid lets a reader ignore a file left behind by a process that no longer
 //! exists (a `kill -9` never reaches the cleanup below).
@@ -46,20 +46,30 @@ pub async fn bind(host: &str, port: u16, fallback: bool) -> io::Result<TcpListen
 	Err(in_use.unwrap_or_else(|| io::Error::from(io::ErrorKind::AddrInUse)))
 }
 
+/// The address the server listens on.
+///
+/// Every interface of its container, whose host side compose publishes on
+/// 127.0.0.1 only
+/// (`infra/compose/file_host.yml`). A source constant (#617), as
+/// `FILE_HOST_BIND` was by default.
+pub const BIND: &str = "0.0.0.0";
+
+/// The port the server listens on.
+///
+/// Compose publishes it and the healthcheck asks it. `make dev` moves past it with the port fallback, never by
+/// changing it. A source constant (#617), as `FILE_HOST_PORT` was by default.
+pub const PORT: u16 = 3000;
+
 /// The listener `main` serves on, from `config`, and the port file recording
 /// it when `config.port_file` asks for one.
 ///
 /// # Errors
 /// A bind failure (see [`bind`]) or a port file that cannot be written.
 pub async fn from_config(config: &crate::Config) -> io::Result<(TcpListener, Option<PortFile>)> {
-	let listener = bind(&config.host, config.port, config.port_fallback).await?;
+	let listener = bind(BIND, PORT, config.port_fallback).await?;
 	let bound = listener.local_addr()?;
-	if bound.port() != config.port {
-		tracing::warn!(
-			requested = config.port,
-			bound = bound.port(),
-			"port taken; listening on the next free one (FILE_HOST_PORT_FALLBACK)"
-		);
+	if bound.port() != PORT {
+		tracing::warn!(requested = PORT, bound = bound.port(), "port taken; listening on the next free one (--port-fallback)");
 	}
 	tracing::info!("listening on {bound}");
 	let port_file = config.port_file.as_deref().map(|path| PortFile::write(path, bound.port())).transpose()?;

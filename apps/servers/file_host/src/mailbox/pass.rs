@@ -7,9 +7,12 @@
 //! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
 //! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
-//! names a voice note by id at most), which lessons it opened, those
+//! names a voice note by id at most), which lessons it opened, each written
+//! reflection it sent home (`PUT /routine/reflections/:id`, text only), each
+//! drama prompt it asked for (`PUT /routine/prompts/:stamp`, text only), those
 //! transcripts and those logs. Last of the handing, it puts the Jobs
-//! routine's index when what it counts has moved ([`super::index`]), so the
+//! routine's index and the reflections routine's, each when what it counts
+//! has moved ([`super::index`], [`super::index::reflections`]), so each
 //! index counts what this pass handed. The index is a view home recomputes,
 //! not a record: home keeps no copy, archiving never walks its folder, and
 //! the routine cannot ask for an old one ([`ARCHIVES`]).
@@ -47,6 +50,17 @@
 //! read, checked against its listing and stored in `mailbox_archive`, and
 //! only then does the mailbox drop its bytes, and only if they are still the
 //! ones home stored. A file home could not store stays live.
+//!
+//! A written reflection or a drama prompt is archived the same way, but its
+//! folder is listed only once one home filed there is due
+//! ([`mailbox_repo::filed_due`], which reads home's own tables), and no ask
+//! for one is ever listed: the routine cannot ask either back
+//! (paulgsc/some-ui `apps/mailbox`, `ASKED`). Home records the mailbox's
+//! answer to each ask to archive one (`mailbox_archive_answer`), and asks
+//! again, by name, for one it stored whose ask heard none
+//! ([`mailbox_repo::unanswered_archives`]): a stored file is due no more, so
+//! the listing would never find it again. So a pass with nothing to do
+//! makes no request for either folder.
 
 use crate::auth::DeletionLock;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -62,15 +76,42 @@ use std::fmt;
 /// the next pass.
 pub const ITEMS_PER_PASS: u32 = 20;
 
-/// The folders archiving walks, for the routine's asks and for files old
-/// enough to go home: every folder but `index`.
+/// The folders archiving walks for files old enough to go home: every
+/// folder but `index`. Its asks walk [`ASKS`].
 ///
 /// Home's index is a view it recomputes from records it keeps, not a record
 /// (owner, paulgsc/server#509): the mailbox holds only the latest per
 /// routine and drops the one before when home puts a new one, so there is
 /// nothing to archive or put back, and listing it would add two requests to
 /// every idle pass (MI6, paulgsc/some-ui `packages/assurance`).
-pub const ARCHIVES: [Folder; 10] = [
+///
+/// A written reflection's folder, and a drama prompt's, is listed only once
+/// one home filed there is due (`mailbox_repo::filed_due`, from home's own
+/// tables), and one home stored is asked for again only while its ask has
+/// no answer (`mailbox_repo::unanswered_archives`), so neither adds a
+/// request to an idle pass.
+pub const ARCHIVES: [Folder; 12] = [
+	Folder::Brief,
+	Folder::Decisions,
+	Folder::Scout,
+	Folder::Scene,
+	Folder::Drama,
+	Folder::Run,
+	Folder::Opened,
+	Folder::Transcript,
+	Folder::Leetype,
+	Folder::LeetypeLog,
+	Folder::Reflection,
+	Folder::Prompt,
+];
+
+/// The folders whose asks a pass answers: every one it archives but
+/// `reflection` and `prompt`.
+///
+/// The routine cannot ask a written reflection or a drama prompt back
+/// (paulgsc/some-ui `apps/mailbox`, `ASKED`), so listing their asks would
+/// only add requests to every pass (MI6).
+pub const ASKS: [Folder; 10] = [
 	Folder::Brief,
 	Folder::Decisions,
 	Folder::Scout,
@@ -97,6 +138,48 @@ pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
 /// What a `LeetType` session's log put to the mailbox's `leetype-log` folder
 /// is (paulgsc/some-ui `apps/mailbox`, the `leetype-log` folder's rules).
 pub const LEETYPE_LOG_SCHEMA: &str = "some-ui.leetype-log/1";
+
+/// What a written reflection put to the mailbox's `reflection` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const REFLECTION_SCHEMA: &str = "some-ui.reflection/1";
+
+/// A written reflection as the mailbox takes it, and its name there.
+///
+/// The routine's minimum (paulgsc/some-ui#2174, decision D2): its id, the
+/// session it is about, when it was written and the typed line. Nothing of
+/// the one-tap answers, of how far into the session, or of any audio.
+#[must_use]
+pub fn reflection_file(reflection: &reflection_repo::Reflection) -> (String, Vec<u8>) {
+	let name = String::from("reflection-") + &reflection.id + ".json";
+	let body = serde_json::json!({
+		"schema": REFLECTION_SCHEMA,
+		"reflection": reflection.id,
+		"session": reflection.session_id,
+		"at": reflection.created_at,
+		"text": reflection.body.text,
+	});
+	(name, body.to_string().into_bytes())
+}
+
+/// What a drama prompt put to the mailbox's `prompt` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const PROMPT_SCHEMA: &str = "some-ui.drama-prompt/1";
+
+/// A drama prompt as the mailbox takes it, and its name there.
+///
+/// The routine's minimum (paulgsc/some-ui#2174, decision D2): its stamp and
+/// its markdown, which names its scene notes by id. Nothing of their audio:
+/// what home heard in each goes as its transcript.
+#[must_use]
+pub fn prompt_file(prompt: &drama_prompt_repo::Prompt) -> (String, Vec<u8>) {
+	let name = prompt.stamp.clone() + ".prompt.json";
+	let body = serde_json::json!({
+		"schema": PROMPT_SCHEMA,
+		"prompt": prompt.stamp,
+		"text": prompt.text,
+	});
+	(name, body.to_string().into_bytes())
+}
 
 /// The largest body the mailbox takes (paulgsc/some-ui `apps/mailbox`,
 /// `MAX_BODY_BYTES`): a log over it is refused at filing, never handed.
@@ -270,7 +353,7 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 ///
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then puts
-/// the Jobs index if what it counts moved since `last_index`, then, with
+/// each routine's index if what it counts moved since `last_index`, then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
@@ -290,7 +373,7 @@ pub async fn run_once<T: MailboxTransport>(
 	subject: &str,
 	deletion: &DeletionLock,
 	settle: std::time::Duration,
-	last_index: &super::index::LastIndex,
+	last_index: &super::index::LastIndexes,
 	now: &(impl Fn() -> String + Sync),
 ) -> Result<Outcome, PassError> {
 	let mut outcome = Outcome::default();
@@ -317,11 +400,13 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		hand_over(db, mailbox, subject, deletion, now, &mut outcome).await
 	};
-	// After outbound, so the index counts what this pass handed.
+	// After outbound, so each index counts what this pass handed.
 	let index = if outcome.no_account {
 		Ok(())
 	} else {
-		super::index::put_jobs_index(db, mailbox, subject, last_index, now, &mut outcome).await
+		let jobs = super::index::put_jobs_index(db, mailbox, subject, &last_index.jobs, now, &mut outcome).await;
+		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
+		jobs.and(reflections)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
@@ -455,7 +540,10 @@ async fn hand_over<T: MailboxTransport>(
 			"opened" => Folder::Opened,
 			"transcript" => Folder::Transcript,
 			"leetype-log" => Folder::LeetypeLog,
+			"reflection" => Folder::Reflection,
+			"prompt" => Folder::Prompt,
 			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
+			// `PUT /routine/reflections/:id`, `PUT /routine/prompts/:stamp`,
 			// `file_transcripts` and `file_leetype_logs` file only these.
 			_ => continue,
 		};
@@ -486,11 +574,13 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	};
 	for transcript in &heard {
 		match file_transcript(db, deletion, subject, transcript, &now()).await.map_err(storage)? {
-			Change::NoAccount => {
+			// Set aside since it was read above: filed for no routine.
+			None => {}
+			Some(Change::NoAccount) => {
 				outcome.no_account = true;
 				return Ok(());
 			}
-			Change::Added | Change::Unchanged => outcome.filed += 1,
+			Some(Change::Added | Change::Unchanged) => outcome.filed += 1,
 		}
 	}
 	Ok(())
@@ -615,7 +705,7 @@ fn leetype_log_body(held: &SessionEvents) -> Option<Vec<u8>> {
 /// The mailbox takes only the bytes it archived; an ask home holds nothing
 /// for (`missing`) stays open.
 async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving<'_, T>, subject: &str, outcome: &mut Outcome) -> Result<(), Failure> {
-	for folder in ARCHIVES {
+	for folder in ASKS {
 		let asks = archiving.mailbox.wanted(folder, PAGE_LIMIT).await.map_err(Failure::Mailbox)?;
 		for ask in asks {
 			let body = {
@@ -656,6 +746,37 @@ async fn archive_old<T: MailboxTransport>(
 	};
 	let mut budget = ITEMS_PER_PASS as usize;
 	for folder in ARCHIVES {
+		// Home knows which reflections and prompts it filed and when the
+		// mailbox took them, so it lists each folder only once one is old
+		// enough. One it stored whose ask heard no answer is no longer due, so
+		// it is asked for again by name first.
+		if answers_recorded(folder) {
+			let owed = {
+				let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+				let limit = i64::try_from(budget).unwrap_or(i64::MAX);
+				mailbox_repo::unanswered_archives(&mut conn, subject, folder.as_str(), limit).await.map_err(storage)?
+			};
+			for file in owed {
+				let item = mailbox_kit::ItemMeta {
+					seq: file.seq,
+					name: file.name,
+					size: u64::try_from(file.size).unwrap_or_default(),
+					sha256: file.sha256,
+					content_type: String::from("application/json"),
+					put_at: file.put_at,
+					live_since: None,
+				};
+				outcome.archived.push(ask_archive(db, archiving, subject, deletion, now, folder, &item).await?);
+				budget -= 1;
+			}
+			if budget == 0 {
+				return Ok(());
+			}
+			let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+			if !mailbox_repo::filed_due(&mut conn, subject, folder.as_str(), &cutoff).await.map_err(storage)? {
+				continue;
+			}
+		}
 		// Paged, so files that stay live at the head (each counted below)
 		// never hold back the old ones behind them.
 		let mut after = 0;
@@ -735,6 +856,31 @@ async fn archive_one<T: MailboxTransport>(
 		Err(mailbox_repo::MailboxError::Rewritten) => return Ok(Some("rewritten")),
 		Err(mailbox_repo::MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
 	}
+	ask_archive(db, archiving, subject, deletion, now, folder, item).await.map(Some)
+}
+
+/// The folders whose archive answers home records (`mailbox_archive_answer`):
+/// a written reflection's and a drama prompt's, which home lists only while
+/// one is due, so a stored one whose ask heard no answer would never be
+/// listed again.
+const fn answers_recorded(folder: Folder) -> bool {
+	matches!(folder, Folder::Reflection | Folder::Prompt)
+}
+
+/// Asks the mailbox to drop `item`, whose bytes home holds in
+/// `mailbox_archive`, naming their SHA-256: what it answered. For a written
+/// reflection or a drama prompt the answer is recorded
+/// (`mailbox_archive_answer`), so one whose ask never reached the mailbox is
+/// asked for again.
+async fn ask_archive<T: MailboxTransport>(
+	db: &SqlitePool,
+	archiving: &Archiving<'_, T>,
+	subject: &str,
+	deletion: &DeletionLock,
+	now: &(impl Fn() -> String + Sync),
+	folder: Folder,
+	item: &mailbox_kit::ItemMeta,
+) -> Result<&'static str, Failure> {
 	let answer = match archiving.mailbox.archive(folder, item).await {
 		Ok(Archive::Archived) => "archived",
 		Ok(Archive::Unchanged) => "unchanged",
@@ -743,7 +889,13 @@ async fn archive_one<T: MailboxTransport>(
 		Err(MailboxError::NotFound) => "gone",
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
-	Ok(Some(answer))
+	if answers_recorded(folder) {
+		// No account: the deletion that took it took the archive too.
+		record_archive_answer(db, deletion, subject, folder.as_str(), &item.name, answer, &now())
+			.await
+			.map_err(storage)?;
+	}
+	Ok(answer)
 }
 
 pub(super) fn storage(err: mailbox_repo::MailboxError) -> Failure {
@@ -765,10 +917,24 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// `keep_item` and `record_handed` check the subject's account in the
 /// statement that writes, and the hold keeps a deletion from landing between
 /// them. Held for this write only, never across a request to the mailbox.
+///
+/// A list of the takes Drive holds, new in `brief` as `drive-takes-*`
+/// (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`), has its takes
+/// home holds recorded as on Drive in the same transaction
+/// (`voice_repo::on_drive`, paulgsc/some-ui#2401). Any other file, or one
+/// that does not read as a list, is kept as every `brief` file is, and
+/// records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+	let listed = (item.folder == Folder::Brief.as_str() && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
+		.then(|| voice_repo::on_drive::listed_in(item.body))
+		.flatten();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
+	if let (Change::Added, Some((at, sha256))) = (change, &listed) {
+		let listed = voice_repo::on_drive::Listed { at, name: item.name, sha256 };
+		voice_repo::on_drive::record(&mut tx, subject, listed, now).await?;
+	}
 	tx.commit().await?;
 	Ok(change)
 }
@@ -782,11 +948,32 @@ async fn keep_archived(db: &SqlitePool, deletion: &DeletionLock, subject: &str, 
 	Ok(change)
 }
 
+/// As [`keep`], for the mailbox's answer to an ask to archive a file.
+async fn record_archive_answer(
+	db: &SqlitePool,
+	deletion: &DeletionLock,
+	subject: &str,
+	folder: &str,
+	name: &str,
+	answer: &str,
+	now: &str,
+) -> Result<Change, mailbox_repo::MailboxError> {
+	let _hold = deletion.hold().await;
+	let mut conn = db.acquire().await?;
+	mailbox_repo::record_archive_answer(&mut conn, subject, folder, name, answer, now).await
+}
+
 /// As [`keep`], for a transcript filed under its note's next number, which
-/// is read in the same transaction.
-async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
+/// is read in the same transaction; `None`, filing nothing, when the owner
+/// set the note aside since [`mailbox_repo::unfiled_transcripts`] read it
+/// (`mailbox_repo::set_aside_from_routines`, checked in that transaction, so
+/// a mark committed between the read and this write is seen).
+async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Option<Change>, mailbox_repo::MailboxError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	if mailbox_repo::set_aside_from_routines(&mut tx, subject, &heard.note_id).await? {
+		return Ok(None);
+	}
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
 		.await
 		.map_err(mailbox_repo::MailboxError::Storage)?;
@@ -795,7 +982,7 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
 	tx.commit().await?;
-	Ok(change)
+	Ok(Some(change))
 }
 
 /// As [`keep`], for a `LeetType` session's log, built from the session's
@@ -853,9 +1040,9 @@ async fn record(
 
 #[cfg(test)]
 mod tests {
-	use super::{run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
+	use super::{file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
-	use crate::mailbox::index::LastIndex;
+	use crate::mailbox::index::LastIndexes;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
 	use sha2::{Digest, Sha256};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -891,7 +1078,7 @@ mod tests {
 		index_fails: Mutex<bool>,
 		/// Home's memory of the last index it put, kept across this fake's
 		/// passes as the poller keeps it across ticks.
-		last_index: LastIndex,
+		last_index: LastIndexes,
 	}
 
 	impl Fake {
@@ -930,11 +1117,13 @@ mod tests {
 						"/v1/scout/items/",
 						"/v1/opened/items/",
 						"/v1/transcript/items/",
-						"/v1/leetype-log/items/"
+						"/v1/leetype-log/items/",
+						"/v1/reflection/items/",
+						"/v1/prompt/items/"
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs and indexes: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections and drama prompts: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -1033,6 +1222,91 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!((seq, stored), (10, body.into_bytes()), "the mailbox's seq and the bytes as it held them");
+	}
+
+	/// A `studio` voice note `id` home holds, its audio hashing to `sha256`.
+	async fn studio_take(pool: &SqlitePool, id: &str, sha256: &str) {
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'studio', 'ep04:s1:t', 'then', 'audio/webm', 1, ?3, 'now')",
+		)
+		.bind(OWNER)
+		.bind(id)
+		.bind(sha256)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn on_drive(pool: &SqlitePool) -> Vec<(String, String, String)> {
+		sqlx::query_as("SELECT note_id, listed_at, list_name FROM studio_take_on_drive ORDER BY note_id")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	/// HF11 (paulgsc/some-ui#2401): the build-journal session's list of the
+	/// takes Drive holds, in `brief`, is kept as any `brief` file is, and each
+	/// take home holds that it names is recorded as on Drive, once; the Jobs
+	/// index, which does not count it, is not put again for it. Each list
+	/// arrives after the digest, so a `jobs_as_of` that counted every `brief`
+	/// file would move with it and put the index again.
+	#[tokio::test]
+	async fn a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(1, &name, &body);
+		pass(&pool, &fake).await.unwrap();
+		let indexes = fake.indexes.lock().unwrap().len();
+		studio_take(&pool, "t1", &"a".repeat(64)).await;
+		studio_take(&pool, "t2", &"b".repeat(64)).await;
+		let list = serde_json::json!({
+			"schema": "some-ui.drive-takes/1",
+			"at": "2026-11-01T09:15:00.000Z",
+			"takes": [{ "sha256": "a".repeat(64) }, { "sha256": "c".repeat(64) }],
+		})
+		.to_string();
+		fake.add(2, "drive-takes-20261101T091500Z.json", &list);
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().kept, 1);
+		assert_eq!(
+			on_drive(&pool).await,
+			vec![(
+				String::from("t1"),
+				String::from("2026-11-01T09:15:00.000Z"),
+				String::from("drive-takes-20261101T091500Z.json")
+			)]
+		);
+		assert_eq!(fake.indexes.lock().unwrap().len(), indexes, "a list of Drive's takes moves no Jobs index");
+		// A later list naming t1 and t2 records t2 alone; t1 stays as first listed.
+		let later = serde_json::json!({
+			"schema": "some-ui.drive-takes/1",
+			"at": "2026-11-02T09:00:00.000Z",
+			"takes": [{ "sha256": "a".repeat(64) }, { "sha256": "b".repeat(64) }],
+		})
+		.to_string();
+		fake.add(3, "drive-takes-20261102T090000Z.json", &later);
+		pass_at(&pool, &fake, "2026-10-23T15:30:00.000Z").await.unwrap();
+		assert_eq!(fake.indexes.lock().unwrap().len(), indexes, "nor does a later one");
+		let recorded: Vec<(String, String)> = on_drive(&pool).await.into_iter().map(|(note, at, _)| (note, at)).collect();
+		assert_eq!(
+			recorded,
+			vec![
+				(String::from("t1"), String::from("2026-11-01T09:15:00.000Z")),
+				(String::from("t2"), String::from("2026-11-02T09:00:00.000Z"))
+			]
+		);
+	}
+
+	/// A file under the list's name that does not read as one is kept as
+	/// any `brief` file is, and records nothing.
+	#[tokio::test]
+	async fn a_list_that_does_not_read_records_nothing() {
+		let (pool, fake) = (pool().await, Fake::default());
+		studio_take(&pool, "t1", &"a".repeat(64)).await;
+		let wrong = serde_json::json!({ "schema": "some-ui.job-digest/1", "takes": [{ "sha256": "a".repeat(64) }] }).to_string();
+		fake.add(1, "drive-takes-20261101T091500Z.json", &wrong);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		assert!(on_drive(&pool).await.is_empty());
 	}
 
 	#[tokio::test]
@@ -1199,10 +1473,6 @@ mod tests {
 		use clap::Parser;
 		const REQUIRED: [&str; 13] = [
 			"file_host",
-			"--obs-host",
-			"h",
-			"--obs-password",
-			"p",
 			"--database-url",
 			"sqlite::memory:",
 			"--auth-enabled",
@@ -1211,6 +1481,10 @@ mod tests {
 			"https://app.example",
 			"--app-base-url",
 			"https://app.example/",
+			"--nats-url",
+			"nats://nats:4222",
+			"--redis-url",
+			"redis://redis:6379",
 		];
 		let config = Config::try_parse_from(REQUIRED).unwrap();
 		assert!(!config.mailbox_enabled, "off by default");
@@ -1231,7 +1505,6 @@ mod tests {
 		let all = [&url[..], &token[..]].concat();
 		let insecure = [&["--mailbox-url", "http://mailbox.example.test"][..], &token[..]].concat();
 		assert!(on(&insecure).is_err(), "only https");
-		assert!(on(&[&all[..], &["--mailbox-seconds", "59"][..]].concat()).is_err(), "at least a minute");
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!(
 			(context.subject.as_deref(), context.interval.as_secs()),
@@ -1442,6 +1715,32 @@ mod tests {
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-note:1-1.json"]);
 	}
 
+	/// D3 (paulgsc/some-ui epic #2368): a mark that lands between the read
+	/// of what waits to be filed and the write that files it is seen in the
+	/// write's transaction, and nothing is filed or handed.
+	#[tokio::test]
+	async fn a_note_set_aside_after_it_was_read_is_not_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "하나").await;
+		let waiting = mailbox_repo::unfiled_transcripts(&mut pool.acquire().await.unwrap(), OWNER, 10).await.unwrap();
+		assert_eq!(waiting.len(), 1);
+		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n1', 'then', 'now')")
+			.bind(OWNER)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let filed = file_transcript(&pool, &DeletionLock::default(), OWNER, &waiting[0], "2026-10-25T04:00:00.000Z")
+			.await
+			.unwrap();
+		assert_eq!(filed, None);
+		assert!(outgoing_transcripts(&pool).await.is_empty());
+		let numbered: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_transcript").fetch_one(&pool).await.unwrap();
+		assert_eq!(numbered, 0, "no number taken either");
+		let later = pass(&pool, &fake).await.unwrap();
+		assert_eq!((later.filed, later.handed), (0, Vec::<&str>::new()), "and no later pass files it");
+		assert!(!fake.puts.lock().unwrap().iter().any(|put| put.contains("/transcript/")), "nor hands it");
+	}
+
 	#[tokio::test]
 	async fn no_transcript_is_filed_for_a_deleted_subject() {
 		let (pool, fake) = (pool().await, Fake::default());
@@ -1492,12 +1791,23 @@ mod tests {
 		wanted: Mutex<Vec<(String, String)>>,
 		/// (path, If-Match) of each archive asked for
 		deletes: Mutex<Vec<(String, Option<String>)>>,
+		/// An archive asked for fails to reach the mailbox (`Reach::Never`),
+		/// or is done and its answer lost (`Reach::AnswerLost`).
+		deletes_reach: Mutex<Option<Reach>>,
 		/// Every request, as `<METHOD> <path>`, either token's.
 		seen: Mutex<Vec<String>>,
+		/// Home's memory of each routine's last index, kept across passes.
+		last_index: LastIndexes,
 	}
 
 	fn sha(body: &str) -> String {
 		hex::encode(Sha256::digest(body.as_bytes()))
+	}
+
+	#[derive(Clone, Copy)]
+	enum Reach {
+		Never,
+		AnswerLost,
 	}
 
 	impl Vault {
@@ -1511,6 +1821,41 @@ mod tests {
 
 		fn names(&self) -> Vec<String> {
 			self.live.lock().unwrap().iter().map(|(_, _, name, ..)| name.clone()).collect()
+		}
+
+		/// An archive asked for, as the mailbox answers it: these bytes live
+		/// go, these bytes gone already are `unchanged`.
+		fn archive(&self, folder: String, name: String, path: String, if_match: Option<&str>) -> Result<Response, &'static str> {
+			self.deletes.lock().unwrap().push((path, if_match.map(str::to_owned)));
+			let reach = *self.deletes_reach.lock().unwrap();
+			if matches!(reach, Some(Reach::Never)) {
+				return Err("connection refused");
+			}
+			let tag = |held: &str| if_match == Some(&*(String::from("\"") + held + "\""));
+			let held = self
+				.live
+				.lock()
+				.unwrap()
+				.iter()
+				.find(|(f, _, n, ..)| *f == folder && *n == name)
+				.map(|(.., body, _)| sha(body));
+			let Some(held) = held else {
+				let archived = self.archived.lock().unwrap().iter().any(|(f, n, h)| *f == folder && *n == name && tag(h));
+				return Ok(if archived {
+					answer(200, r#"{"change":"unchanged"}"#)
+				} else {
+					answer(404, r#"{"error":"not_found"}"#)
+				});
+			};
+			if !tag(&held) {
+				return Ok(answer(412, r#"{"error":"mismatch"}"#));
+			}
+			self.live.lock().unwrap().retain(|(f, _, n, ..)| !(*f == folder && *n == name));
+			self.archived.lock().unwrap().push((folder, name, held));
+			if matches!(reach, Some(Reach::AnswerLost)) {
+				return Err("connection reset");
+			}
+			Ok(answer(200, r#"{"change":"archived"}"#))
 		}
 	}
 
@@ -1585,25 +1930,7 @@ mod tests {
 						.collect();
 					Ok(answer(200, &serde_json::json!({ "items": asks }).to_string()))
 				}
-				(Method::Delete, "items", Some(name)) => {
-					self.deletes.lock().unwrap().push((path.clone(), request.if_match.clone()));
-					let held = self
-						.live
-						.lock()
-						.unwrap()
-						.iter()
-						.find(|(f, _, n, ..)| *f == folder && *n == name)
-						.map(|(.., body, _)| sha(body));
-					let Some(held) = held else {
-						return Ok(answer(404, r#"{"error":"not_found"}"#));
-					};
-					if request.if_match != Some(String::from("\"") + &held + "\"") {
-						return Ok(answer(412, r#"{"error":"mismatch"}"#));
-					}
-					self.live.lock().unwrap().retain(|(f, _, n, ..)| !(*f == folder && *n == name));
-					self.archived.lock().unwrap().push((folder, name, held));
-					Ok(answer(200, r#"{"change":"archived"}"#))
-				}
+				(Method::Delete, "items", Some(name)) => self.archive(folder, name, path, request.if_match.as_deref()),
 				(Method::Put, "items", Some(name)) => {
 					let body = String::from_utf8(request.body.unwrap()).unwrap();
 					let archived = self.archived.lock().unwrap().iter().any(|(f, n, h)| *f == folder && *n == name && *h == sha(&body));
@@ -1623,17 +1950,20 @@ mod tests {
 	const YOUNG: &str = "2026-10-01T00:00:00.000Z";
 
 	async fn archive_pass(pool: &SqlitePool, vault: &Vault) -> Outcome {
+		archive_pass_ending(pool, vault).await.unwrap()
+	}
+
+	async fn archive_pass_ending(pool: &SqlitePool, vault: &Vault) -> Result<Outcome, super::PassError> {
 		let home = Mailbox::new(BASE, Token::new(String::from("home-token")), vault).unwrap();
 		let archive = Mailbox::new(BASE, Token::new(String::from("archive-token")), vault).unwrap();
 		let archiving = super::Archiving {
 			mailbox: &archive,
 			after_days: 90,
 		};
-		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), SETTLE, &LastIndex::default(), &|| {
+		run_once(pool, &home, Some(&archiving), OWNER, &DeletionLock::default(), SETTLE, &vault.last_index, &|| {
 			String::from("2026-10-23T15:00:00.000Z")
 		})
 		.await
-		.unwrap()
 	}
 
 	async fn archived_home(pool: &SqlitePool) -> Vec<(String, String, Vec<u8>)> {
@@ -1820,6 +2150,262 @@ mod tests {
 	}
 
 	/// A `LeetType` session file as the routine puts it.
+	/// A written reflection filed with home for the mailbox, as
+	/// `PUT /routine/reflections/:id` files it, and the mailbox's answer to it
+	/// recorded at `handed_at`.
+	async fn reflection_handed(pool: &SqlitePool, id: &str, handed_at: &str) -> (String, String) {
+		let reflection = reflection_repo::Reflection {
+			id: id.to_owned(),
+			session_id: String::from("s-7f3a91c2"),
+			created_at: String::from("2026-07-01T00:00:00.000Z"),
+			at_ms: None,
+			body: reflection_repo::Written {
+				kind: "text",
+				text: String::from("The second scene felt slow."),
+			},
+		};
+		let (name, body) = super::reflection_file(&reflection);
+		let mut conn = pool.acquire().await.unwrap();
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut conn, OWNER, "reflection", &name, &sha, &body, handed_at).await.unwrap();
+		mailbox_repo::record_handed(&mut conn, OWNER, "reflection", &name, mailbox_repo::Answer::Added, handed_at)
+			.await
+			.unwrap();
+		(name, String::from_utf8(body).unwrap())
+	}
+
+	/// The ledger's MI6 (paulgsc/some-ui `packages/assurance`): with nothing
+	/// to do, an archiving pass lists the five folders home reads, ten folders'
+	/// asks and ten folders' live files, 25 requests, and none of them is for
+	/// written reflections, whether home filed none, or only ones too young.
+	#[tokio::test]
+	async fn an_idle_pass_asks_nothing_of_reflections() {
+		let (pool, vault) = (pool().await, Vault::default());
+		archive_pass(&pool, &vault).await;
+		let idle = vault.seen.lock().unwrap().clone();
+		assert_eq!(idle.len(), 25, "{idle:?}");
+		assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "{idle:?}");
+
+		let (name, body) = reflection_handed(&pool, "r-young", YOUNG).await;
+		vault.add("reflection", 1, &name, &body, YOUNG);
+		// Its arrival moves the reflections index once: work, not idle.
+		assert_eq!(archive_pass(&pool, &vault).await.indexed, ["added"]);
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+		let requests = vault.seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 25, "a reflection too young to archive costs no request: {requests:?}");
+		assert!(!requests.iter().any(|path| path.contains(" /v1/reflection/")), "{requests:?}");
+	}
+
+	/// docs/identity.md invariant 21: an old written reflection is stored home
+	/// before the mailbox drops it, as any file is, and the folder is listed
+	/// only while one is due; its asks are never listed.
+	#[tokio::test]
+	async fn an_old_reflection_is_archived_once_and_its_asks_are_never_listed() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (old, old_body) = reflection_handed(&pool, "r-old", OLD).await;
+		let (young, young_body) = reflection_handed(&pool, "r-young", YOUNG).await;
+		vault.add("reflection", 1, &old, &old_body, OLD);
+		vault.add("reflection", 2, &young, &young_body, YOUNG);
+		assert_eq!(archive_pass(&pool, &vault).await.archived, ["archived"]);
+		assert_eq!(vault.names(), [young]);
+		assert_eq!(archived_home(&pool).await, [(String::from("reflection"), old, old_body.into_bytes())]);
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/reflection/wanted")), "{requests:?}");
+
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(
+			!requests.iter().any(|path| path.contains(" /v1/reflection/")),
+			"an archived one is due no more: {requests:?}"
+		);
+	}
+
+	/// docs/identity.md invariant 21: a reflection home stored whose ask to
+	/// archive it never reached the mailbox, or whose answer was lost, is
+	/// asked for again by name on the next pass, though it is no longer due
+	/// and its folder is not listed, until the mailbox answers; then an idle
+	/// pass asks nothing of reflections again (MI6).
+	#[tokio::test]
+	async fn a_reflection_whose_archive_heard_no_answer_is_asked_for_again() {
+		for (reach, again) in [(Reach::Never, "archived"), (Reach::AnswerLost, "unchanged")] {
+			let (pool, vault) = (pool().await, Vault::default());
+			let (name, body) = reflection_handed(&pool, "r-old", OLD).await;
+			vault.add("reflection", 1, &name, &body, OLD);
+			*vault.deletes_reach.lock().unwrap() = Some(reach);
+			assert!(archive_pass_ending(&pool, &vault).await.is_err(), "the ask heard no answer");
+			assert_eq!(archived_home(&pool).await.len(), 1, "home stored it before it asked");
+			let answers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_archive_answer").fetch_one(&pool).await.unwrap();
+			assert_eq!(answers, 0);
+
+			*vault.deletes_reach.lock().unwrap() = None;
+			vault.seen.lock().unwrap().clear();
+			assert_eq!(archive_pass(&pool, &vault).await.archived, [again]);
+			let requests = vault.seen.lock().unwrap().clone();
+			let path = String::from("/v1/reflection/items/") + &name;
+			assert!(
+				requests.iter().filter(|seen| seen.contains(" /v1/reflection/")).eq([&(String::from("Delete ") + &path)]),
+				"asked again by name, with no listing: {requests:?}"
+			);
+			assert_eq!(vault.deletes.lock().unwrap().last(), Some(&(path, Some(String::from("\"") + &sha(&body) + "\""))));
+			assert!(vault.names().is_empty(), "the mailbox holds it no more");
+
+			vault.seen.lock().unwrap().clear();
+			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+			let idle = vault.seen.lock().unwrap().clone();
+			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "answered, it is owed no more: {idle:?}");
+		}
+	}
+
+	/// The same for a drama prompt: invariant 21, MI6.
+	#[tokio::test]
+	async fn a_prompt_whose_archive_heard_no_answer_is_asked_for_again() {
+		for (reach, again) in [(Reach::Never, "archived"), (Reach::AnswerLost, "unchanged")] {
+			let (pool, vault) = (pool().await, Vault::default());
+			let (name, body) = prompt_handed(&pool, "drama-20260701T000000000Z", OLD).await;
+			vault.add("prompt", 1, &name, &body, OLD);
+			*vault.deletes_reach.lock().unwrap() = Some(reach);
+			assert!(archive_pass_ending(&pool, &vault).await.is_err(), "the ask heard no answer");
+			assert_eq!(archived_home(&pool).await.len(), 1, "home stored it before it asked");
+
+			*vault.deletes_reach.lock().unwrap() = None;
+			vault.seen.lock().unwrap().clear();
+			assert_eq!(archive_pass(&pool, &vault).await.archived, [again]);
+			let requests = vault.seen.lock().unwrap().clone();
+			let path = String::from("/v1/prompt/items/") + &name;
+			assert!(
+				requests.iter().filter(|seen| seen.contains(" /v1/prompt/")).eq([&(String::from("Delete ") + &path)]),
+				"asked again by name, with no listing: {requests:?}"
+			);
+			assert!(vault.names().is_empty(), "the mailbox holds it no more");
+
+			vault.seen.lock().unwrap().clear();
+			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+			let idle = vault.seen.lock().unwrap().clone();
+			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert!(!idle.iter().any(|path| path.contains(" /v1/prompt/")), "answered, it is owed no more: {idle:?}");
+		}
+	}
+
+	#[tokio::test]
+	async fn a_filed_reflection_is_handed_to_its_folder_as_text() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let reflection = reflection_repo::Reflection {
+			id: String::from("r1"),
+			session_id: String::from("s-7f3a91c2"),
+			created_at: String::from("2026-10-23T14:00:00.000Z"),
+			at_ms: Some(61_000),
+			body: reflection_repo::Written {
+				kind: "text",
+				text: String::from("More level two, please."),
+			},
+		};
+		let (name, body) = super::reflection_file(&reflection);
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, "reflection", &name, &sha, &body, "2026-10-23T14:00:01.000Z")
+			.await
+			.unwrap();
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/reflection/items/reflection-r1.json"]);
+		let sent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			sent,
+			serde_json::json!({
+				"schema": "some-ui.reflection/1",
+				"reflection": "r1",
+				"session": "s-7f3a91c2",
+				"at": "2026-10-23T14:00:00.000Z",
+				"text": "More level two, please.",
+			}),
+			"the routine's minimum: no answers, no time into the session, no audio"
+		);
+	}
+
+	/// A drama prompt filed with home for the mailbox, as
+	/// `PUT /routine/prompts/:stamp` files it, and the mailbox's answer to it
+	/// recorded at `handed_at`.
+	async fn prompt_handed(pool: &SqlitePool, stamp: &str, handed_at: &str) -> (String, String) {
+		let prompt = drama_prompt_repo::Prompt {
+			stamp: stamp.to_owned(),
+			text: String::from("Write the next scene."),
+		};
+		let (name, body) = super::prompt_file(&prompt);
+		let mut conn = pool.acquire().await.unwrap();
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut conn, OWNER, "prompt", &name, &sha, &body, handed_at).await.unwrap();
+		mailbox_repo::record_handed(&mut conn, OWNER, "prompt", &name, mailbox_repo::Answer::Added, handed_at)
+			.await
+			.unwrap();
+		(name, String::from_utf8(body).unwrap())
+	}
+
+	/// The ledger's MI6 (paulgsc/some-ui `packages/assurance`): a drama
+	/// prompt too young to archive costs an idle pass no request, so it stays
+	/// 25, none of them for prompts.
+	#[tokio::test]
+	async fn an_idle_pass_asks_nothing_of_prompts() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (name, body) = prompt_handed(&pool, "drama-20261031T071503120Z", YOUNG).await;
+		vault.add("prompt", 1, &name, &body, YOUNG);
+		// Its arrival moves the reflections index once: work, not idle.
+		assert_eq!(archive_pass(&pool, &vault).await.indexed, ["added"]);
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+		let requests = vault.seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 25, "a prompt too young to archive costs no request: {requests:?}");
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/")), "{requests:?}");
+	}
+
+	/// docs/identity.md invariant 21: an old drama prompt is stored home
+	/// before the mailbox drops it, as any file is, and the folder is listed
+	/// only while one is due; its asks are never listed.
+	#[tokio::test]
+	async fn an_old_prompt_is_archived_once_and_its_asks_are_never_listed() {
+		let (pool, vault) = (pool().await, Vault::default());
+		let (old, old_body) = prompt_handed(&pool, "drama-20260701T000000000Z", OLD).await;
+		let (young, young_body) = prompt_handed(&pool, "drama-20261031T071503120Z", YOUNG).await;
+		vault.add("prompt", 1, &old, &old_body, OLD);
+		vault.add("prompt", 2, &young, &young_body, YOUNG);
+		assert_eq!(archive_pass(&pool, &vault).await.archived, ["archived"]);
+		assert_eq!(vault.names(), [young]);
+		assert_eq!(archived_home(&pool).await, [(String::from("prompt"), old, old_body.into_bytes())]);
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/wanted")), "{requests:?}");
+
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/")), "an archived one is due no more: {requests:?}");
+	}
+
+	#[tokio::test]
+	async fn a_filed_prompt_is_handed_to_its_folder_as_text() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let prompt = drama_prompt_repo::Prompt {
+			stamp: String::from("drama-20261023T140000000Z"),
+			text: String::from("> **For an agent:** follow the prompt below.\n\nWrite the next scene."),
+		};
+		let (name, body) = super::prompt_file(&prompt);
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, "prompt", &name, &sha, &body, "2026-10-23T14:00:01.000Z")
+			.await
+			.unwrap();
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/prompt/items/drama-20261023T140000000Z.prompt.json"]);
+		let sent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			sent,
+			serde_json::json!({
+				"schema": "some-ui.drama-prompt/1",
+				"prompt": "drama-20261023T140000000Z",
+				"text": "> **For an agent:** follow the prompt below.\n\nWrite the next scene.",
+			}),
+			"the routine's minimum: the stamp and the markdown, no audio"
+		);
+	}
+
 	fn session_file(title: &str) -> String {
 		serde_json::json!({
 			"schema": "some-ui.leetype-session/1",
@@ -2189,7 +2775,7 @@ mod tests {
 		assert_eq!(last_put(&fake)["from"]["decisions"], serde_json::json!([]), "the mailbox holds other bytes under that name");
 	}
 
-	/// MB2's one-time backfill (owner, #509): a pre-mailbox decisions or
+	/// MB2's one-time backfill (owner, #509): a decisions or
 	/// scouts file the routine put in `brief` is kept as any `brief` file is,
 	/// counted by the index under its own name, and named in `from.backfill`.
 	#[tokio::test]
@@ -2274,12 +2860,13 @@ mod tests {
 	/// MI6 (paulgsc/some-ui `packages/assurance`): with archiving, a pass with
 	/// nothing to do lists five folders it reads, ten folders' asks and ten
 	/// folders' live files, 25 requests, and never the index; once home holds
-	/// a file, a pass where nothing arrived and no pick lapsed, on a later
-	/// day included, makes the same 25.
+	/// a file, a pass where nothing arrived, no pick lapsed and no moment the
+	/// reflections index carries passed, on a later day included, makes the
+	/// same 25.
 	#[tokio::test]
 	async fn an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index() {
 		let (pool, vault) = (pool().await, Vault::default());
-		let last = LastIndex::default();
+		let last = LastIndexes::default();
 		let pass = |now: &'static str| {
 			let (pool, vault, last) = (&pool, &vault, &last);
 			async move {
@@ -2312,6 +2899,40 @@ mod tests {
 			assert!(idle.indexed.is_empty(), "{now}");
 			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
 			assert!(seen.iter().all(|request| !request.contains("/v1/index/")), "{seen:?}");
+		}
+
+		// The reflections index (HF7) adds no listing either: a written
+		// reflection waiting on a voice note home holds and has not heard puts
+		// one when it arrives and one when its two-day wait ends, and nothing
+		// on the passes between.
+		let (name, body) = reflection_handed(&pool, "r-waits", "2026-10-25T15:40:00.000Z").await;
+		vault.add("reflection", 2, &name, &body, "2026-10-25T15:40:00.000Z");
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'said-1', 'reflection', 's-7f3a91c2', '2026-06-30T20:00:00.000Z', 'audio/webm', 1, 's', '2026-10-25T15:41:00.000Z')",
+		)
+		.bind(OWNER)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let reflections_put = |seen: &[String]| seen.iter().filter(|request| request.starts_with("Put /v1/index/items/index-reflections-")).count();
+		let (arrived, seen) = pass("2026-10-25T15:45:00.000Z").await;
+		assert_eq!((arrived.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "{seen:?}");
+		// The 26th in Los Angeles: the Jobs pick lapses, which is the Jobs
+		// index's one put, not the reflections index's.
+		let (lapsed, seen) = pass("2026-10-26T15:00:00.000Z").await;
+		assert_eq!((lapsed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 0, 26), "{seen:?}");
+		for now in ["2026-10-26T15:30:00.000Z", "2026-10-27T15:39:59.999Z"] {
+			let (idle, seen) = pass(now).await;
+			assert!(idle.indexed.is_empty(), "{now}");
+			assert_eq!(seen.len(), 25, "still waiting on {now}: {seen:?}");
+		}
+		let (missed, seen) = pass("2026-10-27T15:40:00.000Z").await;
+		assert_eq!((missed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "the wait ends: {seen:?}");
+		for now in ["2026-10-27T15:55:00.000Z", "2026-10-28T15:30:00.000Z", "2026-11-30T15:30:00.000Z"] {
+			let (idle, seen) = pass(now).await;
+			assert!(idle.indexed.is_empty(), "{now}");
+			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
 		}
 	}
 }

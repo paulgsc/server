@@ -186,12 +186,16 @@ above the button that deletes (invariant 22):
 | aph | `aph_entry`, `aph_settings` |
 | The Jobs record | `jobs_event` |
 | Telling the phone a morning run is in | `jobs_notice_device`, `jobs_notice_sent` |
-| Mailbox files home holds | `mailbox_item`, `mailbox_archive` |
+| Mailbox files home holds | `mailbox_item`, `mailbox_archive`, `mailbox_archive_answer` |
 | Filed with home for the mailbox | `mailbox_outgoing`, `mailbox_handed`, `mailbox_transcript`, `mailbox_leetype_log` |
 | LeetType sessions | `leetype_session_event` |
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
+| Studio's ideas, their marks and the lists they pick from | `idea_revision`, `idea_answer`, `idea_furnishing`, `idea_set_aside`, `idea_list_mark` |
 | Korean's word sets and reading records | `korean_entry` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite` |
+| Written reflections | `written_reflection` |
+| Drama prompts | `drama_prompt` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside` |
+| What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -622,9 +626,12 @@ nowhere is marked as such and belongs to review.
     by name only), and how the session ended), its type, when the phone
     recorded it and when it reached home.
     What was said or typed in a spoken answer, and what it was marked against
-    (`ticks`, `prompt`, `rubric`, `typed`), goes to the owner's Drive and
-    never here: an event carrying any of them is a `422` naming the field, and
-    nothing of it is stored. An event is never updated (a trigger aborts an
+    (`ticks`, `prompt`, `rubric`, `typed`), is never here: an event carrying
+    any of them is a `422` naming the field, and nothing of it is stored.
+    Since paulgsc/some-ui#2180 (HF5) the answer goes home on its own, as a
+    note in `study_note` and its take as a voice note (invariants 23 and 30),
+    so this table, and the file the mailbox carries from it, still hold none
+    of it. An event is never updated (a trigger aborts an
     `UPDATE`) or replaced (a different body under an id its session holds is
     a `409`), and never deleted but with the account. It is written only by
     `PUT /leetype/sessions/:session/events/:id`, readable only by its own
@@ -643,7 +650,7 @@ nowhere is marked as such and belongs to review.
     `apps/www/src/lib/home-link/send.ts`, `logGoing`, which sends only
     `finishedSessions`), so home applies no rule of its own beyond waiting
     out a send in flight. The poller files a session's log once its newest
-    event has been home for a poll interval (`MAILBOX_SECONDS`), and again,
+    event has been home for a poll interval (`mailbox::INTERVAL`), and again,
     as `.r<n>`, only once an event of it arrives after that copy. A session
     it cannot file is recorded as refused, and is decided again the same way;
     its events stay here, whatever the mailbox copy came to. Which
@@ -677,7 +684,10 @@ nowhere is marked as such and belongs to review.
     and home leave each other files. For one subject, the owner's account
     unless `MAILBOX_SUBJECT` names another (`mailbox::pass_subject`),
     `file_host`'s `mailbox` poller reads only its `brief` folder (the
-    routine's daily job digests), its `scene` and `drama` folders (the
+    routine's daily job digests, and the build-journal session's lists of
+    the Studio takes Drive holds, `drive-takes-<stamp>.json`, SHA-256s and
+    when it looked, nothing else; paulgsc/some-ui#2401, the owner's route a),
+    its `scene` and `drama` folders (the
     reflections routine's word sets and dramas) and its `run` folder (a
     record of what each routine's runs found and added, which the phone
     shows as when the routine last ran and, for the jobs routine, what this
@@ -687,9 +697,13 @@ nowhere is marked as such and belongs to review.
     `decisions`, `scout`, `opened`, `transcript` (what home heard in a voice
     note, as text, for the routines to read instead of transcribing;
     paulgsc/server#463), `leetype-log` (how each finished LeetType session
-    went, invariant 18; paulgsc/some-ui#2027) and `index` (home's bookkeeping
-    for the Jobs routine, computed from these tables and kept in none of
-    them; paulgsc/server#509).
+    went, invariant 18; paulgsc/some-ui#2027), `index` (home's bookkeeping
+    for the Jobs routine and for the reflections routine, computed from
+    these tables, with `voice_note`'s, and kept in none of them;
+    paulgsc/server#509), `reflection` (each written reflection home
+    keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178) and
+    `prompt` (each drama prompt home keeps, as the routine's minimum,
+    invariant 31; paulgsc/some-ui#2179).
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -702,13 +716,29 @@ nowhere is marked as such and belongs to review.
       the arrival notice's pass (`jobs_notice`), which reads the same
       `run-jobs-*` records for the poller's subject (invariant 24), and by
       the poller's Jobs index (`mailbox::index`), which reads `brief`: its
-      digests, and the pre-mailbox decisions and scouts files the routine
-      put back there once.
+      digests, and the decisions and scouts files only Drive held that the
+      routine put back there once, by name, and takes when home last took in one of
+      those (`jobs_as_of`) from them alone, so a list of Drive's takes
+      arriving moves no index; and by its reflections index
+      (`mailbox::index::reflections`), which reads `scene` and `drama`; and
+      by `PUT /voice-notes/:id` (`voice_repo::on_drive::match_take`), which,
+      when it stores a `studio` note, reads its own subject's lists of
+      Drive's takes in `brief` (`drive-takes-*`) made no earlier than a day
+      before the note was recorded, and only their `at` and SHA-256s (the
+      owner's decision on paulgsc/some-ui#2416, approved 2026-11-01). A
+      list of Drive's takes is read by the poller from the bytes it is
+      keeping, in the transaction that keeps it, and again by that route,
+      in the transaction that stores a take it names: each `studio` voice
+      note home holds whose SHA-256 it names is recorded in
+      `studio_take_on_drive` (invariant 23), and nothing else of it is kept
+      beyond the file itself.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
-      `PUT /routine/opened` and the poller's `file_transcripts` and
+      `PUT /routine/opened`, `PUT /routine/reflections/:id`,
+      `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
       `file_leetype_logs`: a decisions or scouts file the phone filed, which
-      of the routine's lessons it opened, a transcript, or a LeetType
-      session's log, its bytes, hash and when.
+      of the routine's lessons it opened, a written reflection, a drama
+      prompt, a transcript, or a LeetType session's log, its bytes, hash and
+      when.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -720,8 +750,27 @@ nowhere is marked as such and belongs to review.
       `opened-<stamp>.json`: `<folder>/<name>` of each lesson (`scene` or
       `drama` and a mailbox name), at most 100, and home's time, nothing
       else (owner, 2026-10-24: the routine keeps three lessons not opened).
+      The reflections route files each written reflection it keeps for the
+      first time (invariant 29), in the transaction that keeps it, as
+      `reflection-<id>.json` in `some-ui.reflection/1`: the reflection's id,
+      the session it is about, when it was written and the typed line, and
+      nothing else (paulgsc/some-ui#2174, decision D2: the routine's
+      minimum). A reflection sent again files nothing.
+      The prompts route files each drama prompt it keeps for the first time
+      (invariant 31), in the transaction that keeps it, as
+      `drama-<stamp>.prompt.json` in `some-ui.drama-prompt/1`: the prompt's
+      stamp and its markdown, and nothing else (the same decision D2;
+      paulgsc/some-ui#2179). Its scene notes are named in it by id only;
+      what home heard in each goes as its transcript. A prompt sent again
+      files nothing.
       The poller files each `voice_transcript` row that heard something
-      (never a failure or a silence) as `transcript-<note>-<n>.json` in
+      (never a failure or a silence) of a note said for `reflection`, `jobs`,
+      `scene` or `studio`, the kinds a routine reads and the mailbox's
+      `transcript` folder takes (never a game bite, a soundbite, a
+      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
+      and never of a note but a Jobs note the owner set aside before it was
+      filed (`voice_note_set_aside`, invariant 23, read again in the
+      transaction that files it), as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
@@ -736,10 +785,10 @@ nowhere is marked as such and belongs to review.
       `some-ui.routine-index/1` (paulgsc/server#509, HF7), computed from this
       invariant's own tables and nothing else: the digests in `mailbox_item`,
       the decisions and scouts files and Jobs notes' transcripts in
-      `mailbox_outgoing` that the mailbox took, and the pre-mailbox decisions
-      and scouts files the routine put back in `brief` once (`mailbox_item`;
-      the mailbox's MB2 backfill, which it takes only under a name dated
-      before 2026-10-23). The index is a view of those records, not a record
+      `mailbox_outgoing` that the mailbox took, and the decisions and scouts
+      files only Drive held that the routine put back in `brief` once
+      (`mailbox_item`; the mailbox's MB2 backfill, which it takes only under a
+      name dated before 2026-11-04, paulgsc/some-ui#2393). The index is a view of those records, not a record
       (owner, 2026-10-31,
       https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
       no table here holds it, not `mailbox_outgoing`, `mailbox_handed` or
@@ -761,6 +810,42 @@ nowhere is marked as such and belongs to review.
       Drive link. It is put only when something it counts has arrived or an
       open pick has lapsed since the last one the mailbox answered, never
       for the day turning alone, so an idle pass puts none.
+      The poller puts the reflections index as
+      `index-reflections-<stamp>.json` in the same schema, a view of the same
+      kind (the same decision), computed from this invariant's own tables and
+      `voice_note`'s metadata and nothing else: the scenes and dramas in
+      `mailbox_item`; the written reflections, drama prompts and lists of
+      opened lessons in `mailbox_outgoing` that the mailbox took and home
+      has not archived (`mailbox_archive`), which are what
+      `written_reflection` and `drama_prompt` keep as the routine may read
+      it (invariants 29 and 31), so it reads neither of those tables; each
+      reflection or scene note's id, what it was said for and which one, and
+      when it was recorded (`voice_note`, never `voice_note_audio`), but for
+      a note the owner set aside (`voice_note_set_aside`, invariant 23),
+      which it counts no longer and a prompt naming it waits on no longer;
+      and those notes' transcripts in `mailbox_outgoing` that the mailbox
+      took. It
+      carries only what the routine needs to know what to read: when home
+      last took in what it counts and the first moment still to come at
+      which it would say something else (`validUntil`), the names of the
+      files that did not read, the bases the scenes answer and the prompts
+      the dramas answer, every word id the scenes' decks use with its
+      dictionary form, the latest three scenes' names, bases, folder names,
+      levels and genres, how many of the routine's lessons wait unopened and
+      which, by `<folder>/<name>`, and the name of the list of opened
+      lessons it went by, each group of written reflections no scene answers
+      (its base, session id, day, its reflections' names, when the newest was
+      written and whether two hours have passed since) and each drama prompt
+      no drama answers (its name and stamp), each with the ids of its voice
+      notes (and, for a prompt, their file names), each note's newest
+      transcript's name and hash, and whether it still waits on one, since
+      when and until when. No reflection's, prompt's or transcript's words
+      (a prompt is read only for the line that names its notes by id), and
+      nothing that is or points at audio; the mailbox refuses a body that
+      carries audio or a Drive link. It is put only when something it counts
+      has arrived or left, or a moment it carries has passed, since the last
+      one the mailbox answered (a group's two hours, a note's two-day wait, a
+      lesson leaving the unopened window), so an idle pass puts none.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -785,9 +870,19 @@ nowhere is marked as such and belongs to review.
       (invariant 21): each file it archived from any folder, its bytes as the
       mailbox held them (they must match the listing's SHA-256), its hash,
       size, sequence number, when it was first put and when home stored it.
-      Read only by the poller, to put a file back when the routine asks.
+      Read only by the poller, to put a file back when the routine asks, to
+      ask again for a written reflection or drama prompt whose ask heard no
+      answer, and, by name and when it was stored only, for the reflections
+      index to leave out a reflection, prompt or list of opened lessons home
+      archived.
+    - `mailbox_archive_answer`, written only by the poller with the archive
+      token (invariant 21): the mailbox's answer each time home asked it to
+      drop a written reflection or a drama prompt home holds in
+      `mailbox_archive` (`archived`,
+      `unchanged`, `mismatch`, `refused` or `gone`), and when. Any answer is
+      final, as a hand-off's is.
 
-    No row of the six is updated (each table's trigger aborts an
+    No row of the seven is updated (each table's trigger aborts an
     `UPDATE`), replaced (other bytes under a held or filed name are refused,
     and nothing writes `INSERT OR REPLACE`, which SQLite runs no `UPDATE`
     trigger for) or deleted but with the account, by the sweep and the
@@ -808,17 +903,27 @@ nowhere is marked as such and belongs to review.
     `a_session_is_due_again_only_once_an_event_of_it_arrives_after_its_log`,
     `a_refused_session_moves_the_mark_and_is_due_again_only_with_a_new_event`,
     `the_due_query_reads_only_what_arrived_after_the_mark`,
-    and `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`;
+    `the_jobs_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`,
+    `the_reflections_index_counts_what_the_mailbox_took_and_its_time_is_the_newest_of_those`
+    and `a_note_set_aside_leaves_what_the_routines_read`;
     `mailbox::index`'s
     `the_same_rows_give_the_same_bytes_in_a_fixed_order`,
     `a_waiting_note_carries_its_id_and_its_newest_transcript_and_a_done_one_is_gone`,
     `valid_through_is_the_day_before_the_first_open_pick_lapses` and
     `a_backfilled_file_counts_as_the_phones_and_says_where_it_came_from`;
+    `mailbox::index::reflections`'s
+    `written_reflections_group_by_session_and_los_angeles_day` (which also
+    finds no reflection's words in the index),
+    `a_prompts_notes_are_the_ones_it_names_in_the_order_said` (no prompt's
+    words), `a_groups_unheard_note_waits_two_days_from_its_newest_put_then_is_missed`
+    and `the_same_rows_give_the_same_bytes_until_valid_until`;
     `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
     `a_conflict_or_a_refusal_is_final_and_not_handed_again`,
     `a_filed_file_is_handed_over_as_filed`,
+    `a_filed_reflection_is_handed_to_its_folder_as_text`,
+    `a_filed_prompt_is_handed_to_its_folder_as_text`,
     `a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name`,
     `no_transcript_is_filed_for_a_deleted_subject`,
     `no_transcript_text_or_mailbox_url_reaches_a_log_line`,
@@ -833,11 +938,13 @@ nowhere is marked as such and belongs to review.
     `a_backfilled_file_in_brief_is_counted_and_said_to_be_backfilled`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
     a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript`,
-    `leetype-log` or `index`; `mailbox_kit`'s
+    `leetype-log`, `index`, `reflection` or `prompt`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
-    `files_take_a_file_that_names_a_voice_note`.
+    `files_take_a_file_that_names_a_voice_note`; and `handlers::routine`'s
+    `a_written_reflection_is_kept_once_and_filed_once_as_text` and
+    `a_drama_prompt_is_kept_once_and_filed_once_as_text`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,
@@ -863,7 +970,23 @@ nowhere is marked as such and belongs to review.
     not store (other bytes already under its name, no account) is never asked
     for, and neither is a file from a folder home reads (`brief`, `scene`,
     `drama`, `run`, `leetype`) that `mailbox_item` does not hold, so the phone never loses one
-    to the archive. When the routine asks for an archived file again, the poller puts
+    to the archive. A written reflection or a drama prompt is archived the
+    same way, with two differences that keep a pass with nothing to do from
+    asking anything of its folder: the poller lists `reflection` or `prompt`
+    only once a file it filed there has been taken (or already held) by the
+    mailbox for `MAILBOX_ARCHIVE_DAYS` and is not in `mailbox_archive`
+    (`mailbox_repo::filed_due`, which reads home's own tables), and it never
+    lists the asks for one (`mailbox::pass::ASKS`), since the routine cannot
+    ask either back (paulgsc/some-ui `apps/mailbox`, `ASKED`); their words
+    are `written_reflection`'s and `drama_prompt`'s in any case (invariants
+    29 and 31). Storing one makes it due no more, so a listing would never
+    find it again: the poller records the mailbox's answer to each ask to
+    archive one (`mailbox_archive_answer`), and one it stored whose ask
+    heard no answer (it never reached the mailbox, its answer was lost, or
+    home restarted between the two) is asked for again by its name and the
+    SHA-256 home holds, without listing the folder
+    (`mailbox_repo::unanswered_archives`, home's own tables again), until
+    the mailbox answers; one it had already dropped answers `unchanged`. When the routine asks for an archived file again, the poller puts
     back the bytes `mailbox_archive` holds for it, and the mailbox takes only
     the bytes it archived. Nothing here deletes: an archived file's bytes
     are home's, and the mailbox keeps a row about it for good. Deleting the
@@ -872,10 +995,11 @@ nowhere is marked as such and belongs to review.
     **The one exception is home's index** (owner, 2026-10-31,
     https://github.com/paulgsc/server/issues/509#issuecomment-6547096403):
     the archive copies records, and a view home recomputes from records it
-    keeps is not one. The Jobs index (invariant 19) is such a view: the
-    mailbox keeps only the latest per routine and drops the one before in the
-    write that takes the new one, home neither archives it nor answers an ask
-    for it, and the routine cannot ask (its `ask` rights leave `index` out).
+    keeps is not one. The Jobs index and the reflections index (invariant
+    19) are such views: the mailbox keeps only the latest per routine and
+    drops the one before in the write that takes the new one, home neither
+    archives one nor answers an ask for one, and the routine cannot ask (its
+    `ask` rights leave `index` out).
     Nothing is lost by that: every record the index was computed from is in
     this invariant's tables, and the next pass computes the same bytes from
     them.
@@ -887,8 +1011,14 @@ nowhere is marked as such and belongs to review.
     `a_file_home_cannot_store_stays_live`,
     `a_digest_the_feed_does_not_hold_is_not_archived`,
     `the_routines_word_sets_and_dramas_are_kept_like_digests`,
-    `an_ask_is_answered_from_home_and_one_home_lacks_stays_open` and
-    `a_pass_archives_at_most_twenty`; `mailbox_repo`'s
+    `an_ask_is_answered_from_home_and_one_home_lacks_stays_open`,
+    `a_pass_archives_at_most_twenty`,
+    `an_old_reflection_is_archived_once_and_its_asks_are_never_listed`,
+    `a_reflection_whose_archive_heard_no_answer_is_asked_for_again`,
+    `an_idle_pass_asks_nothing_of_reflections`,
+    `an_old_prompt_is_archived_once_and_its_asks_are_never_listed`,
+    `a_prompt_whose_archive_heard_no_answer_is_asked_for_again` and
+    `an_idle_pass_asks_nothing_of_prompts`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
     days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB5's
@@ -918,7 +1048,7 @@ nowhere is marked as such and belongs to review.
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
-    `scene`, `game` or `studio`) and which one, when the phone recorded it and when it reached
+    `scene`, `game`, `studio`, `soundbite`, `lens` or `leetype`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -956,7 +1086,18 @@ nowhere is marked as such and belongs to review.
     (`20261030000100_add_studio_to_voice_note`). A redo is a new take under a
     new id, never an update of the one it redoes. A take is sent home like
     every note, heard by the transcriber like every note, and its transcript filed for the mailbox like every
-    note's but a game bite's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
+    note's but a game bite's (invariant 19). **A soundbite, a grammar-lens
+    take and a LeetType spoken answer are voice notes** too
+    (paulgsc/some-ui#2180, HF5; owner's decision D1 on paulgsc/some-ui#2174:
+    home is the record, and the phone lets go only what home has read back):
+    said for `soundbite`, its `ref` how it came to be recorded (`direct`,
+    `sessions`, `reminder`, or the retired `capture` and `wrap`); for `lens`,
+    its `ref` the line read aloud; for `leetype`, its `ref` the session file
+    and screen (`<file>:<screen>`). Each carries nothing beside it in these
+    tables (`20261101000500_add_takes_to_voice_note`); what the phone wrote
+    beside a soundbite or an answer is `study_note`'s (invariant 30). Each is
+    heard by the transcriber like every note, and none has its transcript
+    filed for the mailbox: no routine reads them (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19). A note
@@ -965,9 +1106,83 @@ nowhere is marked as such and belongs to review.
     never deleted but with the account, after it is transcribed as before
     (owner, 2026-10-25: the audio is worth more than its transcript). It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line; it is readable by
-    no route yet; and it is deleted with the account by both the sweep and
+    so neither the audio nor its hash reaches a log line; its audio is
+    readable by no route yet, and the routes that read its row,
+    `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
+    (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
+    (invariant 32), read only whether the caller's subject holds it, and,
+    for an idea, whether it is a `studio` note and whether it was set aside;
+    and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12).
+
+    **Home's word that Drive holds a Studio take too is
+    `studio_take_on_drive`, append-only, and comes from the mailbox, never
+    from Drive** (paulgsc/some-ui#2401, HF11; the owner's route a,
+    2026-10-31, "go with route a": home gets no Drive credential). The
+    build-journal session lists Drive's takes folder and puts the SHA-256 of
+    each recording there in the Jobs mailbox (invariant 19); the poller, in
+    the transaction that keeps that list, records each `studio` note the
+    subject holds whose `voice_note.sha256` the list names, and
+    `PUT /voice-notes/:id`, in the transaction that stores a `studio` note
+    arriving after a list naming it, records that note: the note's id,
+    when the session looked, the list's mailbox name and when home recorded
+    it. A hash naming nothing home holds, or a note said for anything but
+    `studio`, is dropped, never kept. Whichever of a take and a list naming
+    it reaches home second matches them (the owner's decision on
+    paulgsc/some-ui#2416, option 1 bounded, approved 2026-11-01): a list
+    matches the takes home holds when it arrives, and a `studio` take that
+    reaches home after a list naming it is matched when it arrives, in the
+    transaction that stores it, against the subject's lists of Drive's takes
+    that `mailbox_item` holds and that were made no earlier than a day (the
+    most a phone's clock may be off home's) before the take was recorded. A
+    list's mailbox name is its stamp, so that is one indexed range read over
+    `mailbox_item`'s key, from a day before the take was recorded onward,
+    with the body filter in SQL: SQLite returns only the first list in that
+    range whose bytes contain the take's SHA-256, only that list is parsed,
+    and the read moves past it to the next only when it contains the hash
+    without naming it. A list made earlier than that is not read, and a
+    take it names is recorded only once a later list names it too (the
+    phone keeps it until "Drive has it" meanwhile).
+    A take is recorded once, by the first
+    list that names it, and never updated (the trigger aborts an `UPDATE`);
+    a later list that no longer names it takes nothing away, and it leaves
+    with the account by both the sweep and its own trigger (invariant 12).
+    The table holds no audio, no Drive name, id or link, and nothing the
+    list did not say. It is written only by `voice_repo::on_drive`: by
+    `record`, from `mailbox::pass`'s `keep`, and by `match_take`, from
+    `voice_repo::put_note` for a newly stored `studio` note (so from
+    `PUT /voice-notes/:id`, its one caller); and read
+    only by `GET /voice-notes/on-drive?ids=`, for the caller's own subject,
+    by the phone's ids, at most 100 a read, which answers each id home has
+    recorded and when its list was made, and reads no `voice_note` row; the
+    phone lets a take go on it under the owner's choice (paulgsc/some-ui
+    LG1).
+
+    **Home's mark that the owner let a note go is `voice_note_set_aside`,
+    append-only, and sets the note aside without deleting it** (the
+    owner's D3 on paulgsc/some-ui epic #2368, 2026-10-31: Let go on any
+    voice take sets it aside and keeps it; paulgsc/some-ui#2372, MIC2). It
+    is its own table so that no note is updated
+    (`20261101000900_create_voice_note_set_aside`): the subject, the note's
+    id, when the owner let it go on the phone and when home recorded it.
+    `PUT /voice-notes/:id/set-aside?at=`, whose span skips its arguments, is
+    its one writer (`voice_repo::set_aside::set_aside`), for a note the
+    caller's subject holds, in the statement that reads it: another
+    subject's note, or one home does not hold, is a `404` and marks nothing.
+    A note is marked once, by the first mark; a repeat is a `204` that
+    changes nothing, its time included, and a mark is never updated (the
+    trigger aborts an `UPDATE`) or taken back (no route un-sets one: the
+    phone has no undo for Let go). It leaves with the account by both the
+    sweep and its own trigger (invariant 12). The note, its audio and
+    every transcript stay. What a mark changes is the work done on the note
+    from then on: the transcriber's queue skips it
+    (`voice_repo::transcript::waiting`), no transcript of it is filed for
+    the mailbox (checked again in the transaction that files one), and the
+    reflections index counts neither it nor a transcript of it already
+    filed (invariant 19). A Jobs note is the exception: it is still heard
+    and filed, and the Jobs index is as it was, since a decisions or scouts
+    file naming it is what puts it in front of the routine and a mark does
+    not unname it. The table holds no audio and nothing said.
 
     **What home heard in a note is `voice_transcript`, and when each word
     was said is `voice_transcript_word`, append-only too**
@@ -1012,11 +1227,25 @@ nowhere is marked as such and belongs to review.
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home only as a transcript filed for the Jobs
-    mailbox (invariant 19), for the routines to read, and since
+    it kept. The text leaves home in three ways only. One is a transcript
+    filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
-    its time, how sure the model was and its language (`words`); the words are readable by
-    no route yet, and the audio never leaves. A probability is not text, so
+    its time, how sure the model was and its language (`words`). Another,
+    since paulgsc/some-ui#2428 (MIC10; the owner took its recommendation that
+    home give a take's words back to the phone, 2026-11-01), is
+    `GET /voice-notes/:id/heard`'s answer, to a session of the
+    note's own subject only (another subject's note is a `404`, as an
+    unknown one is): the text of the newest transcript that heard speech
+    (`voice_repo::transcript::heard`, the one
+    `voice_repo::transcript::words` takes), or empty text for a note only ever found silent, with its language, model and
+    when it was heard, and nothing while no model has ended the note. It
+    reads no audio, no word and no probability, and its span skips every
+    argument. The third, since paulgsc/server#645 (ST26), is the same
+    reading of each `studio` note an idea's answer names, inside
+    `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
+    subject only, by the same `voice_repo::transcript::heard`. The words
+    are readable by no route yet, and the audio never
+    leaves. A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,
@@ -1029,7 +1258,32 @@ nowhere is marked as such and belongs to review.
     `a_game_note_missing_or_misstating_its_bite_is_refused`,
     `a_note_said_for_anything_else_carries_no_bite`,
     `the_schema_refuses_a_bite_that_breaks_its_rules` and
-    `the_rebuilt_notes_keep_what_was_held_before`; `voice_repo::transcript`'s
+    `the_rebuilt_notes_keep_what_was_held_before`, and for HF5's kinds
+    `a_soundbite_a_lens_take_and_a_spoken_answer_are_kept_as_notes` and
+    `the_notes_rebuilt_for_takes_keep_what_was_held_before`, and for Drive's
+    word `voice_repo::on_drive`'s
+    `only_the_subjects_own_studio_takes_a_list_names_are_recorded_once`,
+    `no_row_is_ever_updated_and_rows_leave_with_the_account`,
+    `an_empty_list_records_nothing_and_a_read_stops_at_its_cap`,
+    `a_take_that_reaches_home_after_its_list_is_recorded_when_it_arrives`,
+    `a_take_named_by_many_lists_is_recorded_once_by_the_first` and
+    `a_list_made_more_than_a_day_before_the_take_was_recorded_is_not_read`,
+    `mailbox::pass`'s
+    `a_list_of_drives_takes_records_the_takes_home_holds_and_moves_no_index`
+    and `a_list_that_does_not_read_records_nothing`, and `handlers::voice`'s
+    `the_phone_reads_which_of_its_takes_home_knows_drive_holds`, and for
+    the set-aside mark `voice_repo::set_aside`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `a_held_note_is_set_aside_once_and_kept`,
+    `no_mark_is_ever_updated_and_marks_leave_with_the_account` and
+    `the_transcribers_queue_skips_a_note_set_aside`, `mailbox_repo`'s
+    `a_note_set_aside_leaves_what_the_routines_read`,
+    `mailbox::index::reflections`'s `a_prompt_waits_on_no_note_set_aside`,
+    `mailbox::pass`'s `a_note_set_aside_after_it_was_read_is_not_filed`,
+    and `handlers::voice`'s
+    `the_phone_sets_its_own_note_aside_once_and_home_keeps_it`, and for
+    the text read back `handlers::voice`'s
+    `the_phone_reads_back_what_home_heard_in_its_note`; `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,
     `a_failing_note_stops_waiting_and_an_ended_one_takes_nothing_more`,
@@ -1051,7 +1305,7 @@ nowhere is marked as such and belongs to review.
     `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript\|game_bite' -- '*.rs'` shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.
@@ -1212,6 +1466,194 @@ nowhere is marked as such and belongs to review.
     which the repository's three readers do today
     (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`).
 
+29. **The owner's written reflections are append-only, one per id, and only
+    their text, session and time reach the mailbox.** `written_reflection`
+    keeps each typed line the phone sends home about a study session
+    (paulgsc/some-ui#2178, HF3; `apps/www/src/lib/session-reflection`): the
+    phone's id for it, the session's, when it was written and how far into
+    the session, the line as typed, and when it reached home. Home is the
+    owner's own store (paulgsc/some-ui#2174, decision D1), so it is the
+    record, and the phone lets one go only once home holds it. A reflection
+    is never updated (a trigger aborts an `UPDATE`) or replaced (a different
+    reflection under a held id is a `409`), and never deleted but with the
+    account. It is written only by `PUT /routine/reflections/:id`, which
+    refuses a spoken reflection (a voice note's, invariant 23) and the
+    one-tap answers by name, readable by no route, and deleted with the
+    account by both the sweep and the migration's trigger (invariant 12).
+    Rolling back the migration that creates it fails once it holds a row,
+    rather than dropping the record. The same route files what the
+    reflections routine reads of it, once, for the mailbox's `reflection`
+    folder (invariant 19): its id, its session, when it was written and the
+    text; never the one-tap answers, how far into the session, or anything
+    that points at audio (decision D2). The text is the owner's own words, so
+    it never reaches a log line: the handler records only `otel.kind`
+    (invariant 6).
+    *Enforced by* `reflection_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_reflection_is_stored_once_and_never_replaced` (an `UPDATE` is
+    refused), `the_answer_is_the_reflection_as_the_phone_keeps_it`,
+    `a_spoken_reflection_or_the_answers_are_refused_by_name`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::routine`'s
+    `a_written_reflection_is_kept_once_and_filed_once_as_text` and
+    `a_spoken_reflection_or_the_answers_are_refused_and_nothing_is_filed`.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n written_reflection -- '*.rs'` shows today.
+
+30. **The owner's study notes are append-only, one per id, never parsed,
+    and never leave home.** `study_note` keeps the text the phone writes
+    beside a soundbite or a LeetType spoken answer, once the phone is paired
+    (paulgsc/some-ui#2180, HF5; owner's decision D1 on
+    paulgsc/some-ui#2174, and #1934's "never home" lane folded in): one kind
+    per store the phone keeps (`study_note_repo::Kind`, a closed list).
+    `soundbite` is a soundbite's record, keyed by the soundbite's id: when it
+    was recorded, how long it ran, its container and size, and what the
+    phone noted around it (how it came to be recorded, the most recent
+    session it knew of, how many were open, its time zone). `leetype` is a
+    spoken answer's note, keyed by its own id: the session file and screen,
+    the one-sentence prompt, the rubric shown after answering, the points the
+    owner ticked, the answer typed where they could not speak, and the take
+    it notes by the voice note's id only (its audio is `voice_note_audio`'s,
+    invariant 23). A note is the subject, the kind, the phone's id, the body
+    byte for byte (the JSON value's own text: the whitespace around it is
+    trimmed, nothing within it changed) with its SHA-256, and when it reached
+    home. Home checks only that a body is one JSON object within
+    `study_note_repo::BODY_CEILING`, as the Korean record does (invariant
+    25), so what a note says stays the phone's to judge. A note is never
+    updated (a trigger aborts an `UPDATE`) or replaced (other bytes under a
+    held id are a `409`; the same bytes are `unchanged`), and never deleted
+    but with the account. It is written only by `PUT /study-notes/:kind/:id`,
+    whose span skips its arguments and whose refusals name fields in fixed
+    words, so nothing a note says (an answer can carry what the owner typed)
+    reaches a log line; it is readable by no route yet, and no file the
+    poller files reads it, so it never leaves home; and it is deleted with
+    the account by both the sweep and the migration's trigger (invariant
+    12). Rolling back the migration that creates it fails once it holds a
+    row, rather than dropping the record.
+    *Enforced by* `study_note_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_note_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_body_kept_is_the_bytes_sent_verbatim`,
+    `a_refused_write_names_each_field_and_writes_nothing`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::study_note`'s
+    `refusals_name_their_fields_and_notes_stay_apart` (a refusal never quotes
+    the note) and `a_paired_phone_sends_a_note_home_once`.
+    *Not enforced:* that nothing else writes or reads the table, which
+    `git grep -n study_note -- '*.rs'` shows today and review keeps.
+
+31. **The owner's drama prompts are append-only, one per stamp, and only
+    their stamp and markdown reach the mailbox.** `drama_prompt` keeps each
+    next scene's prompt the phone asks for and sends home
+    (paulgsc/some-ui#2179, HF4; "Ask for the next scene"): the prompt's
+    stamp (`drama-` and the moment it was asked for, which the drama that
+    answers it carries), its markdown as the phone wrote it (a note for an
+    agent, a line naming each scene note by the phone's id, the tree prompt
+    with the scene asked for and the last drama's review), and when it
+    reached home. Home is the owner's own store (paulgsc/some-ui#2174,
+    decision D1), so it is the record, and the phone lets one go only once
+    home holds it. A prompt is never updated (a trigger aborts an `UPDATE`)
+    or replaced (a different prompt under a held stamp is a `409`), and never
+    deleted but with the account. It is written only by
+    `PUT /routine/prompts/:stamp`, which refuses a stamp that is no moment
+    on the calendar, a blank text or one over 256 KiB, and a text the Jobs
+    mailbox would refuse (a `data:` URI, a run of 256 or more base64
+    characters, a Drive link), so home keeps no prompt it could not hand on;
+    it is readable by no route, and deleted with the account by both the
+    sweep and the migration's trigger (invariant 12). Rolling back the
+    migration that creates it fails once it holds a row, rather than
+    dropping the record. The same route files what the reflections routine
+    reads of it, once, for the mailbox's `prompt` folder (invariant 19): its
+    stamp and its markdown; never a scene note's audio, which went home as
+    a voice note (invariant 23) and reaches the routine only as its
+    transcript (decision D2). The text holds the owner's own words, so it
+    never reaches a log line: the handler records only `otel.kind`
+    (invariant 6).
+    *Enforced by* `drama_prompt_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `a_prompt_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_answer_is_the_prompt_as_the_phone_wrote_it`,
+    `a_stamp_is_a_real_moment`, `refusals_name_each_field`,
+    `a_prompt_carrying_audio_or_a_drive_link_is_refused`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::routine`'s
+    `a_drama_prompt_is_kept_once_and_filed_once_as_text` and
+    `a_prompt_the_mailbox_would_refuse_is_refused_and_nothing_is_filed`.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n drama_prompt -- '*.rs'` shows today; and that
+    `drama_prompt_repo::carries` reads a text as the mailbox's
+    `carriesRefusal` does, which a change on either side can break (each
+    side's tests pin the same cases).
+
+32. **The owner's ideas are append-only, one revision per send that changes
+    one, and name their takes only by id.** An idea is one record on home
+    (STUDIO ST26: paulgsc/server#645; the phone's half paulgsc/some-ui#2453,
+    the owner's decisions there, 2026-11-01). `idea_revision` keeps each send
+    that changed it: the phone's id for the idea, when the phone began it
+    (every revision carries the first's), when the owner pressed Send, the
+    title they typed (trimmed, 1 to 80 characters), the topic (the owner's
+    word is "subject"), the format (`short` or `video`), its keywords
+    (sorted, so a reordered list is the same bundle), the question set's
+    version, and when it reached home. `idea_answer` keeps
+    each answer of a revision: the question, and either a `studio` voice
+    note by the phone's id (its audio is `voice_note_audio`'s and went home
+    only through `PUT /voice-notes/:id`, invariant 23) or the words typed
+    when voice failed (1 to 1,000 characters). The first question of the
+    set is always answered. A note an answer names must already be one of
+    the subject's own `studio` notes on home and not one the owner set
+    aside (`voice_note_set_aside`, invariant 23), read in the transaction
+    that writes, or the send is a `409` naming each note by id and writes
+    nothing. `idea_furnishing` keeps every change of the "still furnishing"
+    mark, the latest standing; it is the owner's alone, and nothing reads
+    it for a routine or the mailbox. `idea_set_aside` keeps the one mark
+    that takes an idea out of the list for good: a mark, never a delete,
+    after which the idea takes no new revision. `idea_list_mark` keeps each
+    entry the owner adds to or takes off the topics and keywords lists, the
+    latest per entry standing over the seeds `idea_repo` names. A topic or
+    keyword a send adds to the idea, one its latest revision does not carry,
+    must be on the lists as they stand; one the latest revision carries
+    stays valid after it is taken off. So taking an entry off leaves every
+    idea that uses it as it is, and still editable (paulgsc/server#645,
+    "Taking one off leaves the ideas that use it unchanged", and the
+    prototype the owner approved on paulgsc/some-ui#2453, 2026-11-01). Every table is
+    the owner's record, so none is ever updated (each trigger aborts an
+    `UPDATE`) or replaced: a send whose `sentAt` a revision holds is
+    `unchanged` with the same bundle and a `409` with another, a send whose
+    bundle is the latest revision's is `unchanged`, and a mark that changes
+    nothing writes nothing. Nothing is deleted but with the account, by both
+    the sweep and the migration's triggers (invariant 12), and rolling back
+    the migration that creates them fails once any holds a row. They are
+    written only by `PUT /ideas/:id`, `PUT /ideas/:id/furnishing`,
+    `PUT /ideas/:id/set-aside` and `PUT` and `DELETE
+    /idea-lists/{topics,keywords}/:name`, and read only by `GET /ideas`,
+    `GET /ideas/:id` and `GET /idea-lists`, each for the caller's own
+    subject (another subject's idea is a `404`). `GET /ideas` lists at most
+    the 1,000 newest begun of the ideas not set aside, and says `more` when
+    it holds others back. A read carries, for each answer's note, what home
+    heard in it (invariant 23), unless the owner set the note aside after
+    the send: then the answer says `setAside` and carries no words. No file the poller
+    files reads them, so they never leave home for the mailbox; a routine
+    reads an idea's takes only as their transcripts, as before. A title, a
+    typed answer and what was heard are the owner's own words, so they never
+    reach a log line: every handler records only `otel.kind` (invariant 6),
+    and a refusal names fields in fixed words and notes by id.
+    *Enforced by* `idea_repo`'s `the_tables_hold_exactly_their_described_columns`,
+    `a_send_is_a_revision_and_the_same_bundle_again_is_unchanged`,
+    `no_row_is_ever_updated`,
+    `a_named_note_must_be_the_subjects_own_studio_note_on_home`,
+    `what_a_send_adds_must_be_on_the_lists_as_they_stand`,
+    `a_note_set_aside_is_not_held_and_its_words_leave_the_idea`,
+    `the_list_says_when_it_holds_back_ideas`,
+    `the_lists_start_with_their_seeds_and_each_mark_is_kept`,
+    `the_latest_furnishing_mark_stands_and_every_mark_is_kept`,
+    `an_idea_set_aside_leaves_the_list_for_good`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::ideas`'s
+    `refusals_name_their_fields_and_records_stay_apart` and
+    `nothing_an_idea_says_reaches_a_log_line`.
+    *Not enforced:* that nothing else writes the tables, which
+    `git grep -n -e idea_revision -e idea_answer -e idea_furnishing -e idea_set_aside -e idea_list_mark -- '*.rs'`
+    shows today; and that the phone's question sets match
+    `idea_repo::QUESTION_SETS`, which a new set on the phone breaks until
+    home names it too.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.
@@ -1277,12 +1719,22 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   prompt), and a record of each of that routine's runs (when it ran, how many
   reflections and prompts it found unanswered, the names and titles of what
   it added, and what it could not do, in a sentence), and which of those
-  lessons the phone opened (their names, and when home filed them), live in
+  lessons the phone opened (their names, and when home filed them), and each
+  written reflection home keeps (the owner's typed line about a study
+  session, the session's id and when it was written: the reflections
+  routine's minimum, paulgsc/some-ui#2174 decision D2, invariant 29), and
+  each drama prompt home keeps (the next scene's prompt as the owner asked
+  for it: the scene they asked for, the last drama's review in their words,
+  and their scene notes named by id; the same decision, invariant 31), and
+  the build-journal session's lists of the Studio takes Drive holds (the
+  SHA-256 of each recording, and when it looked; paulgsc/some-ui#2401: which
+  say how many takes Drive held and when, and let anyone holding one of the
+  recordings tell that it was among them), live in
   a Cloudflare D1
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and
-  sees the access pattern: home asking every `MAILBOX_SECONDS` from the home
+  sees the access pattern: home asking every `mailbox::INTERVAL` from the home
   connection's address, and the routine putting a file each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
   account removes home's copy and its archive; the mailbox's live files and
@@ -1296,6 +1748,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   recorded it, to the millisecond, and when it reached home. That timeline is
   what the record is for: it is how the owner's growth reads back. Deleting
   the account removes it; nothing else does.
+- **Studio's ideas and their times.** Each idea's title, topic, format and
+  keywords, every revision of them, the words the owner typed when voice
+  failed, which takes answer which question, whether they are still
+  furnishing it and whether they set it aside, and when the idea was begun
+  and each revision sent, to the millisecond (invariant 32). Deleting the
+  account removes them; nothing else does.
 - **Studio's log and its times.** The events say when the owner sat down to
   work on a video, which screens they had open and for how long, and when
   they put the phone down, each to the millisecond; the friction reports say

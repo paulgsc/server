@@ -61,7 +61,7 @@ jobs:
           PATTERNS: |
             infra/**
             docker-compose.yml
-            example.env
+            deploy/**
             scripts/check_scrape_inventory.py
 
     outputs:
@@ -162,16 +162,32 @@ jobs:
       # `include:` directives into the actual service set — see
       # infra/prometheus/inventory.yml's own header for why the check reads
       # that instead of hand-parsing the compose files.
-      # file_host's `env_file` requires the repo's .env (#407); example.env
-      # stands in for it, so this also checks that example.env resolves.
-      - name: Stand in example.env for .env
-        run: cp example.env .env
+      # Compose interpolates every ${...} before it starts anything, and a
+      # deployment's values are encrypted (#613): CI holds no key and sees no
+      # value. So each required variable gets a stand-in path named after it,
+      # and each env_file an empty file, which proves the files resolve
+      # without saying anything about a deployment.
+      - name: Stand in for the decrypted files
+        run: |
+          set -euo pipefail
+          env_dir="$RUNNER_TEMP/env"
+          mkdir -p "$env_dir"
+          for app in $(grep -ohE '\$\{ENV_DIR:\?[^}]*\}/[A-Za-z0-9_-]+\.env' docker-compose.yml infra/compose/*.yml | sed -E 's|.*/||; s|\.env$||' | sort -u); do
+            : > "$env_dir/$app.env"
+          done
+          {
+            echo "ENV_DIR=$env_dir"
+            echo "REPO_ROOT=$GITHUB_WORKSPACE"
+            for name in $(grep -ohE '\$\{[A-Z_0-9]+:\?' docker-compose.yml infra/compose/*.yml | sed -E 's/^\$\{//; s/:\?$//' | sort -u); do
+              case "$name" in ENV_DIR|REPO_ROOT) ;; *) echo "$name=/stand-in/$name" ;; esac
+            done
+          } >> "$GITHUB_ENV"
 
       - name: Validate docker compose config resolves
-        run: REPO_ROOT=${{ github.workspace }} docker compose config --quiet
+        run: docker compose --env-file /dev/null config --quiet
 
       - name: Check scrape inventory reconciles (#146)
-        run: REPO_ROOT=${{ github.workspace }} python3 scripts/check_scrape_inventory.py
+        run: python3 scripts/check_scrape_inventory.py
 
   # #212 (G1/#217): unconditional, unlike the two jobs above — a phantom
   # query is introduced by editing infra/grafana/ (the `infra` diff), and an

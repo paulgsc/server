@@ -16,7 +16,7 @@
 //! (`nudge::waker`'s header): a timer should pick up work that something
 //! already decided, not go looking for it. Here nothing on home's side can
 //! learn that a file arrived, because the mailbox cannot call in: home makes
-//! only outbound requests. So it asks, every `MAILBOX_SECONDS` (900 by
+//! only outbound requests. So it asks, every `mailbox::INTERVAL` (900 by
 //! default), and an idle pass is one listing request for items after the
 //! highest `seq` home holds, which answers nothing. Asking more often makes a
 //! digest reach home sooner; it changes nothing else.
@@ -67,8 +67,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// The shortest interval `MAILBOX_SECONDS` may set.
+/// The shortest interval a pass may run at.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often home reads the mailbox: every 15 minutes. A source constant
+/// (#617), as `MAILBOX_SECONDS` was by default.
+pub const INTERVAL: Duration = Duration::from_secs(900);
+
+const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs());
 
 /// The fewest days `MAILBOX_ARCHIVE_DAYS` may set: the mailbox's own floor
 /// (`ARCHIVE_MIN_AGE_DAYS` in paulgsc/some-ui `apps/mailbox/src/core.ts`),
@@ -105,10 +111,10 @@ pub struct MailboxContext {
 	/// When each routine is due (`ROUTINE_SCHEDULE`), for
 	/// [`crate::routine_watch::stamp`] after each pass.
 	pub schedules: Vec<crate::routine_watch::Schedule>,
-	/// What the last Jobs index the mailbox answered was computed from, so a
-	/// pass puts one only when that moves ([`index::LastIndex`]). Memory only:
-	/// home keeps no copy of an index.
-	pub last_index: Arc<index::LastIndex>,
+	/// What each routine's last index the mailbox answered was computed
+	/// from, so a pass puts one only when that moves ([`index::LastIndexes`]).
+	/// Memory only: home keeps no copy of an index.
+	pub last_index: Arc<index::LastIndexes>,
 }
 
 impl MailboxContext {
@@ -122,7 +128,7 @@ impl MailboxContext {
 	/// # Errors
 	/// `MAILBOX_ENABLED` with `MAILBOX_URL` or `MAILBOX_TOKEN` unset or
 	/// empty, a URL that is not `https://` and a
-	/// host, `MAILBOX_SECONDS` below 60, or a `MAILBOX_ARCHIVE_TOKEN` that is
+	/// host, `mailbox::INTERVAL` below 60, or a `MAILBOX_ARCHIVE_TOKEN` that is
 	/// `MAILBOX_TOKEN` again or comes with `MAILBOX_ARCHIVE_DAYS` below 30,
 	/// an `FCM_SERVICE_ACCOUNT_FILE` that is not a service account's key, or a
 	/// `ROUTINE_SCHEDULE` that does not parse.
@@ -146,10 +152,7 @@ impl MailboxContext {
 			info!("MAILBOX_SUBJECT is unset; the mailbox's files are kept as the owner's account's, the only one");
 		}
 		let schedules = crate::routine_watch::parse_schedules(&config.routine_schedule).map_err(|why| anyhow::anyhow!("ROUTINE_SCHEDULE: {why}"))?;
-		let interval = Duration::from_secs(config.mailbox_seconds);
-		if interval < MIN_INTERVAL {
-			anyhow::bail!("MAILBOX_SECONDS must be at least 60");
-		}
+		let interval = INTERVAL;
 		let archive_token = set(config.mailbox_archive_token.as_ref());
 		if archive_token.as_ref() == Some(&token) {
 			anyhow::bail!("MAILBOX_ARCHIVE_TOKEN must not be MAILBOX_TOKEN");

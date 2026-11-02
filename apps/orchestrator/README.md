@@ -258,7 +258,7 @@ RUST_LOG=info cargo run --example axum_client
 ```
 
 ### Environment Variables
-- `NATS_URL` - NATS server URL (default: `nats://localhost:4222`)
+- `NATS_URL` - NATS server URL (required; compose sets `nats://nats:4222`)
 - `RUST_LOG` - Log level (e.g., `info`, `debug`, `trace`)
 
 ## Integration with Axum
