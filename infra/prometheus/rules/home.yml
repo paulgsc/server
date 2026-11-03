@@ -15,6 +15,11 @@
 # mailbox poller or nudge waker that is on with its stamp gone is its own
 # alert, and so is file_host itself not answering a scrape.
 #
+# A watcher whose passes start but keep failing still stamps every attempt,
+# so its stale rule never sees it: each `*Failing` rule fires on its
+# `*_pass_failing` gauge (any class) held for three of its intervals, while
+# its `*_enabled` gauge is 1.
+#
 # home-health holds what /ready finds wrong with a file_host that is
 # answering: a degraded home serves, so the container healthcheck never says.
 groups:
@@ -87,6 +92,36 @@ groups:
           objective: NW2
           says: "The study nudge waker is on, but home reports no pass at all."
 
+      - alert: NudgeWakerFailing
+        # NW2: passes start but every one fails (a database missing a
+        # migration, a locked or full disk), which NudgeWakerStale cannot
+        # see: a failing pass still stamps its attempt (#644). Three passes
+        # of WAKER_INTERVAL (300 s, a source constant: nudge.rs) in a row.
+        # Any class at all, as MailboxPollerFailing: a per-class timer would
+        # restart each time the class changed. The file_host dashboard's
+        # LOOPS panel names the class (FAILING · <class>).
+        expr: |
+          max(nudge_waker_pass_failing) == 1
+          and on() max(nudge_waker_enabled) == 1
+        for: 15m
+        labels:
+          objective: NW2
+          says: "The study nudge waker has failed every pass for 15 minutes; the file_host dashboard's LOOPS panel says why."
+
+      - alert: TranscriberFailing
+        # VH1: every pass ends on a storage failure, so no note is heard or
+        # given its recorded reason, and the pass still stamps its attempt
+        # (#644). Three passes of transcribe::INTERVAL (60 s, a source
+        # constant) in a row. Storage is the only way a pass fails: a note
+        # that cannot be heard is kept as an attempt, not a failing pass.
+        expr: |
+          max(transcribe_pass_failing) == 1
+          and on() max(transcribe_enabled) == 1
+        for: 3m
+        labels:
+          objective: VH1
+          says: "The voice-note transcriber has failed every pass on home's storage for 3 minutes; the TRANSCRIBE dashboard's FAILING panel shows it."
+
       - alert: GameFeedStale
         # GA4: the feed wakes every 5 s whether or not a game is due, so two
         # minutes without a wake is a task that stopped, not a quiet week.
@@ -96,6 +131,21 @@ groups:
         labels:
           objective: GA4
           says: "The game feed has not woken for two minutes."
+
+      - alert: GameFeedFailing
+        # GA4: the feed wakes but every pass ends on a storage failure, which
+        # GameFeedStale cannot see: a failing pass still stamps its wake
+        # (#644). Three wakes of game_feed::TICK (5 s, a source constant) in
+        # a row: at the 15 s evaluation interval (../prometheus.yml), two
+        # evaluations that both find it failing. Storage is the only way a
+        # pass fails: an ESPN refusal or no answer is counted and backed off.
+        expr: |
+          max(game_feed_pass_failing) == 1
+          and on() max(game_feed_enabled) == 1
+        for: 15s
+        labels:
+          objective: GA4
+          says: "The game feed has failed every pass on home's storage for 15 seconds; the GAME FEED dashboard's FAILING panel shows it."
 
       - alert: RoutineRunOverdue
         # RR2: 30 minutes after a routine was due, home holds no run that
