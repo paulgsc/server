@@ -152,6 +152,11 @@ pub async fn put_note(
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// A note deleted for good from My data stays deleted: a phone that still
+	// holds its copy and sends it again is refused, not taken back.
+	if voice_repo::delete::receipt(&mut tx, subject.as_str(), &note.id).await.map_err(refusal)?.is_some() {
+		return Err(FileHostError::Conflict(DELETED_FOR_GOOD));
+	}
 	let change = voice_repo::put_note(&mut tx, subject.as_str(), &note, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
@@ -416,6 +421,8 @@ pub struct NoteDeleted {
 	pub receipt: Receipt,
 }
 
+/// What a note sent again after it was deleted for good answers with.
+const DELETED_FOR_GOOD: &str = "this voice note was deleted for good, so it is not kept again";
 /// What a delete of a note home keeps answers with.
 const SWITCHED_OFF: &str = "this kind of voice note can't be deleted until the owner switches it on";
 /// What a delete of a note kept for good answers with.
@@ -1000,6 +1007,28 @@ mod tests {
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_audio").fetch_one(&pool).await.unwrap();
 		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
 		assert_eq!((kept, receipts), (2, 0));
+	}
+
+	/// A note deleted for good is refused when the phone sends it again,
+	/// and nothing is written: its receipt stands.
+	#[tokio::test]
+	async fn a_note_deleted_for_good_is_not_kept_again() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		sqlx::query(
+			"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+			 VALUES (?1, 'n1', 'reflection', 'then', 1, 'then', 'now', '[\"recording\"]', '[]')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let (status, body) = put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await;
+		assert_eq!(status, StatusCode::CONFLICT, "{body}");
+		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note").fetch_one(&pool).await.unwrap();
+		assert_eq!(held, 0);
 	}
 
 	/// The kept read answers the caller's own notes, by kind and week, and a

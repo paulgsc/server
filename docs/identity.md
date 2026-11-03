@@ -1129,7 +1129,9 @@ nowhere is marked as such and belongs to review.
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
     what went and what stayed in fixed words, never what was said, its
-    `ref` or its audio. A repeat answers with that receipt. Any other kind
+    `ref` or its audio. A repeat answers with that receipt, and a `PUT` of
+    a deleted note's id is a `409` that writes nothing, so a phone that still
+    holds its copy never brings it back. Any other kind
     is a `409` that writes nothing, as is a take while takes are switched
     off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
