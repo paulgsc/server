@@ -16,6 +16,12 @@
 //!   the oldest set inside each window: three index range reads, whatever the
 //!   history's length.
 //! - **Nobody's record.** Bytes per table and file; not subject-scoped.
+//!
+//! What one subject keeps for good, counted per kind for the phone's My data
+//! page, is [`kept`]'s: a count and the earliest time per kind, read from
+//! each record's own table, never its bodies.
+
+pub mod kept;
 
 use sqlx::{Connection, Row, SqliteConnection};
 

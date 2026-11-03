@@ -5,6 +5,10 @@ set per UTC day (each table and index from `dbstat`, the whole file, the WAL
 and free disk), and the growth figures read from it (the 7- and 90-day rates,
 each table's growth, the runway). Bytes per table and file, not subject-scoped.
 
+`kept` counts what one subject keeps for good, per kind, and since when, for
+the phone's My data page: a count and the earliest time from each record's own
+table, never its bodies.
+
 The rules are in `src/lib.rs`, in
 `migrations/20261029000100_create_storage_sample.up.sql`, and in
 `docs/storage.md`.
