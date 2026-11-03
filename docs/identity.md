@@ -1120,11 +1120,15 @@ nowhere is marked as such and belongs to review.
     2026-11-02: the tool can go, never the work). It deletes only a kind the
     owner has switched on (`voice_repo::delete::SWITCHED_ON`, empty: every
     kind ships off, and none is on yet), and the one kind it can ever delete
-    today is a Studio take, a `studio` note no idea's answer names; an
-    answer, and every other kind, is the work and is kept. Deleting one
+    today is a Studio take, a `studio` note whose `ref` names a take and
+    that no idea's answer names; an idea's spoken answer (its `ref`
+    `idea:<idea>:<question>`, or named by `idea_answer`), and every other
+    kind, is the work and is kept. Deleting one
     removes the note, its audio, every transcript of it and its words, and
     its set-aside mark in one transaction, and keeps a copy of its words
-    already filed for the mailbox and the record that Drive holds it. It
+    already filed for the mailbox and the record that Drive holds it; the
+    mailbox filer checks the note is still held in the transaction that
+    files, so words deleted after it read them never leave home. It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
@@ -1224,8 +1228,10 @@ nowhere is marked as such and belongs to review.
     changes nothing, its time included, and a mark is never updated (the
     trigger aborts an `UPDATE`) or taken back (no route un-sets one: the
     phone has no undo for Let go). It leaves with the account by both the
-    sweep and its own trigger (invariant 12). The note, its audio and
-    every transcript stay. What a mark changes is the work done on the note
+    sweep and its own trigger (invariant 12), or with its note when the
+    owner deletes that note for good from My data (above). Setting a note
+    aside deletes nothing: the note, its audio and every transcript stay.
+    What a mark changes is the work done on the note
     from then on: the transcriber's queue skips it
     (`voice_repo::transcript::waiting`), no transcript of it is filed for
     the mailbox (checked again in the transaction that files one), and the
@@ -1347,8 +1353,18 @@ nowhere is marked as such and belongs to review.
     keeps `voice_repo::kept`'s
     `home_counts_each_kind_its_room_and_what_was_set_aside_for_its_subject_only`,
     `what_reached_home_is_summed_by_the_week_it_arrived` and
-    `a_kinds_newest_notes_come_first_and_stop_at_the_cap`, and
-    `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`;
+    `a_kinds_newest_notes_come_first_and_stop_at_the_cap` and
+    `a_take_is_listed_as_deletable_only_when_takes_are_switched_on`, and
+    `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`,
+    and for My data's delete `voice_repo::delete`'s
+    `the_receipt_table_holds_exactly_its_described_columns`,
+    `nothing_is_deleted_that_is_switched_off_or_kept_for_good`,
+    `a_take_switched_on_goes_and_leaves_a_receipt`,
+    `a_bare_takes_receipt_names_only_the_recording` and
+    `a_receipt_is_never_rewritten_and_leaves_with_the_account`,
+    `mailbox::pass`'s `a_note_deleted_after_it_was_read_is_not_filed`, and
+    `handlers::voice`'s `a_delete_keeps_every_note_while_no_kind_is_switched_on`
+    and `a_note_deleted_for_good_is_not_kept_again`;
     `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
     `notes_wait_oldest_first_until_heard`,

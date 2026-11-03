@@ -63,9 +63,10 @@
 //! `routes::rust_rounds` does, so a browser's cookie session is a `403`
 //! there too.
 //!
-//! **Append-only, and kept for good.** A `PUT` adds a note or changes
-//! nothing, and other bytes or another description under a held id are a
-//! `409`, and setting a note aside deletes nothing. The one `DELETE` is My
+//! **Append-only, and kept unless deleted from My data.** A `PUT` adds a
+//! note or changes nothing, and other bytes or another description under a
+//! held id, or a note deleted for good, are a `409`; setting a note aside
+//! deletes nothing. The one `DELETE` is My
 //! data's, for a kind the owner switched on, with a receipt
 //! (`voice_repo::delete`); every kind ships switched off.
 //! See `handlers::voice` and `voice_repo`.

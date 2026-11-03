@@ -150,7 +150,7 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[Deletable]) -> Result<Vec<NoteKept>, VoiceError> {
 	let of = of.as_str();
 	let rows = sqlx::query!(
-		r#"SELECT note.note_id, note.of_kind, note.recorded_at, note.stored_at, note.size,
+		r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
 		          aside.set_aside_at AS "set_aside_at?: String",
 		          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
 		            AS "answers!: bool"
@@ -174,7 +174,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 				stored_at: row.stored_at,
 				size: row.size,
 				set_aside_at: row.set_aside_at,
-				deletable: deletable(&row.of_kind, row.answers).is_some_and(|kind| on.contains(&kind)),
+				deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
 			})
 			.collect(),
 	)
@@ -313,6 +313,14 @@ mod tests {
 		let pool = pool().await;
 		note(&pool, A, "take", "studio", "2026-10-01T10:00:00Z", 10, "2026-10-02T00:00:00.000Z").await;
 		note(&pool, A, "answer", "studio", "2026-10-01T11:00:00Z", 10, "2026-10-02T00:00:00.000Z").await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'spoken', 'studio', 'idea:i1:why', '2026-10-01T09:00:00Z', 'audio/webm', 10, 's', '2026-10-02T00:00:00.000Z')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
 		for statement in [
 			"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
 			 VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
@@ -323,7 +331,7 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		let listed = newest(&mut conn, A, Of::Studio, &[Deletable::StudioTake]).await.unwrap();
 		let marked: Vec<(&str, bool)> = listed.iter().map(|kept| (kept.id.as_str(), kept.deletable)).collect();
-		assert_eq!(marked, [("answer", false), ("take", true)]);
+		assert_eq!(marked, [("answer", false), ("take", true), ("spoken", false)]);
 	}
 
 	/// `i` as two digits, without `format!` (banned repo-wide).

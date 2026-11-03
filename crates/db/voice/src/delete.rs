@@ -1,16 +1,18 @@
 //! Deleting a voice note for good, from My data only (paulgsc/some-ui#2477,
-//! MD3, under epic #2473), with a receipt that is never deleted.
-//! `voice_note_deletion`.
+//! MD3, under epic #2473), with a receipt in `voice_note_deletion` that goes
+//! only with the account.
 //!
 //! The owner's rule (paulgsc/some-ui#2474, 2026-11-02): the tool can go,
 //! never the work. A recording whose purpose is served elsewhere may be
 //! deleted; what doing something produced (an answer, a spoken attempt)
 //! never is. So:
 //!
-//! - **One kind of note can ever be deleted today:** a Studio take, a
-//!   `studio` note no idea's answer names ([`Deletable::StudioTake`]). An
-//!   idea's spoken answer is a `studio` note too, and is work, so it is
-//!   kept, as is every other kind.
+//! - **One kind of note can ever be deleted today:** a Studio take
+//!   ([`Deletable::StudioTake`]): a `studio` note whose `ref` names a take
+//!   (`<project>:<shot>:<take>`) and that no idea's answer names. An idea's
+//!   spoken answer is a `studio` note too, its `ref` `idea:<idea>:<question>`
+//!   or named by `idea_answer`, and is the work, so it is kept, as is every
+//!   other kind.
 //! - **Every kind ships switched off.** [`SWITCHED_ON`] is the list the
 //!   owner turns on, one kind at a time, and it is empty: until they do,
 //!   [`delete`] refuses every note, a take included, and deletes nothing.
@@ -31,7 +33,7 @@
 //! - **Written only by `DELETE /voice-notes/:id`** (`file_host`'s
 //!   `handlers::voice`), a paired phone's.
 
-use crate::VoiceError;
+use crate::{Of, VoiceError};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -101,11 +103,19 @@ pub enum Deleted {
 	NotHeld,
 }
 
-/// The kind of a note said for `of_kind` as the machinery sees it, if it is
-/// one it can delete; `answers` when an idea's answer names it.
+/// What a Studio idea's spoken answer's `ref` starts with
+/// (`idea:<idea>:<question>`, paulgsc/some-ui MIC10); a take's is
+/// `<project>:<shot>:<take>`.
+const IDEA_ANSWER: &str = "idea:";
+
+/// The kind a note is, as the machinery sees it, if it is one it can delete.
+///
+/// The note is said for `of_kind`, under `of_ref`; `answers` when an idea's
+/// answer (`idea_answer`) names it. An idea's spoken answer is the work,
+/// whether an answer names it or its `ref` says it answers one.
 #[must_use]
-pub fn deletable(of_kind: &str, answers: bool) -> Option<Deletable> {
-	(of_kind == "studio" && !answers).then_some(Deletable::StudioTake)
+pub fn deletable(of_kind: &str, of_ref: &str, answers: bool) -> Option<Deletable> {
+	(of_kind == Of::Studio.as_str() && !answers && !of_ref.starts_with(IDEA_ANSWER)).then_some(Deletable::StudioTake)
 }
 
 /// The receipt home keeps for `subject`'s note `note_id`, if it deleted it.
@@ -137,47 +147,23 @@ pub async fn receipt(conn: &mut SqliteConnection, subject: &str, note_id: &str) 
 	}))
 }
 
-/// Deletes `subject`'s note `note_id` for good at `now`, if its kind is in
-/// `on` (the handler passes [`SWITCHED_ON`]), and keeps its receipt.
-///
-/// Run it in a `BEGIN IMMEDIATE` transaction, so the note read, its
-/// deletion and the receipt see one snapshot and land together.
-///
-/// # Errors
-/// [`VoiceError::Storage`] for any `sqlx` failure; nothing is written then.
-pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, on: &[Deletable], now: &str) -> Result<Deleted, VoiceError> {
-	let Some(note) = sqlx::query!(
-		"SELECT of_kind, recorded_at, size, stored_at FROM voice_note WHERE subject_id = ?1 AND note_id = ?2",
-		subject,
-		note_id
-	)
-	.fetch_optional(&mut *conn)
-	.await?
-	else {
-		return Ok(receipt(conn, subject, note_id).await?.map_or(Deleted::NotHeld, Deleted::Gone));
-	};
-	let answers = sqlx::query_scalar!(
-		r#"SELECT EXISTS (SELECT 1 FROM idea_answer WHERE subject_id = ?1 AND note_id = ?2) AS "answers!: bool""#,
+/// Deletes `subject`'s note `note_id` and what goes with it, and says, in
+/// fixed words, what went and what stayed.
+async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<(Vec<String>, Vec<String>), VoiceError> {
+	// Words went only if home heard some: a silent or failed attempt is no words.
+	let heard = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2 AND outcome = 'heard') AS "heard!: bool""#,
 		subject,
 		note_id
 	)
 	.fetch_one(&mut *conn)
 	.await?;
-	let Some(kind) = deletable(&note.of_kind, answers) else {
-		return Ok(Deleted::Kept(Kept::ForGood));
-	};
-	if !on.contains(&kind) {
-		return Ok(Deleted::Kept(Kept::SwitchedOff));
-	}
-
-	let heard = sqlx::query!("DELETE FROM voice_transcript_word WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+	sqlx::query!("DELETE FROM voice_transcript_word WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
-		.await?
-		.rows_affected()
-		+ sqlx::query!("DELETE FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
-			.execute(&mut *conn)
-			.await?
-			.rows_affected();
+		.await?;
+	sqlx::query!("DELETE FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
 	let marked = sqlx::query!("DELETE FROM voice_note_set_aside WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?
@@ -204,7 +190,7 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	.await?;
 
 	let mut went = vec![RECORDING.to_owned()];
-	if heard > 0 {
+	if heard {
 		went.push(WORDS.to_owned());
 	}
 	if marked > 0 {
@@ -217,6 +203,45 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	if on_drive {
 		stayed.push(DRIVE_COPY.to_owned());
 	}
+	Ok((went, stayed))
+}
+
+/// Deletes `subject`'s note `note_id` for good at `now`, if its kind is in
+/// `on` (the handler passes [`SWITCHED_ON`]), and keeps its receipt.
+///
+/// Run it in a `BEGIN IMMEDIATE` transaction, so the note read, its
+/// deletion and the receipt see one snapshot and land together.
+///
+/// # Errors
+/// [`VoiceError::Storage`] for any `sqlx` failure, and
+/// [`VoiceError::Unreadable`] for a repeat whose receipt does not read back;
+/// nothing is written then.
+pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, on: &[Deletable], now: &str) -> Result<Deleted, VoiceError> {
+	let Some(note) = sqlx::query!(
+		"SELECT of_kind, of_ref, recorded_at, size, stored_at FROM voice_note WHERE subject_id = ?1 AND note_id = ?2",
+		subject,
+		note_id
+	)
+	.fetch_optional(&mut *conn)
+	.await?
+	else {
+		return Ok(receipt(conn, subject, note_id).await?.map_or(Deleted::NotHeld, Deleted::Gone));
+	};
+	let answers = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM idea_answer WHERE subject_id = ?1 AND note_id = ?2) AS "answers!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	let Some(kind) = deletable(&note.of_kind, &note.of_ref, answers) else {
+		return Ok(Deleted::Kept(Kept::ForGood));
+	};
+	if !on.contains(&kind) {
+		return Ok(Deleted::Kept(Kept::SwitchedOff));
+	}
+
+	let (went, stayed) = remove(conn, subject, note_id).await?;
 	let receipt = Receipt {
 		id: note_id.to_owned(),
 		of: note.of_kind,
@@ -290,8 +315,8 @@ mod tests {
 	/// filed for the mailbox and Drive's listing of it.
 	async fn everything_beside(pool: &SqlitePool, subject: &str, id: &str) {
 		for statement in [
-			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
-			 VALUES (?1, ?2, 'm', 'e', 1, 'silent', 1, 1, 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', 1, 'heard', 'ko', 0.9, 1, 'w', 1, 'now')",
 			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, ?2, 'm', 0, 'w', 0, 1)",
 			"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, 'then', 'now')",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, ?2, 'm', 1, 'now')",
@@ -313,11 +338,6 @@ mod tests {
 	async fn gone(pool: &SqlitePool, subject: &str, id: &str, on: &[Deletable]) -> Deleted {
 		let mut conn = pool.acquire().await.unwrap();
 		delete(&mut conn, subject, id, on, NOW).await.unwrap()
-	}
-
-	#[test]
-	fn every_kind_ships_switched_off() {
-		assert!(SWITCHED_ON.is_empty(), "the owner switches each kind on (paulgsc/some-ui#2477)");
 	}
 
 	#[tokio::test]
@@ -356,11 +376,20 @@ mod tests {
 		)
 		.await;
 		note(&pool, A, "reflection", "reflection").await;
+		run(
+			&pool,
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'studio', 'idea:i1:why', 'then', 'audio/webm', 1, 's', 'now')",
+			A,
+			"spoken",
+		)
+		.await;
 		everything_beside(&pool, A, "take").await;
 
 		assert_eq!(gone(&pool, A, "take", SWITCHED_ON).await, Deleted::Kept(Kept::SwitchedOff));
 		assert_eq!(gone(&pool, A, "answer", ON).await, Deleted::Kept(Kept::ForGood), "an answer is the work");
 		assert_eq!(gone(&pool, A, "reflection", ON).await, Deleted::Kept(Kept::ForGood));
+		assert_eq!(gone(&pool, A, "spoken", ON).await, Deleted::Kept(Kept::ForGood), "an idea's spoken answer is the work");
 		for id in ["take", "answer", "reflection"] {
 			assert_eq!(rows(&pool, "voice_note", A, id).await, 1, "{id}");
 			assert_eq!(rows(&pool, "voice_note_audio", A, id).await, 1, "{id}");
@@ -403,11 +432,20 @@ mod tests {
 		assert_eq!(receipt(&mut conn, B, "take").await.unwrap(), None);
 	}
 
-	/// A bare take goes alone: its receipt names only the recording.
+	/// A take home heard nothing in goes alone: its receipt names only the
+	/// recording, a failed attempt to hear it not being words.
 	#[tokio::test]
 	async fn a_bare_takes_receipt_names_only_the_recording() {
 		let pool = pool().await;
 		note(&pool, A, "take", "studio").await;
+		run(
+			&pool,
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', 1, 'failed', 1, 'now')",
+			A,
+			"take",
+		)
+		.await;
 		let Deleted::Gone(receipt) = gone(&pool, A, "take", ON).await else {
 			panic!("the take is gone");
 		};

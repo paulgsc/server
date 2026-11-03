@@ -652,6 +652,22 @@ impl From<sqlx::Error> for VoiceError {
 	}
 }
 
+/// Whether `subject` holds note `note_id` now: false once it left with the
+/// account or was deleted for good from My data ([`delete`]). Read it in the
+/// transaction that acts on the answer.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn holds(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_note WHERE subject_id = ?1 AND note_id = ?2) AS "held!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await
+}
+
 /// What [`VoiceError::Rewritten`] says.
 pub const REWRITTEN: &str = "this note id already holds a different note: voice notes are append-only";
 

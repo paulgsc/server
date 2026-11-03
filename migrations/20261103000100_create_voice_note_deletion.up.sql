@@ -6,6 +6,10 @@
 -- empty until they do); what doing something produced never is. Every delete
 -- leaves one of these, and a receipt is never deleted.
 --
+-- The earlier voice migrations say a note's only deletes are account
+-- deletion's; this one adds the second, My data's, and those comments cannot
+-- change (their checksums are recorded), so this is where that is amended.
+--
 -- Written only by `DELETE /api/v1/voice-notes/:id`
 -- (`voice_repo::delete::delete`), in the transaction that deletes the note,
 -- its audio and what home heard in it. It says what went and what stayed,

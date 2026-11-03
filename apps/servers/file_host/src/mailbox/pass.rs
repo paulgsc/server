@@ -965,13 +965,16 @@ async fn record_archive_answer(
 
 /// As [`keep`], for a transcript filed under its note's next number, which
 /// is read in the same transaction; `None`, filing nothing, when the owner
-/// set the note aside since [`mailbox_repo::unfiled_transcripts`] read it
-/// (`mailbox_repo::set_aside_from_routines`, checked in that transaction, so
-/// a mark committed between the read and this write is seen).
+/// set the note aside, or deleted it for good from My data, since
+/// [`mailbox_repo::unfiled_transcripts`] read it
+/// (`mailbox_repo::set_aside_from_routines` and `voice_repo::holds`, checked
+/// in that transaction, so a mark or a delete committed between the read and
+/// this write is seen, and words the owner deleted never leave home).
 async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str, heard: &Heard, now: &str) -> Result<Option<Change>, mailbox_repo::MailboxError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	if mailbox_repo::set_aside_from_routines(&mut tx, subject, &heard.note_id).await? {
+	let held = voice_repo::holds(&mut tx, subject, &heard.note_id).await.map_err(mailbox_repo::MailboxError::Storage)?;
+	if !held || mailbox_repo::set_aside_from_routines(&mut tx, subject, &heard.note_id).await? {
 		return Ok(None);
 	}
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
@@ -1739,6 +1742,29 @@ mod tests {
 		let later = pass(&pool, &fake).await.unwrap();
 		assert_eq!((later.filed, later.handed), (0, Vec::<&str>::new()), "and no later pass files it");
 		assert!(!fake.puts.lock().unwrap().iter().any(|put| put.contains("/transcript/")), "nor hands it");
+	}
+
+	/// MD3 (paulgsc/some-ui#2477): a note deleted for good between the read
+	/// of what waits to be filed and the write that files it is seen in the
+	/// write's transaction, so the words the owner deleted never leave home.
+	#[tokio::test]
+	async fn a_note_deleted_after_it_was_read_is_not_filed() {
+		let pool = pool().await;
+		heard(&pool, "n1", "ggml-small-q5_1.bin", "하나").await;
+		let waiting = mailbox_repo::unfiled_transcripts(&mut pool.acquire().await.unwrap(), OWNER, 10).await.unwrap();
+		assert_eq!(waiting.len(), 1);
+		for table in ["voice_transcript_word", "voice_transcript", "voice_note_audio", "voice_note"] {
+			sqlx::query(&(String::from("DELETE FROM ") + table + " WHERE subject_id = ?1 AND note_id = 'n1'"))
+				.bind(OWNER)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let filed = file_transcript(&pool, &DeletionLock::default(), OWNER, &waiting[0], "2026-10-25T04:00:00.000Z")
+			.await
+			.unwrap();
+		assert_eq!(filed, None);
+		assert!(outgoing_transcripts(&pool).await.is_empty());
 	}
 
 	#[tokio::test]
