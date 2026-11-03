@@ -1,9 +1,11 @@
-//! A small max-flow (Dinic), enough for one conference's remaining games.
+//! A small max-flow (Dinic), enough for one conference's remaining games,
+//! and the one network every question here builds on it.
 //!
-//! The graph is source → game → each of its two teams → sink. A game carries
-//! the two points it hands out; a team's edge to the sink carries how many
-//! points it may still take. Every game's points placed means every team can
-//! finish at or under its cap at once.
+//! [`place`]: source → game → each of its two sides → sink. A game carries
+//! the `unit` it hands out; a side's edge to the sink carries how much it may
+//! still take. Every game placed means every side stays within its room at
+//! once; otherwise the sides on the source side of a minimum cut are a set
+//! whose games among themselves hand out more than their room holds.
 
 use std::collections::VecDeque;
 
@@ -110,6 +112,42 @@ impl Network {
 		}
 		0
 	}
+}
+
+/// Whether every game can be handed to one of its sides with each side
+/// within its room.
+pub(crate) enum Placement {
+	/// Per game, whether its first side took it.
+	Yes(Vec<bool>),
+	/// Per side, whether it is on the source side of a minimum cut.
+	No(Vec<bool>),
+}
+
+/// Can each of `games` (pairs of side indices) hand its `unit` to one of its
+/// sides, with side `i` taking at most `room[i]`?
+pub(crate) fn place(room: &[u32], games: &[(usize, usize)], unit: u32) -> Placement {
+	let (source, sink) = (0, 1);
+	let side = |i: usize| 2 + i;
+	let mut net = Network::new(2 + room.len() + games.len());
+	for (i, &r) in room.iter().enumerate() {
+		net.add(side(i), sink, r);
+	}
+	let firsts: Vec<usize> = games
+		.iter()
+		.enumerate()
+		.map(|(k, &(a, b))| {
+			let game = 2 + room.len() + k;
+			net.add(source, game, unit);
+			net.add(game, side(b), unit);
+			net.add(game, side(a), unit)
+		})
+		.collect();
+	let need = u32::try_from(games.len()).unwrap_or(u32::MAX) * unit;
+	if net.max_flow(source, sink) == need {
+		return Placement::Yes(firsts.into_iter().map(|e| net.flow_on(e) == unit).collect());
+	}
+	let reached = net.reachable(source);
+	Placement::No((0..room.len()).map(|i| reached[side(i)]).collect())
 }
 
 #[cfg(test)]

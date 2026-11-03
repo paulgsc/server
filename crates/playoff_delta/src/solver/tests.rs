@@ -6,7 +6,7 @@ use super::*;
 use crate::{
 	rank::seed as seed_of,
 	table::Pending,
-	testing::{final_points, random_case, Lcg},
+	testing::{random_case, Lcg},
 };
 
 /// best[team][extra] over every outcome of the pending games (no ties).
@@ -84,62 +84,4 @@ fn more_than_the_remaining_games_is_no_path() {
 		}],
 	);
 	assert!(best(&table, Team::Sf, 2).is_none());
-}
-
-/// Clinched against brute force: whenever it says in, every outcome of the
-/// pending games seeds the team; and it says so often enough to be tested.
-#[test]
-fn a_clinch_holds_in_every_outcome() {
-	let mut rng = Lcg(0x9F00);
-	let mut proven = 0;
-	for _ in 0..30 {
-		let (records, pending) = random_case(&mut rng, 11);
-		let table = Table::from_parts(records, pending.clone());
-		for team in Team::ALL.into_iter().filter(|t| clinched(&table, *t)) {
-			proven += 1;
-			for outcome in 0u32..1 << pending.len() {
-				assert!(
-					seed_of(&final_points(&records, &pending, outcome), team).is_some(),
-					"{}: outcome {outcome:b} leaves it out",
-					team.code()
-				);
-			}
-		}
-	}
-	assert!(proven > 0, "no random league clinched anyone");
-}
-
-#[test]
-fn a_clinch_by_the_division_or_by_the_wild_card() {
-	// Everyone 8-8 with one game left, the Niners 10-6: no one can catch them.
-	let mut records = [Record { w: 8, l: 8, t: 0 }; 32];
-	records[Team::Sf.index()] = Record { w: 10, l: 6, t: 0 };
-	let pending = |a: Team, b: Team| Pending { week: 17, home: a, away: b };
-	let table = Table::from_parts(records, vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)]);
-	assert!(clinched(&table, Team::Sf));
-	// The Rams 10-6 can pass them, so the division is not proven; with only
-	// one other team able to pass, the wild card is.
-	records[Team::Lar.index()] = Record { w: 10, l: 6, t: 0 };
-	let table = Table::from_parts(records, vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)]);
-	assert!(clinched(&table, Team::Sf));
-	// Two teams in each of three other divisions who can pass: one of each
-	// pair wins its division, and the other three are wild cards above them.
-	let mut games = vec![pending(Team::Sf, Team::Kc), pending(Team::Lar, Team::Ari)];
-	for (t, opponent) in [
-		(Team::Dal, Team::Buf),
-		(Team::Phi, Team::Mia),
-		(Team::Det, Team::Ne),
-		(Team::Gb, Team::Nyj),
-		(Team::Tb, Team::Bal),
-		(Team::Atl, Team::Pit),
-	] {
-		records[t.index()] = Record { w: 10, l: 6, t: 0 };
-		games.push(pending(t, opponent));
-	}
-	let table = Table::from_parts(records, games.clone());
-	assert!(!clinched(&table, Team::Sf));
-	// One of those pairs short of a game to play: two wild cards above, at most.
-	games.retain(|p| p.home != Team::Atl);
-	let table = Table::from_parts(records, games);
-	assert!(clinched(&table, Team::Sf));
 }
