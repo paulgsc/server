@@ -35,7 +35,6 @@ impl Record {
 pub struct Table {
 	records: [Record; 32],
 	pending: Vec<Pending>,
-	through: u8,
 }
 
 impl Table {
@@ -45,7 +44,6 @@ impl Table {
 		let mut table = Self {
 			records: [Record::default(); 32],
 			pending: Vec::new(),
-			through: week,
 		};
 		for g in season.games() {
 			match g.outcome().filter(|_| g.week <= week) {
@@ -66,19 +64,6 @@ impl Table {
 		let mut table = self.clone();
 		if let Some(actual) = game.outcome() {
 			table.unbank(game, actual);
-			table.bank(game, outcome);
-		}
-		table
-	}
-
-	/// The same table with pending `game` banked as it went: no longer
-	/// pending. Unchanged when the game is not final or not pending.
-	#[must_use]
-	pub fn banking(&self, game: &Game) -> Self {
-		let mut table = self.clone();
-		let at = table.pending.iter().position(|p| p.week == game.week && p.home == game.home && p.away == game.away);
-		if let (Some(at), Some(outcome)) = (at, game.outcome()) {
-			table.pending.remove(at);
 			table.bank(game, outcome);
 		}
 		table
@@ -120,13 +105,6 @@ impl Table {
 		self.records[team.index()].points()
 	}
 
-	/// The last week banked. Two tables of one season with the same `through`
-	/// have the same pending games, whatever results were decided otherwise.
-	#[must_use]
-	pub const fn through(&self) -> u8 {
-		self.through
-	}
-
 	#[must_use]
 	pub fn pending(&self) -> &[Pending] {
 		&self.pending
@@ -144,6 +122,6 @@ impl Table {
 	/// A table from its parts, for tests that need standings no real
 	/// schedule would produce.
 	pub(crate) const fn from_parts(records: [Record; 32], pending: Vec<Pending>) -> Self {
-		Self { records, pending, through: 0 }
+		Self { records, pending }
 	}
 }

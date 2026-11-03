@@ -67,7 +67,7 @@ fn the_floor_and_ceiling_are_the_extremes() {
 		let floor = field.floor(&group).unwrap();
 		assert_eq!(floor.points, lo, "case {case}: {group:?}");
 		// No subject in the group: every game left can go to a member.
-		let ceiling = field.ceiling(&group, usize::MAX, false).unwrap();
+		let ceiling = field.ceiling(&group, None).unwrap();
 		assert_eq!(ceiling.points, hi, "case {case}");
 		assert!(group.contains(&ceiling.by));
 		// The bloc forces the floor with its own games, and needs every member.
@@ -87,21 +87,23 @@ fn the_floor_and_ceiling_are_the_extremes() {
 }
 
 #[test]
-fn a_held_member_stays_at_or_under_its_cap() {
+fn held_members_stay_at_or_under_their_cap() {
+	// As the story holds the division at its floor: several members, one cap.
 	let mut rng = Lcg(0x4e1d);
 	for case in 0..100 {
 		let (points, games) = random_field(&mut rng, 6, 11);
 		let field = Field { points: &points, games: &games };
 		let group = random_group(&mut rng, 6);
-		let held_member = group[0];
-		let cap = points[held_member] + 2 * u16::try_from(rng.next(4)).unwrap();
+		let held: Vec<usize> = group.iter().copied().filter(|_| rng.next(2) == 0).collect();
+		let cap = held.iter().map(|&m| points[m]).max().unwrap_or(0) + 2 * u16::try_from(rng.next(4)).unwrap();
 		let oracle = (0u32..1 << games.len())
 			.filter_map(|o| {
 				let f = finals(&points, &games, o);
-				(f[held_member] <= cap).then(|| group.iter().map(|&m| f[m]).max().unwrap())
+				held.iter().all(|&m| f[m] <= cap).then(|| group.iter().map(|&m| f[m]).max().unwrap())
 			})
 			.min();
-		assert_eq!(field.floor_held(&group, &[(held_member, cap)]), oracle, "case {case}");
+		let caps: Vec<(usize, u16)> = held.iter().map(|&m| (m, cap)).collect();
+		assert_eq!(field.floor_held(&group, &caps), oracle, "case {case}");
 	}
 }
 
@@ -111,8 +113,8 @@ fn winning_out_takes_the_subject_s_games_from_the_ceiling() {
 	let games = [(0, 1), (1, 2), (1, 2), (0, 2)];
 	let field = Field { points: &points, games: &games };
 	// 1 reaches 12 winning all three; with subject 2 winning out, 8.
-	assert_eq!(field.ceiling(&[0, 1], 2, false), Some(Ceiling { points: 12, by: 1 }));
-	assert_eq!(field.ceiling(&[0, 1], 2, true), Some(Ceiling { points: 8, by: 1 }));
+	assert_eq!(field.ceiling(&[0, 1], None), Some(Ceiling { points: 12, by: 1 }));
+	assert_eq!(field.ceiling(&[0, 1], Some(2)), Some(Ceiling { points: 8, by: 1 }));
 }
 
 #[test]
@@ -136,7 +138,7 @@ fn the_floor_only_rises_and_the_ceiling_only_falls() {
 		let mut last = (0u16, u16::MAX);
 		while !games.is_empty() {
 			let field = Field { points: &points, games: &games };
-			let now = (field.floor_points(&group).unwrap(), field.ceiling(&group, usize::MAX, false).unwrap().points);
+			let now = (field.floor_points(&group).unwrap(), field.ceiling(&group, None).unwrap().points);
 			assert!(now.0 >= last.0 && now.1 <= last.1, "case {case}: {last:?} then {now:?}");
 			last = now;
 			let (a, b) = games.remove(usize::try_from(rng.next(u64::try_from(games.len()).unwrap())).unwrap());

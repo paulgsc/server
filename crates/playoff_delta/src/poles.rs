@@ -28,7 +28,10 @@
 //! two points to one side, never a tie (the solver's model). The NFL is
 //! adapted to it in [`crate::evaluate`].
 
-use crate::{flow::Network, rank};
+use crate::{
+	flow::{self, Placement},
+	rank,
+};
 
 /// Banked points per entity, and the games still to play.
 #[derive(Debug, Clone, Copy)]
@@ -87,35 +90,25 @@ impl Field<'_> {
 	/// Can the games inside `group` be decided with every member finishing
 	/// at or under its cap?
 	fn place(&self, group: &[usize], cap: impl Fn(usize) -> u16) -> Placed {
-		let inside = self.inside(group);
-		let (source, sink) = (0, 1);
-		let node = |i: usize| 2 + i;
-		let mut net = Network::new(2 + group.len() + inside.len());
-		for (i, &m) in group.iter().enumerate() {
-			let Some(room) = cap(m).checked_sub(self.points[m]) else {
+		let mut room = Vec::with_capacity(group.len());
+		for &m in group {
+			let Some(r) = cap(m).checked_sub(self.points[m]) else {
 				return Placed::No(vec![m]);
 			};
 			// A game left hands out a whole win, so odd room left by a banked
 			// tie is half a win nobody can take.
-			net.add(node(i), sink, u32::from(room) & !1);
+			room.push(u32::from(r) & !1);
 		}
+		match flow::place(&room, &self.local(group), 2) {
+			Placement::Yes(_) => Placed::Yes,
+			Placement::No(side) => Placed::No(group.iter().zip(side).filter(|(_, s)| *s).map(|(&m, _)| m).collect()),
+		}
+	}
+
+	/// The games inside `group`, by each side's position in it.
+	fn local(&self, group: &[usize]) -> Vec<(usize, usize)> {
 		let at = |e: usize| group.iter().position(|&m| m == e).unwrap_or(0);
-		for (k, &g) in inside.iter().enumerate() {
-			let (a, b) = self.games[g];
-			let game = 2 + group.len() + k;
-			net.add(source, game, 2);
-			net.add(game, node(at(a)), 2);
-			net.add(game, node(at(b)), 2);
-		}
-		let need = u32::try_from(inside.len()).unwrap_or(u32::MAX) * 2;
-		if net.max_flow(source, sink) == need {
-			return Placed::Yes;
-		}
-		// The members on the source side of a minimum cut: every game they
-		// can still reach lies between two of them, and those games hand out
-		// more than their caps hold.
-		let side = net.reachable(source);
-		Placed::No(group.iter().enumerate().filter(|(i, _)| side[node(*i)]).map(|(_, &m)| m).collect())
+		self.inside(group).into_iter().map(|g| (at(self.games[g].0), at(self.games[g].1))).collect()
 	}
 
 	/// The fewest points `group`'s best member can finish with, a member
@@ -175,11 +168,11 @@ impl Field<'_> {
 	}
 
 	/// The most points a member of `group` can reach. With `winning_out`, the
-	/// games each plays against `subject` are its losses.
+	/// games each plays against that entity are its losses.
 	#[must_use]
-	pub fn ceiling(&self, group: &[usize], subject: usize, winning_out: bool) -> Option<Ceiling> {
+	pub fn ceiling(&self, group: &[usize], winning_out: Option<usize>) -> Option<Ceiling> {
 		let reach = |m: usize| {
-			let against = if winning_out { self.between(m, subject) } else { 0 };
+			let against = winning_out.map_or(0, |s| self.between(m, s));
 			self.points[m] + 2 * (self.left(m) - against)
 		};
 		let points = group.iter().map(|&m| reach(m)).max()?;
@@ -219,30 +212,24 @@ impl Field<'_> {
 	}
 
 	/// Can every team of `set` finish strictly above `floor` at once? Each
-	/// takes its games against teams outside the set; games inside the set
-	/// must cover what each still needs.
+	/// takes its games against teams outside the set; a game inside the set
+	/// hands one of its sides a loss, and each side can afford only as many
+	/// as leave it the wins it still needs.
 	fn all_above(&self, set: &[usize], floor: u16) -> bool {
-		let inside = self.inside(set);
-		let (source, sink) = (0, 1);
-		let mut net = Network::new(2 + set.len() + inside.len());
-		let mut need_total = 0u32;
+		let games = self.local(set);
+		let mut room = Vec::with_capacity(set.len());
 		for (i, &m) in set.iter().enumerate() {
 			// Wins to pass `floor`: strictly more points.
 			let need = if self.points[m] > floor { 0 } else { (floor - self.points[m]) / 2 + 1 };
-			let ours = u16::try_from(inside.iter().filter(|&&g| self.games[g].0 == m || self.games[g].1 == m).count()).unwrap_or(u16::MAX);
-			let need = u32::from(need.saturating_sub(self.left(m) - ours));
-			need_total += need;
-			net.add(2 + i, sink, need);
+			let ours = u16::try_from(games.iter().filter(|&&(a, b)| a == i || b == i).count()).unwrap_or(u16::MAX);
+			let outside = self.left(m) - ours;
+			let Some(spare) = (ours + outside).checked_sub(need) else {
+				return false;
+			};
+			room.push(u32::from(spare.min(ours)));
 		}
-		let at = |e: usize| set.iter().position(|&m| m == e).unwrap_or(0);
-		for (k, &g) in inside.iter().enumerate() {
-			let (a, b) = self.games[g];
-			let game = 2 + set.len() + k;
-			net.add(source, game, 1);
-			net.add(game, 2 + at(a), 1);
-			net.add(game, 2 + at(b), 1);
-		}
-		net.max_flow(source, sink) == need_total
+		// Placing a game's loss on its first side is its second side's win.
+		matches!(flow::place(&room, &games, 1), Placement::Yes(_))
 	}
 }
 

@@ -79,8 +79,9 @@ impossible too, so the search grows only sets that can, and reads each one's
 seed off `rank::from_above`. It stops at the first set that leaves the team
 out.
 
-`src/poles/tests.rs` checks the floor, the bloc, `held`, the ceiling and the
-worst seed against brute force (every outcome of a dozen games, on random
+`src/poles/tests.rs` checks the floor, the bloc, a floor with members held
+at a cap (as `held` holds the division), the ceiling and the worst seed
+against brute force (every outcome of a dozen games, on random
 fields with banked ties and on random NFL tables).
 
 ## The solver

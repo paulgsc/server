@@ -1,19 +1,9 @@
 //! A season, week by week, into the story contract ([`crate::story`]).
 //!
 //! Every number is exact: a pole read off a table by [`crate::poles`], or a
-//! seed by [`crate::solver`]. Nothing is sampled or weighted. Each week
-//! carries the poles at the table before it and the table after it, and
-//! what each of its results did to them:
-//!
-//! - **Our range**: the team's wins losing every game left, and winning every
-//!   one.
-//! - **A group's floor** (division rivals, conference rivals): the best case.
-//!   The team wins out, and the fewest wins the group's best rival can be
-//!   held to, with the bloc whose own games force it.
-//! - **A group's ceiling**: the worst case, the most wins a rival can reach.
-//! - **Seeds**: the best seed winning out, the worst losing out.
-//! - **A result's move**, per group: the poles as they are, against the same
-//!   week with that one result the other way.
+//! seed by [`crate::solver`]. Each week carries the poles at the table before
+//! it and the table after it, and what each of its results did to them, as
+//! the README's field definitions say.
 
 use crate::{
 	league::Team,
@@ -180,7 +170,11 @@ impl Groups {
 				banked: 0,
 				games: 0,
 			});
-			let ceiling = |winning_out| field.ceiling(members, me.index(), winning_out).unwrap_or_else(|| Ceiling { points: 0, by: me.index() });
+			let ceiling = |winning_out: bool| {
+				field
+					.ceiling(members, winning_out.then_some(me.index()))
+					.unwrap_or_else(|| Ceiling { points: 0, by: me.index() })
+			};
 			let lose = ceiling(false);
 			Group {
 				floor: Wins(floor.points),
@@ -219,7 +213,7 @@ impl Groups {
 	fn bounds(field: &Field<'_>, members: &[usize]) -> Bounds {
 		Bounds {
 			floor: field.floor_points(members).unwrap_or(0),
-			ceiling: field.ceiling(members, usize::MAX, false).map_or(0, |c| c.points),
+			ceiling: field.ceiling(members, None).map_or(0, |c| c.points),
 		}
 	}
 

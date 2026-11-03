@@ -2,9 +2,9 @@
 //!
 //! [`best`] asks: if `team` wins exactly `extra` of its remaining games and
 //! every other remaining game goes whichever way suits it, what is the best
-//! playoff seed it can reach? The story's paths are this question asked of
-//! each count of more wins; the story asks it of winning out, for the best
-//! seed still reachable. The worst seed is [`crate::poles`]'s.
+//! playoff seed it can reach? The story asks it of
+//! winning out, for the best seed still reachable. The worst seed is
+//! [`crate::poles`]'s.
 //!
 //! ## The model (invariant PD1)
 //!
@@ -36,7 +36,7 @@
 //!   exactly those is complete.
 
 use crate::{
-	flow::Network,
+	flow::{self, Placement},
 	league::Team,
 	table::{Record, Table},
 };
@@ -255,45 +255,40 @@ impl<'a> Ask<'a> {
 	/// conference) above the asked team?
 	fn place(&self, free: Mask) -> Placed {
 		let n = self.conf.len();
-		let (source, sink) = (0, 1);
-		let team_node = |i: usize| 2 + i;
+		let mut room = vec![0u32; n];
+		for i in (0..n).filter(|i| free & (1 << i) == 0) {
+			let Some(cap) = self.cap(i) else {
+				return Placed::No(1 << i);
+			};
+			room[i] = cap;
+		}
 		let games: Vec<usize> = (0..self.table.pending().len())
 			.filter(|&g| {
 				let p = self.table.pending()[g];
 				self.capped(p.home, free) && self.capped(p.away, free)
 			})
 			.collect();
-		let mut net = Network::new(2 + n + games.len());
-		for i in (0..n).filter(|i| free & (1 << i) == 0) {
-			let Some(cap) = self.cap(i) else {
-				return Placed::No(1 << i);
-			};
-			net.add(team_node(i), sink, cap);
-		}
 		let pos = |t: Team| self.conf.iter().position(|c| *c == t).unwrap_or(0);
-		let mut home_edges = Vec::with_capacity(games.len());
-		for (k, &g) in games.iter().enumerate() {
-			let p = self.table.pending()[g];
-			let node = 2 + n + k;
-			net.add(source, node, 2);
-			home_edges.push((net.add(node, team_node(pos(p.home)), 2), net.add(node, team_node(pos(p.away)), 2)));
-		}
-		let need = u32::try_from(games.len()).unwrap_or(u32::MAX) * 2;
-		let flow = net.max_flow(source, sink);
-		if flow < need {
-			let side = net.reachable(source);
-			let cut = (0..n).filter(|&i| free & (1 << i) == 0 && side[team_node(i)]).fold(0, |m, i| m | (1 << i));
-			return Placed::No(cut);
-		}
-		let winners = games
+		let pairs: Vec<(usize, usize)> = games
 			.iter()
-			.zip(home_edges)
-			.map(|(&g, (home, _))| {
+			.map(|&g| {
 				let p = self.table.pending()[g];
-				(g, if net.flow_on(home) == 2 { p.home } else { p.away })
+				(pos(p.home), pos(p.away))
 			})
 			.collect();
-		Placed::Yes(winners)
+		match flow::place(&room, &pairs, 2) {
+			Placement::Yes(home_won) => Placed::Yes(
+				games
+					.iter()
+					.zip(home_won)
+					.map(|(&g, home)| {
+						let p = self.table.pending()[g];
+						(g, if home { p.home } else { p.away })
+					})
+					.collect(),
+			),
+			Placement::No(side) => Placed::No((0..n).filter(|&i| free & (1 << i) == 0 && side[i]).fold(0, |m, i| m | (1 << i))),
+		}
 	}
 
 	/// The whole rest of the season for a placement: the flow decides games
