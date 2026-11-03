@@ -13,7 +13,9 @@
 //!   not hold.
 //! - **Append-only, and the first mark stands.** A note is marked once;
 //!   nothing is updated (the trigger aborts an `UPDATE`) or deleted but with
-//!   the account, so a repeat mark changes nothing, its time included. There
+//!   the account, or with its note when the owner deletes that note for good
+//!   from My data ([`crate::delete`]), so a repeat mark changes nothing, its
+//!   time included. There
 //!   is no un-set: the phone has no undo for Let go.
 //! - **Nothing is let go of on home.** The note, its audio and any transcript
 //!   stay. What a mark changes is what does work on the note: the

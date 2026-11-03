@@ -8,7 +8,8 @@
 //!   as a failure naming its kind. [`keep_attempt`] writes it; nothing else
 //!   writes this table.
 //! - **Append-only.** No row is updated (the trigger aborts an `UPDATE`) or
-//!   deleted but with the account. A model that has heard a note, or found
+//!   deleted but with the account, or with its note when the owner deletes
+//!   that note for good from My data ([`crate::delete`]). A model that has heard a note, or found
 //!   it silent, never hears it again (a partial unique index holds that), and
 //!   a better model adds rows of its own beside the old ones.
 //! - **Bounded retries.** [`waiting`] names only the notes a model has not

@@ -27,8 +27,14 @@
 //!                                      their bytes, how many were set
 //!                                      aside and since when, what reached
 //!                                      home each week, and with `of` that
-//!                                      kind's newest notes, to a paired
-//!                                      phone (paulgsc/some-ui#2476)
+//!                                      kind's newest notes, each saying
+//!                                      whether My data may delete it, to a
+//!                                      paired phone (paulgsc/some-ui#2476)
+//! DELETE /voice-notes/:id             → { receipt }: deletes the note for
+//!                                      good, from a paired phone's My
+//!                                      data, only of a kind the owner
+//!                                      switched on (none yet), else a 409
+//!                                      (paulgsc/some-ui#2477)
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -53,12 +59,16 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token. The audio read takes a `Paired` phone, as `routes::rust_rounds`
-//! does, so a browser's cookie session is a `403` there too.
+//! token. The audio read and the delete take a `Paired` phone, as
+//! `routes::rust_rounds` does, so a browser's cookie session is a `403`
+//! there too.
 //!
-//! **Append-only, and kept for good.** A `PUT` adds a note or changes
-//! nothing, and other bytes or another description under a held id are a
-//! `409`; there is no `DELETE`, and setting a note aside deletes nothing.
+//! **Append-only, and kept unless deleted from My data.** A `PUT` adds a
+//! note or changes nothing, and other bytes or another description under a
+//! held id, or a note deleted for good, are a `409`; setting a note aside
+//! deletes nothing. The one `DELETE` is My
+//! data's, for a kind the owner switched on, with a receipt
+//! (`voice_repo::delete`); every kind ships switched off.
 //! See `handlers::voice` and `voice_repo`.
 
 use crate::auth::AuthContext;
@@ -88,7 +98,8 @@ where
 		.get("/voice-notes/:id/heard", handlers::get_heard)
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
 		.get("/voice-notes/:id/audio", handlers::get_audio)
-		.get("/voice-notes/kept", handlers::get_kept);
+		.get("/voice-notes/kept", handlers::get_kept)
+		.delete("/voice-notes/:id", handlers::delete_note);
 
 	Module::versioned("voice", table).with_cors(cors)
 }
@@ -96,7 +107,7 @@ where
 fn cors(config: &Config) -> CorsLayer {
 	allowlisted_cors_with_credentials(
 		config,
-		vec![Method::GET, Method::PUT, Method::OPTIONS],
+		vec![Method::GET, Method::PUT, Method::DELETE, Method::OPTIONS],
 		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, IF_NONE_MATCH],
 	)
 	.expose_headers([ETAG])

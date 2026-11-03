@@ -17,6 +17,11 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
+//! **The one way a note is deleted but with the account** (docs/identity.md
+//! invariant 23): [`delete_note`] is the only caller of
+//! `voice_repo::delete::delete`, for a kind the owner switched on (none
+//! yet), and the only writer of `voice_note_deletion`.
+//!
 //! **The one way audio leaves home** (docs/identity.md invariant 23):
 //! [`get_audio`] is the only caller of `voice_repo::audio_head` and
 //! `voice_repo::audio_body`, and its span
@@ -45,6 +50,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::instrument;
 use voice_repo::{
+	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	kept::{KindKept, NoteKept, WeekKept},
 	set_aside::SetAside,
 	transcript::{Hearing, Transcript},
@@ -146,6 +152,11 @@ pub async fn put_note(
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// A note deleted for good from My data stays deleted: a phone that still
+	// holds its copy and sends it again is refused, not taken back.
+	if voice_repo::delete::receipt(&mut tx, subject.as_str(), &note.id).await.map_err(refusal)?.is_some() {
+		return Err(FileHostError::Conflict(DELETED_FOR_GOOD));
+	}
 	let change = voice_repo::put_note(&mut tx, subject.as_str(), &note, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(NoteWritten { change: change.as_str(), note }))
@@ -354,7 +365,7 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 	let kinds = voice_repo::kept::kinds(&mut tx, subject).await.map_err(refusal)?;
 	let weeks = voice_repo::kept::weeks(&mut tx, subject).await.map_err(refusal)?;
 	let notes = match of {
-		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of).await.map_err(refusal)?),
+		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of, SWITCHED_ON).await.map_err(refusal)?),
 		None => None,
 	};
 	tx.commit().await?;
@@ -400,6 +411,55 @@ pub async fn put_set_aside(subject: SubjectId, State(db): State<SqlitePool>, Pat
 	match marked {
 		SetAside::Marked | SetAside::AlreadyMarked => Ok(StatusCode::NO_CONTENT),
 		SetAside::NotHeld => Err(FileHostError::NotFound),
+	}
+}
+
+/// `DELETE /voice-notes/:id`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteDeleted {
+	/// What home keeps of the note now: its receipt.
+	pub receipt: Receipt,
+}
+
+/// What a note sent again after it was deleted for good answers with.
+const DELETED_FOR_GOOD: &str = "this voice note was deleted for good, so it is not kept again";
+/// What a delete of a note home keeps answers with.
+const SWITCHED_OFF: &str = "this kind of voice note can't be deleted until the owner switches it on";
+/// What a delete of a note kept for good answers with.
+const KEPT_FOR_GOOD: &str = "this voice note is kept for good";
+
+/// `DELETE /voice-notes/:id`: deletes the caller's note `id` for good.
+///
+/// Its audio and what home heard in it go with it, and the answer is its
+/// receipt (paulgsc/some-ui#2477, MD3). Only from a paired phone's My data,
+/// and only of a kind the owner switched on
+/// (`voice_repo::delete::SWITCHED_ON`, none yet): every other note is kept
+/// and nothing is written.
+///
+/// Idempotent: a repeat for a note already deleted answers with the same
+/// receipt, so a phone whose answer was lost learns it is gone.
+///
+/// `BEGIN IMMEDIATE`, so the read, the deletes and the receipt see one
+/// snapshot and land together.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's session or an untrusted
+/// origin, 404 for a note the caller's subject neither holds nor deleted
+/// (another subject's included), 409 for a note home keeps (its kind
+/// switched off, or kept for good), and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_note_delete", skip_all, fields(otel.kind = "server"))]
+pub async fn delete_note(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<NoteDeleted>, FileHostError> {
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let deleted = voice_repo::delete::delete(&mut tx, paired.subject.as_str(), &id, SWITCHED_ON, &now())
+		.await
+		.map_err(refusal)?;
+	tx.commit().await?;
+	match deleted {
+		Deleted::Gone(receipt) => Ok(Json(NoteDeleted { receipt })),
+		Deleted::Kept(deletion::Kept::SwitchedOff) => Err(FileHostError::Conflict(SWITCHED_OFF)),
+		Deleted::Kept(deletion::Kept::ForGood) => Err(FileHostError::Conflict(KEPT_FOR_GOOD)),
+		Deleted::NotHeld => Err(FileHostError::NotFound),
 	}
 }
 
@@ -513,7 +573,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 6);
+		assert_eq!(module().descriptors().count(), 7);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -898,6 +958,79 @@ mod tests {
 		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to hear: {hidden}");
 	}
 
+	/// A delete from a paired phone keeps every note while no kind is
+	/// switched on: a take is a 409 and stays whole, as does a note kept for
+	/// good. No session is a 401, a browser's a 403, and another subject's
+	/// note a 404. What a delete of a kind switched on does is
+	/// `voice_repo::delete`'s tests.
+	#[tokio::test]
+	async fn a_delete_keeps_every_note_while_no_kind_is_switched_on() {
+		const STUDIO_TAKE: &str = "/voice-notes/t1?of=studio&ref=build-journal-ep04:s3:2&at=2026-11-02T18:20:00Z";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [NOTE, STUDIO_TAKE] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+		}
+		let delete = |path: &'static str, auth: Option<(HeaderName, String)>| {
+			let app = app.clone();
+			async move {
+				let mut request = Request::builder().method(Method::DELETE).uri(path);
+				if let Some((name, value)) = auth {
+					request = request.header(name, value);
+				}
+				let response = app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+				let status = response.status();
+				let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+				(status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+			}
+		};
+
+		let (status, body) = delete("/voice-notes/t1", Some(phone.clone())).await;
+		assert_eq!(status, StatusCode::CONFLICT, "a take is kept until the owner switches it on: {body}");
+		assert_eq!(
+			delete("/voice-notes/n1", Some(phone.clone())).await.0,
+			StatusCode::CONFLICT,
+			"a reflection is kept for good"
+		);
+		assert_eq!(delete("/voice-notes/t1", None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(delete("/voice-notes/t1", Some(browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		assert_eq!(
+			delete("/voice-notes/t1", Some(other)).await.0,
+			StatusCode::NOT_FOUND,
+			"another subject's note is not theirs"
+		);
+		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_audio").fetch_one(&pool).await.unwrap();
+		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
+		assert_eq!((kept, receipts), (2, 0));
+	}
+
+	/// A note deleted for good is refused when the phone sends it again,
+	/// and nothing is written: its receipt stands.
+	#[tokio::test]
+	async fn a_note_deleted_for_good_is_not_kept_again() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		sqlx::query(
+			"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+			 VALUES (?1, 'n1', 'reflection', 'then', 1, 'then', 'now', '[\"recording\"]', '[]')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let (status, body) = put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await;
+		assert_eq!(status, StatusCode::CONFLICT, "{body}");
+		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note").fetch_one(&pool).await.unwrap();
+		assert_eq!(held, 0);
+	}
+
 	/// The kept read answers the caller's own notes, by kind and week, and a
 	/// kind's newest with `of`; descriptions only. Counting is
 	/// `voice_repo::kept`'s tests.
@@ -929,7 +1062,7 @@ mod tests {
 		listed.as_object_mut().unwrap().remove("storedAt");
 		assert_eq!(
 			listed,
-			json!({ "id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null })
+			json!({ "id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false })
 		);
 
 		let (status, body) = get(&app, "/voice-notes/kept", Some(&other)).await;

@@ -27,7 +27,11 @@ transcripts home files for the mailbox and the reflections index skip it,
 unless it is a Jobs note, which is still heard and filed because a decisions
 or scouts file naming it is what puts it in front of the routine
 (`migrations/20261101000900_create_voice_note_set_aside.up.sql`,
-`src/set_aside.rs`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
+`src/set_aside.rs`). The one delete besides the account's is My data's, of a
+kind the owner switched on (none yet; a Studio take is the one kind it can
+ever delete), leaving a receipt in `voice_note_deletion`
+(`migrations/20261103000100_create_voice_note_deletion.up.sql`,
+`src/delete.rs`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
 `migrations/20261025000100_create_voice_note.up.sql` and
 `migrations/20261025000200_create_voice_transcript.up.sql` (and the word
 table's migration above), and in
