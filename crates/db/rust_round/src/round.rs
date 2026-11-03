@@ -1,9 +1,11 @@
 //! What home reads of a round: the least it needs to keep it and to record
 //! its programs, and nothing more (paulgsc/some-ui#2234, RR3).
 //!
-//! The format is paulgsc/some-ui's `some-ui.rust-round/1`
+//! The format is paulgsc/some-ui's `some-ui.rust-round/2`
 //! (`packages/ui/rust-rounds/src/lib/formats`, RR1), and the phone's intake
-//! holds a round to all of it before it is sent. Home checks only:
+//! holds a round to all of it before it is sent. A `/1` round, whose cards
+//! still carried choices, is kept too: home reads nothing the two differ in
+//! (paulgsc/some-ui#2550, TALK5). Home checks only:
 //!
 //! - its size ([`ROUND_CEILING`]), its encoding and that it is one JSON object;
 //! - its `schema` tag;
@@ -12,14 +14,16 @@
 //!   `program`, and a variant card's, built as the format builds it
 //!   ([`programs`]), so home records exactly the program the phone shows.
 //!
-//! Anything else in a round (a card's question, choices, guess, a refine
-//! card's note and nudge) is kept as it came and never read here.
+//! Anything else in a round (a card's question, a `/1` card's choices, its
+//! guess, a refine card's note and nudge) is kept as it came and never read
+//! here.
 
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-/// The format's tag.
-pub const ROUND_SCHEMA: &str = "some-ui.rust-round/1";
+/// The format's tags: the current one, and `/1`, which differs only in what
+/// home never reads.
+const ROUND_SCHEMAS: [&str; 2] = ["some-ui.rust-round/2", "some-ui.rust-round/1"];
 
 /// The most bytes a round may hold.
 ///
@@ -77,8 +81,8 @@ pub fn read(body: &[u8]) -> Result<Round, Vec<Problem>> {
 		return Err(problem("body", "is not one JSON object"));
 	};
 	let mut problems = Vec::new();
-	if round.get("schema").and_then(Value::as_str) != Some(ROUND_SCHEMA) {
-		problems.push((String::from("schema"), "must be \"some-ui.rust-round/1\""));
+	if !round.get("schema").and_then(Value::as_str).is_some_and(|tag| ROUND_SCHEMAS.contains(&tag)) {
+		problems.push((String::from("schema"), "must be \"some-ui.rust-round/2\""));
 	}
 	let id = round.get("id").and_then(Value::as_str).filter(|id| is_slug(id));
 	if id.is_none() {
@@ -209,7 +213,7 @@ mod tests {
 
 	fn body(cards: &serde_json::Value) -> Vec<u8> {
 		json!({
-			"schema": "some-ui.rust-round/1",
+			"schema": "some-ui.rust-round/2",
 			"id": "indexing-01",
 			"by": "claude-routine",
 			"concept": "indexing",
@@ -249,6 +253,16 @@ mod tests {
 		assert_eq!(read(&body(&unterminated)).unwrap().programs[1].source, "x\nz", "no newline is added");
 	}
 
+	/// A `/1` round, its cards still carrying choices, is kept as it came.
+	#[test]
+	fn a_round_from_before_choices_went_is_read_too() {
+		let cards = json!([{ "kind": "read", "id": "a", "program": PROGRAM, "choices": [{ "pick": "Not sure", "say": "Say why." }] }]);
+		let v1 = json!({ "schema": "some-ui.rust-round/1", "id": "indexing-01", "cards": cards }).to_string();
+		let round = read(v1.as_bytes()).unwrap();
+		assert_eq!(round.text, v1);
+		assert_eq!(round.programs.len(), 1);
+	}
+
 	#[test]
 	fn whitespace_around_the_json_is_no_part_of_it() {
 		let mut padded = b"\n  ".to_vec();
@@ -267,7 +281,7 @@ mod tests {
 		assert_eq!(refused(&vec![b' '; ROUND_CEILING + 1]), ["body"]);
 		assert_eq!(refused(&[0xff, 0xfe]), ["body"]);
 		assert_eq!(refused(b"[1, 2]"), ["body"]);
-		assert_eq!(refused(br#"{"schema":"some-ui.rust-round/2","id":"Bad Id","cards":[]}"#), ["schema", "id", "cards"]);
+		assert_eq!(refused(br#"{"schema":"some-ui.rust-round/3","id":"Bad Id","cards":[]}"#), ["schema", "id", "cards"]);
 		let long = json!({ "schema": "some-ui.rust-round/1", "id": "a".repeat(65), "cards": [{ "kind": "read", "id": "a", "program": "" }] });
 		assert_eq!(
 			read(long.to_string().as_bytes()).unwrap_err(),
