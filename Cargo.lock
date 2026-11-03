@@ -167,6 +167,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "app_event_repo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1571,6 +1582,7 @@ dependencies = [
  "anyhow",
  "aph_repo",
  "app-config",
+ "app_event_repo",
  "async-nats",
  "auth_repo",
  "axum",

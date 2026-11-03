@@ -197,6 +197,7 @@ above the button that deletes (invariant 22):
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
+| How each recording ended | `app_event` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
 A file home archived out of the mailbox goes with the account, and the person
@@ -1790,6 +1791,37 @@ nowhere is marked as such and belongs to review.
     index can break; and that the list matches the phone's
     `KEPT_FOR_GOOD`, which a kind added on either side breaks until the
     other names it.
+
+34. **What the app saw happen holds ids, timings and endings only, append-only.**
+    `app_event` keeps one event per obligation the owner's phone ran to an
+    ending, once the phone sends it home (paulgsc/some-ui CK2, #2381): a take
+    today, a listening, a spoken line or a note sent home next. An event of
+    the `outcome` family holds the process family, the screen and the ending
+    by the code's own names (1 to 64 lowercase letters, digits, `-` or `.`,
+    which leaves no room for a sentence), whether it worked, failed or was
+    stopped, how long it took to be ready and to run, a take's peak level
+    (0 to 1), the build's commit, when it started and when it reached home.
+    It holds no audio, no words and nothing of what was recorded or read
+    (the owner's C3, paulgsc/some-ui#2369), and no field outside its family's
+    own: an unknown field or family is refused whole. A second family
+    (paulgsc/some-ui ENG2, #2535) is a new variant of
+    `app_event_repo::Event`, held to the same limits. The table is never
+    updated (a trigger aborts an `UPDATE`) or replaced (a different body
+    under a held id is a `409`), and is deleted only with the account. It is
+    written only by `PUT /app-events/:id`, readable only by its own subject,
+    as counts per family, process and screen (`GET /app-events/summary`),
+    and deleted with the account by both the sweep and the migration's
+    trigger (invariant 12). Rolling back the migration that creates it fails
+    once it holds a row, rather than dropping the record.
+    *Enforced by* `app_event_repo`'s `the_table_holds_exactly_its_described_columns`,
+    `an_event_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `an_unknown_field_or_family_is_off_shape`, `every_rule_names_its_field`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, and `handlers::app_events`'s
+    `a_paired_phone_sends_its_outcomes_and_the_summary_counts_them` and
+    `nothing_an_event_says_reaches_a_log_line`.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n app_event -- '*.rs'` shows today.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

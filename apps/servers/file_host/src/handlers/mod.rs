@@ -6,6 +6,7 @@
 #![warn(clippy::let_underscore_must_use, clippy::wildcard_enum_match_arm)]
 
 pub mod aph;
+pub mod app_events;
 pub mod auth;
 pub mod db;
 pub mod health;

@@ -1178,6 +1178,7 @@ mod tests {
 				"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
 				"INSERT INTO studio_sitting_event (subject_id, sitting_id, event_id, at, type, kind, body, written_at) VALUES (?1, 's', 'e', 'now', 'page_hidden', 'record', '{}', 'now')",
 				"INSERT INTO studio_friction (subject_id, report_id, sitting_id, at, how, body, written_at) VALUES (?1, 'f', 's', 'now', 'smooth', '{}', 'now')",
+				"INSERT INTO app_event (subject_id, event_id, family, at, body, written_at) VALUES (?1, 'e', 'outcome', 'now', '{}', 'now')",
 				"INSERT INTO study_note (subject_id, kind, note_id, body, sha256, stored_at) VALUES (?1, 'leetype', 'n', '{}', 's', 'now')",
 				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
 				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
