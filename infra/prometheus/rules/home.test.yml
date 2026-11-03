@@ -1,9 +1,11 @@
 # promtool test rules home.test.yml: each alert in home.yml fires when its
 # behaviour breaks, and stays quiet while it holds or is switched off.
 # Times are seconds from 0, so a stamp of 0 was taken at the start.
+# Rules are evaluated every 15 s, as ../prometheus.yml does on home, so a
+# `for:` shorter than a minute (GameFeedFailing's) is tested as it runs.
 rule_files:
   - home.yml
-evaluation_interval: 1m
+evaluation_interval: 15s
 tests:
   - name: a mailbox poller that stopped is stale past interval + budget + 60 s
     interval: 1m
@@ -98,6 +100,154 @@ tests:
     alert_rule_test:
       - eval_time: 55m
         alertname: MailboxPollerFailing
+        exp_alerts: []
+
+  - name: a nudge waker whose every pass fails alerts after three passes, whatever the class (#644)
+    interval: 1m
+    input_series:
+      - series: 'nudge_waker_enabled{job="file_host"}'
+        values: '1x21'
+      - series: 'nudge_waker_interval_seconds{job="file_host"}'
+        values: '300x21'
+      - series: 'nudge_waker_pass_deadline_seconds{job="file_host"}'
+        values: '120x21'
+      - series: 'nudge_waker_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+60x21'
+      - series: 'nudge_waker_pass_failing{job="file_host",error="schema"}'
+        values: '1x4 0x5 1x4 0x5'
+      - series: 'nudge_waker_pass_failing{job="file_host",error="locked"}'
+        values: '0x4 1x5 0x4 1x5'
+      - series: 'nudge_waker_pass_failing{job="file_host",error="io"}'
+        values: '0x21'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: NudgeWakerFailing
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: NudgeWakerFailing
+        exp_alerts:
+          - exp_labels:
+              objective: NW2
+              says: "The study nudge waker has failed every pass for 15 minutes; the file_host dashboard's LOOPS panel says why."
+      - eval_time: 16m
+        alertname: NudgeWakerStale
+        exp_alerts: []
+
+  - name: one failing nudge pass that recovers does not alert
+    interval: 1m
+    input_series:
+      - series: 'nudge_waker_enabled{job="file_host"}'
+        values: '1x30'
+      - series: 'nudge_waker_pass_failing{job="file_host",error="schema"}'
+        values: '1x4 0x25'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: NudgeWakerFailing
+        exp_alerts: []
+
+  - name: a failing nudge waker that is switched off does not alert
+    interval: 1m
+    input_series:
+      - series: 'nudge_waker_enabled{job="file_host"}'
+        values: '0x30'
+      - series: 'nudge_waker_pass_failing{job="file_host",error="schema"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: NudgeWakerFailing
+        exp_alerts: []
+
+  # The transcriber's gauge has no class: storage is its one way to fail.
+  - name: a transcriber whose every pass fails alerts after three passes (#644)
+    interval: 1m
+    input_series:
+      - series: 'transcribe_enabled{job="file_host"}'
+        values: '1x10'
+      - series: 'transcribe_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+60x10'
+      - series: 'transcribe_pass_failing{job="file_host"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TranscriberFailing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: TranscriberFailing
+        exp_alerts:
+          - exp_labels:
+              objective: VH1
+              says: "The voice-note transcriber has failed every pass on home's storage for 3 minutes; the TRANSCRIBE dashboard's FAILING panel shows it."
+
+  - name: one failing transcriber pass that recovers does not alert
+    interval: 1m
+    input_series:
+      - series: 'transcribe_enabled{job="file_host"}'
+        values: '1x10'
+      - series: 'transcribe_pass_failing{job="file_host"}'
+        values: '1 0x9'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TranscriberFailing
+        exp_alerts: []
+
+  - name: a failing transcriber that is switched off does not alert
+    interval: 1m
+    input_series:
+      - series: 'transcribe_enabled{job="file_host"}'
+        values: '0x10'
+      - series: 'transcribe_pass_failing{job="file_host"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TranscriberFailing
+        exp_alerts: []
+
+  # The game feed wakes every 5 s, so its series are sampled that often.
+  - name: a game feed whose every wake fails alerts after three wakes (#644)
+    interval: 5s
+    input_series:
+      - series: 'game_feed_enabled{job="file_host"}'
+        values: '1x24'
+      - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+5x24'
+      - series: 'game_feed_pass_failing{job="file_host"}'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 10s
+        alertname: GameFeedFailing
+        exp_alerts: []
+      - eval_time: 30s
+        alertname: GameFeedFailing
+        exp_alerts:
+          - exp_labels:
+              objective: GA4
+              says: "The game feed has failed every pass on home's storage for 15 seconds; the GAME FEED dashboard's FAILING panel shows it."
+      - eval_time: 2m
+        alertname: GameFeedStale
+        exp_alerts: []
+
+  - name: one failing game feed wake that recovers does not alert
+    interval: 5s
+    input_series:
+      - series: 'game_feed_enabled{job="file_host"}'
+        values: '1x24'
+      - series: 'game_feed_pass_failing{job="file_host"}'
+        values: '1 0x23'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GameFeedFailing
+        exp_alerts: []
+
+  - name: a failing game feed that is switched off does not alert
+    interval: 5s
+    input_series:
+      - series: 'game_feed_enabled{job="file_host"}'
+        values: '0x24'
+      - series: 'game_feed_pass_failing{job="file_host"}'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GameFeedFailing
         exp_alerts: []
 
   - name: a poller that keeps stamping, or is off, is not stale
