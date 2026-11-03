@@ -35,6 +35,11 @@
 //!                                      data, only of a kind the owner
 //!                                      switched on (none yet), else a 409
 //!                                      (paulgsc/some-ui#2477)
+//! GET /voice-notes/deleted            → { receipts, total }: the receipts
+//!                                      of the caller's notes deleted for
+//!                                      good, newest first, at most 100,
+//!                                      and how many in all, to a paired
+//!                                      phone's My data (paulgsc/server#667)
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -59,9 +64,9 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token. The audio read and the delete take a `Paired` phone, as
-//! `routes::rust_rounds` does, so a browser's cookie session is a `403`
-//! there too.
+//! token. The audio read, the delete and the receipts read take a `Paired`
+//! phone, as `routes::rust_rounds` does, so a browser's cookie session is a
+//! `403` there too.
 //!
 //! **Append-only, and kept unless deleted from My data.** A `PUT` adds a
 //! note or changes nothing, and other bytes or another description under a
@@ -99,7 +104,8 @@ where
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
 		.get("/voice-notes/:id/audio", handlers::get_audio)
 		.get("/voice-notes/kept", handlers::get_kept)
-		.delete("/voice-notes/:id", handlers::delete_note);
+		.delete("/voice-notes/:id", handlers::delete_note)
+		.get("/voice-notes/deleted", handlers::get_deleted);
 
 	Module::versioned("voice", table).with_cors(cors)
 }

@@ -32,6 +32,9 @@
 //! - **Per subject.** Every query takes the subject and filters on it.
 //! - **Written only by `DELETE /voice-notes/:id`** (`file_host`'s
 //!   `handlers::voice`), a paired phone's.
+//! - **Read back by My data's list of what was deleted**
+//!   (`GET /voice-notes/deleted`, paulgsc/server#667): [`receipts`], the
+//!   newest [`RECEIPTS`] of the subject's, and how many in all.
 
 use crate::{Of, VoiceError};
 use serde::Serialize;
@@ -145,6 +148,47 @@ pub async fn receipt(conn: &mut SqliteConnection, subject: &str, note_id: &str) 
 		went: list(&row.went)?,
 		stayed: list(&row.stayed)?,
 	}))
+}
+
+/// The most receipts [`receipts`] answers: the newest, as My data lists them.
+pub const RECEIPTS: i64 = 100;
+
+/// `subject`'s receipts, newest deleted first (the note's id breaking a tie),
+/// at most [`RECEIPTS`] of them, and how many it has in all.
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored list that does not read back.
+pub async fn receipts(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<Receipt>, i64), VoiceError> {
+	let total = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "total!: i64" FROM voice_note_deletion WHERE subject_id = ?1"#, subject)
+		.fetch_one(&mut *conn)
+		.await?;
+	let rows = sqlx::query!(
+		"SELECT note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed
+		 FROM voice_note_deletion WHERE subject_id = ?1
+		 ORDER BY deleted_at DESC, note_id DESC
+		 LIMIT ?2",
+		subject,
+		RECEIPTS
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let list = |text: &str| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable);
+	let receipts = rows
+		.into_iter()
+		.map(|row| {
+			Ok(Receipt {
+				went: list(&row.went)?,
+				stayed: list(&row.stayed)?,
+				id: row.note_id,
+				of: row.of_kind,
+				recorded_at: row.recorded_at,
+				size: row.size,
+				stored_at: row.stored_at,
+				deleted_at: row.deleted_at,
+			})
+		})
+		.collect::<Result<Vec<_>, VoiceError>>()?;
+	Ok((receipts, total))
 }
 
 /// Deletes `subject`'s note `note_id` and what goes with it, and says, in
@@ -274,7 +318,7 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 
 #[cfg(test)]
 mod tests {
-	use super::{delete, receipt, Deletable, Deleted, Kept, DRIVE_COPY, MAILBOX_COPY, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS};
+	use super::{delete, receipt, receipts, Deletable, Deleted, Kept, DRIVE_COPY, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -465,5 +509,40 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM voice_note_deletion").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B]);
+	}
+	/// The list of receipts is the subject's own, newest deleted first, at
+	/// most `RECEIPTS`, with how many there are in all.
+	#[tokio::test]
+	async fn the_receipts_read_back_newest_first_bounded_and_the_subjects_own() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(receipts(&mut conn, A).await.unwrap(), (Vec::new(), 0));
+		drop(conn);
+		let many = usize::try_from(RECEIPTS).unwrap() + 2;
+		// `n` as its last `width` digits, zero-padded.
+		let digits = |n: usize, width: usize| -> String {
+			let text = (n + 10_usize.pow(u32::try_from(width).unwrap())).to_string();
+			text.chars().skip(1).collect()
+		};
+		let id_of = |n: usize| String::from("t") + &digits(n, 3);
+		for n in 0..many {
+			let id = id_of(n);
+			let at = String::from("2026-11-03T09:") + &digits(n / 60, 2) + ":" + &digits(n % 60, 2) + ".000Z";
+			note(&pool, A, &id, "studio").await;
+			let mut conn = pool.acquire().await.unwrap();
+			assert!(matches!(delete(&mut conn, A, &id, ON, &at).await.unwrap(), Deleted::Gone(_)));
+		}
+		note(&pool, B, "theirs", "studio").await;
+		assert!(matches!(gone(&pool, B, "theirs", ON).await, Deleted::Gone(_)));
+
+		let mut conn = pool.acquire().await.unwrap();
+		let (listed, total) = receipts(&mut conn, A).await.unwrap();
+		assert_eq!(total, i64::try_from(many).unwrap());
+		assert_eq!(listed.len(), usize::try_from(RECEIPTS).unwrap());
+		assert_eq!(listed.first().unwrap().id, id_of(many - 1), "the newest first");
+		assert!(listed.iter().zip(listed.iter().skip(1)).all(|(newer, older)| newer.deleted_at >= older.deleted_at));
+		assert!(listed.iter().all(|each| each.id != "theirs" && each.went == [RECORDING]));
+		let (theirs, one) = receipts(&mut conn, B).await.unwrap();
+		assert_eq!((theirs.len(), one), (1, 1));
 	}
 }

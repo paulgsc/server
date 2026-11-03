@@ -1169,7 +1169,16 @@ nowhere is marked as such and belongs to review.
     (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
     audio, no `ref`, no bite and no transcript, and its span skips every
     argument. Its name, like `on-drive`'s, is never a note's id
-    (`voice_repo::is_note_id`).
+    (`voice_repo::is_note_id`). `GET /voice-notes/deleted`
+    (paulgsc/server#667, under paulgsc/some-ui#2477 MD3), a `Paired`
+    phone's (a browser's session is a `403`), reads the caller's own
+    subject's receipts in `voice_note_deletion` for My data's list of what
+    was deleted: the newest deleted first, at most 100
+    (`voice_repo::delete::RECEIPTS`), each as `DELETE` answered it, and how
+    many there are in all (`voice_repo::delete::receipts`, its one caller
+    `handlers::voice`). A receipt holds nothing said, no `ref` and no audio,
+    so neither does the read; its span skips every argument, and its name,
+    `deleted`, is never a note's id either.
 
     **Home's word that Drive holds a Studio take too is
     `studio_take_on_drive`, append-only, and comes from the mailbox, never

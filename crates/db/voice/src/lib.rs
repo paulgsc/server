@@ -402,9 +402,10 @@ fn container(content_type: &str) -> Option<&'static str> {
 
 /// The names under `/voice-notes/` that are routes of their own, never a
 /// note's id: `PUT /voice-notes/on-drive` reaches the `GET` route of that
-/// name, not a note's, and so does `PUT /voice-notes/kept`. `file_host`'s
-/// `handlers::voice` tests that every such route is named here.
-const ROUTE_NAMES: [&str; 2] = ["on-drive", "kept"];
+/// name, not a note's, and so do `PUT /voice-notes/kept` and
+/// `DELETE /voice-notes/deleted`. `file_host`'s `handlers::voice` tests that
+/// every such route is named here.
+const ROUTE_NAMES: [&str; 3] = ["on-drive", "kept", "deleted"];
 
 /// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
 /// not one of [`ROUTE_NAMES`].
@@ -889,17 +890,17 @@ mod tests {
 		pool
 	}
 
-	/// `on-drive` and `kept` are routes' names under `/voice-notes/`, so
-	/// never a note's id, though each reads as one; a name that only starts
-	/// with one is one.
+	/// `on-drive`, `kept` and `deleted` are routes' names under
+	/// `/voice-notes/`, so never a note's id, though each reads as one; a
+	/// name that only starts with one is one.
 	#[test]
 	fn a_route_name_is_not_a_note_id() {
-		for name in ["on-drive", "kept"] {
+		for name in ["on-drive", "kept", "deleted"] {
 			assert!(!is_note_id(name), "{name}");
 			let refused = describe(name, said(NOW), b"frames").unwrap_err();
 			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["id"]);
 		}
-		assert!(is_note_id("on-drive-2") && is_note_id("kept-1") && is_note_id("t1"));
+		assert!(is_note_id("on-drive-2") && is_note_id("kept-1") && is_note_id("deleted-3") && is_note_id("t1"));
 	}
 
 	fn said(at: &str) -> Said<'_> {
