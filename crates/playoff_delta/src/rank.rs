@@ -2,9 +2,9 @@
 //!
 //! A tie in the final standings goes to the team asked about, and no NFL
 //! tiebreaker is applied. The solver answers "can this seed be reached?";
-//! this answers "which seed is it?" for one set of final standings, and the
-//! count ([`crate::count`]) and the solver's brute-force test both use it, so
-//! the two cannot disagree about a season.
+//! this answers "which seed is it?" for one set of final standings. The
+//! worst seed ([`crate::poles::Field::worst_seed`]) and the brute-force tests
+//! read the same rule, so they cannot disagree about a season.
 
 use crate::{league::Team, solver::LAST_SEED};
 
@@ -21,13 +21,21 @@ pub fn seed(points: &[u16; 32], team: Team) -> Option<u8> {
 			above[t.division().index()] += 1;
 		}
 	}
-	if above[own] == 0 {
+	from_above(&above, own)
+}
+
+/// The seed of a team in division `own` of its conference, from how many
+/// teams of each division finish strictly above it; `None` outside the
+/// playoffs.
+#[must_use]
+pub fn from_above(above: &[u8], own: usize) -> Option<u8> {
+	if above.get(own).copied().unwrap_or(0) == 0 {
 		// A division winner: behind each other division whose winner is above.
-		let ahead = (0..8).filter(|d| *d != own && above[*d] > 0).count();
+		let ahead = above.iter().enumerate().filter(|(d, a)| *d != own && **a > 0).count();
 		return Some(1 + u8::try_from(ahead).unwrap_or(u8::MAX));
 	}
 	// A wild card: behind every team above it except one division winner per
-	// division (the four winners always seed first).
+	// division (the division winners always seed first).
 	let ahead: u8 = above.iter().map(|a| a.saturating_sub(1)).sum();
 	let seed = 5u8.saturating_add(ahead);
 	(seed <= LAST_SEED).then_some(seed)

@@ -3,7 +3,8 @@
 //! [`best`] asks: if `team` wins exactly `extra` of its remaining games and
 //! every other remaining game goes whichever way suits it, what is the best
 //! playoff seed it can reach? The story's paths are this question asked of
-//! each count of more wins. [`clinched`] asks the opposite, worst case.
+//! each count of more wins; the story asks it of winning out, for the best
+//! seed still reachable. The worst seed is [`crate::poles`]'s.
 //!
 //! ## The model (invariant PD1)
 //!
@@ -39,10 +40,7 @@ use crate::{
 	league::Team,
 	table::{Record, Table},
 };
-use std::{
-	cell::RefCell,
-	collections::{HashMap, HashSet},
-};
+use std::collections::HashSet;
 
 /// The worst seed that still makes the playoffs.
 pub const LAST_SEED: u8 = 7;
@@ -60,63 +58,6 @@ pub struct Scenario {
 #[must_use]
 pub fn best(table: &Table, team: Team, extra: u8) -> Option<Scenario> {
 	Ask::new(table, team, extra)?.solve()
-}
-
-/// Is `team` in whatever happens: does every way the rest of the season can
-/// go get it in? `true` only when proven; `false` is "not proven".
-///
-/// Its worst case is losing every game it has left: turning one of its wins
-/// into a loss lowers it and raises an opponent, so no team that was below it
-/// gets above. Losing out, a team can finish above it (PD1: strictly more
-/// points) when its points plus every game it has left beat the asked team's.
-/// [`crate::rank::seed`] then reads the proof: with no division mate able to
-/// finish above, it wins its division; otherwise its wild card is 5 plus,
-/// per division, the teams above it but one, so it is in while at most two
-/// such teams can be above. Both counts ignore the games those teams play
-/// each other, so they can miss a clinch, never claim a false one.
-#[must_use]
-pub fn clinched(table: &Table, team: Team) -> bool {
-	let floor = table.points(team);
-	let mut above = [0u8; 8];
-	for t in Team::of_conference(team.conference()).filter(|t| *t != team) {
-		if table.points(t) + u16::from(table.remaining(t)) * 2 > floor {
-			above[t.division().index()] += 1;
-		}
-	}
-	let past_the_division_winners: u8 = above.iter().map(|a| a.saturating_sub(1)).sum();
-	above[team.division().index()] == 0 || past_the_division_winners + 5 <= LAST_SEED
-}
-
-/// What [`best`] depends on: the pending games (fixed by `through` within
-/// one season), the asked team's conference's points, the team and `extra`.
-type Key = (u8, [u16; 16], Team, u8);
-
-/// [`best`], remembered, for the tables of one season.
-///
-/// The evaluator asks the same question many times: a flipped result in the
-/// other conference leaves this conference's points, and so the answer,
-/// unchanged.
-#[derive(Debug, Default)]
-pub struct Memo {
-	seen: RefCell<HashMap<Key, Option<Scenario>>>,
-}
-
-impl Memo {
-	/// [`best`] for `table`, which must come from the season this memo serves.
-	#[must_use]
-	pub fn best(&self, table: &Table, team: Team, extra: u8) -> Option<Scenario> {
-		let mut points = [0u16; 16];
-		for (slot, t) in points.iter_mut().zip(Team::of_conference(team.conference())) {
-			*slot = table.points(t);
-		}
-		let key = (table.through(), points, team, extra);
-		if let Some(hit) = self.seen.borrow().get(&key) {
-			return hit.clone();
-		}
-		let answer = best(table, team, extra);
-		self.seen.borrow_mut().insert(key, answer.clone());
-		answer
-	}
 }
 
 /// Bitmask over a conference's sixteen teams, by position in [`Ask::conf`].

@@ -129,9 +129,8 @@ panic = "abort"
 
 # `cargo bench` (criterion in ws-conn-manager/benches) measures the code as
 # it ships, so benches inherit the release codegen above.
-# playoff_delta's tests count every way a week can go for every team, which
-# an unoptimized build runs about thirty times slower than this: half an hour
-# of CPU for `cargo test -p playoff_delta` instead of under a minute.
+# playoff_delta's brute-force tests decide every outcome of a dozen games for
+# every team, which an unoptimized build runs many times slower than this.
 [profile.dev.package.playoff_delta]
 opt-level = 3
 

@@ -14,7 +14,7 @@ mod espn;
 
 use clap::Parser;
 use playoff_delta::{
-	evaluate::{evaluate, Subject, RESTS, WAYS},
+	evaluate::{evaluate, Subject},
 	league::Team,
 	season::Season,
 };
@@ -76,8 +76,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 	let subject = Subject {
 		team: code(&args.team)?,
 		label: args.label.unwrap_or_else(|| args.season.to_string()),
-		ways: WAYS,
-		rests: RESTS,
 	};
 	let story = evaluate(&season(&args.scoreboards, args.season)?, &subject)?;
 	let mut out = io::stdout().lock();
