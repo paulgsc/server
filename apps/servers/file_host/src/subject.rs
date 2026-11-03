@@ -36,6 +36,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	("account", "the account itself: a subject id and its WebAuthn user handle"),
 	("activity_outcome", "per-block study outcomes"),
 	(
+		"app_event",
+		"how each obligation the owner's phone ran ended (paulgsc/some-ui CK2): which process and screen by the code's names, the ending, whether it worked, how long it took to be ready and to run, a take's peak level, the build, and when it started and reached home; no audio, words or content. See docs/identity.md invariant 34",
+	),
+	(
 		"aph_entry",
 		"the owner's aph log (paulgsc/some-ui `packages/ui/aph`), every revision of every entry: the figures, labels and note as written, and when each revision was written; see docs/identity.md",
 	),
