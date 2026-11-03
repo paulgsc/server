@@ -635,7 +635,8 @@ nowhere is marked as such and belongs to review.
     `UPDATE`) or replaced (a different body under an id its session holds is
     a `409`), and never deleted but with the account. It is written only by
     `PUT /leetype/sessions/:session/events/:id`, readable only by its own
-    subject (`GET /leetype/sessions` and `GET /leetype/sessions/:session/events`)
+    subject (`GET /leetype/sessions` and `GET /leetype/sessions/:session/events`,
+    and counted by `GET /subjects/me/kept`, invariant 33)
     and by the `mailbox` poller for its subject (the owner's account unless
     `MAILBOX_SUBJECT` names another, `mailbox::pass_subject`), and deleted
     with the account by both the sweep and the migration's
@@ -1471,7 +1472,9 @@ nowhere is marked as such and belongs to review.
     with the account. They are written only by
     `PUT /studio/sittings/:sitting/events/:id` and `PUT /studio/friction/:id`,
     readable only by their own subject (`GET /studio/sittings`,
-    `GET /studio/sittings/:sitting/events` and `GET /studio/friction`), and
+    `GET /studio/sittings/:sitting/events` and `GET /studio/friction`, and
+    `studio_sitting_event` counted by `GET /subjects/me/kept`, invariant
+    33), and
     deleted with the account by both the sweep and the migration's triggers
     (invariant 12). Rolling back the migration that creates them fails once
     either holds a row, rather than dropping the record.
@@ -1520,7 +1523,8 @@ nowhere is marked as such and belongs to review.
     voice notes by its id and carries the tutor's nudge, which can paraphrase
     what the owner said (decided 2026-10-31 on #2234). It is listed and read
     only by its own subject (`GET /rust-rounds` and `GET /rust-rounds/:id`;
-    another subject's id is a `404`), ids are unique per subject, and it is
+    another subject's id is a `404`; and counted by `GET /subjects/me/kept`,
+    invariant 33), ids are unique per subject, and it is
     never updated (a trigger aborts an `UPDATE`) or replaced (another body
     under a held id is a `409`). It is deleted only with the account: a
     trigger aborts a `DELETE` while the subject's account stands, and the
@@ -1546,7 +1550,8 @@ nowhere is marked as such and belongs to review.
     the account-deletion and trigger tests above (invariants 12 and 22).
     *Not enforced:* that every read of `rust_round` filters on its subject,
     which the repository's three readers do today
-    (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`).
+    (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`), and so
+    does the count in `storage_repo::kept` (invariant 33).
 
 29. **The owner's written reflections are append-only, one per id, and only
     their text, session and time reach the mailbox.** `written_reflection`
@@ -1560,7 +1565,9 @@ nowhere is marked as such and belongs to review.
     reflection under a held id is a `409`), and never deleted but with the
     account. It is written only by `PUT /routine/reflections/:id`, which
     refuses a spoken reflection (a voice note's, invariant 23) and the
-    one-tap answers by name, readable by no route, and deleted with the
+    one-tap answers by name, readable by no route (`GET /subjects/me/kept`
+    counts its rows and reads its earliest `at`, and nothing else of it,
+    invariant 33), and deleted with the
     account by both the sweep and the migration's trigger (invariant 12).
     Rolling back the migration that creates it fails once it holds a row,
     rather than dropping the record. The same route files what the
@@ -1639,8 +1646,10 @@ nowhere is marked as such and belongs to review.
     on the calendar, a blank text or one over 256 KiB, and a text the Jobs
     mailbox would refuse (a `data:` URI, a run of 256 or more base64
     characters, a Drive link), so home keeps no prompt it could not hand on;
-    it is readable by no route, and deleted with the account by both the
-    sweep and the migration's trigger (invariant 12). Rolling back the
+    it is readable by no route (`GET /subjects/me/kept` counts its rows and
+    reads its earliest stamp, and nothing else of it, invariant 33), and
+    deleted with the account by both the sweep and the migration's trigger
+    (invariant 12). Rolling back the
     migration that creates it fails once it holds a row, rather than
     dropping the record. The same route files what the reflections routine
     reads of it, once, for the mailbox's `prompt` folder (invariant 19): its
@@ -1706,7 +1715,8 @@ nowhere is marked as such and belongs to review.
     `PUT /ideas/:id/set-aside` and `PUT` and `DELETE
     /idea-lists/{topics,keywords}/:name`, and read only by `GET /ideas`,
     `GET /ideas/:id` and `GET /idea-lists`, each for the caller's own
-    subject (another subject's idea is a `404`). `GET /ideas` lists at most
+    subject (another subject's idea is a `404`), and `idea_revision` counted
+    by `GET /subjects/me/kept` (invariant 33). `GET /ideas` lists at most
     the 1,000 newest begun of the ideas not set aside, and says `more` when
     it holds others back. A read carries, for each answer's note, what home
     heard in it (invariant 23), unless the owner set the note aside after
@@ -1735,6 +1745,42 @@ nowhere is marked as such and belongs to review.
     shows today; and that the phone's question sets match
     `idea_repo::QUESTION_SETS`, which a new set on the phone breaks until
     home names it too.
+
+33. **My data's count of what home keeps for good reads counts and one
+    time per kind, for the caller's own subject only.**
+    `GET /subjects/me/kept` (paulgsc/some-ui#2519, MY-DATA MD2b), a
+    `Paired` phone's (no session is a `401`, a browser's cookie session a
+    `403`), answers, for each kind of record the owner keeps for good
+    (the phone's `KEPT_FOR_GOOD`), how many home holds for the caller's
+    subject and the earliest time they name, in one statement
+    (`storage_repo::kept`, its one caller `handlers::subjects`):
+    `sessions` (rows; earliest `created_at`), `written_reflection` (rows;
+    `at`), `idea_revision` (distinct ideas; `created_at`),
+    `activity_outcome` (rows; `started_at`), `korean_entry` (distinct kind
+    and key; `written_at`), `jobs_event` (rows; `at`), `aph_entry`
+    (distinct entries; `written_at`), `leetype_session_event` (distinct
+    sessions; `at`), `rust_round` (rows; `received_at`), `drama_prompt`
+    (rows; the earliest stamp, as the moment it names) and
+    `studio_sitting_event` (distinct sittings; `at`). Each part filters on
+    `subject_id` and reads by a key or index that starts with it, so the
+    read is a range read of that subject's rows, and its answer is at most
+    one row per kind. It reads no body, text, title, key or id out of any
+    of them, and no size: none of these tables keeps one, and summing their
+    bodies would read every record the subject holds (room per table is
+    `storage_sample`'s, across subjects). A kind the subject holds none of
+    is left out. Its span skips every argument (invariant 6).
+    *Enforced by* `storage_repo::kept`'s
+    `home_counts_each_kind_it_keeps_for_good_and_since_when_for_its_subject_only`
+    and `handlers::subjects`'s
+    `a_paired_phone_reads_how_much_home_keeps_for_good_of_its_own_record`
+    (the answer's keys are exactly `kind`, `count` and `since`, another
+    subject's record is not counted, and a browser's session is a `403`).
+    *Not enforced:* that each part reads only by an index that starts with
+    `subject_id`, which `EXPLAIN QUERY PLAN` of the statement shows today
+    (a `SEARCH … (subject_id=?)` per table) and a new kind or a dropped
+    index can break; and that the list matches the phone's
+    `KEPT_FOR_GOOD`, which a kind added on either side breaks until the
+    other names it.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
