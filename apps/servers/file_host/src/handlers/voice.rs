@@ -22,6 +22,9 @@
 //! `voice_repo::delete::delete`, for a kind the owner switched on (none
 //! yet), and the only writer of `voice_note_deletion`.
 //!
+//! [`get_deleted`] is the only reader of the whole list of receipts
+//! (`voice_repo::delete::receipts`), for My data's list of what was deleted.
+//!
 //! **The one way audio leaves home** (docs/identity.md invariant 23):
 //! [`get_audio`] is the only caller of `voice_repo::audio_head` and
 //! `voice_repo::audio_body`, and its span
@@ -463,6 +466,38 @@ pub async fn delete_note(paired: Paired, State(db): State<SqlitePool>, Path(id):
 	}
 }
 
+/// `GET /voice-notes/deleted`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotesDeleted {
+	/// The newest receipts, newest deleted first, at most
+	/// `voice_repo::delete::RECEIPTS`.
+	pub receipts: Vec<Receipt>,
+	/// How many receipts home keeps in all.
+	pub total: i64,
+}
+
+/// `GET /voice-notes/deleted`: the receipts of the caller's notes deleted for
+/// good, for My data's list of what was deleted (paulgsc/server#667,
+/// paulgsc/some-ui#2477 MD3).
+///
+/// Each is the receipt `DELETE /voice-notes/:id` answered with: the note's
+/// id and kind, when it was recorded, reached home and was deleted, its
+/// size, and what went and what stayed in fixed words. A receipt holds
+/// nothing said, no `ref` and no audio, so neither does this. Read in one
+/// transaction, so the list and the total agree.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's (only a paired phone reads
+/// it), and 500 for a storage failure or a receipt that does not read back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_deleted_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_deleted(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<NotesDeleted>, FileHostError> {
+	let mut tx = db.begin().await?;
+	let (receipts, total) = voice_repo::delete::receipts(&mut tx, paired.subject.as_str()).await.map_err(refusal)?;
+	tx.commit().await?;
+	Ok(Json(NotesDeleted { receipts, total }))
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
@@ -573,7 +608,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 7);
+		assert_eq!(module().descriptors().count(), 8);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -1029,6 +1064,50 @@ mod tests {
 		assert_eq!(status, StatusCode::CONFLICT, "{body}");
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note").fetch_one(&pool).await.unwrap();
 		assert_eq!(held, 0);
+	}
+
+	/// The receipts read answers the caller's own receipts, as `DELETE`
+	/// answered them, with the total; another subject's are not named. No
+	/// session is a 401, a browser's a 403. Order and bound are
+	/// `voice_repo::delete`'s tests.
+	#[tokio::test]
+	async fn a_paired_phone_reads_its_own_receipts() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(
+			get(&app, "/voice-notes/deleted", Some(&phone)).await,
+			(StatusCode::OK, json!({ "receipts": [], "total": 0 }))
+		);
+		for (subject, id) in [(A, "t1"), (B, "t2")] {
+			sqlx::query(
+				"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+				 VALUES (?1, ?2, 'studio', '2026-11-01T10:00:00.000Z', 120, '2026-11-01T10:05:00.000Z', '2026-11-03T09:00:00.000Z',
+				         '[\"recording\",\"words\"]', '[\"drive copy\"]')",
+			)
+			.bind(subject)
+			.bind(id)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		let (status, body) = get(&app, "/voice-notes/deleted", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(
+			body,
+			json!({ "receipts": [{
+				"id": "t1", "of": "studio", "recordedAt": "2026-11-01T10:00:00.000Z", "size": 120,
+				"storedAt": "2026-11-01T10:05:00.000Z", "deletedAt": "2026-11-03T09:00:00.000Z",
+				"went": ["recording", "words"], "stayed": ["drive copy"]
+			}], "total": 1 })
+		);
+		assert_eq!(get(&app, "/voice-notes/deleted", None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, "/voice-notes/deleted", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		let (status, theirs) = get(&app, "/voice-notes/deleted", Some(&other)).await;
+		assert_eq!((status, theirs["total"].clone()), (StatusCode::OK, json!(1)), "B's own, not A's");
 	}
 
 	/// The kept read answers the caller's own notes, by kind and week, and a
