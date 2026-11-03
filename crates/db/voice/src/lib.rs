@@ -11,9 +11,10 @@
 //!   id, or nothing when that id already holds the same note; other bytes or
 //!   another description under a held id are refused
 //!   ([`VoiceError::Rewritten`]), never stored. No row is ever updated (the
-//!   triggers abort an `UPDATE`), and nothing here deletes, a transcribed
-//!   note included. Account deletion is the one delete: its generic sweep of
-//!   `SUBJECT_SCOPED_TABLES`, and the migration's trigger on `account`.
+//!   triggers abort an `UPDATE`). Account deletion deletes every note: its
+//!   generic sweep of `SUBJECT_SCOPED_TABLES`, and the migration's trigger
+//!   on `account`. The one other delete is [`delete`]'s, of a kind the owner
+//!   switched on, from My data, with a receipt; none is switched on yet.
 //! - **Checked before it is kept.** A write passes [`describe`]: an id, what
 //!   the note was said for, when, a container the transcriber reads, and a
 //!   size within [`NOTE_CEILING`].
@@ -57,6 +58,10 @@
 //!
 //! What home keeps, counted for the phone's My data page, is [`kept`]'s.
 //!
+//! Deleting a note for good, only of a kind the owner switched on
+//! ([`delete::SWITCHED_ON`], empty today), and keeping its receipt in
+//! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
+//!
 //! Which notes the owner let go of on the phone is [`set_aside`]'s:
 //! `voice_note_set_aside`, one mark per note, the first standing, written
 //! only by `file_host`'s `handlers::voice` (`PUT
@@ -67,6 +72,7 @@
 //! scouts file naming it is what puts it in front of the routine, and a
 //! mark does not unname it.
 
+pub mod delete;
 pub mod kept;
 pub mod on_drive;
 pub mod set_aside;

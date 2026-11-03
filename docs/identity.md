@@ -194,7 +194,7 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -1114,7 +1114,24 @@ nowhere is marked as such and belongs to review.
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
-    (owner, 2026-10-25: the audio is worth more than its transcript). It is
+    (owner, 2026-10-25: the audio is worth more than its transcript), or by
+    one route: `DELETE /voice-notes/:id`, a `Paired` phone's, from My data
+    (paulgsc/some-ui#2477, MD3; the owner's rule on paulgsc/some-ui#2474,
+    2026-11-02: the tool can go, never the work). It deletes only a kind the
+    owner has switched on (`voice_repo::delete::SWITCHED_ON`, empty: every
+    kind ships off, and none is on yet), and the one kind it can ever delete
+    today is a Studio take, a `studio` note no idea's answer names; an
+    answer, and every other kind, is the work and is kept. Deleting one
+    removes the note, its audio, every transcript of it and its words, and
+    its set-aside mark in one transaction, and keeps a copy of its words
+    already filed for the mailbox and the record that Drive holds it. It
+    writes a receipt to `voice_note_deletion`, append-only (its trigger
+    aborts an `UPDATE`) and gone only with the account: the note's id and
+    kind, when it was recorded, reached home and was deleted, its size, and
+    what went and what stayed in fixed words, never what was said, its
+    `ref` or its audio. A repeat answers with that receipt. Any other kind
+    is a `409` that writes nothing, as is a take while takes are switched
+    off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line. **Its audio is
     read back by one route, for Rust Rounds notes only** (the owner's D4 on
