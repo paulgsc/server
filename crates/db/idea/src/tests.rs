@@ -137,8 +137,8 @@ async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 			"id": "i1", "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
 			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
 			],
 			"furnishing": false, "setAside": false
 		})
@@ -408,8 +408,8 @@ async fn a_read_carries_what_home_heard_in_each_note() {
 	assert_eq!(
 		serde_json::to_value(&held.ideas[0].answers).unwrap(),
 		json!([
-			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" }, "setAside": false },
-			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false }
+			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" }, "setAside": false, "deletedAt": null },
+			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
 		])
 	);
 	assert!(idea(&mut pool.acquire().await.unwrap(), B, "i1").await.unwrap().is_none(), "B reads none of A's");
@@ -436,7 +436,7 @@ async fn a_note_set_aside_is_not_held_and_its_words_leave_the_idea() {
 	for held in [idea(&mut conn, A, "i1").await.unwrap().unwrap(), ideas(&mut conn, A).await.unwrap().ideas.remove(0)] {
 		assert_eq!(
 			serde_json::to_value(&held.answers[0]).unwrap(),
-			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": true }),
+			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": true, "deletedAt": null }),
 			"set aside, and its words left out"
 		);
 		assert!(!held.answers[1].set_aside, "a typed answer is never set aside");
@@ -454,6 +454,45 @@ async fn a_note_set_aside_is_not_held_and_its_words_leave_the_idea() {
 	assert_eq!(put(&pool, A, &again).await.unwrap().0, Change::Added, "the answer said again");
 	let mut conn = pool.acquire().await.unwrap();
 	assert_eq!(voice_repo::set_aside::set_aside_at(&mut conn, B, "n1").await.unwrap(), None, "B's n1 is not A's");
+}
+
+/// An answer whose recording the owner deleted from My data keeps its
+/// place in the idea, with no words, and says when. A later send may keep it
+/// in that place, so the idea can still change, and may not name it anywhere
+/// else (paulgsc/some-ui#2579).
+#[tokio::test]
+async fn an_answer_whose_recording_was_deleted_keeps_its_place() {
+	let pool = pool().await;
+	let first = send("i1", "2026-11-01T09:10:00.000Z");
+	put(&pool, A, &first).await.unwrap();
+	let mut conn = pool.acquire().await.unwrap();
+	let gone = voice_repo::delete::delete(&mut conn, A, "n1", voice_repo::delete::SWITCHED_ON, NOW).await.unwrap();
+	assert!(matches!(gone, voice_repo::delete::Deleted::Gone(_)), "{gone:?}");
+	for held in [idea(&mut conn, A, "i1").await.unwrap().unwrap(), ideas(&mut conn, A).await.unwrap().ideas.remove(0)] {
+		assert_eq!(
+			serde_json::to_value(&held.answers[0]).unwrap(),
+			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": NOW }),
+		);
+		assert_eq!(held.answers[1].deleted_at, None, "a typed answer has no recording");
+	}
+	drop(conn);
+	assert_eq!(put(&pool, A, &first).await.unwrap().0, Change::Unchanged, "a held send retried is still held");
+	let mut again = first.clone();
+	again["sentAt"] = json!("2026-11-01T10:00:00.000Z");
+	again["title"] = json!("Renamed");
+	let (change, held) = put(&pool, A, &again).await.unwrap();
+	assert_eq!(
+		(change, held.revision, held.answers[0].deleted_at.as_deref()),
+		(Change::Added, 2, Some(NOW)),
+		"it keeps its place"
+	);
+	let mut moved = again.clone();
+	moved["sentAt"] = json!("2026-11-01T11:00:00.000Z");
+	moved["answers"][1] = json!({ "question": "takeaway", "note": "n1" });
+	match put(&pool, A, &moved).await {
+		Err(IdeaError::NotesNotHeld(notes)) => assert_eq!(notes, ["n1"], "and goes nowhere else"),
+		other => panic!("{other:?}"),
+	}
 }
 
 /// The list holds at most [`IDEAS_LISTED`] ideas, and says when there are

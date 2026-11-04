@@ -19,7 +19,10 @@
 //!   invariant 23), and none the owner set aside. This crate reads
 //!   `voice_note`'s kind, whether a note is set aside
 //!   (`voice_repo::set_aside::set_aside_at`) and, for a read, what home heard
-//!   in it (`voice_repo::transcript::heard`), and writes none of them.
+//!   in it (`voice_repo::transcript::heard`) and when the owner deleted it
+//!   (`voice_note_deletion`'s receipt), and writes none of them. An answer
+//!   whose note was deleted keeps its place, and a later send may keep it
+//!   there.
 //! - **The lists are seeds and marks.** A list is its seeds
 //!   (`SEED_TOPICS`, `SEED_KEYWORDS`) with each entry's latest mark applied.
 //!   A topic or keyword a send adds to the idea must be on the lists as they
@@ -149,9 +152,12 @@ pub struct AnswerView {
 	/// What home heard in the note; none while it has not, for a note set
 	/// aside, and for a typed answer.
 	pub heard: Option<Transcript>,
-	/// Whether the owner set the answer's note aside after the idea was sent
-	/// (on the phone, Delete); false for a typed answer.
+	/// Whether the owner set the answer's note aside after the idea was sent;
+	/// false for a typed answer.
 	pub set_aside: bool,
+	/// When the owner deleted the answer's recording from My data, if they
+	/// did (paulgsc/some-ui#2579): the answer keeps its place, with no words.
+	pub deleted_at: Option<String>,
 }
 
 /// An idea as home serves it: its latest revision and its marks.
@@ -336,6 +342,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				AnswerView {
 					question: answer.question,
 					heard: heard(conn, subject, &note, aside).await?,
+					deleted_at: deleted_at(conn, subject, &note).await?,
 					note: Some(note),
 					typed: None,
 					set_aside: aside,
@@ -347,6 +354,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				typed: Some(typed),
 				heard: None,
 				set_aside: false,
+				deleted_at: None,
 			},
 		});
 	}
@@ -499,10 +507,17 @@ pub async fn mark_entry(conn: &mut SqliteConnection, subject: &str, list: List, 
 	Ok((Change::Added, lists(conn, subject).await?))
 }
 
-async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Content) -> Result<Vec<String>, IdeaError> {
+/// The notes `content` names that home does not hold as the subject's own
+/// `studio` notes not set aside. A note the owner deleted from My data is
+/// held to its place: the answer the latest revision (`carried`) gave the
+/// same question may name it still, and any other answer may not.
+async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Content, carried: &[Answer]) -> Result<Vec<String>, IdeaError> {
 	let mut missing = Vec::new();
 	for answer in &content.answers {
 		if let Said::Note(note) = &answer.said {
+			if carried.contains(answer) && deleted_at(conn, subject, note).await?.is_some() {
+				continue;
+			}
 			let kind = sqlx::query_scalar!("SELECT of_kind FROM voice_note WHERE subject_id = ?1 AND note_id = ?2", subject, note)
 				.fetch_optional(&mut *conn)
 				.await?;
@@ -512,6 +527,15 @@ async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Co
 		}
 	}
 	Ok(missing)
+}
+
+/// When the owner deleted the subject's note from My data, if they did.
+async fn deleted_at(conn: &mut SqliteConnection, subject: &str, note: &str) -> Result<Option<String>, IdeaError> {
+	Ok(
+		sqlx::query_scalar!("SELECT deleted_at FROM voice_note_deletion WHERE subject_id = ?1 AND note_id = ?2", subject, note)
+			.fetch_optional(&mut *conn)
+			.await?,
+	)
 }
 
 /// Stores the send in `body` as a revision of `subject`'s idea `id`, as of
@@ -564,7 +588,7 @@ pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body
 	// Only what the send adds is held to the lists: an entry taken off leaves
 	// the ideas that carry it as they are, and still editable (#645, and the
 	// prototype the owner approved on paulgsc/some-ui#2453).
-	let (carried_topic, carried_keywords) = carried.map(|held| (Some(held.topic), held.keywords)).unwrap_or_default();
+	let (carried_topic, carried_keywords, carried_answers) = carried.map(|held| (Some(held.topic), held.keywords, held.answers)).unwrap_or_default();
 	let standing = lists(conn, subject).await?;
 	if carried_topic.as_ref() != Some(&content.topic) && !standing.topics.contains(&content.topic) {
 		problems.push(("topic", "must be on the topics list as it stands, or the one the idea carries"));
@@ -579,7 +603,7 @@ pub async fn put_idea(conn: &mut SqliteConnection, subject: &str, id: &str, body
 	if !problems.is_empty() {
 		return Err(IdeaError::Invalid(problems));
 	}
-	let missing = notes_not_held(conn, subject, &content).await?;
+	let missing = notes_not_held(conn, subject, &content, &carried_answers).await?;
 	if !missing.is_empty() {
 		return Err(IdeaError::NotesNotHeld(missing));
 	}
