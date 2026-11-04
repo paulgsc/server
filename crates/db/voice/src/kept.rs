@@ -4,8 +4,9 @@
 //! say how many of each kind home holds, how much room they take, since
 //! when, how many were set aside, and how the room grew week by week.
 //!
-//! - **Descriptions only.** Every read here is of `voice_note` and
-//!   `voice_note_set_aside`, and [`newest`] reads whether an idea's answer
+//! - **Descriptions only.** Every read here is of `voice_note`,
+//!   `voice_note_set_aside` and, for [`weeks`], the receipts in
+//!   `voice_note_deletion`, and [`newest`] reads whether an idea's answer
 //!   names a note (`idea_answer`), to say whether My data may offer to delete
 //!   it; none reads `voice_note_audio`, a transcript, a
 //!   `ref` or a bite, so what was said never leaves through it.
@@ -113,6 +114,11 @@ pub async fn kinds(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Kin
 /// What reached home for `subject`, week by week (weeks start on Monday,
 /// UTC), oldest first. A week nothing reached home is not listed.
 ///
+/// A note the owner later deleted still counts in the week it reached home,
+/// read from its receipt (`voice_note_deletion` keeps its size and when it
+/// reached home), so a delete never rewrites a past week (the owner,
+/// 2026-11-04, paulgsc/some-ui#2477).
+///
 /// # Errors
 /// [`VoiceError::Storage`] for any `sqlx` failure.
 pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<WeekKept>, VoiceError> {
@@ -122,8 +128,9 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 		r#"SELECT date(stored_at, 'weekday 0', '-6 days') AS "week!: String",
 		          COUNT(*) AS "notes!: i64",
 		          SUM(size) AS "bytes!: i64"
-		   FROM voice_note
-		   WHERE subject_id = ?1
+		   FROM (SELECT stored_at, size FROM voice_note WHERE subject_id = ?1
+		         UNION ALL
+		         SELECT stored_at, size FROM voice_note_deletion WHERE subject_id = ?1)
 		   GROUP BY 1
 		   ORDER BY 1"#,
 		subject
@@ -183,7 +190,11 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 #[cfg(test)]
 mod tests {
 	use super::{kinds, newest, weeks, KindKept, WeekKept, NEWEST};
-	use crate::{delete::Deletable, set_aside::set_aside, Of};
+	use crate::{
+		delete::{delete, Deletable, Deleted, SWITCHED_ON},
+		set_aside::set_aside,
+		Of,
+	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -255,6 +266,7 @@ mod tests {
 		assert!(kinds(&mut conn, "subject-c").await.unwrap().is_empty());
 	}
 
+	/// A note deleted since still counts in the week it reached home.
 	#[tokio::test]
 	async fn what_reached_home_is_summed_by_the_week_it_arrived() {
 		let pool = pool().await;
@@ -263,15 +275,21 @@ mod tests {
 		note(&pool, A, "n2", "lens", "2026-10-11T10:00:00Z", 20, "2026-10-11T23:59:59.000Z").await;
 		note(&pool, A, "n3", "studio", "2026-10-12T10:00:00Z", 7, "2026-10-12T00:00:00.000Z").await;
 		note(&pool, B, "n4", "studio", "2026-10-12T10:00:00Z", 999, "2026-10-12T00:00:00.000Z").await;
+		note(&pool, A, "n5", "studio", "2026-10-06T10:00:00Z", 3, "2026-10-06T10:00:01.000Z").await;
+		note(&pool, B, "n5", "studio", "2026-10-06T10:00:00Z", 999, "2026-10-06T10:00:01.000Z").await;
 		let mut conn = pool.acquire().await.unwrap();
+		for subject in [A, B] {
+			let gone = delete(&mut conn, subject, "n5", SWITCHED_ON, "2026-11-04T10:00:00.000Z").await.unwrap();
+			assert!(matches!(gone, Deleted::Gone(_)));
+		}
 
 		assert_eq!(
 			weeks(&mut conn, A).await.unwrap(),
 			vec![
 				WeekKept {
 					week: "2026-10-05".to_owned(),
-					notes: 2,
-					bytes: 120,
+					notes: 3,
+					bytes: 123,
 				},
 				WeekKept {
 					week: "2026-10-12".to_owned(),
@@ -307,7 +325,7 @@ mod tests {
 	}
 
 	/// With takes switched on, a take is listed as deletable and an idea's
-	/// spoken answer, the work, is not.
+	/// spoken answer, which has its own switch, is not; with both on, both are.
 	#[tokio::test]
 	async fn a_take_is_listed_as_deletable_only_when_takes_are_switched_on() {
 		let pool = pool().await;
@@ -332,6 +350,8 @@ mod tests {
 		let listed = newest(&mut conn, A, Of::Studio, &[Deletable::StudioTake]).await.unwrap();
 		let marked: Vec<(&str, bool)> = listed.iter().map(|kept| (kept.id.as_str(), kept.deletable)).collect();
 		assert_eq!(marked, [("answer", false), ("take", true), ("spoken", false)]);
+		let listed = newest(&mut conn, A, Of::Studio, SWITCHED_ON).await.unwrap();
+		assert!(listed.iter().all(|kept| kept.deletable), "with answers on too, every studio note is");
 	}
 
 	/// `i` as two digits, without `format!` (banned repo-wide).

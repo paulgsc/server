@@ -1120,15 +1120,19 @@ nowhere is marked as such and belongs to review.
     one route: `DELETE /voice-notes/:id`, a `Paired` phone's, from My data
     (paulgsc/some-ui#2477, MD3; the owner's rule on paulgsc/some-ui#2474,
     2026-11-02: the tool can go, never the work). It deletes only a kind the
-    owner has switched on (`voice_repo::delete::SWITCHED_ON`, empty: every
-    kind ships off, and none is on yet), and the one kind it can ever delete
-    today is a Studio take, a `studio` note whose `ref` names a take and
-    that no idea's answer names; an idea's spoken answer (its `ref`
-    `idea:<idea>:<question>`, or named by `idea_answer`), and every other
-    kind, is the work and is kept. Deleting one
+    owner has switched on (`voice_repo::delete::SWITCHED_ON`; every kind
+    shipped off). The two kinds it can delete are a Studio take, a `studio`
+    note whose `ref` names a take and that no idea's answer names, and an
+    idea's spoken answer, a `studio` note whose `ref` is
+    `idea:<idea>:<question>` or that `idea_answer` names (the owner,
+    2026-11-04, paulgsc/some-ui#2579, amending the 2026-11-02 rule that kept
+    an answer as the work); the owner switched both on on 2026-11-04
+    (paulgsc/some-ui#2473). Every other kind is the work and is kept.
+    Deleting one
     removes the note, its audio, every transcript of it and its words, and
     its set-aside mark in one transaction, and keeps a copy of its words
-    already filed for the mailbox and the record that Drive holds it; the
+    already filed for the mailbox, the record that Drive holds it, and the
+    idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
     files, so words deleted after it read them never leave home. It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
@@ -1138,8 +1142,8 @@ nowhere is marked as such and belongs to review.
     `ref` or its audio. A repeat answers with that receipt, and a `PUT` of
     a deleted note's id is a `409` that writes nothing, so a phone that still
     holds its copy never brings it back. Any other kind
-    is a `409` that writes nothing, as is a take while takes are switched
-    off; `voice_repo::delete::delete` has no other caller. It is
+    is a `409` that writes nothing, as is a take or an answer while its kind
+    is switched off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line. **Its audio is
     read back by one route, for Rust Rounds notes and Studio takes only**
@@ -1389,10 +1393,12 @@ nowhere is marked as such and belongs to review.
     `the_receipt_table_holds_exactly_its_described_columns`,
     `nothing_is_deleted_that_is_switched_off_or_kept_for_good`,
     `a_take_switched_on_goes_and_leaves_a_receipt`,
+    `takes_and_idea_answers_are_switched_on`,
+    `an_idea_answer_switched_on_goes_and_its_idea_stays`,
     `a_bare_takes_receipt_names_only_the_recording` and
     `a_receipt_is_never_rewritten_and_leaves_with_the_account`,
     `mailbox::pass`'s `a_note_deleted_after_it_was_read_is_not_filed`, and
-    `handlers::voice`'s `a_delete_keeps_every_note_while_no_kind_is_switched_on`
+    `handlers::voice`'s `a_paired_phone_deletes_a_take_and_home_keeps_every_other_kind`
     and `a_note_deleted_for_good_is_not_kept_again`;
     `voice_repo::transcript`'s
     `the_table_holds_exactly_its_described_columns`,
@@ -1748,7 +1754,11 @@ nowhere is marked as such and belongs to review.
     the 1,000 newest begun of the ideas not set aside, and says `more` when
     it holds others back. A read carries, for each answer's note, what home
     heard in it (invariant 23), unless the owner set the note aside after
-    the send: then the answer says `setAside` and carries no words. No file the poller
+    the send: then the answer says `setAside` and carries no words. An
+    answer whose note the owner deleted from My data (invariant 23) keeps
+    its place in every revision that names it, carries no words, and says
+    `deletedAt`, read from the note's receipt; a later send may not name
+    that note, so the answer is said again. No file the poller
     files reads them, so they never leave home for the mailbox; a routine
     reads an idea's takes only as their transcripts, as before. A title, a
     typed answer and what was heard are the owner's own words, so they never
@@ -1760,6 +1770,7 @@ nowhere is marked as such and belongs to review.
     `a_named_note_must_be_the_subjects_own_studio_note_on_home`,
     `what_a_send_adds_must_be_on_the_lists_as_they_stand`,
     `a_note_set_aside_is_not_held_and_its_words_leave_the_idea`,
+    `an_answer_whose_recording_was_deleted_keeps_its_place`,
     `the_list_says_when_it_holds_back_ideas`,
     `the_lists_start_with_their_seeds_and_each_mark_is_kept`,
     `the_latest_furnishing_mark_stands_and_every_mark_is_kept`,

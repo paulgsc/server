@@ -477,7 +477,8 @@ const KEPT_FOR_GOOD: &str = "this voice note is kept for good";
 /// Its audio and what home heard in it go with it, and the answer is its
 /// receipt (paulgsc/some-ui#2477, MD3). Only from a paired phone's My data,
 /// and only of a kind the owner switched on
-/// (`voice_repo::delete::SWITCHED_ON`, none yet): every other note is kept
+/// (`voice_repo::delete::SWITCHED_ON`: Studio takes and idea answers): every
+/// other note is kept
 /// and nothing is written.
 ///
 /// Idempotent: a repeat for a note already deleted answers with the same
@@ -1128,13 +1129,13 @@ mod tests {
 		assert_eq!((status, &theirs["total"]), (StatusCode::OK, &json!(0)), "one subject's takes are never another's");
 	}
 
-	/// A delete from a paired phone keeps every note while no kind is
-	/// switched on: a take is a 409 and stays whole, as does a note kept for
-	/// good. No session is a 401, a browser's a 403, and another subject's
-	/// note a 404. What a delete of a kind switched on does is
+	/// A delete from a paired phone deletes a Studio take, switched on since
+	/// 2026-11-04, and answers its receipt, again on a repeat; a note kept
+	/// for good is a 409 and stays whole. No session is a 401, a browser's a
+	/// 403, and another subject's note a 404. What goes with each kind is
 	/// `voice_repo::delete`'s tests.
 	#[tokio::test]
-	async fn a_delete_keeps_every_note_while_no_kind_is_switched_on() {
+	async fn a_paired_phone_deletes_a_take_and_home_keeps_every_other_kind() {
 		const STUDIO_TAKE: &str = "/voice-notes/t1?of=studio&ref=build-journal-ep04:s3:2&at=2026-11-02T18:20:00Z";
 		let state = state().await;
 		let pool = state.pool.clone();
@@ -1160,13 +1161,6 @@ mod tests {
 			}
 		};
 
-		let (status, body) = delete("/voice-notes/t1", Some(phone.clone())).await;
-		assert_eq!(status, StatusCode::CONFLICT, "a take is kept until the owner switches it on: {body}");
-		assert_eq!(
-			delete("/voice-notes/n1", Some(phone.clone())).await.0,
-			StatusCode::CONFLICT,
-			"a reflection is kept for good"
-		);
 		assert_eq!(delete("/voice-notes/t1", None).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(delete("/voice-notes/t1", Some(browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 		assert_eq!(
@@ -1174,9 +1168,19 @@ mod tests {
 			StatusCode::NOT_FOUND,
 			"another subject's note is not theirs"
 		);
+		assert_eq!(
+			delete("/voice-notes/n1", Some(phone.clone())).await.0,
+			StatusCode::CONFLICT,
+			"a reflection is kept for good"
+		);
+		let (status, body) = delete("/voice-notes/t1", Some(phone.clone())).await;
+		assert_eq!(status, StatusCode::OK, "Studio takes are switched on: {body}");
+		assert_eq!(body["receipt"]["id"], "t1");
+		assert_eq!(body["receipt"]["went"], json!(["recording"]));
+		assert_eq!(delete("/voice-notes/t1", Some(phone)).await, (StatusCode::OK, body), "a repeat answers with the receipt");
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_audio").fetch_one(&pool).await.unwrap();
 		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
-		assert_eq!((kept, receipts), (2, 0));
+		assert_eq!((kept, receipts), (1, 1));
 	}
 
 	/// A note deleted for good is refused when the phone sends it again,

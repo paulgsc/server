@@ -7,22 +7,25 @@
 //! deleted; what doing something produced (an answer, a spoken attempt)
 //! never is. So:
 //!
-//! - **One kind of note can ever be deleted today:** a Studio take
+//! - **Two kinds of note can be deleted:** a Studio take
 //!   ([`Deletable::StudioTake`]): a `studio` note whose `ref` names a take
-//!   (`<project>:<shot>:<take>`) and that no idea's answer names. An idea's
-//!   spoken answer is a `studio` note too, its `ref` `idea:<idea>:<question>`
-//!   or named by `idea_answer`, and is the work, so it is kept, as is every
-//!   other kind.
-//! - **Every kind ships switched off.** [`SWITCHED_ON`] is the list the
-//!   owner turns on, one kind at a time, and it is empty: until they do,
-//!   [`delete`] refuses every note, a take included, and deletes nothing.
-//!   What goes with a kind is confirmed when it is switched on, and recorded
-//!   on paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
+//!   (`<project>:<shot>:<take>`) and that no idea's answer names; and an
+//!   idea's spoken answer ([`Deletable::IdeaAnswer`]): a `studio` note whose
+//!   `ref` is `idea:<idea>:<question>` or that `idea_answer` names. Every
+//!   other kind is kept. The owner ruled the answer deletable on
+//!   2026-11-04 (paulgsc/some-ui#2579, amending the 2026-11-02 rule on
+//!   #2474 that kept it as the work): the idea keeps its answer's place,
+//!   which then says the recording was deleted.
+//! - **Each kind has its own switch.** [`SWITCHED_ON`] is the list the
+//!   owner turns on, one kind at a time. On 2026-11-04 they switched on
+//!   both (paulgsc/some-ui#2473): what goes with each is recorded on
+//!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
 //!   transcript and its words) and its set-aside mark, in one transaction.
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
-//!   holds it, and the receipt.
+//!   holds it, the idea an answer belongs to (`idea_answer` still names the
+//!   note, and the idea's read says when it was deleted), and the receipt.
 //! - **The receipt** says what kind, when recorded and when it reached
 //!   home, how many bytes, when deleted, and what went and what stayed, in
 //!   fixed words. Never the words, the ref or the audio. It is never updated
@@ -46,11 +49,16 @@ pub enum Deletable {
 	/// A Studio take: a `studio` note no idea's answer names. Its purpose is
 	/// served once its video is published (paulgsc/some-ui#2495).
 	StudioTake,
+	/// An idea's spoken answer: a `studio` note an idea's answer names, or
+	/// whose `ref` says it answers one (the owner, paulgsc/some-ui#2579,
+	/// 2026-11-04).
+	IdeaAnswer,
 }
 
-/// The kinds the owner has switched on. None yet (paulgsc/some-ui#2477): the
-/// machinery ships off, and the owner turns kinds on one at a time.
-pub const SWITCHED_ON: &[Deletable] = &[];
+/// The kinds the owner has switched on: both, on 2026-11-04
+/// (paulgsc/some-ui#2473). The machinery shipped off (paulgsc/some-ui#2477),
+/// and the owner turns kinds on one at a time.
+pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer];
 
 /// What went with a deleted note, in fixed words.
 pub const RECORDING: &str = "recording";
@@ -62,6 +70,8 @@ pub const SET_ASIDE_MARK: &str = "set-aside mark";
 pub const MAILBOX_COPY: &str = "mailbox copy";
 /// The build-journal session's word that Drive holds it.
 pub const DRIVE_COPY: &str = "drive copy";
+/// The idea it answered, which keeps the answer's place.
+pub const IDEA: &str = "idea";
 
 /// What a delete left behind: the receipt, as home keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -114,11 +124,16 @@ const IDEA_ANSWER: &str = "idea:";
 /// The kind a note is, as the machinery sees it, if it is one it can delete.
 ///
 /// The note is said for `of_kind`, under `of_ref`; `answers` when an idea's
-/// answer (`idea_answer`) names it. An idea's spoken answer is the work,
-/// whether an answer names it or its `ref` says it answers one.
+/// answer (`idea_answer`) names it. A `studio` note is an idea's spoken
+/// answer when an answer names it or its `ref` says it answers one, and a
+/// take otherwise; every other kind is kept.
 #[must_use]
 pub fn deletable(of_kind: &str, of_ref: &str, answers: bool) -> Option<Deletable> {
-	(of_kind == Of::Studio.as_str() && !answers && !of_ref.starts_with(IDEA_ANSWER)).then_some(Deletable::StudioTake)
+	(of_kind == Of::Studio.as_str()).then_some(if answers || of_ref.starts_with(IDEA_ANSWER) {
+		Deletable::IdeaAnswer
+	} else {
+		Deletable::StudioTake
+	})
 }
 
 /// The receipt home keeps for `subject`'s note `note_id`, if it deleted it.
@@ -193,7 +208,7 @@ pub async fn receipts(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec
 
 /// Deletes `subject`'s note `note_id` and what goes with it, and says, in
 /// fixed words, what went and what stayed.
-async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<(Vec<String>, Vec<String>), VoiceError> {
+async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answers: bool) -> Result<(Vec<String>, Vec<String>), VoiceError> {
 	// Words went only if home heard some: a silent or failed attempt is no words.
 	let heard = sqlx::query_scalar!(
 		r#"SELECT EXISTS (SELECT 1 FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2 AND outcome = 'heard') AS "heard!: bool""#,
@@ -247,6 +262,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Re
 	if on_drive {
 		stayed.push(DRIVE_COPY.to_owned());
 	}
+	if answers {
+		stayed.push(IDEA.to_owned());
+	}
 	Ok((went, stayed))
 }
 
@@ -285,7 +303,7 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 		return Ok(Deleted::Kept(Kept::SwitchedOff));
 	}
 
-	let (went, stayed) = remove(conn, subject, note_id).await?;
+	let (went, stayed) = remove(conn, subject, note_id, answers).await?;
 	let receipt = Receipt {
 		id: note_id.to_owned(),
 		of: note.of_kind,
@@ -318,7 +336,7 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 
 #[cfg(test)]
 mod tests {
-	use super::{delete, receipt, receipts, Deletable, Deleted, Kept, DRIVE_COPY, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS};
+	use super::{delete, receipt, receipts, Deletable, Deleted, Kept, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -397,8 +415,9 @@ mod tests {
 		);
 	}
 
-	/// Switched off, a take is kept whole and nothing is written; so is
-	/// every other kind, and an idea's spoken answer, switched on or not.
+	/// Switched off, a take is kept whole and nothing is written, and so is
+	/// an idea's spoken answer while only takes are on; every other kind is
+	/// kept for good, switched on or not.
 	#[tokio::test]
 	async fn nothing_is_deleted_that_is_switched_off_or_kept_for_good() {
 		let pool = pool().await;
@@ -430,10 +449,10 @@ mod tests {
 		.await;
 		everything_beside(&pool, A, "take").await;
 
-		assert_eq!(gone(&pool, A, "take", SWITCHED_ON).await, Deleted::Kept(Kept::SwitchedOff));
-		assert_eq!(gone(&pool, A, "answer", ON).await, Deleted::Kept(Kept::ForGood), "an answer is the work");
-		assert_eq!(gone(&pool, A, "reflection", ON).await, Deleted::Kept(Kept::ForGood));
-		assert_eq!(gone(&pool, A, "spoken", ON).await, Deleted::Kept(Kept::ForGood), "an idea's spoken answer is the work");
+		assert_eq!(gone(&pool, A, "take", &[]).await, Deleted::Kept(Kept::SwitchedOff));
+		assert_eq!(gone(&pool, A, "answer", ON).await, Deleted::Kept(Kept::SwitchedOff), "an answer has its own switch");
+		assert_eq!(gone(&pool, A, "reflection", SWITCHED_ON).await, Deleted::Kept(Kept::ForGood));
+		assert_eq!(gone(&pool, A, "spoken", ON).await, Deleted::Kept(Kept::SwitchedOff), "so does a spoken answer");
 		for id in ["take", "answer", "reflection"] {
 			assert_eq!(rows(&pool, "voice_note", A, id).await, 1, "{id}");
 			assert_eq!(rows(&pool, "voice_note_audio", A, id).await, 1, "{id}");
@@ -510,6 +529,60 @@ mod tests {
 		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM voice_note_deletion").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B]);
 	}
+	/// The owner switched on both kinds on 2026-11-04 (paulgsc/some-ui#2473).
+	#[test]
+	fn takes_and_idea_answers_are_switched_on() {
+		assert_eq!(SWITCHED_ON, [Deletable::StudioTake, Deletable::IdeaAnswer]);
+	}
+
+	/// Switched on, an idea's spoken answer goes as a take does, and the
+	/// idea keeps its place: `idea_answer` still names the note, and the
+	/// receipt says the idea stayed. A spoken answer no idea names goes
+	/// with no idea to stay.
+	#[tokio::test]
+	async fn an_idea_answer_switched_on_goes_and_its_idea_stays() {
+		let pool = pool().await;
+		note(&pool, A, "answer", "studio").await;
+		everything_beside(&pool, A, "answer").await;
+		run(
+			&pool,
+			"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
+			 VALUES (?1, ?2, 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+			A,
+			"idea",
+		)
+		.await;
+		run(
+			&pool,
+			"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'idea', 1, 'what', ?2, NULL)",
+			A,
+			"answer",
+		)
+		.await;
+		run(
+			&pool,
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'studio', 'idea:i1:why', 'then', 'audio/webm', 1, 's', 'now')",
+			A,
+			"spoken",
+		)
+		.await;
+
+		let Deleted::Gone(answer) = gone(&pool, A, "answer", SWITCHED_ON).await else {
+			panic!("the answer is gone");
+		};
+		assert_eq!(answer.went, [RECORDING, WORDS, SET_ASIDE_MARK]);
+		assert_eq!(answer.stayed, [MAILBOX_COPY, DRIVE_COPY, IDEA]);
+		for table in ["voice_note", "voice_note_audio", "voice_transcript", "voice_transcript_word", "voice_note_set_aside"] {
+			assert_eq!(rows(&pool, table, A, "answer").await, 0, "{table}");
+		}
+		assert_eq!(rows(&pool, "idea_answer", A, "answer").await, 1, "the idea keeps its answer's place");
+		let Deleted::Gone(spoken) = gone(&pool, A, "spoken", SWITCHED_ON).await else {
+			panic!("the spoken answer is gone");
+		};
+		assert_eq!((spoken.went, spoken.stayed), (vec![RECORDING.to_owned()], Vec::new()));
+	}
+
 	/// The list of receipts is the subject's own, newest deleted first, at
 	/// most `RECEIPTS`, with how many there are in all.
 	#[tokio::test]

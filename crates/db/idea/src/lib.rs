@@ -19,7 +19,9 @@
 //!   invariant 23), and none the owner set aside. This crate reads
 //!   `voice_note`'s kind, whether a note is set aside
 //!   (`voice_repo::set_aside::set_aside_at`) and, for a read, what home heard
-//!   in it (`voice_repo::transcript::heard`), and writes none of them.
+//!   in it (`voice_repo::transcript::heard`) and whether the owner deleted it
+//!   (`voice_repo::delete::receipt`), and writes none of them. An answer
+//!   whose note was deleted keeps its place and says when.
 //! - **The lists are seeds and marks.** A list is its seeds
 //!   (`SEED_TOPICS`, `SEED_KEYWORDS`) with each entry's latest mark applied.
 //!   A topic or keyword a send adds to the idea must be on the lists as they
@@ -149,9 +151,12 @@ pub struct AnswerView {
 	/// What home heard in the note; none while it has not, for a note set
 	/// aside, and for a typed answer.
 	pub heard: Option<Transcript>,
-	/// Whether the owner set the answer's note aside after the idea was sent
-	/// (on the phone, Delete); false for a typed answer.
+	/// Whether the owner set the answer's note aside after the idea was sent;
+	/// false for a typed answer.
 	pub set_aside: bool,
+	/// When the owner deleted the answer's recording from My data, if they
+	/// did (paulgsc/some-ui#2579): the answer keeps its place, with no words.
+	pub deleted_at: Option<String>,
 }
 
 /// An idea as home serves it: its latest revision and its marks.
@@ -336,6 +341,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				AnswerView {
 					question: answer.question,
 					heard: heard(conn, subject, &note, aside).await?,
+					deleted_at: voice_repo::delete::receipt(conn, subject, &note).await?.map(|receipt| receipt.deleted_at),
 					note: Some(note),
 					typed: None,
 					set_aside: aside,
@@ -347,6 +353,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				typed: Some(typed),
 				heard: None,
 				set_aside: false,
+				deleted_at: None,
 			},
 		});
 	}

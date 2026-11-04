@@ -64,7 +64,8 @@
 //! a search of them, is [`takes`]'s (docs/take-library.md).
 //!
 //! Deleting a note for good, only of a kind the owner switched on
-//! ([`delete::SWITCHED_ON`], empty today), and keeping its receipt in
+//! ([`delete::SWITCHED_ON`]: Studio takes and idea answers since
+//! 2026-11-04), and keeping its receipt in
 //! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
 //!
 //! Which notes the owner let go of on the phone is [`set_aside`]'s:
