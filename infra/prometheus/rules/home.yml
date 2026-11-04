@@ -31,7 +31,7 @@ groups:
         expr: (max(up{job="file_host"}) == 0) or absent(up{job="file_host"})
         for: 2m
         labels:
-          objective: MI3 NW2 GA4 RR2
+          objective: MI3 NW2 GA4 RR2 AV2
           says: "Home's server has not answered for 2 minutes, so nothing on it is being watched."
 
       - alert: MailboxPollerStale
