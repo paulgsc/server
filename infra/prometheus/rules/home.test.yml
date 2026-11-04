@@ -425,7 +425,7 @@ tests:
         alertname: FileHostDown
         exp_alerts:
           - exp_labels:
-              objective: MI3 NW2 GA4 RR2
+              objective: MI3 NW2 GA4 RR2 AV2
               says: "Home's server has not answered for 2 minutes, so nothing on it is being watched."
 
   - name: a file_host Prometheus has no target for is down too
@@ -439,7 +439,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: file_host
-              objective: MI3 NW2 GA4 RR2
+              objective: MI3 NW2 GA4 RR2 AV2
               says: "Home's server has not answered for 2 minutes, so nothing on it is being watched."
 
   - name: a database behind its build for 5 minutes is DatabaseBehindBuild
