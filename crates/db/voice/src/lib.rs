@@ -29,8 +29,7 @@
 //!   `<project>:<shot>:<take>` (an idea's answer `idea:<idea>:<question>`,
 //!   a take with no scene whatever the phone names it), and it carries
 //!   nothing beside the note: no side table, no fields of its own. A redo is
-//!   a new take under a new id. Every take is the take library
-//!   ([`takes`], paulgsc/some-ui#2590), and its audio is read back too.
+//!   a new take under a new id. Its audio is read back ([`PLAYED_BACK`]).
 //! - **A soundbite, a grammar-lens take and a `LeetType` spoken answer are
 //!   voice notes** (paulgsc/some-ui#2180, HF5). Said for [`Of::Soundbite`],
 //!   [`Of::Lens`] or [`Of::Leetype`], each carries nothing beside the note,
@@ -776,9 +775,9 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 ///
 /// - [`Of::RustRound`]: a refine card plays an earlier note the phone let go
 ///   once home held it (the owner's D4 on paulgsc/some-ui#2237, 2026-10-29).
-/// - [`Of::Studio`]: a take is kept and played from home, as the take
-///   library has it (the owner's decision 8 on paulgsc/some-ui#2248,
-///   2026-11-04; paulgsc/some-ui#2590, ST32, and #2322, ST24).
+/// - [`Of::Studio`]: every take, an idea's spoken answer included, is kept
+///   and played from home (the owner's decision 8 on paulgsc/some-ui#2248,
+///   2026-11-04; ST32).
 ///
 /// Every other kind's audio never leaves home.
 pub const PLAYED_BACK: [Of; 2] = [Of::RustRound, Of::Studio];

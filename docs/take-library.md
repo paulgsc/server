@@ -106,8 +106,11 @@ takes. The identity doc's do, as above.
 
 ## Cost
 
-Each library read walks the caller's takes once: every `studio` note with its
-chosen hearing, in one statement, then keeps at most 50. It grows with how
-many takes the owner keeps, never with other subjects' notes or other kinds,
-and it is asked only by the owner's own paired phone, once per screen opened
-or search said.
+Each library read is one statement: it walks the caller's note descriptions
+(`voice_note` by its key, never the audio), keeps the `studio` ones, and reads
+each one's chosen hearing by the transcripts' key, so no other kind's
+transcript is read. It then keeps at most 50. It grows with how many notes the
+owner keeps, never with other subjects', and only the owner's own paired phone
+asks it, once per screen opened or search said. If the owner's other notes
+ever make that walk slow, an index on `voice_note (subject_id, of_kind)` makes
+it the takes alone.

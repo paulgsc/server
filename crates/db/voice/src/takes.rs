@@ -24,16 +24,15 @@
 //!   docs/take-library.md, "Where the meaning index lives", which is not
 //!   built yet; [`By`] says which search answered, so the phone never says
 //!   meaning when it searched words.
-//! - **Cost.** Each read walks the subject's takes once (every `studio`
-//!   note, and its chosen words by an indexed lookup per take), then keeps
-//!   at most [`NEWEST`]. That grows
-//!   with how many takes the owner keeps, one owner's library, never with
-//!   other subjects' or other kinds' notes, and it is only ever asked by the
-//!   owner's own phone, one read per screen opened or search said.
+//! - **Cost.** One statement walks the subject's note descriptions (no
+//!   audio), keeps the `studio` ones, and reads each one's chosen words by
+//!   the transcripts' key; then at most [`NEWEST`] are kept. It reads no
+//!   other kind's transcript, and only the owner's own phone asks it
+//!   (docs/take-library.md, "Cost").
 //! - **Its one caller** is `file_host`'s `handlers::voice`
 //!   (`GET /api/v1/voice-notes/takes`).
 
-use crate::{Of, VoiceError};
+use crate::{transcript::Transcript, Of, VoiceError};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -81,20 +80,6 @@ pub enum By {
 	Words,
 }
 
-/// What home heard in a take, as `GET /voice-notes/:id/heard` says it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Heard {
-	/// What was heard; empty when home heard the take and found it silent.
-	pub text: String,
-	/// Whisper's code for the language detected; none for a silent take.
-	pub language: Option<String>,
-	/// The model file it was heard with.
-	pub model: String,
-	/// When that hearing ended, ISO-8601 UTC.
-	pub heard_at: String,
-}
-
 /// One take, as the library lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,7 +99,7 @@ pub struct Take {
 	/// When the owner set it aside, if they did; it is kept either way.
 	pub set_aside_at: Option<String>,
 	/// What home heard in it; null while home has not heard it yet.
-	pub heard: Option<Heard>,
+	pub heard: Option<Transcript>,
 }
 
 /// The library's answer.
@@ -142,10 +127,8 @@ pub struct Library {
 /// crate never writes, and [`VoiceError::Storage`] for any `sqlx` failure.
 pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<&Search>) -> Result<Library, VoiceError> {
 	let studio = Of::Studio.as_str();
-	// The chosen hearing is `transcript::heard`'s order: a heard ending before
-	// a silent one, then the newest, then the model, so both reads agree. It
-	// is looked up per take by the transcripts' primary key, so no other
-	// kind's transcript is read.
+	// `transcript::heard`'s ORDER BY, kept equal by
+	// `the_words_are_the_ones_the_takes_own_read_answers`.
 	let rows = sqlx::query!(
 		r#"SELECT note.note_id AS "id!: String", note.of_ref AS "of_ref!: String",
 		          note.recorded_at AS "recorded_at!: String", note.stored_at AS "stored_at!: String",
@@ -174,7 +157,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 	let mut takes = Vec::new();
 	for row in rows {
 		let heard = match (row.outcome, row.model, row.heard_at) {
-			(Some(outcome), Some(model), Some(heard_at)) => Some(Heard {
+			(Some(outcome), Some(model), Some(heard_at)) => Some(Transcript {
 				text: if outcome == "heard" { row.text.ok_or(VoiceError::Unreadable)? } else { String::new() },
 				language: row.language,
 				model,
@@ -210,8 +193,9 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 
 #[cfg(test)]
 mod tests {
-	use super::{library, By, Heard, Search, MAX_SEARCH_CHARS, NEWEST};
+	use super::{library, By, Search, MAX_SEARCH_CHARS, NEWEST};
 	use crate::set_aside::set_aside;
+	use crate::transcript::Transcript;
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -317,7 +301,7 @@ mod tests {
 		assert_eq!(all.takes[1].set_aside_at.as_deref(), Some("2026-11-02T11:00:00.000Z"), "set aside, and still listed");
 		assert_eq!(
 			all.takes[2].heard,
-			Some(Heard {
+			Some(Transcript {
 				text: "the brand intro".to_owned(),
 				language: Some("en".to_owned()),
 				model: "small".to_owned(),

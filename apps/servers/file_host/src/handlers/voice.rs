@@ -1037,13 +1037,12 @@ mod tests {
 	/// ST32 (paulgsc/some-ui#2590; the owner's decision 8 on
 	/// paulgsc/some-ui#2248): a Studio take is played from home too, to a
 	/// paired phone, while every other kind but a Rust Rounds note stays home.
+	/// Who may read it is the Rust Rounds test's.
 	#[tokio::test]
 	async fn a_paired_phone_plays_its_studio_take_from_home_and_no_other_kind() {
 		use base64::{engine::general_purpose::STANDARD, Engine};
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
-		let browser = session(&state, A, Carrier::Cookie).await;
-		let other = session(&state, B, Carrier::Bearer).await;
 		let app = app(state);
 		for path in ["/voice-notes/t1?of=studio&ref=library:t1&at=2026-11-04T18:20:00Z", NOTE] {
 			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
@@ -1060,12 +1059,6 @@ mod tests {
 			get(&app, "/voice-notes/n1/audio", Some(&phone)).await.0,
 			StatusCode::NOT_FOUND,
 			"a reflection's audio stays home"
-		);
-		assert_eq!(get(&app, "/voice-notes/t1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
-		assert_eq!(
-			get(&app, "/voice-notes/t1/audio", Some(&other)).await.0,
-			StatusCode::NOT_FOUND,
-			"another subject's take is not theirs"
 		);
 	}
 

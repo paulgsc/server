@@ -1149,7 +1149,8 @@ nowhere is marked as such and belongs to review.
     2026-11-04: a take is kept and played from home, paulgsc/some-ui#2590,
     ST32): `GET /voice-notes/:id/audio`, a
     `Paired` phone's (a browser's session is a `403`), answers the caller's
-    own subject's `rust-round` or `studio` note `id` with its container, SHA-256 and
+    own subject's `rust-round` or `studio` note `id` (a `studio` note being any
+    take, an idea's spoken answer included) with its container, SHA-256 and
     bytes as base64, the SHA-256 its `ETag`; another subject's note, one
     home does not hold and a note said for any other kind are each a `404`,
     so no other kind's audio leaves home. It reads only, its span skips every
@@ -1183,8 +1184,9 @@ nowhere is marked as such and belongs to review.
     how many takes it holds, and with `q` (at most 200 characters, its
     terms compared in Unicode lowercase) the takes whose words hold every
     term and how many it found (`voice_repo::takes`, its one caller
-    `handlers::voice`). It reads no audio, no bite, no other kind's note and
-    no other subject's, and its span skips every argument, so neither the
+    `handlers::voice`). It answers no audio, no bite, no other kind's note
+    and no other subject's, reads no other kind's transcript, and its span
+    skips every argument, so neither the
     words nor the search reach a log line. Its name, `takes`, is never a
     note's id either. `GET /voice-notes/deleted`
     (paulgsc/server#667, under paulgsc/some-ui#2477 MD3), a `Paired`
