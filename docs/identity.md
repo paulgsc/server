@@ -1142,11 +1142,15 @@ nowhere is marked as such and belongs to review.
     off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line. **Its audio is
-    read back by one route, for Rust Rounds notes only** (the owner's D4 on
-    paulgsc/some-ui#2237, 2026-10-29: home gives a note's audio back to the
-    phone, for refine cards and replay): `GET /voice-notes/:id/audio`, a
+    read back by one route, for Rust Rounds notes and Studio takes only**
+    (`voice_repo::PLAYED_BACK`; the owner's D4 on paulgsc/some-ui#2237,
+    2026-10-29: home gives a note's audio back to the phone, for refine cards
+    and replay; and the owner's decision 8 on paulgsc/some-ui#2248,
+    2026-11-04: a take is kept and played from home, paulgsc/some-ui#2590,
+    ST32): `GET /voice-notes/:id/audio`, a
     `Paired` phone's (a browser's session is a `403`), answers the caller's
-    own subject's `rust-round` note `id` with its container, SHA-256 and
+    own subject's `rust-round` or `studio` note `id` (a `studio` note being any
+    take, an idea's spoken answer included) with its container, SHA-256 and
     bytes as base64, the SHA-256 its `ETag`; another subject's note, one
     home does not hold and a note said for any other kind are each a `404`,
     so no other kind's audio leaves home. It reads only, its span skips every
@@ -1170,7 +1174,21 @@ nowhere is marked as such and belongs to review.
     (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
     audio, no `ref`, no bite and no transcript, and its span skips every
     argument. Its name, like `on-drive`'s, is never a note's id
-    (`voice_repo::is_note_id`). `GET /voice-notes/deleted`
+    (`voice_repo::is_note_id`). `GET /voice-notes/takes`
+    (paulgsc/some-ui#2590, ST32; docs/take-library.md), a `Paired` phone's
+    (a browser's session is a `403`), is the take library: the caller's own
+    subject's `studio` notes, newest recorded first, at most 50
+    (`voice_repo::takes::NEWEST`), each with its id, `ref`, `recorded_at`,
+    `stored_at`, `size`, set-aside time and the words
+    `GET /voice-notes/:id/heard` would answer (the same choice of hearing),
+    how many takes it holds, and with `q` (at most 200 characters, its
+    terms compared in Unicode lowercase) the takes whose words hold every
+    term and how many it found (`voice_repo::takes`, its one caller
+    `handlers::voice`). It answers no audio, no bite, no other kind's note
+    and no other subject's, reads no other kind's transcript, and its span
+    skips every argument, so neither the
+    words nor the search reach a log line. Its name, `takes`, is never a
+    note's id either. `GET /voice-notes/deleted`
     (paulgsc/server#667, under paulgsc/some-ui#2477 MD3), a `Paired`
     phone's (a browser's session is a `403`), reads the caller's own
     subject's receipts in `voice_note_deletion` for My data's list of what

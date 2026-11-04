@@ -18,10 +18,18 @@
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
-//!                                      a Rust Rounds note's audio as
-//!                                      base64, to a paired phone, with its
-//!                                      SHA-256 as the ETag (`304` on
-//!                                      `If-None-Match`), or a JSON 404
+//!                                      a Rust Rounds note's or a Studio
+//!                                      take's audio as base64, to a paired
+//!                                      phone, with its SHA-256 as the ETag
+//!                                      (`304` on `If-None-Match`), or a
+//!                                      JSON 404
+//! GET /voice-notes/takes?q=           → { takes, total, matched, by }: the
+//!                                      take library, every Studio take
+//!                                      home keeps with the words it heard,
+//!                                      newest first, at most 50, or with
+//!                                      `q` the takes whose words hold every
+//!                                      term, to a paired phone
+//!                                      (paulgsc/some-ui#2590, ST32)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set
@@ -53,7 +61,9 @@
 //! own table beside the note, so no note is rewritten.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
-//! `rust-round` note only (`voice_repo::audio_head` says why).
+//! `rust-round` note or a `studio` take only (`voice_repo::PLAYED_BACK`
+//! says why). The take library answers what each take is and its words,
+//! never its audio (`voice_repo::takes`).
 //!
 //! A game bite is a note said for `game` (`ref` the game's id), whose
 //! query also carries the bite's fields (`voice_repo::SaidBite` lists them),
@@ -65,8 +75,8 @@
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
 //! token. The audio read, the delete and the receipts read take a `Paired`
-//! phone, as `routes::rust_rounds` does, so a browser's cookie session is a
-//! `403` there too.
+//! phone, as `routes::rust_rounds` does, and so do the kept read and the
+//! take library, so a browser's cookie session is a `403` there too.
 //!
 //! **Append-only, and kept unless deleted from My data.** A `PUT` adds a
 //! note or changes nothing, and other bytes or another description under a
@@ -104,6 +114,7 @@ where
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
 		.get("/voice-notes/:id/audio", handlers::get_audio)
 		.get("/voice-notes/kept", handlers::get_kept)
+		.get("/voice-notes/takes", handlers::get_takes)
 		.delete("/voice-notes/:id", handlers::delete_note)
 		.get("/voice-notes/deleted", handlers::get_deleted);
 
