@@ -457,8 +457,9 @@ async fn a_note_set_aside_is_not_held_and_its_words_leave_the_idea() {
 }
 
 /// An answer whose recording the owner deleted from My data keeps its
-/// place in the idea, with no words, and says when; a new send may not name
-/// it, so the answer is said again (paulgsc/some-ui#2579).
+/// place in the idea, with no words, and says when. A later send may keep it
+/// in that place, so the idea can still change, and may not name it anywhere
+/// else (paulgsc/some-ui#2579).
 #[tokio::test]
 async fn an_answer_whose_recording_was_deleted_keeps_its_place() {
 	let pool = pool().await;
@@ -478,9 +479,18 @@ async fn an_answer_whose_recording_was_deleted_keeps_its_place() {
 	assert_eq!(put(&pool, A, &first).await.unwrap().0, Change::Unchanged, "a held send retried is still held");
 	let mut again = first.clone();
 	again["sentAt"] = json!("2026-11-01T10:00:00.000Z");
-	again["title"] = json!("Said again");
-	match put(&pool, A, &again).await {
-		Err(IdeaError::NotesNotHeld(notes)) => assert_eq!(notes, ["n1"], "a new send may not name it"),
+	again["title"] = json!("Renamed");
+	let (change, held) = put(&pool, A, &again).await.unwrap();
+	assert_eq!(
+		(change, held.revision, held.answers[0].deleted_at.as_deref()),
+		(Change::Added, 2, Some(NOW)),
+		"it keeps its place"
+	);
+	let mut moved = again.clone();
+	moved["sentAt"] = json!("2026-11-01T11:00:00.000Z");
+	moved["answers"][1] = json!({ "question": "takeaway", "note": "n1" });
+	match put(&pool, A, &moved).await {
+		Err(IdeaError::NotesNotHeld(notes)) => assert_eq!(notes, ["n1"], "and goes nowhere else"),
 		other => panic!("{other:?}"),
 	}
 }

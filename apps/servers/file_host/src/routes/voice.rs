@@ -83,7 +83,7 @@
 //! held id, or a note deleted for good, are a `409`; setting a note aside
 //! deletes nothing. The one `DELETE` is My
 //! data's, for a kind the owner switched on, with a receipt
-//! (`voice_repo::delete`); every kind ships switched off.
+//! (`voice_repo::delete`): Studio takes and idea answers.
 //! See `handlers::voice` and `voice_repo`.
 
 use crate::auth::AuthContext;

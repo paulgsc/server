@@ -14,7 +14,7 @@
 //!   filters on it.
 //! - **Bounded.** [`kinds`] answers at most one row per [`Of`], [`weeks`] one
 //!   row per week since the subject's first note reached home, and [`newest`]
-//!   at most [`NEWEST`] notes.
+//!   at most [`NEWEST`] notes and the one it is asked for.
 //! - **Reads only.** Its one caller is `file_host`'s `handlers::voice`
 //!   (`GET /api/v1/voice-notes/kept`).
 
@@ -44,16 +44,20 @@ pub struct KindKept {
 	pub since: String,
 }
 
-/// What reached home in one week.
+/// What reached home in one week, and what the owner deleted from it then.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WeekKept {
 	/// The week's Monday (UTC), `YYYY-MM-DD`.
 	pub week: String,
-	/// How many notes reached home that week.
+	/// How many notes reached home that week, those deleted since included.
 	pub notes: i64,
 	/// Their audio's bytes.
 	pub bytes: i64,
+	/// How many notes the owner deleted that week, from My data.
+	pub left_notes: i64,
+	/// Their audio's bytes.
+	pub left_bytes: i64,
 }
 
 /// One note as My data lists it: no `ref`, no audio, nothing said.
@@ -71,7 +75,7 @@ pub struct NoteKept {
 	/// When the owner set it aside, if they did.
 	pub set_aside_at: Option<String>,
 	/// My data may offer to delete it: its kind is one the owner switched on
-	/// ([`crate::delete::SWITCHED_ON`]), and it is not the work.
+	/// ([`crate::delete::SWITCHED_ON`]).
 	pub deletable: bool,
 }
 
@@ -112,12 +116,13 @@ pub async fn kinds(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Kin
 }
 
 /// What reached home for `subject`, week by week (weeks start on Monday,
-/// UTC), oldest first. A week nothing reached home is not listed.
+/// UTC), oldest first.
 ///
 /// A note the owner later deleted still counts in the week it reached home,
-/// read from its receipt (`voice_note_deletion` keeps its size and when it
-/// reached home), so a delete never rewrites a past week (the owner,
-/// 2026-11-04, paulgsc/some-ui#2477).
+/// and leaves in the week it was deleted, both read from its receipt, so a
+/// delete never rewrites a past week (the owner, paulgsc/some-ui#2477) and
+/// the weeks' running total is what home holds. A week nothing reached home
+/// and nothing left it is not listed.
 ///
 /// # Errors
 /// [`VoiceError::Storage`] for any `sqlx` failure.
@@ -125,12 +130,16 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 	// `weekday 0` moves to the coming Sunday (or stays on one), so six days
 	// back is that week's Monday.
 	let rows = sqlx::query!(
-		r#"SELECT date(stored_at, 'weekday 0', '-6 days') AS "week!: String",
-		          COUNT(*) AS "notes!: i64",
-		          SUM(size) AS "bytes!: i64"
-		   FROM (SELECT stored_at, size FROM voice_note WHERE subject_id = ?1
+		r#"SELECT date(at, 'weekday 0', '-6 days') AS "week!: String",
+		          SUM(arrived) AS "notes!: i64",
+		          SUM(arrived * size) AS "bytes!: i64",
+		          SUM(1 - arrived) AS "left_notes!: i64",
+		          SUM((1 - arrived) * size) AS "left_bytes!: i64"
+		   FROM (SELECT stored_at AS at, size, 1 AS arrived FROM voice_note WHERE subject_id = ?1
 		         UNION ALL
-		         SELECT stored_at, size FROM voice_note_deletion WHERE subject_id = ?1)
+		         SELECT stored_at, size, 1 FROM voice_note_deletion WHERE subject_id = ?1
+		         UNION ALL
+		         SELECT deleted_at, size, 0 FROM voice_note_deletion WHERE subject_id = ?1)
 		   GROUP BY 1
 		   ORDER BY 1"#,
 		subject
@@ -144,6 +153,8 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 				week: row.week,
 				notes: row.notes,
 				bytes: row.bytes,
+				left_notes: row.left_notes,
+				left_bytes: row.left_bytes,
 			})
 			.collect(),
 	)
@@ -152,9 +163,13 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 /// `subject`'s newest notes said for `of`, newest recorded first, at most
 /// [`NEWEST`].
 ///
+/// After them comes the note `also` names, when it is one of the subject's
+/// said for `of` but older: the note another screen's "Delete…" opens My
+/// data on (paulgsc/some-ui#2579).
+///
 /// # Errors
 /// [`VoiceError::Storage`] for any `sqlx` failure.
-pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[Deletable]) -> Result<Vec<NoteKept>, VoiceError> {
+pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[Deletable], also: Option<&str>) -> Result<Vec<NoteKept>, VoiceError> {
 	let of = of.as_str();
 	let rows = sqlx::query!(
 		r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
@@ -172,19 +187,42 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 	)
 	.fetch_all(&mut *conn)
 	.await?;
-	Ok(
-		rows
-			.into_iter()
-			.map(|row| NoteKept {
-				id: row.note_id,
-				recorded_at: row.recorded_at,
-				stored_at: row.stored_at,
-				size: row.size,
-				set_aside_at: row.set_aside_at,
-				deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
-			})
-			.collect(),
-	)
+	let mut notes: Vec<NoteKept> = rows
+		.into_iter()
+		.map(|row| NoteKept {
+			deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
+			id: row.note_id,
+			recorded_at: row.recorded_at,
+			stored_at: row.stored_at,
+			size: row.size,
+			set_aside_at: row.set_aside_at,
+		})
+		.collect();
+	if let Some(also) = also.filter(|also| !notes.iter().any(|note| note.id == *also)) {
+		let row = sqlx::query!(
+			r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
+			          aside.set_aside_at AS "set_aside_at?: String",
+			          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+			            AS "answers!: bool"
+			   FROM voice_note AS note
+			   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
+			   WHERE note.subject_id = ?1 AND note.of_kind = ?2 AND note.note_id = ?3"#,
+			subject,
+			of,
+			also
+		)
+		.fetch_optional(&mut *conn)
+		.await?;
+		notes.extend(row.map(|row| NoteKept {
+			deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
+			id: row.note_id,
+			recorded_at: row.recorded_at,
+			stored_at: row.stored_at,
+			size: row.size,
+			set_aside_at: row.set_aside_at,
+		}));
+	}
+	Ok(notes)
 }
 
 #[cfg(test)]
@@ -266,7 +304,8 @@ mod tests {
 		assert!(kinds(&mut conn, "subject-c").await.unwrap().is_empty());
 	}
 
-	/// A note deleted since still counts in the week it reached home.
+	/// A note deleted since still counts in the week it reached home, and
+	/// leaves in the week it was deleted.
 	#[tokio::test]
 	async fn what_reached_home_is_summed_by_the_week_it_arrived() {
 		let pool = pool().await;
@@ -290,11 +329,22 @@ mod tests {
 					week: "2026-10-05".to_owned(),
 					notes: 3,
 					bytes: 123,
+					left_notes: 0,
+					left_bytes: 0,
 				},
 				WeekKept {
 					week: "2026-10-12".to_owned(),
 					notes: 1,
 					bytes: 7,
+					left_notes: 0,
+					left_bytes: 0,
+				},
+				WeekKept {
+					week: "2026-11-02".to_owned(),
+					notes: 0,
+					bytes: 0,
+					left_notes: 1,
+					left_bytes: 3,
 				},
 			]
 		);
@@ -313,7 +363,7 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		set_aside(&mut conn, A, "t50", "2026-10-03T10:00:00.000Z", "2026-10-03T10:00:01.000Z").await.unwrap();
 
-		let listed = newest(&mut conn, A, Of::Studio, &[]).await.unwrap();
+		let listed = newest(&mut conn, A, Of::Studio, &[], None).await.unwrap();
 		assert_eq!(listed.len(), usize::try_from(NEWEST).unwrap());
 		assert_eq!(listed[0].id, "t50", "the newest recorded first, B's newer take not among them");
 		assert_eq!(listed[0].set_aside_at.as_deref(), Some("2026-10-03T10:00:00.000Z"));
@@ -322,12 +372,19 @@ mod tests {
 		assert!(listed.iter().all(|kept| kept.id.starts_with('t')), "only the kind asked for");
 		assert!(!listed.iter().any(|kept| kept.id == "t0"), "the oldest past the cap is left out");
 		assert!(listed.iter().all(|kept| !kept.deletable), "nothing is deletable while takes are switched off");
+		let asked = newest(&mut conn, A, Of::Studio, &[], Some("t0")).await.unwrap();
+		assert_eq!(asked.len(), listed.len() + 1);
+		assert_eq!(asked.last().map(|kept| kept.id.as_str()), Some("t0"), "the note asked for, after the newest");
+		for (also, why) in [("t50", "already listed"), ("r1", "another kind"), ("b1", "another subject's")] {
+			assert_eq!(newest(&mut conn, A, Of::Studio, &[], Some(also)).await.unwrap().len(), listed.len(), "{why}");
+		}
 	}
 
-	/// With takes switched on, a take is listed as deletable and an idea's
-	/// spoken answer, which has its own switch, is not; with both on, both are.
+	/// A note is listed as deletable only when its kind is switched on: with
+	/// takes alone, a take is and an idea's spoken answer is not; with both,
+	/// both are.
 	#[tokio::test]
-	async fn a_take_is_listed_as_deletable_only_when_takes_are_switched_on() {
+	async fn a_note_is_listed_as_deletable_only_when_its_kind_is_switched_on() {
 		let pool = pool().await;
 		note(&pool, A, "take", "studio", "2026-10-01T10:00:00Z", 10, "2026-10-02T00:00:00.000Z").await;
 		note(&pool, A, "answer", "studio", "2026-10-01T11:00:00Z", 10, "2026-10-02T00:00:00.000Z").await;
@@ -347,10 +404,10 @@ mod tests {
 			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
 		}
 		let mut conn = pool.acquire().await.unwrap();
-		let listed = newest(&mut conn, A, Of::Studio, &[Deletable::StudioTake]).await.unwrap();
+		let listed = newest(&mut conn, A, Of::Studio, &[Deletable::StudioTake], None).await.unwrap();
 		let marked: Vec<(&str, bool)> = listed.iter().map(|kept| (kept.id.as_str(), kept.deletable)).collect();
 		assert_eq!(marked, [("answer", false), ("take", true), ("spoken", false)]);
-		let listed = newest(&mut conn, A, Of::Studio, SWITCHED_ON).await.unwrap();
+		let listed = newest(&mut conn, A, Of::Studio, SWITCHED_ON, None).await.unwrap();
 		assert!(listed.iter().all(|kept| kept.deletable), "with answers on too, every studio note is");
 	}
 

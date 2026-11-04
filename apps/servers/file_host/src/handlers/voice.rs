@@ -347,38 +347,45 @@ pub struct Kept {
 	pub notes: Option<Vec<NoteKept>>,
 }
 
-/// `GET /voice-notes/kept[?of=<kind>]`
+/// `GET /voice-notes/kept[?of=<kind>[&note=<id>]]`
 ///
 /// What home keeps of the caller's voice notes, for the phone's My data
 /// page (paulgsc/some-ui#2476, MY-DATA MD2): how many of each kind, their
 /// room, how many were set aside and since when, what reached home each
-/// week, and, when `of` names a kind, that kind's newest notes
-/// (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
+/// week, and, when `of` names a kind, that kind's newest notes, with the
+/// one `note` names when it is older (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
 /// nothing said.
 ///
-/// Read in one transaction, so its parts agree. The query is read as its pairs, so `of` said twice is
-/// refused as an unknown kind is; other keys are ignored.
+/// Read in one transaction, so its parts agree. The query is read as its pairs, so `of` or `note`
+/// said twice is refused as an unknown kind is; other keys are ignored.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's (only a paired phone reads
-/// it), 422 for an `of` that names no kind or is said more than once, and
-/// 500 for a storage failure.
+/// it), 422 for an `of` that names no kind or is said more than once, or a
+/// `note` that is no note's id, is said more than once or comes without
+/// `of`, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_kept_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<Kept>, FileHostError> {
 	let refused = || FileHostError::unprocessable_entity([("of", "a kind of voice note, said once")]);
-	let asked: Vec<&str> = query.iter().filter(|(key, _)| key == "of").map(|(_, value)| value.as_str()).collect();
-	let of = match asked.as_slice() {
+	let said = |name: &str| query.iter().filter(|(key, _)| key == name).map(|(_, value)| value.as_str()).collect::<Vec<&str>>();
+	let of = match said("of").as_slice() {
 		[] => None,
 		[name] => Some(Of::named(name).ok_or_else(refused)?),
 		_ => return Err(refused()),
+	};
+	let unnamed = || FileHostError::unprocessable_entity([("note", "a voice note's id, said once, with of")]);
+	let also = match said("note").as_slice() {
+		[] => None,
+		[id] if of.is_some() && voice_repo::is_note_id(id) => Some((*id).to_owned()),
+		_ => return Err(unnamed()),
 	};
 	let subject = paired.subject.as_str();
 	let mut tx = db.begin().await?;
 	let kinds = voice_repo::kept::kinds(&mut tx, subject).await.map_err(refusal)?;
 	let weeks = voice_repo::kept::weeks(&mut tx, subject).await.map_err(refusal)?;
 	let notes = match of {
-		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of, SWITCHED_ON).await.map_err(refusal)?),
+		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of, SWITCHED_ON, also.as_deref()).await.map_err(refusal)?),
 		None => None,
 	};
 	tx.commit().await?;
@@ -1288,6 +1295,19 @@ mod tests {
 		assert_eq!(body["kinds"], json!([]), "another subject's notes are not counted");
 		assert_eq!(get(&app, "/voice-notes/kept?of=diary", Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
 		assert_eq!(get(&app, "/voice-notes/kept?of=lens&of=studio", Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		for bad in [
+			"/voice-notes/kept?note=n1",
+			"/voice-notes/kept?of=reflection&note=n1&note=n2",
+			"/voice-notes/kept?of=reflection&note=a%20b",
+		] {
+			assert_eq!(get(&app, bad, Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+		}
+		let (status, body) = get(&app, "/voice-notes/kept?of=reflection&note=n1", Some(&phone)).await;
+		assert_eq!(
+			(status, body["notes"].as_array().map(Vec::len)),
+			(StatusCode::OK, Some(1)),
+			"a listed note is not listed twice"
+		);
 		assert_eq!(get(&app, "/voice-notes/kept", None).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(get(&app, "/voice-notes/kept", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 	}

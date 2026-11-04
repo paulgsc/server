@@ -1172,8 +1172,10 @@ nowhere is marked as such and belongs to review.
     session is a `403`), reads the caller's own subject's rows and
     set-aside marks for the phone's My data page: how many notes of each
     kind, their summed `size`, how many were set aside and the earliest
-    `recorded_at`; what reached home each week, by `stored_at`; and, with
-    `of`, that kind's newest notes (at most 50), each with its id,
+    `recorded_at`; what reached home each week, by `stored_at`, and what
+    the owner deleted from it each week, both a deleted note's read from its
+    receipt; and, with `of`, that kind's newest notes (at most 50), and the
+    one `note` names when it is that kind's and older, each with its id,
     `recorded_at`, `stored_at`, `size` and set-aside time
     (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
     audio, no `ref`, no bite and no transcript, and its span skips every
@@ -1387,13 +1389,12 @@ nowhere is marked as such and belongs to review.
     `home_counts_each_kind_its_room_and_what_was_set_aside_for_its_subject_only`,
     `what_reached_home_is_summed_by_the_week_it_arrived` and
     `a_kinds_newest_notes_come_first_and_stop_at_the_cap` and
-    `a_take_is_listed_as_deletable_only_when_takes_are_switched_on`, and
+    `a_note_is_listed_as_deletable_only_when_its_kind_is_switched_on`, and
     `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`,
     and for My data's delete `voice_repo::delete`'s
     `the_receipt_table_holds_exactly_its_described_columns`,
     `nothing_is_deleted_that_is_switched_off_or_kept_for_good`,
     `a_take_switched_on_goes_and_leaves_a_receipt`,
-    `takes_and_idea_answers_are_switched_on`,
     `an_idea_answer_switched_on_goes_and_its_idea_stays`,
     `a_bare_takes_receipt_names_only_the_recording` and
     `a_receipt_is_never_rewritten_and_leaves_with_the_account`,
@@ -1757,8 +1758,9 @@ nowhere is marked as such and belongs to review.
     the send: then the answer says `setAside` and carries no words. An
     answer whose note the owner deleted from My data (invariant 23) keeps
     its place in every revision that names it, carries no words, and says
-    `deletedAt`, read from the note's receipt; a later send may not name
-    that note, so the answer is said again. No file the poller
+    `deletedAt`, read from the note's receipt. A later send may keep that
+    note in the same answer, so the idea can still change, and may not name
+    it anywhere else. No file the poller
     files reads them, so they never leave home for the mailbox; a routine
     reads an idea's takes only as their transcripts, as before. A title, a
     typed answer and what was heard are the owner's own words, so they never

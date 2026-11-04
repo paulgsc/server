@@ -12,13 +12,10 @@
 //!   (`<project>:<shot>:<take>`) and that no idea's answer names; and an
 //!   idea's spoken answer ([`Deletable::IdeaAnswer`]): a `studio` note whose
 //!   `ref` is `idea:<idea>:<question>` or that `idea_answer` names. Every
-//!   other kind is kept. The owner ruled the answer deletable on
-//!   2026-11-04 (paulgsc/some-ui#2579, amending the 2026-11-02 rule on
-//!   #2474 that kept it as the work): the idea keeps its answer's place,
-//!   which then says the recording was deleted.
+//!   other kind is kept. The idea keeps a deleted answer's place, which then
+//!   says the recording was deleted.
 //! - **Each kind has its own switch.** [`SWITCHED_ON`] is the list the
-//!   owner turns on, one kind at a time. On 2026-11-04 they switched on
-//!   both (paulgsc/some-ui#2473): what goes with each is recorded on
+//!   owner turns on, one kind at a time; what goes with each is recorded on
 //!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
 //!   transcript and its words) and its set-aside mark, in one transaction.
@@ -50,14 +47,11 @@ pub enum Deletable {
 	/// served once its video is published (paulgsc/some-ui#2495).
 	StudioTake,
 	/// An idea's spoken answer: a `studio` note an idea's answer names, or
-	/// whose `ref` says it answers one (the owner, paulgsc/some-ui#2579,
-	/// 2026-11-04).
+	/// whose `ref` says it answers one.
 	IdeaAnswer,
 }
 
-/// The kinds the owner has switched on: both, on 2026-11-04
-/// (paulgsc/some-ui#2473). The machinery shipped off (paulgsc/some-ui#2477),
-/// and the owner turns kinds on one at a time.
+/// The kinds the owner has switched on (paulgsc/some-ui#2473).
 pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer];
 
 /// What went with a deleted note, in fixed words.
@@ -529,12 +523,6 @@ mod tests {
 		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM voice_note_deletion").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B]);
 	}
-	/// The owner switched on both kinds on 2026-11-04 (paulgsc/some-ui#2473).
-	#[test]
-	fn takes_and_idea_answers_are_switched_on() {
-		assert_eq!(SWITCHED_ON, [Deletable::StudioTake, Deletable::IdeaAnswer]);
-	}
-
 	/// Switched on, an idea's spoken answer goes as a take does, and the
 	/// idea keeps its place: `idea_answer` still names the note, and the
 	/// receipt says the idea stayed. A spoken answer no idea names goes
