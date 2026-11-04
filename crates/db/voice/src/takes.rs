@@ -25,7 +25,8 @@
 //!   built yet; [`By`] says which search answered, so the phone never says
 //!   meaning when it searched words.
 //! - **Cost.** Each read walks the subject's takes once (every `studio`
-//!   note, with its chosen words), then keeps at most [`NEWEST`]. That grows
+//!   note, and its chosen words by an indexed lookup per take), then keeps
+//!   at most [`NEWEST`]. That grows
 //!   with how many takes the owner keeps, one owner's library, never with
 //!   other subjects' or other kinds' notes, and it is only ever asked by the
 //!   owner's own phone, one read per screen opened or search said.
@@ -142,7 +143,9 @@ pub struct Library {
 pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<&Search>) -> Result<Library, VoiceError> {
 	let studio = Of::Studio.as_str();
 	// The chosen hearing is `transcript::heard`'s order: a heard ending before
-	// a silent one, then the newest, then the model, so both reads agree.
+	// a silent one, then the newest, then the model, so both reads agree. It
+	// is looked up per take by the transcripts' primary key, so no other
+	// kind's transcript is read.
 	let rows = sqlx::query!(
 		r#"SELECT note.note_id AS "id!: String", note.of_ref AS "of_ref!: String",
 		          note.recorded_at AS "recorded_at!: String", note.stored_at AS "stored_at!: String",
@@ -152,15 +155,13 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 		          heard.heard_at AS "heard_at?: String"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
-		   LEFT JOIN (
-		     SELECT note_id, outcome, text, language, model, heard_at,
-		            ROW_NUMBER() OVER (
-		              PARTITION BY note_id
-		              ORDER BY outcome = 'heard' DESC, heard_at DESC, model DESC
-		            ) AS pick
-		     FROM voice_transcript
-		     WHERE subject_id = ?1 AND outcome IN ('heard', 'silent')
-		   ) AS heard ON heard.note_id = note.note_id AND heard.pick = 1
+		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
+		     SELECT hearing.rowid FROM voice_transcript AS hearing
+		     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
+		       AND hearing.outcome IN ('heard', 'silent')
+		     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
+		     LIMIT 1
+		   )
 		   WHERE note.subject_id = ?1 AND note.of_kind = ?2
 		   ORDER BY note.recorded_at DESC, note.stored_at DESC, note.note_id DESC"#,
 		subject,
