@@ -26,8 +26,11 @@
 //!   game note carries a bite, and every game note carries one.
 //! - **A Studio take is a voice note** (paulgsc/server#552, paulgsc/some-ui
 //!   ST12). Said for [`Of::Studio`], its `ref` is the take,
-//!   `<project>:<shot>:<take>`, and it carries nothing beside the note: no
-//!   side table, no fields of its own. A redo is a new take under a new id.
+//!   `<project>:<shot>:<take>` (an idea's answer `idea:<idea>:<question>`,
+//!   a take with no scene whatever the phone names it), and it carries
+//!   nothing beside the note: no side table, no fields of its own. A redo is
+//!   a new take under a new id. Every take is the take library
+//!   ([`takes`], paulgsc/some-ui#2590), and its audio is read back too.
 //! - **A soundbite, a grammar-lens take and a `LeetType` spoken answer are
 //!   voice notes** (paulgsc/some-ui#2180, HF5). Said for [`Of::Soundbite`],
 //!   [`Of::Lens`] or [`Of::Leetype`], each carries nothing beside the note,
@@ -35,8 +38,8 @@
 //!   answer is `study_note_repo`'s, keyed by the phone's ids.
 //! - **A Rust Rounds note is a voice note** (paulgsc/some-ui#2237, RR6),
 //!   said for [`Of::RustRound`], its `ref` as [`is_rust_round_ref`] says,
-//!   and nothing beside it. Its audio is the one read back ([`audio_head`],
-//!   [`audio_body`]).
+//!   and nothing beside it. Its audio is read back, as a Studio take's is
+//!   ([`PLAYED_BACK`], [`audio_head`], [`audio_body`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -58,6 +61,9 @@
 //!
 //! What home keeps, counted for the phone's My data page, is [`kept`]'s.
 //!
+//! The take library, every Studio take with the words home heard in it and
+//! a search of them, is [`takes`]'s (docs/take-library.md).
+//!
 //! Deleting a note for good, only of a kind the owner switched on
 //! ([`delete::SWITCHED_ON`], empty today), and keeping its receipt in
 //! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
@@ -76,6 +82,7 @@ pub mod delete;
 pub mod kept;
 pub mod on_drive;
 pub mod set_aside;
+pub mod takes;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -405,7 +412,7 @@ fn container(content_type: &str) -> Option<&'static str> {
 /// name, not a note's, and so do `PUT /voice-notes/kept` and
 /// `DELETE /voice-notes/deleted`. `file_host`'s `handlers::voice` tests that
 /// every such route is named here.
-const ROUTE_NAMES: [&str; 3] = ["on-drive", "kept", "deleted"];
+const ROUTE_NAMES: [&str; 4] = ["on-drive", "kept", "deleted", "takes"];
 
 /// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
 /// not one of [`ROUTE_NAMES`].
@@ -764,6 +771,18 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 	Ok(Change::Added)
 }
 
+/// The kinds of note whose audio home gives back to the owner's paired
+/// phone, and why each:
+///
+/// - [`Of::RustRound`]: a refine card plays an earlier note the phone let go
+///   once home held it (the owner's D4 on paulgsc/some-ui#2237, 2026-10-29).
+/// - [`Of::Studio`]: a take is kept and played from home, as the take
+///   library has it (the owner's decision 8 on paulgsc/some-ui#2248,
+///   2026-11-04; paulgsc/some-ui#2590, ST32, and #2322, ST24).
+///
+/// Every other kind's audio never leaves home.
+pub const PLAYED_BACK: [Of; 2] = [Of::RustRound, Of::Studio];
+
 /// What home holds of a note's audio short of its bytes: its container and
 /// their SHA-256, enough to answer a read that already has them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -781,10 +800,9 @@ pub struct AudioHead {
 /// does, under the same filter, only when the bytes are wanted.
 ///
 /// Reads only. With [`audio_body`], its one caller is `file_host`'s
-/// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves
-/// [`Of::RustRound`] notes only, to a paired phone, so a refine card can play
-/// an earlier note the phone let go once home held it (the owner's D4 on
-/// paulgsc/some-ui#2237, 2026-10-29; docs/identity.md invariant 23).
+/// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves the
+/// kinds in [`PLAYED_BACK`] only, to a paired phone (docs/identity.md
+/// invariant 23).
 ///
 /// # Errors
 /// [`VoiceError::Unreadable`] for a held container this crate would not have

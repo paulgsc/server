@@ -27,8 +27,12 @@
 //!
 //! **The one way audio leaves home** (docs/identity.md invariant 23):
 //! [`get_audio`] is the only caller of `voice_repo::audio_head` and
-//! `voice_repo::audio_body`, and its span
-//! skips every argument.
+//! `voice_repo::audio_body`, for the kinds `voice_repo::PLAYED_BACK` lists,
+//! and its span skips every argument.
+//!
+//! [`get_takes`] is the only reader of the take library
+//! (`voice_repo::takes`): what each Studio take is and the words home heard
+//! in it, never its audio.
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
@@ -56,8 +60,9 @@ use voice_repo::{
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	kept::{KindKept, NoteKept, WeekKept},
 	set_aside::SetAside,
+	takes::{Library, Search},
 	transcript::{Hearing, Transcript},
-	Note, Of, Said, SaidBite, VoiceError, REWRITTEN,
+	Note, Of, Said, SaidBite, VoiceError, PLAYED_BACK, REWRITTEN,
 };
 
 /// `PUT /voice-notes/:id`'s query: what the phone says the note is.
@@ -277,8 +282,9 @@ pub struct NoteAudio {
 
 /// `GET /voice-notes/:id/audio`
 ///
-/// The caller's Rust Rounds note `id` back from home, for the reason
-/// `voice_repo::audio_head` gives.
+/// The caller's note `id` back from home, when it is of a kind in
+/// `voice_repo::PLAYED_BACK` (a Rust Rounds note or a Studio take), for the
+/// reasons that list gives.
 ///
 /// The audio comes inside JSON, as base64 beside its container and SHA-256,
 /// because the phone reads every answer from home as text
@@ -291,17 +297,21 @@ pub struct NoteAudio {
 /// # Errors
 /// 401 without a session, 403 for a browser's (only a paired phone reads a
 /// note's audio), 404 for a note the caller's subject does not hold
-/// (another subject's included) and for one said for anything but
-/// `rust-round`, and 500 for a storage failure.
+/// (another subject's included) and for one of a kind not in
+/// `voice_repo::PLAYED_BACK`, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_audio_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
 	let mut conn = db.acquire().await?;
 	let subject = paired.subject.as_str();
-	let head = voice_repo::audio_head(&mut conn, subject, &id, Of::RustRound)
-		.await
-		.map_err(refusal)?
-		.ok_or(FileHostError::NotFound)?;
+	let mut found = None;
+	for of in PLAYED_BACK {
+		if let Some(head) = voice_repo::audio_head(&mut conn, subject, &id, of).await.map_err(refusal)? {
+			found = Some((of, head));
+			break;
+		}
+	}
+	let (of, head) = found.ok_or(FileHostError::NotFound)?;
 	let etag = etag_value(&head.sha256)?;
 	// Decided from the head, so a 304 reads no audio.
 	if if_none_match_hits(&headers, &etag) {
@@ -309,7 +319,7 @@ pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: He
 	}
 	// The note is append-only, so a body missing here is a store that does
 	// not read back, not a race.
-	let body = voice_repo::audio_body(&mut conn, subject, &id, Of::RustRound)
+	let body = voice_repo::audio_body(&mut conn, subject, &id, of)
 		.await
 		.map_err(refusal)?
 		.ok_or(FileHostError::OperationError("a stored voice note does not read back".to_owned()))?;
@@ -373,6 +383,37 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 	};
 	tx.commit().await?;
 	Ok(Json(Kept { kinds, weeks, notes }))
+}
+
+/// `GET /voice-notes/takes[?q=<words>]`
+///
+/// The caller's take library (paulgsc/some-ui#2590, ST32; the owner's
+/// decision 8 on paulgsc/some-ui#2248): every Studio take home keeps, newest
+/// first, each with the words home heard in it, or with `q` the takes whose
+/// words hold every term of it (`voice_repo::takes`). It answers what each
+/// take is, never its audio, which `GET /voice-notes/:id/audio` plays.
+///
+/// The query is read as its pairs, so `q` said twice is refused as a blank
+/// one is; other keys are ignored.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's (only a paired phone reads
+/// it), 422 for a `q` with no term, longer than
+/// `voice_repo::takes::MAX_SEARCH_CHARS` or said more than once, and 500 for
+/// a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_takes_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_takes(paired: Paired, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<Library>, FileHostError> {
+	let refused = || FileHostError::unprocessable_entity([("q", "words to search for, at most 200 characters, said once")]);
+	let asked: Vec<&str> = query.iter().filter(|(key, _)| key == "q").map(|(_, value)| value.as_str()).collect();
+	let search = match asked.as_slice() {
+		[] => None,
+		[words] => Some(Search::parse(words).ok_or_else(refused)?),
+		_ => return Err(refused()),
+	};
+	let mut conn = db.acquire().await?;
+	let library = voice_repo::takes::library(&mut conn, paired.subject.as_str(), search.as_ref()).await.map_err(refusal)?;
+	Ok(Json(library))
 }
 
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
@@ -608,7 +649,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 8);
+		assert_eq!(module().descriptors().count(), 9);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -991,6 +1032,107 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/r1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 		let (status, hidden) = get(&app, "/voice-notes/r1/audio", Some(&other)).await;
 		assert_eq!(status, StatusCode::NOT_FOUND, "another subject's note is not theirs to hear: {hidden}");
+	}
+
+	/// ST32 (paulgsc/some-ui#2590; the owner's decision 8 on
+	/// paulgsc/some-ui#2248): a Studio take is played from home too, to a
+	/// paired phone, while every other kind but a Rust Rounds note stays home.
+	#[tokio::test]
+	async fn a_paired_phone_plays_its_studio_take_from_home_and_no_other_kind() {
+		use base64::{engine::general_purpose::STANDARD, Engine};
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for path in ["/voice-notes/t1?of=studio&ref=library:t1&at=2026-11-04T18:20:00Z", NOTE] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+		}
+
+		let (status, body) = get(&app, "/voice-notes/t1/audio", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		assert_eq!(
+			body,
+			json!({ "id": "t1", "contentType": "audio/webm", "sha256": TAKE_SHA256, "audio": STANDARD.encode(TAKE) })
+		);
+		assert_eq!(
+			get(&app, "/voice-notes/n1/audio", Some(&phone)).await.0,
+			StatusCode::NOT_FOUND,
+			"a reflection's audio stays home"
+		);
+		assert_eq!(get(&app, "/voice-notes/t1/audio", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		assert_eq!(
+			get(&app, "/voice-notes/t1/audio", Some(&other)).await.0,
+			StatusCode::NOT_FOUND,
+			"another subject's take is not theirs"
+		);
+	}
+
+	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's
+	/// Studio takes with what home heard in each, searches their words, and
+	/// is a paired phone's only. Which takes and words are chosen is
+	/// `voice_repo::takes`'s tests.
+	#[tokio::test]
+	async fn a_paired_phone_reads_and_searches_its_take_library() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [
+			"/voice-notes/t1?of=studio&ref=ep04:s1:1&at=2026-11-04T18:20:00Z",
+			"/voice-notes/t2?of=studio&ref=library:t2&at=2026-11-04T18:21:00Z",
+			NOTE,
+		] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+		}
+		sqlx::query(
+			"INSERT INTO voice_transcript
+			   (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 't1', 'small', 'whisper.cpp', 1, 'heard', 'en', 0.9, 1000, 'the brand intro', 5, '2026-11-04T18:30:00Z')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+
+		let (status, all) = get(&app, "/voice-notes/takes", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{all}");
+		assert_eq!(
+			all,
+			json!({
+				"takes": [
+					{ "id": "t2", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
+						"size": TAKE.len(), "setAsideAt": null, "heard": null },
+					{ "id": "t1", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
+						"size": TAKE.len(), "setAsideAt": null,
+						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" } }
+				],
+				"total": 2, "matched": null, "by": "newest"
+			}),
+			"the reflection is no take"
+		);
+		let (status, found) = get(&app, "/voice-notes/takes?q=Brand", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{found}");
+		assert_eq!(
+			(&found["takes"][0]["id"], &found["total"], &found["matched"], &found["by"]),
+			(&json!("t1"), &json!(2), &json!(1), &json!("words"))
+		);
+		assert_eq!(found["takes"].as_array().map(Vec::len), Some(1));
+
+		for refused in ["/voice-notes/takes?q=%20", "/voice-notes/takes?q=a&q=b"] {
+			let (status, body) = get(&app, refused, Some(&phone)).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}: {body}");
+		}
+		let long = String::from("/voice-notes/takes?q=") + &"a".repeat(voice_repo::takes::MAX_SEARCH_CHARS + 1);
+		assert_eq!(get(&app, &long, Some(&phone)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		assert_eq!(get(&app, "/voice-notes/takes", None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, "/voice-notes/takes", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		let (status, theirs) = get(&app, "/voice-notes/takes", Some(&other)).await;
+		assert_eq!((status, &theirs["total"]), (StatusCode::OK, &json!(0)), "one subject's takes are never another's");
 	}
 
 	/// A delete from a paired phone keeps every note while no kind is
